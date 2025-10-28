@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 class BenchmarkManager:
-
     def __init__(self, agents_dir: Path, config: dict[str, Any] | None = None):
         """
         Args:
