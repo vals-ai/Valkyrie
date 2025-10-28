@@ -1,5 +1,3 @@
-"""Agent registry for managing agent implementations."""
-
 from pathlib import Path
 
 
@@ -19,5 +17,4 @@ class AgentRegistry:
         agent_path = self.agents_dir / agent_id
         if not agent_path.exists():
             raise FileNotFoundError(f"Agent not found: {agent_id} at {agent_path}")
-
         return agent_path

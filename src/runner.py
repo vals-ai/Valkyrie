@@ -43,7 +43,7 @@ class AgentRunner:
         agents_dir = AGENTS_DIR
 
         # initialize benchmark manager first
-        self.benchmark_manager = BenchmarkManager(agents_dir)
+        self.benchmark_manager = BenchmarkManager(agents_dir, config)
         self.benchmark = self.benchmark_manager.get_benchmark(benchmark_name)
         self.benchmark.agent_args = agent_args
 
