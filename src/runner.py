@@ -38,7 +38,7 @@ class AgentRunner:
                 "Invalid agent_function format"
             )
 
-        module_name, func_name = agent_function.rsplit("q.", 1)
+        module_name, func_name = agent_function.rsplit(".", 1)
         if not module_name or not func_name:
             raise ValueError(
                 "Invalid agent_function format"
