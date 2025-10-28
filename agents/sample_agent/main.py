@@ -2,13 +2,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 def run(input: dict[str, dict], **kwargs) -> dict[str, str]:
     """Runs the agent with the given input.
-    
+
     Args:
         input: Dictionary mapping task IDs to task data
         **kwargs: Additional arguments passed via -A flags
-    
+
     Returns:
         Dictionary mapping task IDs to submissions
     """

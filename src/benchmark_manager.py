@@ -41,9 +41,7 @@ class BenchmarkManager:
             def get_dataset(self) -> dict[str, Any]:
                 """Get the benchmark dataset."""
                 if not hasattr(self.module, "get_dataset"):
-                    raise NotImplementedError(
-                        f"Benchmark {self.name} must implement get_dataset()"
-                    )
+                    raise NotImplementedError(f"Benchmark {self.name} must implement get_dataset()")
 
                 # TODO(Nikil): assumes the benchmark module's main.py has a get_dataset function
                 # need to think more about this design- perhaps it actually works well though....
@@ -64,7 +62,7 @@ class BenchmarkManager:
 
     def _load_benchmark_module(self, benchmark_path: Path) -> ModuleType:
         """Load benchmark module from path."""
-        
+
         benchmark_main = benchmark_path / "main.py"
         if not benchmark_main.exists():
             raise FileNotFoundError(f"Benchmark main.py not found at {benchmark_main}")

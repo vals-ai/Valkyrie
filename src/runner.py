@@ -34,15 +34,11 @@ class AgentRunner:
         """
         # validate agent_function format
         if "." not in agent_function:
-            raise ValueError(
-                "Invalid agent_function format"
-            )
+            raise ValueError("Invalid agent_function format")
 
         module_name, func_name = agent_function.rsplit(".", 1)
         if not module_name or not func_name:
-            raise ValueError(
-                "Invalid agent_function format"
-            )
+            raise ValueError("Invalid agent_function format")
 
         agents_dir = AGENTS_DIR
 
