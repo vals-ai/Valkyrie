@@ -1,0 +1,64 @@
+[project]
+name = "agentic-harness"
+version = "0.1.0"
+description = "An agentic harness that interfaces with benchmarks hosted by Vals AI"
+readme = "README.md"
+requires-python = ">=3.13"
+
+dependencies = [
+]
+
+[dependency-groups]
+dev = [
+  # test
+  "pytest",
+  "pytest-asyncio",
+  # style
+  "ruff",
+  "basedpyright",
+  # log
+  "rich",
+  # tui
+  "inquirerpy",
+  # env
+  "dotenv",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = []
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.basedpyright]
+exclude = [
+  ".*",
+  "tests/**",
+]
+typeCheckingMode = "strict"
+reportExplicitAny = false
+reportMissingTypeStubs = false
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests that don't require external resources",
+    "integration: Integration tests that require API keys and external services",
+]
+# Async test configuration
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
