@@ -15,13 +15,16 @@ dev = [
   "pytest-asyncio",
   # style
   "ruff",
-  "basedpyright",
   # log
   "rich",
   # tui
   "inquirerpy",
   # env
   "dotenv",
+]
+
+type-check = [
+  "basedpyright",
 ]
 
 [tool.ruff]
