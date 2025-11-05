@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from model_library.base import InputItem
+from vals_model_proxy.base import InputItem
 
 
 class AgentRunner(ABC):

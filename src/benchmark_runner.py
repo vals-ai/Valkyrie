@@ -7,7 +7,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional
 
-from model_library.base import InputItem
+from vals_model_proxy.base import InputItem
 
 from agent_runner import AgentRunner
 
@@ -54,7 +54,7 @@ class DefaultBenchmarkRunner(BenchmarkRunner):
 
     def get_input_items(self) -> list[InputItem]:
         return [
-            InputItem(task_id=task_id, input=task_data)
+            {"task_id": task_id, "input": task_data}
             for task_id, task_data in self._input_data.items()
         ]
 

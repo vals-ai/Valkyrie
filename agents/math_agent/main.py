@@ -5,30 +5,31 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
 
-from agent_runner import AgentRunner, InputItem
+from agent_runner import AgentRunner
 
 
 class MathAgent(AgentRunner):
     """Simple agent that solves addition problems."""
 
-    def run(self, input_items: list[InputItem]) -> dict[str, str]:
+    def run(self, input_items: list) -> dict[str, str]:
         """Solve addition problems."""
         results = {}
-        
+
         for item in input_items:
             try:
-                data = item.input
+                task_id = item.get("task_id") if isinstance(item, dict) else item.task_id
+                data = item.get("input") if isinstance(item, dict) else item.input
                 a = data.get("a")
                 b = data.get("b")
-                
+
                 if a is not None and b is not None:
                     answer = a + b
-                    results[item.task_id] = str(answer)
+                    results[task_id] = str(answer)
                 else:
-                    results[item.task_id] = "error"
+                    results[task_id] = "error"
             except Exception as e:
-                results[item.task_id] = f"error: {str(e)}"
-        
+                results[task_id] = f"error: {str(e)}"
+
         return results
 
 
