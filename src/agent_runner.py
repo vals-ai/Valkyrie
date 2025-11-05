@@ -3,13 +3,7 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-
-class InputItem:
-    """Input item for an agent."""
-
-    def __init__(self, task_id: str, input: Any):
-        self.task_id = task_id
-        self.input = input
+from model_library.base import InputItem
 
 
 class AgentRunner(ABC):
