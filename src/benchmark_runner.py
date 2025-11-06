@@ -9,7 +9,7 @@ from typing import Any, Optional
 
 from vals_model_proxy.base import InputItem
 
-from agent_runner import AgentRunner
+from src.agent_runner import AgentRunner
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ class ValsRunner:
             def __init__(self, module: ModuleType, name: str):
                 self.module = module
                 self.name = name
-                self.requires_sandbox = getattr(module, "requires_sandbox", False)
+                self.requires_docker: bool = getattr(module, "requires_docker", False)
                 self.setup_script = getattr(module, "setup_script", None)
 
             def get_dataset(self) -> dict[str, Any]:

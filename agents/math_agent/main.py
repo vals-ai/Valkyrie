@@ -1,17 +1,13 @@
 """Simple math agent that solves addition problems."""
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../src"))
-
-from agent_runner import AgentRunner
+from src.agent_runner import AgentRunner
+from vals_model_proxy.base import InputItem
 
 
 class MathAgent(AgentRunner):
     """Solves addition problems."""
 
-    def run(self, input_items: list) -> dict[str, str]:
+    def run(self, input_items: list[InputItem]) -> dict[str, str]:
         results = {}
         for item in input_items:
             try:
@@ -26,7 +22,7 @@ class MathAgent(AgentRunner):
 
 
 if __name__ == "__main__":
-    from main import run_agent_on_benchmark
+    from src.main import run_agent_on_benchmark
 
     result = run_agent_on_benchmark(agent_runner=MathAgent(), benchmark_name="addition")
     print("\n" + "="*50)

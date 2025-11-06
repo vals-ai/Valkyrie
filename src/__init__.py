@@ -1,1 +1,1 @@
-"""Agentic harness for running agents on benchmarks."""
+"""Agentic harness core modules."""

@@ -8,9 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from agent_runner import AgentRunner
-from benchmark_runner import ValsRunner
-from constants import AGENTS_DIR, DEFAULT_BENCHMARKS_DIR
+from src.agent_runner import AgentRunner
+from src.benchmark_runner import ValsRunner
+from src.constants import AGENTS_DIR, DEFAULT_BENCHMARKS_DIR
 
 logger = logging.getLogger(__name__)
 

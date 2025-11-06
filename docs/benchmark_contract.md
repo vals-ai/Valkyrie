@@ -28,7 +28,7 @@ def get_dataset() -> dict[str, dict]:
     return {"task_1": {"input": "..."}, "task_2": {"input": "..."}}
 
 # Optional
-requires_sandbox = False
+requires_docker = False
 setup_script = "setup.sh"
 evaluate_output = lambda output, run_id: {...}  # Optional evaluation
 ```
