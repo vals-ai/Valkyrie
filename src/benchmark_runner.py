@@ -91,7 +91,7 @@ class ValsRunner:
                 return self.module.get_dataset()
 
             def evaluate_output(
-                self, output: dict[str, Any], run_id: str = "test_run"
+                self, output: list[dict[str, Any]], run_id: str = "test_run"
             ) -> Optional[dict[str, Any]]:
                 if not hasattr(self.module, "evaluate_output"):
                     return None

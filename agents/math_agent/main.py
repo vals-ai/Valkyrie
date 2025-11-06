@@ -1,5 +1,7 @@
 """Simple math agent that solves addition problems."""
 
+from typing import Any
+
 from src.agent_runner import AgentRunner
 from vals_model_proxy.base import InputItem
 
@@ -7,17 +9,18 @@ from vals_model_proxy.base import InputItem
 class MathAgent(AgentRunner):
     """Solves addition problems."""
 
-    def run(self, input_items: list[InputItem]) -> dict[str, str]:
-        results = {}
+    def run(self, input_items: list[InputItem]) -> list[dict[str, Any]]:
+        results = []
         for item in input_items:
             try:
                 task_id = item.get("task_id") if isinstance(item, dict) else item.task_id
                 data = item.get("input") if isinstance(item, dict) else item.input
                 a = data.get("a")
                 b = data.get("b")
-                results[task_id] = str(a + b) if a is not None and b is not None else "error"
+                output = str(a + b) if a is not None and b is not None else "error"
+                results.append({"task_id": task_id, "output": output})
             except Exception as e:
-                results[task_id] = f"error: {str(e)}"
+                results.append({"task_id": task_id, "output": f"error: {str(e)}"})
         return results
 
 

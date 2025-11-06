@@ -12,19 +12,22 @@ def get_dataset() -> dict[str, dict]:
     }
 
 
-def evaluate_output(output: dict[str, str], run_id: str) -> dict:
+def evaluate_output(output: list[dict], run_id: str) -> dict:
     """Evaluate agent answers against expected results."""
     dataset = get_dataset()
     correct = 0
     total = len(dataset)
-
+    
+    # Create a mapping from task_id to output
+    output_map = {item["task_id"]: item["output"] for item in output}
+    
     for task_id, task in dataset.items():
-        if task_id in output:
+        if task_id in output_map:
             try:
-                agent_answer = int(output[task_id])
+                agent_answer = int(output_map[task_id])
                 if agent_answer == task["expected"]:
                     correct += 1
             except (ValueError, TypeError):
                 pass
-
+    
     return {"correct": correct, "total": total, "accuracy": correct / total}
