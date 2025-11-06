@@ -17,7 +17,7 @@ def evaluate_output(output: dict[str, str], run_id: str) -> dict:
     dataset = get_dataset()
     correct = 0
     total = len(dataset)
-    
+
     for task_id, task in dataset.items():
         if task_id in output:
             try:
@@ -26,5 +26,5 @@ def evaluate_output(output: dict[str, str], run_id: str) -> dict:
                     correct += 1
             except (ValueError, TypeError):
                 pass
-    
+
     return {"correct": correct, "total": total, "accuracy": correct / total}

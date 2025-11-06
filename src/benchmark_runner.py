@@ -23,21 +23,17 @@ class BenchmarkRunner(ABC):
 
     @abstractmethod
     def get_input_items(self) -> list[InputItem]:
-        """Transform input to InputItem list."""
         pass
 
     @abstractmethod
     def run(self, input_items: list[InputItem]) -> Any:
-        """Run agent on input items."""
         pass
 
     @abstractmethod
     def eval(self, final_output: Any) -> Optional[dict[str, Any]]:
-        """Evaluate output."""
         pass
 
     def execute(self) -> dict[str, Any]:
-        """Execute the benchmark workflow."""
         input_items = self.get_input_items()
         logger.info(f"Running agent on {len(input_items)} tasks")
         output = self.run(input_items)
@@ -68,7 +64,7 @@ class DefaultBenchmarkRunner(BenchmarkRunner):
 
 
 class ValsRunner:
-    """Loads and runs benchmark with/using a scaffold."""
+    """Loads and runs benchmarks."""
 
     def __init__(self, agents_dir: Path, config: Optional[dict[str, Any]] = None):
         self.agents_dir = agents_dir
@@ -76,12 +72,7 @@ class ValsRunner:
         self.benchmarks_dir = Path(self.config.get("benchmarks_dir", "benchmarks"))
 
     def load_benchmark(self, benchmark_name: str):
-        # Benchmarks can be local directories or git submodules under benchmarks_dir
-        # To use an external repo as a benchmark:
-        #   git submodule add <repo_url> benchmarks/<benchmark_name>
-        # The _load_module() method will automatically load main.py from it
         benchmark_path = self.benchmarks_dir / benchmark_name
-
         if not benchmark_path.exists():
             raise FileNotFoundError(f"Benchmark not found: {benchmark_name} at {benchmark_path}")
 
@@ -120,15 +111,12 @@ class ValsRunner:
     def _load_module(self, benchmark_path: Path) -> ModuleType:
         benchmark_main = benchmark_path / "main.py"
         if not benchmark_main.exists():
-            msg = f"Benchmark main.py not found at {benchmark_main}"
-            raise FileNotFoundError(msg)
+            raise FileNotFoundError(f"Benchmark main.py not found at {benchmark_main}")
 
         spec = importlib.util.spec_from_file_location("benchmark", benchmark_main)
         if spec is None or spec.loader is None:
-            msg = f"Failed to load benchmark module from {benchmark_main}"
-            raise ValueError(msg)
+            raise ValueError(f"Failed to load benchmark module from {benchmark_main}")
 
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return module
-
