@@ -2,8 +2,9 @@
 
 from typing import Any
 
-from src.agent_runner import AgentRunner
 from vals_model_proxy.base import InputItem
+
+from src.agent_runner import AgentRunner
 
 
 class MathAgent(AgentRunner):
@@ -28,12 +29,12 @@ if __name__ == "__main__":
     from src.main import run_agent_on_benchmark
 
     result = run_agent_on_benchmark(agent_runner=MathAgent(), benchmark_name="addition")
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("BENCHMARK RESULTS")
-    print("="*50)
+    print("=" * 50)
     print(f"Benchmark: {result['benchmark']}")
     print(f"Dataset size: {result['dataset_size']}")
     print(f"Output: {result['output']}")
-    if result.get('evaluation'):
+    if result.get("evaluation"):
         print(f"Evaluation: {result['evaluation']}")
-    print("="*50 + "\n")
+    print("=" * 50 + "\n")
