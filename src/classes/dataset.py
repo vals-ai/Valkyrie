@@ -5,16 +5,34 @@ from src.models import Task
 
 class Dataset(ABC):
     """
-    Base class for fetching datasets and preparing them for agent execution.
+    Abstract base class for managing benchmark datasets.
 
-    You can define dataset creation, setup scripts inside of here
+    The Dataset class is responsible for fetching, caching, and providing structured data
+    for benchmark evaluation. It serves as the data source for Benchmark instances.
+
+    Relationship to other classes:
+    - Used by: Benchmark (receives dataset through constructor)
+    - Provides: A list of Task objects for benchmark execution
+
+    Implementation requirements:
+    - Subclasses must implement _fetch_dataset() to load data from any source
+    - The dataset property handles caching automatically
+    - Each task should be structured according to the Task model
     """
 
     _dataset: list[Task] = []
 
     @property
     async def dataset(self) -> list[Task]:
-        """Returns dataset if it exists, else fetches it and caches it."""
+        """
+        Returns the dataset, fetching and caching it on first access.
+
+        This property ensures the dataset is only fetched once and cached for
+        subsequent access, optimizing performance for repeated benchmark runs.
+
+        Returns:
+            list[Task]: A list of Task objects ready for benchmark execution.
+        """
         if not self._dataset:
             self._dataset = await self._fetch_dataset()
 
@@ -23,19 +41,30 @@ class Dataset(ABC):
     @abstractmethod
     async def _fetch_dataset(self) -> list[Task]:
         """
-        Fetch raw dataset from the source, this is also where any filtering or pruning should be done.
-        The goal is to break the dataset into a list of tasks.
+        Fetch and process the raw dataset from its source.
 
-        example:
-        ```python
+        This method should handle all data loading, filtering, and transformation
+        logic to convert raw data into a list of Task objects. This is called
+        automatically by the dataset property on first access.
 
-        from datasets import load_dataset
+        Returns:
+            list[Task]: Processed dataset as a list of Task objects.
 
-        # Load MMMU dataset from huggingface
-        ds = load_dataset("MMMU/MMMU_Pro", "standard (4 options)")
+        Example:
+            ```python
+            from datasets import load_dataset
 
-        # Return the dataset as a list of dicts
-        return ds.to_list()
-        ```
+            async def _fetch_dataset(self) -> list[Task]:
+                # Load dataset from HuggingFace
+                ds = load_dataset("MMMU/MMMU_Pro", "standard (4 options)")
+
+                # Convert to Task objects with proper structure
+                tasks = [
+                    Task(id=i, input=item["question"], expected_output=item["answer"])
+                    for i, item in enumerate(ds)
+                ]
+
+                return tasks
+            ```
         """
         ...
