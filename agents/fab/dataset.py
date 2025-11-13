@@ -14,9 +14,9 @@ tests = [test.model_dump() for test in suite.tests]
 """
 
 from textwrap import dedent
-from typing import override
 
 from model_library.base import InputItem, TextInput
+from typing_extensions import override
 from vals import Suite
 from vals.sdk.run import Test
 
@@ -49,13 +49,15 @@ class FinanceAgentDataset(Dataset):
 
     Question:
     {question}
-    """)
+    """)  # noqa: E501
 
     def _prepare_task(self, test: Test) -> list[InputItem]:
         """
-        Takes in a single task and prepares a list of input items to be fed to the agent at run time.
+        Takes in a single task and prepares a list of input items to be fed to
+        the agent at run time.
 
-        Finance agent dataset does not require anything extra so here the `len(input_items) == 1`
+        Finance agent dataset does not require anything extra so here the
+        `len(input_items) == 1`
         """
         if not self.system_prompt:
             raise ValueError("System prompt is required to run this benchmark")
@@ -86,7 +88,7 @@ class FinanceAgentDataset(Dataset):
             }
         }
         ```
-        """
+        """  # noqa: E501
         suite = await Suite.from_id(self._suite_id)
 
         return [

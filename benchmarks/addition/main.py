@@ -17,10 +17,10 @@ def evaluate_output(output: list[dict], run_id: str) -> dict:
     dataset = get_dataset()
     correct = 0
     total = len(dataset)
-    
+
     # Create a mapping from task_id to output
     output_map = {item["task_id"]: item["output"] for item in output}
-    
+
     for task_id, task in dataset.items():
         if task_id in output_map:
             try:
@@ -29,5 +29,5 @@ def evaluate_output(output: list[dict], run_id: str) -> dict:
                     correct += 1
             except (ValueError, TypeError):
                 pass
-    
+
     return {"correct": correct, "total": total, "accuracy": correct / total}

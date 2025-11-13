@@ -7,7 +7,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Optional
 
-from vals_model_proxy.base import InputItem
+from model_library.base import InputItem
 
 from src.agent_runner import AgentRunner
 

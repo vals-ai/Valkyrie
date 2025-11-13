@@ -1,7 +1,7 @@
 from typing import Any
 
+from model_library.base import InputItem
 from pydantic import BaseModel
-from vals_model_proxy.base import InputItem
 
 
 class Task(BaseModel):

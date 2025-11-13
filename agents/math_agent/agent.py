@@ -1,6 +1,7 @@
-from typing import Any, override
+from typing import Any
 
 from model_library.base import LLM, InputItem
+from typing_extensions import override
 
 from src.classes import Agent
 

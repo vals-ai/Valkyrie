@@ -1,6 +1,7 @@
-from typing import Any, override
+from typing import Any
 
-from vals_model_proxy.base import InputItem
+from model_library.base import InputItem
+from typing_extensions import override
 
 from src.classes import Agent
 

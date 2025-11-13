@@ -1,7 +1,8 @@
 import json
-from typing import Any, cast, override
+from typing import Any, cast
 
 from model_library.base import QueryResult, QueryResultMetadata
+from typing_extensions import override
 from vals import QuestionAnswerPair
 
 from src.classes import Agent, Benchmark, Dataset
@@ -36,7 +37,9 @@ class FinanceAgentBenchmark(Benchmark):
         """
         Evaluates the output on the platform.
 
-        NOTE: This is an example of how it would look, ensure that the final output from the agent scaffold is a dictionary with the keys required to fill out the object.
+        NOTE: This is an example of how it would look, ensure that
+        the final output from the agent scaffold is a dictionary with
+        the keys required to fill out the object.
         """
 
         qa_set_id = cast(str, output.get("qa_set_id"))
@@ -64,7 +67,8 @@ class FinanceAgentBenchmark(Benchmark):
     @override
     async def evaluate(self, task: Task, output: dict[str, Any]) -> dict[str, Any]:
         """
-        Takes in the final output from the agent scaffold and evaluates it by uploading the result to the platform.
+        Takes in the final output from the agent scaffold and
+        evaluates it by uploading the result to the platform.
         """
         if not self._evalute_locally:
             raise ValueError(
@@ -76,7 +80,8 @@ class FinanceAgentBenchmark(Benchmark):
     @override
     async def upload_results(self, evaluation_result: dict[str, Any]) -> None:
         """
-        Can either ommit if we want to just use what is inside of the platform or we can save the results locally to a json file.
+        Can either ommit if we want to just use what is inside of the
+        platform or we can save the results locally to a json file.
         """
 
         with open("evaluation_results.json", "w") as f:

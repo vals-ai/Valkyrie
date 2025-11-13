@@ -30,9 +30,7 @@ def load_agent(agent_name: str) -> AgentRunner:
 
     for attr_name in dir(module):
         attr = getattr(module, attr_name)
-        if (isinstance(attr, type) and
-            issubclass(attr, AgentRunner) and
-            attr is not AgentRunner):
+        if isinstance(attr, type) and issubclass(attr, AgentRunner) and attr is not AgentRunner:
             return attr()
 
     raise ValueError(f"No AgentRunner subclass found in {agent_main}")
@@ -43,32 +41,25 @@ def run_agent_on_benchmark(
     benchmark_name: str,
     benchmarks_dir: Path = DEFAULT_BENCHMARKS_DIR,
 ) -> dict[str, Any]:
-    runner = ValsRunner(
-        agents_dir=AGENTS_DIR,
-        config={"benchmarks_dir": str(benchmarks_dir)}
-    )
+    runner = ValsRunner(agents_dir=AGENTS_DIR, config={"benchmarks_dir": str(benchmarks_dir)})
     return runner.run(agent_runner, benchmark_name)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Run an agent on a benchmark")
+    parser.add_argument("--agent", required=True, help="Agent name (directory in agents/)")
     parser.add_argument(
-        "--agent", required=True, help="Agent name (directory in agents/)"
+        "--benchmark", required=True, help="Benchmark name (directory in benchmarks/)"
     )
     parser.add_argument(
-        "--benchmark", required=True,
-        help="Benchmark name (directory in benchmarks/)"
-    )
-    parser.add_argument(
-        "--benchmarks-dir", type=Path, default=DEFAULT_BENCHMARKS_DIR,
-        help="Benchmarks directory"
+        "--benchmarks-dir", type=Path, default=DEFAULT_BENCHMARKS_DIR, help="Benchmarks directory"
     )
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
     try:
@@ -85,10 +76,10 @@ def main():
         print(f"Benchmark: {result['benchmark']}")
         print(f"Dataset size: {result['dataset_size']}")
         print("\nOutput:")
-        print(result['output'])
-        if result.get('evaluation'):
+        print(result["output"])
+        if result.get("evaluation"):
             print("\nEvaluation:")
-            print(json.dumps(result['evaluation'], indent=2))
+            print(json.dumps(result["evaluation"], indent=2))
         print("=" * 60 + "\n")
 
     except (FileNotFoundError, ValueError) as e:
@@ -98,6 +89,7 @@ def main():
         logger.error(f"Unexpected error: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         sys.exit(1)
 

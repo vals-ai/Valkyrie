@@ -1,6 +1,5 @@
-from typing import override
-
 from model_library.base import TextInput
+from typing_extensions import override
 
 from src.classes import Dataset
 from src.models import Task
