@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 from model_library.base import InputItem
 from pydantic import BaseModel
 
+from agentic_harness.base.agent import Agent
+
 
 class Task(BaseModel):
     input: list[InputItem]
@@ -13,6 +15,10 @@ class TaskGroup(BaseModel):
 
 
 class Benchmark(ABC):
-    @property
+    on_platform: bool = True
+
     @abstractmethod
-    def dataset(self) -> list[TaskGroup]: ...
+    async def dataset(self) -> list[TaskGroup]: ...
+
+    @abstractmethod
+    async def run(self, agent: Agent) -> None: ...
