@@ -26,6 +26,7 @@ include = ["agentic_harness", "agents", "benchmarks"]
 exclude = [
   ".*",
   "tests/**",
+  "agents/fab/edgar_agent/**",
 ]
 typeCheckingMode = "strict"
 reportExplicitAny = false
