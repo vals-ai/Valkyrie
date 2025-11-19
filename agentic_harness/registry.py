@@ -19,6 +19,8 @@ _benchmarks_imported = False
 
 
 def _import_modules(base_dir: Path, package: str, module_name: str) -> None:
+    """Import every package submodule named ``module_name`` under ``base_dir``."""
+
     if not base_dir.exists():
         return
 
@@ -34,6 +36,8 @@ def _import_modules(base_dir: Path, package: str, module_name: str) -> None:
 
 
 def _ensure_agents_imported() -> None:
+    """Lazily import all agent modules once per process."""
+
     global _agents_imported
     if _agents_imported:
         return
@@ -43,6 +47,8 @@ def _ensure_agents_imported() -> None:
 
 
 def _ensure_benchmarks_imported() -> None:
+    """Lazily import all benchmark modules once per process."""
+
     global _benchmarks_imported
     if _benchmarks_imported:
         return
@@ -52,6 +58,8 @@ def _ensure_benchmarks_imported() -> None:
 
 
 def register_agent(name: str) -> Callable[[Type[AgentT]], Type[AgentT]]:
+    """Decorator that registers an Agent subclass under ``name``."""
+
     def decorator(cls: Type[AgentT]) -> Type[AgentT]:
         _agent_registry[name] = cls
         return cls
@@ -59,6 +67,8 @@ def register_agent(name: str) -> Callable[[Type[AgentT]], Type[AgentT]]:
     return decorator
 
 def register_benchmark(name: str) -> Callable[[Type[BenchmarkT]], Type[BenchmarkT]]:
+    """Decorator that registers a Benchmark subclass under ``name``."""
+
     def decorator(cls: Type[BenchmarkT]) -> Type[BenchmarkT]:
         _benchmark_registry[name] = cls
         return cls
@@ -67,6 +77,8 @@ def register_benchmark(name: str) -> Callable[[Type[BenchmarkT]], Type[Benchmark
 
 
 def load_agent(agent_name: str) -> Agent:
+    """Instantiate the registered agent identified by ``agent_name``."""
+
     _ensure_agents_imported()
     try:
         agent_cls = _agent_registry[agent_name]
@@ -77,6 +89,8 @@ def load_agent(agent_name: str) -> Agent:
 
 
 def load_benchmark(benchmark_name: str) -> Benchmark:
+    """Instantiate the registered benchmark identified by ``benchmark_name``."""
+
     _ensure_benchmarks_imported()
     try:
         benchmark_cls = _benchmark_registry[benchmark_name]

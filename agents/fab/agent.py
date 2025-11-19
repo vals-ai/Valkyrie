@@ -22,7 +22,7 @@ from .edgar_agent.agent import Agent as EdgarAgent
 @register_agent("fab")
 class FinanceAgent(Agent):
     def __init__(self):
-        # TODO: create AgentConfig
+        # TODO: model params and agent config should live in yaml
         llm = get_registry_model("openai/gpt-5-mini-2025-08-07")
         tools: dict[str, Tool] = {
             "google_web_search": GoogleWebSearch(),

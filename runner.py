@@ -17,16 +17,18 @@ logger = logging.getLogger(__name__)
 
 async def basic_runner(agent: Agent, benchmark: Benchmark) -> list[QueryResult]:
     """
-    Basic agent runnner.
+    Basic benchmark runnner.
 
-    Eventually we will build a more robust runner that can manage agents in a
+    Eventually we will build a more robust runner that can manage tasks in a
     distributed system.
+
+    This can also be a class.
     """
     results: list[QueryResult] = []
     dataset = await benchmark.dataset()
     for task_group in dataset:
         for task in task_group.tasks:
-            results.append(await agent.run(task.input))
+            await benchmark.evaluate(task, agent)
     return results
 
 
@@ -55,7 +57,7 @@ async def main():
     logger.info(f"Loading benchmark: {args.benchmark}")
     benchmark = load_benchmark(args.benchmark)
 
-    results = await basic_runner_example(agent, benchmark)
+    results = await basic_runner(agent, benchmark)
     return results
 
 
