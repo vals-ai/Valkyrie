@@ -2,10 +2,8 @@ from model_library.base import TextInput
 from typing_extensions import override
 from vals import Suite
 from agentic_harness.base.dataset import Dataset, Task, TaskGroup
-from agentic_harness.registry import register_dataset
 
 
-@register_dataset("fab")
 class FinanceAgentDataset(Dataset):
     suite_id = "fdf9a783-a522-484f-a139-e47bbb5571ac"
 

@@ -4,10 +4,6 @@ from agentic_harness.base.benchmark import Benchmark
 from agentic_harness.base.dataset import Task
 from vals import QuestionAnswerPair, RunParameters, Suite
 
-from agentic_harness.registry import register_benchmark
-
-
-@register_benchmark("fab")
 class FinanceAgentBenchmark(Benchmark):
     suite_id = "fdf9a783-a522-484f-a139-e47bbb5571ac"
 

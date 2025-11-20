@@ -7,7 +7,6 @@ from model_library.base import (
 )
 from model_library.registry_utils import get_registry_model
 from typing_extensions import override
-from agentic_harness.registry import register_agent
 from agents.fab.edgar_agent.tool import (
     GoogleWebSearch,
     RetrieveInformation,
@@ -19,7 +18,6 @@ from agentic_harness.base.agent import Agent
 from .edgar_agent.agent import Agent as EdgarAgent
 
 
-@register_agent("fab")
 class FinanceAgent(Agent):
     def __init__(self):
         # TODO: model params and agent config should live in yaml
