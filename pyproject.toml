@@ -6,6 +6,8 @@ readme = "README.md"
 requires-python = ">=3.11"
 
 dependencies = [
+  "asgiref",
+  "pypandoc",
   "model-library @ git+https://github.com/vals-ai/model-library.git",
   "valsai @ git+ssh://git@github.com/vals-ai/platform-be.git@dev#subdirectory=sdk",
 ]
@@ -17,35 +19,15 @@ dev = [
   "pytest-asyncio",
   # style
   "ruff",
-  # log
-  "rich",
-  # tui
-  "inquirerpy",
-  # env
-  "dotenv",
-]
-
-basedpyright = [
   "basedpyright"
 ]
 
-[tool.ruff]
-line-length = 100
-target-version = "py313"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
-ignore = []
-
-[tool.ruff.format]
-quote-style = "double"
-indent-style = "space"
-
 [tool.basedpyright]
-include = ["src", "agents"]
+include = ["agentic_harness", "agents", "benchmarks"]
 exclude = [
   ".*",
   "tests/**",
+  "agents/fab/edgar_agent/**",
 ]
 typeCheckingMode = "strict"
 reportExplicitAny = false
@@ -59,7 +41,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["agentic_harness"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
