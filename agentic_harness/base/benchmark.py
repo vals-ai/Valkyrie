@@ -1,9 +1,7 @@
 from abc import ABC, abstractmethod
 
-from model_library.base import InputItem
+from model_library.base import InputItem, QueryResult
 from pydantic import BaseModel
-
-from agentic_harness.base.agent import Agent
 
 
 class Task(BaseModel):
@@ -31,10 +29,5 @@ class Benchmark(ABC):
         """Materialize the task groups that compose this benchmark."""
 
     @abstractmethod
-    async def evaluate(self, task: Task, agent: Agent) -> None:
-        """
-        Run the agent on a single task and handle result aggregation.
-
-        If a benchmark is coupled with the platform, this method should upload
-        QuestionAnswerPairs to the platform.
-        """
+    async def evaluate(self, task: Task, query_result: QueryResult) -> None:
+        """Evaluate query result for a single task."""

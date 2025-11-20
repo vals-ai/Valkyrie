@@ -28,7 +28,8 @@ async def basic_runner(agent: Agent, benchmark: Benchmark) -> list[QueryResult]:
     dataset = await benchmark.dataset()
     for task_group in dataset:
         for task in task_group.tasks:
-            await benchmark.evaluate(task, agent)
+            result = await agent.run(task.input)
+            await benchmark.evaluate(task, result)
     return results
 
 

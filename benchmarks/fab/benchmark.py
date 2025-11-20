@@ -1,6 +1,5 @@
 from typing_extensions import override
-from model_library.base import TextInput
-from agentic_harness.base.agent import Agent
+from model_library.base import QueryResult, TextInput
 from agentic_harness.base.benchmark import Benchmark, TaskGroup, Task
 from vals import QuestionAnswerPair, RunParameters, Suite
 
@@ -28,9 +27,9 @@ class FinanceAgentBenchmark(Benchmark):
         return [TaskGroup(tasks=tasks)]
 
     @override
-    async def evaluate(self, task: Task, agent: Agent) -> None:
+    async def evaluate(self, task: Task, query_result: QueryResult) -> None:
         """
-        Evaluate a single task using an agent.
+        Evaluate a single task.
 
         TODO: this should not rely on instance variables;
         """
@@ -45,11 +44,9 @@ class FinanceAgentBenchmark(Benchmark):
                 ),  # TODO: params should live in yaml
             )
 
-        result = await agent.run(task.input)
-
         await QuestionAnswerPair.upload(
             run_id=self.run.id,
             qa_set_id=self.run.qa_set_id,
             test_id=task.id,
-            query_result=result,
+            query_result=query_result,
         )
