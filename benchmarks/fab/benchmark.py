@@ -1,6 +1,7 @@
 from typing_extensions import override
-from model_library.base import QueryResult, TextInput
-from agentic_harness.base.benchmark import Benchmark, TaskGroup, Task
+from model_library.base import QueryResult
+from agentic_harness.base.benchmark import Benchmark
+from agentic_harness.base.dataset import Task
 from vals import QuestionAnswerPair, RunParameters, Suite
 
 from agentic_harness.registry import register_benchmark
@@ -12,19 +13,6 @@ class FinanceAgentBenchmark(Benchmark):
 
     def __init__(self):
         self.run = None
-
-    @override
-    async def dataset(self) -> list[TaskGroup]:
-        suite = await Suite.from_id(self.suite_id)
-        tests = suite.tests
-
-        tasks: list[Task] = []
-        for test in tests:
-            input = [TextInput(text=test.input_under_test)]
-            task = Task(id=test._id, input=input)  # pyright: ignore[reportPrivateUsage]
-            tasks.append(task)
-
-        return [TaskGroup(tasks=tasks)]
 
     @override
     async def evaluate(self, task: Task, query_result: QueryResult) -> None:

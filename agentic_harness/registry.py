@@ -4,18 +4,23 @@ from typing import Callable, Type, TypeVar
 
 from agentic_harness.base.agent import Agent
 from agentic_harness.base.benchmark import Benchmark
+from agentic_harness.base.dataset import Dataset
 
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
 DEFAULT_BENCHMARKS_DIR = Path(__file__).parent.parent / "benchmarks"
+DATASETS_DIR = Path(__file__).parent.parent / "datasets"
 
 AgentT = TypeVar("AgentT", bound=Agent)
 BenchmarkT = TypeVar("BenchmarkT", bound=Benchmark)
+DatasetT = TypeVar("DatasetT", bound=Dataset)
 
 _agent_registry: dict[str, type[Agent]] = {}
 _benchmark_registry: dict[str, type[Benchmark]] = {}
+_dataset_registry: dict[str, type[Dataset]] = {}
 
 _agents_imported = False
 _benchmarks_imported = False
+_datasets_imported = False
 
 
 def _import_modules(base_dir: Path, package: str, module_name: str) -> None:
@@ -57,6 +62,17 @@ def _ensure_benchmarks_imported() -> None:
     _benchmarks_imported = True
 
 
+def _ensure_datasets_imported() -> None:
+    """Lazily import all dataset modules once per process."""
+
+    global _datasets_imported
+    if _datasets_imported:
+        return
+
+    _import_modules(DATASETS_DIR, "datasets", "dataset")
+    _datasets_imported = True
+
+
 def register_agent(name: str) -> Callable[[Type[AgentT]], Type[AgentT]]:
     """Decorator that registers an Agent subclass under ``name``."""
 
@@ -71,6 +87,16 @@ def register_benchmark(name: str) -> Callable[[Type[BenchmarkT]], Type[Benchmark
 
     def decorator(cls: Type[BenchmarkT]) -> Type[BenchmarkT]:
         _benchmark_registry[name] = cls
+        return cls
+
+    return decorator
+
+
+def register_dataset(name: str) -> Callable[[Type[DatasetT]], Type[DatasetT]]:
+    """Decorator that registers a Dataset subclass under ``name``."""
+
+    def decorator(cls: Type[DatasetT]) -> Type[DatasetT]:
+        _dataset_registry[name] = cls
         return cls
 
     return decorator
@@ -98,3 +124,15 @@ def load_benchmark(benchmark_name: str) -> Benchmark:
         raise ValueError(f"Benchmark {benchmark_name} not found")
 
     return benchmark_cls()
+
+
+def load_dataset(dataset_name: str) -> Dataset:
+    """Instantiate the registered dataset identified by ``dataset_name``."""
+
+    _ensure_datasets_imported()
+    try:
+        dataset_cls = _dataset_registry[dataset_name]
+    except KeyError:
+        raise ValueError(f"Dataset {dataset_name} not found")
+
+    return dataset_cls()

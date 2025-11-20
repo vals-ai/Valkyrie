@@ -5,17 +5,21 @@ import asyncio
 import logging
 
 from agentic_harness.base import Agent, Benchmark
-from agentic_harness.registry import load_agent, load_benchmark
+from agentic_harness.registry import load_agent, load_benchmark, load_dataset
 from model_library.base import QueryResult
 
 from dotenv import load_dotenv
+
+from datasets.fab.dataset import Dataset
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 
-async def basic_runner(agent: Agent, benchmark: Benchmark) -> list[QueryResult]:
+async def basic_runner(
+    agent: Agent, dataset: Dataset, benchmark: Benchmark
+) -> list[QueryResult]:
     """
     Basic benchmark runnner.
 
@@ -25,11 +29,12 @@ async def basic_runner(agent: Agent, benchmark: Benchmark) -> list[QueryResult]:
     This can also be a class.
     """
     results: list[QueryResult] = []
-    dataset = await benchmark.dataset()
-    for task_group in dataset:
+    task_groups = await dataset.create()
+    for task_group in task_groups:
         for task in task_group.tasks:
             result = await agent.run(task.input)
             await benchmark.evaluate(task, result)
+            results.append(result)
     return results
 
 
@@ -38,6 +43,9 @@ async def main():
 
     parser.add_argument(
         "--agent", required=True, help="Agent name (directory in agents/)"
+    )
+    parser.add_argument(
+        "--dataset", required=True, help="Dataset name (directory in datasets/)"
     )
     parser.add_argument(
         "--benchmark", required=True, help="Benchmark name (directory in benchmarks/)"
@@ -55,13 +63,15 @@ async def main():
     logger.info(f"Loading agent: {args.agent}")
     agent = load_agent(args.agent)
 
+    logger.info(f"Loading dataset: {args.dataset}")
+    dataset = load_dataset(args.dataset)
+
     logger.info(f"Loading benchmark: {args.benchmark}")
     benchmark = load_benchmark(args.benchmark)
 
-    results = await basic_runner(agent, benchmark)
-    return results
+    results = await basic_runner(agent, dataset, benchmark)
+    print(results)
 
 
 if __name__ == "__main__":
-    result = asyncio.run(main())
-    print(result)
+    asyncio.run(main())
