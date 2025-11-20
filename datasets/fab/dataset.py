@@ -11,7 +11,7 @@ class FinanceAgentDataset(Dataset):
 
     @override
     async def create(self) -> list[TaskGroup]:
-        suite = await Suite.from_id(self.suite_id)
+        suite = await Suite.from_id(self._suite_id)
         tests = suite.tests
 
         tasks: list[Task] = []

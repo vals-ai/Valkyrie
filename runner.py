@@ -17,9 +17,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-async def basic_runner(
-    agent: Agent, dataset: Dataset, benchmark: Benchmark
-) -> list[QueryResult]:
+async def basic_runner(agent: Agent, dataset: Dataset, benchmark: Benchmark):
     """
     Basic benchmark runnner.
 
@@ -28,14 +26,10 @@ async def basic_runner(
 
     This can also be a class.
     """
-    results: list[QueryResult] = []
     task_groups = await dataset.create()
     for task_group in task_groups:
         for task in task_group.tasks:
-            result = await agent.run(task.input)
-            await benchmark.evaluate(task, result)
-            results.append(result)
-    return results
+            await benchmark.run(task, agent)
 
 
 async def main():
@@ -69,8 +63,7 @@ async def main():
     logger.info(f"Loading benchmark: {args.benchmark}")
     benchmark = load_benchmark(args.benchmark)
 
-    results = await basic_runner(agent, dataset, benchmark)
-    print(results)
+    await basic_runner(agent, dataset, benchmark)
 
 
 if __name__ == "__main__":
