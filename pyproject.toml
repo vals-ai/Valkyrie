@@ -26,6 +26,12 @@ type-check = [
   "basedpyright"
 ]
 
+
+# uv pip install ".[ioi]"
+ioi = [
+  "pypdf2",
+]
+
 [tool.basedpyright]
 include = ["agentic_harness", "agents", "benchmarks"]
 exclude = [

@@ -19,6 +19,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+ioi = [
+    { name = "pypdf2" },
+]
 type-check = [
     { name = "basedpyright" },
 ]
@@ -36,9 +39,10 @@ requires-dist = [
     { name = "basedpyright", marker = "extra == 'type-check'" },
     { name = "model-library", git = "https://github.com/vals-ai/model-library.git" },
     { name = "pypandoc" },
+    { name = "pypdf2", marker = "extra == 'ioi'" },
     { name = "valsai", git = "ssh://git@github.com/vals-ai/platform-be.git?subdirectory=sdk&rev=dev" },
 ]
-provides-extras = ["type-check"]
+provides-extras = ["type-check", "ioi"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2561,6 +2565,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0b/18/9f5f70567b97758625335209b98d5cb857e19aa1a9306e9749567a240634/pypandoc-1.16.2.tar.gz", hash = "sha256:7a72a9fbf4a5dc700465e384c3bb333d22220efc4e972cb98cf6fc723cdca86b", size = 31477, upload-time = "2025-11-13T16:30:29.608Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bb/e9/b145683854189bba84437ea569bfa786f408c8dc5bc16d8eb0753f5583bf/pypandoc-1.16.2-py3-none-any.whl", hash = "sha256:c200c1139c8e3247baf38d1e9279e85d9f162499d1999c6aa8418596558fe79b", size = 19451, upload-time = "2025-11-13T16:30:07.66Z" },
+]
+
+[[package]]
+name = "pypdf2"
+version = "3.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9f/bb/18dc3062d37db6c491392007dfd1a7f524bb95886eb956569ac38a23a784/PyPDF2-3.0.1.tar.gz", hash = "sha256:a74408f69ba6271f71b9352ef4ed03dc53a31aa404d29b5d31f53bfecfee1440", size = 227419, upload-time = "2022-12-31T10:36:13.13Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/5e/c86a5643653825d3c913719e788e41386bee415c2b87b4f955432f2de6b2/pypdf2-3.0.1-py3-none-any.whl", hash = "sha256:d16e4205cfee272fbdc0568b68d82be796540b1537508cef59388f839c191928", size = 232572, upload-time = "2022-12-31T10:36:10.327Z" },
 ]
 
 [[package]]
