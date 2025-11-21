@@ -1,7 +1,7 @@
 from typing_extensions import override
 from agentic_harness.base import Agent
 from agentic_harness.base.benchmark import Benchmark
-from agentic_harness.base.dataset import Task
+from agentic_harness.base.types import Task
 from vals import QuestionAnswerPair, RunParameters, Suite
 
 

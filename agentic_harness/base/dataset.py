@@ -1,27 +1,15 @@
 from abc import ABC, abstractmethod
-from model_library.base import InputItem
-from pydantic import BaseModel
 
-
-class Task(BaseModel):
-    """
-    Represents one task.
-
-    id field represents the run_id for platform benchmarks.
-    """
-
-    id: str
-    input: list[InputItem]
-
-
-class TaskGroup(BaseModel):
-    """Collection of tasks."""
-
-    tasks: list[Task]
+from agentic_harness.base.types import DatasetConfig, TaskGroup
 
 
 class Dataset(ABC):
     """Constructs dataset for a benchmark."""
+
+    _config: DatasetConfig
+
+    def __init__(self, config: DatasetConfig):
+        self._config = config
 
     @abstractmethod
     async def create(self) -> list[TaskGroup]:

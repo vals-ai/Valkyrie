@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 from agentic_harness.base.agent import Agent
-from agentic_harness.base.dataset import Task
+from agentic_harness.base.types import Task
 
 
 class Benchmark(ABC):

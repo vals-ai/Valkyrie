@@ -1,7 +1,8 @@
 from model_library.base import TextInput
 from typing_extensions import override
 from vals import Suite
-from agentic_harness.base.dataset import Dataset, Task, TaskGroup
+from agentic_harness.base.dataset import Dataset
+from agentic_harness.base.types import Task, TaskGroup
 
 
 class FinanceAgentDataset(Dataset):
