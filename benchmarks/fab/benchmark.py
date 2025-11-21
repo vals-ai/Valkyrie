@@ -4,8 +4,9 @@ from agentic_harness.base.benchmark import Benchmark
 from agentic_harness.base.dataset import Task
 from vals import QuestionAnswerPair, RunParameters, Suite
 
+
 class FinanceAgentBenchmark(Benchmark):
-    suite_id = "fdf9a783-a522-484f-a139-e47bbb5571ac"
+    _suite_id: str = "fdf9a783-a522-484f-a139-e47bbb5571ac"
 
     def __init__(self):
         self._run = None
