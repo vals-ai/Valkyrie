@@ -18,9 +18,13 @@ dependencies = [
     { name = "valsai" },
 ]
 
+[package.optional-dependencies]
+type-check = [
+    { name = "basedpyright" },
+]
+
 [package.dev-dependencies]
 dev = [
-    { name = "basedpyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -29,14 +33,15 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "asgiref" },
+    { name = "basedpyright", marker = "extra == 'type-check'" },
     { name = "model-library", git = "https://github.com/vals-ai/model-library.git" },
     { name = "pypandoc" },
     { name = "valsai", git = "ssh://git@github.com/vals-ai/platform-be.git?subdirectory=sdk&rev=dev" },
 ]
+provides-extras = ["type-check"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "basedpyright" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -1639,7 +1644,7 @@ wheels = [
 
 [[package]]
 name = "model-library"
-version = "0.1.1"
+version = "0.1.dev3+g8200b8b6d"
 source = { git = "https://github.com/vals-ai/model-library.git#8200b8b6d72abb092c608f61d2a777443b39d80a" }
 dependencies = [
     { name = "ai21" },

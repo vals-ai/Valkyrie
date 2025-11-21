@@ -19,6 +19,10 @@ dev = [
   "pytest-asyncio",
   # style
   "ruff",
+]
+
+[project.optional-dependencies]
+type-check = [
   "basedpyright"
 ]
 

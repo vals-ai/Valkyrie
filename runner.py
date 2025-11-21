@@ -6,7 +6,6 @@ import logging
 
 from agentic_harness.base import Agent, Benchmark
 from agentic_harness.registry import load_agent, load_benchmark, load_dataset
-from model_library.base import QueryResult
 
 from dotenv import load_dotenv
 

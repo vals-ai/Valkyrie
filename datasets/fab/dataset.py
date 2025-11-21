@@ -5,7 +5,7 @@ from agentic_harness.base.dataset import Dataset, Task, TaskGroup
 
 
 class FinanceAgentDataset(Dataset):
-    suite_id = "fdf9a783-a522-484f-a139-e47bbb5571ac"
+    _suite_id: str = "fdf9a783-a522-484f-a139-e47bbb5571ac"
 
     @override
     async def create(self) -> list[TaskGroup]:
