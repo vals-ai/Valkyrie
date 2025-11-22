@@ -13,4 +13,5 @@ class Dataset(ABC):
 
     @abstractmethod
     async def create(self) -> list[TaskGroup]:
-        """Constructs dataset for a benchmark."""
+        """Creates the final task group list."""
+        ...

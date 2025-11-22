@@ -1,12 +1,12 @@
-from typing import Any, cast
+from typing import Any
 from model_library.base import (
-    InputItem,
     QueryResult,
     QueryResultMetadata,
     TextInput,
 )
 from model_library.registry_utils import get_registry_model
 from typing_extensions import override
+from agentic_harness.base.types import Task
 from agents.fab.edgar_agent.tool import (
     GoogleWebSearch,
     RetrieveInformation,
@@ -19,8 +19,10 @@ from .edgar_agent.agent import Agent as EdgarAgent
 
 
 class FinanceAgent(Agent):
-    def __init__(self):
-        # TODO: model params and agent config should live in yaml
+    _MAX_TURNS: int = 20
+
+    def _create_edgar_agent(self) -> EdgarAgent:
+        """Creates a hard coded edgar agent"""
         llm = get_registry_model("openai/gpt-5-mini-2025-08-07")
         tools: dict[str, Tool] = {
             "google_web_search": GoogleWebSearch(),
@@ -28,19 +30,13 @@ class FinanceAgent(Agent):
             "parse_html_page": ParseHtmlPage(),
             "edgar_search": EDGARSearch(),
         }
-        max_turns = 20
-        self._agent = EdgarAgent(llm=llm, tools=tools, max_turns=max_turns)
 
-    @override
-    async def run(self, input_items: list[InputItem]) -> QueryResult:
-        if len(input_items) != 1:
-            raise ValueError("Expected exactly one input item")
+        return EdgarAgent(llm=llm, tools=tools, max_turns=self._MAX_TURNS)
 
-        if not isinstance(input_items[0], TextInput):
-            raise ValueError("Expected a TextInput")
-
-        response, metadata = await self._agent.run(input_items[0].text)  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
-        metadata = cast(dict[str, Any], metadata)
+    def _create_query_result(
+        self, response: str, metadata: dict[str, Any]
+    ) -> QueryResult:
+        """Provided a response from the edgar agent, creates a query result object"""
         return QueryResult(
             output_text=response,
             metadata=QueryResultMetadata(
@@ -50,3 +46,16 @@ class FinanceAgent(Agent):
             ),
             raw=metadata,
         )
+
+    @override
+    async def run(self, task: Task) -> QueryResult:
+        """Runs the edgar agent with a single task and parses the response into a query result object"""
+        agent = self._create_edgar_agent()
+
+        input_item = task.input[0]
+        if not isinstance(input_item, TextInput):
+            raise ValueError("Expected a TextInput")
+
+        response, metadata = await agent.run(question=input_item.text)
+
+        return self._create_query_result(response, metadata)

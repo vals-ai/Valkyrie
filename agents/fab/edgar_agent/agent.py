@@ -2,7 +2,6 @@ import json
 import os
 import re
 import traceback
-import uuid
 from abc import ABC
 from datetime import datetime
 
@@ -62,9 +61,13 @@ class Agent(ABC):
 
         # Get response from LLM
         tool_definitions = [tool.get_tool_repr() for tool in self.tools.values()]
-        agent_logger.info(f"\033[1;35m[TOOLS AVAILABLE]\033[0m {[tool.name for tool in tool_definitions]}")
+        agent_logger.info(
+            f"\033[1;35m[TOOLS AVAILABLE]\033[0m {[tool.name for tool in tool_definitions]}"
+        )
         try:
-            response: QueryResult = await self.llm.query(input=self.messages, tools=tool_definitions)
+            response: QueryResult = await self.llm.query(
+                input=self.messages, tools=tool_definitions
+            )
         except Exception as e:
             agent_logger.critical(f"Error: {e}")
             agent_logger.critical(f"Traceback: {traceback.format_exc()}")
@@ -110,8 +113,12 @@ class Agent(ABC):
                     try:
                         arguments = json.loads(arguments)
                     except json.JSONDecodeError:
-                        agent_logger.warning(f"Could not parse tool call arguments: {arguments}")
-                        raise ToolCallException(f"Could not parse tool call arguments: {arguments}")
+                        agent_logger.warning(
+                            f"Could not parse tool call arguments: {arguments}"
+                        )
+                        raise ToolCallException(
+                            f"Could not parse tool call arguments: {arguments}"
+                        )
 
                 # Track tool call in turn metadata
                 tool_call_metadata = {
@@ -134,11 +141,15 @@ class Agent(ABC):
 
                 # Call tools with appropriate arguments
                 if tool_name == "retrieve_information":
-                    tool_result = await self.tools[tool_name](arguments, data_storage, self.llm)
+                    tool_result = await self.tools[tool_name](
+                        arguments, data_storage, self.llm
+                    )
                     if "usage" in tool_result:
                         tool_token_usage = tool_result["usage"]
                         turn_metadata["in_tokens"] += tool_token_usage["prompt_tokens"]
-                        turn_metadata["out_tokens"] += tool_token_usage["completion_tokens"]
+                        turn_metadata["out_tokens"] += tool_token_usage[
+                            "completion_tokens"
+                        ]
                         tr = turn_metadata.get("tokens_retrieval")
                         if tr is None:
                             tr = {
@@ -162,7 +173,9 @@ class Agent(ABC):
                     tool_call_metadata["error"] = tool_result["result"]
                     turn_metadata["errors"].append(tool_result["result"])
 
-                tool_result_obj = ToolResult(tool_call=tool_call, result=tool_result["result"])
+                tool_result_obj = ToolResult(
+                    tool_call=tool_call, result=tool_result["result"]
+                )
                 self.messages.append(tool_result_obj)
 
                 # Add tool call metadata to turn
@@ -172,15 +185,21 @@ class Agent(ABC):
             # Detect "FINAL ANSWER:" in pure text
             final_answer_pattern = re.compile(r"FINAL ANSWER:", re.IGNORECASE)
 
-            if isinstance(response_text, str) and final_answer_pattern.search(response_text):
+            if isinstance(response_text, str) and final_answer_pattern.search(
+                response_text
+            ):
                 final_answer_match = re.search(
                     r"FINAL ANSWER:(.*?)(?:\{\"sources\"|\Z)",
                     response_text,
                     re.DOTALL,
                 )
-                sources_match = re.search(r"(\{\"sources\".*\})", response_text, re.DOTALL)
+                sources_match = re.search(
+                    r"(\{\"sources\".*\})", response_text, re.DOTALL
+                )
 
-                answer_text = final_answer_match.group(1).strip() if final_answer_match else ""
+                answer_text = (
+                    final_answer_match.group(1).strip() if final_answer_match else ""
+                )
 
                 sources_text = sources_match.group(1) if sources_match else ""
 
@@ -196,7 +215,7 @@ class Agent(ABC):
 
         return None, turn_metadata, True
 
-    async def run(self, question: str, session_id: str = None) -> tuple[str, dict]:
+    async def run(self, question: str) -> tuple[str, dict[str, Any]]:
         """
         Run the agent on a question from the user.
 
@@ -208,9 +227,7 @@ class Agent(ABC):
             tuple[str, dict]: The final answer and metadata about the run
         """
         # Initialize metadata
-        session_id = session_id or str(uuid.uuid4())
         metadata = {
-            "session_id": session_id,
             "user_input": question,
             "start_time": datetime.now().isoformat(),
             "end_time": None,
@@ -250,7 +267,9 @@ class Agent(ABC):
             turn_count += 1
             # Process the current turn
             try:
-                result, turn_metadata, should_continue = await self._process_turn(turn_count, data_storage, metadata)
+                result, turn_metadata, should_continue = await self._process_turn(
+                    turn_count, data_storage, metadata
+                )
 
                 # Add turn metadata to session metadata
                 metadata["turns"].append(turn_metadata)
@@ -263,12 +282,16 @@ class Agent(ABC):
             # kimi messes up tool calls
             except ToolCallException:
                 last_message = self.messages.pop(-1)
-                agent_logger.warning(f"\033[1;37m[RETRYING TOOL CALL]\033[0m Removed last message: {last_message}")
+                agent_logger.warning(
+                    f"\033[1;37m[RETRYING TOOL CALL]\033[0m Removed last message: {last_message}"
+                )
 
             except Exception as e:
                 # Log the error
                 agent_logger.error(f"\033[1;31m[ERROR]\033[0m {e}")
-                agent_logger.error(f"\033[1;31m[traceback]\033[0m {traceback.format_exc()}")
+                agent_logger.error(
+                    f"\033[1;31m[traceback]\033[0m {traceback.format_exc()}"
+                )
 
                 # Explain the error to the agent and give them a chance to recover
                 error_message = TextInput(
