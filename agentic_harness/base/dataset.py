@@ -11,6 +11,10 @@ class Dataset(ABC):
     def __init__(self, config: DatasetConfig):
         self._config = config
 
+    @property
+    def config(self) -> DatasetConfig:
+        return self._config
+
     @abstractmethod
     async def create(self) -> list[TaskGroup]:
         """Creates the final task group list."""

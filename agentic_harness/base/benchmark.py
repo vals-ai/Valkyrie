@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 
 from agentic_harness.base.agent import Agent
 from agentic_harness.base.dataset import Dataset
@@ -13,10 +13,9 @@ class Benchmark(ABC):
         self._dataset = dataset
         self._agent = agent
 
-    @abstractmethod
-    async def setup(self) -> None:
-        """Hook that runs before we instantiate the dataset and starts the agents"""
-        ...
+    @property
+    def agent(self) -> Agent:
+        return self._agent
 
     async def _run_task_group(self, task_group: TaskGroup) -> None:
         for task in task_group.tasks:
@@ -33,8 +32,6 @@ class Benchmark(ABC):
 
         Example:
         ```python
-        await self.setup()
-
         task_groups = await self._dataset.create()
 
         for task_group in task_groups:

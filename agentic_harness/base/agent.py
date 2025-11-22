@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 
 from model_library.base import QueryResult
-from agentic_harness.base.types import Task
+from agentic_harness.base.types import AgentConfig, Task
+from agentic_harness.base.contract import AgentContract
 
 
 class Agent(ABC):
@@ -22,6 +23,24 @@ class Agent(ABC):
     ```
     """
 
+    _contract: AgentContract
+
+    def __init__(self, contract: AgentContract):
+        self._contract = contract
+
+    @property
+    def config(self) -> AgentConfig:
+        return self._contract.config
+
     @abstractmethod
+    async def evaluate_result(self, task: Task, result: QueryResult) -> None:
+        """Evaluates the result of the task, different for each agent"""
+        ...
+
     async def run(self, task: Task) -> QueryResult:
-        """Execute the agent for the provided task and return a model response."""
+        """Runs the agent by calling the contract's run method"""
+        response = await self._contract.run(task)
+
+        await self.evaluate_result(task, response)
+
+        return response

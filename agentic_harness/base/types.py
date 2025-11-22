@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Any
 from model_library.base import InputItem
 
@@ -24,18 +24,45 @@ class TaskGroup(BaseModel):
 DatasetConfig = dict[str, Any]
 
 
-class BaseParameters(BaseModel):
+class AgentConfig(BaseModel):
+    """Generic agent configuration"""
+
+    model: str | None = None
+    temperature: float | None = None
+    max_tokens: int | None = None
+    top_p: float | None = None
+    reasoning_effort: str | None = None
+    extra: dict[str, Any] = {}
+
+
+class BaseConfig(BaseModel):
     """
-    Base parameters for an agent.
+    Main config. should be inside of `config/<benchmark>.yaml`
     """
 
-    # Model Parameters
-    model: str
-    temperature: float
-    max_tokens: int
-    top_p: float
-    extra: dict[str, Any]
-    reasoning_effort: str
+    class Config:
+        extra = "ignore"
+
+    # Benchmark specific parameters
+    benchmark: str
+    agent: str
+
+    # Agent Parameters
+    agent_config: AgentConfig = AgentConfig()
 
     # Dataset Parameters
-    dataset: dict[str, Any]
+    dataset: dict[str, Any] = {}
+
+    @model_validator(mode="before")
+    def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:
+        """NOTE: Human readable validation"""
+        if "benchmark" not in config:
+            raise ValueError("`benchmark` is required")
+        if "agent" not in config:
+            raise ValueError("`agent` is required")
+
+        dataset_name = config.get("dataset", {}).get("name", None)
+        if dataset_name is None:
+            raise ValueError("`dataset.name` is required")
+
+        return config
