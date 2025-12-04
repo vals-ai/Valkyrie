@@ -1,0 +1,4 @@
+[submodule "submodules/ioi_agent"]
+	path = submodules/ioi_agent
+	url = git@github.com:vals-ai/ioi-agent.git
+	branch = agent-harness

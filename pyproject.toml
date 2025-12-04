@@ -26,14 +26,14 @@ type-check = [
   "basedpyright"
 ]
 
-
 # uv pip install ".[ioi]"
 ioi = [
   "pypdf2",
+  "ioi-agent",
 ]
 
 [tool.basedpyright]
-include = ["agentic_harness", "agents", "benchmarks"]
+include = ["agentic_harness", "agents", "benchmarks", "contracts"]
 exclude = [
   ".*",
   "tests/**",
@@ -66,3 +66,7 @@ markers = [
 # Async test configuration
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
+
+
+[tool.uv.sources]
+ioi-agent = { path = "submodules/ioi_agent" }

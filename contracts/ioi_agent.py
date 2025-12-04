@@ -3,17 +3,15 @@ from typing import Any, cast, override
 from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
 from agentic_harness.base.types import AgentConfig, Task
-from .tool import (
-    GoogleWebSearch,
-    RetrieveInformation,
-    ParseHtmlPage,
-    EDGARSearch,
+from submodules.ioi_agent.tool import (
     Tool,
+    Submission,
+    CppExecutor,
 )
-from .agent import Agent as EdgarAgent
+from submodules.ioi_agent.agent import Agent as IOIAgent
 
 
-class EdgarAgentContract(AgentContract):
+class IOIAgentContract(AgentContract):
     """
     Contract for the Edgar Agent to be usable within the agentic harness framework
     """
@@ -30,19 +28,17 @@ class EdgarAgentContract(AgentContract):
 
         return self._config
 
-    def _create_edgar_agent(self) -> EdgarAgent:
-        """Creates a hard coded edgar agent"""
+    def _create_ioi_agent(self) -> IOIAgent:
+        """Creates a hard coded ioi agent"""
         config = self._validate_config()
         llm = get_registry_model(cast(str, config.model))
 
         tools: dict[str, Tool] = {
-            "google_web_search": GoogleWebSearch(),
-            "retrieve_information": RetrieveInformation(),
-            "parse_html_page": ParseHtmlPage(),
-            "edgar_search": EDGARSearch(),
+            "cpp_executor": CppExecutor(),
+            "submission": Submission(),
         }
 
-        return EdgarAgent(llm=llm, tools=tools, max_turns=self._max_turns)
+        return IOIAgent(llm=llm, tools=tools, max_turns=self._max_turns)
 
     def _create_query_result(
         self, response: str, metadata: dict[str, Any]
@@ -60,8 +56,8 @@ class EdgarAgentContract(AgentContract):
 
     @override
     async def run(self, task: Task) -> QueryResult:
-        """Runs the edgar agent with a single task and parses the response into a query result object"""
-        agent = self._create_edgar_agent()
+        """Runs the ioi agent with a single task and parses the response into a query result object"""
+        agent = self._create_ioi_agent()
 
         response, metadata = await agent.run(input_items=task.input)
 
