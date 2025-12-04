@@ -5,6 +5,9 @@ import yaml
 from pathlib import Path
 from agentic_harness.base.types import BaseConfig
 import logging
+from dotenv import load_dotenv
+import os
+from vals import configure_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -49,9 +52,6 @@ def create_base_config(config_path: str) -> BaseConfig:
 
 def setup_environment():
     """Sets up the environment for using the vals api"""
-    from dotenv import load_dotenv
-    import os
-    from vals import configure_credentials
 
     _ = load_dotenv()
 
