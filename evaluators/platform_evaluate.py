@@ -3,23 +3,20 @@ from model_library.base import (
 )
 from typing_extensions import override
 from vals import QuestionAnswerPair
+from agentic_harness.base.evaluate import Evaluator
 from agentic_harness.base.types import Task
-from agentic_harness.base.agent import Agent
 from agentic_harness.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class FinanceAgent(Agent):
+class PlatformEvaluator(Evaluator):
     """
-    Finance agent that that uses the platform to evaluate the result of the task
-
-    NOTE: This is hardcoded and needs to be changed
-    If we abstract the evaluate result method into a class, we can just use a generic agent class for this
+    Evaluator that uses the platform to evaluate the result of the task
     """
 
     @override
-    async def evaluate_result(self, task: Task, result: QueryResult) -> None:
+    async def evaluate(self, task: Task, result: QueryResult) -> None:
         """Uploads the task to the platform where we also evaluate the result"""
 
         qa_set_id = task.extra.get("qa_set_id", None)

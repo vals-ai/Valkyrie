@@ -9,6 +9,7 @@ from agentic_harness.base.contract import AgentContract
 from agentic_harness.base.types import BaseConfig
 
 from agentic_harness.logger import get_logger
+from evaluators.platform_evaluate import PlatformEvaluator
 
 logger = get_logger(__name__)
 
@@ -118,9 +119,12 @@ def create_benchmark(config: BaseConfig) -> Benchmark:
     BenchmarkClass = load_benchmark(config.benchmark)
     Contract = load_contract(config.agent)
 
+    # NOTE: Hardcode the evaluator for now - introduce additional options as we need them
+    evaluator = PlatformEvaluator()
+
     # Instantiate the benchmark
     dataset = Dataset(config.dataset)
-    agent = Agent(Contract(config.agent_config))
+    agent = Agent(Contract(config.agent_config), evaluator)
 
     logger.info("Loaded components...")
 
