@@ -10,6 +10,8 @@ dependencies = [
   "pypandoc",
   "model-library @ git+https://github.com/vals-ai/model-library.git",
   "valsai @ git+ssh://git@github.com/vals-ai/platform-be.git@dev#subdirectory=sdk",
+  "pytest>=9.0.1",
+  "pytest-asyncio>=1.3.0",
 ]
 
 [dependency-groups]
@@ -19,6 +21,7 @@ dev = [
   "pytest-asyncio",
   # style
   "ruff",
+  "pypdf2",
 ]
 
 [project.optional-dependencies]
@@ -28,7 +31,6 @@ type-check = [
 
 # uv pip install ".[ioi]"
 ioi = [
-  "pypdf2",
   "ioi-agent",
 ]
 

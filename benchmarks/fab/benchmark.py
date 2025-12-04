@@ -2,21 +2,13 @@ from typing import override
 from agentic_harness.base.benchmark import Benchmark
 from vals import RunParameters, Suite
 from vals import Run
-from dotenv import load_dotenv
 from agentic_harness.base.types import TaskGroup
-import os
-from vals import configure_credentials
 from agentic_harness.logger import get_logger
+from agentic_harness.utils import setup_environment
 
 logger = get_logger(__name__)
 
-_ = load_dotenv()
-
-_vals_api_key = os.getenv("VALS_API_KEY")
-if _vals_api_key is None:
-    raise ValueError("VALS_API_KEY is not set")
-
-configure_credentials(api_key=_vals_api_key, endpoint="https://bench.platform.vals.ai")
+setup_environment()
 
 
 class FinanceAgentBenchmark(Benchmark):

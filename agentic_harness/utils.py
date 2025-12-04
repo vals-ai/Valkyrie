@@ -45,3 +45,20 @@ def create_base_config(config_path: str) -> BaseConfig:
     config = parse_yaml_config(f"config/{config_path}.yaml")
 
     return parse_base_config(config)
+
+
+def setup_environment():
+    """Sets up the environment for using the vals api"""
+    from dotenv import load_dotenv
+    import os
+    from vals import configure_credentials
+
+    _ = load_dotenv()
+
+    _vals_api_key = os.getenv("VALS_API_KEY")
+    if _vals_api_key is None:
+        raise ValueError("VALS_API_KEY is not set")
+
+    configure_credentials(
+        api_key=_vals_api_key, endpoint="https://bench.platform.vals.ai"
+    )

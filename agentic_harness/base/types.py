@@ -40,7 +40,7 @@ class BaseConfig(BaseModel):
     Main config. should be inside of `config/<benchmark>.yaml`
     """
 
-    class Config:
+    class ConfigDict:
         extra = "ignore"
 
     # Benchmark specific parameters

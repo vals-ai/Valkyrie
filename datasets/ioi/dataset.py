@@ -10,30 +10,19 @@ tar -xzf archive.tar.gz
 
 """
 
-from abc import abstractmethod
 import io
 from pathlib import Path, PurePosixPath
-from typing import cast, override
+from typing import override
 
 from model_library.base import TextInput
-from pydantic import BaseModel
 from agentic_harness.base.dataset import Dataset
-from agentic_harness.base.types import DatasetConfig, Task, TaskGroup
+from agentic_harness.base.types import Task, TaskGroup
 from vals import Suite, Test
 import PyPDF2
 import tarfile
 
 
-class TaskConfig(BaseModel):
-    name: str
-    suite_id: str
-
-
-TypedDatasetConfig = list[TaskConfig]
-
-
-class IOITarDataset(Dataset):
-    _typed_config: TypedDatasetConfig
+class IOIDataset(Dataset):
     _TAR_PATH: Path = Path("datasets/ioi/files/archive.tar.gz")
     _TAR_EXAM_PATH: str = "exams"
     _SYSTEM_PROMPT = """
@@ -55,13 +44,6 @@ class IOITarDataset(Dataset):
         {question}
         """
 
-    @override
-    def __init__(self, config: DatasetConfig):
-        """Override init method to type the expected config we pass in"""
-        super().__init__(config)
-        tasks = config.get("tasks", [])
-        self._typed_config = cast(TypedDatasetConfig, tasks)
-
     @staticmethod
     def _extract_text_from_pdf(pdf_bytes: bytes) -> str:
         """Ripped from https://github.com/vals-ai/ioi-agent/blob/main/utils.py"""
@@ -75,13 +57,13 @@ class IOITarDataset(Dataset):
 
         return text.strip()
 
-    async def _pull_tests(self, task_config: TaskConfig) -> list[Test]:
+    async def _pull_tests(self, suite_id: str) -> list[Test]:
         """
         Pulls all tests from a single suite.
         """
         tests: list[Test]
 
-        suite = await Suite.from_id(task_config.suite_id)
+        suite = await Suite.from_id(suite_id)
         tests = suite.tests
 
         return tests
@@ -132,15 +114,12 @@ class IOITarDataset(Dataset):
 
             return data
 
-    def _format_question(
-        self, test: Test, question_text: str, task_config: TaskConfig
-    ) -> TaskGroup:
+    def _format_question(self, test: Test, question_text: str) -> TaskGroup:
         """Formats a question and returns a single task group"""
         formatted_system_prompt = self._SYSTEM_PROMPT.format(question=question_text)
         input = [TextInput(text=formatted_system_prompt)]
 
-        extra = {"suite_id": task_config.suite_id, "task_name": task_config.name}
-        task = Task(id=test.id or "", input=input, extra=extra)
+        task = Task(id=test.id or "", input=input)
 
         return TaskGroup(tasks=[task])
 
@@ -151,9 +130,9 @@ class IOITarDataset(Dataset):
 
             return any(m.name == path for m in members)
 
-    async def _create_task_groups(self, task_config: TaskConfig) -> list[TaskGroup]:
+    async def _create_task_groups(self, suite_id: str) -> list[TaskGroup]:
         """Creates a task group for a given task"""
-        raw_tests = await self._pull_tests(task_config)
+        raw_tests = await self._pull_tests(suite_id)
 
         tar_bytes = self._load_tar_file_bytes(self._TAR_PATH)
 
@@ -164,11 +143,11 @@ class IOITarDataset(Dataset):
                 raise ValueError(f"Path {expected_path} does not exist in tar file")
 
             question_text = self._fetch_question_text(tar_bytes, expected_path)
-            task_groups.append(self._format_question(test, question_text, task_config))
+            task_groups.append(self._format_question(test, question_text))
 
         return task_groups
 
-    @abstractmethod
+    @override
     async def create(self) -> list[TaskGroup]:
         """
         Creates the final task group list.
@@ -179,7 +158,11 @@ class IOITarDataset(Dataset):
         NOTE: We are coupling all datasets inside of IOI since the format is the same and its like 15-20 questions combined
         """
         task_groups: list[TaskGroup] = []
-        for task_config in self._typed_config:
-            task_groups.extend(await self._create_task_groups(task_config))
+        suite_id = self._config.get("suite_id")
+
+        if suite_id is None:
+            raise ValueError("`dataset.suite_id` is required")
+
+        task_groups.extend(await self._create_task_groups(suite_id))
 
         return task_groups

@@ -15,13 +15,14 @@ dependencies = [
     { name = "asgiref" },
     { name = "model-library" },
     { name = "pypandoc" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "valsai" },
 ]
 
 [package.optional-dependencies]
 ioi = [
     { name = "ioi-agent" },
-    { name = "pypdf2" },
 ]
 type-check = [
     { name = "basedpyright" },
@@ -29,6 +30,7 @@ type-check = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "pypdf2" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -41,13 +43,15 @@ requires-dist = [
     { name = "ioi-agent", marker = "extra == 'ioi'", virtual = "submodules/ioi_agent" },
     { name = "model-library", git = "https://github.com/vals-ai/model-library.git" },
     { name = "pypandoc" },
-    { name = "pypdf2", marker = "extra == 'ioi'" },
+    { name = "pytest", specifier = ">=9.0.1" },
+    { name = "pytest-asyncio", specifier = ">=1.3.0" },
     { name = "valsai", git = "ssh://git@github.com/vals-ai/platform-be.git?subdirectory=sdk&rev=dev" },
 ]
 provides-extras = ["type-check", "ioi"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pypdf2" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
