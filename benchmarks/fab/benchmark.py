@@ -22,6 +22,8 @@ class FinanceAgentBenchmark(Benchmark):
             eval_model=self._EVAL_MODEL,
             run_confidence_evaluation=False,
             create_text_summary=False,
+            temperature=self.agent.config.temperature
+            or 1,  # NOTE: will raise if its falsy
         )
 
         logger.info(f"Creating run with parameters: `{str(parameters)}`")
@@ -30,11 +32,23 @@ class FinanceAgentBenchmark(Benchmark):
         if suite_id is None:
             raise ValueError("`dataset.suite_id` is required")
 
-        if self.agent.config.model is None:
+        project_id = self._dataset.config.get("project_id") or "default-project"
+
+        model = self.agent.config.model
+
+        if model is None:
             raise ValueError("`agent.config.model` is required")
 
+        name = self._dataset.config.get("name")
+        if name is None:
+            raise ValueError("`dataset.name` is required")
+
         return await Suite.create_run(
-            suite_id, parameters=parameters, model_under_test=self.agent.config.model
+            suite_id,
+            parameters=parameters,
+            model_under_test=model,
+            project_id=project_id,
+            run_name=f"{name}-{model}",
         )
 
     @override

@@ -1,11 +1,13 @@
 agent_config:
   model: openai/gpt-5-mini-2025-08-07
+  max_tokens: 16384
+  temperature: 1
   extra:
     max_turns: 20
-    verbosity: medium
 
 benchmark: ioi
 agent: ioi_agent
 dataset:
-  name: ioi 2025
+  name: ioi
   suite_id: e37b9fb3-44e5-46c2-94b8-3503ef96ae9b
+  project_id: ioi-s964z8

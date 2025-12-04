@@ -1,20 +1,20 @@
 from abc import ABC
 
-from agentic_harness.base.agent import Agent
 from agentic_harness.base.dataset import Dataset
 from agentic_harness.base.types import TaskGroup
+from agentic_harness.base_agent import BaseAgent
 
 
 class Benchmark(ABC):
     _dataset: Dataset
-    _agent: Agent
+    _agent: BaseAgent
 
-    def __init__(self, dataset: Dataset, agent: Agent):
+    def __init__(self, dataset: Dataset, agent: BaseAgent):
         self._dataset = dataset
         self._agent = agent
 
     @property
-    def agent(self) -> Agent:
+    def agent(self) -> BaseAgent:
         return self._agent
 
     async def _run_task_group(self, task_group: TaskGroup) -> None:

@@ -53,7 +53,7 @@ def create_base_config(config_path: str) -> BaseConfig:
 def setup_environment():
     """Sets up the environment for using the vals api"""
 
-    _ = load_dotenv()
+    _ = load_dotenv(override=True)
 
     _vals_api_key = os.getenv("VALS_API_KEY")
     if _vals_api_key is None:
@@ -62,3 +62,5 @@ def setup_environment():
     configure_credentials(
         api_key=_vals_api_key, endpoint="https://bench.platform.vals.ai"
     )
+
+    logger.info("Environment setup complete")

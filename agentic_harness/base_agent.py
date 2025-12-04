@@ -1,12 +1,10 @@
-from abc import ABC, abstractmethod
-
 from model_library.base import QueryResult
 from agentic_harness.base.evaluate import Evaluator
 from agentic_harness.base.types import AgentConfig, Task
 from agentic_harness.base.contract import AgentContract
 
 
-class Agent(ABC):
+class BaseAgent:
     """
     Interface for models that execute a single task and return a result.
 
@@ -35,7 +33,6 @@ class Agent(ABC):
     def config(self) -> AgentConfig:
         return self._contract.config
 
-    @abstractmethod
     async def run(self, task: Task) -> QueryResult:
         """Runs the agent by calling the contract's run method"""
         response = await self._contract.run(task)

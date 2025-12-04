@@ -11,6 +11,9 @@ from submodules.edgar_agent.tool import (
     Tool,
 )
 from submodules.edgar_agent.agent import Agent as EdgarAgent
+from agentic_harness.utils import setup_environment
+
+setup_environment()
 
 
 class EdgarAgentContract(AgentContract):

@@ -1,10 +1,12 @@
-from agentic_harness.base import Agent, Benchmark, Dataset
+from agentic_harness.base import Dataset
+from agentic_harness.base_agent import BaseAgent
 from agentic_harness.utils import setup_environment
+from benchmarks.fab.benchmark import FinanceAgentBenchmark
 
 setup_environment()
 
 
-class IOIBenchmark(Benchmark):
+class IOIBenchmark(FinanceAgentBenchmark):
     """
     IOI benchmark class
 
@@ -14,5 +16,5 @@ class IOIBenchmark(Benchmark):
     This is _not_ the usual case which is why it may seem weird
     """
 
-    def __init__(self, dataset: Dataset, agent: Agent):
+    def __init__(self, dataset: Dataset, agent: BaseAgent):
         super().__init__(dataset, agent)

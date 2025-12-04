@@ -9,6 +9,10 @@ from submodules.ioi_agent.tool import (
     CppExecutor,
 )
 from submodules.ioi_agent.agent import Agent as IOIAgent
+from agentic_harness.utils import setup_environment
+
+
+setup_environment()
 
 
 class IOIAgentContract(AgentContract):
