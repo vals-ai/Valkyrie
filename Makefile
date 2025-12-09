@@ -17,6 +17,12 @@ update-submodules:
 	git submodule update --remote --merge
 	uv sync
 
+venv_check:
+	@if [ ! -f .venv/bin/activate ]; then \
+		echo "❌ Virtualenv not found! Run \`make install\` first."; \
+		exit 1; \
+	fi
+
 format: venv_check
 	@uv run ruff format .
 
