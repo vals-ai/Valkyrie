@@ -75,6 +75,7 @@ class Agent(ABC):
         metadata["tool_calls_count"] = 0
         metadata["api_calls_count"] = len(metadata["turns"])
         metadata["error_count"] = 0
+        metadata["total_cost"] = 0
 
         # Aggregate statistics from all turns
         for turn in metadata["turns"]:
@@ -84,6 +85,9 @@ class Agent(ABC):
             metadata["total_tokens"]["total_tokens"] += (
                 turn["in_tokens"] + turn["out_tokens"]
             )
+
+            # Aggregate cost
+            metadata["total_cost"] += turn["cost"]
 
             if "tokens_retrieval" in turn:
                 tr = turn["tokens_retrieval"]
@@ -168,6 +172,9 @@ class Agent(ABC):
             "completion_tokens": 0,
             "total_tokens": 0,
         }
+        turn_metadata["cost"] = (
+            response.metadata.cost.total if response.metadata.cost else 0
+        )
 
         # Log the thinking content if available
         if reasoning_text:

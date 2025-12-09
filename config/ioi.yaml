@@ -1,5 +1,5 @@
 agent_config:
-  model: openai/gpt-5-mini-2025-08-07
+  model: grok/grok-4-1-fast-non-reasoning
   max_tokens: 16384
   temperature: 1
   extra:
@@ -9,5 +9,5 @@ benchmark: ioi
 agent: ioi_agent
 dataset:
   name: ioi
-  suite_id: e37b9fb3-44e5-46c2-94b8-3503ef96ae9b
+  suite_id: ed7f59e3-9eeb-44e2-a1c4-87ca507ea1d2
   project_id: ioi-s964z8

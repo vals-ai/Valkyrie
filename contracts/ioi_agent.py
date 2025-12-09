@@ -54,6 +54,7 @@ class IOIAgentContract(AgentContract):
                 in_tokens=metadata["total_tokens"]["prompt_tokens"],
                 out_tokens=metadata["total_tokens"]["completion_tokens"],
                 duration_seconds=metadata["total_duration_seconds"],
+                cost=metadata["total_cost"],
             ),
             raw=metadata,
         )
