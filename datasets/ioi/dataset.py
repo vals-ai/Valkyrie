@@ -119,7 +119,7 @@ class IOIDataset(Dataset):
         formatted_system_prompt = self._SYSTEM_PROMPT.format(question=question_text)
         input = [TextInput(text=formatted_system_prompt)]
 
-        task = Task(id=test._id or "", input=input)
+        task = Task(id=test.id or "", input=input)
 
         return TaskGroup(tasks=[task])
 

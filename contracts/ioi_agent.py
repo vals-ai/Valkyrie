@@ -1,6 +1,6 @@
 from agentic_harness.base.contract import AgentContract
 from typing import Any, cast, override
-from model_library.base import QueryResult, QueryResultCost, QueryResultMetadata
+from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
 from agentic_harness.base.types import AgentConfig, Task
 from submodules.ioi_agent.tool import (
@@ -50,15 +50,7 @@ class IOIAgentContract(AgentContract):
         """Provided a response from the edgar agent, creates a query result object"""
         return QueryResult(
             output_text=response,
-            metadata=QueryResultMetadata(
-                in_tokens=metadata["total_tokens"]["prompt_tokens"],
-                out_tokens=metadata["total_tokens"]["completion_tokens"],
-                duration_seconds=metadata["total_duration_seconds"],
-                cost=QueryResultCost(
-                    input=metadata["total_tokens"]["prompt_tokens"],
-                    output=metadata["total_tokens"]["completion_tokens"],
-                ),
-            ),
+            metadata=QueryResultMetadata(**metadata["total_metadata"]),
             raw=metadata,
         )
 

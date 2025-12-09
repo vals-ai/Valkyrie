@@ -7,6 +7,7 @@ from datetime import datetime
 from model_library.base import (
     LLM,
     QueryResult,
+    QueryResultMetadata,
     ToolCall,
     ToolResult,
     TextInput,
@@ -39,6 +40,8 @@ class ToolCallException(Exception):
 
 
 class Agent(ABC):
+    _query_result_metadata: list[QueryResultMetadata] = []
+
     def __init__(
         self,
         tools: dict[str, Tool],
@@ -50,7 +53,9 @@ class Agent(ABC):
         self.max_turns = max_turns
 
     @staticmethod
-    def _merge_statistics(metadata: dict[str, Any]) -> dict[str, Any]:
+    def _merge_statistics(
+        metadata: dict[str, Any], query_result_metadata: list[QueryResultMetadata]
+    ) -> dict[str, Any]:
         """
         Merge turn-level statistics into session-level statistics.
 
@@ -60,47 +65,14 @@ class Agent(ABC):
         Returns:
             dict: Updated metadata with merged statistics
         """
-        # Reset aggregate values to recalculate
-        metadata["total_tokens"] = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
-        metadata["total_tokens_retrieval"] = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
+
         metadata["tool_usage"] = {}
         metadata["tool_calls_count"] = 0
         metadata["api_calls_count"] = len(metadata["turns"])
         metadata["error_count"] = 0
-        metadata["total_cost"] = 0
 
         # Aggregate statistics from all turns
         for turn in metadata["turns"]:
-            # Aggregate token usage
-            metadata["total_tokens"]["prompt_tokens"] += turn["in_tokens"]
-            metadata["total_tokens"]["completion_tokens"] += turn["out_tokens"]
-            metadata["total_tokens"]["total_tokens"] += (
-                turn["in_tokens"] + turn["out_tokens"]
-            )
-
-            # Aggregate cost
-            metadata["total_cost"] += turn["cost"]
-
-            if "tokens_retrieval" in turn:
-                tr = turn["tokens_retrieval"]
-                metadata["total_tokens_retrieval"]["prompt_tokens"] += tr.get(
-                    "prompt_tokens", 0
-                )
-                metadata["total_tokens_retrieval"]["completion_tokens"] += tr.get(
-                    "completion_tokens", 0
-                )
-                metadata["total_tokens_retrieval"]["total_tokens"] += tr.get(
-                    "total_tokens", 0
-                )
-
             # Count errors
             metadata["error_count"] += len(turn["errors"])
 
@@ -117,6 +89,15 @@ class Agent(ABC):
             start = datetime.fromisoformat(metadata["start_time"])
             end = datetime.fromisoformat(metadata["end_time"])
             metadata["total_duration_seconds"] = (end - start).total_seconds()
+
+        # Aggregate query result metadata (need to start with the first one to mantain the cost per token information)
+        total_metadata = query_result_metadata[0]
+        for qr_metadata in query_result_metadata[1:]:
+            total_metadata = total_metadata.__add__(qr_metadata)
+
+        total_metadata_dict = total_metadata.model_dump()
+
+        metadata["total_metadata"] = total_metadata_dict
 
         return metadata
 
@@ -145,6 +126,9 @@ class Agent(ABC):
             response: QueryResult = await self.llm.query(
                 input=self.messages, tools=tool_definitions
             )
+
+            # NOTE: Track query results and combine turn metadata at the end of the run
+            self._query_result_metadata.append(response.metadata)
         except Exception as e:
             agent_logger.critical(f"Error: {e}")
             agent_logger.critical(f"Traceback: {traceback.format_exc()}")
@@ -167,14 +151,6 @@ class Agent(ABC):
         turn_metadata = response.metadata.model_dump()
         turn_metadata["tool_calls"] = []
         turn_metadata["errors"] = []
-        turn_metadata["tokens_retrieval"] = {
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-        }
-        turn_metadata["cost"] = (
-            response.metadata.cost.total if response.metadata.cost else 0
-        )
 
         # Log the thinking content if available
         if reasoning_text:
@@ -224,23 +200,7 @@ class Agent(ABC):
                     tool_result = await self.tools[tool_name](
                         arguments, data_storage, self.llm
                     )
-                    if "usage" in tool_result:
-                        tool_token_usage = tool_result["usage"]
-                        turn_metadata["in_tokens"] += tool_token_usage["prompt_tokens"]
-                        turn_metadata["out_tokens"] += tool_token_usage[
-                            "completion_tokens"
-                        ]
-                        tr = turn_metadata.get("tokens_retrieval")
-                        if tr is None:
-                            tr = {
-                                "prompt_tokens": 0,
-                                "completion_tokens": 0,
-                                "total_tokens": 0,
-                            }
-                            turn_metadata["tokens_retrieval"] = tr
-                        tr["prompt_tokens"] += tool_token_usage["prompt_tokens"]
-                        tr["completion_tokens"] += tool_token_usage["completion_tokens"]
-                        tr["total_tokens"] += tool_token_usage["total_tokens"]
+                    self._query_result_metadata.append(tool_result["usage"])
                 elif tool_name == "parse_html_page":
                     tool_result = await self.tools[tool_name](arguments, data_storage)
                 else:
@@ -311,16 +271,6 @@ class Agent(ABC):
             "start_time": datetime.now().isoformat(),
             "end_time": None,
             "total_duration_seconds": 0,
-            "total_tokens": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-            },
-            "total_tokens_retrieval": {
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "total_tokens": 0,
-            },
             "turns": [],
             "tool_usage": {},
             "tool_calls_count": 0,
@@ -389,7 +339,7 @@ class Agent(ABC):
             metadata["final_answer"] = final_answer
 
         # Merge turn-level statistics into session-level statistics
-        metadata = self._merge_statistics(metadata)
+        metadata = self._merge_statistics(metadata, self._query_result_metadata)
 
         if final_answer:
             return final_answer, metadata

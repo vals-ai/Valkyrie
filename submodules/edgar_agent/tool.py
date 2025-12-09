@@ -17,7 +17,11 @@ tool_logger = get_logger(__name__)
 
 
 def is_429(exception):
-    is429 = isinstance(exception, aiohttp.ClientResponseError) and exception.status == 429 or "429" in str(exception)
+    is429 = (
+        isinstance(exception, aiohttp.ClientResponseError)
+        and exception.status == 429
+        or "429" in str(exception)
+    )
     if is429:
         print(f"429 error: {exception}")
     return is429
@@ -78,11 +82,15 @@ class Tool(ABC):
         pass
 
     async def __call__(self, arguments: dict = None, *args, **kwargs) -> list[str]:
-        tool_logger.info(f"\033[1;33m[TOOL: {self.name.upper()}]\033[0m Calling with arguments: {arguments}")
+        tool_logger.info(
+            f"\033[1;33m[TOOL: {self.name.upper()}]\033[0m Calling with arguments: {arguments}"
+        )
 
         try:
             tool_result = await self.call_tool(arguments, *args, **kwargs)
-            tool_logger.info(f"\033[1;32m[TOOL: {self.name.upper()}]\033[0m Returned: {tool_result}")
+            tool_logger.info(
+                f"\033[1;32m[TOOL: {self.name.upper()}]\033[0m Returned: {tool_result}"
+            )
             if self.name == "retrieve_information":
                 return {
                     "success": True,
@@ -100,7 +108,9 @@ class Tool(ABC):
                     f"\033[1;31m[TOOL: {self.name.upper()}]\033[0m Error: {e}\nTraceback: {traceback.format_exc()}"
                 )
             else:
-                tool_logger.warning(f"\033[1;31m[TOOL: {self.name.upper()}]\033[0m Error: {e}")
+                tool_logger.warning(
+                    f"\033[1;31m[TOOL: {self.name.upper()}]\033[0m Error: {e}"
+                )
             return {"success": False, "result": error_msg}
 
 
@@ -154,7 +164,9 @@ class GoogleWebSearch(Tool):
         }
 
         async with aiohttp.ClientSession() as session:
-            async with session.get("https://serpapi.com/search.json", params=params) as response:
+            async with session.get(
+                "https://serpapi.com/search.json", params=params
+            ) as response:
                 response.raise_for_status()  # This will raise ClientResponseError
                 results = await response.json()
 
@@ -257,12 +269,18 @@ class EDGARSearch(Tool):
         end_date = "2025-04-07"
 
         # Parse form_types if it's a string representation of a JSON array
-        if isinstance(form_types, str) and form_types.startswith("[") and form_types.endswith("]"):
+        if (
+            isinstance(form_types, str)
+            and form_types.startswith("[")
+            and form_types.endswith("]")
+        ):
             try:
                 form_types = json.loads(form_types.replace("'", '"'))
             except json.JSONDecodeError:
                 # Fallback to simple parsing if JSON parsing fails
-                form_types = [item.strip(" \"'") for item in form_types[1:-1].split(",")]
+                form_types = [
+                    item.strip(" \"'") for item in form_types[1:-1].split(",")
+                ]
 
         # Parse ciks if it's a string representation of a JSON array
         if isinstance(ciks, str) and ciks.startswith("[") and ciks.endswith("]"):
@@ -287,7 +305,9 @@ class EDGARSearch(Tool):
         }
 
         async with aiohttp.ClientSession() as session:
-            async with session.post(self.sec_api_url, json=payload, headers=headers) as response:
+            async with session.post(
+                self.sec_api_url, json=payload, headers=headers
+            ) as response:
                 response.raise_for_status()  # This will raise ClientResponseError
                 result = await response.json()
 
@@ -299,7 +319,9 @@ class EDGARSearch(Tool):
         except Exception as e:
             is_verbose = os.environ.get("EDGAR_AGENT_VERBOSE", "0") == "1"
             if is_verbose:
-                tool_logger.error(f"SEC API error: {e}\nTraceback: {traceback.format_exc()}")
+                tool_logger.error(
+                    f"SEC API error: {e}\nTraceback: {traceback.format_exc()}"
+                )
             else:
                 tool_logger.error(f"SEC API error: {e}")
             raise
@@ -322,7 +344,9 @@ class ParseHtmlPage(Tool):
     }
     required_arguments: list[str] = ["url", "key"]
 
-    def __init__(self, headers: dict = {"User-Agent": "ValsAI/antoine@vals.ai"}, *args, **kwargs):
+    def __init__(
+        self, headers: dict = {"User-Agent": "ValsAI/antoine@vals.ai"}, *args, **kwargs
+    ):
         super().__init__(
             *args,
             **kwargs,
@@ -342,7 +366,9 @@ class ParseHtmlPage(Tool):
         """
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.get(url, headers=self.headers, timeout=60) as response:
+                async with session.get(
+                    url, headers=self.headers, timeout=60
+                ) as response:
                     response.raise_for_status()
                     html_content = await response.text()
             except Exception as e:
@@ -353,7 +379,9 @@ class ParseHtmlPage(Tool):
                 else:
                     is_verbose = os.environ.get("EDGAR_AGENT_VERBOSE", "0") == "1"
                     if is_verbose:
-                        raise Exception(str(e) + "\nTraceback: " + traceback.format_exc())
+                        raise Exception(
+                            str(e) + "\nTraceback: " + traceback.format_exc()
+                        )
                     else:
                         raise Exception(str(e))
 
@@ -371,7 +399,9 @@ class ParseHtmlPage(Tool):
 
         return text
 
-    async def _save_tool_output(self, output: list[str], key: str, data_storage: dict) -> None:
+    async def _save_tool_output(
+        self, output: list[str], key: str, data_storage: dict
+    ) -> None:
         """
         Save the parsed HTML text to the data_storage dictionary.
 
@@ -384,10 +414,11 @@ class ParseHtmlPage(Tool):
 
         tool_result = ""
         if key in data_storage:
-            tool_result = (
-                "WARNING: The key already exists in the data storage. The new result overwrites the old one.\n"
-            )
-        tool_result += f"SUCCESS: The result has been saved to the data storage under the key: {key}." + "\n"
+            tool_result = "WARNING: The key already exists in the data storage. The new result overwrites the old one.\n"
+        tool_result += (
+            f"SUCCESS: The result has been saved to the data storage under the key: {key}."
+            + "\n"
+        )
 
         data_storage[key] = output
 
@@ -451,7 +482,12 @@ class RetrieveInformation(Tool):
                 "type": "object",
                 "properties": {
                     "key": {"type": "string"},
-                    "range": {"type": "array", "items": {"type": "integer"}, "minItems": 0, "maxItems": 2},
+                    "range": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "minItems": 0,
+                        "maxItems": 2,
+                    },
                 },
                 "required": ["key", "range"],
             },
@@ -465,13 +501,17 @@ class RetrieveInformation(Tool):
             **kwargs,
         )
 
-    async def call_tool(self, arguments: dict, data_storage: dict, model: LLM, *args, **kwargs) -> list[str]:
+    async def call_tool(
+        self, arguments: dict, data_storage: dict, model: LLM, *args, **kwargs
+    ) -> list[str]:
         prompt: str = arguments.get("prompt")
         input_character_ranges = arguments.get("input_character_ranges", [])
         if input_character_ranges is None:
             input_character_ranges = []
 
-        input_character_ranges = {item["key"]: item["range"] for item in input_character_ranges}
+        input_character_ranges = {
+            item["key"]: item["range"] for item in input_character_ranges
+        }
 
         # Verify that the prompt contains at least one placeholder in the correct format
         if not re.search(r"{{[^{}]+}}", prompt):
@@ -524,9 +564,5 @@ class RetrieveInformation(Tool):
 
         return {
             "retrieval": response.output_text_str,
-            "usage": {
-                "prompt_tokens": response.metadata.in_tokens,
-                "completion_tokens": response.metadata.out_tokens,
-                "total_tokens": response.metadata.in_tokens + response.metadata.out_tokens,
-            },
+            "usage": response.metadata,
         }

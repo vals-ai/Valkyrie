@@ -18,12 +18,17 @@ class FinanceAgentBenchmark(Benchmark):
     async def _create_run(self) -> Run:
         """Helper method to create a run object"""
 
+        model = self.agent.config.model
+        if model is None:
+            raise ValueError("`agent.config.model` is required")
+
         parameters = RunParameters(
             eval_model=self._EVAL_MODEL,
             run_confidence_evaluation=False,
             create_text_summary=False,
             temperature=self.agent.config.temperature
             or 1,  # NOTE: will raise if its falsy
+            model_under_test=model,
         )
 
         logger.info(f"Creating run with parameters: `{str(parameters)}`")
@@ -34,11 +39,6 @@ class FinanceAgentBenchmark(Benchmark):
 
         project_id = self._dataset.config.get("project_id") or "default-project"
 
-        model = self.agent.config.model
-
-        if model is None:
-            raise ValueError("`agent.config.model` is required")
-
         name = self._dataset.config.get("name")
         if name is None:
             raise ValueError("`dataset.name` is required")
@@ -46,9 +46,7 @@ class FinanceAgentBenchmark(Benchmark):
         return await Suite.create_run(
             suite_id,
             parameters=parameters,
-            model_under_test=model,
             project_id=project_id,
-            run_name=f"{name}-{model}",
         )
 
     @override

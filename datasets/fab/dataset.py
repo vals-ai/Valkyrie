@@ -46,7 +46,7 @@ class FinanceAgentDataset(Dataset):
                 question=test.input_under_test
             )
             input = [TextInput(text=formatted_question)]
-            task = Task(id=test._id or "", input=input)
+            task = Task(id=test.id or "", input=input)
             tasks.append(task)
 
         logger.info(f"Created `{len(tasks)}` tasks")
