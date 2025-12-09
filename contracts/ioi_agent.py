@@ -17,7 +17,7 @@ setup_environment()
 
 class IOIAgentContract(AgentContract):
     """
-    Contract for the Edgar Agent to be usable within the agentic harness framework
+    Contract for the IOI Agent to be usable within the agentic harness framework
     """
 
     _max_turns: int = 20
