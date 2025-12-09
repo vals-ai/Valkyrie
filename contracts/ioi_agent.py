@@ -1,6 +1,6 @@
 from agentic_harness.base.contract import AgentContract
 from typing import Any, cast, override
-from model_library.base import QueryResult, QueryResultMetadata
+from model_library.base import QueryResult, QueryResultCost, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
 from agentic_harness.base.types import AgentConfig, Task
 from submodules.ioi_agent.tool import (
@@ -54,7 +54,10 @@ class IOIAgentContract(AgentContract):
                 in_tokens=metadata["total_tokens"]["prompt_tokens"],
                 out_tokens=metadata["total_tokens"]["completion_tokens"],
                 duration_seconds=metadata["total_duration_seconds"],
-                cost=metadata["total_cost"],
+                cost=QueryResultCost(
+                    input=metadata["total_tokens"]["prompt_tokens"],
+                    output=metadata["total_tokens"]["completion_tokens"],
+                ),
             ),
             raw=metadata,
         )
