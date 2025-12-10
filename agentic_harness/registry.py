@@ -2,16 +2,23 @@ from importlib import import_module
 from inspect import isclass
 from typing import TypeVar
 
-from agentic_harness.base.agent import Agent
 from agentic_harness.base.benchmark import Benchmark
 from agentic_harness.base.dataset import Dataset
+from agentic_harness.base.contract import AgentContract
+from agentic_harness.base.types import BaseConfig
 
-AGENT_PACKAGE = "agents"
-AGENT_MODULE = "agent"
+from agentic_harness.base_agent import BaseAgent
+from agentic_harness.logger import get_logger
+from evaluators.platform_evaluate import PlatformEvaluator
+
+logger = get_logger(__name__)
+
 BENCHMARK_PACKAGE = "benchmarks"
 BENCHMARK_MODULE = "benchmark"
 DATASET_PACKAGE = "datasets"
 DATASET_MODULE = "dataset"
+CONTRACT_PACKAGE = "contracts"
+CONTRACT_MODULE = "contract"
 
 T = TypeVar("T")
 
@@ -19,15 +26,16 @@ T = TypeVar("T")
 def _load_component_instance(
     component_name: str,
     package: str,
-    module_name: str,
     base_cls: type[T],
-) -> T:
+    module_name: str | None = None,
+) -> type[T]:
     """Import the expected module and instantiate the single subclass it defines."""
 
-    try:
-        module = import_module(f"{package}.{component_name}.{module_name}")
-    except ModuleNotFoundError as exc:
-        raise ValueError(f"{package.title()} {component_name} not found") from exc
+    module_path = f"{package}.{component_name}"
+    if module_name is not None:
+        module_path += f".{module_name}"
+
+    module = import_module(module_path)
 
     matching_classes: list[type[T]] = []
     for attr in vars(module).values():
@@ -48,37 +56,61 @@ def _load_component_instance(
         )
 
     cls = matching_classes[0]
-    return cls()
+    return cls
 
 
-def load_agent(agent_name: str) -> Agent:
-    """Instantiate the agent identified by ``agent_name``."""
-
-    return _load_component_instance(
-        agent_name,
-        AGENT_PACKAGE,
-        AGENT_MODULE,
-        Agent,
-    )
-
-
-def load_benchmark(benchmark_name: str) -> Benchmark:
+def load_benchmark(benchmark_name: str) -> type[Benchmark]:
     """Instantiate the benchmark identified by ``benchmark_name``."""
 
     return _load_component_instance(
         benchmark_name,
         BENCHMARK_PACKAGE,
-        BENCHMARK_MODULE,
         Benchmark,
+        BENCHMARK_MODULE,
     )
 
 
-def load_dataset(dataset_name: str) -> Dataset:
+def load_dataset(dataset_name: str) -> type[Dataset]:
     """Instantiate the dataset identified by ``dataset_name``."""
 
     return _load_component_instance(
         dataset_name,
         DATASET_PACKAGE,
-        DATASET_MODULE,
         Dataset,
+        DATASET_MODULE,
     )
+
+
+def load_contract(contract_name: str) -> type[AgentContract]:
+    """Instantiate the contract identified by ``contract_name``."""
+    return _load_component_instance(
+        contract_name,
+        CONTRACT_PACKAGE,
+        AgentContract,
+    )
+
+
+def create_benchmark(config: BaseConfig) -> Benchmark:
+    """Loads required components and constructs a benchmark object"""
+
+    logger.info(f"Creating benchmark with config: `{str(config)}`")
+
+    dataset_name = config.dataset.get("name", None)
+    if dataset_name is None:
+        raise ValueError("`dataset.name` is required")
+
+    # Parse the dataset, agent, and contract
+    Dataset = load_dataset(dataset_name)
+    BenchmarkClass = load_benchmark(config.benchmark)
+    Contract = load_contract(config.agent)
+
+    # NOTE: Hardcode the evaluator for now - introduce additional options as we need them
+    evaluator = PlatformEvaluator()
+
+    # Instantiate the benchmark
+    dataset = Dataset(config.dataset)
+    agent = BaseAgent(Contract(config.agent_config), evaluator)
+
+    logger.info("Loaded components...")
+
+    return BenchmarkClass(dataset=dataset, agent=agent)

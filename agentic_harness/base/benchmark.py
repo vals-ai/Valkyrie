@@ -1,12 +1,45 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 
-from agentic_harness.base.agent import Agent
-from agentic_harness.base.dataset import Task
+from agentic_harness.base.dataset import Dataset
+from agentic_harness.base.types import TaskGroup
+from agentic_harness.base_agent import BaseAgent
 
 
 class Benchmark(ABC):
-    """Constructs dataset and runs agents against them."""
+    _dataset: Dataset
+    _agent: BaseAgent
 
-    @abstractmethod
-    async def run(self, task: Task, agent: Agent) -> None:
-        """Run agent against a single task."""
+    def __init__(self, dataset: Dataset, agent: BaseAgent):
+        self._dataset = dataset
+        self._agent = agent
+
+    @property
+    def agent(self) -> BaseAgent:
+        return self._agent
+
+    async def _run_task_group(self, task_group: TaskGroup) -> None:
+        for task in task_group.tasks:
+            await self._agent.run(task)
+
+    async def _create_dataset(self) -> list[TaskGroup]:
+        return await self._dataset.create()
+
+    async def run(self) -> None:
+        """
+        Runs complete benchmark
+        1. Instantiates the dataset
+        2. Runs each task group
+
+        Example:
+        ```python
+        task_groups = await self._dataset.create()
+
+        for task_group in task_groups:
+            await self._run_task_group(task_group)
+        ```
+        """
+
+        task_groups = await self._create_dataset()
+
+        for task_group in task_groups:
+            await self._run_task_group(task_group)

@@ -2,68 +2,44 @@
 
 import argparse
 import asyncio
-import logging
 
-from agentic_harness.base import Agent, Benchmark
-from agentic_harness.registry import load_agent, load_benchmark, load_dataset
-from model_library.base import QueryResult
+from agentic_harness.base.types import BaseConfig
 
 from dotenv import load_dotenv
+from agentic_harness.logger import get_logger
 
-from datasets.fab.dataset import Dataset
+from agentic_harness import create_base_config
+from agentic_harness.registry import create_benchmark
 
 load_dotenv()
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
-async def basic_runner(agent: Agent, dataset: Dataset, benchmark: Benchmark):
-    """
-    Basic benchmark runnner.
+async def run_benchmark(config: BaseConfig):
+    try:
+        benchmark = create_benchmark(config)
 
-    Eventually we will build a more robust runner that can manage tasks in a
-    distributed system.
-
-    This can also be a class.
-    """
-    task_groups = await dataset.create()
-    for task_group in task_groups:
-        for task in task_group.tasks:
-            await benchmark.run(task, agent)
+        await benchmark.run()
+    except ValueError as e:
+        logger.error(f"Error creating benchmark: {e}")
+        return
 
 
 async def main():
     parser = argparse.ArgumentParser(description="Run an agent on a benchmark")
 
-    parser.add_argument(
-        "--agent", required=True, help="Agent name (directory in agents/)"
-    )
-    parser.add_argument(
-        "--dataset", required=True, help="Dataset name (directory in datasets/)"
-    )
-    parser.add_argument(
-        "--benchmark", required=True, help="Benchmark name (directory in benchmarks/)"
-    )
+    parser.add_argument("--config", required=True, help="Path to the config file")
 
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging")
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    config = create_base_config(args.config)
 
-    logger.info(f"Loading agent: {args.agent}")
-    agent = load_agent(args.agent)
+    logger.info(f"Running agent: `{config.agent}` on benchmark: `{config.benchmark}`")
 
-    logger.info(f"Loading dataset: {args.dataset}")
-    dataset = load_dataset(args.dataset)
-
-    logger.info(f"Loading benchmark: {args.benchmark}")
-    benchmark = load_benchmark(args.benchmark)
-
-    await basic_runner(agent, dataset, benchmark)
+    await run_benchmark(config)
 
 
 if __name__ == "__main__":

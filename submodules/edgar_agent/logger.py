@@ -30,7 +30,7 @@ LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
 
 
-def color(color):
+def color(color: str) -> str:
     colored_str = "".join((color, LEVEL, RESET))
     bold_str = "".join((BOLD, NAME, RESET))
     return " ".join((colored_str, bold_str, MSG))
@@ -45,7 +45,7 @@ class ColorFormatter(logging.Formatter):
         logging.CRITICAL: color(BOLD_RED),
     }
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
         # Truncate message if it exceeds MAX_MESSAGE_LENGTH
         if len(record.msg) > MAX_MESSAGE_LENGTH and not is_verbose:
             record.msg = record.msg[:MAX_MESSAGE_LENGTH] + "... [truncated]"
@@ -58,7 +58,7 @@ class ColorFormatter(logging.Formatter):
 class TruncatingFormatter(logging.Formatter):
     """Formatter that truncates long messages."""
 
-    def format(self, record):
+    def format(self, record: logging.LogRecord) -> str:
         # Truncate message if it exceeds MAX_MESSAGE_LENGTH
         if len(record.msg) > MAX_MESSAGE_LENGTH and not is_verbose:
             record.msg = record.msg[:MAX_MESSAGE_LENGTH] + "... [truncated]"
@@ -85,7 +85,9 @@ def get_logger(name: str) -> logging.Logger:
         log_file = os.path.join(LOGS_DIR, f"{name}_{timestamp}.log")
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(logging.DEBUG)
-        file_formatter = TruncatingFormatter("%(asctime)s %(levelname)s -- %(name)s: %(message)s")
+        file_formatter = TruncatingFormatter(
+            "%(asctime)s %(levelname)s -- %(name)s: %(message)s"
+        )
         file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 
