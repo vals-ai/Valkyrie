@@ -1,0 +1,30 @@
+name: setup uv workflow
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        required: true
+        type: string
+
+jobs:
+  setup-uv:
+    runs-on: ubuntu-latest
+
+    outputs:
+      python-version: ${{ inputs.python-version }}
+
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: uv with cache enabled
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-local-path: ".setup-uv-cache"
+          cache-dependency-glob: "uv.lock"
+
+      - name: uv --version
+        run: uv --version

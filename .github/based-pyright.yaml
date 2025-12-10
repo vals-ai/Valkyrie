@@ -1,0 +1,25 @@
+name: basedpyright
+on: [pull_request, push]
+
+jobs:
+  setup-uv:
+    uses: ./.github/_setup_uv.yaml
+    with:
+      python-version: "3.11"
+
+  run-basedpyright:
+    needs: setup-uv
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Run basedpyright
+        run: make typecheck

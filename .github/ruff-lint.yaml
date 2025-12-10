@@ -1,0 +1,21 @@
+name: ruff-lint
+on: [pull_request, push]
+
+jobs:
+  setup-uv:
+    uses: ./.github/_setup_uv.yaml
+    with:
+      python-version: "3.11"
+
+  run-ruff-lint:
+    needs: setup-uv
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: make install
+
+      - name: Run lint check
+        run: make lint
