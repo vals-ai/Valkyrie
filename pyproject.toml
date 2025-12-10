@@ -29,17 +29,17 @@ type-check = [
   "basedpyright"
 ]
 
+
 # uv pip install ".[ioi]"
 ioi = [
   "ioi-agent",
 ]
 
 [tool.basedpyright]
-include = ["agentic_harness", "agents", "benchmarks", "contracts"]
+include = ["agentic_harness", "benchmarks", "contracts"]
 exclude = [
   ".*",
-  "tests/**",
-  "agents/fab/edgar_agent/**",
+  "submodules/**",
 ]
 typeCheckingMode = "strict"
 reportExplicitAny = false
