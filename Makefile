@@ -1,4 +1,5 @@
 .PHONY: help install test test-integration test-all style style-check typecheck
+PYTHON_VERSION := 3.11
 
 help:
 	@echo "Makefile for agentic-harness"
@@ -9,7 +10,8 @@ help:
 	@echo "  make typecheck        Typecheck"
 
 install:
-	uv venv
+	uv venv --python $(PYTHON_VERSION)
+	uv cache clean model-library valsai
 	uv sync --group dev
 	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
 
