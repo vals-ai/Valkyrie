@@ -3,9 +3,9 @@ from model_library.base import (
 )
 from typing_extensions import override
 from vals import QuestionAnswerPair
-from agentic_harness.base.evaluate import Evaluator
-from agentic_harness.base.types import Task
-from agentic_harness.logger import get_logger
+from src.base.evaluate import Evaluator
+from src.base.types import Task
+from src.logger import get_logger
 
 logger = get_logger(__name__)
 
