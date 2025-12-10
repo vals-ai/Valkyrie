@@ -1,8 +1,8 @@
-from agentic_harness.base.contract import AgentContract
+from src.base.contract import AgentContract
 from typing import Any, cast, override
 from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
-from agentic_harness.base.types import AgentConfig, Task
+from src.base.types import AgentConfig, Task
 from submodules.edgar_agent.tool import (
     GoogleWebSearch,
     RetrieveInformation,
@@ -11,7 +11,7 @@ from submodules.edgar_agent.tool import (
     Tool,
 )
 from submodules.edgar_agent.agent import Agent as EdgarAgent
-from agentic_harness.utils import setup_environment
+from src.utils import setup_environment
 
 setup_environment()
 

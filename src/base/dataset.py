@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from agentic_harness.base.types import DatasetConfig, TaskGroup
+from src.base.types import DatasetConfig, TaskGroup
 
 
 class Dataset(ABC):

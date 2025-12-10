@@ -1,7 +1,7 @@
 from model_library.base import QueryResult
-from agentic_harness.base.evaluate import Evaluator
-from agentic_harness.base.types import AgentConfig, Task
-from agentic_harness.base.contract import AgentContract
+from src.base.evaluate import Evaluator
+from src.base.types import AgentConfig, Task
+from src.base.contract import AgentContract
 
 
 class BaseAgent:

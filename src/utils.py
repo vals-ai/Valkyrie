@@ -3,7 +3,7 @@
 from typing import Any
 import yaml
 from pathlib import Path
-from agentic_harness.base.types import BaseConfig
+from src.base.types import BaseConfig
 import logging
 from dotenv import load_dotenv
 import os

@@ -2,13 +2,13 @@ from importlib import import_module
 from inspect import isclass
 from typing import TypeVar
 
-from agentic_harness.base.benchmark import Benchmark
-from agentic_harness.base.dataset import Dataset
-from agentic_harness.base.contract import AgentContract
-from agentic_harness.base.types import BaseConfig
+from src.base.benchmark import Benchmark
+from src.base.dataset import Dataset
+from src.base.contract import AgentContract
+from src.base.types import BaseConfig
 
-from agentic_harness.base_agent import BaseAgent
-from agentic_harness.logger import get_logger
+from src.base_agent import BaseAgent
+from src.logger import get_logger
 from evaluators.platform_evaluate import PlatformEvaluator
 
 logger = get_logger(__name__)

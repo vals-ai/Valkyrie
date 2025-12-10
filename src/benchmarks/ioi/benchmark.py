@@ -1,6 +1,6 @@
-from agentic_harness.base import Dataset
-from agentic_harness.base_agent import BaseAgent
-from agentic_harness.utils import setup_environment
+from src.base import Dataset
+from src.base_agent import BaseAgent
+from src.utils import setup_environment
 from benchmarks.fab.benchmark import FinanceAgentBenchmark
 
 setup_environment()

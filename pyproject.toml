@@ -3,12 +3,11 @@ name = "agentic-harness"
 version = "0.1.0"
 description = "An agentic harness that interfaces with benchmarks hosted by Vals AI"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 
 dependencies = [
-  "asgiref",
   "pypandoc",
-  "model-library @ git+https://github.com/vals-ai/model-library.git",
+  "model-library @ git+ssh://git@github.com/vals-ai/model-proxy.git@dev",
   "valsai @ git+ssh://git@github.com/vals-ai/platform-be.git@dev#subdirectory=sdk",
   "pytest>=9.0.1",
   "pytest-asyncio>=1.3.0",
@@ -16,17 +15,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-  # test
   "pytest",
   "pytest-asyncio",
-  # style
   "ruff",
-  "pypdf2",
-]
-
-[project.optional-dependencies]
-type-check = [
-  "basedpyright"
+  "basedpyright",
+  "pypdf2"
 ]
 
 
@@ -35,15 +28,29 @@ ioi = [
   "ioi-agent",
 ]
 
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
 [tool.basedpyright]
-include = ["agentic_harness", "benchmarks", "contracts"]
+venvPath=".venv"
+typeCheckingMode = "strict"
+
+reportExplicitAny = false
+reportAny = false
+reportMissingTypeStubs = false
+enableTypeIgnoreComments = true
+reportImplicitRelativeImport = true
+
+include = ["src", "contracts"]
+
 exclude = [
-  ".*",
   "submodules/**",
 ]
-typeCheckingMode = "strict"
-reportExplicitAny = false
-reportMissingTypeStubs = false
 
 [build-system]
 requires = ["hatchling"]
@@ -53,22 +60,15 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["agentic_harness"]
+packages = ["src"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_classes = ["Test*"]
-python_functions = ["test_*"]
-markers = [
-    "unit: Unit tests that don't require external resources",
-    "integration: Integration tests that require API keys and external services",
-]
+
 # Async test configuration
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
-
 
 [tool.uv.sources]
 ioi-agent = { path = "submodules/ioi_agent" }

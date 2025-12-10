@@ -1,10 +1,10 @@
 from typing import override
-from agentic_harness.base.benchmark import Benchmark
+from src.base.benchmark import Benchmark
 from vals import RunParameters, Suite
 from vals import Run
-from agentic_harness.base.types import TaskGroup
-from agentic_harness.logger import get_logger
-from agentic_harness.utils import setup_environment
+from src.base.types import TaskGroup
+from src.logger import get_logger
+from src.utils import setup_environment
 
 logger = get_logger(__name__)
 
