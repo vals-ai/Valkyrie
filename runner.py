@@ -3,13 +3,12 @@
 import argparse
 import asyncio
 
-from agentic_harness.base.types import BaseConfig
-
 from dotenv import load_dotenv
-from agentic_harness.logger import get_logger
 
-from agentic_harness import create_base_config
-from agentic_harness.registry import create_benchmark
+from src.base.types import BaseConfig
+from src.logger import get_logger
+from src.registry import create_benchmark
+from src.utils import create_base_config
 
 load_dotenv()
 

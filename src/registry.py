@@ -3,17 +3,16 @@ from inspect import isclass
 from typing import TypeVar
 
 from src.base.benchmark import Benchmark
-from src.base.dataset import Dataset
 from src.base.contract import AgentContract
+from src.base.dataset import Dataset
 from src.base.types import BaseConfig
-
 from src.base_agent import BaseAgent
+from src.evaluators.platform_evaluate import PlatformEvaluator
 from src.logger import get_logger
-from evaluators.platform_evaluate import PlatformEvaluator
 
 logger = get_logger(__name__)
 
-BENCHMARK_PACKAGE = "benchmarks"
+BENCHMARK_PACKAGE = "src.benchmarks"
 BENCHMARK_MODULE = "benchmark"
 DATASET_PACKAGE = "datasets"
 DATASET_MODULE = "dataset"
@@ -46,14 +45,10 @@ def _load_component_instance(
             matching_classes.append(attr)
 
     if not matching_classes:
-        raise ValueError(
-            f"{package.title()} {component_name} does not define a {base_cls.__name__}"
-        )
+        raise ValueError(f"{package.title()} {component_name} does not define a {base_cls.__name__}")
 
     if len(matching_classes) > 1:
-        raise ValueError(
-            f"{package.title()} {component_name} defines multiple {base_cls.__name__} subclasses"
-        )
+        raise ValueError(f"{package.title()} {component_name} defines multiple {base_cls.__name__} subclasses")
 
     cls = matching_classes[0]
     return cls
