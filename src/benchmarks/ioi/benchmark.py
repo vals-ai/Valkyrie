@@ -1,7 +1,7 @@
 from src.base import Dataset
 from src.base_agent import BaseAgent
+from src.benchmarks.fab.benchmark import FinanceAgentBenchmark
 from src.utils import setup_environment
-from benchmarks.fab.benchmark import FinanceAgentBenchmark
 
 setup_environment()
 

@@ -11,15 +11,16 @@ tar -xzf archive.tar.gz
 """
 
 import io
+import tarfile
 from pathlib import Path, PurePosixPath
 from typing import override
 
-from model_library.base import TextInput
-from agentic_harness.base.dataset import Dataset
-from agentic_harness.base.types import Task, TaskGroup
-from vals import Suite, Test
 import PyPDF2
-import tarfile
+from model_library.base import TextInput
+from vals import Suite, Test
+
+from src.base.dataset import Dataset
+from src.base.types import Task, TaskGroup
 
 
 class IOIDataset(Dataset):
