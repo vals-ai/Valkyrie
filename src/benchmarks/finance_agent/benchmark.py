@@ -1,7 +1,8 @@
 from typing import override
+
+from vals import Run, RunParameters, Suite
+
 from src.base.benchmark import Benchmark
-from vals import RunParameters, Suite
-from vals import Run
 from src.base.types import TaskGroup
 from src.logger import get_logger
 from src.utils import setup_environment
@@ -26,8 +27,7 @@ class FinanceAgentBenchmark(Benchmark):
             eval_model=self._EVAL_MODEL,
             run_confidence_evaluation=False,
             create_text_summary=False,
-            temperature=self.agent.config.temperature
-            or 1,  # NOTE: will raise if its falsy
+            temperature=self.agent.config.temperature or 1,  # NOTE: will raise if its falsy
             model_under_test=model,
         )
 
@@ -58,9 +58,7 @@ class FinanceAgentBenchmark(Benchmark):
 
         self._run = await self._create_run()
 
-        logger.info(
-            f"Created run with id `{self._run.id}` and qa_set_id `{self._run.qa_set_id}`"
-        )
+        logger.info(f"Created run with id `{self._run.id}` and qa_set_id `{self._run.qa_set_id}`")
 
         dataset = await super()._create_dataset()
         for task_group in dataset:

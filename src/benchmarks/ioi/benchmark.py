@@ -1,7 +1,8 @@
 from src.base import Dataset
+from src.base.environment import Environment
 from src.base_agent import BaseAgent
+from src.benchmarks.finance_agent.benchmark import FinanceAgentBenchmark
 from src.utils import setup_environment
-from benchmarks.fab.benchmark import FinanceAgentBenchmark
 
 setup_environment()
 
@@ -16,5 +17,5 @@ class IOIBenchmark(FinanceAgentBenchmark):
     This is _not_ the usual case which is why it may seem weird
     """
 
-    def __init__(self, dataset: Dataset, agent: BaseAgent):
-        super().__init__(dataset, agent)
+    def __init__(self, dataset: Dataset, agent: BaseAgent, environment: Environment | None):
+        super().__init__(dataset, agent, environment)

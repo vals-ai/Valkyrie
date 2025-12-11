@@ -4,6 +4,15 @@ from model_library.base import InputItem
 from pydantic import BaseModel, model_validator
 
 
+class Sandbox(BaseModel):
+    """
+    Represents a sandbox.
+    """
+
+    id: str
+    extra: dict[str, Any] = {}
+
+
 class Task(BaseModel):
     """
     Represents one task.
@@ -14,6 +23,9 @@ class Task(BaseModel):
     id: str
     input: list[InputItem]
     extra: dict[str, Any] = {}
+
+    # Sandbox information
+    sandbox: Sandbox | None = None
 
 
 class TaskGroup(BaseModel):
@@ -29,6 +41,7 @@ class AgentConfig(BaseModel):
     """Generic agent configuration"""
 
     model: str | None = None
+    parallelism: int = 1
     temperature: float | None = None
     max_tokens: int | None = None
     top_p: float | None = None
@@ -53,6 +66,9 @@ class BaseConfig(BaseModel):
 
     # Dataset Parameters
     dataset: dict[str, Any] = {}
+
+    # Environment Parameters
+    environment: dict[str, Any] = {}
 
     @model_validator(mode="before")
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:

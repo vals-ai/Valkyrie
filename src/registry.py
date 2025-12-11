@@ -1,15 +1,15 @@
 from importlib import import_module
 from inspect import isclass
-from typing import TypeVar
+from typing import Any, TypeVar
 
+from evaluators.platform_evaluate import PlatformEvaluator
 from src.base.benchmark import Benchmark
-from src.base.dataset import Dataset
 from src.base.contract import AgentContract
+from src.base.dataset import Dataset
+from src.base.environment import Environment
 from src.base.types import BaseConfig
-
 from src.base_agent import BaseAgent
 from src.logger import get_logger
-from evaluators.platform_evaluate import PlatformEvaluator
 
 logger = get_logger(__name__)
 
@@ -19,6 +19,7 @@ DATASET_PACKAGE = "datasets"
 DATASET_MODULE = "dataset"
 CONTRACT_PACKAGE = "contracts"
 CONTRACT_MODULE = "contract"
+ENVIRONMENT_PACKAGE = "environments"
 
 T = TypeVar("T")
 
@@ -46,14 +47,10 @@ def _load_component_instance(
             matching_classes.append(attr)
 
     if not matching_classes:
-        raise ValueError(
-            f"{package.title()} {component_name} does not define a {base_cls.__name__}"
-        )
+        raise ValueError(f"{package.title()} {component_name} does not define a {base_cls.__name__}")
 
     if len(matching_classes) > 1:
-        raise ValueError(
-            f"{package.title()} {component_name} defines multiple {base_cls.__name__} subclasses"
-        )
+        raise ValueError(f"{package.title()} {component_name} defines multiple {base_cls.__name__} subclasses")
 
     cls = matching_classes[0]
     return cls
@@ -90,6 +87,30 @@ def load_contract(contract_name: str) -> type[AgentContract]:
     )
 
 
+def load_environment(environment_name: str) -> type[Environment]:
+    """Instantiate the environment identified by ``environment_name``."""
+    return _load_component_instance(
+        environment_name,
+        ENVIRONMENT_PACKAGE,
+        Environment,
+    )
+
+
+def parse_environment(environment_config: dict[str, Any]) -> Environment | None:
+    """Fetches the environment config if it exists"""
+    environment = environment_config.get("environment", None)
+    if environment is None:
+        return None
+
+    environment_name = environment.pop("name", None)
+    if environment_name is None:
+        raise ValueError("`environment.name` is required to run the benchmark in a separate environment")
+
+    Environment = load_environment(environment_name)
+
+    return Environment(config=environment)
+
+
 def create_benchmark(config: BaseConfig) -> Benchmark:
     """Loads required components and constructs a benchmark object"""
 
@@ -111,6 +132,8 @@ def create_benchmark(config: BaseConfig) -> Benchmark:
     dataset = Dataset(config.dataset)
     agent = BaseAgent(Contract(config.agent_config), evaluator)
 
+    environment = parse_environment(config.environment)
+
     logger.info("Loaded components...")
 
-    return BenchmarkClass(dataset=dataset, agent=agent)
+    return BenchmarkClass(dataset=dataset, agent=agent, environment=environment)
