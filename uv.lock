@@ -1387,7 +1387,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "model-library", git = "https://github.com/vals-ai/model-library.git" },
+    { name = "model-library", specifier = ">=0.1.3" },
     { name = "pypdf2", specifier = ">=3.0.1" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
 ]
@@ -1756,7 +1756,7 @@ wheels = [
 [[package]]
 name = "model-library"
 version = "0.1.3"
-source = { git = "https://github.com/vals-ai/model-library.git#d4149beaa37ac9cbc128858e90c92d0ab7916fe6" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ai21" },
     { name = "anthropic" },
@@ -1774,6 +1774,10 @@ dependencies = [
     { name = "tiktoken" },
     { name = "typing-extensions" },
     { name = "xai-sdk" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/b8/50/caff9f147fef2db83a65ecb2e4679bf35fadb4cfa6c5943248c0b2822721/model_library-0.1.3.tar.gz", hash = "sha256:e037c088567207909093c5fc0dd20db342a1d4d136697391deb0447616168abf", size = 256275, upload-time = "2025-11-26T04:55:28.579Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ba/a6/e1f8434ee772b469981beb9743b48c5f68b40e1e2f819fe29f00a0ff5ef4/model_library-0.1.3-py3-none-any.whl", hash = "sha256:d3ef8396833c0a460187e1ddd30e1f8eae5eeb72ec47a7c5a1c1888c5abf25da", size = 120561, upload-time = "2025-11-26T04:55:26.884Z" },
 ]
 
 [[package]]

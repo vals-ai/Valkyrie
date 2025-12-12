@@ -1,11 +1,12 @@
+from textwrap import dedent
+
 from model_library.base import TextInput
 from typing_extensions import override
 from vals import Suite
-from agentic_harness.base.dataset import Dataset
-from agentic_harness.base.types import Task, TaskGroup
-from textwrap import dedent
 
-from agentic_harness.logger import get_logger
+from src.base.dataset import Dataset
+from src.base.types import Task, TaskGroup
+from src.logger import get_logger
 
 logger = get_logger(__name__)
 
@@ -42,9 +43,7 @@ class FinanceAgentDataset(Dataset):
 
         tasks: list[Task] = []
         for test in tests:
-            formatted_question = self.INSTRUCTIONS_PROMPT.format(
-                question=test.input_under_test
-            )
+            formatted_question = self.INSTRUCTIONS_PROMPT.format(question=test.input_under_test)
             input = [TextInput(text=formatted_question)]
             task = Task(id=test.id or "", input=input)
             tasks.append(task)

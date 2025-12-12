@@ -12,8 +12,6 @@ class Benchmark(ABC):
     _dataset: Dataset
     _agent: BaseAgent
     _environment: Environment | None
-
-    # NOTE: Do not hardcode this value in the future
     _semaphore: Semaphore
 
     def __init__(self, dataset: Dataset, agent: BaseAgent, environment: Environment | None):

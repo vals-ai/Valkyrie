@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 
 from model_library.base import QueryResult
-from src.base.types import Task, AgentConfig
+
+from src.base.types import AgentConfig, Task
 
 
 class AgentContract(ABC):

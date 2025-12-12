@@ -1,7 +1,7 @@
 import os
-from typing import override
 
 from daytona import AsyncDaytona, DaytonaConfig, DaytonaError
+from typing_extensions import override
 
 from src.base.environment import Environment
 from src.base.types import Sandbox, Task

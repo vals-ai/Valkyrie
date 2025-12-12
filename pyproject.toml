@@ -32,6 +32,7 @@ ioi = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+exclude = [".venv", "submodules", "src/platform"]
 
 [tool.ruff.format]
 quote-style = "double"

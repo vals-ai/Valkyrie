@@ -47,9 +47,7 @@ class EdgarAgentContract(AgentContract):
 
         return EdgarAgent(llm=llm, tools=tools, max_turns=self._max_turns)
 
-    def _create_query_result(
-        self, response: str, metadata: dict[str, Any]
-    ) -> QueryResult:
+    def _create_query_result(self, response: str, metadata: dict[str, Any]) -> QueryResult:
         """Provided a response from the edgar agent, creates a query result object"""
         return QueryResult(
             output_text=response,
