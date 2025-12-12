@@ -2,3 +2,6 @@
 	path = submodules/ioi_agent
 	url = git@github.com:vals-ai/ioi-agent.git
 	branch = agent-harness
+[submodule "submodules/finance_agent"]
+	path = submodules/finance_agent
+	url = git@github.com:vals-ai/finance-agent.git

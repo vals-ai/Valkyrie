@@ -1,16 +1,17 @@
+from typing_extensions import override
 from src.base.contract import AgentContract
-from typing import Any, cast, override
+from typing import Any, cast
 from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
 from src.base.types import AgentConfig, Task
-from submodules.edgar_agent.tool import (
+from submodules.finance_agent.tools import (
     GoogleWebSearch,
     RetrieveInformation,
     ParseHtmlPage,
     EDGARSearch,
     Tool,
 )
-from submodules.edgar_agent.agent import Agent as EdgarAgent
+from submodules.finance_agent.agent import Agent as EdgarAgent
 from src.utils import setup_environment
 
 setup_environment()
@@ -47,9 +48,7 @@ class EdgarAgentContract(AgentContract):
 
         return EdgarAgent(llm=llm, tools=tools, max_turns=self._max_turns)
 
-    def _create_query_result(
-        self, response: str, metadata: dict[str, Any]
-    ) -> QueryResult:
+    def _create_query_result(self, response: str, metadata: dict[str, Any]) -> QueryResult:
         """Provided a response from the edgar agent, creates a query result object"""
         return QueryResult(
             output_text=response,
@@ -62,6 +61,6 @@ class EdgarAgentContract(AgentContract):
         """Runs the edgar agent with a single task and parses the response into a query result object"""
         agent = self._create_edgar_agent()
 
-        response, metadata = await agent.run(input_items=task.input)
+        response, metadata = await agent.run(input_items=task.input)  # type: ignore
 
-        return self._create_query_result(response, metadata)
+        return self._create_query_result(response, metadata)  # type: ignore
