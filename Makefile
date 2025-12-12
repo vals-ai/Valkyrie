@@ -1,4 +1,5 @@
-.PHONY: help install test test-integration test-all style style-check typecheck
+.PHONY: help install test test-integration test-all style style-check typecheck update
+
 PYTHON_VERSION := 3.11
 
 help:
@@ -12,8 +13,12 @@ help:
 install:
 	uv venv --python $(PYTHON_VERSION)
 	uv cache clean model-library valsai
-	uv sync --group dev
+	uv sync --directory . --group dev
 	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
+
+update:
+	uv lock --upgrade
+	uv lock
 
 update-submodules:
 	git submodule update --remote --merge
