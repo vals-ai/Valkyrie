@@ -11,7 +11,7 @@ class Task(BaseModel):
     id field represents the run_id for platform benchmarks.
     """
 
-    id: str
+    id: str  # typically test.id
     input: list[InputItem]
     extra: dict[str, Any] = {}
 
