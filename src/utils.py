@@ -41,7 +41,6 @@ def parse_base_config(config: dict[str, Any]) -> BaseConfig:
         )
 
     # NOTE: Bareminimum validation for now
-
     return BaseConfig(**config)
 
 

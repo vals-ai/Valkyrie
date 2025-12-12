@@ -1,7 +1,8 @@
 from model_library.base import QueryResult
+
+from src.base.contract import AgentContract
 from src.base.evaluate import Evaluator
 from src.base.types import AgentConfig, Task
-from src.base.contract import AgentContract
 
 
 class BaseAgent:
@@ -32,6 +33,9 @@ class BaseAgent:
     @property
     def config(self) -> AgentConfig:
         return self._contract.config
+
+    def build_execute_command(self, task: Task) -> str:
+        return self._contract.build_execute_command(task)
 
     async def run(self, task: Task) -> QueryResult:
         """Runs the agent by calling the contract's run method"""

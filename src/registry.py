@@ -3,12 +3,12 @@ from inspect import isclass
 from typing import Any, TypeVar
 
 from evaluators.platform_evaluate import PlatformEvaluator
-from src.base.benchmark import Benchmark
 from src.base.contract import AgentContract
 from src.base.dataset import Dataset
 from src.base.environment import Environment
 from src.base.types import BaseConfig
 from src.base_agent import BaseAgent
+from src.base_benchmark import Benchmark
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -123,14 +123,14 @@ def create_benchmark(config: BaseConfig) -> Benchmark:
     # Parse the dataset, agent, and contract
     Dataset = load_dataset(dataset_name)
     BenchmarkClass = load_benchmark(config.benchmark)
-    Contract = load_contract(config.agent)
+    Contract = load_contract(config.agent.name)
 
     # NOTE: Hardcode the evaluator for now - introduce additional options as we need them
     evaluator = PlatformEvaluator()
 
     # Instantiate the benchmark
     dataset = Dataset(config.dataset)
-    agent = BaseAgent(Contract(config.agent_config), evaluator)
+    agent = BaseAgent(Contract(config.agent), evaluator)
 
     environment = parse_environment(config.environment)
 

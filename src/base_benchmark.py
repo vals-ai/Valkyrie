@@ -1,5 +1,4 @@
 import asyncio
-from abc import ABC
 from asyncio import Semaphore
 
 from src.base.dataset import Dataset
@@ -8,7 +7,7 @@ from src.base.types import Task, TaskGroup
 from src.base_agent import BaseAgent
 
 
-class Benchmark(ABC):
+class Benchmark:
     _dataset: Dataset
     _agent: BaseAgent
     _environment: Environment | None
@@ -24,15 +23,22 @@ class Benchmark(ABC):
     def agent(self) -> BaseAgent:
         return self._agent
 
+    async def _run_task(self, task: Task) -> None:
+        """Executes the task either inside of the environment or directly inside of the users machine"""
+        if self._environment:
+            await self._environment.create(task, self._agent)
+        else:
+            await self._agent.run(task)
+
     async def _run_task_group(self, task_group: TaskGroup) -> None:
         # Setup the environment if it exists
-        if self._environment is not None:
+        if self._environment:
             await self._environment.setup()
 
         # Prepare concurrency
         async def _run_task_with_semaphore(task: Task) -> None:
             async with self._semaphore:
-                await self._agent.run(task)
+                await self._run_task(task)
 
         # Execute tasks in parallel
         await asyncio.gather(*[_run_task_with_semaphore(task) for task in task_group.tasks])

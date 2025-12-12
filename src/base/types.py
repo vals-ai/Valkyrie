@@ -4,6 +4,12 @@ from model_library.base import InputItem
 from pydantic import BaseModel, model_validator
 
 
+class EnvironmentKeys(BaseModel):
+    """Inherited by environments expected to return desired dependencies to inject into the sandbox environment"""
+
+    ...
+
+
 class Sandbox(BaseModel):
     """
     Represents a sandbox.
@@ -40,6 +46,7 @@ DatasetConfig = dict[str, Any]
 class AgentConfig(BaseModel):
     """Generic agent configuration"""
 
+    name: str
     model: str | None = None
     parallelism: int = 1
     temperature: float | None = None
@@ -59,10 +66,8 @@ class BaseConfig(BaseModel):
 
     # Benchmark specific parameters
     benchmark: str
-    agent: str
 
-    # Agent Parameters
-    agent_config: AgentConfig = AgentConfig()
+    agent: AgentConfig
 
     # Dataset Parameters
     dataset: dict[str, Any] = {}

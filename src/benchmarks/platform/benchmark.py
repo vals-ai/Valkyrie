@@ -1,9 +1,8 @@
-from typing import override
-
+from typing_extensions import override
 from vals import Run, RunParameters, Suite
 
-from src.base.benchmark import Benchmark
 from src.base.types import TaskGroup
+from src.base_benchmark import Benchmark
 from src.logger import get_logger
 from src.utils import setup_environment
 
@@ -12,7 +11,7 @@ logger = get_logger(__name__)
 setup_environment()
 
 
-class FinanceAgentBenchmark(Benchmark):
+class PlatformAgentBenchmark(Benchmark):
     _run: Run | None = None
     _EVAL_MODEL: str = "openai/gpt-4o-2024-08-06"
 

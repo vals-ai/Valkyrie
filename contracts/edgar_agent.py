@@ -1,17 +1,20 @@
-from src.base.contract import AgentContract
-from typing import Any, cast, override
+from typing import Any, cast
+
 from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
+from typing_extensions import override
+
+from src.base.contract import AgentContract
 from src.base.types import AgentConfig, Task
+from src.utils import setup_environment
+from submodules.edgar_agent.agent import Agent as EdgarAgent
 from submodules.edgar_agent.tool import (
-    GoogleWebSearch,
-    RetrieveInformation,
-    ParseHtmlPage,
     EDGARSearch,
+    GoogleWebSearch,
+    ParseHtmlPage,
+    RetrieveInformation,
     Tool,
 )
-from submodules.edgar_agent.agent import Agent as EdgarAgent
-from src.utils import setup_environment
 
 setup_environment()
 

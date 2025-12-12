@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from src.base.types import Sandbox, Task
+from src.base.types import EnvironmentKeys, Task
+from src.base_agent import BaseAgent
 
 
 class Environment(ABC):
@@ -16,15 +17,19 @@ class Environment(ABC):
     def __init__(self, config: dict[str, Any]):
         self._config = config
 
+    @staticmethod
+    @abstractmethod
+    def _environment_keys() -> EnvironmentKeys: ...
+
     @abstractmethod
     async def setup(self) -> None: ...
 
     @abstractmethod
-    async def create(self, task: Task) -> None: ...
+    async def create(self, task: Task, agent: BaseAgent) -> None: ...
 
     @abstractmethod
     async def execute(self, command: str) -> None: ...
 
     @staticmethod
     @abstractmethod
-    async def close(sandbox: Sandbox) -> None: ...
+    async def close(sandbox_id: str) -> None: ...

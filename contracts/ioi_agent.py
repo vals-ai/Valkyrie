@@ -1,16 +1,18 @@
-from src.base.contract import AgentContract
-from typing import Any, cast, override
+from typing import Any, cast
+
 from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
-from src.base.types import AgentConfig, Task
-from submodules.ioi_agent.tool import (
-    Tool,
-    Submission,
-    CppExecutor,
-)
-from submodules.ioi_agent.agent import Agent as IOIAgent
-from src.utils import setup_environment
+from typing_extensions import override
 
+from src.base.contract import AgentContract
+from src.base.types import AgentConfig, Task
+from src.utils import setup_environment
+from submodules.ioi_agent.agent import Agent as IOIAgent
+from submodules.ioi_agent.tool import (
+    CppExecutor,
+    Submission,
+    Tool,
+)
 
 setup_environment()
 
