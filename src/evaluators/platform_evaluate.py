@@ -26,8 +26,8 @@ class PlatformEvaluator(Evaluator):
 
         await QuestionAnswerPair.upload(
             qa_set_id=qa_set_id,
-            test_id=task.id,
+            test_id=task.test_id,
             query_result=result,
         )
 
-        logger.info(f"Uploaded result for task: `{task.id}` to qa_set: `{qa_set_id}`")
+        logger.info(f"Uploaded result for task: `{task.test_id}` to qa_set: `{qa_set_id}`")

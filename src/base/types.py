@@ -1,7 +1,7 @@
-from typing import Any
+from typing import Annotated, Any
 
 from model_library.base import InputItem
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 
 class Task(BaseModel):
@@ -11,9 +11,9 @@ class Task(BaseModel):
     id field represents the run_id for platform benchmarks.
     """
 
-    id: str  # typically test.id
-    input: list[InputItem]
-    extra: dict[str, Any] = {}
+    test_id: str
+    input: Annotated[list[InputItem], Field(min_length=1)]
+    extra: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskGroup(BaseModel):
@@ -33,6 +33,7 @@ class AgentConfig(BaseModel):
     max_tokens: int | None = None
     top_p: float | None = None
     reasoning_effort: str | None = None
+    trace: bool = False
     extra: dict[str, Any] = {}
 
 
