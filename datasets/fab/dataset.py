@@ -45,7 +45,9 @@ class FinanceAgentDataset(Dataset):
         for test in tests:
             formatted_question = self.INSTRUCTIONS_PROMPT.format(question=test.input_under_test)
             input = [TextInput(text=formatted_question)]
-            task = Task(id=test.id or "", input=input)
+            if test.id is None:
+                raise Exception("Something went wrong, Test.id is None")
+            task = Task(test_id=test.id, input=input)
             tasks.append(task)
 
         logger.info(f"Created `{len(tasks)}` tasks")
