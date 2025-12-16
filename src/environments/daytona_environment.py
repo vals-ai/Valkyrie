@@ -4,18 +4,26 @@ from datetime import datetime
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
-    CreateSandboxFromImageParams,
+    CreateSandboxFromSnapshotParams,
+    CreateSnapshotParams,
     DaytonaConfig,
     DaytonaError,
+    DaytonaNotFoundError,
     Image,
     SessionExecuteRequest,
 )
+from daytona.common.snapshot import Snapshot
 from typing_extensions import override
 
 from src.base.environment import Environment
 from src.base.types import EnvironmentKeys, Task
 from src.base_agent import BaseAgent
 from src.exceptions import EnvironmentException
+from src.logger import get_logger
+
+logger = get_logger(__name__)
+
+stream_logger = get_logger(__name__, stream=True)
 
 
 class DaytonaEnvironmentKeys(EnvironmentKeys):
@@ -28,7 +36,11 @@ class DaytonaEnvironment(Environment):
     _daytona: AsyncDaytona
     _DEFAULT_TIMEOUT: int = 300  # 5 minutes
     _AUTO_DELETE_TIMER: int = 60  # auto deletes the sandbox after 1 hour
-    _DOCKER_IMAGE_PATH: str = "src/Dockerfile.base"
+
+    # TODO: Source from config file
+    _DOCKER_IMAGE_PATH: str = "Dockerfile.base"
+    _BASE_IMAGE_NAME: str = "agent.base.image"
+    _EXTERNAL_IMAGE_NAME: str = "agent.external.image"
 
     @staticmethod
     @override
@@ -77,18 +89,85 @@ class DaytonaEnvironment(Environment):
 
         self._daytona = _daytona
 
-    async def _create_sandbox(self) -> AsyncSandbox:
-        """Creates a sandbox in the daytona environment"""
+        logger.info("Daytona environment setup complete, required variables were sourced")
 
-        _image_definition = Image.from_dockerfile(self._DOCKER_IMAGE_PATH)
+    async def _get_snapshot(self, name: str, path: str) -> Snapshot:
+        """Either fetches snapshot if it exists already, or creates a new one from the given path"""
 
-        _sandbox_params = CreateSandboxFromImageParams(
-            image=_image_definition, env_vars=self._environment_keys().model_dump()
+        created: bool = True
+        try:
+            _base_snapshot = await self._daytona.snapshot.get(name=name)
+            created = False
+        except DaytonaNotFoundError:
+            _image_definition = Image.base(name).from_dockerfile(path)
+            _base_snapshot = await self._daytona.snapshot.create(
+                CreateSnapshotParams(image=_image_definition, name=name),
+                timeout=self._DEFAULT_TIMEOUT,
+            )
+
+        logger.info(
+            f"Base snapshot: `{_base_snapshot.name}`. Snapshot was {'created' if created else 'fetched from daytona (was already created)'}."
         )
-        _sandbox = await self._daytona.create(_sandbox_params, timeout=self._DEFAULT_TIMEOUT)
+
+        return _base_snapshot
+
+    async def _create_external_snapshot(self, image_path: str) -> Snapshot:
+        """Creates an external snapshot from the image path, using same params as the base snapshot"""
+
+        # Need to create a new image from the base one we created earlier
+        with open(image_path) as f:
+            commands = [line.strip() for line in f if line.strip()]
+
+        _image_definition = Image.from_dockerfile(self._DOCKER_IMAGE_PATH).dockerfile_commands(commands)
+
+        # Create cached snapshot
+        _snapshot = await self._daytona.snapshot.create(
+            CreateSnapshotParams(image=_image_definition, name=self._EXTERNAL_IMAGE_NAME),
+            timeout=self._DEFAULT_TIMEOUT,
+        )
+
+        return _snapshot
+
+    def _create_params(self, name: str, environment_variables: dict[str, str]) -> CreateSandboxFromSnapshotParams:
+        daytona_required_vars = self._environment_keys()
+
+        combined_environment_variables: dict[str, str] = {**daytona_required_vars.model_dump(), **environment_variables}
+
+        return CreateSandboxFromSnapshotParams(snapshot=name, env_vars=combined_environment_variables)
+
+    async def _create_sandbox(self, image_path: str | None, environment_variables: dict[str, str]) -> AsyncSandbox:
+        # 1. External snapshot is requested, we try to create a sandbox from that if it exists
+        if image_path:
+            try:
+                _snapshot = await self._daytona.snapshot.get(name=self._EXTERNAL_IMAGE_NAME)
+
+                return await self._daytona.create(
+                    params=self._create_params(name=_snapshot.name, environment_variables=environment_variables)
+                )
+            except DaytonaNotFoundError:
+                pass
+
+        # 2. We upsert the base snapshot and then create a sandbox from that if no external snapshot is requested
+        if not image_path:
+            _base_snapshot = await self._get_snapshot(name=self._BASE_IMAGE_NAME, path=self._DOCKER_IMAGE_PATH)
+
+            return await self._daytona.create(
+                params=self._create_params(name=_base_snapshot.name, environment_variables=environment_variables)
+            )
+
+        logger.info(f"Creating external snapshot from image path: `{image_path}`")
+
+        # 3. We create a new external snapshot and then create a sandbox from that
+        _snapshot = await self._create_external_snapshot(image_path)
+
+        logger.info(f"External snapshot created: `{_snapshot.name}`")
 
         # Auto apply the auto delete timeout to the sandbox
-        await _sandbox.set_auto_delete_interval(self._AUTO_DELETE_TIMER)
+        _sandbox: AsyncSandbox = await self._daytona.create(
+            params=self._create_params(name=_snapshot.name, environment_variables=environment_variables)
+        )
+
+        logger.info(f"Sandbox created from external snapshot: name: `{_snapshot.name}`, id: `{_sandbox.id}`")
 
         return _sandbox
 
@@ -102,10 +181,16 @@ class DaytonaEnvironment(Environment):
         """
         session_id = f"{task.id}-{agent.config.model}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
+        logger.info(f"Creating session with id: {session_id}")
+
         # Create session with the id that we can later use to fetch logs from
         await sandbox.process.create_session(session_id)
 
         start_agent_command = agent.build_execute_command(task)
+
+        logger.info(
+            f"Build the execution command: {start_agent_command[:100] + '...' if len(start_agent_command) > 100 else start_agent_command}"
+        )
 
         response = await sandbox.process.execute_session_command(
             session_id,
@@ -130,17 +215,16 @@ class DaytonaEnvironment(Environment):
         Create environment for the task and set it up, including copying over all dependencies needed to run the task
         """
         try:
-            _sandbox = await self._create_sandbox()
+            environment_variables = agent.environment_variables
+            _sandbox = await self._create_sandbox(
+                task.sandbox.image_path if task.sandbox else None, environment_variables
+            )
 
             # assign id to the sandbox so that we can reference it later
             _, _ = await self._start_sandbox_session(_sandbox, task, agent)
 
         except DaytonaError as e:
             raise EnvironmentException(f"Could not create sandbox: {e}")
-
-    @override
-    async def execute(self, command: str) -> None:
-        pass
 
     @override
     @staticmethod

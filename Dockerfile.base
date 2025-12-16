@@ -17,3 +17,6 @@ COPY submodules/ ./submodules/
 COPY pyproject.toml ./pyproject.toml
 COPY README.md ./README.md
 RUN uv sync --group dev
+
+
+CMD ["python", "-c", "import time; time.sleep(10**9)"]

@@ -1,6 +1,7 @@
 from model_library.base import QueryResult
 
 from src.base.contract import AgentContract
+from src.base.environment import Environment
 from src.base.evaluate import Evaluator
 from src.base.types import AgentConfig, Task
 
@@ -25,22 +26,38 @@ class BaseAgent:
 
     _contract: AgentContract
     _evaluator: Evaluator
+    _environment: Environment | None
 
-    def __init__(self, contract: AgentContract, evaluator: Evaluator):
+    def __init__(self, contract: AgentContract, evaluator: Evaluator, environment: Environment | None):
         self._contract = contract
         self._evaluator = evaluator
+        self._environment = environment
 
     @property
     def config(self) -> AgentConfig:
         return self._contract.config
+
+    @property
+    def environment(self) -> Environment | None:
+        return self._environment
+
+    @property
+    def environment_variables(self) -> dict[str, str]:
+        return self._contract.environment_variables
 
     def build_execute_command(self, task: Task) -> str:
         return self._contract.build_execute_command(task)
 
     async def run(self, task: Task) -> QueryResult:
         """Runs the agent by calling the contract's run method"""
+        if self._environment and (not task.sandbox or not task.sandbox.id):
+            raise ValueError("Environment was selected but no sandbox was created")
+
         response = await self._contract.run(task)
 
         await self._evaluator.evaluate(task, response)
+
+        if self._environment and task.sandbox and task.sandbox.id:
+            await self._environment.close(task.sandbox.id)
 
         return response

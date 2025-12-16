@@ -2,24 +2,24 @@ from importlib import import_module
 from inspect import isclass
 from typing import Any, TypeVar
 
-from evaluators.platform_evaluate import PlatformEvaluator
 from src.base.contract import AgentContract
 from src.base.dataset import Dataset
 from src.base.environment import Environment
 from src.base.types import BaseConfig
 from src.base_agent import BaseAgent
-from src.base_benchmark import Benchmark
+from src.benchmarks.base_benchmark import Benchmark
+from src.evaluators import BlankEvaluator
 from src.logger import get_logger
 
 logger = get_logger(__name__)
 
-BENCHMARK_PACKAGE = "benchmarks"
+BENCHMARK_PACKAGE = "src.benchmarks"
 BENCHMARK_MODULE = "benchmark"
-DATASET_PACKAGE = "datasets"
+DATASET_PACKAGE = "src.datasets"
 DATASET_MODULE = "dataset"
 CONTRACT_PACKAGE = "contracts"
 CONTRACT_MODULE = "contract"
-ENVIRONMENT_PACKAGE = "environments"
+ENVIRONMENT_PACKAGE = "src.environments"
 
 T = TypeVar("T")
 
@@ -32,8 +32,9 @@ def _load_component_instance(
 ) -> type[T]:
     """Import the expected module and instantiate the single subclass it defines."""
 
-    module_path = f"{package}.{component_name}"
-    if module_name is not None:
+    module_path = "src.benchmarks.base_benchmark" if component_name == "base" else f"{package}.{component_name}"
+
+    if module_name and component_name != "base":
         module_path += f".{module_name}"
 
     module = import_module(module_path)
@@ -43,8 +44,11 @@ def _load_component_instance(
         if not isclass(attr) or attr.__module__ != module.__name__:
             continue
 
-        if issubclass(attr, base_cls) and attr is not base_cls:
+        if issubclass(attr, base_cls):
             matching_classes.append(attr)
+
+    if base_cls in matching_classes and len(matching_classes) > 1:
+        matching_classes = [cls for cls in matching_classes if cls is not base_cls]
 
     if not matching_classes:
         raise ValueError(f"{package.title()} {component_name} does not define a {base_cls.__name__}")
@@ -98,17 +102,24 @@ def load_environment(environment_name: str) -> type[Environment]:
 
 def parse_environment(environment_config: dict[str, Any]) -> Environment | None:
     """Fetches the environment config if it exists"""
-    environment = environment_config.get("environment", None)
+    environment = environment_config.get("name", None)
     if environment is None:
         return None
 
-    environment_name = environment.pop("name", None)
-    if environment_name is None:
-        raise ValueError("`environment.name` is required to run the benchmark in a separate environment")
+    Environment = load_environment(environment)
 
-    Environment = load_environment(environment_name)
+    return Environment(config=environment_config)
 
-    return Environment(config=environment)
+
+def create_agent(config: BaseConfig) -> BaseAgent:
+    """Loads required components and constructs an agent object"""
+    Contract = load_contract(config.agent.name)
+    environment = parse_environment(config.environment)
+
+    # NOTE: Hardcode the evaluator for now - introduce additional options as we need them
+    evaluator = BlankEvaluator()
+
+    return BaseAgent(Contract(config.agent), evaluator, environment)
 
 
 def create_benchmark(config: BaseConfig) -> Benchmark:
@@ -123,17 +134,11 @@ def create_benchmark(config: BaseConfig) -> Benchmark:
     # Parse the dataset, agent, and contract
     Dataset = load_dataset(dataset_name)
     BenchmarkClass = load_benchmark(config.benchmark)
-    Contract = load_contract(config.agent.name)
-
-    # NOTE: Hardcode the evaluator for now - introduce additional options as we need them
-    evaluator = PlatformEvaluator()
 
     # Instantiate the benchmark
     dataset = Dataset(config.dataset)
-    agent = BaseAgent(Contract(config.agent), evaluator)
-
-    environment = parse_environment(config.environment)
+    agent = create_agent(config)
 
     logger.info("Loaded components...")
 
-    return BenchmarkClass(dataset=dataset, agent=agent, environment=environment)
+    return BenchmarkClass(dataset=dataset, agent=agent, environment=agent.environment)

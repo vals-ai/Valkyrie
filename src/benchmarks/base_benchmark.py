@@ -5,6 +5,9 @@ from src.base.dataset import Dataset
 from src.base.environment import Environment
 from src.base.types import Task, TaskGroup
 from src.base_agent import BaseAgent
+from src.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class Benchmark:
@@ -25,6 +28,7 @@ class Benchmark:
 
     async def _run_task(self, task: Task) -> None:
         """Executes the task either inside of the environment or directly inside of the users machine"""
+
         if self._environment:
             await self._environment.create(task, self._agent)
         else:
@@ -33,7 +37,10 @@ class Benchmark:
     async def _run_task_group(self, task_group: TaskGroup) -> None:
         # Setup the environment if it exists
         if self._environment:
+            logger.info(f"Environment has been detected, setting up {self._environment.__class__.__name__}")
             await self._environment.setup()
+        else:
+            logger.info("No environment has been detected, running directly inside of the users machine")
 
         # Prepare concurrency
         async def _run_task_with_semaphore(task: Task) -> None:
@@ -63,5 +70,8 @@ class Benchmark:
 
         task_groups = await self._create_dataset()
 
-        for task_group in task_groups:
+        logger.info(f"Created {len(task_groups)} task groups")
+
+        for index, task_group in enumerate(task_groups):
+            logger.info(f"Running task group {index + 1} of {len(task_groups)}")
             await self._run_task_group(task_group)

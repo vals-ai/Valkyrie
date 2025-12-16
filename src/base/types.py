@@ -15,8 +15,8 @@ class Sandbox(BaseModel):
     Represents a sandbox.
     """
 
-    id: str
-    extra: dict[str, Any] = {}
+    id: str | None = None
+    image_path: str | None = None
 
 
 class Task(BaseModel):
@@ -65,7 +65,7 @@ class BaseConfig(BaseModel):
         extra = "ignore"
 
     # Benchmark specific parameters
-    benchmark: str
+    benchmark: str = "base"
 
     agent: AgentConfig
 
@@ -78,8 +78,6 @@ class BaseConfig(BaseModel):
     @model_validator(mode="before")
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:
         """NOTE: Human readable validation"""
-        if "benchmark" not in config:
-            raise ValueError("`benchmark` is required")
         if "agent" not in config:
             raise ValueError("`agent` is required")
 

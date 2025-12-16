@@ -1,0 +1,80 @@
+# Foobar Python Program Spec Sheet
+
+## 1. Purpose
+Design a Python module named `foobar` that provides basic operations on numerical and string inputs. The module should be testable, type-annotated, and maintainable.
+
+---
+
+## 2. Functional Requirements
+
+### 2.1 Functions
+
+- **foo(x: int) -> int**
+  - Multiplies the input by a fixed factor.
+  - Should raise an exception if the input is invalid.
+
+- **bar(s: str) -> str**
+  - Transforms a string in a defined way (e.g., reverses or changes case).
+  - Should raise an exception for invalid input (e.g., empty string).
+
+- **foobar(x: int, s: str) -> str**
+  - Combines the outputs of `foo` and `bar` into a formatted string.
+
+### 2.2 CLI (Optional)
+- Allow running the program from the command line with options for both inputs.
+- Output the result of `foobar`.
+
+---
+
+## 3. Non-Functional Requirements
+- Python 3.10+
+- Type annotations for all functions
+- Follow PEP8 style
+- Include docstrings
+- Unit tests using `unittest`
+- Minimum test coverage: 90%
+
+---
+
+## 4. Folder Structure
+
+foobar_project/
+│
+├── foobar.py # Main module
+├── test_foobar.py # Unit tests
+├── pyproject.toml # Optional: project config
+└── README.md
+
+
+---
+
+## 5. Example Behavior
+
+- `foo` should operate on numbers and handle invalid inputs.
+- `bar` should operate on strings and handle empty strings.
+- `foobar` should combine results meaningfully.
+
+---
+
+## 6. Unit Test Requirements
+
+### 6.1 Tests for `foo`
+- Valid positive input
+- Zero input
+- Invalid negative input
+
+### 6.2 Tests for `bar`
+- Valid non-empty string
+- Mixed-case string
+- Empty string input
+
+### 6.3 Tests for `foobar`
+- Valid combination of number and string
+- Input causing `foo` to fail
+- Input causing `bar` to fail
+
+---
+
+## 7. Documentation
+- Docstrings for all functions
+- README describing installation, usage, and tests

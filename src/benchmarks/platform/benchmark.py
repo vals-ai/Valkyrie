@@ -2,7 +2,7 @@ from typing_extensions import override
 from vals import Run, RunParameters, Suite
 
 from src.base.types import TaskGroup
-from src.base_benchmark import Benchmark
+from src.benchmarks.base_benchmark import Benchmark
 from src.logger import get_logger
 from src.utils import setup_environment
 

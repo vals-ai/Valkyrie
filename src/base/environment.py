@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.base.types import EnvironmentKeys, Task
-from src.base_agent import BaseAgent
+
+if TYPE_CHECKING:
+    from src.base_agent import BaseAgent
 
 
 class Environment(ABC):
@@ -25,10 +27,7 @@ class Environment(ABC):
     async def setup(self) -> None: ...
 
     @abstractmethod
-    async def create(self, task: Task, agent: BaseAgent) -> None: ...
-
-    @abstractmethod
-    async def execute(self, command: str) -> None: ...
+    async def create(self, task: Task, agent: "BaseAgent") -> None: ...
 
     @staticmethod
     @abstractmethod

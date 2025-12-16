@@ -39,15 +39,19 @@ class ColorFormatter(logging.Formatter):
         return f"[{padded_level}] {logger_name}: {message}"
 
 
-def get_logger(name: str) -> logging.Logger:
+def get_logger(name: str, stream: bool = False) -> logging.Logger:
     """Get a configured logger instance with pretty colors."""
-    logger = logging.getLogger(name)
+    logger = logging.getLogger(name if not stream else f"{name}.stream")
     logger.propagate = False
 
     if not logger.hasHandlers():
         logger.setLevel(logging.DEBUG)
 
         console_handler = logging.StreamHandler(sys.stdout)
+
+        if stream:
+            console_handler.terminator = ""
+
         console_handler.setLevel(logging.DEBUG)
 
         # Attach formatter
