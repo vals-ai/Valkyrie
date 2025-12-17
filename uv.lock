@@ -3420,11 +3420,12 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "ariadne-codegen" },
+    { name = "ariadne-codegen", specifier = ">=0.17.0" },
     { name = "basedpyright" },
     { name = "ipykernel" },
     { name = "openai" },
     { name = "pytest" },
+    { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "ruff" },
 ]
 parsing = [
