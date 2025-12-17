@@ -1,5 +1,6 @@
+from typing_extensions import override
 from src.base.contract import AgentContract
-from typing import Any, cast, override
+from typing import Any, cast
 from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
 from src.base.types import AgentConfig, Task
@@ -44,9 +45,7 @@ class IOIAgentContract(AgentContract):
 
         return IOIAgent(llm=llm, tools=tools, max_turns=self._max_turns)
 
-    def _create_query_result(
-        self, response: str, metadata: dict[str, Any]
-    ) -> QueryResult:
+    def _create_query_result(self, response: str, metadata: dict[str, Any]) -> QueryResult:
         """Provided a response from the edgar agent, creates a query result object"""
         return QueryResult(
             output_text=response,

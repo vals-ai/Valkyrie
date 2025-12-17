@@ -13,7 +13,7 @@ tar -xzf archive.tar.gz
 import io
 import tarfile
 from pathlib import Path, PurePosixPath
-from typing import override
+from typing_extensions import override
 
 import PyPDF2
 from model_library.base import TextInput
@@ -120,7 +120,7 @@ class IOIDataset(Dataset):
         formatted_system_prompt = self._SYSTEM_PROMPT.format(question=question_text)
         input = [TextInput(text=formatted_system_prompt)]
 
-        task = Task(id=test.id or "", input=input)
+        task = Task(test_id=test.id or "", input=input)
 
         return TaskGroup(tasks=[task])
 
