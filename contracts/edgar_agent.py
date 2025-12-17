@@ -105,4 +105,7 @@ class EdgarAgentContract(AgentContract):
 
         response, metadata = await agent.run(question=question)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
+        if trace:
+            trace.shutdown()
+
         return self._create_query_result(response, metadata)  # pyright: ignore[reportUnknownArgumentType]
