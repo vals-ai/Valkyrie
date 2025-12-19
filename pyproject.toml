@@ -14,6 +14,10 @@ dependencies = [
   "model-library>=0.1.3",
 ]
 
+[project.scripts]
+agentic-harness = "src.entry.__main__:cli"
+
+
 [dependency-groups]
 dev = [
   "pytest",
@@ -32,7 +36,8 @@ ioi = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-exclude = ["submodules", "src/platform"]
+exclude = ["submodules/ioi_agent", "submodules/edgar_agent", "src/platform"]
+include = ["submodules/claude_code/agent.py"]
 
 [tool.ruff.format]
 quote-style = "double"

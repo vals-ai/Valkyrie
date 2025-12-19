@@ -4,6 +4,9 @@ from src.base.contract import AgentContract
 from src.base.environment import Environment
 from src.base.evaluate import Evaluator
 from src.base.types import AgentConfig, Task
+from src.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class BaseAgent:

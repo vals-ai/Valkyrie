@@ -1,7 +1,11 @@
+USER root
+
 # Curl dependency to install claude code
-RUN apt update && apt install -y curl
+RUN apt update && apt install -y curl && apt install -y vim
+
+USER agent-user
 
 # Install claude code inside of the image
 RUN curl -fsSL https://claude.ai/install.sh | bash
 
-ENV PATH=/root/.local/bin:$PATH
+ENV PATH=/home/agent-user/.local/bin:$PATH

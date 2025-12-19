@@ -10,8 +10,6 @@ if TYPE_CHECKING:
 class Environment(ABC):
     """
     Base environment class that all environments must implement.
-
-    TODO: Add some examples inside here for usage
     """
 
     _config: dict[str, Any]

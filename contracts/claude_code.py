@@ -29,8 +29,14 @@ class ClaudeCodeAgentContract(AgentContract):
             }
         ```
         """
+
+        usage: dict[str, Any] = response.get("usage", {})
         metadata = QueryResultMetadata(
             duration_seconds=response.get("duration_ms", None),
+            in_tokens=usage.get("input_tokens", 0),
+            out_tokens=usage.get("output_tokens", 0),
+            cache_read_tokens=usage.get("cache_read_input_tokens", 0),
+            cache_write_tokens=usage.get("cache_creation_input_tokens", 0),
         )
 
         return QueryResult(

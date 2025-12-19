@@ -48,9 +48,7 @@ class AgentContract(ABC):
             base_command += f" --sandbox-id {task.sandbox.id}"
         ```
         """
-        base_command: str = (
-            f"uv python -m src.entry --config {self.config.model_dump_json()} --task {task.model_dump_json()}"
-        )
+        base_command: str = f"/app/.venv/bin/agentic-harness --config '{self.config.model_dump_json()}' --task '{task.model_dump_json()}'"
 
         return base_command
 

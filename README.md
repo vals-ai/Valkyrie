@@ -3,7 +3,7 @@
 Define your agent in `agents/`, add benchmarks as git submodules in `benchmarks/`, and run evaluations.
 
 ```bash
-python runner.py --config config/ioi.yaml
+python runner.py --config config/test.yaml
 ```
 
 **Setup:** `make install`

@@ -5,7 +5,7 @@ from typing import Any, TypeVar
 from src.base.contract import AgentContract
 from src.base.dataset import Dataset
 from src.base.environment import Environment
-from src.base.types import BaseConfig
+from src.base.types import AgentConfig, BaseConfig
 from src.base_agent import BaseAgent
 from src.benchmarks.base_benchmark import Benchmark
 from src.evaluators import BlankEvaluator
@@ -111,15 +111,15 @@ def parse_environment(environment_config: dict[str, Any]) -> Environment | None:
     return Environment(config=environment_config)
 
 
-def create_agent(config: BaseConfig) -> BaseAgent:
+def create_agent(config: AgentConfig) -> BaseAgent:
     """Loads required components and constructs an agent object"""
-    Contract = load_contract(config.agent.name)
+    Contract = load_contract(config.name)
     environment = parse_environment(config.environment)
 
     # NOTE: Hardcode the evaluator for now - introduce additional options as we need them
     evaluator = BlankEvaluator()
 
-    return BaseAgent(Contract(config.agent), evaluator, environment)
+    return BaseAgent(Contract(config), evaluator, environment)
 
 
 def create_benchmark(config: BaseConfig) -> Benchmark:
@@ -137,7 +137,7 @@ def create_benchmark(config: BaseConfig) -> Benchmark:
 
     # Instantiate the benchmark
     dataset = Dataset(config.dataset)
-    agent = create_agent(config)
+    agent = create_agent(config.agent)
 
     logger.info("Loaded components...")
 

@@ -53,6 +53,11 @@ class AgentConfig(BaseModel):
     max_tokens: int | None = None
     top_p: float | None = None
     reasoning_effort: str | None = None
+
+    # Environment Parameters
+    environment: dict[str, Any] = {}
+
+    # Extra parameters we can pass into the agent
     extra: dict[str, Any] = {}
 
 
@@ -71,9 +76,6 @@ class BaseConfig(BaseModel):
 
     # Dataset Parameters
     dataset: dict[str, Any] = {}
-
-    # Environment Parameters
-    environment: dict[str, Any] = {}
 
     @model_validator(mode="before")
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:

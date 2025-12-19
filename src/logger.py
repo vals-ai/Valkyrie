@@ -3,11 +3,21 @@ Basic logger with some formatted colors
 """
 
 import logging
+import os
 import sys
+from datetime import datetime
+from pathlib import Path
 
-# ANSI Color Codes
+# Need to disable logging to a file when executing an agent
+_DISABLE_FILE_LOGGING = os.environ.get("DISABLE_FILE_LOGGING", "0") == "1"
+
+_logs_path: Path | None = None
+if not _DISABLE_FILE_LOGGING:
+    _logs_path = Path("logs") / datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(_logs_path.parent, exist_ok=True)
+
+
 RESET = "\033[0m"
-
 COLORS = {
     "DEBUG": "\033[36m",  # Cyan
     "INFO": "\033[32m",  # Green
@@ -52,10 +62,15 @@ def get_logger(name: str, stream: bool = False) -> logging.Logger:
         if stream:
             console_handler.terminator = ""
 
-        console_handler.setLevel(logging.DEBUG)
+        console_handler.setLevel(logging.INFO)
 
         # Attach formatter
         console_handler.setFormatter(ColorFormatter("%(message)s"))
+
+        if not _DISABLE_FILE_LOGGING:
+            file_handler = logging.FileHandler(f"{_logs_path}.log")
+            file_handler.setLevel(logging.DEBUG)
+            logger.addHandler(file_handler)
 
         logger.addHandler(console_handler)
 
