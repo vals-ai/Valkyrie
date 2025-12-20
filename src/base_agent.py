@@ -49,8 +49,24 @@ class AgentRunner:
         return self._contract.environment_variables
 
     def build_execute_command(self, task: Task) -> str:
-        """Returns the build command that is executed inside of the sandbox to start the agent"""
-        return self._contract.build_execute_command(task)
+        """
+        Constructs the command that we use to execute the agent inside of a sandbox.
+
+        ```python
+        # Command we are using to execute the agent inside of the sandbox,
+        # task information is serialized into a string we pass through the --task argument
+        base_command: str = f"/app/.venv/bin/agentic-harness --config '{self.config.model_dump_json()}' --task '{task.model_dump_json()}'"
+
+        return base_command
+        ```
+        """
+
+        if not self._environment:
+            raise ValueError("Environment must exist to be passed into the build command")
+
+        base_command: str = f"/app/.venv/bin/agentic-harness --config '{self.config.model_dump_json()}' --task '{task.model_dump_json()}' --environment '{self._environment.config.model_dump_json()}'"
+
+        return base_command
 
     async def run(self, task: Task) -> QueryResult:
         """Runs the agent by calling the contract's run method"""

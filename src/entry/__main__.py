@@ -12,7 +12,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from src.base.types import AgentConfig, Task
+from src.base.types import AgentConfig, EnvironmentConfig, Task
 from src.logger import get_logger
 from src.registry import create_agent
 
@@ -25,11 +25,13 @@ def cli():
     parser = argparse.ArgumentParser(description="Run an agent on a benchmark")
     parser.add_argument("--config", type=str, required=True, help="Path to the config file")
     parser.add_argument("--task", type=str, required=True, help="Path to the task file")
+    parser.add_argument("--environment", type=str, required=False, help="Environment to use for the agent")
     args = parser.parse_args()
 
     agent_config = validate_object(args.config, AgentConfig)
+    environment_config = validate_object(args.environment, EnvironmentConfig)
     task = validate_object(args.task, Task)
-    agent = create_agent(agent_config)
+    agent = create_agent(agent_config, environment_config)
 
     asyncio.run(agent.run(task))
 

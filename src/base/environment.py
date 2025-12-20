@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from src.base.types import EnvironmentKeys, Task
+from src.base.types import EnvironmentConfig, EnvironmentKeys, Task
 
 if TYPE_CHECKING:
     from src.base_agent import AgentRunner
@@ -14,12 +14,16 @@ class Environment(ABC):
 
     _submodule_name: str
     _contract_name: str
-    _config: dict[str, Any]
+    _config: EnvironmentConfig
 
-    def __init__(self, config: dict[str, Any], submodule_name: str, contract_name: str):
+    def __init__(self, config: EnvironmentConfig, submodule_name: str, contract_name: str):
         self._submodule_name = submodule_name
         self._contract_name = contract_name
         self._config = config
+
+    @property
+    def config(self) -> EnvironmentConfig:
+        return self._config
 
     @staticmethod
     @abstractmethod

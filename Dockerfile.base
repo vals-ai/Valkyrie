@@ -40,4 +40,4 @@ WORKDIR /app/workspace
 # Disable logging to file
 ENV DISABLE_FILE_LOGGING=1
 
-CMD ["python", "-c", "import time; time.sleep(10**9)"]
+CMD ["sleep", "infinity"]

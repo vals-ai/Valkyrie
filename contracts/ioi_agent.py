@@ -29,7 +29,7 @@ class IOIAgentContract(AgentContract):
         if self._config.model is None:
             raise ValueError("`model` is required")
 
-        if max_turns := self._config.extra.get("max_turns", None):
+        if max_turns := self._config.kwargs.get("max_turns", None):
             self._max_turns = max_turns
 
         return self._config

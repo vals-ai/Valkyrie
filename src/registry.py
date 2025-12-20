@@ -2,12 +2,12 @@ import ast
 import inspect
 from importlib import import_module
 from inspect import isclass
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from src.base.contract import AgentContract
 from src.base.dataset import Dataset
 from src.base.environment import Environment
-from src.base.types import AgentConfig, BaseConfig
+from src.base.types import AgentConfig, BaseConfig, EnvironmentConfig
 from src.base_agent import AgentRunner
 from src.benchmarks.base_benchmark import BenchmarkRunner
 from src.evaluators import BlankEvaluator
@@ -102,12 +102,12 @@ def load_environment(environment_name: str) -> type[Environment]:
 
 
 def parse_environment(
-    environment_config: dict[str, Any], contract_name: str, submodule_name: str
+    environment_config: EnvironmentConfig, contract_name: str, submodule_name: str
 ) -> Environment | None:
     """Fetches the environment config if it exists"""
-    environment = environment_config.get("name", None)
-    if environment is None:
-        return None
+    environment = environment_config.name
+    if not environment:
+        raise ValueError("`environment.name` is required")
 
     Environment = load_environment(environment)
 
@@ -144,17 +144,19 @@ def find_submodule_from_contract(contract_name: str) -> str:
     return list(found)[0]
 
 
-def create_agent(config: AgentConfig) -> AgentRunner:
+def create_agent(agent_config: AgentConfig, environment_config: EnvironmentConfig | None) -> AgentRunner:
     """Loads required components and constructs an agent object"""
-    Contract = load_contract(config.name)
-    submodule_name = find_submodule_from_contract(config.name)
+    Contract = load_contract(agent_config.name)
+    submodule_name = find_submodule_from_contract(agent_config.name)
 
-    environment = parse_environment(config.environment, config.name, submodule_name)
+    environment = None
+    if environment_config:
+        environment = parse_environment(environment_config, agent_config.name, submodule_name)
 
     # NOTE: Hardcode the evaluator for now - introduce additional options as we need them
     evaluator = BlankEvaluator()
 
-    return AgentRunner(Contract(config), evaluator, environment)
+    return AgentRunner(Contract(agent_config), evaluator, environment)
 
 
 def create_benchmark(config: BaseConfig) -> BenchmarkRunner:
@@ -162,8 +164,8 @@ def create_benchmark(config: BaseConfig) -> BenchmarkRunner:
 
     logger.info(f"Creating benchmark with config: `{str(config)}`")
 
-    dataset_name = config.dataset.get("name", None)
-    if dataset_name is None:
+    dataset_name = config.dataset.name
+    if not dataset_name:
         raise ValueError("`dataset.name` is required")
 
     # Parse the dataset, agent, and contract
@@ -172,7 +174,7 @@ def create_benchmark(config: BaseConfig) -> BenchmarkRunner:
 
     # Instantiate the benchmark
     dataset = Dataset(config.dataset)
-    agent = create_agent(config.agent)
+    agent = create_agent(config.agent, config.environment)
 
     logger.info("Loaded components...")
 

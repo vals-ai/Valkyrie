@@ -5,7 +5,7 @@ from model_library.base import TextInput
 from typing_extensions import override
 
 from src.base.dataset import Dataset
-from src.base.types import Sandbox, Task, TaskGroup
+from src.base.types import Image, Sandbox, Task, TaskGroup
 
 
 class TestDataset(Dataset):
@@ -29,7 +29,7 @@ class TestDataset(Dataset):
         task = Task(
             id=str(uuid.uuid4()),
             input=[TextInput(text=specsheet)],
-            sandbox=Sandbox(image_path=str(self.dockerfile_path)),
+            sandbox=Sandbox(image=Image(dockerfile=self.dockerfile_path)),
         )
         task_groups.append(TaskGroup(tasks=[task]))
 

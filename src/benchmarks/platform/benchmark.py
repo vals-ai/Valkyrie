@@ -32,13 +32,13 @@ class PlatformBenchmarkRunner(BenchmarkRunner):
 
         logger.info(f"Creating run with parameters: `{str(parameters)}`")
 
-        suite_id = self._dataset.config.get("suite_id")
+        suite_id = self._dataset.kwargs.get("suite_id")
         if suite_id is None:
             raise ValueError("`dataset.suite_id` is required")
 
-        project_id = self._dataset.config.get("project_id") or "default-project"
+        project_id = self._dataset.kwargs.get("project_id") or "default-project"
 
-        name = self._dataset.config.get("name")
+        name = self._dataset.kwargs.get("name")
         if name is None:
             raise ValueError("`dataset.name` is required")
 
@@ -53,7 +53,7 @@ class PlatformBenchmarkRunner(BenchmarkRunner):
         """
         Override to create run and add qa_set_id to each task
         """
-        logger.info(f"Creating run for suite: `{self._dataset.config.get('suite_id')}`")
+        logger.info(f"Creating run for suite: `{self._dataset.kwargs.get('suite_id')}`")
 
         self._run = await self._create_run()
 

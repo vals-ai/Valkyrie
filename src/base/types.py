@@ -1,7 +1,11 @@
+from pathlib import Path
 from typing import Any
 
 from model_library.base import InputItem
 from pydantic import BaseModel, model_validator
+from wonderwords import RandomWord
+
+rw = RandomWord()
 
 
 class EnvironmentKeys(BaseModel):
@@ -10,13 +14,34 @@ class EnvironmentKeys(BaseModel):
     ...
 
 
+class Image(BaseModel):
+    dockerfile: Path | None = None
+    name: str | None = None
+    tag: str = "latest"
+
+    @property
+    def image_name(self) -> str:
+        if self.name is None:
+            adjective = rw.word(include_categories=["adjectives"])
+            noun = rw.word(include_categories=["nouns"])
+
+            name = f"{adjective.capitalize()}-{noun.capitalize()}"
+
+            # In case we need to access it again
+            self.name = name
+
+            return name
+
+        return self.image_name
+
+
 class Sandbox(BaseModel):
     """
     Represents a sandbox.
     """
 
     id: str | None = None
-    image_path: str | None = None
+    image: Image
 
 
 class Task(BaseModel):
@@ -40,7 +65,14 @@ class TaskGroup(BaseModel):
     tasks: list[Task]
 
 
-DatasetConfig = dict[str, Any]
+class DatasetConfig(BaseModel):
+    name: str
+    kwargs: dict[str, Any] = {}
+
+
+class EnvironmentConfig(BaseModel):
+    name: str
+    kwargs: dict[str, Any] = {}
 
 
 class AgentConfig(BaseModel):
@@ -54,11 +86,8 @@ class AgentConfig(BaseModel):
     top_p: float | None = None
     reasoning_effort: str | None = None
 
-    # Environment Parameters
-    environment: dict[str, Any] = {}
-
     # Extra parameters we can pass into the agent
-    extra: dict[str, Any] = {}
+    kwargs: dict[str, Any] = {}
 
 
 class BaseConfig(BaseModel):
@@ -69,13 +98,13 @@ class BaseConfig(BaseModel):
     class ConfigDict:
         extra = "ignore"
 
-    # Benchmark specific parameters
     benchmark: str = "base"
 
     agent: AgentConfig
 
-    # Dataset Parameters
-    dataset: dict[str, Any] = {}
+    environment: EnvironmentConfig
+
+    dataset: DatasetConfig
 
     @model_validator(mode="before")
     def validate_config(cls, config: dict[str, Any]) -> dict[str, Any]:

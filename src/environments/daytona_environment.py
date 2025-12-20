@@ -1,6 +1,7 @@
 import asyncio
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from daytona import (
@@ -20,7 +21,8 @@ from pydantic import BaseModel, ValidationError, model_serializer
 from typing_extensions import override
 
 from src.base.environment import Environment
-from src.base.types import EnvironmentKeys, Sandbox, Task
+from src.base.types import EnvironmentConfig, EnvironmentKeys, Task
+from src.base.types import Image as ImageType
 from src.base_agent import AgentRunner
 from src.exceptions import EnvironmentException
 from src.logger import get_logger
@@ -62,22 +64,23 @@ class DaytonaEnvironment(Environment):
     _daytona: AsyncDaytona
     _DEFAULT_TIMEOUT: int = 300  # 5 minutes
     _AUTO_DELETE_TIMER: int = 1  # auto deletes the sandbox after 1 hour
+    _STOP_TIMEOUT: int = 10  # wait n seconds before stopping the sandbox after the task has finished running
     _resources: DaytonaResources
 
     # TODO: Source from config file
     _DOCKER_IMAGE_PATH: str = "Dockerfile.base"
     _BASE_IMAGE_NAME: str = "agent.base.image"
-    _EXTERNAL_IMAGE_NAME: str = "agent.external.image"
 
     @override
-    def __init__(self, config: dict[str, Any], submodule_name: str, contract_name: str):
+    def __init__(self, config: EnvironmentConfig, submodule_name: str, contract_name: str):
         super().__init__(config, submodule_name, contract_name)
 
         try:
-            self._resources = DaytonaResources.model_validate(config.pop("resources", {}), extra="forbid")
+            self._resources = DaytonaResources.model_validate(config.kwargs.pop("resources", {}), extra="forbid")
 
             if self._resources:
                 logger.info(f"Resources discovered: {str(self._resources)}")
+
         except ValidationError as e:
             raise EnvironmentException(f"Unexpected resources were found in the config: {e.errors(include_url=False)}")
 
@@ -177,7 +180,7 @@ class DaytonaEnvironment(Environment):
 
         return _base_snapshot
 
-    async def _create_external_snapshot(self, image_path: str) -> Snapshot:
+    async def _create_external_snapshot(self, image_path: Path, image_name: str) -> Snapshot:
         """Creates an external snapshot from the image path, using same params as the base snapshot"""
 
         # Need to create a new image from the base one we created earlier
@@ -193,7 +196,7 @@ class DaytonaEnvironment(Environment):
         _snapshot = await self._daytona.snapshot.create(
             CreateSnapshotParams(
                 image=_image_definition,
-                name=self._EXTERNAL_IMAGE_NAME,
+                name=image_name,
                 resources=Resources(**self._resources.model_dump()),
             ),
             timeout=self._DEFAULT_TIMEOUT,
@@ -213,11 +216,11 @@ class DaytonaEnvironment(Environment):
             auto_delete_interval=self._AUTO_DELETE_TIMER,
         )
 
-    async def _create_sandbox(self, image_path: str | None, environment_variables: dict[str, str]) -> AsyncSandbox:
+    async def _create_sandbox(self, image: ImageType, environment_variables: dict[str, str]) -> AsyncSandbox:
         # 1. External snapshot is requested, we try to create a sandbox from that if it exists
-        if image_path:
+        if image.dockerfile:
             try:
-                _snapshot = await self._daytona.snapshot.get(name=self._EXTERNAL_IMAGE_NAME)
+                _snapshot = await self._daytona.snapshot.get(name=image.image_name)
 
                 return await self._daytona.create(
                     params=self._create_params(name=_snapshot.name, environment_variables=environment_variables)
@@ -226,16 +229,16 @@ class DaytonaEnvironment(Environment):
                 pass
 
         # 2. We upsert the base snapshot and then create a sandbox from that if no external snapshot is requested
-        if not image_path:
+        if not image.dockerfile:
             _base_snapshot = await self._get_snapshot(name=self._BASE_IMAGE_NAME, path=self._DOCKER_IMAGE_PATH)
 
             return await self._daytona.create(
                 params=self._create_params(name=_base_snapshot.name, environment_variables=environment_variables)
             )
 
-        async with spinner(f"Creating external snapshot from image path: `{image_path}`", stream_logger):
+        async with spinner(f"Creating external snapshot from image path: `{image.dockerfile}`", stream_logger):
             # 3. We create a new external snapshot and then create a sandbox from that
-            _snapshot = await self._create_external_snapshot(image_path)
+            _snapshot = await self._create_external_snapshot(image.dockerfile, image.image_name)
 
         logger.info(f"External snapshot created: `{_snapshot.name}`")
 
@@ -339,18 +342,23 @@ class DaytonaEnvironment(Environment):
         Create environment for the task and set it up, including copying over all dependencies needed to run the task
         """
         if not task.sandbox:
-            task.sandbox = Sandbox()
+            raise EnvironmentException(
+                "Cannot create environment without sandbox information existing within task.sandbox"
+            )
 
         try:
             environment_variables = agent.environment_variables
-            _sandbox = await self._create_sandbox(task.sandbox.image_path, environment_variables)
+            _sandbox = await self._create_sandbox(task.sandbox.image, environment_variables)
 
             # assign id to the sandbox so that we can reference it later
             cmd_id, session_id = await self._start_sandbox_session(_sandbox, task, agent)
 
             log_task = await self._get_session_logger(_sandbox, session_id, cmd_id)
 
-            await log_task
+            try:
+                await log_task
+            except DaytonaError as e:
+                logger.warning(f"Exited on error but completed the task successfully, error: {e}")
 
         except DaytonaError as e:
             raise EnvironmentException(f"Could not create sandbox: {e}")
@@ -367,6 +375,10 @@ class DaytonaEnvironment(Environment):
 
         try:
             _daytona_sandbox = await _daytona.get(sandbox_id)
+
+            logger.info(f"Stopping sandbox in {DaytonaEnvironment._AUTO_DELETE_TIMER} minutes")
+
+            await asyncio.sleep(DaytonaEnvironment._STOP_TIMEOUT)
 
             await _daytona_sandbox.stop()
 

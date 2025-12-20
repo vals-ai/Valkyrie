@@ -38,22 +38,6 @@ class AgentContract(ABC):
         """
         return {}
 
-    def build_execute_command(self, task: Task) -> str:
-        """
-        Constructs the command that we use to execute the agent inside of a sandbox.
-
-        ```python
-        # Command we are using to execute the agent inside of the sandbox,
-        # task information is serialized into a string we pass through the --task argument
-        base_command: str = f"/app/.venv/bin/agentic-harness --config '{self.config.model_dump_json()}' --task '{task.model_dump_json()}'"
-
-        return base_command
-        ```
-        """
-        base_command: str = f"/app/.venv/bin/agentic-harness --config '{self.config.model_dump_json()}' --task '{task.model_dump_json()}'"
-
-        return base_command
-
     @abstractmethod
     async def run(self, task: Task) -> QueryResult:
         """Execute the agent for the provided task and return a model response."""

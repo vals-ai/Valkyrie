@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from typing import Any
 
 from src.base.types import DatasetConfig, TaskGroup
 
@@ -14,6 +15,10 @@ class Dataset(ABC):
     @property
     def config(self) -> DatasetConfig:
         return self._config
+
+    @property
+    def kwargs(self) -> dict[str, Any]:
+        return self.config.kwargs
 
     @abstractmethod
     async def create(self) -> list[TaskGroup]:
