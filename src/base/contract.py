@@ -40,12 +40,14 @@ class AgentContract(ABC):
 
     def build_execute_command(self, task: Task) -> str:
         """
-        Constructs the command that we use to execute the agent inside of a sandbox. Will only append sandbox related arguments if the task has a sandbox.
+        Constructs the command that we use to execute the agent inside of a sandbox.
 
         ```python
-        # Example of adding additional arguments to the command
-        if task.sandbox is not None:
-            base_command += f" --sandbox-id {task.sandbox.id}"
+        # Command we are using to execute the agent inside of the sandbox,
+        # task information is serialized into a string we pass through the --task argument
+        base_command: str = f"/app/.venv/bin/agentic-harness --config '{self.config.model_dump_json()}' --task '{task.model_dump_json()}'"
+
+        return base_command
         ```
         """
         base_command: str = f"/app/.venv/bin/agentic-harness --config '{self.config.model_dump_json()}' --task '{task.model_dump_json()}'"
