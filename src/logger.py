@@ -49,6 +49,14 @@ class ColorFormatter(logging.Formatter):
         return f"[{padded_level}] {logger_name}: {message}"
 
 
+class DisableLogging(logging.Filter):
+    def __init__(self):
+        self.enabled = False
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not self.enabled
+
+
 def get_logger(name: str, stream: bool = False) -> logging.Logger:
     """Get a configured logger instance with pretty colors."""
     logger = logging.getLogger(name if not stream else f"{name}.stream")
@@ -70,6 +78,10 @@ def get_logger(name: str, stream: bool = False) -> logging.Logger:
         if not _DISABLE_FILE_LOGGING:
             file_handler = logging.FileHandler(f"{_logs_path}.log")
             file_handler.setLevel(logging.DEBUG)
+
+            file_filter = DisableLogging()
+            file_handler.addFilter(file_filter)
+
             logger.addHandler(file_handler)
 
         logger.addHandler(console_handler)

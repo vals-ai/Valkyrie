@@ -24,6 +24,7 @@ from src.base.types import EnvironmentKeys, Sandbox, Task
 from src.base_agent import AgentRunner
 from src.exceptions import EnvironmentException
 from src.logger import get_logger
+from src.utils import spinner
 
 logger = get_logger(__name__)
 
@@ -159,16 +160,16 @@ class DaytonaEnvironment(Environment):
             _base_snapshot = await self._daytona.snapshot.get(name=name)
             created = False
         except DaytonaNotFoundError:
-            # TODO: Spinner context manager
-            logger.info(f"Base snapshot: `{name}` not found, creating new one from dockerfile: `{path}`")
-
-            _image_definition = Image.base(name).dockerfile_commands(self.base_image_commands)
-            _base_snapshot = await self._daytona.snapshot.create(
-                CreateSnapshotParams(
-                    image=_image_definition, name=name, resources=Resources(**self._resources.model_dump())
-                ),
-                timeout=self._DEFAULT_TIMEOUT,
-            )
+            async with spinner(
+                f"Base snapshot: `{name}` not found, creating new one from dockerfile: `{path}`", stream_logger
+            ):
+                _image_definition = Image.base(name).dockerfile_commands(self.base_image_commands)
+                _base_snapshot = await self._daytona.snapshot.create(
+                    CreateSnapshotParams(
+                        image=_image_definition, name=name, resources=Resources(**self._resources.model_dump())
+                    ),
+                    timeout=self._DEFAULT_TIMEOUT,
+                )
 
         logger.info(
             f"Base snapshot: `{_base_snapshot.name}`. Snapshot was {'created' if created else 'fetched from daytona (was already created)'}."
@@ -232,11 +233,9 @@ class DaytonaEnvironment(Environment):
                 params=self._create_params(name=_base_snapshot.name, environment_variables=environment_variables)
             )
 
-        # TODO: Spinner context manager
-        # 3. We create a new external snapshot and then create a sandbox from that
-        logger.info(f"Creating external snapshot from image path: `{image_path}`")
-
-        _snapshot = await self._create_external_snapshot(image_path)
+        async with spinner(f"Creating external snapshot from image path: `{image_path}`", stream_logger):
+            # 3. We create a new external snapshot and then create a sandbox from that
+            _snapshot = await self._create_external_snapshot(image_path)
 
         logger.info(f"External snapshot created: `{_snapshot.name}`")
 
@@ -317,11 +316,11 @@ class DaytonaEnvironment(Environment):
 
         def log_stdout(stdout: str) -> None:
             if stdout.strip():
-                logger.info(f"[STDOUT]: {stdout}")
+                logger.info(f"[STDOUT]: {stdout.rstrip()}")
 
         def log_stderr(stderr: str) -> None:
             if stderr.strip():
-                logger.error(f"[STDERR]: {stderr}")
+                logger.error(f"[STDERR]: {stderr.rstrip()}")
 
         log_task = asyncio.create_task(
             sandbox.process.get_session_command_logs_async(
@@ -369,7 +368,7 @@ class DaytonaEnvironment(Environment):
         try:
             _daytona_sandbox = await _daytona.get(sandbox_id)
 
-            # await _daytona_sandbox.stop()
+            await _daytona_sandbox.stop()
 
             logger.warning(
                 f"Sandbox {sandbox_id} stopped. deleting in {DaytonaEnvironment._AUTO_DELETE_TIMER} minutes."
