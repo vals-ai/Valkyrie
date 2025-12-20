@@ -1,6 +1,5 @@
 # env files
 .env
-
 .venv/
 
 # cache
@@ -10,5 +9,7 @@ __pycache__/
 
 # Config files
 config/**.yaml
-
 logs/
+
+# Experimental directories
+scripts/

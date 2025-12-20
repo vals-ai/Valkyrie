@@ -21,7 +21,7 @@ from typing_extensions import override
 
 from src.base.environment import Environment
 from src.base.types import EnvironmentKeys, Sandbox, Task
-from src.base_agent import BaseAgent
+from src.base_agent import AgentRunner
 from src.exceptions import EnvironmentException
 from src.logger import get_logger
 
@@ -69,8 +69,8 @@ class DaytonaEnvironment(Environment):
     _EXTERNAL_IMAGE_NAME: str = "agent.external.image"
 
     @override
-    def __init__(self, config: dict[str, Any]):
-        super().__init__(config)
+    def __init__(self, config: dict[str, Any], submodule_name: str, contract_name: str):
+        super().__init__(config, submodule_name, contract_name)
 
         try:
             self._resources = DaytonaResources.model_validate(config.pop("resources", {}), extra="forbid")
@@ -82,7 +82,7 @@ class DaytonaEnvironment(Environment):
 
     @staticmethod
     @override
-    def _environment_keys() -> DaytonaEnvironmentKeys:
+    def environment_keys() -> DaytonaEnvironmentKeys:
         """Ensures that all of the environment variables requested are set before we start setting up the environment."""
         _env_variables: list[str] = ["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"]
         _collected_variables: dict[str, str] = {}
@@ -103,9 +103,31 @@ class DaytonaEnvironment(Environment):
 
         return DaytonaEnvironmentKeys(**_collected_variables)
 
+    @property
+    def base_image_commands(self) -> list[str]:
+        """
+        Breaks Dockerfile.base into commands we can append to external images
+
+        NOTE: String replaces the build args so that we can use them in the snapshot
+        """
+        with open(self._DOCKER_IMAGE_PATH) as base_f:
+            base_f_content = (
+                base_f.read()
+                .replace("${SUBMODULE_NAME}", self._submodule_name)
+                .replace("${CONTRACT_NAME}", self._contract_name)
+            )
+
+            base_commands = [
+                line.strip()
+                for line in base_f_content.split("\n")
+                if line.strip() and not line.strip().startswith("FROM")
+            ]
+
+        return base_commands
+
     @staticmethod
     def create_config() -> AsyncDaytona:
-        _environment_keys = DaytonaEnvironment._environment_keys()
+        _environment_keys = DaytonaEnvironment.environment_keys()
 
         try:
             _daytona = AsyncDaytona(
@@ -140,7 +162,7 @@ class DaytonaEnvironment(Environment):
             # TODO: Spinner context manager
             logger.info(f"Base snapshot: `{name}` not found, creating new one from dockerfile: `{path}`")
 
-            _image_definition = Image.base(name).from_dockerfile(path)
+            _image_definition = Image.base(name).dockerfile_commands(self.base_image_commands)
             _base_snapshot = await self._daytona.snapshot.create(
                 CreateSnapshotParams(
                     image=_image_definition, name=name, resources=Resources(**self._resources.model_dump())
@@ -159,12 +181,12 @@ class DaytonaEnvironment(Environment):
 
         # Need to create a new image from the base one we created earlier
         with open(image_path) as f:
-            commands = [line.strip() for line in f if line.strip()]
+            commands: list[str] = self.base_image_commands + [line.strip() for line in f if line.strip()]
 
             # NOTE: After we install dependencies we change to the default user to avoid giving root access
             commands.append("USER agent-user")
 
-        _image_definition = Image.from_dockerfile(self._DOCKER_IMAGE_PATH).dockerfile_commands(commands)
+        _image_definition = Image.base("python:3.12-slim").dockerfile_commands(commands)
 
         # Create cached snapshot
         _snapshot = await self._daytona.snapshot.create(
@@ -179,7 +201,7 @@ class DaytonaEnvironment(Environment):
         return _snapshot
 
     def _create_params(self, name: str, environment_variables: dict[str, str]) -> CreateSandboxFromSnapshotParams:
-        daytona_required_vars = self._environment_keys()
+        daytona_required_vars = self.environment_keys()
 
         combined_environment_variables: dict[str, str] = {**daytona_required_vars.model_dump(), **environment_variables}
 
@@ -227,7 +249,7 @@ class DaytonaEnvironment(Environment):
 
         return _sandbox
 
-    async def _start_sandbox_session(self, sandbox: AsyncSandbox, task: Task, agent: BaseAgent) -> tuple[str, str]:
+    async def _start_sandbox_session(self, sandbox: AsyncSandbox, task: Task, agent: AgentRunner) -> tuple[str, str]:
         """
         Creates a session inside of the sandbox that we can use to fetch logs from, returns the command id we can use to fetch logs from the session
 
@@ -313,7 +335,7 @@ class DaytonaEnvironment(Environment):
         return log_task
 
     @override
-    async def create(self, task: Task, agent: BaseAgent) -> None:
+    async def create(self, task: Task, agent: AgentRunner) -> None:
         """
         Create environment for the task and set it up, including copying over all dependencies needed to run the task
         """

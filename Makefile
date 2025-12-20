@@ -13,6 +13,8 @@ help:
 install:
 	uv venv --python $(PYTHON_VERSION)
 	uv cache clean model-library valsai
+	uv add --upgrade model-library
+	uv add --upgrade valsai
 	uv sync --directory . --group dev
 	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
 

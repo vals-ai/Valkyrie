@@ -11,7 +11,7 @@ dependencies = [
   "pytest>=9.0.1",
   "pytest-asyncio>=1.3.0",
   "daytona>=0.123.0",
-  "model-library>=0.1.3",
+  "model-library>=0.1.5",
 ]
 
 [project.scripts]

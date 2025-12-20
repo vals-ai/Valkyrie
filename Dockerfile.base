@@ -13,9 +13,9 @@ ENV PYTHONPATH=/app
 # NOTE: Ideally this is just what we need to start the daytona environment (Not everything)
 COPY src/ ./src/
 
-COPY submodules/ ./submodules/
+COPY submodules/${SUBMODULE_NAME} ./submodules/${SUBMODULE_NAME}
 
-COPY contracts ./contracts
+COPY contracts/${CONTRACT_NAME}.py ./contracts/${CONTRACT_NAME}.py
 
 # Copy over project pyproject.toml file and install dependencies
 COPY pyproject.toml ./pyproject.toml

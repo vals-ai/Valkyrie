@@ -9,7 +9,7 @@ from src.logger import get_logger
 logger = get_logger(__name__)
 
 
-class BaseAgent:
+class AgentRunner:
     """
     Interface for models that execute a single task and return a result.
 

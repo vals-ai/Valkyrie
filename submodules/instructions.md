@@ -15,7 +15,7 @@ from agentic_harness.base.types import AgentConfig, Task
 from agentic_harness.base.contract import AgentContract
 
 
-class Agent(ABC):
+class AgentRunner(ABC):
     @abstractmethod
     async def evaluate_result(self, task: Task, result: QueryResult) -> None:
         """Evaluates the result of the task, different for each agent"""

@@ -4,26 +4,26 @@ from asyncio import Semaphore
 from src.base.dataset import Dataset
 from src.base.environment import Environment
 from src.base.types import Task, TaskGroup
-from src.base_agent import BaseAgent
+from src.base_agent import AgentRunner
 from src.logger import get_logger
 
 logger = get_logger(__name__)
 
 
-class Benchmark:
+class BenchmarkRunner:
     _dataset: Dataset
-    _agent: BaseAgent
+    _agent: AgentRunner
     _environment: Environment | None
     _semaphore: Semaphore
 
-    def __init__(self, dataset: Dataset, agent: BaseAgent, environment: Environment | None):
+    def __init__(self, dataset: Dataset, agent: AgentRunner, environment: Environment | None):
         self._dataset = dataset
         self._agent = agent
         self._environment = environment
         self._semaphore = Semaphore(self._agent.config.parallelism)
 
     @property
-    def agent(self) -> BaseAgent:
+    def agent(self) -> AgentRunner:
         return self._agent
 
     async def _run_task(self, task: Task) -> None:

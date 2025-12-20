@@ -1,7 +1,7 @@
 import os
 from typing import Any
 
-from model_library.base import QueryResult, QueryResultMetadata
+from model_library.base import QueryResult, QueryResultCost, QueryResultMetadata
 from typing_extensions import override
 
 from src.base.contract import AgentContract
@@ -32,6 +32,11 @@ class ClaudeCodeAgentContract(AgentContract):
 
         usage: dict[str, Any] = response.get("usage", {})
         metadata = QueryResultMetadata(
+            cost=QueryResultCost(
+                total_override=response.get("total_cost_usd", 0),
+                input=0,  # Required by model library
+                output=0,
+            ),
             duration_seconds=response.get("duration_ms", None),
             in_tokens=usage.get("input_tokens", 0),
             out_tokens=usage.get("output_tokens", 0),

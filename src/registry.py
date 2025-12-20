@@ -1,3 +1,5 @@
+import ast
+import inspect
 from importlib import import_module
 from inspect import isclass
 from typing import Any, TypeVar
@@ -6,8 +8,8 @@ from src.base.contract import AgentContract
 from src.base.dataset import Dataset
 from src.base.environment import Environment
 from src.base.types import AgentConfig, BaseConfig
-from src.base_agent import BaseAgent
-from src.benchmarks.base_benchmark import Benchmark
+from src.base_agent import AgentRunner
+from src.benchmarks.base_benchmark import BenchmarkRunner
 from src.evaluators import BlankEvaluator
 from src.logger import get_logger
 
@@ -18,7 +20,6 @@ BENCHMARK_MODULE = "benchmark"
 DATASET_PACKAGE = "src.datasets"
 DATASET_MODULE = "dataset"
 CONTRACT_PACKAGE = "contracts"
-CONTRACT_MODULE = "contract"
 ENVIRONMENT_PACKAGE = "src.environments"
 
 T = TypeVar("T")
@@ -60,13 +61,13 @@ def _load_component_instance(
     return cls
 
 
-def load_benchmark(benchmark_name: str) -> type[Benchmark]:
+def load_benchmark(benchmark_name: str) -> type[BenchmarkRunner]:
     """Instantiate the benchmark identified by ``benchmark_name``."""
 
     return _load_component_instance(
         benchmark_name,
         BENCHMARK_PACKAGE,
-        Benchmark,
+        BenchmarkRunner,
         BENCHMARK_MODULE,
     )
 
@@ -100,7 +101,9 @@ def load_environment(environment_name: str) -> type[Environment]:
     )
 
 
-def parse_environment(environment_config: dict[str, Any]) -> Environment | None:
+def parse_environment(
+    environment_config: dict[str, Any], contract_name: str, submodule_name: str
+) -> Environment | None:
     """Fetches the environment config if it exists"""
     environment = environment_config.get("name", None)
     if environment is None:
@@ -108,21 +111,53 @@ def parse_environment(environment_config: dict[str, Any]) -> Environment | None:
 
     Environment = load_environment(environment)
 
-    return Environment(config=environment_config)
+    return Environment(config=environment_config, submodule_name=submodule_name, contract_name=contract_name)
 
 
-def create_agent(config: AgentConfig) -> BaseAgent:
+def find_submodule_from_contract(contract_name: str) -> str:
+    """
+    Returns the set of submodule names imported from `submodules.*`
+
+    TODO: Just move the contract to the submodule, and then we can just use the submodule name
+    """
+    contract = import_module(f"{CONTRACT_PACKAGE}.{contract_name}")
+
+    source = inspect.getsource(contract)
+    tree = ast.parse(source)
+
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module and node.module.startswith("submodules."):
+                parts = node.module.split(".")
+                if len(parts) >= 2:
+                    found.add(parts[1])
+
+    if not found:
+        raise ValueError(f"Contract {contract_name} does not use any submodules")
+
+    if len(found) > 1:
+        raise ValueError(
+            f"Contract {contract_name} uses multiple submodules: {found}. Please consolidate into a single submodule."
+        )
+
+    return list(found)[0]
+
+
+def create_agent(config: AgentConfig) -> AgentRunner:
     """Loads required components and constructs an agent object"""
     Contract = load_contract(config.name)
-    environment = parse_environment(config.environment)
+    submodule_name = find_submodule_from_contract(config.name)
+
+    environment = parse_environment(config.environment, config.name, submodule_name)
 
     # NOTE: Hardcode the evaluator for now - introduce additional options as we need them
     evaluator = BlankEvaluator()
 
-    return BaseAgent(Contract(config), evaluator, environment)
+    return AgentRunner(Contract(config), evaluator, environment)
 
 
-def create_benchmark(config: BaseConfig) -> Benchmark:
+def create_benchmark(config: BaseConfig) -> BenchmarkRunner:
     """Loads required components and constructs a benchmark object"""
 
     logger.info(f"Creating benchmark with config: `{str(config)}`")
