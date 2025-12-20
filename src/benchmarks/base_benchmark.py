@@ -35,6 +35,8 @@ class BenchmarkRunner:
             await self._agent.run(task)
 
     async def _run_task_group(self, task_group: TaskGroup) -> None:
+        """Executes a single task group, setting up the environment before it executes the tasks"""
+
         # Setup the environment if it exists
         if self._environment:
             logger.info(f"Environment has been detected, setting up {self._environment.__class__.__name__}")
@@ -51,6 +53,7 @@ class BenchmarkRunner:
         await asyncio.gather(*[_run_task_with_semaphore(task) for task in task_group.tasks])
 
     async def _create_dataset(self) -> list[TaskGroup]:
+        """Initializes the dataset for the benchmark"""
         return await self._dataset.create()
 
     async def run(self) -> None:
@@ -59,7 +62,6 @@ class BenchmarkRunner:
         1. Instantiates the dataset
         2. Runs each task group
 
-        Example:
         ```python
         task_groups = await self._dataset.create()
 

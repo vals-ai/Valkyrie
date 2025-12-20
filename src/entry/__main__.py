@@ -1,3 +1,11 @@
+"""
+Entry point where we deserialize the command line arguments sent from the host machine to the sandbox environment.
+
+The agent config is used to create the agent runner which is then used to execute the task.
+
+The work directory is located at `app/workspace` and is where the agent will run all of its code / create files, etc...
+"""
+
 import argparse
 import asyncio
 from typing import TypeVar

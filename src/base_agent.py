@@ -49,6 +49,7 @@ class AgentRunner:
         return self._contract.environment_variables
 
     def build_execute_command(self, task: Task) -> str:
+        """Returns the build command that is executed inside of the sandbox to start the agent"""
         return self._contract.build_execute_command(task)
 
     async def run(self, task: Task) -> QueryResult:
