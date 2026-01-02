@@ -5,10 +5,10 @@ import asyncio
 
 from dotenv import load_dotenv
 
-from src.base.types import BaseConfig
-from src.logger import get_logger
-from src.registry import create_benchmark
-from src.utils import create_base_config
+from agentic_harness.base.types import BaseConfig
+from agentic_harness.logger import get_logger
+from agentic_harness.registry import create_benchmark
+from agentic_harness.utils import create_base_config
 
 load_dotenv()
 

@@ -9,3 +9,6 @@ __pycache__/
 
 # Config files
 config/**.yaml
+
+# fab
+logs

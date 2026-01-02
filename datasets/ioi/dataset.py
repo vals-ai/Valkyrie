@@ -13,14 +13,14 @@ tar -xzf archive.tar.gz
 import io
 import tarfile
 from pathlib import Path, PurePosixPath
-from typing import override
 
 import PyPDF2
 from model_library.base import TextInput
+from typing_extensions import override
 from vals import Suite, Test
 
-from src.base.dataset import Dataset
-from src.base.types import Task, TaskGroup
+from agentic_harness.base.dataset import Dataset
+from agentic_harness.base.types import Task, TaskGroup
 
 
 class IOIDataset(Dataset):

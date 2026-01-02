@@ -1,8 +1,10 @@
 from abc import ABC, abstractmethod
+
 from model_library.base import (
     QueryResult,
 )
-from src.base.types import Task
+
+from agentic_harness.base.types import Task
 
 
 class Evaluator(ABC):

@@ -32,6 +32,7 @@ submodules = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+extend-exclude = ["submodules"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -45,7 +46,6 @@ reportExplicitAny = false
 reportAny = false
 reportMissingTypeStubs = false
 enableTypeIgnoreComments = true
-reportImplicitRelativeImport = true
 
 include = ["src", "contracts"]
 
@@ -61,7 +61,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src"]
+packages = ["src/agentic_harness", "contracts", "datasets"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -78,3 +78,10 @@ finance-agent = { path = "submodules/finance_agent" }
 # point these paths to your local repos
 model-libary = { path = "../platform/backend/model-library" }
 valsai = { path = "../platform/sdk" }
+
+[tool.uv.workspace]
+members = [
+    ".",
+    "services/tracker",
+    "cli",
+]

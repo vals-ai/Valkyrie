@@ -1,8 +1,8 @@
 from abc import ABC
 
-from src.base.dataset import Dataset
-from src.base.types import TaskGroup
-from src.base_agent import BaseAgent
+from agentic_harness.base.dataset import Dataset
+from agentic_harness.base.types import TaskGroup
+from agentic_harness.base_agent import BaseAgent
 
 
 class Benchmark(ABC):

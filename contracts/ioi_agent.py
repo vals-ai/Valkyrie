@@ -1,16 +1,18 @@
-from src.base.contract import AgentContract
-from typing import Any, cast, override
+from typing import Any, cast
+
 from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
-from src.base.types import AgentConfig, Task
-from submodules.ioi_agent.tool import (
-    Tool,
-    Submission,
-    CppExecutor,
-)
-from submodules.ioi_agent.agent import Agent as IOIAgent
-from src.utils import setup_environment
+from typing_extensions import override
 
+from agentic_harness.base.contract import AgentContract
+from agentic_harness.base.types import AgentConfig, Task
+from agentic_harness.utils import setup_environment
+from submodules.ioi_agent.agent import Agent as IOIAgent
+from submodules.ioi_agent.tool import (
+    CppExecutor,
+    Submission,
+    Tool,
+)
 
 setup_environment()
 
@@ -44,9 +46,7 @@ class IOIAgentContract(AgentContract):
 
         return IOIAgent(llm=llm, tools=tools, max_turns=self._max_turns)
 
-    def _create_query_result(
-        self, response: str, metadata: dict[str, Any]
-    ) -> QueryResult:
+    def _create_query_result(self, response: str, metadata: dict[str, Any]) -> QueryResult:
         """Provided a response from the edgar agent, creates a query result object"""
         return QueryResult(
             output_text=response,

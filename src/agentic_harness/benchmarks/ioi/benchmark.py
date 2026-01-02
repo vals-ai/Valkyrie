@@ -1,7 +1,7 @@
-from src.base import Dataset
-from src.base_agent import BaseAgent
-from src.benchmarks.fab.benchmark import FinanceAgentBenchmark
-from src.utils import setup_environment
+from agentic_harness.base import Dataset
+from agentic_harness.base_agent import BaseAgent
+from agentic_harness.benchmarks.fab.benchmark import FinanceAgentBenchmark
+from agentic_harness.utils import setup_environment
 
 setup_environment()
 

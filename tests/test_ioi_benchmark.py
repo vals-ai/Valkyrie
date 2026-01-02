@@ -1,8 +1,9 @@
-from agentic_harness.base.types import DatasetConfig
-from datasets.ioi.dataset import IOIDataset
 import pytest
+
+from agentic_harness.base.types import DatasetConfig
 from agentic_harness.logger import get_logger
 from agentic_harness.utils import setup_environment
+from datasets.ioi.dataset import IOIDataset
 
 logger = get_logger(__name__)
 
@@ -11,9 +12,7 @@ setup_environment()
 
 @pytest.fixture
 def dataset_config() -> DatasetConfig:
-    return DatasetConfig(
-        name="ioi 2025", suite_id="e37b9fb3-44e5-46c2-94b8-3503ef96ae9b"
-    )
+    return DatasetConfig(name="ioi 2025", suite_id="e37b9fb3-44e5-46c2-94b8-3503ef96ae9b")
 
 
 @pytest.mark.integration
@@ -33,9 +32,7 @@ class TestIOI:
 
         task_groups = await dataset.create()
 
-        task_groups_str = "\n".join(
-            [str(task_group)[200:500] for task_group in task_groups]
-        )
+        task_groups_str = "\n".join([str(task_group)[200:500] for task_group in task_groups])
 
         logger.info(task_groups_str)
 

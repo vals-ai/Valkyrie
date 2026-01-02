@@ -1,0 +1,13 @@
+[project]
+name = "tracker"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Omar Almatov", email = "52346350+oalmatov@users.noreply.github.com" }
+]
+requires-python = ">=3.11"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
