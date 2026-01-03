@@ -14,10 +14,12 @@ source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "daytona" },
+    { name = "httpx" },
     { name = "model-library" },
     { name = "pypandoc" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "tomli-w" },
     { name = "valsai" },
     { name = "wonderwords" },
 ]
@@ -39,10 +41,12 @@ submodules = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "daytona", specifier = ">=0.123.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "model-library" },
     { name = "pypandoc" },
     { name = "pytest", specifier = ">=9.0.1" },
     { name = "pytest-asyncio", specifier = ">=1.3.0" },
+    { name = "tomli-w" },
     { name = "valsai", directory = "../platform/sdk" },
     { name = "wonderwords", specifier = ">=3.0.1" },
 ]
@@ -56,8 +60,8 @@ dev = [
     { name = "ruff" },
 ]
 submodules = [
-    { name = "finance-agent", virtual = "submodules/finance_agent" },
-    { name = "ioi-agent", virtual = "submodules/ioi_agent" },
+    { name = "finance-agent", virtual = "contracts/finance_agent/submodules/finance_agent" },
+    { name = "ioi-agent", virtual = "contracts/ioi/submodules/ioi_agent" },
 ]
 
 [[package]]
@@ -806,7 +810,7 @@ wheels = [
 [[package]]
 name = "finance-agent"
 version = "0.1.0"
-source = { virtual = "submodules/finance_agent" }
+source = { virtual = "contracts/finance_agent/submodules/finance_agent" }
 dependencies = [
     { name = "aiohttp" },
     { name = "backoff" },
@@ -1382,7 +1386,7 @@ wheels = [
 [[package]]
 name = "ioi-agent"
 version = "0.1.0"
-source = { virtual = "submodules/ioi_agent" }
+source = { virtual = "contracts/ioi/submodules/ioi_agent" }
 dependencies = [
     { name = "model-library" },
     { name = "pypdf2" },
@@ -1391,7 +1395,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "model-library", git = "https://github.com/vals-ai/model-library.git" },
+    { name = "model-library", specifier = ">=0.1.3" },
     { name = "pypdf2", specifier = ">=3.0.1" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
 ]
@@ -3299,6 +3303,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/be/ba/1f744cdc819428fc6b5084ec34d9b30660f6f9daaf70eead706e3203ec3c/toml-0.10.2.tar.gz", hash = "sha256:b3bda1d108d5dd99f4a20d24d9c348e91c4db7ab1b749200bded2f839ccbe68f", size = 22253, upload-time = "2020-11-01T01:40:22.204Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/44/6f/7120676b6d73228c96e17f1f794d8ab046fc910d781c8d151120c3f1569e/toml-0.10.2-py2.py3-none-any.whl", hash = "sha256:806143ae5bfb6a3c6e736a764057db0e6a0e05e338b5630894a5f779cabb4f9b", size = 16588, upload-time = "2020-11-01T01:40:20.672Z" },
+]
+
+[[package]]
+name = "tomli-w"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/75/241269d1da26b624c0d5e110e8149093c759b7a286138f4efd61a60e75fe/tomli_w-1.2.0.tar.gz", hash = "sha256:2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021", size = 7184, upload-time = "2025-01-15T12:07:24.262Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl", hash = "sha256:188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90", size = 6675, upload-time = "2025-01-15T12:07:22.074Z" },
 ]
 
 [[package]]

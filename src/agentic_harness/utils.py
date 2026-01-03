@@ -1,20 +1,13 @@
-"""Runner for executing agents on benchmarks."""
-
-import asyncio
 import logging
 import os
-import sys
-import time
-from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import yaml
 from dotenv import load_dotenv
 from vals import configure_credentials
 
 from agentic_harness.base.types import BaseConfig
-from agentic_harness.logger import DisableLogging
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +49,7 @@ def create_base_config(config_path: str) -> BaseConfig:
     return parse_base_config(config)
 
 
-def setup_environment():
+def setup_vals_environment():
     """Sets up the environment for using the vals api"""
 
     _ = load_dotenv(override=True)
@@ -75,62 +68,26 @@ def setup_environment():
     logger.info("Environment setup complete")
 
 
-@asynccontextmanager
-async def spinner(message: str, stream_logger: logging.Logger):
+def validate_contract(contract_path: Path) -> list[str]:
     """
-    Creates a spinner around logs which signify the start of a long running operation
+    Validate contract structure.
 
-    NOTE: This should not be used with multiple async loggin operations going on at the same time.
-    WARNING: Do not include logs inside of this context manager other than the log inside of the spinning message
+    Args:
+        contract_path: Path to contract directory
+
+    Returns:
+        List of validation error messages. Empty list if valid.
     """
+    errors: list[str] = []
 
-    if not any(isinstance(handler, logging.StreamHandler) for handler in stream_logger.handlers):
-        raise ValueError("Stream logger must be a stream logger with a stream handler")
+    # Check that contract.py exists
+    contract_file = contract_path / "contract.py"
+    if not contract_file.exists():
+        errors.append("Contract directory must contain a contract.py file")
 
-    filter_handler: DisableLogging | None = None
-    for handler in stream_logger.handlers:
-        if isinstance(handler, logging.StreamHandler):
-            filter_handler = cast(DisableLogging, handler.filters[0])
-            break
+    # TODO: Add more validation:
+    # - Check if it imports/implements AgentContract
+    # - Validate submodule is a pyproject
+    # - Validate setup.sh if present
 
-    if filter_handler is None:
-        raise ValueError("Stream logger must have a filter handler to disable file logging while spining in place")
-
-    # Disable logs to file while we are spinning
-    filter_handler.enabled = True
-
-    stop = asyncio.Event()
-    start = time.time()
-
-    async def spin():
-        frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        interval = 0.1
-        i = 0
-        while not stop.is_set():
-            elapsed = time.time() - start
-            frame = frames[i % len(frames)]
-            sys.stdout.write("\r\033[K")
-            stream_logger.info(f"{frame} {message} [{elapsed:.1f}s]")
-            sys.stdout.flush()
-            i += 1
-            await asyncio.sleep(interval)
-
-    task = asyncio.create_task(spin())
-
-    try:
-        yield
-    finally:
-        stop.set()
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-
-        filter_handler.enabled = False
-
-        elapsed = time.time() - start
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
-
-        stream_logger.info(f"✓ {message} [completed in {elapsed:.1f}s]\n")
+    return errors

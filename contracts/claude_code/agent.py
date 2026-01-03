@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from typing import Any, AsyncGenerator, TypeAlias
 
 from model_library.base import InputItem, TextInput
@@ -14,6 +15,22 @@ class ClaudeCodeAgent:
 
     NOTE: Assumes all dependencies are correctly installed and credientials are configured.
     """
+
+    _ALLOWED_TOOLS = [
+        "Bash",
+        "Edit",
+        "Write",
+        "Read",
+        "Glob",
+        "Grep",
+        "LS",
+        "WebFetch",
+        "NotebookEdit",
+        "NotebookRead",
+        "TodoRead",
+        "TodoWrite",
+        "Agent",
+    ]
 
     async def _stream_conversation(self, stream: asyncio.StreamReader) -> AsyncGenerator[str, Any]:
         while True:
@@ -62,10 +79,12 @@ class ClaudeCodeAgent:
             "--output-format",
             "stream-json",
             "--verbose",
-            "--dangerously-skip-permissions",
+            "--allowedTools",
+            f"{''.join(self._ALLOWED_TOOLS)}",
             stdin=asyncio.subprocess.DEVNULL,  # NOTE: Daytona does not provide a stdin when executed from command externally
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "PATH": f"{os.environ['HOME']}/.local/bin:{os.environ['PATH']}"},
         )
 
         if not subprocess_result.stdout or not subprocess_result.stderr:

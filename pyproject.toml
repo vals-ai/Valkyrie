@@ -14,6 +14,8 @@ dependencies = [
   "daytona>=0.123.0",
   "click>=8.1.0",
   "wonderwords>=3.0.1",
+  "httpx>=0.28.1",
+  "tomli-w",
 ]
 
 [project.scripts]
@@ -36,14 +38,15 @@ submodules = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = ["submodules", "services/benchmarks/swebench"]
+extend-exclude = ["submodules"]
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 
 [tool.basedpyright]
-venvPath=".venv"
+venvPath="."
+venv=".venv"
 typeCheckingMode = "strict"
 
 reportExplicitAny = false
@@ -54,8 +57,7 @@ enableTypeIgnoreComments = true
 include = ["src", "contracts"]
 
 exclude = [
-  "submodules/**",
-  "services/benchmarks/swebench",
+  "**/submodules/**",
 ]
 
 [build-system]
@@ -81,8 +83,8 @@ filterwarnings = [
 
 
 [tool.uv.sources]
-ioi-agent = { path = "submodules/ioi_agent" }
-finance-agent = { path = "submodules/finance_agent" }
+ioi-agent = { path = "contracts/ioi/submodules/ioi_agent" }
+finance-agent = { path = "contracts/finance_agent/submodules/finance_agent" }
 # point these paths to your local repos
 model-libary = { path = "../platform/backend/model-library" }
 valsai = { path = "../platform/sdk" }

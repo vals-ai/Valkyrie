@@ -6,7 +6,8 @@ from typing_extensions import override
 
 from agentic_harness.base.contract import AgentContract
 from agentic_harness.base.types import Task
-from submodules.claude_code.agent import ClaudeCodeAgent
+
+from contracts.claude_code.agent import ClaudeCodeAgent
 
 
 class ClaudeCodeAgentContract(AgentContract):

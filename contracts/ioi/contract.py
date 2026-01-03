@@ -6,7 +6,7 @@ from typing_extensions import override
 
 from agentic_harness.base.contract import AgentContract
 from agentic_harness.base.types import AgentConfig, Task
-from agentic_harness.utils import setup_environment
+from agentic_harness.utils import setup_vals_environment
 from submodules.ioi_agent.agent import Agent as IOIAgent
 from submodules.ioi_agent.tool import (
     CppExecutor,
@@ -14,7 +14,7 @@ from submodules.ioi_agent.tool import (
     Tool,
 )
 
-setup_environment()
+setup_vals_environment()
 
 
 class IOIAgentContract(AgentContract):

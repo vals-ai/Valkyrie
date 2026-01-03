@@ -2,11 +2,6 @@ from typing import Any, cast
 
 from model_library.base import QueryResult, QueryResultMetadata
 from model_library.registry_utils import get_registry_model
-from typing_extensions import override
-
-from agentic_harness.base.contract import AgentContract
-from agentic_harness.base.types import AgentConfig, Task
-from agentic_harness.utils import setup_environment
 from submodules.finance_agent.agent import Agent as EdgarAgent
 from submodules.finance_agent.tools import (
     EDGARSearch,
@@ -15,8 +10,13 @@ from submodules.finance_agent.tools import (
     RetrieveInformation,
     Tool,
 )
+from typing_extensions import override
 
-setup_environment()
+from agentic_harness.base.contract import AgentContract
+from agentic_harness.base.types import AgentConfig, Task
+from agentic_harness.utils import setup_vals_environment
+
+setup_vals_environment()
 
 
 class EdgarAgentContract(AgentContract):
