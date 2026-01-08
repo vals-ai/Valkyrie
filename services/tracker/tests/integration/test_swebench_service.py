@@ -1,0 +1,259 @@
+import pytest
+from daytona import AsyncDaytona, AsyncSandbox
+from pytest import MonkeyPatch
+from requests.exceptions import ConnectTimeout
+from tracker.benchmark_service import BenchmarkService
+from tests.utils import build_task_environment, validate_docker_image
+
+
+@pytest.fixture
+def docker_image_format() -> str:
+    return "ghcr.io/epoch-research/swe-bench.eval.x86_64.{task_id}:latest"
+
+
+@pytest.fixture(scope="session", autouse=True)
+async def require_health_check(benchmark_service: BenchmarkService):
+    """Checks that the server is running before running the test. If its not connected it will fail"""
+    try:
+        _ = await benchmark_service.request_health_check()
+    except ConnectTimeout:
+        pytest.fail("Could not connect to the swebench service. Please ensure that it is running.", pytrace=False)
+
+
+class TestSWEBenchmarkService:
+    def test_setup_benchmark_service(self, monkeypatch: MonkeyPatch):
+        """
+        Test setup of benchmark service with valid and invalid environment variables.
+
+        Test Cases:
+        - Invalid environment variables: Raises ValueError that the user sees
+        - Valid environment variables: Sets environment variables and returns the correct keys
+        """
+        monkeypatch.setenv("DAYTONA_API_KEY", "xyz")
+        monkeypatch.setenv("DAYTONA_TARGET", "us")
+
+        # User is missing the api url environment variable
+        monkeypatch.setenv("DAYTONA_API_URL", "")
+
+        with pytest.raises(ValueError):
+            _ = BenchmarkService(name="swebench", url="http://test_ip:8000")
+
+        # User sets the api url environment variable after finding out that they are missing it
+        monkeypatch.setenv("DAYTONA_API_URL", "https://app.daytona.io/api")
+        try:
+            assert BenchmarkService.daytona_keys() == {
+                "DAYTONA_API_KEY": "xyz",
+                "DAYTONA_API_URL": "https://app.daytona.io/api",
+                "DAYTONA_TARGET": "us",
+            }
+        except Exception as e:
+            pytest.fail(f"Missing environment variables: {e}", pytrace=False)
+
+    async def test_health_check(self, benchmark_service: BenchmarkService):
+        """
+        Test health check of the benchmark service. Ensures that the service is running before we proceed with the tests.
+
+        Test Cases:
+        - Service is running: Returns 200 OK
+        """
+        try:
+            response = await benchmark_service.request_health_check()
+            assert response == {"status": "ok"}
+
+        except Exception as e:
+            pytest.fail(f"Health check failed: {e}", pytrace=False)
+
+    async def test_verify_task_ids(self, benchmark_service: BenchmarkService):
+        """
+        Test the verify task ids endpoint of the benchmark service.
+
+        Test Cases:
+        - Valid task ids: Returns 200 OK
+        - Invalid task ids: Raises Exception that the user sees
+        - No task ids passed in: Returns all 500 task ids to run the benchmark
+        """
+
+        try:
+            # Test case 1. Valid tasks passed in returns the same task ids in the same order passed in
+            task_ids = ["astropy__astropy-12907", "django__django-11066", "django__django-12858"]
+            response = await benchmark_service.request_verify_task_ids(task_ids=task_ids)
+            assert response == {
+                "task_ids": task_ids,
+            }
+
+            # Test case 2. Invalid task ids passed in raises and Exception that the user sees
+            with pytest.raises(Exception):
+                _ = await benchmark_service.request_verify_task_ids(
+                    task_ids=["astropy__astropy-12907", "invalid_task_id"]
+                )
+
+            # Test case 3. No task ids passed in returns all 500 task ids to run the benchmark
+            task_ids = await benchmark_service.request_verify_task_ids(task_ids=[])
+            assert task_ids
+            assert len(task_ids) == 500
+
+        except Exception as e:
+            pytest.fail(f"Verify task ids failed: {e}", pytrace=False)
+
+    async def test_retrieve_tasks(self, benchmark_service: BenchmarkService, docker_image_format: str):
+        """
+        Test the retrieve tasks endpoint of the benchmark service.
+
+        Test Cases:
+        - Valid task ids: Returns the tasks in the same order as the task ids passed in
+        - Invalid task ids: Raises Exception that the user sees
+        - No task ids passed in: Raises Exception that the user sees
+        """
+
+        try:
+            # Test case 1. Valid tasks passed in returns a valid dict structure
+            task_ids = ["astropy__astropy-12907", "django__django-11066", "django__django-12858"]
+            response: dict[str, dict[str, str]] = await benchmark_service.request_retrieve_tasks(task_ids=task_ids)
+
+            assert list(response.keys()) == task_ids, "Returned in the same order as passed in"
+
+            for task_id, task_data in response.items():
+                assert task_data.get("docker_image") == docker_image_format.format(task_id=task_id)
+                assert task_data.get("request_setup")
+                assert task_data.get("problem_statement")
+
+            # We can also pull the manifest from these docker images to ensure that they do in fact exist
+            failed_images: list[str] = []
+            for task_id, task_data in response.items():
+                if not await validate_docker_image(task_data["docker_image"]):
+                    failed_images.append(task_id)
+
+            assert len(failed_images) == 0, f"Failed to validate the following tasks: {', '.join(failed_images)}"
+
+            # Test case 2. Invalid task ids passed in raises and Exception that the user sees
+            # Skip validation since some tasks don't have proper manifests but we can still pull them
+            with pytest.raises(Exception):
+                _ = await benchmark_service.request_retrieve_tasks(
+                    task_ids=["django__django-12858", "invalid_task_id"], skip_validation=True
+                )
+
+            # Test case 3. Ensure that if we pass in an empty list, we get an error back from the service
+            # (Minimum of 1 task is required to fetch the tasks)
+            with pytest.raises(Exception):
+                _ = await benchmark_service.request_retrieve_tasks(task_ids=[], skip_validation=True)
+
+        except Exception as e:
+            pytest.fail(f"Retrieve tasks failed: {e}", pytrace=False)
+
+    @staticmethod
+    async def _fetch_commit(sandbox: AsyncSandbox) -> str:
+        """
+        Fetches the current commit inside of the sandbox
+        """
+        git_diff_result = await sandbox.process.exec(
+            command="git rev-parse HEAD",
+            cwd="/testbed",
+        )
+
+        current_commit = git_diff_result.result.split()[0]
+
+        return current_commit
+
+    async def test_setup_task(
+        self, benchmark_service: BenchmarkService, docker_image_format: str, daytona_client: AsyncDaytona
+    ):
+        """
+        Ensures that the setup.sh script inside of the swebench service is running inside of the container we build
+        NOTE: This endpoint occurs after we setup the sandbox so we can skip to that step in the test
+
+        Test Cases:
+        - When sandbox is first created, we are on the correct commit inside of the environment
+        - If a task does not start on the base commit, we checkout the correct commit after using the setup task endpoint
+        - When using the setup task endpoint with a valid task id and instance id: Returns 200 OK
+        - Ensure we have entered the correct commit inside of the environment after using the setup task endpoint
+
+        Use the following url to find the base commit and task ids of [swebench verified dataset](https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/viewer/default/test?views%5B%5D=test)
+        """
+
+        task_id = "django__django-15572"
+        base_commit = "0b31e024873681e187b574fe1c4afe5e48aeeecf"
+
+        try:
+            docker_image = docker_image_format.format(task_id=task_id)
+            async with build_task_environment(daytona_client, task_id, docker_image) as sandbox:
+                # Test case 1. We are on the correct commit inside of the environment before using the setup task endpoint
+                current_commit = await self._fetch_commit(sandbox)
+                assert current_commit == base_commit, "Should be the same at the start of the test"
+
+                # Test case 2. We are not on the same commit as the base commit when we start the container
+                _ = await sandbox.process.exec(
+                    command="git checkout HEAD~1",
+                    cwd="/testbed",
+                )
+
+                current_commit = await self._fetch_commit(sandbox)
+                assert current_commit != base_commit, "Should not be the same after checking out a different commit"
+
+                # Test case 3. When using the setup task endpoint with a valid task id and instance id: Returns 200 OK
+                response = await benchmark_service.request_setup_task(task_id=task_id, instance_id=sandbox.id)
+                assert response == {"status": "ok"}
+
+                # Test case 3. Ensure we have entered the correct commit inside of the environment after using the setup task endpoint
+                current_commit = await self._fetch_commit(sandbox)
+                assert current_commit == base_commit, "Should be the same after using the setup task endpoint"
+        except Exception as e:
+            pytest.fail(f"Setup task failed: {e}", pytrace=False)
+
+    async def test_evaluate_instance(
+        self, benchmark_service: BenchmarkService, docker_image_format: str, daytona_client: AsyncDaytona
+    ):
+        """
+        Test the evaluate instance endpoint of the benchmark service.
+        NOTE: end to end testing done inside of the swebench service itself, so we are just testing the endpoint itself here
+
+        Test Cases:
+        - When using evaluate instance endpoint with a valid task id and instance id: Returns 200 OK
+        """
+        try:
+            task_id = "django__django-12325"
+            docker_image = docker_image_format.format(task_id=task_id)
+
+            async with build_task_environment(daytona_client, task_id, docker_image) as sandbox:
+                response = await benchmark_service.request_evaluate_instance(task_id=task_id, instance_id=sandbox.id)
+
+                # Response is correct constructed with the instance id and task id
+                assert response.get("instance_id") == sandbox.id
+                assert response.get("task_id") == task_id
+
+                # Since no solution patch was used this evaluation is going to be unresolved
+                assert not response.get("resolved")
+
+        except Exception as e:
+            pytest.fail(f"Evaluate instance failed: {e}", pytrace=False)
+
+    async def test_final_score(self, benchmark_service: BenchmarkService):
+        """
+        Test the final score endpoint of the benchmark service.
+
+        Test Cases:
+        - When using final score endpoint with a valid evaluation results: Correctly constructs a final score object
+        """
+        try:
+            task_id = "astropy__astropy-12907"
+            first_evaluation_result = {
+                task_id: {
+                    "task_id": task_id,
+                    "instance_id": task_id,
+                    "patch_successfully_applied": True,
+                    "resolved": True,
+                    "resolution_status": "FULL",
+                }
+            }
+
+            final_score = await benchmark_service.request_final_score(evaluation_results=first_evaluation_result)
+
+            assert final_score == {
+                "tasks_evaluated": [task_id],
+                "final_score": round(100.0, 6),
+                "resolved_tasks": [task_id],
+                "unresolved_tasks": [],
+                "evaluation_results": first_evaluation_result,
+            }
+
+        except Exception as e:
+            pytest.fail(f"Final score failed: {e}", pytrace=False)

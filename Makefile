@@ -103,6 +103,7 @@ tracker-test-integration:
 	@echo "Running tracker integration tests..."
 	@cd services/tracker && uv run pytest tests/integration
 
+# SWEbench service commands
 swebench-install:
 	@echo "Installing swebench service (separate venv)..."
 	@cd services/benchmarks/swebench && uv venv --python $(SWEBENCH_PYTHON_VERSION)
@@ -113,3 +114,15 @@ swebench-dev:
 	@echo "Starting swebench service (development mode on port $(SWEBENCH_PORT))..."
 	# TODO: figure out this certifi thing
 	@cd services/benchmarks/swebench && SSL_CERT_FILE=$$(uv run python -c "import certifi; print(certifi.where())") uv run fastapi dev main.py --port $(SWEBENCH_PORT)
+
+swebench-test:
+	@echo "Running tracker service tests..."
+	@cd services/benchmarks/swebench && uv run pytest
+
+swebench-test-unit:
+	@echo "Running tracker unit tests..."
+	@cd services/benchmarks/swebench && uv run pytest tests/unit
+
+swebench-test-integration:
+	@echo "Running tracker integration tests..."
+	@cd services/benchmarks/swebench && uv run pytest tests/integration

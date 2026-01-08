@@ -1,16 +1,10 @@
+import logging
 import os
 from typing import Any
 
 import requests
-from daytona import AsyncDaytona, DaytonaConfig
-from dotenv import load_dotenv
 
-from tracker.exceptions import BenchmarkServiceError
-from tracker.logger import get_logger
-
-load_dotenv()
-
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class BenchmarkService:
@@ -19,21 +13,17 @@ class BenchmarkService:
     _environment_keys: dict[str, str]
 
     def __init__(self, name: str, url: str):
-        logger.info(f"Initializing benchmark service for {name} at {url}")
-
         self._name = name
         self._url = url
         self._environment_keys = self.daytona_keys()
 
-        self._daytona = AsyncDaytona(
-            config=DaytonaConfig(
-                api_key=self._environment_keys["DAYTONA_API_KEY"],
-                api_url=self._environment_keys["DAYTONA_API_URL"],
-                target=self._environment_keys["DAYTONA_TARGET"],
-            )
-        )
+    @property
+    def name(self) -> str:
+        return self._name
 
-        logger.info(f"Benchmark service initialized for {name} at {url}")
+    @property
+    def environment_keys(self) -> dict[str, str]:
+        return self._environment_keys
 
     @staticmethod
     def daytona_keys() -> dict[str, str]:
@@ -43,10 +33,13 @@ class BenchmarkService:
             "DAYTONA_TARGET": os.getenv("DAYTONA_TARGET") or "",
         }
 
-        missing_keys = [key for key, value in environment_keys.items() if not value]
+        missing_keys: list[str] = []
+        for key, value in environment_keys.items():
+            if not value:
+                missing_keys.append(key)
 
         if missing_keys:
-            raise BenchmarkServiceError(
+            raise ValueError(
                 f"The following environment variables are not set: {', '.join(missing_keys)}. Please set them in your `.env` file so that they can be sourced."
             )
 
@@ -56,42 +49,34 @@ class BenchmarkService:
         """
         Requests health check from benchmark service
         """
-        logger.info(f"Performing health check for {self._name} benchmark service")
-
         response = requests.get(f"{self._url}/health")
 
         logger.debug(f"Health check response: {response.json()}")
 
         if response.status_code != 200:
-            raise BenchmarkServiceError(
-                f"Health check failed with status code {response.status_code}, response: {response.text}"
-            )
-
-        logger.info(f"Health check passed for {self._name} benchmark service")
+            raise Exception(f"Health check failed with status code {response.status_code}, response: {response.text}")
 
         return response.json()
 
-    async def request_verify_task_ids(self, task_ids: list[str]) -> list[str]:
+    async def request_verify_task_ids(self, task_ids: list[str] | None) -> dict[str, list[str]]:
         """
         Requests verify task ids from benchmark service
-        Returns a list of verified task ids
         """
-        logger.info(f"Verifying task IDs: {task_ids}")
 
-        query_params = "&".join([f"task_ids={task_id}" for task_id in task_ids])
-        response = requests.get(f"{self._url}/verify-task-ids?{query_params}")
+        params: dict[str, list[str]] = {}
+        if task_ids is not None:
+            params["task_ids"] = task_ids
+
+        response = requests.get(f"{self._url}/verify-task-ids", params=params)
+
+        logger.debug(f"Verify task ids response: {response.json()}")
 
         if response.status_code != 200:
-            raise BenchmarkServiceError(
+            raise Exception(
                 f"Verify task ids failed with status code {response.status_code}, response: {response.text}"
             )
 
-        response_json = response.json()
-        verified_task_ids: list[str] = response_json["task_ids"]
-
-        logger.info(f"Task IDs verified successfully: {verified_task_ids}")
-
-        return verified_task_ids
+        return response.json()
 
     async def request_retrieve_tasks(
         self, task_ids: list[str], skip_validation: bool = False
@@ -99,24 +84,21 @@ class BenchmarkService:
         """
         Requests retrieve tasks from benchmark service
         """
-        logger.info(f"Retrieving tasks for verified task IDs: {task_ids}")
 
         query_params = "&".join([f"task_ids={task_id}" for task_id in task_ids])
         response = requests.get(f"{self._url}/retrieve-tasks?{query_params}&skip_validation={skip_validation}")
 
-        if response.status_code != 200:
-            raise BenchmarkServiceError(
-                f"Retrieve tasks failed with status code {response.status_code}, response: {response.text}"
-            )
+        logger.debug(f"Retrieve tasks response: {response.json()}")
 
-        logger.info("Tasks retrieved successfully")
+        if response.status_code != 200:
+            raise Exception(f"Retrieve tasks failed with status code {response.status_code}, response: {response.text}")
+
         return response.json()
 
     async def request_setup_task(self, task_id: str, instance_id: str) -> dict[str, str]:
         """
         Requests setup task from benchmark service
         """
-        logger.info(f"Setting up task {task_id} with instance {instance_id}")
 
         response = requests.post(
             f"{self._url}/setup-task",
@@ -129,12 +111,10 @@ class BenchmarkService:
             },
         )
 
-        if response.status_code != 200:
-            raise BenchmarkServiceError(
-                f"Setup task failed with status code {response.status_code}, response: {response.text}"
-            )
+        logger.debug(f"Setup task response: {response.json()}")
 
-        logger.info(f"Task {task_id} setup successfully")
+        if response.status_code != 200:
+            raise Exception(f"Setup task failed with status code {response.status_code}, response: {response.text}")
 
         return response.json()
 
@@ -142,7 +122,6 @@ class BenchmarkService:
         """
         Requests evaluate instance from benchmark service
         """
-        logger.info(f"Evaluating instance {instance_id} for task {task_id}")
 
         response = requests.post(
             f"{self._url}/evaluate-instance",
@@ -155,39 +134,28 @@ class BenchmarkService:
             },
         )
 
+        logger.debug(f"Evaluate instance response: {response.json()}")
+
         if response.status_code != 200:
-            raise BenchmarkServiceError(
+            raise Exception(
                 f"Evaluate instance failed with status code {response.status_code}, response: {response.text}"
             )
 
-        logger.info(f"Instance {instance_id} evaluated successfully")
-
         return response.json()
 
-    async def request_final_score(self, evaluation_results: dict[str, dict[str, Any]]) -> dict[str, str]:
+    async def request_final_score(self, evaluation_results: dict[str, dict[str, Any]]) -> dict[str, Any]:
         """
         Requests final score from benchmark service
         """
-        logger.info(f"Producing final score for tasks {evaluation_results.keys()}")
-
         response = requests.post(
             f"{self._url}/final-score",
             json={"evaluation_results": evaluation_results},
             headers={"Content-Type": "application/json"},
         )
 
-        if response.status_code != 200:
-            raise BenchmarkServiceError(
-                f"Final score failed with status code {response.status_code}, response: {response.text}"
-            )
+        logger.debug(f"Final score response: {response.json()}")
 
-        logger.info("Final score produced successfully")
+        if response.status_code != 200:
+            raise Exception(f"Final score failed with status code {response.status_code}, response: {response.text}")
 
         return response.json()
-
-    @property
-    def daytona(self) -> AsyncDaytona:
-        """
-        Returns the Daytona client instance.
-        """
-        return self._daytona

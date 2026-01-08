@@ -1,0 +1,6 @@
+{
+    "recommendations": [
+      "detachhead.basedpyright",
+      "charliermarsh.ruff"
+    ]
+  }

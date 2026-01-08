@@ -27,7 +27,6 @@ dev = [
   "pytest-asyncio",
   "ruff",
   "basedpyright",
-  "pypdf2"
 ]
 
 submodules = [
