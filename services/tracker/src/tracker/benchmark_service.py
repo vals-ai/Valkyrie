@@ -67,7 +67,7 @@ class BenchmarkService:
         """
         Requests health check from benchmark service
         """
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.get(f"{self._url}/health")
 
         logger.debug(f"Health check response: {response.json()}")
@@ -88,8 +88,8 @@ class BenchmarkService:
         if task_ids is not None:
             params["task_ids"] = task_ids
 
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{self._url}/verify-task-ids", params=params)
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+            response = await client.get(f"{self._url}/verify-task-ids/", params=params)
 
         logger.debug(f"Verify task ids response: {response.json()}")
 
@@ -108,10 +108,10 @@ class BenchmarkService:
         """
 
         params = {"task_ids": task_ids, "skip_validation": skip_validation}
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{self._url}/retrieve-tasks", params=params)
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+            response = await client.get(f"{self._url}/retrieve-tasks/", params=params)
 
-        logger.debug(f"Retrieve tasks response: {response.json()}")
+        logger.debug(f"Retrieve tasks response: {response.text}")
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
@@ -125,9 +125,9 @@ class BenchmarkService:
         Requests setup task from benchmark service
         """
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.post(
-                f"{self._url}/setup-task",
+                f"{self._url}/setup-task/",
                 json={"task_id": task_id, "instance_id": instance_id},
                 headers={
                     "Content-Type": "application/json",
@@ -137,7 +137,7 @@ class BenchmarkService:
                 },
             )
 
-        logger.debug(f"Setup task response: {response.json()}")
+        logger.debug(f"Setup task response: {response.text}")
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
@@ -151,9 +151,9 @@ class BenchmarkService:
         Requests evaluate instance from benchmark service
         """
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.post(
-                f"{self._url}/evaluate-instance",
+                f"{self._url}/evaluate-instance/",
                 json={"task_id": task_id, "instance_id": instance_id},
                 headers={
                     "Content-Type": "application/json",
@@ -163,7 +163,7 @@ class BenchmarkService:
                 },
             )
 
-        logger.debug(f"Evaluate instance response: {response.json()}")
+        logger.debug(f"Evaluate instance response: {response.text}")
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
@@ -176,14 +176,14 @@ class BenchmarkService:
         """
         Requests final score from benchmark service
         """
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.post(
-                f"{self._url}/final-score",
+                f"{self._url}/final-score/",
                 json={"evaluation_results": evaluation_results},
                 headers={"Content-Type": "application/json"},
             )
 
-        logger.debug(f"Final score response: {response.json()}")
+        logger.debug(f"Final score response: {response.text}")
 
         if response.status_code != 200:
             raise BenchmarkServiceError(

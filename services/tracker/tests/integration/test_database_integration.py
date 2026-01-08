@@ -333,4 +333,4 @@ class TestDatabaseIntegration:
             assert evaluation_result_row.unresolved_tasks == response["unresolved_tasks"]
 
         except Exception as e:
-            pytest.fail(f"End to end test failed: {e}", pytrace=False)
+            pytest.fail(f"End to end test failed: {e}")
