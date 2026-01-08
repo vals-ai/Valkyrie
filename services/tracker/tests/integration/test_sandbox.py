@@ -11,8 +11,8 @@ from moto import mock_aws
 from mypy_boto3_s3.client import S3Client
 
 from tracker.config import S3_BUCKET_NAME
-from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
 from tracker.exceptions import SandboxError
+from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
 
 
 @pytest.fixture

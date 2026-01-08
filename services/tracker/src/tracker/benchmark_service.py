@@ -1,7 +1,7 @@
 import os
 from typing import Any
 
-import requests
+import httpx
 from daytona import AsyncDaytona, DaytonaConfig
 from dotenv import load_dotenv
 
@@ -58,7 +58,8 @@ class BenchmarkService:
         """
         logger.info(f"Performing health check for {self._name} benchmark service")
 
-        response = requests.get(f"{self._url}/health")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self._url}/health")
 
         logger.debug(f"Health check response: {response.json()}")
 
@@ -78,8 +79,9 @@ class BenchmarkService:
         """
         logger.info(f"Verifying task IDs: {task_ids}")
 
-        query_params = "&".join([f"task_ids={task_id}" for task_id in task_ids])
-        response = requests.get(f"{self._url}/verify-task-ids?{query_params}")
+        params = {"task_ids": task_ids}
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self._url}/verify-task-ids", params=params)
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
@@ -101,8 +103,9 @@ class BenchmarkService:
         """
         logger.info(f"Retrieving tasks for verified task IDs: {task_ids}")
 
-        query_params = "&".join([f"task_ids={task_id}" for task_id in task_ids])
-        response = requests.get(f"{self._url}/retrieve-tasks?{query_params}&skip_validation={skip_validation}")
+        params = {"task_ids": task_ids, "skip_validation": skip_validation}
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{self._url}/retrieve-tasks", params=params)
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
@@ -118,16 +121,17 @@ class BenchmarkService:
         """
         logger.info(f"Setting up task {task_id} with instance {instance_id}")
 
-        response = requests.post(
-            f"{self._url}/setup-task",
-            json={"task_id": task_id, "instance_id": instance_id},
-            headers={
-                "Content-Type": "application/json",
-                "X-Api-Key": self._environment_keys["DAYTONA_API_KEY"],
-                "X-Api-Url": self._environment_keys["DAYTONA_API_URL"],
-                "X-Target": self._environment_keys["DAYTONA_TARGET"],
-            },
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self._url}/setup-task",
+                json={"task_id": task_id, "instance_id": instance_id},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Api-Key": self._environment_keys["DAYTONA_API_KEY"],
+                    "X-Api-Url": self._environment_keys["DAYTONA_API_URL"],
+                    "X-Target": self._environment_keys["DAYTONA_TARGET"],
+                },
+            )
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
@@ -144,16 +148,17 @@ class BenchmarkService:
         """
         logger.info(f"Evaluating instance {instance_id} for task {task_id}")
 
-        response = requests.post(
-            f"{self._url}/evaluate-instance",
-            json={"task_id": task_id, "instance_id": instance_id},
-            headers={
-                "Content-Type": "application/json",
-                "X-Api-Key": self._environment_keys["DAYTONA_API_KEY"],
-                "X-Api-Url": self._environment_keys["DAYTONA_API_URL"],
-                "X-Target": self._environment_keys["DAYTONA_TARGET"],
-            },
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self._url}/evaluate-instance",
+                json={"task_id": task_id, "instance_id": instance_id},
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Api-Key": self._environment_keys["DAYTONA_API_KEY"],
+                    "X-Api-Url": self._environment_keys["DAYTONA_API_URL"],
+                    "X-Target": self._environment_keys["DAYTONA_TARGET"],
+                },
+            )
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
@@ -170,11 +175,12 @@ class BenchmarkService:
         """
         logger.info(f"Producing final score for tasks {evaluation_results.keys()}")
 
-        response = requests.post(
-            f"{self._url}/final-score",
-            json={"evaluation_results": evaluation_results},
-            headers={"Content-Type": "application/json"},
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self._url}/final-score",
+                json={"evaluation_results": evaluation_results},
+                headers={"Content-Type": "application/json"},
+            )
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
