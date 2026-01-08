@@ -1257,8 +1257,8 @@ dependencies = [
     { name = "boto3-stubs", extra = ["s3"] },
     { name = "daytona" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "httpx" },
     { name = "moto", extra = ["s3"] },
-    { name = "requests" },
     { name = "sqlmodel" },
 ]
 
@@ -1276,8 +1276,8 @@ requires-dist = [
     { name = "boto3-stubs", extras = ["s3"] },
     { name = "daytona", specifier = ">=0.128.1" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.127.1" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "moto", extras = ["s3"] },
-    { name = "requests", specifier = ">=2.32.5" },
     { name = "sqlmodel", specifier = ">=0.0.31" },
 ]
 

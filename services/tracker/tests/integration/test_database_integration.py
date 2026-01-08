@@ -8,11 +8,12 @@ from typing import Any, cast
 from uuid import UUID
 
 import pytest
-from benchmark_service import BenchmarkService
 from daytona import AsyncDaytona
 from pytest import MonkeyPatch
 from sqlmodel import Session, col, create_engine, inspect, select
+
 from tests.utils import build_task_environment
+from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 
 logger = logging.getLogger(__name__)
@@ -265,8 +266,7 @@ class TestDatabaseIntegration:
             database_session.flush()
 
             # Request all of the task ids from the benchmark service
-            response = await benchmark_service.request_verify_task_ids(task_ids=None)
-            task_ids = response.get("task_ids")
+            task_ids = await benchmark_service.request_verify_task_ids(task_ids=None)
 
             # Returned all of the task ids from the swebench service
             assert task_ids is not None

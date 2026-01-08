@@ -107,7 +107,7 @@ async def start_run(contract_name: str, benchmark_name: str):
     # TODO: pass in actual list of tasks
     task_ids: list[str] = ["astropy__astropy-12907"]
     verified_task_ids = await benchmark_service.request_verify_task_ids(task_ids=task_ids)
-    retrieved_tasks = await benchmark_service.request_retrieve_tasks(verified_task_ids)
+    retrieved_tasks = await benchmark_service.request_retrieve_tasks(task_ids=verified_task_ids)
 
     # TODO: run using a semaphore
     evaluation_results: dict[str, dict[str, str]] = {}
@@ -117,7 +117,7 @@ async def start_run(contract_name: str, benchmark_name: str):
         docker_image = task["docker_image"]
         request_setup = task["request_setup"]
 
-        async with create_sandbox(benchmark_service.daytona, task_id, docker_image) as sandbox:
+        async with create_sandbox(benchmark_service.daytona_client, task_id, docker_image) as sandbox:
             await upload_contract_to_sandbox(sandbox, contract_name)
             await install_dependencies(sandbox, contract_name)
 

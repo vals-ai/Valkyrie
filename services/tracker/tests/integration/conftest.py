@@ -3,10 +3,11 @@ from collections.abc import Generator
 from typing import Any
 
 import pytest
-from benchmark_service import BenchmarkService
 from daytona import AsyncDaytona, DaytonaConfig
 from dotenv import load_dotenv
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
+
+from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import *  # noqa: F403
 
 _ = load_dotenv()

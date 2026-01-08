@@ -12,7 +12,6 @@ dependencies = [
     "moto[s3]",
     "fastapi[standard]>=0.127.1",
     "daytona>=0.128.1",
-    "requests>=2.32.5",
     "sqlmodel>=0.0.31",
     "httpx>=0.28.1",
 ]
