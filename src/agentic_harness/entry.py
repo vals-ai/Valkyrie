@@ -71,15 +71,12 @@ def cli():
 
     load_dotenv(contract_path / "env")
 
-    contract = get_contract(contract_path)
-    agent = AgentRunner(contract)
+    agent_contract = get_contract(contract_path)
+    agent = AgentRunner(agent_contract)
 
     # TODO: add task id and kwargs or rework the Task object
     task = Task(id="", input=[TextInput(text=args.problem_statement)])
-    result = asyncio.run(agent.run(task))
-
-    # Write result to stdout
-    print(result.output_text)
+    asyncio.run(agent.run(task))
 
 
 if __name__ == "__main__":

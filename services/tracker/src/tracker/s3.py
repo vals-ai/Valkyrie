@@ -2,7 +2,6 @@
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
-
 from tracker.config import S3_BUCKET_NAME
 from tracker.exceptions import S3Error
 
@@ -52,7 +51,6 @@ def download_from_s3(s3_key: str) -> bytes:
     try:
         s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
         response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
-        # TODO: bundles may get too large, may have to stream in the future
         return response["Body"].read()
     except (ClientError, BotoCoreError) as e:
         raise S3Error(f"Failed to download from S3 bucket '{bucket_name}' with key '{s3_key}': {str(e)}") from e

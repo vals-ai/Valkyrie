@@ -66,28 +66,3 @@ def setup_vals_environment():
     configure_credentials(api_key=_vals_api_key)
 
     logger.info("Environment setup complete")
-
-
-def validate_contract(contract_path: Path) -> list[str]:
-    """
-    Validate contract structure.
-
-    Args:
-        contract_path: Path to contract directory
-
-    Returns:
-        List of validation error messages. Empty list if valid.
-    """
-    errors: list[str] = []
-
-    # Check that contract.py exists
-    contract_file = contract_path / "contract.py"
-    if not contract_file.exists():
-        errors.append("Contract directory must contain a contract.py file")
-
-    # TODO: Add more validation:
-    # - Check if it imports/implements AgentContract
-    # - Validate submodule is a pyproject
-    # - Validate setup.sh if present
-
-    return errors

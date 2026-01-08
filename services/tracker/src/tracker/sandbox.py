@@ -28,6 +28,46 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 
 
+def _strip_bundle_prefix(filename: str) -> str:
+    """
+    Strip bundle_* prefix from filename if present.
+
+    Args:
+        filename: Filename from zip archive (e.g., "bundle_abc123/contracts/mycontract/contract.py")
+
+    Returns:
+        Filename with bundle prefix removed (e.g., "contracts/mycontract/contract.py")
+    """
+    if "/" in filename and filename.split("/")[0].startswith("bundle"):
+        return "/".join(filename.split("/")[1:])
+
+    return filename
+
+
+def _collect_parent_directories(filename: str, base_path: PurePosixPath) -> set[str]:
+    """
+    Collect all parent directories that need to be created for a file.
+
+    Args:
+        filename: Relative filename (e.g., "contracts/mycontract/contract.py")
+        base_path: Base path to prepend (e.g., "/bundle")
+
+    Returns:
+        Set of directory paths that need to be created
+    """
+    dirs_to_create: set[str] = set()
+    parent = str(Path(filename).parent)
+
+    if parent and parent != ".":
+        # Add all parent directories in the path
+        parts = Path(filename).parts[:-1]  # Exclude the file itself
+        for i in range(1, len(parts) + 1):
+            dir_path = str(base_path.joinpath(*parts[:i]))
+            dirs_to_create.add(dir_path)
+
+    return dirs_to_create
+
+
 def get_contract_path(contract_name: str) -> PurePosixPath:
     """Get the path to a contract in the sandbox."""
     return bundle_path / "contracts" / contract_name
@@ -90,24 +130,18 @@ async def upload_contract_to_sandbox(sandbox: AsyncSandbox, contract_name: str) 
         for file_info in zip_ref.filelist:
             if not file_info.is_dir():
                 file_content = zip_ref.read(file_info.filename)
+                filename = _strip_bundle_prefix(file_info.filename)
 
                 files_to_upload.append(
                     FileUpload(
                         source=file_content,
-                        destination=f"/{file_info.filename}",
+                        destination=str(bundle_path / filename),
                     )
                 )
 
-                # Collect parent directories that need to be created
-                parent = str(Path(file_info.filename).parent)
-                if parent and parent != ".":
-                    # Add all parent directories in the path
-                    parts = Path(file_info.filename).parts[:-1]  # Exclude the file itself
-                    for i in range(1, len(parts) + 1):
-                        dir_path = "/" + "/".join(parts[:i])
-                        dirs_to_create.add(dir_path)
+                dirs_to_create.update(_collect_parent_directories(filename, bundle_path))
 
-    # Create all necessary directories first
+    # Create all necessary directories
     if dirs_to_create:
         mkdir_cmd = "mkdir -p " + " ".join(sorted(dirs_to_create))
         result = await sandbox.process.exec(mkdir_cmd)

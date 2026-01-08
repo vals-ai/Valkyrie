@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.scripts]
-harness = "agentic_harness.cli.main:cli"
+harness = "cli.main:cli"
 
 [dependency-groups]
 dev = [
@@ -68,7 +68,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agentic_harness", "contracts"]
+packages = ["src/agentic_harness", "cli", "contracts"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
