@@ -31,8 +31,12 @@ help:
 	@echo "  make tracker-test-unit   Run tracker unit tests"
 	@echo "  make tracker-test-integration  Run tracker integration tests"
 	@echo ""
-	@echo "Services (development mode):"
-	@echo "  make tracker-dev         Start tracker service on port $(TRACKER_PORT)"
+	@echo "Tracker Service:"
+	@echo "  make tracker-build       Build tracker Docker image"
+	@echo "  make tracker-dev         Start tracker service (Docker) on port $(TRACKER_PORT)"
+	@echo "  make tracker-prod        Start tracker service (Docker, detached) on port $(TRACKER_PORT)"
+	@echo ""
+	@echo "SWEBench Service:"
 	@echo "  make swebench-dev        Start swebench service on port $(SWEBENCH_PORT)"
 
 install:
@@ -82,26 +86,25 @@ test-integration: venv_check
 
 # Tracker service commands
 tracker-install:
-	@echo "Installing tracker service (separate venv)..."
-	@cd services/tracker && uv venv --python $(PYTHON_VERSION)
-	@cd services/tracker && uv sync
-	@echo "✓ Tracker service installed at services/tracker/.venv"
+	$(MAKE) -C services/tracker install
+
+tracker-build:
+	$(MAKE) -C services/tracker build
 
 tracker-dev:
-	@echo "Starting tracker service (development mode on port $(TRACKER_PORT))..."
-	@cd services/tracker && uv run fastapi dev main.py --port $(TRACKER_PORT)
+	$(MAKE) -C services/tracker dev PORT=$(TRACKER_PORT)
+
+tracker-prod:
+	$(MAKE) -C services/tracker prod PORT=$(TRACKER_PORT)
 
 tracker-test:
-	@echo "Running tracker service tests..."
-	@cd services/tracker && uv run pytest
+	$(MAKE) -C services/tracker test
 
 tracker-test-unit:
-	@echo "Running tracker unit tests..."
-	@cd services/tracker && uv run pytest tests/unit
+	$(MAKE) -C services/tracker test-unit
 
 tracker-test-integration:
-	@echo "Running tracker integration tests..."
-	@cd services/tracker && uv run pytest tests/integration
+	$(MAKE) -C services/tracker test-integration
 
 # SWEbench service commands
 swebench-install:
