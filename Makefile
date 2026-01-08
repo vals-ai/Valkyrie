@@ -83,7 +83,7 @@ test-integration: venv_check
 # Tracker service commands
 tracker-install:
 	@echo "Installing tracker service (separate venv)..."
-	@cd services/tracker && uv venv --python $(PYTHON_VERSION)
+	@cd services/tracker && uv venv --python $(SWEBENCH_PYTHON_VERSION)
 	@cd services/tracker && uv sync
 	@echo "✓ Tracker service installed at services/tracker/.venv"
 
