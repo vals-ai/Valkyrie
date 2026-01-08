@@ -1,5 +1,4 @@
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from pydantic import BaseModel
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import BENCHMARK_SERVICE_URL
@@ -76,14 +75,8 @@ async def upload_contract_to_s3(
     }
 
 
-# TODO: move these to a schemas.py have more models
-class StartRunRequest(BaseModel):
-    contract_name: str
-    benchmark_name: str
-
-
 @app.post("/start-run")
-async def start_run(request: StartRunRequest):
+async def start_run(contract_name: str, benchmark_name: str):
     """
     Start a benchmark run with the uploaded contract.
 
@@ -105,10 +98,7 @@ async def start_run(request: StartRunRequest):
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if run fails to start
     """
-    logger.info(f"Starting benchmark run - contract: {request.contract_name}, benchmark: {request.benchmark_name}")
-
-    benchmark_name = request.benchmark_name
-    contract_name = request.contract_name
+    logger.info(f"Starting benchmark run - contract: {contract_name}, benchmark: {benchmark_name}")
 
     benchmark_service = BenchmarkService(benchmark_name, url=BENCHMARK_SERVICE_URL)
 
@@ -146,7 +136,7 @@ async def start_run(request: StartRunRequest):
     return {
         "status": "success",
         "message": "Benchmark run started",
-        "contract_name": request.contract_name,
-        "benchmark_name": request.benchmark_name,
+        "contract_name": contract_name,
+        "benchmark_name": benchmark_name,
         "final_score": final_score,
     }

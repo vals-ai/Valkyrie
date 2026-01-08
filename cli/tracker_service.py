@@ -99,7 +99,7 @@ class TrackerService:
                 "benchmark_name": benchmark_name,
             }
 
-            response = self._client.post(f"{self._base_url}/start-run", json=payload)
+            response = self._client.post(f"{self._base_url}/start-run", params=payload)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
