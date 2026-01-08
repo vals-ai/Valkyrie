@@ -9,8 +9,6 @@ dependencies = [
   "pypandoc",
   "model-library",
   "valsai",
-  "pytest>=9.0.1",
-  "pytest-asyncio>=1.3.0",
   "daytona>=0.123.0",
   "click>=8.1.0",
   "wonderwords>=3.0.1",

@@ -12,6 +12,7 @@ from mypy_boto3_s3.client import S3Client
 
 from tracker.config import S3_BUCKET_NAME
 from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
+from tracker.exceptions import SandboxError
 
 
 @pytest.fixture
@@ -143,7 +144,6 @@ class TestSandboxOperations:
         self, test_sandbox: AsyncSandbox, mock_s3: S3Client, minimal_contract_zip: bytes
     ) -> None:
         """Test that install_dependencies raises SandboxError when bundle is missing."""
-        from tracker.exceptions import SandboxError
 
         # Upload contract without bundle
         mock_s3.put_object(Bucket=S3_BUCKET_NAME, Key="contracts/test_contract.zip", Body=minimal_contract_zip)
@@ -155,7 +155,6 @@ class TestSandboxOperations:
 
     async def test_run_agent_creates_session_and_executes_command(self, test_sandbox: AsyncSandbox) -> None:
         """Test that run_agent creates a session and executes the command."""
-        from tracker.exceptions import SandboxError
 
         # Create a simple test script that will succeed
         await test_sandbox.process.exec("mkdir -p /test_contract")

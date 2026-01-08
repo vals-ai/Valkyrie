@@ -3,7 +3,7 @@ from pydantic import BaseModel
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import BENCHMARK_SERVICE_URL
-from tracker.exceptions import BenchmarkServiceError, S3Error, SandboxError
+from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
 from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
@@ -13,24 +13,9 @@ logger = get_logger(__name__)
 app = FastAPI()
 
 
-@app.exception_handler(SandboxError)
-async def sandbox_error_handler(_request: Request, exc: SandboxError):
-    """Handle sandbox-related errors"""
-    logger.error(f"Sandbox error: {exc}", exc_info=True)
-    raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
-@app.exception_handler(BenchmarkServiceError)
-async def benchmark_service_error_handler(_request: Request, exc: BenchmarkServiceError):
-    """Handle benchmark service communication errors"""
-    logger.error(f"Benchmark service error: {exc}", exc_info=True)
-    raise HTTPException(status_code=502, detail=str(exc)) from exc
-
-
-@app.exception_handler(S3Error)
-async def s3_error_handler(_request: Request, exc: S3Error):
-    """Handle S3 storage errors"""
-    logger.error(f"S3 error: {exc}", exc_info=True)
+@app.exception_handler(TrackerServiceError)
+async def tracker_service_error_handler(_request: Request, exc: TrackerServiceError):
+    logger.error(exc, exc_info=True)
     raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

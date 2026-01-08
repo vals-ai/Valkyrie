@@ -10,16 +10,19 @@ class TrackerServiceError(Exception):
 class SandboxError(TrackerServiceError):
     """Exception raised for sandbox-related errors."""
 
-    pass
+    def __str__(self) -> str:
+        return "Sandbox error: " + super().__str__()
 
 
 class BenchmarkServiceError(TrackerServiceError):
     """Exception raised for benchmark service communication errors."""
 
-    pass
+    def __str__(self) -> str:
+        return "Benchmark service error: " + super().__str__()
 
 
 class S3Error(TrackerServiceError):
     """Exception raised for S3 storage operation errors."""
 
-    pass
+    def __str__(self) -> str:
+        return "S3 error: " + super().__str__()
