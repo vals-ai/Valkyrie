@@ -1,3 +1,4 @@
+import json
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -32,6 +33,10 @@ def mock_process_benchmark(*args: Any, **kwargs: Any) -> None:
 
 async def mock_request_health_check(self: BenchmarkService, *args: Any, **kwargs: Any) -> dict[str, str]:
     return {"status": "ok"}
+
+
+async def mock_request_verify_task_ids_error(self: BenchmarkService, *args: Any, **kwargs: Any) -> list[str]:
+    raise Exception("Error verifying task ids")
 
 
 class TestFastapiServer:
@@ -292,3 +297,50 @@ class TestFastapiServer:
         # Test case 6. Final evaluation now exists
         assert response_json.get("final_evaluation")
         assert response_json.get("final_evaluation").get("final_score") == 100
+
+    async def test_benchmark_error_handling(self, database_session: Session, monkeypatch: MonkeyPatch):
+        """
+        Test benchmark error handling of the fastapi server.
+
+        Test Cases:
+            - Returns error message from exception
+            - Benchmark row is marked as error and error message is set
+        """
+
+        def get_test_session():
+            yield database_session
+
+        app.dependency_overrides[get_session] = get_test_session
+
+        # Mock health check to benchmark service
+        monkeypatch.setattr(BenchmarkService, "request_health_check", mock_request_health_check)
+
+        # Expection is raised if verify task ids fails
+        monkeypatch.setattr(BenchmarkService, "request_verify_task_ids", mock_request_verify_task_ids_error)
+
+        # Example request sent from the cli to the fastapi server
+        request = StartRunRequest(
+            contract_name="claude_code",
+            benchmark_name="swebench",
+            concurrency=10,
+            task_ids=None,
+        )
+
+        # Send request to start the run and ensure that the start response is returned
+        response = client.post("/start-run", json=request.model_dump())
+
+        # Test case 1. Returns error message from exception
+        assert response.status_code == 500
+        response_json = response.json()
+        detail = json.loads(response_json.get("detail", "{}"))
+
+        # benchmark id and error message are included in the response
+        assert detail
+        assert detail.get("benchmark_id")
+        assert detail.get("error_message") == "Error verifying task ids"
+
+        # Test case 2. Benchmark row is marked as error and error message is set
+        benchmark_row = database_session.get(Benchmark, UUID(detail.get("benchmark_id")))
+        assert benchmark_row
+        assert benchmark_row.status == BenchmarkStatus.ERROR
+        assert benchmark_row.error_message == detail.get("error_message")

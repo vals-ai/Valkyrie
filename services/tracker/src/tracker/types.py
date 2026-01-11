@@ -20,6 +20,11 @@ class StartRunRequest(BaseModel):
         return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
 
 
+class StartRunErrorResponse(BaseModel):
+    benchmark_id: UUID
+    error_message: str
+
+
 class StartRunResponse(BaseModel):
     benchmark_name: str
     contract_name: str

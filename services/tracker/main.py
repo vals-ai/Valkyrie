@@ -9,7 +9,13 @@ from tracker.database.utils import BenchmarkContext, commit_benchmark_error, pro
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
-from tracker.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest, StartRunResponse
+from tracker.types import (
+    FetchBenchmarkResponse,
+    RetrieveResultsResponse,
+    StartRunErrorResponse,
+    StartRunRequest,
+    StartRunResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -126,7 +132,12 @@ async def start_run(
     except Exception as e:
         error_message = str(e)
         commit_benchmark_error(benchmark_row, session, error_message)
-        raise HTTPException(status_code=500, detail=error_message) from e
+        error_response = StartRunErrorResponse(
+            benchmark_id=benchmark_row.id,
+            error_message=error_message,
+        )
+
+        raise TrackerServiceError(error_response.model_dump_json()) from e
 
     background_tasks.add_task(
         process_benchmark, request, benchmark_row.id, verified_task_ids, benchmark_service, session
