@@ -9,7 +9,7 @@ from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapper
 from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, TypeDecorator, select
 
-from tracker.database.helpers import has_field_changed
+from tracker.database.utils import has_field_changed
 
 
 class BenchmarkStatus(str, Enum):
