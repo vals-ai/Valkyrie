@@ -1,0 +1,294 @@
+from typing import Any
+from uuid import UUID, uuid4
+
+from fastapi.testclient import TestClient
+from pytest import MonkeyPatch
+from sqlmodel import Session
+
+from main import app
+from tracker.benchmark_service import BenchmarkService
+from tracker.database.models import (
+    Benchmark,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    EvaluationResult,
+    FinalEvaluation,
+    Task,
+    TaskStatus,
+)
+from tracker.database.session import get_session
+from tracker.types import StartRunRequest
+
+client = TestClient(app)
+
+
+async def mock_request_verify_task_ids(self: BenchmarkService, *args: Any, **kwargs: Any) -> list[str]:
+    return ["task_id"] * 500
+
+
+def mock_process_benchmark(*args: Any, **kwargs: Any) -> None:
+    pass
+
+
+async def mock_request_health_check(self: BenchmarkService, *args: Any, **kwargs: Any) -> dict[str, str]:
+    return {"status": "ok"}
+
+
+class TestFastapiServer:
+    def test_health_check(self):
+        """
+        Test health check of the fastapi server.
+
+        Test Cases:
+            - Returns 200 OK
+            - Response contains expected format
+        """
+        response = client.get("/health")
+
+        assert response.status_code == 200
+
+        assert response.json() == {"status": "ok"}
+
+    async def test_start_run(self, monkeypatch: MonkeyPatch, database_session: Session):
+        """
+        Test start run of the fastapi server.
+
+        Test Cases:
+            - Returns 200 OK
+            - Start timestamp is in UTC timezone
+            - Returning task count provided from the request_verify_task_ids function
+            - Benchmark row has been created and pushed to the database
+        """
+
+        # We use a Depends on the session for this endpoint
+        def get_test_session():
+            yield database_session
+
+        app.dependency_overrides[get_session] = get_test_session
+
+        # Example request sent from the cli to the fastapi server
+        request = StartRunRequest(
+            contract_name="claude_code",
+            benchmark_name="swebench",
+            concurrency=10,
+            task_ids=None,
+        )
+
+        # Mock health check to benchmark service
+        monkeypatch.setattr(
+            BenchmarkService,
+            "request_health_check",
+            mock_request_health_check,
+        )
+
+        # Expected 500 task ids to be returned from benchmark service
+        monkeypatch.setattr(
+            BenchmarkService,
+            "request_verify_task_ids",
+            mock_request_verify_task_ids,
+        )
+
+        # Ignore background task to run benchmark
+        monkeypatch.setattr(
+            "main.process_benchmark",
+            mock_process_benchmark,
+        )
+
+        # Send request to start the run and ensure that the start response is returned
+        response = client.post(
+            "/start-run",
+            json=request.model_dump(),
+        )
+
+        # Test case 1. Returns 200 OK
+        assert response.status_code == 200
+        json_response = response.json()
+
+        # Test case 2. Benchmark row has been created and pushed to the database
+        benchmark_row = database_session.get(Benchmark, UUID(json_response["benchmark_id"]))
+        assert benchmark_row
+
+        # Secondary test. Arguments is correct serialized into the database
+        assert benchmark_row.arguments == BenchmarkArguments(
+            contract_name=request.contract_name,
+            concurrency=request.concurrency,
+            task_ids=None,
+        )
+
+        # Test case 3. Start timestamp is in UTC timezone and matches the benchmark row
+        assert json_response["started_at"] == benchmark_row.started_at.isoformat()
+
+        # Test case 4. Returning task count provided from the request_verify_task_ids function
+        assert json_response["task_count"] == 500
+
+        # Remaining fields match what we passed into the request
+        assert json_response["benchmark_name"] == request.benchmark_name
+        assert json_response["contract_name"] == request.contract_name
+        assert json_response["concurrency"] == request.concurrency
+
+    async def test_fetch_benchmark(self, database_session: Session):
+        """
+        Test fetch benchmark of the fastapi server.
+
+        Test Cases:
+            - Returns 200 OK
+            - Raising exception if benchmark row is not found
+            - Benchmark details are returned in the response
+            - Benchmark details are updated as benchmark progresses
+        """
+
+        def get_test_session():
+            yield database_session
+
+        app.dependency_overrides[get_session] = get_test_session
+
+        # Test case 1. Return 404 Not Found if benchmark does not exist
+        query_params = {"benchmark_id": str(uuid4())}
+        response = client.get("/fetch-benchmark", params=query_params)
+        assert response.status_code == 404
+
+        # Add benchmark row to the database to fetch
+        benchmark_row = Benchmark(
+            name="swebench",
+            arguments=BenchmarkArguments(contract_name="claude_code", concurrency=10, task_ids=None),
+        )
+
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # Push some task rows that we can use to check the progress of the benchmark
+        task_rows = [Task(task_id=f"task_{i}", benchmark_id=benchmark_row.id) for i in range(10)]
+        database_session.add_all(task_rows)
+        database_session.commit()
+
+        # Send request to fetch the benchmark and ensure that the fetch response is returned
+        query_params = {"benchmark_id": str(benchmark_row.id)}
+        response = client.get("/fetch-benchmark", params=query_params)
+
+        # Test case 2. Returns 200 OK
+        assert response.status_code == 200
+        details = response.json().get("details")
+        assert details
+
+        # Test case 3. Benchmark details are returned in the response
+        # NOTE: Let's just check the fields that are being tracked and are due to change
+        assert details.get("status") == BenchmarkStatus.IN_PROGRESS
+        assert details.get("total_tasks") == 10
+        assert details.get("finished_tasks") == 0
+
+        # Test case 4. Benchmark details are updated as benchmark progresses
+        # Change a few to in progress, finished and error
+        # NOTE: as of now only error and finished are "task ended" states
+        for i, task_row in enumerate(task_rows[:9]):
+            if i < 3:
+                task_row.status = TaskStatus.IN_PROGRESS
+            elif i < 6:
+                task_row.status = TaskStatus.FINISHED
+
+                # Create evaluation result rows for finished tasks
+                evaluation_result_row = EvaluationResult(
+                    task_id=task_row.id,
+                    instance_id=str(uuid4()),
+                    result={"finished": True},
+                )
+
+                database_session.add(evaluation_result_row)
+            else:
+                task_row.status = TaskStatus.ERROR
+                task_row.error_message = "Error occured during task execution or evaluation"
+
+            database_session.add(task_row)
+
+        database_session.commit()
+
+        # Send request to fetch the benchmark and ensure that the fetch response is returned
+        query_params = {"benchmark_id": str(benchmark_row.id)}
+        response = client.get("/fetch-benchmark", params=query_params)
+        details = response.json().get("details")
+        assert details
+
+        # Test case 5. Benchmark details are updated as benchmark progresses
+        assert details.get("total_tasks") and details["total_tasks"] == 10
+        assert details.get("finished_tasks") and details["finished_tasks"] == 6
+
+    async def test_retrieve_results(self, database_session: Session):
+        """
+        Test the retrieve results endpoint of the fastapi server.
+
+        Test Cases:
+            - 404 on invalid benchmark id
+            - Final evaluation is ommited if benchmark has not finished yet
+            - Evaluation results are returned as the tasks are being completed
+            - Works when no tasks are completed
+            - Base fields are included within response
+        """
+
+        def get_test_session():
+            yield database_session
+
+        app.dependency_overrides[get_session] = get_test_session
+
+        # Test case 1. 404 on invalid benchmark id
+        query_params = {"benchmark_id": str(uuid4())}
+        response = client.get("/retrieve-results", params=query_params)
+        assert response.status_code == 404
+
+        # Add benchmark row
+        benchmark_row = Benchmark(
+            name="swebench",
+            arguments=BenchmarkArguments(contract_name="claude_code", concurrency=10, task_ids=None),
+        )
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        query_params = {"benchmark_id": str(benchmark_row.id)}
+        response = client.get("/retrieve-results", params=query_params)
+        assert response.status_code == 200
+        response_json = response.json()
+
+        # Base fields are included within response
+        assert response_json.get("benchmark_name") == benchmark_row.name
+        assert response_json.get("status") == benchmark_row.status
+
+        # Test case 2. Final evaluation is ommited if benchmark has not finished yet
+        assert response_json.get("final_evaluation") is None
+
+        # Test case 3. Empty evaluation result are returned if no tasks are completed
+        assert response_json.get("evaluation_results") == {}
+
+        # Test case 4. Evaluation results are returned as the tasks are being completed
+        task_rows = [
+            Task(task_id=f"task_{i}", benchmark_id=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(10)
+        ]
+        evaluation_result_rows = [
+            EvaluationResult(task_id=task_row.id, instance_id=str(uuid4()), result={"finished": True})
+            for task_row in task_rows
+        ]
+        database_session.add_all(task_rows)
+        database_session.add_all(evaluation_result_rows)
+        database_session.commit()
+
+        response = client.get("/retrieve-results", params=query_params)
+        assert response.status_code == 200
+        response_json = response.json()
+
+        # Test case 5. Evaluation results are returned if they exist even if benchmark has not finished yet
+        assert response_json.get("evaluation_results")
+        assert len(response_json.get("evaluation_results")) == 10
+
+        # Change benchmark status to finished and add final evaluation row
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        final_evaluation_row = FinalEvaluation(
+            benchmark_id=benchmark_row.id, final_score=100, resolved_tasks=[], unresolved_tasks=[]
+        )
+        database_session.add(benchmark_row)
+        database_session.add(final_evaluation_row)
+        database_session.commit()
+
+        response = client.get("/retrieve-results", params=query_params)
+        assert response.status_code == 200
+        response_json = response.json()
+
+        # Test case 6. Final evaluation now exists
+        assert response_json.get("final_evaluation")
+        assert response_json.get("final_evaluation").get("final_score") == 100
