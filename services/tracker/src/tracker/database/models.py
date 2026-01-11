@@ -28,7 +28,7 @@ class TaskStatus(str, Enum):
 
 class FinalEvaluation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    benchmark_id: UUID = Field(foreign_key="benchmark.id")
+    benchmark: UUID = Field(foreign_key="benchmark.id")
     final_score: float = Field(nullable=False)
 
     resolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
@@ -37,7 +37,7 @@ class FinalEvaluation(SQLModel, table=True):
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
         from tracker.database.utils import fetch_evaluation_results
 
-        return fetch_evaluation_results(self.benchmark_id, session)
+        return fetch_evaluation_results(self.benchmark, session)
 
 
 class BenchmarkArguments(BaseModel):
@@ -96,7 +96,7 @@ class Benchmark(SQLModel, table=True):
     )
 
     def fetch_final_evaluation(self, session: Session) -> FinalEvaluation | None:
-        statement = select(FinalEvaluation).where(FinalEvaluation.benchmark_id == self.id)
+        statement = select(FinalEvaluation).where(FinalEvaluation.benchmark == self.id)
         return session.exec(statement).first()
 
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
@@ -143,7 +143,7 @@ class Task(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
-    benchmark_id: UUID = Field(foreign_key="benchmark.id")
+    benchmark: UUID = Field(foreign_key="benchmark.id")
 
 
 @event.listens_for(Task, "before_insert")
@@ -166,6 +166,6 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
 
 class EvaluationResult(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    task_id: UUID = Field(foreign_key="task.id")
+    task: UUID = Field(foreign_key="task.id")
     instance_id: str = Field(unique=True)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))

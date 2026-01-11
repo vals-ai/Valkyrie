@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 class TestDatabaseIntegration:
     async def _create_task(self, database_session: Session, task_id: str, benchmark_id: UUID) -> Task:
-        task_row = Task(task_id=task_id, benchmark_id=benchmark_id)
+        task_row = Task(task_id=task_id, benchmark=benchmark_id)
         database_session.add(task_row)
         database_session.flush()
 
@@ -39,7 +39,7 @@ class TestDatabaseIntegration:
         self, database_session: Session, task_row: Task, evaluation_result: dict[str, Any]
     ) -> EvaluationResult:
         instance_id = evaluation_result["instance_id"]
-        evaluation_result_row = EvaluationResult(task_id=task_row.id, instance_id=instance_id, result=evaluation_result)
+        evaluation_result_row = EvaluationResult(task=task_row.id, instance_id=instance_id, result=evaluation_result)
         database_session.add(evaluation_result_row)
 
         task_row.status = TaskStatus.FINISHED
@@ -52,7 +52,7 @@ class TestDatabaseIntegration:
         self, database_session: Session, benchmark_row: Benchmark, final_score_result: dict[str, Any]
     ) -> FinalEvaluation:
         final_evaluation_row = FinalEvaluation(
-            benchmark_id=benchmark_row.id,
+            benchmark=benchmark_row.id,
             final_score=final_score_result["final_score"],
             resolved_tasks=final_score_result["resolved_tasks"],
             unresolved_tasks=final_score_result["unresolved_tasks"],
@@ -130,7 +130,7 @@ class TestDatabaseIntegration:
         assert benchmark_row.finished_at, "Should be auto generated when the status is updated to finished"
 
         # Test the task table
-        task_row = Task(task_id="task_id_1", benchmark_id=benchmark_row.id)
+        task_row = Task(task_id="task_id_1", benchmark=benchmark_row.id)
         database_session.add(task_row)
 
         # When created its in starting status
@@ -176,16 +176,14 @@ class TestDatabaseIntegration:
             _ = await self._create_task(database_session, task_id, benchmark_row.id)
 
         # Can fetch the tasks based off the benchmark id and that the tasks are created as expected
-        fetch_tasks_query = (
-            select(Task).where(Task.benchmark_id == benchmark_row.id).order_by(col(Task.started_at).asc())
-        )
+        fetch_tasks_query = select(Task).where(Task.benchmark == benchmark_row.id).order_by(col(Task.started_at).asc())
         fetched_tasks = database_session.exec(fetch_tasks_query).all()
 
         # Base test cases
         assert len(fetched_tasks) == len(task_ids)
         for task_id, task_row in zip(task_ids, fetched_tasks):
             assert task_row.task_id == task_id
-            assert task_row.benchmark_id == benchmark_row.id
+            assert task_row.benchmark == benchmark_row.id
             assert task_row.status == TaskStatus.STARTING
             assert task_row.started_at is not None
             assert task_row.finished_at is None
@@ -204,9 +202,7 @@ class TestDatabaseIntegration:
 
         for task_id, evaluation_result in simulated_evaluation_results.items():
             # Fetch the task row based off of the human readable task_id and the benchmark foreign key
-            task_row_query = (
-                select(Task).where(Task.task_id == task_id and Task.benchmark_id == benchmark_row.id).limit(1)
-            )
+            task_row_query = select(Task).where(Task.task_id == task_id and Task.benchmark == benchmark_row.id).limit(1)
             task_row = database_session.exec(task_row_query).first()
 
             assert task_row is not None
@@ -215,7 +211,7 @@ class TestDatabaseIntegration:
             _ = await self._create_evaluation_result(database_session, task_row, evaluation_result)
 
         # Once the evaluation is completed, we can check if the task rows have been updated with the finished_at timestamp and status
-        fetch_tasks_query = select(Task).where(Task.benchmark_id == benchmark_row.id)
+        fetch_tasks_query = select(Task).where(Task.benchmark == benchmark_row.id)
         fetched_tasks = database_session.exec(fetch_tasks_query).all()
 
         assert len(fetched_tasks) == len(task_ids)
@@ -345,7 +341,7 @@ class TestDatabaseIntegration:
             for task_id, evaluation_result in fetched_evaluation_results.items():
                 evaluation_result_row = database_session.exec(
                     select(EvaluationResult)
-                    .join(Task, col(EvaluationResult.task_id) == col(Task.id))
+                    .join(Task, col(EvaluationResult.task) == col(Task.id))
                     .where(col(Task.task_id) == task_id)
                 ).first()
                 assert evaluation_result_row is not None

@@ -30,7 +30,7 @@ async def process_benchmark(
     # Create tasks inside of the database for each task id
     task_row_mapping: dict[str, Task] = {}
     for task_id in verified_task_ids:
-        task_row = Task(task_id=task_id, benchmark_id=benchmark_row.id)
+        task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
         task_row_mapping[task_id] = task_row
 
     session.add_all(list(task_row_mapping.values()))
@@ -79,7 +79,7 @@ async def process_benchmark(
 
                     # Save the evaluation result to the database with the task row
                     evaluation_result_row = EvaluationResult(
-                        task_id=task_row.id, instance_id=sandbox.id, result=evaluation_result
+                        task=task_row.id, instance_id=sandbox.id, result=evaluation_result
                     )
                     task_session.add(evaluation_result_row)
 
@@ -95,7 +95,7 @@ async def process_benchmark(
     )
 
     evaluation_results: dict[str, dict[str, Any]] = {
-        str(evaluation_result_row.task_id): evaluation_result_row.result
+        str(evaluation_result_row.task): evaluation_result_row.result
         for evaluation_result_row in evaluation_result_rows
     }
 
@@ -104,7 +104,7 @@ async def process_benchmark(
 
     # Create the final evaluation row and add it to the database
     final_evaluation_row = FinalEvaluation(
-        benchmark_id=benchmark_row.id,
+        benchmark=benchmark_row.id,
         final_score=final_score["final_score"],
         # TODO: Remove these fields because not each task will have a resolved or unresolved task
         resolved_tasks=final_score["resolved_tasks"],
@@ -150,7 +150,7 @@ class BenchmarkContext:
                 func.count(case((Task.status == TaskStatus.ERROR, 1))).label("failed_tasks"),
             )
             .select_from(Task)
-            .where(Task.benchmark_id == self._benchmark_row.id)
+            .where(Task.benchmark == self._benchmark_row.id)
         )
 
         result = self._session.exec(statement).one()
@@ -173,8 +173,8 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session) -> dict[str, 
     """Select all evaluation results for a given benchmark"""
     statement = (
         select(EvaluationResult, Task.task_id)
-        .join(Task, col(EvaluationResult.task_id) == col(Task.id))
-        .where(Task.benchmark_id == benchmark_id)
+        .join(Task, col(EvaluationResult.task) == col(Task.id))
+        .where(Task.benchmark == benchmark_id)
     )
     results = session.exec(statement).all()
 

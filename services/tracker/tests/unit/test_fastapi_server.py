@@ -157,7 +157,7 @@ class TestFastapiServer:
         database_session.commit()
 
         # Push some task rows that we can use to check the progress of the benchmark
-        task_rows = [Task(task_id=f"task_{i}", benchmark_id=benchmark_row.id) for i in range(10)]
+        task_rows = [Task(task_id=f"task_{i}", benchmark=benchmark_row.id) for i in range(10)]
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -187,7 +187,7 @@ class TestFastapiServer:
 
                 # Create evaluation result rows for finished tasks
                 evaluation_result_row = EvaluationResult(
-                    task_id=task_row.id,
+                    task=task_row.id,
                     instance_id=str(uuid4()),
                     result={"finished": True},
                 )
@@ -258,10 +258,10 @@ class TestFastapiServer:
 
         # Test case 4. Evaluation results are returned as the tasks are being completed
         task_rows = [
-            Task(task_id=f"task_{i}", benchmark_id=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(10)
+            Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(10)
         ]
         evaluation_result_rows = [
-            EvaluationResult(task_id=task_row.id, instance_id=str(uuid4()), result={"finished": True})
+            EvaluationResult(task=task_row.id, instance_id=str(uuid4()), result={"finished": True})
             for task_row in task_rows
         ]
         database_session.add_all(task_rows)
@@ -279,7 +279,7 @@ class TestFastapiServer:
         # Change benchmark status to finished and add final evaluation row
         benchmark_row.status = BenchmarkStatus.FINISHED
         final_evaluation_row = FinalEvaluation(
-            benchmark_id=benchmark_row.id, final_score=100, resolved_tasks=[], unresolved_tasks=[]
+            benchmark=benchmark_row.id, final_score=100, resolved_tasks=[], unresolved_tasks=[]
         )
         database_session.add(benchmark_row)
         database_session.add(final_evaluation_row)
