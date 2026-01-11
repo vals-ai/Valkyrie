@@ -143,6 +143,25 @@ class TestDatabaseIntegration:
         database_session.flush()
         assert task_row.finished_at, "Should be auto generated when the status is updated to finished"
 
+        # When task status is marked as error, the finished_at timestamp should be set
+        task_row = Task(task_id="task_id_2", benchmark=benchmark_row.id)
+        task_row.status = TaskStatus.ERROR
+        database_session.add(task_row)
+        database_session.flush()
+        assert task_row.finished_at, "Should be auto generated when the status is updated to error"
+
+        # Reset the benchmark row to in progress status
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.finished_at = None
+        database_session.add(benchmark_row)
+        database_session.flush()
+
+        # When the benchmark status is marked as error, the finished_at timestamp should be set
+        benchmark_row.status = BenchmarkStatus.ERROR
+        database_session.add(benchmark_row)
+        database_session.flush()
+        assert benchmark_row.finished_at, "Should be auto generated when the status is updated to error"
+
     async def test_database_relations(self, database_session: Session):
         """
         Test the relationships between the tables and ensure that they are correctly being built
