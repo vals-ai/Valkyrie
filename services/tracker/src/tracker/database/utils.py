@@ -40,7 +40,7 @@ async def process_benchmark(
 
     async def process_task(task_id: str) -> EvaluationResult:
         async with semaphore:
-            # NOTE: This endpoint was made for retrieving task info for a group of tasks
+            # TODO: This endpoint was made for retrieving task info for a group of tasks
             # Turns out its a better design to retrieve a single task at a time so that it fits better with a semaphore
             task_data = (await benchmark_service.request_retrieve_tasks(task_ids=[task_id]))[task_id]
 
@@ -106,7 +106,7 @@ async def process_benchmark(
     final_evaluation_row = FinalEvaluation(
         benchmark_id=benchmark_row.id,
         final_score=final_score["final_score"],
-        # NOTE: Remove these fields because not each task will have a resolved or unresolved task
+        # TODO: Remove these fields because not each task will have a resolved or unresolved task
         resolved_tasks=final_score["resolved_tasks"],
         unresolved_tasks=final_score["unresolved_tasks"],
     )
