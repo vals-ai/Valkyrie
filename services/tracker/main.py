@@ -1,18 +1,15 @@
-from asyncio import Semaphore, gather
-from datetime import datetime
-from typing import Any, cast
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
 from sqlmodel import Session
 
-from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
-from tracker.database.session import engine, get_session
+from tracker.database.models import Benchmark, BenchmarkArguments
+from tracker.database.session import get_session
+from tracker.database.utils import BenchmarkContext, process_benchmark
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
-from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
-from tracker.types import StartRunRequest, StartRunResponse
+from tracker.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest, StartRunResponse
 
 logger = get_logger(__name__)
 
@@ -26,7 +23,7 @@ async def tracker_service_error_handler(_request: Request, exc: TrackerServiceEr
 
 
 @app.get("/health")
-def health_check():
+def health_check() -> dict[str, str]:
     """
     Health check to ensure that the tracker service is running.
 
@@ -48,7 +45,7 @@ def health_check():
 @app.post("/upload")
 async def upload_contract_to_s3(
     contract: UploadFile = File(..., description="Contract directory zip file"),
-):
+) -> dict[str, str]:
     """
     Upload contract to S3.
 
@@ -83,7 +80,11 @@ async def upload_contract_to_s3(
 
 
 @app.post("/start-run")
-async def start_run(request: StartRunRequest, session: Session = Depends(get_session)):
+async def start_run(
+    request: StartRunRequest,
+    session: Session = Depends(get_session),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+) -> StartRunResponse:
     """
     Start a benchmark run with the uploaded contract.
 
@@ -108,112 +109,82 @@ async def start_run(request: StartRunRequest, session: Session = Depends(get_ses
     _ = await benchmark_service.request_health_check()
 
     # Create benchmark row inside of database to mark start of the benchmark
-    benchmark_row = Benchmark(name=benchmark_service.name)
+    benchmark_row = Benchmark(
+        name=benchmark_service.name,
+        arguments=BenchmarkArguments(
+            contract_name=request.contract_name,
+            concurrency=request.concurrency,
+            task_ids=request.task_ids,
+        ),
+    )
     session.add(benchmark_row)
     session.commit()
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     verified_task_ids = await benchmark_service.request_verify_task_ids(task_ids=request.task_ids)
 
-    # Create tasks inside of the database for each task id
-    task_row_mapping: dict[str, Task] = {}
-    for task_id in verified_task_ids:
-        task_row = Task(task_id=task_id, benchmark_id=cast(UUID, benchmark_row.id))
-        task_row_mapping[task_id] = task_row
-
-    session.add_all(list(task_row_mapping.values()))
-    session.commit()
-
-    semaphore = Semaphore(request.concurrency)
-
-    async def process_task(task_id: str) -> EvaluationResult:
-        async with semaphore:
-            # NOTE: This endpoint was made for retrieving task info for a group of tasks
-            # Turns out its a better design to retrieve a single task at a time so that it fits better with a semaphore
-            task_data = (await benchmark_service.request_retrieve_tasks(task_ids=[task_id]))[task_id]
-
-            with Session(bind=engine) as task_session:
-                task_row = task_row_mapping[task_id]
-                # Update the task status to in progress
-                task_row.status = TaskStatus.IN_PROGRESS
-                task_session.add(task_row)
-                task_session.commit()
-
-                async with create_sandbox(
-                    benchmark_service.daytona_client, task_row.task_id, task_data["docker_image"]
-                ) as sandbox:
-                    # Upload the contract to the sandbox after creating and install the dependencies
-                    await upload_contract_to_sandbox(sandbox, request.contract_name)
-                    await install_dependencies(sandbox, request.contract_name)
-
-                    # Setup task if requested
-                    if task_data["request_setup"]:
-                        _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
-
-                    # Run the agent inside of the sandbox
-                    # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
-                    await run_agent(sandbox, request.contract_name, task_row.task_id, task_data["problem_statement"])
-
-                    # Update the status to evaluating once we finish running the agent
-                    task_row.status = TaskStatus.EVALUATING
-                    task_session.add(task_row)
-                    task_session.commit()
-
-                    # Evaluate the instance
-                    # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
-                    evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
-
-                    # Save the evaluation result to the database with the task row
-                    evaluation_result_row = EvaluationResult(
-                        task_id=cast(UUID, task_row.id), instance_id=sandbox.id, result=evaluation_result
-                    )
-                    task_session.add(evaluation_result_row)
-
-                    # Mark the task status as finished since we have finished processing the task
-                    task_row.status = TaskStatus.FINISHED
-                    task_session.add(task_row)
-                    task_session.commit()
-
-                    return evaluation_result_row
-
-    evaluation_result_rows: list[EvaluationResult] = await gather(
-        *[process_task(task_id) for task_id in verified_task_ids]
+    background_tasks.add_task(
+        process_benchmark, request, benchmark_row.id, verified_task_ids, benchmark_service, session
     )
-
-    evaluation_results: dict[str, dict[str, Any]] = {
-        str(evaluation_result_row.task_id): evaluation_result_row.result
-        for evaluation_result_row in evaluation_result_rows
-    }
-
-    # Calculate the final score based off the tasks that were ran
-    final_score: dict[str, Any] = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
-
-    # Create the final evaluation row and add it to the database
-    final_evaluation_row = FinalEvaluation(
-        benchmark_id=cast(UUID, benchmark_row.id),
-        final_score=final_score["final_score"],
-        resolved_tasks=final_score["resolved_tasks"],
-        unresolved_tasks=final_score["unresolved_tasks"],
-    )
-
-    session.add(final_evaluation_row)
-    session.commit()
-
-    # Mark benchmark as completed
-    # NOTE: Finished at will be automatically set by an event when the status becomes finished
-    benchmark_row.status = BenchmarkStatus.FINISHED
-    session.add(benchmark_row)
-    session.commit()
 
     return StartRunResponse(
         benchmark_name=benchmark_row.name,
         contract_name=request.contract_name,
+        benchmark_id=benchmark_row.id,
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
-        finished_at=cast(datetime, benchmark_row.finished_at),
-        task_ids=verified_task_ids,
-        final_score=final_score["final_score"],
-        resolved_tasks=final_score["resolved_tasks"],
-        unresolved_tasks=final_score["unresolved_tasks"],
-        evaluation_results=evaluation_results,
+        task_count=len(verified_task_ids),
+    )
+
+
+@app.get("/fetch-benchmark")
+async def fetch_benchmark(benchmark_id: UUID, session: Session = Depends(get_session)) -> FetchBenchmarkResponse:
+    """
+    Fetch a benchmark by its id.
+
+    Usage:
+    curl -X GET http://<endpoint>/fetch-benchmark/<benchmark_id>
+
+    Returns:
+        FetchBenchmarkResponse
+
+    Returns:
+    - 200 OK if benchmark is found
+    - 404 Not Found if benchmark is not found
+    """
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    benchmark_context = BenchmarkContext(benchmark_row, session)
+
+    return FetchBenchmarkResponse(
+        benchmark_name=benchmark_row.name,
+        benchmark_id=benchmark_row.id,
+        details=benchmark_context.benchmark_details,
+    )
+
+
+@app.get("/retrieve-results", response_model_exclude_none=True)
+async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_session)) -> RetrieveResultsResponse:
+    """
+    Retrieve the results of a benchmark by its id.
+
+    Usage:
+    curl -X GET http://<endpoint>/retrieve-results/<benchmark_id>
+
+    Returns:
+        RetrieveResultsResponse
+    """
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    return RetrieveResultsResponse(
+        benchmark_name=benchmark_row.name,
+        status=benchmark_row.status,
+        benchmark_id=benchmark_row.id,
+        benchmark_arguments=benchmark_row.arguments,
+        final_evaluation=benchmark_row.fetch_final_evaluation(session),
+        evaluation_results=benchmark_row.fetch_evaluation_results(session),
     )

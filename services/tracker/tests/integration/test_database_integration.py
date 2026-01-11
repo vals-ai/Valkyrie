@@ -4,7 +4,7 @@ import uuid
 from asyncio import Semaphore, create_subprocess_exec, gather
 from pathlib import Path
 from random import sample
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import pytest
@@ -14,7 +14,15 @@ from sqlmodel import Session, col, create_engine, inspect, select
 
 from tests.utils import build_task_environment
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
+from tracker.database.models import (
+    Benchmark,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    EvaluationResult,
+    FinalEvaluation,
+    Task,
+    TaskStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,9 +39,7 @@ class TestDatabaseIntegration:
         self, database_session: Session, task_row: Task, evaluation_result: dict[str, Any]
     ) -> EvaluationResult:
         instance_id = evaluation_result["instance_id"]
-        evaluation_result_row = EvaluationResult(
-            task_id=cast(UUID, task_row.id), instance_id=instance_id, result=evaluation_result
-        )
+        evaluation_result_row = EvaluationResult(task_id=task_row.id, instance_id=instance_id, result=evaluation_result)
         database_session.add(evaluation_result_row)
 
         task_row.status = TaskStatus.FINISHED
@@ -46,7 +52,7 @@ class TestDatabaseIntegration:
         self, database_session: Session, benchmark_row: Benchmark, final_score_result: dict[str, Any]
     ) -> FinalEvaluation:
         final_evaluation_row = FinalEvaluation(
-            benchmark_id=cast(UUID, benchmark_row.id),
+            benchmark_id=benchmark_row.id,
             final_score=final_score_result["final_score"],
             resolved_tasks=final_score_result["resolved_tasks"],
             unresolved_tasks=final_score_result["unresolved_tasks"],
@@ -107,7 +113,10 @@ class TestDatabaseIntegration:
         """
 
         # Test the benchmark table
-        benchmark_row = Benchmark(name="SWEBench benchmark")
+        benchmark_row = Benchmark(
+            name="SWEBench benchmark",
+            arguments=BenchmarkArguments(contract_name="claude_code", concurrency=5, task_ids=None),
+        )
         database_session.add(benchmark_row)
 
         # When created its in pending status
@@ -121,7 +130,7 @@ class TestDatabaseIntegration:
         assert benchmark_row.finished_at, "Should be auto generated when the status is updated to finished"
 
         # Test the task table
-        task_row = Task(task_id="task_id_1", benchmark_id=cast(UUID, benchmark_row.id))
+        task_row = Task(task_id="task_id_1", benchmark_id=benchmark_row.id)
         database_session.add(task_row)
 
         # When created its in starting status
@@ -146,7 +155,10 @@ class TestDatabaseIntegration:
 
         # Add a new benchmark row to the database
         benchmark_name = "SWEBench benchmark"
-        benchmark_row = Benchmark(name=benchmark_name)
+        benchmark_row = Benchmark(
+            name=benchmark_name,
+            arguments=BenchmarkArguments(contract_name="claude_code", concurrency=5, task_ids=None),
+        )
         database_session.add(benchmark_row)
 
         # Can fetch it using the same id that it was created with
@@ -161,7 +173,7 @@ class TestDatabaseIntegration:
 
         task_ids = ["task_id_1", "task_id_2", "task_id_3"]
         for task_id in task_ids:
-            _ = await self._create_task(database_session, task_id, cast(UUID, benchmark_row.id))
+            _ = await self._create_task(database_session, task_id, benchmark_row.id)
 
         # Can fetch the tasks based off the benchmark id and that the tasks are created as expected
         fetch_tasks_query = (
@@ -261,7 +273,14 @@ class TestDatabaseIntegration:
             assert response == {"status": "ok"}
 
             # Create benchmark row to initiate a benchmark
-            benchmark_row = Benchmark(name=benchmark_service.name)
+            benchmark_row = Benchmark(
+                name=benchmark_service.name,
+                arguments=BenchmarkArguments(
+                    contract_name="claude_code",
+                    concurrency=5,
+                    task_ids=None,
+                ),
+            )
             database_session.add(benchmark_row)
             database_session.flush()
 
@@ -281,7 +300,7 @@ class TestDatabaseIntegration:
             # Create the task rows for each task we are going to run
             task_row_mapping: dict[str, Task] = {}
             for task_id in task_ids:
-                task_row = await self._create_task(database_session, task_id, cast(UUID, benchmark_row.id))
+                task_row = await self._create_task(database_session, task_id, benchmark_row.id)
                 task_row_mapping[task_id] = task_row
 
             logger.info(f"Sample of task row mapping: {str(list(task_row_mapping.values())[:250])}")
@@ -312,25 +331,30 @@ class TestDatabaseIntegration:
             logger.info(f"Final score response: {str(response)[:250]}")
 
             # Create the final evaluation row and add it to the database
-            evaluation_result_row = await self._create_final_evaluation(database_session, benchmark_row, response)
+            final_evaluation_row = await self._create_final_evaluation(database_session, benchmark_row, response)
 
             # Fetch the evaluation results from the final evaluation row
-            fetched_evaluation_results = evaluation_result_row.fetch_evaluation_results(database_session)
+            fetched_evaluation_results = final_evaluation_row.fetch_evaluation_results(database_session)
 
-            results = fetched_evaluation_results.all()
+            results = list(fetched_evaluation_results.keys())
             assert len(results) == len(list(evaluation_results.keys()))
 
             logger.info(f"Sample of fetched evaluation results: {str(results[:100])}")
 
-            for evaluation_result in results:
-                task_row = database_session.get(Task, evaluation_result.task_id)
-                assert task_row is not None
-                assert evaluation_results.get(task_row.task_id)
+            # check that the evaluation results retrieved match the ones stored in the database
+            for task_id, evaluation_result in fetched_evaluation_results.items():
+                evaluation_result_row = database_session.exec(
+                    select(EvaluationResult)
+                    .join(Task, col(EvaluationResult.task_id) == col(Task.id))
+                    .where(col(Task.task_id) == task_id)
+                ).first()
+                assert evaluation_result_row is not None
+                assert evaluation_result == evaluation_result_row.result
 
             # Verify that the final evaluation row matches what we have in the database
-            assert evaluation_result_row.final_score == response["final_score"]
-            assert evaluation_result_row.resolved_tasks == response["resolved_tasks"]
-            assert evaluation_result_row.unresolved_tasks == response["unresolved_tasks"]
+            assert final_evaluation_row.final_score == response["final_score"]
+            assert final_evaluation_row.resolved_tasks == response["resolved_tasks"]
+            assert final_evaluation_row.unresolved_tasks == response["unresolved_tasks"]
 
         except Exception as e:
             pytest.fail(f"End to end test failed: {e}")

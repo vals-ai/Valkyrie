@@ -4,16 +4,18 @@ from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Connection, ScalarResult, event
+from pydantic import BaseModel
+from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapper
-from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, col, select
+from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, TypeDecorator, select
 
-from tracker.database.utils import has_field_changed
+from tracker.database.helpers import has_field_changed
 
 
 class BenchmarkStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     FINISHED = "finished"
+    ERROR = "error"
 
 
 class TaskStatus(str, Enum):
@@ -21,23 +23,55 @@ class TaskStatus(str, Enum):
     IN_PROGRESS = "in_progress"
     EVALUATING = "evaluating"
     FINISHED = "finished"
+    ERROR = "error"
 
 
 class FinalEvaluation(SQLModel, table=True):
-    id: UUID | None = Field(default_factory=uuid4, primary_key=True)
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     benchmark_id: UUID = Field(foreign_key="benchmark.id")
     final_score: float = Field(nullable=False)
+
     resolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     unresolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
 
-    def fetch_evaluation_results(self, session: Session) -> ScalarResult["EvaluationResult"]:
-        """Select all evaluation results for a given benchmark"""
-        statement = (
-            select(EvaluationResult)
-            .join(Task, col(EvaluationResult.task_id) == col(Task.id))
-            .where(col(Task.benchmark_id) == self.benchmark_id)
-        )
-        return session.exec(statement)
+    def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
+        from tracker.database.utils import fetch_evaluation_results
+
+        return fetch_evaluation_results(self.benchmark_id, session)
+
+
+class BenchmarkArguments(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    contract_name: str
+    concurrency: int
+    task_ids: list[str] | None
+
+
+class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
+    """
+    Hook for converting benchmark arguments to an object and back again.
+    Allows us to use the type without manually serializing and deserializing.
+    NOTE: We do this because the field is not relevant enough to be a separate table and we want it created with the benchmark row
+
+    Related Documentation:
+        - https://docs.sqlalchemy.org/en/20/core/custom_types.html#sqlalchemy.types.TypeDecorator
+    """
+
+    impl = JSON
+    cache_ok = True
+
+    def process_bind_param(self, value: BenchmarkArguments | None, dialect: Dialect) -> dict[str, Any] | None:
+        """Runs when we save the value to the database."""
+        if value is None:
+            return None
+        return value.model_dump()
+
+    def process_result_value(self, value: dict[str, Any] | None, dialect: Dialect) -> BenchmarkArguments | None:
+        """Runs when we fetch the value from the database."""
+        if value is None:
+            return None
+        return BenchmarkArguments(**value)
 
 
 class Benchmark(SQLModel, table=True):
@@ -48,11 +82,27 @@ class Benchmark(SQLModel, table=True):
         ),
     )
 
-    id: UUID | None = Field(default_factory=uuid4, primary_key=True)
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
-    status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
+    status: BenchmarkStatus = Field(
+        default=BenchmarkStatus.IN_PROGRESS
+    )  # TODO: Automatically set to finished when all tasks are in a finished state or error state
+
+    error_message: str | None = Field(default=None)
+    arguments: BenchmarkArguments = Field(
+        sa_column=Column(BenchmarkArgumentsType),
+    )
+
+    def fetch_final_evaluation(self, session: Session) -> FinalEvaluation | None:
+        statement = select(FinalEvaluation).where(FinalEvaluation.benchmark_id == self.id)
+        return session.exec(statement).first()
+
+    def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
+        from tracker.database.utils import fetch_evaluation_results
+
+        return fetch_evaluation_results(self.id, session)
 
 
 @event.listens_for(Benchmark, "before_insert")
@@ -87,10 +137,11 @@ class Task(SQLModel, table=True):
         ),
     )
 
-    id: UUID | None = Field(default_factory=uuid4, primary_key=True)
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     task_id: str = Field(unique=True)
     status: TaskStatus = Field(default=TaskStatus.STARTING)
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
     benchmark_id: UUID = Field(foreign_key="benchmark.id")
 
@@ -114,7 +165,7 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
 
 
 class EvaluationResult(SQLModel, table=True):
-    id: UUID | None = Field(default_factory=uuid4, primary_key=True)
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     task_id: UUID = Field(foreign_key="task.id")
     instance_id: str = Field(unique=True)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
