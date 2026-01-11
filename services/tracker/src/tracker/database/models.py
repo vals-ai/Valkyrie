@@ -77,7 +77,7 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
 class Benchmark(SQLModel, table=True):
     __table_args__: tuple[CheckConstraint, ...] = (
         CheckConstraint(
-            "(status != 'FINISHED') OR (finished_at IS NOT NULL)",
+            "(status != 'FINISHED' AND status != 'ERROR') OR (finished_at IS NOT NULL)",
             name="benchmark_finished_requires_timestamp",
         ),
     )
@@ -119,7 +119,7 @@ def set_finished_at_when_benchmark_finished(_mapper: Mapper[Benchmark], _connect
     """
 
     # Benchmark statuses we want the finished_at timestamp to be set when updated to
-    finished_states = [BenchmarkStatus.FINISHED]
+    finished_states = [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR]
 
     # Check that the status has actually changed between the current and previous state
     status_changed = has_field_changed(target, "status")
@@ -132,7 +132,7 @@ def set_finished_at_when_benchmark_finished(_mapper: Mapper[Benchmark], _connect
 class Task(SQLModel, table=True):
     __table_args__: tuple[CheckConstraint, ...] = (
         CheckConstraint(
-            "(status != 'FINISHED') OR (finished_at IS NOT NULL)",
+            "(status != 'FINISHED' AND status != 'ERROR') OR (finished_at IS NOT NULL)",
             name="task_finished_requires_timestamp",
         ),
     )
@@ -154,7 +154,7 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
     """
 
     # Task statuses we want the finished_at timestamp to be set when updated to
-    finished_states = [TaskStatus.FINISHED]
+    finished_states = [TaskStatus.FINISHED, TaskStatus.ERROR]
 
     # Check that the status has actually changed between the current and previous state
     status_changed = has_field_changed(target, "status")
