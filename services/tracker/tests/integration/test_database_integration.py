@@ -302,7 +302,7 @@ class TestDatabaseIntegration:
             logger.info(f"Sample of task row mapping: {str(list(task_row_mapping.values())[:250])}")
 
             semaphore = Semaphore(5)
-            evaluation_results: dict[str, dict[str, Any]] = {}
+            evaluation_results: dict[str, dict[str, Any] | None] = {}
 
             task_information = await benchmark_service.request_retrieve_tasks(task_ids=task_ids)
 

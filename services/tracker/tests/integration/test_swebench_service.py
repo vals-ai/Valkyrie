@@ -1,9 +1,12 @@
+from typing import Any
+
 import pytest
 from daytona import AsyncDaytona, AsyncSandbox
 from pytest import MonkeyPatch
 from requests.exceptions import ConnectTimeout
-from tracker.benchmark_service import BenchmarkService
+
 from tests.utils import build_task_environment, validate_docker_image
+from tracker.benchmark_service import BenchmarkService
 
 
 @pytest.fixture
@@ -235,7 +238,7 @@ class TestSWEBenchmarkService:
         """
         try:
             task_id = "astropy__astropy-12907"
-            first_evaluation_result = {
+            first_evaluation_result: dict[str, dict[str, Any] | None] = {
                 task_id: {
                     "task_id": task_id,
                     "instance_id": task_id,
