@@ -26,9 +26,7 @@ async def process_task(
         with Session(bind=engine, expire_on_commit=False) as task_session:
             task_row = task_row_mapping[task_id]
             try:
-                # TODO: This endpoint was made for retrieving task info for a group of tasks
-                # Turns out its a better design to retrieve a single task at a time so that it fits better with a semaphore
-                task_data = (await benchmark_service.request_retrieve_tasks(task_ids=[task_id]))[task_id]
+                task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
 
                 task_row = task_session.merge(task_row)
                 task_row.status = TaskStatus.IN_PROGRESS

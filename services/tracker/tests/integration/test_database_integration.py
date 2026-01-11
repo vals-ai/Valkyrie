@@ -323,10 +323,9 @@ class TestDatabaseIntegration:
             semaphore = Semaphore(5)
             evaluation_results: dict[str, dict[str, Any] | None] = {}
 
-            task_information = await benchmark_service.request_retrieve_tasks(task_ids=task_ids)
-
-            async def process_task(task_id: str, task_data: dict[str, str]) -> None:
+            async def process_task(task_id: str) -> None:
                 async with semaphore:
+                    task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
                     task_row = task_row_mapping[task_id]
                     evaluation_result = await self._evaluate_instance(
                         database_session, benchmark_service, daytona_client, task_row, task_data
@@ -336,7 +335,7 @@ class TestDatabaseIntegration:
                     )
                     evaluation_results[task_id] = evaluation_result_row.result
 
-            _ = await gather(*[process_task(task_id, task_data) for task_id, task_data in task_information.items()])
+            _ = await gather(*[process_task(task_id) for task_id in task_ids])
 
             logger.info(f"Sample of evaluation results: {str(list(evaluation_results.values())[:100])}")
 

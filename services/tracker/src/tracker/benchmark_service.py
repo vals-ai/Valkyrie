@@ -100,22 +100,20 @@ class BenchmarkService:
 
         return response.json().get("task_ids", [])
 
-    async def request_retrieve_tasks(
-        self, task_ids: list[str], skip_validation: bool = False
-    ) -> dict[str, dict[str, str]]:
+    async def request_retrieve_task(self, task_id: str, skip_validation: bool = False) -> dict[str, str]:
         """
-        Requests retrieve tasks from benchmark service
+        Requests retrieve task from benchmark service for a single task
         """
 
-        params = {"task_ids": task_ids, "skip_validation": skip_validation}
+        params = {"task_id": task_id, "skip_validation": skip_validation}
         async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
-            response = await client.get(f"{self._url}/retrieve-tasks/", params=params)
+            response = await client.get(f"{self._url}/retrieve-task/", params=params)
 
-        logger.debug(f"Retrieve tasks response: {response.text}")
+        logger.debug(f"Retrieve task response: {response.text}")
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
-                f"Retrieve tasks failed with status code {response.status_code}, response: {response.text}"
+                f"Retrieve task failed with status code {response.status_code}, response: {response.text}"
             )
 
         return response.json()

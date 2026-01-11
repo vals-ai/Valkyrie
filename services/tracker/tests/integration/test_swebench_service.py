@@ -98,50 +98,37 @@ class TestSWEBenchmarkService:
         except Exception as e:
             pytest.fail(f"Verify task ids failed: {e}", pytrace=False)
 
-    async def test_retrieve_tasks(self, benchmark_service: BenchmarkService, docker_image_format: str):
+    async def test_retrieve_task(self, benchmark_service: BenchmarkService, docker_image_format: str):
         """
-        Test the retrieve tasks endpoint of the benchmark service.
+        Test the retrieve task endpoint of the benchmark service.
 
         Test Cases:
-        - Valid task ids: Returns the tasks in the same order as the task ids passed in
-        - Invalid task ids: Raises Exception that the user sees
-        - No task ids passed in: Raises Exception that the user sees
+        - Valid task id: Returns the task data with correct structure
+        - Invalid task id: Raises Exception that the user sees
         """
 
         try:
-            # Test case 1. Valid tasks passed in returns a valid dict structure
+            # Test case 1. Valid task returns a valid dict structure
             task_ids = ["astropy__astropy-12907", "django__django-11066", "django__django-12858"]
-            response: dict[str, dict[str, str]] = await benchmark_service.request_retrieve_tasks(task_ids=task_ids)
 
-            assert list(response.keys()) == task_ids, "Returned in the same order as passed in"
+            for task_id in task_ids:
+                task_data: dict[str, str] = await benchmark_service.request_retrieve_task(task_id=task_id)
 
-            for task_id, task_data in response.items():
                 assert task_data.get("docker_image") == docker_image_format.format(task_id=task_id)
                 assert task_data.get("request_setup")
                 assert task_data.get("problem_statement")
 
-            # We can also pull the manifest from these docker images to ensure that they do in fact exist
-            failed_images: list[str] = []
-            for task_id, task_data in response.items():
+                # Verify docker image exists
                 if not await validate_docker_image(task_data["docker_image"]):
-                    failed_images.append(task_id)
+                    pytest.fail(f"Failed to validate docker image for task: {task_id}")
 
-            assert len(failed_images) == 0, f"Failed to validate the following tasks: {', '.join(failed_images)}"
-
-            # Test case 2. Invalid task ids passed in raises and Exception that the user sees
+            # Test case 2. Invalid task id raises an Exception that the user sees
             # Skip validation since some tasks don't have proper manifests but we can still pull them
             with pytest.raises(Exception):
-                _ = await benchmark_service.request_retrieve_tasks(
-                    task_ids=["django__django-12858", "invalid_task_id"], skip_validation=True
-                )
-
-            # Test case 3. Ensure that if we pass in an empty list, we get an error back from the service
-            # (Minimum of 1 task is required to fetch the tasks)
-            with pytest.raises(Exception):
-                _ = await benchmark_service.request_retrieve_tasks(task_ids=[], skip_validation=True)
+                _ = await benchmark_service.request_retrieve_task(task_id="invalid_task_id", skip_validation=True)
 
         except Exception as e:
-            pytest.fail(f"Retrieve tasks failed: {e}", pytrace=False)
+            pytest.fail(f"Retrieve task failed: {e}", pytrace=False)
 
     @staticmethod
     async def _fetch_commit(sandbox: AsyncSandbox) -> str:

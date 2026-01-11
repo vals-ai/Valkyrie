@@ -1,5 +1,6 @@
 from asyncio import Semaphore
 from functools import partial
+from sqlite3 import OperationalError
 from typing import Any
 
 from pytest import MonkeyPatch
@@ -157,3 +158,129 @@ class TestProcessBenchmark:
 
         # All tasks have been marked as finished
         assert len(tasks) == len(task_ids)
+
+    async def test_process_benchmark_error(
+        self, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
+    ):
+        """
+        Test that we are correctly handling when a benchmark errors out
+
+        Test Cases:
+            - Benchmark row is marked as error if at any point we get an error outside of processing the tasks
+            - Error message is set on the benchmark row
+        """
+
+        # Example tasks from swebench
+        task_ids: list[str] = ["astropy__astropy-12907"]
+        start_run_request = StartRunRequest(
+            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
+        )
+
+        # Create benchmark row inside of start run request
+        benchmark_row = Benchmark(
+            name=benchmark_service.name,
+            arguments=BenchmarkArguments(
+                contract_name=start_run_request.contract_name,
+                concurrency=start_run_request.concurrency,
+                task_ids=start_run_request.task_ids,
+            ),
+        )
+
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        original_commit = Session.commit
+        commit_count = {"count": 0}
+
+        # Fail on the second commit
+        def mock_commit_with_error(self: Session) -> None:
+            commit_count["count"] += 1
+            if commit_count["count"] == 1:
+                raise OperationalError("Handled database error")
+
+            original_commit(self)
+
+        # Monkey patch failure to push benchmark row to the database
+        monkeypatch.setattr(Session, "commit", mock_commit_with_error)
+        monkeypatch.setattr("tracker.database.utils.engine", database_session.bind)
+
+        # Run the benchmark (error is not raised and instead handled)
+        await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
+
+        # Benchmark status is updated to error once the benchmark is done running
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.ERROR
+        assert benchmark_row.error_message == "Handled database error"
+
+    async def test_process_task_error(
+        self, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
+    ):
+        """
+        Test that we are correctly handling when a task errors out
+
+        Test Cases:
+            - Task row is marked as error if process task fails
+            - Error message is set on the task row
+        """
+
+        task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
+
+        start_run_request = StartRunRequest(
+            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
+        )
+
+        benchmark_row = Benchmark(
+            name=benchmark_service.name,
+            arguments=BenchmarkArguments(
+                contract_name=start_run_request.contract_name,
+                concurrency=start_run_request.concurrency,
+                task_ids=start_run_request.task_ids,
+            ),
+        )
+
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        count = {"count": 0}
+
+        async def mock_request_setup_task(original_method: Any, task_id: str, instance_id: str) -> None:
+            count["count"] += 1
+            if count["count"] == 2:
+                raise Exception("Exception raised while setting up the task")
+
+            return await original_method(task_id, instance_id)
+
+        original_request_setup_task = benchmark_service.request_setup_task
+
+        # Setup fails for the second task
+        monkeypatch.setattr(
+            benchmark_service,
+            "request_setup_task",
+            partial(mock_request_setup_task, original_request_setup_task),
+        )
+
+        monkeypatch.setattr("tracker.database.utils.engine", database_session.bind)
+
+        await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
+
+        # Benchmark status is still finished even though one task has errored out
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
+
+        tasks = database_session.exec(
+            select(Task).where((Task.benchmark == benchmark_row.id) & (Task.status == TaskStatus.ERROR))
+        ).all()
+
+        # One task has been marked as error
+        assert len(tasks) == 1
+
+        # Error message is set on the task row
+        assert tasks[0].error_message == "Exception raised while setting up the task"
+        assert tasks[0].status == TaskStatus.ERROR
+
+        final_evaluation = benchmark_row.fetch_final_evaluation(database_session)
+        assert final_evaluation
+
+        evaluation_results = final_evaluation.fetch_evaluation_results(database_session)
+        assert evaluation_results is not None
+        assert len(list(evaluation_results.keys())) == 1, "Only one task should be evaluated"
