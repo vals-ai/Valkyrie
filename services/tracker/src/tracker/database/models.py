@@ -35,7 +35,7 @@ class FinalEvaluation(SQLModel, table=True):
     unresolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
 
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
-        from tracker.database.utils import fetch_evaluation_results
+        from tracker.utils import fetch_evaluation_results
 
         return fetch_evaluation_results(self.benchmark, session)
 
@@ -100,7 +100,7 @@ class Benchmark(SQLModel, table=True):
         return session.exec(statement).first()
 
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
-        from tracker.database.utils import fetch_evaluation_results
+        from tracker.utils import fetch_evaluation_results
 
         return fetch_evaluation_results(self.id, session)
 

@@ -8,9 +8,9 @@ from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkArguments, BenchmarkStatus, EvaluationResult, Task, TaskStatus
-from tracker.database.utils import process_benchmark, process_task
 from tracker.sandbox import run_agent
 from tracker.types import StartRunRequest
+from tracker.utils import process_benchmark, process_task
 
 
 class TestProcessBenchmark:

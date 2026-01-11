@@ -5,7 +5,6 @@ from sqlmodel import Session
 
 from tracker.database.models import Benchmark, BenchmarkArguments
 from tracker.database.session import get_session
-from tracker.database.utils import BenchmarkContext, commit_benchmark_error, process_benchmark
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
@@ -16,6 +15,7 @@ from tracker.types import (
     StartRunRequest,
     StartRunResponse,
 )
+from tracker.utils import BenchmarkContext, commit_benchmark_error, process_benchmark
 
 logger = get_logger(__name__)
 
