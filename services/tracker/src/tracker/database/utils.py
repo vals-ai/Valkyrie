@@ -21,56 +21,62 @@ async def process_task(
     semaphore: Semaphore,
     benchmark_service: BenchmarkService,
     task_id: str,
-) -> tuple[EvaluationResult, str]:
+) -> tuple[EvaluationResult | None, str]:
     async with semaphore:
-        # TODO: This endpoint was made for retrieving task info for a group of tasks
-        # Turns out its a better design to retrieve a single task at a time so that it fits better with a semaphore
-        task_data = (await benchmark_service.request_retrieve_tasks(task_ids=[task_id]))[task_id]
-
         with Session(bind=engine, expire_on_commit=False) as task_session:
-            task_row = task_session.merge(task_row_mapping[task_id])
-            task_row.status = TaskStatus.IN_PROGRESS
-            task_session.add(task_row)
-            task_session.commit()
+            task_row = task_row_mapping[task_id]
+            try:
+                # TODO: This endpoint was made for retrieving task info for a group of tasks
+                # Turns out its a better design to retrieve a single task at a time so that it fits better with a semaphore
+                task_data = (await benchmark_service.request_retrieve_tasks(task_ids=[task_id]))[task_id]
 
-            async with create_sandbox(
-                benchmark_service.daytona_client, task_row.task_id, task_data["docker_image"]
-            ) as sandbox:
-                # Upload the contract to the sandbox after creating and install the dependencies
-                await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
-                await install_dependencies(sandbox, start_run_request.contract_name)
-
-                # Setup task if requested
-                if task_data["request_setup"]:
-                    _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
-
-                # Run the agent inside of the sandbox
-                # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
-                await run_agent(
-                    sandbox, start_run_request.contract_name, task_row.task_id, task_data["problem_statement"]
-                )
-
-                # Update the status to evaluating once we finish running the agent
-                task_row.status = TaskStatus.EVALUATING
+                task_row = task_session.merge(task_row)
+                task_row.status = TaskStatus.IN_PROGRESS
                 task_session.add(task_row)
                 task_session.commit()
 
-                # Evaluate the instance
-                # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
-                evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
+                async with create_sandbox(
+                    benchmark_service.daytona_client, task_row.task_id, task_data["docker_image"]
+                ) as sandbox:
+                    # Upload the contract to the sandbox after creating and install the dependencies
+                    await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
+                    await install_dependencies(sandbox, start_run_request.contract_name)
 
-                # Save the evaluation result to the database with the task row
-                evaluation_result_row = EvaluationResult(
-                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result
-                )
-                task_session.add(evaluation_result_row)
+                    # Setup task if requested
+                    if task_data["request_setup"]:
+                        _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
 
-                # Mark the task status as finished since we have finished processing the task
-                task_row.status = TaskStatus.FINISHED
-                task_session.add(task_row)
-                task_session.commit()
+                    # Run the agent inside of the sandbox
+                    # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
+                    await run_agent(
+                        sandbox, start_run_request.contract_name, task_row.task_id, task_data["problem_statement"]
+                    )
 
-                return evaluation_result_row, task_id
+                    # Update the status to evaluating once we finish running the agent
+                    task_row.status = TaskStatus.EVALUATING
+                    task_session.add(task_row)
+                    task_session.commit()
+
+                    # Evaluate the instance
+                    # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                    evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
+
+                    # Save the evaluation result to the database with the task row
+                    evaluation_result_row = EvaluationResult(
+                        task=task_row.id, instance_id=sandbox.id, result=evaluation_result
+                    )
+                    task_session.add(evaluation_result_row)
+
+                    # Mark the task status as finished since we have finished processing the task
+                    task_row.status = TaskStatus.FINISHED
+                    task_session.add(task_row)
+                    task_session.commit()
+
+                    return evaluation_result_row, task_id
+            except Exception as e:
+                error_message = str(e)
+                commit_task_error(task_row, task_session, error_message)
+                return None, task_id
 
 
 async def process_benchmark(
@@ -97,15 +103,17 @@ async def process_benchmark(
 
         semaphore = Semaphore(start_run_request.concurrency)
 
-        evaluation_result_rows: list[tuple[EvaluationResult, str]] = await gather(
+        evaluation_result_rows: list[tuple[EvaluationResult | None, str]] = await gather(
             *[
                 process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
                 for task_id in verified_task_ids
             ]
         )
 
-        evaluation_results: dict[str, dict[str, Any]] = {
-            task_id: evaluation_result.result for evaluation_result, task_id in evaluation_result_rows
+        # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
+        evaluation_results: dict[str, dict[str, Any] | None] = {
+            task_id: evaluation_result.result if isinstance(evaluation_result, EvaluationResult) else evaluation_result
+            for evaluation_result, task_id in evaluation_result_rows
         }
 
         # Calculate the final score based off the tasks that were ran
@@ -202,4 +210,11 @@ def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_mes
     benchmark_row.status = BenchmarkStatus.ERROR
     benchmark_row.error_message = error_message
     session.add(benchmark_row)
+    session.commit()
+
+
+def commit_task_error(task_row: Task, session: Session, error_message: str) -> None:
+    task_row.status = TaskStatus.ERROR
+    task_row.error_message = error_message
+    session.add(task_row)
     session.commit()

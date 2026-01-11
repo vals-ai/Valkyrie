@@ -172,7 +172,7 @@ class BenchmarkService:
 
         return response.json()
 
-    async def request_final_score(self, evaluation_results: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    async def request_final_score(self, evaluation_results: dict[str, dict[str, Any] | None]) -> dict[str, Any]:
         """
         Requests final score from benchmark service
         """
