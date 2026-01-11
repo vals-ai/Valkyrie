@@ -85,48 +85,52 @@ async def process_benchmark(
     if not benchmark_row:
         raise ValueError(f"Benchmark with id {benchmark_id} not found")
 
-    # Create tasks inside of the database for each task id
-    task_row_mapping: dict[str, Task] = {}
-    for task_id in verified_task_ids:
-        task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
-        task_row_mapping[task_id] = task_row
+    try:
+        # Create tasks inside of the database for each task id
+        task_row_mapping: dict[str, Task] = {}
+        for task_id in verified_task_ids:
+            task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
+            task_row_mapping[task_id] = task_row
 
-    session.add_all(list(task_row_mapping.values()))
-    session.commit()
+        session.add_all(list(task_row_mapping.values()))
+        session.commit()
 
-    semaphore = Semaphore(start_run_request.concurrency)
+        semaphore = Semaphore(start_run_request.concurrency)
 
-    evaluation_result_rows: list[tuple[EvaluationResult, str]] = await gather(
-        *[
-            process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
-            for task_id in verified_task_ids
-        ]
-    )
+        evaluation_result_rows: list[tuple[EvaluationResult, str]] = await gather(
+            *[
+                process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
+                for task_id in verified_task_ids
+            ]
+        )
 
-    evaluation_results: dict[str, dict[str, Any]] = {
-        task_id: evaluation_result.result for evaluation_result, task_id in evaluation_result_rows
-    }
+        evaluation_results: dict[str, dict[str, Any]] = {
+            task_id: evaluation_result.result for evaluation_result, task_id in evaluation_result_rows
+        }
 
-    # Calculate the final score based off the tasks that were ran
-    final_score: dict[str, Any] = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
+        # Calculate the final score based off the tasks that were ran
+        final_score: dict[str, Any] = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
 
-    # Create the final evaluation row and add it to the database
-    final_evaluation_row = FinalEvaluation(
-        benchmark=benchmark_row.id,
-        final_score=final_score["final_score"],
-        # TODO: Remove these fields because not each task will have a resolved or unresolved task
-        resolved_tasks=final_score["resolved_tasks"],
-        unresolved_tasks=final_score["unresolved_tasks"],
-    )
+        # Create the final evaluation row and add it to the database
+        final_evaluation_row = FinalEvaluation(
+            benchmark=benchmark_row.id,
+            final_score=final_score["final_score"],
+            # TODO: Remove these fields because not each task will have a resolved or unresolved task
+            resolved_tasks=final_score["resolved_tasks"],
+            unresolved_tasks=final_score["unresolved_tasks"],
+        )
 
-    session.add(final_evaluation_row)
-    session.commit()
+        session.add(final_evaluation_row)
+        session.commit()
 
-    # Mark benchmark as completed
-    # NOTE: Finished at will be automatically set by an event when the status becomes finished
-    benchmark_row.status = BenchmarkStatus.FINISHED
-    session.add(benchmark_row)
-    session.commit()
+        # Mark benchmark as completed
+        # NOTE: Finished at will be automatically set by an event when the status becomes finished
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        session.add(benchmark_row)
+        session.commit()
+    except Exception as e:
+        error_message = str(e)
+        commit_benchmark_error(benchmark_row, session, error_message)
 
 
 class TaskCounts(NamedTuple):
@@ -192,3 +196,10 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session) -> dict[str, 
         evaluation_results[task_id] = result_data
 
     return evaluation_results
+
+
+def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_message: str) -> None:
+    benchmark_row.status = BenchmarkStatus.ERROR
+    benchmark_row.error_message = error_message
+    session.add(benchmark_row)
+    session.commit()

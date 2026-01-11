@@ -5,7 +5,7 @@ from sqlmodel import Session
 
 from tracker.database.models import Benchmark, BenchmarkArguments
 from tracker.database.session import get_session
-from tracker.database.utils import BenchmarkContext, process_benchmark
+from tracker.database.utils import BenchmarkContext, commit_benchmark_error, process_benchmark
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
@@ -121,7 +121,12 @@ async def start_run(
     session.commit()
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
-    verified_task_ids = await benchmark_service.request_verify_task_ids(task_ids=request.task_ids)
+    try:
+        verified_task_ids = await benchmark_service.request_verify_task_ids(task_ids=request.task_ids)
+    except Exception as e:
+        error_message = str(e)
+        commit_benchmark_error(benchmark_row, session, error_message)
+        raise HTTPException(status_code=500, detail=error_message) from e
 
     background_tasks.add_task(
         process_benchmark, request, benchmark_row.id, verified_task_ids, benchmark_service, session
