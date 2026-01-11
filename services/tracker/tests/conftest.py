@@ -27,7 +27,7 @@ def database_session() -> Generator[Session, Any, None]:
 
     SQLModel.metadata.create_all(test_engine)
 
-    with Session(test_engine) as session:
+    with Session(test_engine, expire_on_commit=False) as session:
         yield session
 
     SQLModel.metadata.drop_all(test_engine)
