@@ -4,7 +4,7 @@ from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_serializer
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapper
 from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, TypeDecorator, select
@@ -33,6 +33,10 @@ class FinalEvaluation(SQLModel, table=True):
 
     resolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     unresolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+
+    @field_serializer("id", "benchmark")
+    def serialize_uuid(self, value: UUID | str) -> str:
+        return str(value)
 
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
         from tracker.utils import fetch_evaluation_results

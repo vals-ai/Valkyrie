@@ -25,6 +25,7 @@ run:
 		--name $(CONTAINER_NAME) \
 		-p 8000:8000 \
 		--env-file .env \
+		-v ${HOME}/.aws:/root/.aws:ro \
 		$(IMAGE_NAME)
 	@echo "Container started successfully!"
 	@echo "Tracker service is running on http://localhost:8000"

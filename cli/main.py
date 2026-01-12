@@ -1,16 +1,15 @@
 """CLI views/commands for the agentic harness."""
 
-import json
 from pathlib import Path
 from uuid import UUID
 
 import click
-from tracker.types import StartRunResponse
 
 import cli.contract_bundler as bundler
 from cli.contract_bundler import BundlerError
 from cli.tracker_service import TrackerService, TrackerServiceError
 from cli.utils import check_tracker_service_health, format_benchmark_status, format_start_run_response
+from services.tracker.src.tracker.types import StartRunResponse
 
 
 @click.group()
@@ -41,7 +40,7 @@ def cli():
 )
 @click.option(
     "--task-ids",
-    type=str | None,
+    type=str,
     required=False,
     default=None,
     help="Comma-separated list of task IDs (e.g., astropy__astropy-12907,astropy__astropy-12908)",
@@ -58,18 +57,20 @@ def start_benchmark(
     Example:
         harness run --contract contracts/claude_code --benchmark swebench
     """
-    click.echo(f"Running benchmark: {benchmark}")
-    click.echo(f"Contract: {contract}")
-    click.echo(f"Concurrency: {concurrency}")
+    click.echo("Arguments:")
+    click.echo(f"  - Benchmark: {benchmark}")
+    click.echo(f"  - Contract: {contract}")
+    click.echo(f"  - Concurrency: {concurrency}")
+    if task_ids:
+        click.echo(f"  - Task IDs: {task_ids[:100]}{'...' if len(task_ids) > 100 else ''}")
+    else:
+        click.echo("  - Task IDs: all tasks")
 
     formatted_task_ids: list[str] | None = None
     if task_ids:
         formatted_task_ids = task_ids.split(",")
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
-    click.echo()
-
-    click.echo("Validating contract...")
     bundler.validate_contract(contract)
 
     try:
@@ -78,7 +79,6 @@ def start_benchmark(
                 return
 
             click.echo(f"Creating contract bundle for: {contract}")
-            click.echo("Zipping bundle...")
 
             with bundler.create_contract_bundle_stream(contract) as file_stream:
                 click.echo("Uploading bundle to tracker service...")
@@ -89,7 +89,7 @@ def start_benchmark(
 
             if response.status_code != 200:
                 click.echo(click.style("Benchmark failed to start!", fg="red", bold=True))
-                click.echo(json.dumps(response.json(), indent=4, default=str))
+                click.echo(response.text)
                 return
 
             format_start_run_response(StartRunResponse.model_validate(response.json()))
@@ -120,8 +120,6 @@ def fetch_benchmark(benchmark_id: UUID):
 
             response = tracker.fetch_benchmark(benchmark_id)
 
-            click.echo(click.style("Benchmark fetched successfully!", fg="green", bold=True))
-
             format_benchmark_status(response)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
@@ -145,7 +143,7 @@ def retrieve_results(benchmark_id: UUID, path: Path):
     Retrieve the results of a benchmark by its benchmark id.
 
     Example:
-        harness retrieve-results --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --path ./results.json
+        harness retrieve-results --benchmark-id e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
     click.echo(f"Retrieving results for benchmark: {benchmark_id}")
 

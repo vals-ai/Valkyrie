@@ -16,7 +16,6 @@ def check_tracker_service_health(tracker: TrackerService) -> bool:
     Returns:
         bool: True if the tracker service is healthy, False otherwise
     """
-    click.echo("\nChecking tracker service health...")
     response = tracker.health_check()
     if response.status_code != 200:
         click.echo(click.style("Tracker service failed to respond!", fg="red", bold=True))
@@ -24,7 +23,6 @@ def check_tracker_service_health(tracker: TrackerService) -> bool:
         return False
 
     click.echo(click.style("Tracker service health check successful!", fg="green", bold=True))
-    click.echo(json.dumps(response.json(), indent=4, default=str))
 
     return True
 
@@ -59,13 +57,15 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     filled_width = int(bar_width * progress_pct / 100)
     bar = "█" * filled_width + "░" * (bar_width - filled_width)
 
-    click.echo(f"\n{click.style('Benchmark:', bold=True)} {benchmark_name}")
+    click.echo(f"{click.style('Benchmark:', bold=True)} {benchmark_name}")
     click.echo(f"{click.style('Started at:', bold=True)} {started_at}")
     click.echo(f"{click.style('Benchmark ID:', bold=True)} {benchmark_id}")
     click.echo()
 
     status_text = click.style(status, fg=status_color, bold=True)
-    click.echo(f"[{bar}] {finished_tasks}/{total_tasks} ({progress_pct:.1f}%) • {status_text}")
+    click.echo(
+        f"[{bar}] {finished_tasks}/{total_tasks} ({progress_pct:.1f}%) • {status_text.replace('_', ' ').capitalize()}"
+    )
 
 
 def format_start_run_response(start_run_response: StartRunResponse) -> None:
@@ -93,3 +93,10 @@ def format_start_run_response(start_run_response: StartRunResponse) -> None:
             f"Track progress: harness fetch-benchmark --benchmark-id {start_run_response.benchmark_id}", fg="cyan"
         )
     )
+    click.echo(
+        click.style(
+            f"Retrieve results: harness retrieve-results --benchmark-id {start_run_response.benchmark_id} --path ./results.json",
+            fg="cyan",
+        )
+    )
+    click.echo()

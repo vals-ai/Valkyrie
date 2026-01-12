@@ -19,6 +19,3 @@ Dockerfile
 
 # Documentation
 README.md
-
-# Lock file (already copied explicitly)
-uv.lock

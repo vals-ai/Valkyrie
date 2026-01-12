@@ -3,7 +3,7 @@
 	swebench-install swebench-dev \
 	validate-workspace
 
-PYTHON_VERSION := 3.11
+PYTHON_VERSION := 3.12
 SWEBENCH_PYTHON_VERSION := 3.12
 
 TRACKER_PORT ?= 8000

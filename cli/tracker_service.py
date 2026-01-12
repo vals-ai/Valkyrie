@@ -106,7 +106,7 @@ class TrackerService:
                 task_ids=task_ids,
             )
 
-            response = self._client.post(f"{self._base_url}/start-run", params=payload.model_dump())
+            response = self._client.post(f"{self._base_url}/start-run", json=payload.model_dump())
 
             return response
         except httpx.HTTPError as e:
@@ -150,6 +150,6 @@ class TrackerService:
             if response.status_code != 200:
                 raise TrackerServiceError(f"Failed to retrieve results: {response.text}")
 
-            return RetrieveResultsResponse.model_validate_json(response.json())
+            return RetrieveResultsResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
