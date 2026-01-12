@@ -1,0 +1,45 @@
+.PHONY: help build run stop clean logs test
+
+IMAGE_NAME := tracker-service
+CONTAINER_NAME := tracker-service-container
+
+help:
+	@echo "Available commands:"
+	@echo "  make build  - Build the Docker image"
+	@echo "  make run    - Run the Docker container with environment variables from .env"
+	@echo "  make stop   - Stop and remove the Docker container"
+	@echo "  make clean  - Remove the Docker image and container"
+	@echo "  make logs   - View container logs"
+
+build:
+	@echo "Building Docker image..."
+	docker build -t $(IMAGE_NAME) .
+
+run:
+	@echo "Starting Docker container..."
+	@if [ ! -f .env ]; then \
+		echo "Error: .env file not found!"; \
+		exit 1; \
+	fi
+	@docker run -d \
+		--name $(CONTAINER_NAME) \
+		-p 8000:8000 \
+		--env-file .env \
+		$(IMAGE_NAME)
+	@echo "Container started successfully!"
+	@echo "Tracker service is running on http://localhost:8000"
+	@echo "Health check: http://localhost:8000/health"
+
+stop:
+	@echo "Stopping and removing container..."
+	@docker stop $(CONTAINER_NAME) 2>/dev/null || true
+	@docker rm $(CONTAINER_NAME) 2>/dev/null || true
+	@echo "Container stopped and removed."
+
+clean: stop
+	@echo "Removing Docker image..."
+	@docker rmi $(IMAGE_NAME) 2>/dev/null || true
+	@echo "Cleanup complete."
+
+logs:
+	@docker logs -f $(CONTAINER_NAME)

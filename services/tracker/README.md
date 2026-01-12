@@ -1,12 +1,36 @@
 ### Required Environment variables
 
-```
-SWEBENCH_SERVICE_IP=13.2...
+Create a `.env` file in the project root with the following variables:
 
+```env
+SWEBENCH_SERVICE_IP=13.2...
 DAYTONA_API_KEY=...
 DAYTONA_API_URL=https://app.daytona.io/api
 DAYTONA_TARGET=us
 ```
+
+### Docker Deployment
+
+Build and run the tracker service in a Docker container:
+
+```bash
+# Build the Docker image
+make build
+
+# Run the container (automatically loads .env file)
+make run
+
+# View container logs
+make logs
+
+# Stop the container
+make stop
+
+# Clean up (remove container and image)
+make clean
+```
+
+The service will be available at `http://localhost:8000`
 
 ### Running unit tests
 

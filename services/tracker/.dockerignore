@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Testing
+tests/
+.pytest_cache/
+
+# Logs
+logs/
+
+# Database (exclude local dev database)
+src/tracker/database/tracker.db
+
+# Docker files
+Dockerfile
+.dockerignore
+
+# Documentation
+README.md
+
+# Lock file (already copied explicitly)
+uv.lock
