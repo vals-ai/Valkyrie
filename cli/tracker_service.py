@@ -1,8 +1,11 @@
 """Client for interacting with the tracker service."""
 
 from typing import Any, BinaryIO
+from uuid import UUID
 
 import httpx
+from httpx._models import Response
+from tracker.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest
 
 from cli.config import TRACKER_URL
 
@@ -40,20 +43,20 @@ class TrackerService:
         """Close the HTTP client."""
         self._client.close()
 
-    def health_check(self) -> dict[str, str]:
+    def health_check(self) -> Response:
         """
         Check tracker service health.
 
         Returns:
-            Health status response
+            Response with health status
 
         Raises:
             TrackerServiceError: If health check fails
         """
         try:
             response = self._client.get(f"{self._base_url}/health")
-            response.raise_for_status()
-            return response.json()
+
+            return response
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Health check failed: {e}") from e
 
@@ -79,7 +82,9 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Upload failed: {e}") from e
 
-    def start_run(self, contract_name: str, benchmark_name: str) -> dict[str, Any]:
+    def start_run(
+        self, contract_name: str, benchmark_name: str, concurrency: int, task_ids: list[str] | None
+    ) -> Response:
         """
         Start a benchmark run on the tracker service.
 
@@ -94,13 +99,57 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
-            payload = {
-                "contract_name": contract_name,
-                "benchmark_name": benchmark_name,
-            }
+            payload = StartRunRequest(
+                contract_name=contract_name,
+                benchmark_name=benchmark_name,
+                concurrency=concurrency,
+                task_ids=task_ids,
+            )
 
-            response = self._client.post(f"{self._base_url}/start-run", params=payload)
-            response.raise_for_status()
-            return response.json()
+            response = self._client.post(f"{self._base_url}/start-run", params=payload.model_dump())
+
+            return response
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to start run: {e}") from e
+
+    def fetch_benchmark(self, benchmark_id: UUID) -> FetchBenchmarkResponse:
+        """
+        Fetch a benchmark by its benchmark id.
+
+        Args:
+            benchmark_id: Benchmark id
+
+        Returns:
+            FetchBenchmarkResponse with benchmark information
+        """
+        try:
+            response = self._client.get(f"{self._base_url}/fetch-benchmark", params={"benchmark_id": str(benchmark_id)})
+
+            if response.status_code != 200:
+                raise TrackerServiceError(f"Failed to fetch benchmark: {response.text}")
+
+            return FetchBenchmarkResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to fetch benchmark: {e}") from e
+
+    def retrieve_results(self, benchmark_id: UUID) -> RetrieveResultsResponse:
+        """
+        Retrieve the results of a benchmark by its benchmark id.
+
+        Args:
+            benchmark_id: Benchmark id
+
+        Returns:
+            RetrieveResultsResponse with benchmark results
+        """
+        try:
+            response = self._client.get(
+                f"{self._base_url}/retrieve-results", params={"benchmark_id": str(benchmark_id)}
+            )
+
+            if response.status_code != 200:
+                raise TrackerServiceError(f"Failed to retrieve results: {response.text}")
+
+            return RetrieveResultsResponse.model_validate_json(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
