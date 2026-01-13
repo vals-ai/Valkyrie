@@ -1,7 +1,7 @@
 .PHONY: help install test test-unit test-integration test-all style style-check typecheck \
 	tracker-install tracker-dev tracker-test tracker-test-unit tracker-test-integration \
 	swebench-install swebench-dev \
-	validate-workspace
+	validate-workspace tracker-service
 
 PYTHON_VERSION := 3.12
 SWEBENCH_PYTHON_VERSION := 3.12
@@ -81,8 +81,8 @@ test-integration: venv_check
 	@uv run pytest -m integration
 
 # Tracker service commands
-tracker:
-	cd services/tracker && make clean && make build && make run && make logs
+tracker-service:
+	cd services/tracker && make tracker-service
 
 tracker-test:
 	@echo "Running tracker service tests..."

@@ -6,7 +6,7 @@ from typing import AsyncGenerator, Generator
 
 import boto3
 import pytest
-from daytona import AsyncDaytona, AsyncSandbox, DaytonaConfig, FileUpload
+from daytona import AsyncDaytona, AsyncSandbox, FileUpload
 from moto import mock_aws
 from mypy_boto3_s3.client import S3Client
 
@@ -68,35 +68,20 @@ echo "Test contract setup complete"
 
 
 @pytest.fixture
-async def daytona() -> AsyncGenerator[AsyncDaytona, None]:
-    """Create a real Daytona client for integration tests."""
-    import os
-
-    config = DaytonaConfig(
-        api_key=os.getenv("DAYTONA_API_KEY"),
-        api_url=os.getenv("DAYTONA_API_URL"),
-        target=os.getenv("DAYTONA_TARGET"),
-    )
-
-    async with AsyncDaytona(config=config) as client:
-        yield client
-
-
-@pytest.fixture
-async def test_sandbox(daytona: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
+async def test_sandbox(daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
     """Create a test sandbox with Python."""
-    async with create_sandbox(daytona, "test-sandbox", "python:3.11-slim") as sandbox:
+    async with create_sandbox(daytona_client, "test-sandbox", "python:3.11-slim") as sandbox:
         yield sandbox
 
 
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
 
-    async def test_create_and_cleanup_sandbox(self, daytona: AsyncDaytona) -> None:
+    async def test_create_and_cleanup_sandbox(self, daytona_client: AsyncDaytona) -> None:
         """Test that sandbox is created and cleaned up properly."""
         sandbox_name = "test-cleanup-sandbox"
 
-        async with create_sandbox(daytona, sandbox_name, "python:3.11-slim") as sandbox:
+        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim") as sandbox:
             assert sandbox.name == sandbox_name
             result = await sandbox.process.exec("echo 'test'")
             assert result.exit_code == 0

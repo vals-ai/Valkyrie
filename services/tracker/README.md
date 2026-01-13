@@ -3,7 +3,7 @@
 Create a `.env` file in the project root with the following variables:
 
 ```env
-SWEBENCH_SERVICE_IP=13.2...
+BENCHMARK_SERVICE_URL=http://98....
 DAYTONA_API_KEY=...
 DAYTONA_API_URL=https://app.daytona.io/api
 DAYTONA_TARGET=us
@@ -28,6 +28,9 @@ make stop
 
 # Clean up (remove container and image)
 make clean
+
+# Clean build and run the tracker service
+make tracker-service
 ```
 
 The service will be available at `http://localhost:8000`

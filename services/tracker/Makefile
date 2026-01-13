@@ -1,4 +1,4 @@
-.PHONY: help build run stop clean logs test
+.PHONY: help build run stop clean logs test tracker-service
 
 IMAGE_NAME := tracker-service
 CONTAINER_NAME := tracker-service-container
@@ -10,6 +10,7 @@ help:
 	@echo "  make stop   - Stop and remove the Docker container"
 	@echo "  make clean  - Remove the Docker image and container"
 	@echo "  make logs   - View container logs"
+	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
 
 build:
 	@echo "Building Docker image..."
@@ -44,3 +45,11 @@ clean: stop
 
 logs:
 	@docker logs -f $(CONTAINER_NAME)
+
+
+tracker-service:
+	@echo "Building tracker service..."
+	@make clean
+	@make build
+	@make run
+	@make logs

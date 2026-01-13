@@ -6,6 +6,18 @@ from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Da
 
 
 async def validate_docker_image(image_name: str) -> bool:
+    """
+    Validate the docker image is supported by the docker daemon
+
+    Args:
+        image_name: The name of the docker image to validate
+
+    Returns:
+        True if the docker image is supported, False otherwise
+
+    Raises:
+        ValueError: If the docker image is not supported
+    """
     try:
         result = await asyncio.create_subprocess_exec(
             "docker",
@@ -31,6 +43,14 @@ async def build_task_environment(
 ) -> AsyncIterator[AsyncSandbox]:
     """
     Builds the task environment using the docker image, once we are finished using the sandbox, we delete it
+
+    Args:
+        daytona: The daytona client
+        task_id: The id of the task (usually a string name of the task)
+        docker_image: The docker image to build the sandbox from
+
+    Returns:
+        A context manager that yields the sandbox
     """
 
     task_image = Image.base(docker_image)

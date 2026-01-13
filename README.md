@@ -30,7 +30,7 @@ Creates `.venv` and installs dependencies for CLI and harness from `pyproject.to
 
 Each service maintains its own isolated virtual environment:
 
-- **Tracker service**: `make tracker` — Cleans, builds, and runs Docker container
+- **Tracker service**: `make tracker-service` — Cleans, builds, and runs Docker container
 - **SWE-bench service**: `make swebench-install` — Creates `services/benchmarks/swebench/.venv`
 
 ### Usage

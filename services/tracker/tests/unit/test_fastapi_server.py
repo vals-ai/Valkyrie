@@ -25,23 +25,19 @@ from tracker.types import StartRunRequest
 client = TestClient(app)
 
 
-async def mock_request_verify_task_ids(self: BenchmarkService, *args: Any, **kwargs: Any) -> list[str]:
-    return ["task_id"] * 500
-
-
-def mock_process_benchmark(*args: Any, **kwargs: Any) -> None:
-    pass
-
-
-async def mock_request_health_check(self: BenchmarkService, *args: Any, **kwargs: Any) -> dict[str, str]:
-    return {"status": "ok"}
-
-
-async def mock_request_verify_task_ids_error(self: BenchmarkService, *args: Any, **kwargs: Any) -> list[str]:
-    raise Exception("Error verifying task ids")
-
-
 class TestFastapiServer:
+    async def _mock_request_verify_task_ids(self, *args: Any, **kwargs: Any) -> list[str]:
+        return ["task_id"] * 500
+
+    def _mock_process_benchmark(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    async def _mock_request_health_check(self, *args: Any, **kwargs: Any) -> dict[str, str]:
+        return {"status": "ok"}
+
+    async def _mock_request_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> list[str]:
+        raise Exception("Error verifying task ids")
+
     def test_health_check(self):
         """
         Test health check of the fastapi server.
@@ -85,20 +81,20 @@ class TestFastapiServer:
         monkeypatch.setattr(
             BenchmarkService,
             "request_health_check",
-            mock_request_health_check,
+            self._mock_request_health_check,
         )
 
         # Expected 500 task ids to be returned from benchmark service
         monkeypatch.setattr(
             BenchmarkService,
             "request_verify_task_ids",
-            mock_request_verify_task_ids,
+            self._mock_request_verify_task_ids,
         )
 
         # Ignore background task to run benchmark
         monkeypatch.setattr(
             "main.process_benchmark",
-            mock_process_benchmark,
+            self._mock_process_benchmark,
         )
 
         # Send request to start the run and ensure that the start response is returned
@@ -315,10 +311,10 @@ class TestFastapiServer:
         app.dependency_overrides[get_session] = get_test_session
 
         # Mock health check to benchmark service
-        monkeypatch.setattr(BenchmarkService, "request_health_check", mock_request_health_check)
+        monkeypatch.setattr(BenchmarkService, "request_health_check", self._mock_request_health_check)
 
         # Expection is raised if verify task ids fails
-        monkeypatch.setattr(BenchmarkService, "request_verify_task_ids", mock_request_verify_task_ids_error)
+        monkeypatch.setattr(BenchmarkService, "request_verify_task_ids", self._mock_request_verify_task_ids_error)
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(

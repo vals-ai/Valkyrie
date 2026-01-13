@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import os
 import shlex
 import zipfile
 from contextlib import asynccontextmanager
@@ -88,6 +89,7 @@ async def create_sandbox(daytona: AsyncDaytona, sandbox_name: str, image: str) -
 
     sandbox = await daytona.create(
         CreateSandboxFromImageParams(
+            env_vars=dict(os.environ),
             name=sandbox_name,
             image=Image.base(image),
             network_block_all=False,
