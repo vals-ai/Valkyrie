@@ -116,6 +116,7 @@ class TestFastapiServer:
             contract_name=request.contract_name,
             concurrency=request.concurrency,
             task_ids=None,
+            slice_str=None,
         )
 
         # Test case 3. Start timestamp is in UTC timezone and matches the benchmark row
@@ -129,7 +130,7 @@ class TestFastapiServer:
         assert json_response["contract_name"] == request.contract_name
         assert json_response["concurrency"] == request.concurrency
 
-    async def test_fetch_benchmark(self, database_session: Session):
+    async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test fetch benchmark of the fastapi server.
 
@@ -151,10 +152,7 @@ class TestFastapiServer:
         assert response.status_code == 404
 
         # Add benchmark row to the database to fetch
-        benchmark_row = Benchmark(
-            name="swebench",
-            arguments=BenchmarkArguments(contract_name="claude_code", concurrency=10, task_ids=None),
-        )
+        benchmark_row = example_benchmark_object
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -214,7 +212,7 @@ class TestFastapiServer:
         assert details.get("total_tasks") and details["total_tasks"] == 10
         assert details.get("finished_tasks") and details["finished_tasks"] == 6
 
-    async def test_retrieve_results(self, database_session: Session):
+    async def test_retrieve_results(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test the retrieve results endpoint of the fastapi server.
 
@@ -237,10 +235,7 @@ class TestFastapiServer:
         assert response.status_code == 404
 
         # Add benchmark row
-        benchmark_row = Benchmark(
-            name="swebench",
-            arguments=BenchmarkArguments(contract_name="claude_code", concurrency=10, task_ids=None),
-        )
+        benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
 

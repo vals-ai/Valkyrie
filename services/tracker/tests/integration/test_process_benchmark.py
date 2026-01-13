@@ -7,7 +7,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark, BenchmarkArguments, BenchmarkStatus, EvaluationResult, Task, TaskStatus
+from tracker.database.models import BenchmarkStatus, EvaluationResult, Task, TaskStatus
 from tracker.types import SetupTaskResponse, StartRunRequest
 from tracker.utils import process_benchmark, process_task
 
@@ -83,14 +83,7 @@ class TestProcessBenchmark:
         # Concurrency control for each task being processed inside of the benchmark
         semaphore = Semaphore(start_run_request.concurrency)
 
-        benchmark_row = Benchmark(
-            name=benchmark_service.name,
-            arguments=BenchmarkArguments(
-                contract_name=start_run_request.contract_name,
-                concurrency=start_run_request.concurrency,
-                task_ids=start_run_request.task_ids,
-            ),
-        )
+        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -151,14 +144,7 @@ class TestProcessBenchmark:
         )
 
         # Create benchmark row inside of start run request
-        benchmark_row = Benchmark(
-            name=benchmark_service.name,
-            arguments=BenchmarkArguments(
-                contract_name=start_run_request.contract_name,
-                concurrency=start_run_request.concurrency,
-                task_ids=start_run_request.task_ids,
-            ),
-        )
+        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -224,14 +210,7 @@ class TestProcessBenchmark:
         )
 
         # Create benchmark row inside of start run request
-        benchmark_row = Benchmark(
-            name=benchmark_service.name,
-            arguments=BenchmarkArguments(
-                contract_name=start_run_request.contract_name,
-                concurrency=start_run_request.concurrency,
-                task_ids=start_run_request.task_ids,
-            ),
-        )
+        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -286,14 +265,7 @@ class TestProcessBenchmark:
             benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
         )
 
-        benchmark_row = Benchmark(
-            name=benchmark_service.name,
-            arguments=BenchmarkArguments(
-                contract_name=start_run_request.contract_name,
-                concurrency=start_run_request.concurrency,
-                task_ids=start_run_request.task_ids,
-            ),
-        )
+        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
 
         database_session.add(benchmark_row)
         database_session.commit()

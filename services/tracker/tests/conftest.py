@@ -9,6 +9,7 @@ from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tracker.database.models import *  # noqa: F403
+from tracker.database.models import Benchmark, BenchmarkArguments
 
 _ = load_dotenv()
 
@@ -31,3 +32,11 @@ def database_session() -> Generator[Session, Any, None]:
         yield session
 
     SQLModel.metadata.drop_all(test_engine)
+
+
+@pytest.fixture
+def example_benchmark_object() -> Benchmark:
+    return Benchmark(
+        name="swebench",
+        arguments=BenchmarkArguments(contract_name="claude_code", concurrency=5, task_ids=None, slice_str=None),
+    )

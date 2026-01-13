@@ -4,7 +4,8 @@ from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Quer
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
-from tracker.database.models import Benchmark, BenchmarkArguments
+from tracker.benchmark_service import BenchmarkService
+from tracker.database.models import Benchmark
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
@@ -116,21 +117,15 @@ async def start_run(
     _ = await benchmark_service.request_health_check()
 
     # Create benchmark row inside of database to mark start of the benchmark
-    benchmark_row = Benchmark(
-        name=benchmark_service.name,
-        arguments=BenchmarkArguments(
-            contract_name=request.contract_name,
-            concurrency=request.concurrency,
-            task_ids=request.task_ids,
-        ),
-    )
+    benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(request)
     session.add(benchmark_row)
     session.commit()
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
-        verify_response = await benchmark_service.request_verify_task_ids(task_ids=request.task_ids)
-        verified_task_ids = verify_response.task_ids
+        verify_response = await benchmark_service.request_verify_task_ids(
+            task_ids=request.task_ids, slice_str=request.slice_str
+        )
     except Exception as e:
         error_message = str(e)
         commit_benchmark_error(benchmark_row, session, error_message)
@@ -142,7 +137,7 @@ async def start_run(
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
     background_tasks.add_task(
-        process_benchmark, request, benchmark_row.id, verified_task_ids, benchmark_service, session
+        process_benchmark, request, benchmark_row.id, verify_response.task_ids, benchmark_service, session
     )
 
     return StartRunResponse(
@@ -151,7 +146,7 @@ async def start_run(
         benchmark_id=benchmark_row.id,
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
-        task_count=len(verified_task_ids),
+        task_count=len(verify_response.task_ids),
     )
 
 

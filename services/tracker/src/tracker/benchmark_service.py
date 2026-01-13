@@ -5,12 +5,14 @@ from typing import Any
 import httpx
 from daytona import AsyncDaytona, DaytonaConfig
 
+from tracker.database.models import Benchmark, BenchmarkArguments
 from tracker.exceptions import BenchmarkServiceError
 from tracker.types import (
     FinalScoreResponse,
     HealthCheckResponse,
     RetrieveTaskResponse,
     SetupTaskResponse,
+    StartRunRequest,
     VerifyTaskIdsResponse,
 )
 
@@ -70,6 +72,18 @@ class BenchmarkService:
             )
         )
 
+    @staticmethod
+    def start_run_request_to_benchmark_object(request: StartRunRequest) -> Benchmark:
+        return Benchmark(
+            name=request.benchmark_name,
+            arguments=BenchmarkArguments(
+                contract_name=request.contract_name,
+                concurrency=request.concurrency,
+                task_ids=request.task_ids,
+                slice_str=request.slice_str,
+            ),
+        )
+
     async def request_health_check(self) -> HealthCheckResponse:
         """
         Requests health check from benchmark service
@@ -86,14 +100,17 @@ class BenchmarkService:
 
         return HealthCheckResponse.model_validate(response.json())
 
-    async def request_verify_task_ids(self, task_ids: list[str] | None) -> VerifyTaskIdsResponse:
+    async def request_verify_task_ids(self, task_ids: list[str] | None, slice_str: str | None) -> VerifyTaskIdsResponse:
         """
         Requests verify task ids from benchmark service
         """
 
-        params: dict[str, list[str]] = {}
+        params: dict[str, list[str] | str] = {}
         if task_ids is not None:
             params["task_ids"] = task_ids
+
+        if slice_str is not None:
+            params["slice_str"] = slice_str
 
         async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.get(f"{self._url}/verify-task-ids/", params=params)

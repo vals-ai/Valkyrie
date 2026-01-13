@@ -50,6 +50,7 @@ class BenchmarkArguments(BaseModel):
     contract_name: str
     concurrency: int
     task_ids: list[str] | None
+    slice_str: str | None
 
 
 class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):

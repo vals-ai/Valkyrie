@@ -14,6 +14,11 @@ DAYTONA_TARGET=us
 Build and run the tracker service in a Docker container:
 
 ```bash
+# ----- Main command -----
+# Clean, build and run the tracker service
+make tracker-service
+
+# ----- Helper commands -----
 # Build the Docker image
 make build
 
@@ -28,9 +33,6 @@ make stop
 
 # Clean up (remove container and image)
 make clean
-
-# Clean build and run the tracker service
-make tracker-service
 ```
 
 The service will be available at `http://localhost:8000`

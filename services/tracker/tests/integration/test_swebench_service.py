@@ -1,3 +1,4 @@
+import os
 from typing import Any
 
 import pytest
@@ -15,8 +16,15 @@ def docker_image_format() -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-async def require_health_check(benchmark_service: BenchmarkService):
+async def require_health_check():
     """Checks that the server is running before running the test. If its not connected it will fail"""
+
+    service_ip = os.getenv("BENCHMARK_SERVICE_URL")
+    if not service_ip:
+        pytest.fail("BENCHMARK_SERVICE_URL is not set", pytrace=False)
+
+    benchmark_service = BenchmarkService(name="swebench", url=service_ip)
+
     try:
         _ = await benchmark_service.request_health_check()
     except ConnectTimeout:
@@ -79,17 +87,17 @@ class TestSWEBenchmarkService:
         try:
             # Test case 1. Valid tasks passed in returns the same task ids in the same order passed in
             task_ids = ["astropy__astropy-12907", "django__django-11066", "django__django-12858"]
-            response = await benchmark_service.request_verify_task_ids(task_ids=task_ids)
+            response = await benchmark_service.request_verify_task_ids(task_ids=task_ids, slice_str=None)
             assert response.task_ids == task_ids
 
             # Test case 2. Invalid task ids passed in raises and Exception that the user sees
             with pytest.raises(Exception):
                 _ = await benchmark_service.request_verify_task_ids(
-                    task_ids=["astropy__astropy-12907", "invalid_task_id"]
+                    task_ids=["astropy__astropy-12907", "invalid_task_id"], slice_str=None
                 )
 
             # Test case 3. No task ids passed in returns all 500 task ids to run the benchmark
-            response = await benchmark_service.request_verify_task_ids(task_ids=[])
+            response = await benchmark_service.request_verify_task_ids(task_ids=[], slice_str=None)
             assert response.task_ids
             assert len(response.task_ids) == 500
 

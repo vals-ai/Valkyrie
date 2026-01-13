@@ -16,7 +16,6 @@ from tests.utils import build_task_environment
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import (
     Benchmark,
-    BenchmarkArguments,
     BenchmarkStatus,
     EvaluationResult,
     FinalEvaluation,
@@ -104,7 +103,7 @@ class TestDatabaseIntegration:
                 f"Failed to create tables: {e}: {traceback.format_exc()}",
             )
 
-    async def test_database_integrity(self, database_session: Session):
+    async def test_database_integrity(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test the integrity of the database
 
@@ -114,10 +113,7 @@ class TestDatabaseIntegration:
         """
 
         # Test the benchmark table
-        benchmark_row = Benchmark(
-            name="SWEBench benchmark",
-            arguments=BenchmarkArguments(contract_name="claude_code", concurrency=5, task_ids=None),
-        )
+        benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
 
         # When created its in pending status
@@ -163,7 +159,7 @@ class TestDatabaseIntegration:
         database_session.flush()
         assert benchmark_row.finished_at, "Should be auto generated when the status is updated to error"
 
-    async def test_database_relations(self, database_session: Session):
+    async def test_database_relations(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test the relationships between the tables and ensure that they are correctly being built
 
@@ -174,11 +170,7 @@ class TestDatabaseIntegration:
         """
 
         # Add a new benchmark row to the database
-        benchmark_name = "SWEBench benchmark"
-        benchmark_row = Benchmark(
-            name=benchmark_name,
-            arguments=BenchmarkArguments(contract_name="claude_code", concurrency=5, task_ids=None),
-        )
+        benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
 
         # Can fetch it using the same id that it was created with
@@ -271,7 +263,11 @@ class TestDatabaseIntegration:
             return response
 
     async def test_end_to_end(
-        self, database_session: Session, benchmark_service: BenchmarkService, daytona_client: AsyncDaytona
+        self,
+        database_session: Session,
+        benchmark_service: BenchmarkService,
+        daytona_client: AsyncDaytona,
+        example_benchmark_object: Benchmark,
     ):
         """
         Test the end to end flow when using database with a benchmark service
@@ -289,19 +285,12 @@ class TestDatabaseIntegration:
             assert response.status == "ok"
 
             # Create benchmark row to initiate a benchmark
-            benchmark_row = Benchmark(
-                name=benchmark_service.name,
-                arguments=BenchmarkArguments(
-                    contract_name="claude_code",
-                    concurrency=5,
-                    task_ids=None,
-                ),
-            )
+            benchmark_row = example_benchmark_object
             database_session.add(benchmark_row)
             database_session.flush()
 
             # Request all of the task ids from the benchmark service
-            verify_response = await benchmark_service.request_verify_task_ids(task_ids=None)
+            verify_response = await benchmark_service.request_verify_task_ids(task_ids=None, slice_str=None)
 
             # Returned all of the task ids from the swebench service
             assert verify_response.task_ids is not None

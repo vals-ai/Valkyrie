@@ -16,6 +16,7 @@ class StartRunRequest(BaseModel):
     benchmark_name: str
     concurrency: int = 5
     task_ids: list[str] | None = None
+    slice_str: str | None = None
 
     @property
     def benchmark_service(self) -> "BenchmarkService":
