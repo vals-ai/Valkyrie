@@ -82,6 +82,7 @@ class TestSWEBenchmarkService:
         - Valid task ids: Returns 200 OK
         - Invalid task ids: Raises Exception that the user sees
         - No task ids passed in: Returns all 500 task ids to run the benchmark
+        - Slice string passed in: Returns the correct amount of task ids expected for the slice
         """
 
         try:
@@ -100,6 +101,11 @@ class TestSWEBenchmarkService:
             response = await benchmark_service.request_verify_task_ids(task_ids=[], slice_str=None)
             assert response.task_ids
             assert len(response.task_ids) == 500
+
+            # Test case 4. Slice string passed in returns the correct amount of task ids expected for the slice
+            response = await benchmark_service.request_verify_task_ids(task_ids=None, slice_str="100:200")
+            assert response.task_ids
+            assert len(response.task_ids) == 100
 
         except Exception as e:
             pytest.fail(f"Verify task ids failed: {e}", pytrace=False)

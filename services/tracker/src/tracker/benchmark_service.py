@@ -110,7 +110,7 @@ class BenchmarkService:
             params["task_ids"] = task_ids
 
         if slice_str is not None:
-            params["slice_str"] = slice_str
+            params["slice"] = slice_str
 
         async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.get(f"{self._url}/verify-task-ids/", params=params)
