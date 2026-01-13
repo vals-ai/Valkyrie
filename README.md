@@ -38,11 +38,20 @@ Each service maintains its own isolated virtual environment:
 #### Start a benchmark
 
 ```bash
+# With specific task IDs:
 uv run harness start-benchmark \
   --contract <contract_path> \
   --benchmark <benchmark_name> \
   --concurrency 1 \
-  --task-ids "task_1_id,task_2_id" # Exclude --task-ids to run whole benchmark (not recommended for development)
+  --task-ids "task_1_id,task_2_id" \
+  --slice "start:stop:step"
+
+# Or run whole benchmark (not recommended for development):
+uv run harness start-benchmark \
+  --contract <contract_path> \
+  --benchmark <benchmark_name> \
+  --concurrency 1 \
+  --slice "start:stop:step"
 ```
 
 Starts the benchmark and exits once successfully created.
