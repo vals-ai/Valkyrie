@@ -50,11 +50,20 @@ def cli():
     default=None,
     help="Comma-separated list of task IDs (e.g., astropy__astropy-12907,astropy__astropy-12908)",
 )
+@click.option(
+    "--slice",
+    "slice_str",
+    type=str,
+    required=False,
+    default=None,
+    help="Slice string to use for slicing the benchmark (e.g., 1-10)",
+)
 def start_benchmark(
     contract: Path,
     benchmark: str,
     concurrency: int,
     task_ids: str | None,
+    slice_str: str | None,
 ):
     """
     Run an agent on a benchmark.
@@ -66,6 +75,7 @@ def start_benchmark(
     click.echo(f"  - Benchmark: {benchmark}")
     click.echo(f"  - Contract: {contract}")
     click.echo(f"  - Concurrency: {concurrency}")
+    click.echo(f"  - Slice: {slice_str}")
     if task_ids:
         click.echo(f"  - Task IDs: {task_ids[:100]}{'...' if len(task_ids) > 100 else ''}")
     else:
@@ -91,7 +101,7 @@ def start_benchmark(
                 tracker.upload_contract(contract.name, file_stream)
 
             click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
-            response = tracker.start_run(contract.name, benchmark, concurrency, formatted_task_ids)
+            response = tracker.start_run(contract.name, benchmark, concurrency, formatted_task_ids, slice_str)
 
             click.echo("\r\033[K", nl=False)
             if response.status_code != 200:

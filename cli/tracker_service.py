@@ -84,7 +84,12 @@ class TrackerService:
             raise TrackerServiceError(f"Upload failed: {e}") from e
 
     def start_run(
-        self, contract_name: str, benchmark_name: str, concurrency: int, task_ids: list[str] | None
+        self,
+        contract_name: str,
+        benchmark_name: str,
+        concurrency: int,
+        task_ids: list[str] | None,
+        slice_str: str | None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -105,6 +110,7 @@ class TrackerService:
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
                 task_ids=task_ids,
+                slice_str=slice_str,
             )
 
             response = self._client.post(f"{self._base_url}/start-run", json=payload.model_dump())
