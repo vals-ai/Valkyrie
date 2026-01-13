@@ -112,8 +112,7 @@ swebench-install:
 
 swebench-dev:
 	@echo "Starting swebench service (development mode on port $(SWEBENCH_PORT))..."
-	# TODO: figure out this certifi thing
-	@cd services/benchmarks/swebench && SSL_CERT_FILE=$$(uv run python -c "import certifi; print(certifi.where())") uv run fastapi dev main.py --port $(SWEBENCH_PORT)
+	@cd services/benchmarks/swebench && uv run fastapi dev main.py --port $(SWEBENCH_PORT)
 
 swebench-test:
 	@echo "Running tracker service tests..."
