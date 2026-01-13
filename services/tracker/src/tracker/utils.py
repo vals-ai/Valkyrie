@@ -3,6 +3,7 @@ import json
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator
 from functools import cached_property
+from pathlib import Path
 from typing import Any, NamedTuple
 from uuid import UUID
 
@@ -12,7 +13,7 @@ from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.logger import get_logger
-from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
+from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_agent_payload
 from tracker.types import (
     BenchmarkDetails,
     FetchBenchmarkResponse,
@@ -25,6 +26,7 @@ logger = get_logger(__name__, stream=True)
 async def process_task(
     task_row_mapping: dict[str, Task],
     start_run_request: StartRunRequest,
+    payload_bytes: bytes,
     semaphore: Semaphore,
     benchmark_service: BenchmarkService,
     task_id: str,
@@ -41,11 +43,13 @@ async def process_task(
                 task_session.commit()
 
                 async with create_sandbox(
-                    benchmark_service.daytona_client, task_row.task_id, task_data["docker_image"]
+                    benchmark_service.daytona_client,
+                    task_row.task_id,
+                    task_data["docker_image"],
+                    env_vars=start_run_request.contract.env,
                 ) as sandbox:
-                    # Upload the contract to the sandbox after creating and install the dependencies
-                    await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
-                    await install_dependencies(sandbox, start_run_request.contract_name)
+                    await upload_agent_payload(sandbox, payload_bytes)
+                    await install_dependencies(sandbox, start_run_request.contract)
 
                     # Setup task if requested
                     if task_data["request_setup"]:
@@ -54,7 +58,10 @@ async def process_task(
                     # Run the agent inside of the sandbox
                     # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
                     await run_agent(
-                        sandbox, start_run_request.contract_name, task_row.task_id, task_data["problem_statement"]
+                        sandbox,
+                        start_run_request.contract,
+                        task_row.task_id,
+                        task_data["problem_statement"],
                     )
 
                     # Update the status to evaluating once we finish running the agent
@@ -106,11 +113,17 @@ async def process_benchmark(
         session.add_all(list(task_row_mapping.values()))
         session.commit()
 
+        payload_path = Path("/tmp") / f"{start_run_request.agent_payload_id}.zip"
+        if not payload_path.exists():
+            raise FileNotFoundError(f"Agent payload not found: {payload_path}")
+        payload_bytes = payload_path.read_bytes()
+        payload_path.unlink(missing_ok=True)
+
         semaphore = Semaphore(start_run_request.concurrency)
 
         evaluation_result_rows: list[tuple[EvaluationResult | None, str]] = await gather(
             *[
-                process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
+                process_task(task_row_mapping, start_run_request, payload_bytes, semaphore, benchmark_service, task_id)
                 for task_id in verified_task_ids
             ]
         )

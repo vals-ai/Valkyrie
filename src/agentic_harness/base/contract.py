@@ -1,43 +1,27 @@
-from abc import ABC, abstractmethod
+from typing import Any
 
-from model_library.base import QueryResult
-
-from agentic_harness.base.types import AgentConfig, Task
+from pydantic import BaseModel, Field
 
 
-class AgentContract(ABC):
+class AgentContract(BaseModel):
     """
-    Agent contract that all submodules must implement,
-    This allows us to substitute different agent scaffolds with ease.
+    Declarative contract describing how to run an agent in the sandbox.
 
+    The tracker service consumes this schema to upload agent payloads,
+    run setup commands, and execute the agent CLI command.
     """
 
-    _config: AgentConfig
-
-    def __init__(self, config: AgentConfig):
-        self._config = config
-
-    @property
-    def config(self) -> AgentConfig:
-        return self._config
-
-    @property
-    def environment_variables(self) -> dict[str, str]:
-        """
-        Override this method to inject additional environment variables into the sandbox that allow the agent to function
-
-
-        Example:
-        ```python
-        import os
-
-        return {
-            "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
-        }
-        ```
-        """
-        return {}
-
-    @abstractmethod
-    async def run(self, task: Task) -> QueryResult:
-        """Execute the agent for the provided task and return a model response."""
+    name: str = Field(..., description="Human-readable name for the agent")
+    uploads: list[str] = Field(
+        default_factory=list,
+        description="Relative paths to agent payloads that should be uploaded and zipped by the client",
+    )
+    setup: list[str] = Field(
+        default_factory=list,
+        description="Commands to run inside the sandbox to install or prepare the agent",
+    )
+    command: str = Field(..., description="CLI command to execute the agent")
+    env: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Environment variables to set when running the agent",
+    )

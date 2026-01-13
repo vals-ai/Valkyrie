@@ -1,14 +1,17 @@
 from uuid import UUID
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+import json
+from pathlib import Path
+
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
+from agentic_harness.base.contract import AgentContract
 from tracker.database.models import Benchmark, BenchmarkArguments
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
-from tracker.s3 import get_contract_s3_key, upload_to_s3
 from tracker.types import (
     FetchBenchmarkResponse,
     RetrieveResultsResponse,
@@ -49,40 +52,34 @@ def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/upload")
-async def upload_contract_to_s3(
-    contract: UploadFile = File(..., description="Contract directory zip file"),
+@app.post("/upload-agent")
+async def upload_agent_payload(
+    payload: UploadFile = File(..., description="Agent payload zip"),
 ) -> dict[str, str]:
     """
-    Upload contract to S3.
+    Upload agent payload and return an id.
 
     Usage:
-    curl -X POST http://<endpoint>/upload \
-      -F "contract=@claude_code.zip"
+    curl -X POST http://<endpoint>/upload-agent \
+      -F "payload=@claude_code.zip"
 
     Returns:
     {
         "status": "success",
-        "message": "Contract uploaded successfully"
+        "agent_payload_id": "claude_code"
     }
-
-    Returns:
-    - 200 OK if upload succeeds
-    - 400 Bad Request if files are invalid
-    - 500 Internal Server Error if upload fails
     """
-    if not contract.filename or not contract.filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Contract must be a zip file")
+    if not payload.filename or not payload.filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Payload must be a zip file")
 
-    contract_content = await contract.read()
-    # Extract contract name from filename (remove .zip extension)
-    contract_name = contract.filename.rsplit(".zip", 1)[0]
-    contract_s3_key = get_contract_s3_key(contract_name)
-    upload_to_s3(contract_content, contract_s3_key)
+    payload_bytes = await payload.read()
+    payload_name = Path(payload.filename).stem
+    temp_path = Path("/tmp") / f"{payload_name}.zip"
+    temp_path.write_bytes(payload_bytes)
 
     return {
         "status": "success",
-        "message": "Contract uploaded successfully",
+        "agent_payload_id": payload_name,
     }
 
 
@@ -93,12 +90,12 @@ async def start_run(
     background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> StartRunResponse:
     """
-    Start a benchmark run with the uploaded contract.
+    Start a benchmark run with the uploaded contract payload.
 
     Usage:
     curl -X POST http://<endpoint>/start-run \
       -H "Content-Type: application/json" \
-      -d '{"contract_name": "claude_code", "benchmark_name": "swebench", "task_ids": ["astropy__astropy-12907"]}'
+      -d '{"contract": {...}, "agent_payload_id": "claude_code.zip", "benchmark_name": "swebench", "task_ids": ["astropy__astropy-12907"]}'
 
     Returns:
         StartRunResponse

@@ -4,13 +4,15 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from agentic_harness.base.contract import AgentContract
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import BENCHMARK_SERVICE_URL
 from tracker.database.models import BenchmarkArguments, BenchmarkStatus, FinalEvaluation
 
 
 class StartRunRequest(BaseModel):
-    contract_name: str
+    contract: AgentContract
+    agent_payload_id: str
     benchmark_name: str
     concurrency: int = 5
     task_ids: list[str] | None = None
@@ -18,6 +20,10 @@ class StartRunRequest(BaseModel):
     @property
     def benchmark_service(self) -> BenchmarkService:
         return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
+
+    @property
+    def contract_name(self) -> str:
+        return self.contract.name
 
 
 class StartRunErrorResponse(BaseModel):
