@@ -7,7 +7,6 @@ requires-python = ">=3.12"
 
 dependencies = [
   "pypandoc",
-  "model-library",
   "click>=8.1.0",
   "wonderwords>=3.0.1",
   "httpx>=0.28.1",
@@ -81,5 +80,3 @@ filterwarnings = [
 [tool.uv.sources]
 tracker = { path = "services/tracker", editable = true }
 ioi-agent = { path = "contracts/ioi/submodules/ioi_agent" }
-# point these paths to your local repos
-model-libary = { path = "../platform/backend/model-library" }

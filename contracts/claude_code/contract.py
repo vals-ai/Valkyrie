@@ -1,12 +1,10 @@
 import os
 from typing import Any
 
-from model_library.base import QueryResult, QueryResultCost, QueryResultMetadata
 from typing_extensions import override
 
 from agentic_harness.base.contract import AgentContract
-from agentic_harness.base.types import Task
-
+from agentic_harness.base.types import QueryResult, QueryResultCost, QueryResultMetadata, Task
 from contracts.claude_code.agent import ClaudeCodeAgent
 
 
@@ -69,7 +67,7 @@ class ClaudeCodeAgentContract(AgentContract):
         agent = ClaudeCodeAgent()
 
         try:
-            response = await agent.run(input_items=task.input)
+            response = await agent.run(input_items=task.input)  # type: ignore
 
             return self._create_query_result(response)
         except Exception as e:

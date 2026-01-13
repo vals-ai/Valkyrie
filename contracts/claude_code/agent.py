@@ -3,7 +3,7 @@ import json
 import os
 from typing import Any, AsyncGenerator, TypeAlias
 
-from model_library.base import InputItem, TextInput
+from agentic_harness.base.types import InputItem, TextInput
 
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | dict[str, "JSONValue"] | list["JSONValue"]

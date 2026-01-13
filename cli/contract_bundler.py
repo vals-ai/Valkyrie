@@ -23,7 +23,7 @@ MINIMAL_PYPROJECT = {
         "name": "agentic-harness",
         "version": "0.1.0",
         "description": "An agentic harness that interfaces with benchmarks hosted by Vals AI",
-        "requires-python": ">=3.11",
+        "requires-python": ">=3.10",
         "dependencies": [
             "pypandoc",
             "pytest>=9.0.1",
@@ -31,8 +31,9 @@ MINIMAL_PYPROJECT = {
             "daytona>=0.123.0",
             "click>=8.1.0",
             "wonderwords>=3.0.1",
-            "model-library",
             "httpx>=0.28.1",
+            "python-dotenv",
+            "pydantic>=2.0",
         ],
     },
     "build-system": {

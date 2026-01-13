@@ -5,10 +5,9 @@ import asyncio
 from pathlib import Path
 
 from dotenv import load_dotenv
-from model_library.base import TextInput
 
 from agentic_harness.base.contract import AgentContract
-from agentic_harness.base.types import AgentConfig, Task
+from agentic_harness.base.types import AgentConfig, Task, TextInput
 from agentic_harness.base_agent import AgentRunner
 
 

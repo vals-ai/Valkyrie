@@ -1,10 +1,43 @@
-from typing import Any
+from typing import Any, Literal
 
-from model_library.base import InputItem
 from pydantic import BaseModel, model_validator
 from wonderwords import RandomWord
 
 rw = RandomWord()
+
+
+# NOTE: Was getting some dependency issues with the model-library
+# Removing the package fixed it
+
+
+class InputItem(BaseModel):
+    pass
+
+
+class TextInput(InputItem):
+    text: str
+    type: Literal["text"] = "text"
+
+
+class QueryResultCost(BaseModel):
+    input: float = 0
+    output: float = 0
+    total: float | None = None
+
+
+class QueryResultMetadata(BaseModel):
+    cost: QueryResultCost | None = None
+    duration_seconds: float | None = None
+    in_tokens: int = 0
+    out_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+class QueryResult(BaseModel):
+    output_text: str | None = None
+    metadata: QueryResultMetadata | None = None
+    raw: dict[str, Any] | None = None
 
 
 class Task(BaseModel):

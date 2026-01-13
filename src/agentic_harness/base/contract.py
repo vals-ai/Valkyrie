@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
 
-from model_library.base import QueryResult
-
-from agentic_harness.base.types import AgentConfig, Task
+from agentic_harness.base.types import AgentConfig, QueryResult, Task
 
 
 class AgentContract(ABC):

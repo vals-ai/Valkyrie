@@ -13,7 +13,6 @@ source = { editable = "." }
 dependencies = [
     { name = "click" },
     { name = "httpx" },
-    { name = "model-library" },
     { name = "pypandoc" },
     { name = "tomli-w" },
     { name = "tracker" },
@@ -36,7 +35,6 @@ submodules = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "model-library" },
     { name = "pypandoc" },
     { name = "tomli-w" },
     { name = "tracker", editable = "services/tracker" },

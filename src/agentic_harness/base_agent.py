@@ -1,7 +1,5 @@
-from model_library.base import QueryResult
-
 from agentic_harness.base.contract import AgentContract
-from agentic_harness.base.types import AgentConfig, Task
+from agentic_harness.base.types import AgentConfig, QueryResult, Task
 from agentic_harness.logger import get_logger
 
 logger = get_logger(__name__)
