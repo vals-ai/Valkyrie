@@ -79,7 +79,7 @@ class TestProcessBenchmark:
         database_session.add(task_row)
         database_session.commit()
 
-        monkeypatch.setattr("tracker.database.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         original_evaluate = benchmark_service.request_evaluate_instance
         monkeypatch.setattr(
@@ -126,7 +126,7 @@ class TestProcessBenchmark:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        monkeypatch.setattr("tracker.database.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         original_run_agent = run_agent
         monkeypatch.setattr(
@@ -202,7 +202,7 @@ class TestProcessBenchmark:
 
         # Monkey patch failure to push benchmark row to the database
         monkeypatch.setattr(Session, "commit", mock_commit_with_error)
-        monkeypatch.setattr("tracker.database.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         # Run the benchmark (error is not raised and instead handled)
         await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
@@ -259,7 +259,7 @@ class TestProcessBenchmark:
             partial(mock_request_setup_task, original_request_setup_task),
         )
 
-        monkeypatch.setattr("tracker.database.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
 

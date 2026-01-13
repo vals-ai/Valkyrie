@@ -1,6 +1,7 @@
 from uuid import UUID
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
 from tracker.database.models import Benchmark, BenchmarkArguments
@@ -15,7 +16,7 @@ from tracker.types import (
     StartRunRequest,
     StartRunResponse,
 )
-from tracker.utils import BenchmarkContext, commit_benchmark_error, process_benchmark
+from tracker.utils import BenchmarkContext, commit_benchmark_error, process_benchmark, stream_benchmark_results
 
 logger = get_logger(__name__)
 
@@ -153,13 +154,15 @@ async def start_run(
     )
 
 
-@app.get("/fetch-benchmark")
-async def fetch_benchmark(benchmark_id: UUID, session: Session = Depends(get_session)) -> FetchBenchmarkResponse:
+@app.get("/fetch-benchmark", response_model=None)
+async def fetch_benchmark(
+    benchmark_id: UUID, connect: bool = Query(default=False), session: Session = Depends(get_session)
+) -> FetchBenchmarkResponse | StreamingResponse:
     """
     Fetch a benchmark by its id.
 
     Usage:
-    curl -X GET http://<endpoint>/fetch-benchmark/<benchmark_id>
+    curl -X GET http://<endpoint>/fetch-benchmark/<benchmark_id>?connect=true
 
     Returns:
         FetchBenchmarkResponse
@@ -171,6 +174,19 @@ async def fetch_benchmark(benchmark_id: UUID, session: Session = Depends(get_ses
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    # When we connect to the client every 60 seconds we send the latest benchmark status
+    # and additional updates about the tasks completed
+    if connect:
+        return StreamingResponse(
+            stream_benchmark_results(benchmark_id, session),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     benchmark_context = BenchmarkContext(benchmark_row, session)
 

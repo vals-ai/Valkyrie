@@ -1,4 +1,5 @@
 import json
+from uuid import UUID
 
 import click
 from tracker.types import FetchBenchmarkResponse, StartRunResponse
@@ -21,8 +22,6 @@ def check_tracker_service_health(tracker: TrackerService) -> bool:
         click.echo(click.style("Tracker service failed to respond!", fg="red", bold=True))
         click.echo(json.dumps(response.json(), indent=4, default=str))
         return False
-
-    click.echo(click.style("Tracker service health check successful!", fg="green", bold=True))
 
     return True
 
@@ -77,8 +76,6 @@ def format_start_run_response(start_run_response: StartRunResponse) -> None:
     """
 
     click.echo()
-    click.echo(click.style("✓ Benchmark started successfully!", fg="green", bold=True))
-    click.echo()
     click.echo("┌─ Benchmark Details " + "─" * 58)
     click.echo(f"│ Benchmark:     {start_run_response.benchmark_name}")
     click.echo(f"│ Contract:      {start_run_response.contract_name}")
@@ -90,7 +87,8 @@ def format_start_run_response(start_run_response: StartRunResponse) -> None:
     click.echo()
     click.echo(
         click.style(
-            f"Track progress: harness fetch-benchmark --benchmark-id {start_run_response.benchmark_id}", fg="cyan"
+            f"Track progress: harness fetch-benchmark --benchmark-id {start_run_response.benchmark_id} --connect",
+            fg="cyan",
         )
     )
     click.echo(
@@ -100,3 +98,62 @@ def format_start_run_response(start_run_response: StartRunResponse) -> None:
         )
     )
     click.echo()
+
+
+def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None:
+    """
+    Stream and display live benchmark status updates.
+
+    Args:
+        tracker: TrackerService instance
+        benchmark_id: Benchmark UUID to stream
+    """
+    status_colors = {
+        "in_progress": "blue",
+        "finished": "green",
+        "error": "red",
+    }
+
+    click.echo(click.style("Streaming benchmark updates (Ctrl+C to stop)...\n", fg="cyan"))
+
+    try:
+        for event in tracker.stream_benchmark(benchmark_id):
+            if event.startswith("data:"):
+                data_json = event[5:].strip()
+                if not data_json:
+                    continue
+
+                response = FetchBenchmarkResponse.model_validate_json(data_json)
+                details = response.details
+
+                progress_pct = (details.finished_tasks / details.total_tasks * 100) if details.total_tasks > 0 else 0
+                bar_width = 30
+                filled_width = int(bar_width * progress_pct / 100)
+                bar = "█" * filled_width + "░" * (bar_width - filled_width)
+
+                status_color = status_colors.get(details.status.value, "white")
+                status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
+
+                click.echo(
+                    f"\r\033[K[{bar}] {details.finished_tasks}/{details.total_tasks} ({progress_pct:.1f}%) • {status_text}",
+                    nl=False,
+                )
+
+            elif event.startswith("event: complete"):
+                click.echo("\n")
+                click.echo(click.style("✓ Benchmark completed!", fg="green", bold=True))
+                break
+
+            elif event.startswith("event: error"):
+                click.echo("\n")
+                click.echo(click.style("✗ Error occurred while streaming", fg="red", bold=True))
+                break
+
+            elif event.startswith("event: disconnect"):
+                click.echo("\n")
+                click.echo(click.style("Disconnected from stream", fg="yellow"))
+                break
+
+    except KeyboardInterrupt:
+        click.echo("\n")
+        click.echo(click.style("Stopped streaming", fg="yellow"))

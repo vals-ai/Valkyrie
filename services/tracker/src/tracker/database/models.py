@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, field_serializer
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapper
-from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, TypeDecorator, select
+from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, TypeDecorator, UniqueConstraint, select
 
 from tracker.database.utils import has_field_changed
 
@@ -134,15 +134,16 @@ def set_finished_at_when_benchmark_finished(_mapper: Mapper[Benchmark], _connect
 
 
 class Task(SQLModel, table=True):
-    __table_args__: tuple[CheckConstraint, ...] = (
+    __table_args__: tuple[CheckConstraint, UniqueConstraint] = (
         CheckConstraint(
             "(status != 'FINISHED' AND status != 'ERROR') OR (finished_at IS NOT NULL)",
             name="task_finished_requires_timestamp",
         ),
+        UniqueConstraint("benchmark", "task_id", name="unique_task_per_benchmark"),
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    task_id: str = Field(unique=True)
+    task_id: str
     status: TaskStatus = Field(default=TaskStatus.STARTING)
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     error_message: str | None = Field(default=None)

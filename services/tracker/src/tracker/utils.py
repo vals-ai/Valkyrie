@@ -1,4 +1,7 @@
+import asyncio
+import json
 from asyncio import Semaphore, gather
+from collections.abc import AsyncGenerator
 from functools import cached_property
 from typing import Any, NamedTuple
 from uuid import UUID
@@ -8,11 +11,15 @@ from sqlmodel import Session, case, col, func, select
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
+from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
 from tracker.types import (
     BenchmarkDetails,
+    FetchBenchmarkResponse,
     StartRunRequest,
 )
+
+logger = get_logger(__name__, stream=True)
 
 
 async def process_task(
@@ -216,3 +223,47 @@ def commit_task_error(task_row: Task, session: Session, error_message: str) -> N
     task_row.error_message = error_message
     session.add(task_row)
     session.commit()
+
+
+async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> AsyncGenerator[str]:
+    """
+    Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
+
+    Usage from client:
+        curl -X GET http://<endpoint>/stream-benchmark-results/<benchmark_id>?connect=true
+
+    Returns:
+        AsyncGenerator[str]
+    """
+    EVENT_COMPLETE = "event: complete\n\n"
+    EVENT_ERROR = "event: error\ndata:"
+    DATA_PREFIX = "data:"
+    DISCONNECT = "event: disconnect\n\n"
+    try:
+        while True:
+            with Session(bind=session.bind) as fresh_session:
+                fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
+                if not fresh_benchmark:
+                    yield f"{EVENT_ERROR} {json.dumps({'error': 'Benchmark not found'})}\n\n"
+                    break
+
+                fresh_session.refresh(fresh_benchmark)
+                benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session)
+
+                response_data = FetchBenchmarkResponse(
+                    benchmark_name=fresh_benchmark.name,
+                    benchmark_id=fresh_benchmark.id,
+                    details=benchmark_context.benchmark_details,
+                )
+
+                yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
+
+                if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR]:
+                    yield EVENT_COMPLETE
+                    break
+
+            await asyncio.sleep(60)
+
+    except asyncio.CancelledError:
+        logger.info(f"Client disconnected from benchmark {benchmark_id} stream")
+        yield DISCONNECT

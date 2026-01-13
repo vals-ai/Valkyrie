@@ -1,5 +1,6 @@
 """Client for interacting with the tracker service."""
 
+from collections.abc import Generator
 from typing import Any, BinaryIO
 from uuid import UUID
 
@@ -131,6 +132,32 @@ class TrackerService:
             return FetchBenchmarkResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch benchmark: {e}") from e
+
+    def stream_benchmark(self, benchmark_id: UUID) -> Generator[str, None, None]:
+        """
+        Stream benchmark updates via SSE.
+
+        Args:
+            benchmark_id: Benchmark id
+
+        Yields:
+            SSE event strings
+        """
+        try:
+            with self._client.stream(
+                "GET",
+                f"{self._base_url}/fetch-benchmark",
+                params={"benchmark_id": str(benchmark_id), "connect": "true"},
+                timeout=None,
+            ) as response:
+                if response.status_code != 200:
+                    raise TrackerServiceError(f"Failed to stream benchmark: {response.status_code}")
+
+                for line in response.iter_lines():
+                    if line:
+                        yield line
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to stream benchmark: {e}") from e
 
     def retrieve_results(self, benchmark_id: UUID) -> RetrieveResultsResponse:
         """

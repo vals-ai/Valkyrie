@@ -8,7 +8,12 @@ import click
 import cli.contract_bundler as bundler
 from cli.contract_bundler import BundlerError
 from cli.tracker_service import TrackerService, TrackerServiceError
-from cli.utils import check_tracker_service_health, format_benchmark_status, format_start_run_response
+from cli.utils import (
+    check_tracker_service_health,
+    format_benchmark_status,
+    format_start_run_response,
+    stream_benchmark_status,
+)
 from services.tracker.src.tracker.types import StartRunResponse
 
 
@@ -71,6 +76,7 @@ def start_benchmark(
         formatted_task_ids = task_ids.split(",")
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
+    click.echo("Validating contract...", nl=False)
     bundler.validate_contract(contract)
 
     try:
@@ -78,15 +84,16 @@ def start_benchmark(
             if not check_tracker_service_health(tracker):
                 return
 
-            click.echo(f"Creating contract bundle for: {contract}")
+            click.echo("\r\033[KZipping bundle...", nl=False)
 
             with bundler.create_contract_bundle_stream(contract) as file_stream:
-                click.echo("Uploading bundle to tracker service...")
+                click.echo("\r\033[KUploading bundle to tracker service...", nl=False)
                 tracker.upload_contract(contract.name, file_stream)
 
-            click.echo(f"Starting benchmark for: {contract.name}")
+            click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
             response = tracker.start_run(contract.name, benchmark, concurrency, formatted_task_ids)
 
+            click.echo("\r\033[K", nl=False)
             if response.status_code != 200:
                 click.echo(click.style("Benchmark failed to start!", fg="red", bold=True))
                 click.echo(response.text)
@@ -104,23 +111,31 @@ def start_benchmark(
     required=True,
     help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
 )
-def fetch_benchmark(benchmark_id: UUID):
+@click.option(
+    "--connect",
+    is_flag=True,
+    required=False,
+    help="Connect to the tracker service to stream benchmark updates",
+)
+def fetch_benchmark(benchmark_id: UUID, connect: bool):
     """
     Fetch a benchmark by its benchmark id.
 
     Example:
-        harness fetch-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+        harness fetch-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --connect
     """
-    click.echo(f"Fetching benchmark: {benchmark_id}")
 
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            response = tracker.fetch_benchmark(benchmark_id)
-
-            format_benchmark_status(response)
+            if connect:
+                stream_benchmark_status(tracker, benchmark_id)
+            else:
+                click.echo(f"Fetching benchmark: {benchmark_id}")
+                response = tracker.fetch_benchmark(benchmark_id)
+                format_benchmark_status(response)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
