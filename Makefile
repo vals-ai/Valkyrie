@@ -84,6 +84,10 @@ test-integration: venv_check
 tracker-service:
 	cd services/tracker && make tracker-service
 
+tracker-dev:
+	@echo "Starting tracker service (development mode on port $(TRACKER_PORT))..."
+	@cd services/tracker && uv run fastapi dev main.py --port $(TRACKER_PORT)
+
 tracker-test:
 	@echo "Running tracker service tests..."
 	@cd services/tracker && uv run pytest
@@ -105,8 +109,7 @@ swebench-install:
 
 swebench-dev:
 	@echo "Starting swebench service (development mode on port $(SWEBENCH_PORT))..."
-	# TODO: figure out this certifi thing
-	@cd services/benchmarks/swebench && SSL_CERT_FILE=$$(uv run python -c "import certifi; print(certifi.where())") uv run fastapi dev main.py --port $(SWEBENCH_PORT)
+	@cd services/benchmarks/swebench && uv run fastapi dev main.py --port $(SWEBENCH_PORT)
 
 swebench-test:
 	@echo "Running tracker service tests..."
