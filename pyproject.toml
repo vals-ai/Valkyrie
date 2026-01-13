@@ -8,12 +8,12 @@ requires-python = ">=3.12"
 dependencies = [
   "pypandoc",
   "model-library",
-  "daytona>=0.123.0",
   "click>=8.1.0",
   "wonderwords>=3.0.1",
   "httpx>=0.28.1",
   "tomli-w",
-  "tracker"
+  "tracker",
+  "valsai>=0.1.2",
 ]
 
 [project.scripts]

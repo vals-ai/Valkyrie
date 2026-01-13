@@ -1,28 +1,68 @@
-# Agentic Harness
+## Development
 
-Define your agent in `agents/`, add benchmarks as git submodules in `benchmarks/`, and run evaluations.
+### Prerequisites
 
-```bash
-python runner.py --config config/ioi.yaml
+- Python 3.12
+- UV package manager (brew install uv)
+
+### Environment Setup
+
+Create `services/tracker/.env` with the following configuration:
+
+```env
+DAYTONA_API_KEY=dtn_5ebxx_xxxx
+DAYTONA_API_URL=https://app.daytona.io/api
+DAYTONA_TARGET=us
+BENCHMARK_SERVICE_URL=http://98.xx.xx:8000
 ```
 
-**Setup:** `make install`
-**Style:** `make style`
-**Type Check:** `make typecheck`
+### Installation
 
-## Virtual Environment Setup
-
-This project uses separate virtual environments for different components:
-
-- **Root workspace** (`.venv`): Contains the main harness framework and shared dependencies
-  - Install with: `make install`
-- **Services** (isolated venvs): Each service maintains its own virtual environment. You might have to switch your venv depending on the service you are working on.
-  - Tracker service: `make tracker-install` (creates `services/tracker/.venv`)
-  - SWE-bench service: `make swebench-install` (creates `services/benchmarks/swebench/.venv`)
-
-### Running Tracker Service Locally
+**Harness (CLI)**
 
 ```bash
-# Start tracker service (development mode)
-make tracker-dev
+make install
 ```
+
+Creates `.venv` and installs dependencies for CLI and harness from `pyproject.toml`.
+
+**Services**
+
+Each service maintains its own isolated virtual environment:
+
+- **Tracker service**: `make tracker` — Cleans, builds, and runs Docker container
+- **SWE-bench service**: `make swebench-install` — Creates `services/benchmarks/swebench/.venv`
+
+### Usage
+
+#### Start a benchmark
+
+```bash
+uv run harness start-benchmark \
+  --contract <contract_path> \
+  --benchmark <benchmark_name> \
+  --concurrency 1 \
+  --task-ids "task_1_id,task_2_id" # Exclude --task-ids to run whole benchmark (not recommended for development)
+```
+
+Starts the benchmark and exits once successfully created.
+
+#### Monitor benchmark status
+
+```bash
+# Live updates every 60 seconds
+uv run harness fetch-benchmark --benchmark-id <benchmark_id> --connect
+
+# One-time status check
+uv run harness fetch-benchmark --benchmark-id <benchmark_id>
+```
+
+#### Download results
+
+```bash
+uv run harness retrieve-results --benchmark-id <benchmark_id> --path ./results.json
+```
+
+### Supported Benchmarks
+
+- SWE-bench

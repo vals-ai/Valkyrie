@@ -135,13 +135,19 @@ class TrackerService:
 
     def stream_benchmark(self, benchmark_id: UUID) -> Generator[str, None, None]:
         """
-        Stream benchmark updates via SSE.
+        Stream benchmark updates using a generator.
+
+        possible values for the generator:
+        - data: {FetchBenchmarkResponse}
+        - event: complete: benchmark completed
+        - event: error: benchmark error
+        - event: disconnect: client disconnected from stream
 
         Args:
             benchmark_id: Benchmark id
 
         Yields:
-            SSE event strings
+            Generator[str, None, None]
         """
         try:
             with self._client.stream(

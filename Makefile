@@ -81,15 +81,8 @@ test-integration: venv_check
 	@uv run pytest -m integration
 
 # Tracker service commands
-tracker-install:
-	@echo "Installing tracker service (separate venv)..."
-	@cd services/tracker && uv venv --python $(SWEBENCH_PYTHON_VERSION)
-	@cd services/tracker && uv sync
-	@echo "✓ Tracker service installed at services/tracker/.venv"
-
-tracker-dev:
-	@echo "Starting tracker service (development mode on port $(TRACKER_PORT))..."
-	@cd services/tracker && uv run fastapi dev main.py --port $(TRACKER_PORT)
+tracker:
+	cd services/tracker && make clean && make build && make run && make logs
 
 tracker-test:
 	@echo "Running tracker service tests..."
