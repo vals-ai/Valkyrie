@@ -1,7 +1,9 @@
 import json
+from datetime import timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+from dateutil.parser import isoparse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session
@@ -121,7 +123,7 @@ class TestFastapiServer:
         )
 
         # Test case 3. Start timestamp is in UTC timezone and matches the benchmark row
-        assert json_response["started_at"] == benchmark_row.started_at.isoformat()
+        assert isoparse(json_response["started_at"]) == benchmark_row.started_at.replace(tzinfo=timezone.utc)
 
         # Test case 4. Returning task count provided from the request_verify_task_ids function
         assert json_response["task_count"] == 500
