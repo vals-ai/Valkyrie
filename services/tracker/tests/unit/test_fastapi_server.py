@@ -20,22 +20,22 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import StartRunRequest
+from tracker.types import HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
 
 client = TestClient(app)
 
 
 class TestFastapiServer:
-    async def _mock_request_verify_task_ids(self, *args: Any, **kwargs: Any) -> list[str]:
-        return ["task_id"] * 500
+    async def _mock_request_verify_task_ids(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=["task_id"] * 500)
 
     def _mock_process_benchmark(self, *args: Any, **kwargs: Any) -> None:
         pass
 
-    async def _mock_request_health_check(self, *args: Any, **kwargs: Any) -> dict[str, str]:
-        return {"status": "ok"}
+    async def _mock_request_health_check(self, *args: Any, **kwargs: Any) -> HealthCheckResponse:
+        return HealthCheckResponse(status="ok")
 
-    async def _mock_request_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> list[str]:
+    async def _mock_request_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
     def test_health_check(self):

@@ -61,7 +61,7 @@ class TestSWEBenchmarkService:
         """
         try:
             response = await benchmark_service.request_health_check()
-            assert response == {"status": "ok"}
+            assert response.status == "ok"
 
         except Exception as e:
             pytest.fail(f"Health check failed: {e}", pytrace=False)
@@ -80,9 +80,7 @@ class TestSWEBenchmarkService:
             # Test case 1. Valid tasks passed in returns the same task ids in the same order passed in
             task_ids = ["astropy__astropy-12907", "django__django-11066", "django__django-12858"]
             response = await benchmark_service.request_verify_task_ids(task_ids=task_ids)
-            assert response == {
-                "task_ids": task_ids,
-            }
+            assert response.task_ids == task_ids
 
             # Test case 2. Invalid task ids passed in raises and Exception that the user sees
             with pytest.raises(Exception):
@@ -91,9 +89,9 @@ class TestSWEBenchmarkService:
                 )
 
             # Test case 3. No task ids passed in returns all 500 task ids to run the benchmark
-            task_ids = await benchmark_service.request_verify_task_ids(task_ids=[])
-            assert task_ids
-            assert len(task_ids) == 500
+            response = await benchmark_service.request_verify_task_ids(task_ids=[])
+            assert response.task_ids
+            assert len(response.task_ids) == 500
 
         except Exception as e:
             pytest.fail(f"Verify task ids failed: {e}", pytrace=False)
@@ -112,14 +110,14 @@ class TestSWEBenchmarkService:
             task_ids = ["astropy__astropy-12907", "django__django-11066", "django__django-12858"]
 
             for task_id in task_ids:
-                task_data: dict[str, str] = await benchmark_service.request_retrieve_task(task_id=task_id)
+                task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
 
-                assert task_data.get("docker_image") == docker_image_format.format(task_id=task_id)
-                assert task_data.get("request_setup")
-                assert task_data.get("problem_statement")
+                assert task_data.docker_image == docker_image_format.format(task_id=task_id)
+                assert task_data.request_setup
+                assert task_data.problem_statement
 
                 # Verify docker image exists
-                if not await validate_docker_image(task_data["docker_image"]):
+                if not await validate_docker_image(task_data.docker_image):
                     pytest.fail(f"Failed to validate docker image for task: {task_id}")
 
             # Test case 2. Invalid task id raises an Exception that the user sees
@@ -181,7 +179,7 @@ class TestSWEBenchmarkService:
 
                 # Test case 3. When using the setup task endpoint with a valid task id and instance id: Returns 200 OK
                 response = await benchmark_service.request_setup_task(task_id=task_id, instance_id=sandbox.id)
-                assert response == {"status": "ok"}
+                assert response.status == "ok"
 
                 # Test case 3. Ensure we have entered the correct commit inside of the environment after using the setup task endpoint
                 current_commit = await self._fetch_commit(sandbox)
@@ -237,13 +235,10 @@ class TestSWEBenchmarkService:
 
             final_score = await benchmark_service.request_final_score(evaluation_results=first_evaluation_result)
 
-            assert final_score == {
-                "tasks_evaluated": [task_id],
-                "final_score": round(100.0, 6),
-                "resolved_tasks": [task_id],
-                "unresolved_tasks": [],
-                "evaluation_results": first_evaluation_result,
-            }
+            assert final_score.tasks_evaluated == [task_id]
+            assert final_score.final_score == round(100.0, 6)
+            assert final_score.metadata.get("resolved_tasks", []) == [task_id]
+            assert final_score.metadata.get("unresolved_tasks", []) == []
 
         except Exception as e:
             pytest.fail(f"Final score failed: {e}", pytrace=False)

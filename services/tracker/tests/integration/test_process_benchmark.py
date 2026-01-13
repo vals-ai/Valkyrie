@@ -8,16 +8,26 @@ from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkArguments, BenchmarkStatus, EvaluationResult, Task, TaskStatus
-from tracker.sandbox import run_agent
-from tracker.types import StartRunRequest
+from tracker.types import SetupTaskResponse, StartRunRequest
 from tracker.utils import process_benchmark, process_task
 
 
 class TestProcessBenchmark:
+    @staticmethod
+    async def _mock_install_dependencies(*args: Any, **kwargs: Any) -> None:
+        pass
+
+    @staticmethod
+    async def _mock_run_agent(*args: Any, **kwargs: Any) -> None:
+        pass
+
+    @staticmethod
+    async def _mock_upload_contract(*args: Any, **kwargs: Any) -> None:
+        pass
+
     async def _test_request_evaluate_instance(
         self,
         original_method: Any,
-        database_session: Session,
         *args: Any,
         **kwargs: Any,
     ) -> dict[str, str]:
@@ -25,28 +35,39 @@ class TestProcessBenchmark:
         Test when the model finishes running and before the evaluation begins.
         expected status of the task is evaluating
         """
+        from sqlmodel import Session
+
+        from tracker.utils import engine
+
         task_id: str = args[0]
 
-        task_row = database_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
+        with Session(bind=engine, expire_on_commit=False) as test_session:
+            task_row = test_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
 
-        assert task_row is not None
-        assert task_row.status == TaskStatus.EVALUATING
+            assert task_row is not None, f"Task {task_id} not found"
+            assert task_row.status == TaskStatus.EVALUATING, (
+                f"Task {task_id} status is {task_row.status}, expected EVALUATING"
+            )
 
         evaluation_result = await original_method(*args, **kwargs)
 
         return evaluation_result
 
-    async def _test_run_agent(self, original_method: Any, database_session: Session, *args: Any, **kwargs: Any) -> None:
+    async def _test_run_agent(self, *args: Any, **kwargs: Any) -> None:
         """
         Test task status is pending before we start running the agent
         (confirms we move from starting to in progress status)
         """
-        task_id: str = args[2]
-        task_row = database_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
-        assert task_row is not None
-        assert task_row.status == TaskStatus.IN_PROGRESS
+        from sqlmodel import Session
 
-        await original_method(*args, **kwargs)
+        from tracker.utils import engine
+
+        task_id: str = args[2]
+
+        with Session(bind=engine, expire_on_commit=False) as test_session:
+            task_row = test_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
+            assert task_row is not None
+            assert task_row.status == TaskStatus.IN_PROGRESS
 
     async def test_process_task(
         self, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
@@ -81,11 +102,27 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
+        # Mock upload contract since we don't have actual contract files
+        monkeypatch.setattr(
+            "tracker.utils.upload_contract_to_sandbox",
+            TestProcessBenchmark._mock_upload_contract,
+        )
+
+        monkeypatch.setattr(
+            "tracker.utils.install_dependencies",
+            TestProcessBenchmark._mock_install_dependencies,
+        )
+
+        monkeypatch.setattr(
+            "tracker.utils.run_agent",
+            TestProcessBenchmark._mock_run_agent,
+        )
+
         original_evaluate = benchmark_service.request_evaluate_instance
         monkeypatch.setattr(
             benchmark_service,
             "request_evaluate_instance",
-            partial(self._test_request_evaluate_instance, original_evaluate, database_session),
+            partial(self._test_request_evaluate_instance, original_evaluate),
         )
 
         # Starts and evaluates a single task inside using the benchmark service
@@ -128,10 +165,20 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        original_run_agent = run_agent
+        # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
-            "tracker.sandbox.run_agent",
-            partial(self._test_run_agent, original_run_agent, database_session),
+            "tracker.utils.upload_contract_to_sandbox",
+            TestProcessBenchmark._mock_upload_contract,
+        )
+
+        monkeypatch.setattr(
+            "tracker.utils.install_dependencies",
+            TestProcessBenchmark._mock_install_dependencies,
+        )
+
+        monkeypatch.setattr(
+            "tracker.utils.run_agent",
+            TestProcessBenchmark._mock_run_agent,
         )
 
         # Run the benchmark
@@ -204,6 +251,16 @@ class TestProcessBenchmark:
         monkeypatch.setattr(Session, "commit", mock_commit_with_error)
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
+        monkeypatch.setattr(
+            "tracker.utils.install_dependencies",
+            self._mock_install_dependencies,
+        )
+
+        monkeypatch.setattr(
+            "tracker.utils.run_agent",
+            self._mock_run_agent,
+        )
+
         # Run the benchmark (error is not raised and instead handled)
         await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
 
@@ -241,11 +298,8 @@ class TestProcessBenchmark:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        count = {"count": 0}
-
-        async def mock_request_setup_task(original_method: Any, task_id: str, instance_id: str) -> None:
-            count["count"] += 1
-            if count["count"] == 2:
+        async def mock_request_setup_task(original_method: Any, task_id: str, instance_id: str) -> SetupTaskResponse:
+            if task_id == "astropy__astropy-13033":
                 raise Exception("Exception raised while setting up the task")
 
             return await original_method(task_id, instance_id)
@@ -260,6 +314,24 @@ class TestProcessBenchmark:
         )
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+
+        # Mock upload contract since we don't have actual contract files
+        monkeypatch.setattr(
+            "tracker.utils.upload_contract_to_sandbox",
+            TestProcessBenchmark._mock_upload_contract,
+        )
+
+        # Mock the install dependencies part in case dependencies break it does not affect this test
+        monkeypatch.setattr(
+            "tracker.utils.install_dependencies",
+            TestProcessBenchmark._mock_install_dependencies,
+        )
+
+        # Mock run agent part because we don't have an agent inside of the sandbox
+        monkeypatch.setattr(
+            "tracker.utils.run_agent",
+            TestProcessBenchmark._mock_run_agent,
+        )
 
         await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
 

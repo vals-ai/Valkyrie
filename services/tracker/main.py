@@ -129,7 +129,8 @@ async def start_run(
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
-        verified_task_ids = await benchmark_service.request_verify_task_ids(task_ids=request.task_ids)
+        verify_response = await benchmark_service.request_verify_task_ids(task_ids=request.task_ids)
+        verified_task_ids = verify_response.task_ids
     except Exception as e:
         error_message = str(e)
         commit_benchmark_error(benchmark_row, session, error_message)

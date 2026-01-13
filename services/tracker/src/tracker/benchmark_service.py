@@ -6,6 +6,13 @@ import httpx
 from daytona import AsyncDaytona, DaytonaConfig
 
 from tracker.exceptions import BenchmarkServiceError
+from tracker.types import (
+    FinalScoreResponse,
+    HealthCheckResponse,
+    RetrieveTaskResponse,
+    SetupTaskResponse,
+    VerifyTaskIdsResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,23 +70,23 @@ class BenchmarkService:
             )
         )
 
-    async def request_health_check(self) -> dict[str, str]:
+    async def request_health_check(self) -> HealthCheckResponse:
         """
         Requests health check from benchmark service
         """
         async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.get(f"{self._url}/health")
 
-        logger.debug(f"Health check response: {response.json()}")
+        logger.debug(f"Health check response: {response.text}")
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
                 f"Health check failed with status code {response.status_code}, response: {response.text}"
             )
 
-        return response.json()
+        return HealthCheckResponse.model_validate(response.json())
 
-    async def request_verify_task_ids(self, task_ids: list[str] | None) -> list[str]:
+    async def request_verify_task_ids(self, task_ids: list[str] | None) -> VerifyTaskIdsResponse:
         """
         Requests verify task ids from benchmark service
         """
@@ -91,16 +98,16 @@ class BenchmarkService:
         async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.get(f"{self._url}/verify-task-ids/", params=params)
 
-        logger.debug(f"Verify task ids response: {response.json()}")
+        logger.debug(f"Verify task ids response: {response.text}")
 
         if response.status_code != 200:
             raise BenchmarkServiceError(
                 f"Verify task ids failed with status code {response.status_code}, response: {response.text}"
             )
 
-        return response.json().get("task_ids", [])
+        return VerifyTaskIdsResponse.model_validate(response.json())
 
-    async def request_retrieve_task(self, task_id: str, skip_validation: bool = False) -> dict[str, str]:
+    async def request_retrieve_task(self, task_id: str, skip_validation: bool = False) -> RetrieveTaskResponse:
         """
         Requests retrieve task from benchmark service for a single task
         """
@@ -116,9 +123,9 @@ class BenchmarkService:
                 f"Retrieve task failed with status code {response.status_code}, response: {response.text}"
             )
 
-        return response.json()
+        return RetrieveTaskResponse.model_validate(response.json())
 
-    async def request_setup_task(self, task_id: str, instance_id: str) -> dict[str, str]:
+    async def request_setup_task(self, task_id: str, instance_id: str) -> SetupTaskResponse:
         """
         Requests setup task from benchmark service
         """
@@ -142,7 +149,7 @@ class BenchmarkService:
                 f"Setup task failed with status code {response.status_code}, response: {response.text}"
             )
 
-        return response.json()
+        return SetupTaskResponse.model_validate(response.json())
 
     async def request_evaluate_instance(self, task_id: str, instance_id: str) -> dict[str, str]:
         """
@@ -170,7 +177,7 @@ class BenchmarkService:
 
         return response.json()
 
-    async def request_final_score(self, evaluation_results: dict[str, dict[str, Any] | None]) -> dict[str, Any]:
+    async def request_final_score(self, evaluation_results: dict[str, dict[str, Any] | None]) -> FinalScoreResponse:
         """
         Requests final score from benchmark service
         """
@@ -188,4 +195,4 @@ class BenchmarkService:
                 f"Final score failed with status code {response.status_code}, response: {response.text}"
             )
 
-        return response.json()
+        return FinalScoreResponse.model_validate(response.json())

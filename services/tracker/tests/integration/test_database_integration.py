@@ -23,6 +23,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.types import RetrieveTaskResponse
 
 logger = logging.getLogger(__name__)
 
@@ -246,9 +247,9 @@ class TestDatabaseIntegration:
         benchmark_service: BenchmarkService,
         daytona_client: AsyncDaytona,
         task_row: Task,
-        task_data: dict[str, str],
+        task_data: RetrieveTaskResponse,
     ) -> dict[str, str]:
-        docker_image: str = task_data["docker_image"]
+        docker_image: str = task_data.docker_image
 
         # Change the status of the task to evaluating before we start evaluation
         task_row.status = TaskStatus.EVALUATING
@@ -256,12 +257,12 @@ class TestDatabaseIntegration:
         database_session.flush()
 
         async with build_task_environment(daytona_client, task_row.task_id, docker_image) as sandbox:
-            request_setup = task_data["request_setup"]
+            request_setup = task_data.request_setup
             if request_setup:
                 response = await benchmark_service.request_setup_task(
                     task_id=task_row.task_id, instance_id=str(sandbox.id)
                 )
-                assert response == {"status": "ok"}
+                assert response.status == "ok"
 
             response = await benchmark_service.request_evaluate_instance(
                 task_id=task_row.task_id, instance_id=sandbox.id
@@ -285,7 +286,7 @@ class TestDatabaseIntegration:
         try:
             # Ensure that the benchmark service is running
             response = await benchmark_service.request_health_check()
-            assert response == {"status": "ok"}
+            assert response.status == "ok"
 
             # Create benchmark row to initiate a benchmark
             benchmark_row = Benchmark(
@@ -300,15 +301,15 @@ class TestDatabaseIntegration:
             database_session.flush()
 
             # Request all of the task ids from the benchmark service
-            task_ids = await benchmark_service.request_verify_task_ids(task_ids=None)
+            verify_response = await benchmark_service.request_verify_task_ids(task_ids=None)
 
             # Returned all of the task ids from the swebench service
-            assert task_ids is not None
-            assert len(task_ids) == 500
+            assert verify_response.task_ids is not None
+            assert len(verify_response.task_ids) == 500
 
             # NOTE: For testing we only are going to random sample the dataset
             # Also to mimic limits we are going to apply a concurrency limit
-            task_ids = sample(task_ids, 10)
+            task_ids = sample(verify_response.task_ids, 10)
 
             logger.info(f"Sample of task ids returned: {task_ids[:10]}")
 
@@ -340,12 +341,17 @@ class TestDatabaseIntegration:
             logger.info(f"Sample of evaluation results: {str(list(evaluation_results.values())[:100])}")
 
             # When all tasks have been evaluated, we can make a request to get the final evaluation score
-            response = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
+            final_score_response = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
 
-            logger.info(f"Final score response: {str(response)[:250]}")
+            logger.info(f"Final score response: {str(final_score_response)[:250]}")
 
             # Create the final evaluation row and add it to the database
-            final_evaluation_row = await self._create_final_evaluation(database_session, benchmark_row, response)
+            response_dict = {
+                "final_score": final_score_response.final_score,
+                "resolved_tasks": final_score_response.metadata.get("resolved_tasks", []),
+                "unresolved_tasks": final_score_response.metadata.get("unresolved_tasks", []),
+            }
+            final_evaluation_row = await self._create_final_evaluation(database_session, benchmark_row, response_dict)
 
             # Fetch the evaluation results from the final evaluation row
             fetched_evaluation_results = final_evaluation_row.fetch_evaluation_results(database_session)
@@ -366,9 +372,9 @@ class TestDatabaseIntegration:
                 assert evaluation_result == evaluation_result_row.result
 
             # Verify that the final evaluation row matches what we have in the database
-            assert final_evaluation_row.final_score == response["final_score"]
-            assert final_evaluation_row.resolved_tasks == response["resolved_tasks"]
-            assert final_evaluation_row.unresolved_tasks == response["unresolved_tasks"]
+            assert final_evaluation_row.final_score == final_score_response.final_score
+            assert final_evaluation_row.resolved_tasks == final_score_response.metadata.get("resolved_tasks", [])
+            assert final_evaluation_row.unresolved_tasks == final_score_response.metadata.get("unresolved_tasks", [])
 
         except Exception as e:
             pytest.fail(f"End to end test failed: {e}")

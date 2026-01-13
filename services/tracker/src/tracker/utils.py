@@ -41,20 +41,20 @@ async def process_task(
                 task_session.commit()
 
                 async with create_sandbox(
-                    benchmark_service.daytona_client, task_row.task_id, task_data["docker_image"]
+                    benchmark_service.daytona_client, task_row.task_id, task_data.docker_image
                 ) as sandbox:
                     # Upload the contract to the sandbox after creating and install the dependencies
                     await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
                     await install_dependencies(sandbox, start_run_request.contract_name)
 
                     # Setup task if requested
-                    if task_data["request_setup"]:
+                    if task_data.request_setup:
                         _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
 
                     # Run the agent inside of the sandbox
                     # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
                     await run_agent(
-                        sandbox, start_run_request.contract_name, task_row.task_id, task_data["problem_statement"]
+                        sandbox, start_run_request.contract_name, task_row.task_id, task_data.problem_statement
                     )
 
                     # Update the status to evaluating once we finish running the agent
@@ -122,15 +122,15 @@ async def process_benchmark(
         }
 
         # Calculate the final score based off the tasks that were ran
-        final_score: dict[str, Any] = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
+        final_score_response = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
 
         # Create the final evaluation row and add it to the database
         final_evaluation_row = FinalEvaluation(
             benchmark=benchmark_row.id,
-            final_score=final_score["final_score"],
+            final_score=final_score_response.final_score,
             # TODO: Remove these fields because not each task will have a resolved or unresolved task
-            resolved_tasks=final_score["resolved_tasks"],
-            unresolved_tasks=final_score["unresolved_tasks"],
+            resolved_tasks=final_score_response.metadata.get("resolved_tasks", []),
+            unresolved_tasks=final_score_response.metadata.get("unresolved_tasks", []),
         )
 
         session.add(final_evaluation_row)

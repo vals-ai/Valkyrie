@@ -11,7 +11,7 @@ from tracker.database.models import *  # noqa: F403
 _ = load_dotenv()
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")
 def benchmark_service() -> BenchmarkService:
     service_ip = os.getenv("BENCHMARK_SERVICE_URL")
     if not service_ip:

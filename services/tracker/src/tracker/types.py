@@ -1,12 +1,14 @@
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel
 
-from tracker.benchmark_service import BenchmarkService
 from tracker.config import BENCHMARK_SERVICE_URL
 from tracker.database.models import BenchmarkArguments, BenchmarkStatus, FinalEvaluation
+
+if TYPE_CHECKING:
+    from tracker.benchmark_service import BenchmarkService
 
 
 class StartRunRequest(BaseModel):
@@ -16,7 +18,9 @@ class StartRunRequest(BaseModel):
     task_ids: list[str] | None = None
 
     @property
-    def benchmark_service(self) -> BenchmarkService:
+    def benchmark_service(self) -> "BenchmarkService":
+        from tracker.benchmark_service import BenchmarkService
+
         return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
 
 
@@ -54,3 +58,31 @@ class RetrieveResultsResponse(BaseModel):
     benchmark_arguments: BenchmarkArguments
     final_evaluation: FinalEvaluation | None
     evaluation_results: dict[str, dict[str, Any]] | None
+
+
+class FinalScoreResponse(BaseModel):
+    tasks_evaluated: list[str]
+    final_score: float
+    metadata: dict[str, Any]
+
+
+class StatusResponse(BaseModel):
+    status: str
+
+
+class SetupTaskResponse(StatusResponse):
+    pass
+
+
+class HealthCheckResponse(StatusResponse):
+    pass
+
+
+class RetrieveTaskResponse(BaseModel):
+    docker_image: str
+    problem_statement: str
+    request_setup: bool
+
+
+class VerifyTaskIdsResponse(BaseModel):
+    task_ids: list[str]
