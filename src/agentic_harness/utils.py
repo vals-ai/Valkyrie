@@ -1,11 +1,8 @@
 import logging
-import os
 from pathlib import Path
 from typing import Any
 
 import yaml
-from dotenv import load_dotenv
-from vals import configure_credentials
 
 from agentic_harness.base.types import BaseConfig
 
@@ -47,22 +44,3 @@ def create_base_config(config_path: str) -> BaseConfig:
     config = parse_yaml_config(config_path)
 
     return parse_base_config(config)
-
-
-def setup_vals_environment():
-    """Sets up the environment for using the vals api"""
-
-    _ = load_dotenv(override=True)
-
-    _vals_api_key = os.getenv("VALS_API_KEY")
-    if _vals_api_key is None:
-        raise ValueError("VALS_API_KEY is not set")
-
-    # NOTE: Used to check but sourced inside of the sdk already
-    _vals_env = os.getenv("VALS_ENV")
-    if _vals_env is None:
-        raise ValueError("VALS_ENV is not set")
-
-    configure_credentials(api_key=_vals_api_key)
-
-    logger.info("Environment setup complete")
