@@ -5,16 +5,16 @@ from uuid import UUID
 
 import click
 
-import cli.contract_bundler as bundler
-from cli.contract_bundler import BundlerError
-from cli.tracker_service import TrackerService, TrackerServiceError
-from cli.utils import (
+import agentic_harness.cli.contract_bundler as bundler
+from agentic_harness.cli.contract_bundler import BundlerError
+from agentic_harness.cli.tracker_service import TrackerService, TrackerServiceError
+from agentic_harness.cli.utils import (
     check_tracker_service_health,
     format_benchmark_status,
     format_start_run_response,
     stream_benchmark_status,
 )
-from services.tracker.src.tracker.types import StartRunResponse
+from agentic_harness.types import StartRunResponse
 
 
 @click.group()

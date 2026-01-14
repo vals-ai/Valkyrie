@@ -1,10 +1,12 @@
+"""Utility functions for the CLI."""
+
 import json
 from uuid import UUID
 
 import click
-from tracker.types import FetchBenchmarkResponse, StartRunResponse
+from agentic_harness.types import FetchBenchmarkResponse, StartRunResponse
 
-from cli.main import TrackerService
+from agentic_harness.cli.tracker_service import TrackerService
 
 
 def check_tracker_service_health(tracker: TrackerService) -> bool:

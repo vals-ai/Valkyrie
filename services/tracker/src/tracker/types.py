@@ -1,66 +1,41 @@
-from datetime import datetime
-from typing import TYPE_CHECKING, Any
-from uuid import UUID
+"""Internal types for the tracker service."""
+
+from typing import Any
 
 from pydantic import BaseModel
 
-from tracker.config import BENCHMARK_SERVICE_URL
-from tracker.database.models import BenchmarkArguments, BenchmarkStatus, FinalEvaluation
+# Re-export shared types for convenience
+from agentic_harness.types import (
+    BenchmarkArguments,
+    BenchmarkDetails,
+    BenchmarkStatus,
+    FetchBenchmarkResponse,
+    FinalEvaluationResponse,
+    RetrieveResultsResponse,
+    StartRunErrorResponse,
+    StartRunRequest,
+    StartRunResponse,
+)
 
-from agentic_harness.base.contract import AgentContract
-
-if TYPE_CHECKING:
-    from tracker.benchmark_service import BenchmarkService
-
-
-class StartRunRequest(BaseModel):
-    contract: AgentContract
-    benchmark_name: str
-    concurrency: int = 5
-    task_ids: list[str] | None = None
-    slice_str: str | None = None
-
-    @property
-    def benchmark_service(self) -> "BenchmarkService":
-        from tracker.benchmark_service import BenchmarkService
-
-        return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
-
-
-class StartRunErrorResponse(BaseModel):
-    benchmark_id: UUID
-    error_message: str
-
-
-class StartRunResponse(BaseModel):
-    benchmark_name: str
-    contract_name: str
-    benchmark_id: UUID
-    concurrency: int
-    started_at: datetime
-    task_count: int
-
-
-class BenchmarkDetails(BaseModel):
-    status: BenchmarkStatus
-    started_at: datetime
-    total_tasks: int
-    finished_tasks: int
-
-
-class FetchBenchmarkResponse(BaseModel):
-    benchmark_name: str
-    benchmark_id: UUID
-    details: BenchmarkDetails
-
-
-class RetrieveResultsResponse(BaseModel):
-    benchmark_name: str
-    status: BenchmarkStatus
-    benchmark_id: UUID
-    benchmark_arguments: BenchmarkArguments
-    final_evaluation: FinalEvaluation | None
-    evaluation_results: dict[str, dict[str, Any]] | None
+__all__ = [
+    # Tracker API types
+    "BenchmarkArguments",
+    "BenchmarkDetails",
+    "BenchmarkStatus",
+    "FetchBenchmarkResponse",
+    "FinalEvaluationResponse",
+    "RetrieveResultsResponse",
+    "StartRunErrorResponse",
+    "StartRunRequest",
+    "StartRunResponse",
+    # SWEBench Service types
+    "FinalScoreResponse",
+    "StatusResponse",
+    "SetupTaskResponse",
+    "HealthCheckResponse",
+    "RetrieveTaskResponse",
+    "VerifyTaskIdsResponse",
+]
 
 
 class FinalScoreResponse(BaseModel):

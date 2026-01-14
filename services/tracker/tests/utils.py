@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from agentic_harness.base.contract import AgentContract
+from agentic_harness import AgentContract
 from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, DaytonaNotFoundError, Image, Resources
 
 TEST_CONTRACT = AgentContract(

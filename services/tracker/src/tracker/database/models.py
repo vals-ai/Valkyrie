@@ -4,18 +4,13 @@ from typing import Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, field_serializer
+from pydantic import field_serializer
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapper
 from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, TypeDecorator, UniqueConstraint, select
 
+from tracker.types import BenchmarkArguments, BenchmarkStatus, FinalEvaluationResponse
 from tracker.database.utils import has_field_changed
-
-
-class BenchmarkStatus(str, Enum):
-    IN_PROGRESS = "in_progress"
-    FINISHED = "finished"
-    ERROR = "error"
 
 
 class TaskStatus(str, Enum):
@@ -26,7 +21,7 @@ class TaskStatus(str, Enum):
     ERROR = "error"
 
 
-class FinalEvaluation(SQLModel, table=True):
+class FinalEvaluation(FinalEvaluationResponse, SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     benchmark: UUID = Field(foreign_key="benchmark.id")
     final_score: float = Field(nullable=False)
@@ -42,15 +37,6 @@ class FinalEvaluation(SQLModel, table=True):
         from tracker.utils import fetch_evaluation_results
 
         return fetch_evaluation_results(self.benchmark, session)
-
-
-class BenchmarkArguments(BaseModel):
-    model_config = {"extra": "forbid"}
-
-    contract_name: str
-    concurrency: int
-    task_ids: list[str] | None = None
-    slice_str: str | None = None
 
 
 class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):

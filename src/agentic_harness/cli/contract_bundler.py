@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, Generator
 
-from agentic_harness.base.contract import AgentContract
+from agentic_harness import AgentContract
 
 
 class BundlerError(Exception):

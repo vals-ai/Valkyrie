@@ -1,7 +1,11 @@
+"""Agent Contract"""
+
 from pydantic import BaseModel
 
 
 class AgentContract(BaseModel):
+    """Contract that defines how to upload, install, and run an agent."""
+
     name: str
     """Name of the agent."""
 

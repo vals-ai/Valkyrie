@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
-from agentic_harness.base.contract import AgentContract
+from agentic_harness import AgentContract
 from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 from moto import mock_aws
 from mypy_boto3_s3.client import S3Client

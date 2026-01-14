@@ -8,8 +8,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncGenerator
 
-from agentic_harness.base.contract import AgentContract
-from agentic_harness.logger import get_logger
+from agentic_harness import AgentContract
+from tracker.logger import get_logger
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,

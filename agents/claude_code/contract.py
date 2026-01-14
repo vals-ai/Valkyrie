@@ -1,5 +1,5 @@
 import os
-from agentic_harness.base.contract import AgentContract
+from agentic_harness import AgentContract
 from dotenv import load_dotenv
 
 load_dotenv()

@@ -6,7 +6,7 @@ from functools import cached_property
 from typing import Any, NamedTuple
 from uuid import UUID
 
-from agentic_harness.logger import get_logger
+from tracker.logger import get_logger
 from sqlmodel import Session, case, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
