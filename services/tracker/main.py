@@ -76,7 +76,7 @@ async def upload_contract_to_s3(
         raise HTTPException(status_code=400, detail="Contract must be a zip file")
 
     contract_content = await contract.read()
-    # Extract contract name from filename (remove .zip extension)
+    # TODO: handle collisions/versioning
     contract_name = contract.filename.rsplit(".zip", 1)[0]
     contract_s3_key = get_contract_s3_key(contract_name)
     upload_to_s3(contract_content, contract_s3_key)
@@ -109,7 +109,7 @@ async def start_run(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if run fails to start
     """
-    logger.info(f"Starting benchmark run - contract: {request.contract_name}, benchmark: {request.benchmark_name}")
+    logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
 
@@ -142,7 +142,7 @@ async def start_run(
 
     return StartRunResponse(
         benchmark_name=benchmark_row.name,
-        contract_name=request.contract_name,
+        contract_name=request.contract.name,
         benchmark_id=benchmark_row.id,
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,

@@ -25,7 +25,7 @@ def cli():
 
 @cli.command()
 @click.option(
-    "--contract",
+    "--contract-path",
     type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
     required=True,
     help="Path to contract directory (e.g., contracts/claude_code)",
@@ -59,7 +59,7 @@ def cli():
     help="Slice string to use for slicing the benchmark (e.g., 1-10)",
 )
 def start_benchmark(
-    contract: Path,
+    contract_path: Path,
     benchmark: str,
     concurrency: int,
     task_ids: str | None,
@@ -73,7 +73,7 @@ def start_benchmark(
     """
     click.echo("Arguments:")
     click.echo(f"  - Benchmark: {benchmark}")
-    click.echo(f"  - Contract: {contract}")
+    click.echo(f"  - Contract: {contract_path}")
     click.echo(f"  - Concurrency: {concurrency}")
     click.echo(f"  - Slice: {slice_str}")
     if task_ids:
@@ -86,22 +86,28 @@ def start_benchmark(
         formatted_task_ids = task_ids.split(",")
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
-    click.echo("Validating contract...", nl=False)
-    bundler.validate_contract(contract)
-
     try:
+        contract = bundler.get_contract(contract_path / "contract.py")
+
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            click.echo("\r\033[KZipping bundle...", nl=False)
+            click.echo("\r\033[KZipping agent artifacts...", nl=False)
 
-            with bundler.create_contract_bundle_stream(contract) as file_stream:
-                click.echo("\r\033[KUploading bundle to tracker service...", nl=False)
+            with bundler.get_agent_zip_stream(contract) as file_stream:
+                click.echo("\r\033[KUploading agent to tracker service...", nl=False)
                 tracker.upload_contract(contract.name, file_stream)
 
             click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
-            response = tracker.start_run(contract.name, benchmark, concurrency, formatted_task_ids, slice_str)
+
+            response = tracker.start_run(
+                contract,
+                benchmark,
+                concurrency,
+                formatted_task_ids,
+                slice_str,
+            )
 
             click.echo("\r\033[K", nl=False)
             if response.status_code != 200:

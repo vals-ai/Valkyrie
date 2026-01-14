@@ -12,7 +12,14 @@ from mypy_boto3_s3.client import S3Client
 
 from tracker.config import S3_BUCKET_NAME
 from tracker.exceptions import SandboxError
-from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
+from tracker.sandbox import (
+    create_sandbox,
+    get_contract_path,
+    install_dependencies,
+    run_agent,
+    upload_contract_to_sandbox,
+)
+from tests.utils import TEST_CONTRACT
 
 
 @pytest.fixture
@@ -55,13 +62,13 @@ class TestContract(AgentContract):
             output=[TextOutput(text="Test agent completed successfully")]
         )
 '''
-        zip_file.writestr("bundle/contracts/test_contract/contract.py", contract_code)
+        zip_file.writestr("test_contract/contract.py", contract_code)
 
         # Minimal setup.sh (just echoes success)
         setup_script = """#!/bin/bash
 echo "Test contract setup complete"
 """
-        zip_file.writestr("bundle/contracts/test_contract/setup.sh", setup_script)
+        zip_file.writestr("test_contract/setup.sh", setup_script)
 
     zip_buffer.seek(0)
     return zip_buffer.read()
@@ -96,12 +103,14 @@ class TestSandboxOperations:
         # Upload contract to sandbox
         await upload_contract_to_sandbox(test_sandbox, "test_contract")
 
+        contract_path = get_contract_path("test_contract")
+
         # Verify contract file exists in sandbox
-        result = await test_sandbox.process.exec("test -f /bundle/contracts/test_contract/contract.py")
+        result = await test_sandbox.process.exec(f"test -f {contract_path}/contract.py")
         assert result.exit_code == 0, "Contract file should exist in sandbox"
 
         # Verify setup.sh exists
-        result = await test_sandbox.process.exec("test -f /bundle/contracts/test_contract/setup.sh")
+        result = await test_sandbox.process.exec(f"test -f {contract_path}/setup.sh")
         assert result.exit_code == 0, "Setup script should exist in sandbox"
 
     async def test_upload_contract_creates_nested_directories(
@@ -111,18 +120,20 @@ class TestSandboxOperations:
         # Create a contract with nested structure
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("bundle/contracts/nested/subdir/deep/file.py", "# test file")
-            zf.writestr("bundle/contracts/nested/other/file.txt", "test content")
+            zf.writestr("nested/subdir/deep/file.py", "# test file")
+            zf.writestr("nested/other/file.txt", "test content")
 
         mock_s3.put_object(Bucket=S3_BUCKET_NAME, Key="contracts/nested.zip", Body=zip_buffer.getvalue())
 
         await upload_contract_to_sandbox(test_sandbox, "nested")
 
+        contract_path = get_contract_path("nested")
+
         # Verify nested files exist
-        result = await test_sandbox.process.exec("test -f /bundle/contracts/nested/subdir/deep/file.py")
+        result = await test_sandbox.process.exec(f"test -f {contract_path}/subdir/deep/file.py")
         assert result.exit_code == 0, "Deeply nested file should exist"
 
-        result = await test_sandbox.process.exec("test -f /bundle/contracts/nested/other/file.txt")
+        result = await test_sandbox.process.exec(f"test -f {contract_path}/other/file.txt")
         assert result.exit_code == 0, "Other nested file should exist"
 
     async def test_install_dependencies_errors_on_missing_bundle(
@@ -136,7 +147,7 @@ class TestSandboxOperations:
 
         # Try to install dependencies without bundle - should fail
         with pytest.raises(SandboxError, match="Failed to install agentic_harness dependencies"):
-            await install_dependencies(test_sandbox, "test_contract")
+            await install_dependencies(test_sandbox, TEST_CONTRACT)
 
     async def test_run_agent_creates_session_and_executes_command(self, test_sandbox: AsyncSandbox) -> None:
         """Test that run_agent creates a session and executes the command."""
@@ -153,11 +164,12 @@ import sys
 print("Agent executed successfully")
 sys.exit(0)
 """
-        await test_sandbox.process.exec("mkdir -p /bundle/contracts/test_contract")
-        file_upload = FileUpload(source=script.encode(), destination="/bundle/contracts/test_contract/entry.py")
+        contract_path = get_contract_path("test_contract")
+        await test_sandbox.process.exec(f"mkdir -p {contract_path}")
+        file_upload = FileUpload(source=script.encode(), destination=f"{contract_path}/entry.py")
         await test_sandbox.fs.upload_files(files=[file_upload])
         await test_sandbox.process.exec("chmod +x /test_agent.py")
 
         # Test that command execution works (will fail because entry.py doesn't exist, but tests the flow)
         with pytest.raises(SandboxError):
-            await run_agent(test_sandbox, "test_contract", "task-1", "Test problem statement")
+            await run_agent(test_sandbox, TEST_CONTRACT, "Test problem statement")

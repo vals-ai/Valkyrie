@@ -2,13 +2,13 @@
 
 import asyncio
 import io
-import os
 import shlex
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, AsyncGenerator
 
+from agentic_harness.base.contract import AgentContract
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
@@ -27,22 +27,6 @@ logger = get_logger(__name__)
 
 
 bundle_path = PurePosixPath("/bundle")
-
-
-def _strip_bundle_prefix(filename: str) -> str:
-    """
-    Strip bundle_* prefix from filename if present.
-
-    Args:
-        filename: Filename from zip archive (e.g., "bundle_abc123/contracts/mycontract/contract.py")
-
-    Returns:
-        Filename with bundle prefix removed (e.g., "contracts/mycontract/contract.py")
-    """
-    if "/" in filename and filename.split("/")[0].startswith("bundle"):
-        return "/".join(filename.split("/")[1:])
-
-    return filename
 
 
 def _collect_parent_directories(filename: str, base_path: PurePosixPath) -> set[str]:
@@ -71,16 +55,16 @@ def _collect_parent_directories(filename: str, base_path: PurePosixPath) -> set[
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
     """Get the path to a contract in the sandbox."""
-    return bundle_path / "contracts" / contract_name
-
-
-def get_submodules_dir(contract_name: str) -> PurePosixPath:
-    """Get the path to submodules directory for a contract."""
-    return get_contract_path(contract_name) / "submodules"
+    return bundle_path / contract_name
 
 
 @asynccontextmanager
-async def create_sandbox(daytona: AsyncDaytona, sandbox_name: str, image: str) -> AsyncGenerator[AsyncSandbox, Any]:
+async def create_sandbox(
+    daytona: AsyncDaytona,
+    sandbox_name: str,
+    image: str,
+    env_vars: dict[str, str] = {},
+) -> AsyncGenerator[AsyncSandbox, Any]:
     """
     Create a sandbox with the given name and image.
     Automatically cleans up the sandbox when the context manager exits.
@@ -89,7 +73,7 @@ async def create_sandbox(daytona: AsyncDaytona, sandbox_name: str, image: str) -
 
     sandbox = await daytona.create(
         CreateSandboxFromImageParams(
-            env_vars=dict(os.environ),
+            env_vars=env_vars,
             name=sandbox_name,
             image=Image.base(image),
             network_block_all=False,
@@ -132,16 +116,15 @@ async def upload_contract_to_sandbox(sandbox: AsyncSandbox, contract_name: str) 
         for file_info in zip_ref.filelist:
             if not file_info.is_dir():
                 file_content = zip_ref.read(file_info.filename)
-                filename = _strip_bundle_prefix(file_info.filename)
 
                 files_to_upload.append(
                     FileUpload(
                         source=file_content,
-                        destination=str(bundle_path / filename),
+                        destination=str(bundle_path / file_info.filename),
                     )
                 )
 
-                dirs_to_create.update(_collect_parent_directories(filename, bundle_path))
+                dirs_to_create.update(_collect_parent_directories(file_info.filename, bundle_path))
 
     # Create all necessary directories
     if dirs_to_create:
@@ -153,78 +136,30 @@ async def upload_contract_to_sandbox(sandbox: AsyncSandbox, contract_name: str) 
     await sandbox.fs.upload_files(files_to_upload)
 
 
-async def install_dependencies(sandbox: AsyncSandbox, contract_name: str) -> None:
-    """
-    Install agent dependencies in the sandbox.
+async def install_dependencies(sandbox: AsyncSandbox, contract: AgentContract) -> None:
+    """Install agent dependencies in the sandbox."""
+    logger.info(f"Installing dependencies for contract: {contract.name}")
 
-    This function:
-    1. Installs the agentic_harness package
-    2. Installs all packages in the submodules/ directory (if it exists)
-    3. Runs the setup.sh script from the contract (if it exists)
+    contract_path = get_contract_path(contract.name)
 
-    Args:
-        sandbox: The sandbox to install dependencies in
-        contract_name: Name of the contract (used to locate setup.sh)
+    response = await sandbox.process.exec(contract.install_cmd, cwd=str(contract_path))
 
-    Raises:
-        SandboxError: If dependency installation fails
-
-    TODO: add integration test
-    """
-    logger.info(f"Installing dependencies for contract: {contract_name}")
-
-    contract_path = get_contract_path(contract_name)
-
-    contract_files = await sandbox.fs.list_files(str(contract_path))
-    setup_exists = any(file.name == "setup.sh" for file in contract_files)
-    submodules_exist = any(file.name == "submodules" for file in contract_files)
-
-    logger.info("Installing agentic_harness dependencies")
-    response = await sandbox.process.exec("pip install -e .", cwd=str(bundle_path))
     if response.exit_code != 0:
-        error_msg = f"Failed to install agentic_harness dependencies: {response.result}"
+        error_msg = f"Failed to install dependencies for contract {contract.name}: {response.result}"
         logger.error(error_msg)
         raise SandboxError(error_msg)
+
     logger.info(response.result)
-    logger.info("Finished installing agentic_harness dependencies")
-
-    if submodules_exist:
-        submodules_dir = get_submodules_dir(contract_name)
-        submodule_files = await sandbox.fs.list_files(str(submodules_dir))
-
-        for submodule in submodule_files:
-            if submodule.is_dir:
-                submodule_dir = submodules_dir / submodule.name
-                logger.info(f"Installing dependencies for submodule: {submodule.name}")
-                response = await sandbox.process.exec("pip install -e .", cwd=str(submodule_dir))
-
-                if response.exit_code != 0:
-                    error_msg = f"Failed to install dependencies for submodule {submodule.name}: {response.result}"
-                    logger.error(error_msg)
-                    raise SandboxError(error_msg)
-
-                logger.info(response.result)
-                logger.info(f"Finished installing dependencies for submodule: {submodule.name}")
-
-    if setup_exists:
-        logger.info(f"Running setup.sh for contract: {contract_name}")
-        response = await sandbox.process.exec("bash setup.sh", cwd=str(contract_path))
-
-        if response.exit_code != 0:
-            logger.error(f"Failed to run setup.sh for contract {contract_name}: {response.result}")
-
-        logger.info(response.result)
-        logger.info(f"Finished running setup.sh for contract: {contract_name}")
+    logger.info(f"Finished running installing dependencies for contract: {contract.name}")
 
 
-async def run_agent(sandbox: AsyncSandbox, contract_name: str, task_id: str, problem_statement: str) -> None:
+async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_statement: str) -> None:
     """
     Run the agent inside the sandbox for a given task.
 
     Args:
         sandbox: The sandbox to run the agent in
         contract_name: Name of the contract
-        task_id: ID of the task being run
         problem_statement: Problem statement to pass to the agent
 
     Raises:
@@ -232,14 +167,12 @@ async def run_agent(sandbox: AsyncSandbox, contract_name: str, task_id: str, pro
 
     TODO: add integration tests
     """
-    logger.info(f"Starting agent {contract_name} for task {task_id}")
+    logger.info(f"Starting agent {contract.name}")
 
-    contract_path = get_contract_path(contract_name)
-    run_cmd = f"python -m agentic_harness.entry --contract {contract_path} --problem_statement {shlex.quote(problem_statement)}"
-
-    session_id = contract_name
+    session_id = contract.name
     await sandbox.process.create_session(session_id)
 
+    run_cmd = contract.run_cmd.replace("{{problem_statement}}", shlex.quote(problem_statement))
     run_agent_request = SessionExecuteRequest(command=run_cmd)
     run_agent_response = await sandbox.process.execute_session_command(session_id, run_agent_request)
     command_id = run_agent_response.cmd_id
@@ -261,6 +194,6 @@ async def run_agent(sandbox: AsyncSandbox, contract_name: str, task_id: str, pro
     logger.info(logs.output)
 
     if command.exit_code != 0:
-        raise SandboxError(f"Failed to run agent {contract_name} for task {task_id}")
+        raise SandboxError(f"Failed to run agent {contract.name}")
 
-    logger.info(f"Agent ran successfully for task {task_id}")
+    logger.info(f"Ran agent {contract.name} successfully")

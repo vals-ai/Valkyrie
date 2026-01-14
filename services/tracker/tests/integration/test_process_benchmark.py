@@ -10,6 +10,7 @@ from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import BenchmarkStatus, EvaluationResult, Task, TaskStatus
 from tracker.types import SetupTaskResponse, StartRunRequest
 from tracker.utils import process_benchmark, process_task
+from tests.utils import TEST_CONTRACT
 
 
 class TestProcessBenchmark:
@@ -77,7 +78,7 @@ class TestProcessBenchmark:
 
         # Dependencies required to process the task that the user sends
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=[task_id]
+            benchmark_name="swebench", contract=TEST_CONTRACT, concurrency=5, task_ids=[task_id]
         )
 
         # Concurrency control for each task being processed inside of the benchmark
@@ -140,7 +141,7 @@ class TestProcessBenchmark:
 
         # Start run request sent by user to start the benchmark
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=TEST_CONTRACT, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
@@ -206,7 +207,7 @@ class TestProcessBenchmark:
         # Example tasks from swebench
         task_ids: list[str] = ["astropy__astropy-12907"]
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=TEST_CONTRACT, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
@@ -262,7 +263,7 @@ class TestProcessBenchmark:
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=TEST_CONTRACT, concurrency=5, task_ids=task_ids
         )
 
         benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)

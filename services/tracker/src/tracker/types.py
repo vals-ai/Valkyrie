@@ -7,12 +7,14 @@ from pydantic import BaseModel
 from tracker.config import BENCHMARK_SERVICE_URL
 from tracker.database.models import BenchmarkArguments, BenchmarkStatus, FinalEvaluation
 
+from agentic_harness.base.contract import AgentContract
+
 if TYPE_CHECKING:
     from tracker.benchmark_service import BenchmarkService
 
 
 class StartRunRequest(BaseModel):
-    contract_name: str
+    contract: AgentContract
     benchmark_name: str
     concurrency: int = 5
     task_ids: list[str] | None = None

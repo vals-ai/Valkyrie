@@ -41,11 +41,14 @@ async def process_task(
                 task_session.commit()
 
                 async with create_sandbox(
-                    benchmark_service.daytona_client, task_row.task_id, task_data.docker_image
+                    benchmark_service.daytona_client,
+                    task_row.task_id,
+                    task_data.docker_image,
+                    env_vars=start_run_request.contract.env,
                 ) as sandbox:
                     # Upload the contract to the sandbox after creating and install the dependencies
-                    await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
-                    await install_dependencies(sandbox, start_run_request.contract_name)
+                    await upload_contract_to_sandbox(sandbox, start_run_request.contract.name)
+                    await install_dependencies(sandbox, start_run_request.contract)
 
                     # Setup task if requested
                     if task_data.request_setup:
@@ -53,9 +56,7 @@ async def process_task(
 
                     # Run the agent inside of the sandbox
                     # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
-                    await run_agent(
-                        sandbox, start_run_request.contract_name, task_row.task_id, task_data.problem_statement
-                    )
+                    await run_agent(sandbox, start_run_request.contract, task_data.problem_statement)
 
                     # Update the status to evaluating once we finish running the agent
                     task_row.status = TaskStatus.EVALUATING

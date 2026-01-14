@@ -1,41 +1,18 @@
-from abc import ABC, abstractmethod
-
-from agentic_harness.base.types import AgentConfig, QueryResult, Task
+from pydantic import BaseModel
 
 
-class AgentContract(ABC):
-    """
-    Agent contract that all submodules must implement,
-    This allows us to substitute different agent scaffolds with ease.
+class AgentContract(BaseModel):
+    name: str
+    """Name of the agent."""
 
-    """
+    artifacts: list[str] = []
+    """Paths to artifacts."""
 
-    _config: AgentConfig
+    install_cmd: str
+    """Command to install the agent."""
 
-    def __init__(self, config: AgentConfig):
-        self._config = config
+    run_cmd: str
+    """Command to run the agent."""
 
-    @property
-    def config(self) -> AgentConfig:
-        return self._config
-
-    @property
-    def environment_variables(self) -> dict[str, str]:
-        """
-        Override this method to inject additional environment variables into the sandbox that allow the agent to function
-
-
-        Example:
-        ```python
-        import os
-
-        return {
-            "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
-        }
-        ```
-        """
-        return {}
-
-    @abstractmethod
-    async def run(self, task: Task) -> QueryResult:
-        """Execute the agent for the provided task and return a model response."""
+    env: dict[str, str] = {}
+    """Environment variables required to run the agent."""

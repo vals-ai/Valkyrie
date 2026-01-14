@@ -8,6 +8,8 @@ import httpx
 from httpx._models import Response
 from tracker.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest
 
+from agentic_harness.base.contract import AgentContract
+
 from cli.config import TRACKER_URL
 
 
@@ -85,7 +87,7 @@ class TrackerService:
 
     def start_run(
         self,
-        contract_name: str,
+        contract: AgentContract,
         benchmark_name: str,
         concurrency: int,
         task_ids: list[str] | None,
@@ -106,7 +108,7 @@ class TrackerService:
         """
         try:
             payload = StartRunRequest(
-                contract_name=contract_name,
+                contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
                 task_ids=task_ids,

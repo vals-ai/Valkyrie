@@ -14,7 +14,11 @@ dependencies = [
     "daytona>=0.128.1",
     "sqlmodel>=0.0.31",
     "httpx>=0.28.1",
+    "agentic-harness",
 ]
+
+[tool.uv.sources]
+agentic-harness = { path = "../.." }
 
 [dependency-groups]
 dev = [

@@ -290,7 +290,7 @@ class TestDatabaseIntegration:
             database_session.flush()
 
             # Request all of the task ids from the benchmark service
-            verify_response = await benchmark_service.request_verify_task_ids(task_ids=None, slice=None)
+            verify_response = await benchmark_service.request_verify_task_ids(task_ids=None, slice_str=None)
 
             # Returned all of the task ids from the swebench service
             assert verify_response.task_ids is not None

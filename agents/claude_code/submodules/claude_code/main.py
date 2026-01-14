@@ -1,9 +1,11 @@
 import asyncio
+import argparse
 import json
 import os
+from pprint import pprint
 from typing import Any, AsyncGenerator, TypeAlias
 
-from agentic_harness.base.types import InputItem, TextInput
+from model_library.base import InputItem, TextInput
 
 JSONScalar: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONScalar | dict[str, "JSONValue"] | list["JSONValue"]
@@ -48,19 +50,6 @@ class ClaudeCodeAgent:
         except json.JSONDecodeError:
             return None
 
-    def walk_paths(self, obj: JSONValue, path: str = "") -> None:
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                next_path = f"{path}.{k}" if path else k
-                self.walk_paths(v, next_path)
-
-        elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                self.walk_paths(item, f"{path}[{i}]")
-
-        else:
-            print(f"{path} = {obj!r}", flush=True)
-
     async def _read_stderr(self, stderr: asyncio.StreamReader) -> str:
         data = await stderr.read()
         return data.decode()
@@ -96,9 +85,6 @@ class ClaudeCodeAgent:
         async for line in self._stream_conversation(subprocess_result.stdout):
             parsed_line = self._parse_sequence(line)
 
-            if parsed_line:
-                self.walk_paths(parsed_line)
-
             if parsed_line and parsed_line.get("type") == "result":
                 result_sequence = parsed_line
 
@@ -114,3 +100,18 @@ class ClaudeCodeAgent:
             raise ValueError("No result sequence found")
 
         return result_sequence
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-p", "--prompt", type=str, required=True, help="Prompt to run Claude Code with")
+    args = parser.parse_args()
+
+    claude = ClaudeCodeAgent()
+
+    result = asyncio.run(claude.run([TextInput(text=args.prompt)]))
+
+    pprint(result)
+
+if __name__ == "__main__":
+    main()
+

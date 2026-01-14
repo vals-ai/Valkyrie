@@ -21,6 +21,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import get_session
 from tracker.types import HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
+from tests.utils import TEST_CONTRACT
 
 client = TestClient(app)
 
@@ -71,7 +72,7 @@ class TestFastapiServer:
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(
-            contract_name="claude_code",
+            contract=TEST_CONTRACT,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
@@ -113,7 +114,7 @@ class TestFastapiServer:
 
         # Secondary test. Arguments is correct serialized into the database
         assert benchmark_row.arguments == BenchmarkArguments(
-            contract_name=request.contract_name,
+            contract_name=request.contract.name,
             concurrency=request.concurrency,
             task_ids=None,
             slice_str=None,
@@ -127,7 +128,7 @@ class TestFastapiServer:
 
         # Remaining fields match what we passed into the request
         assert json_response["benchmark_name"] == request.benchmark_name
-        assert json_response["contract_name"] == request.contract_name
+        assert json_response["contract_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
@@ -313,7 +314,7 @@ class TestFastapiServer:
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(
-            contract_name="claude_code",
+            contract=TEST_CONTRACT,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
