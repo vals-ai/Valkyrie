@@ -22,7 +22,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.types import RetrieveTaskResponse
+from tracker.types import FinalScoreResponse, RetrieveTaskResponse
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +49,12 @@ class TestDatabaseIntegration:
         return evaluation_result_row
 
     async def _create_final_evaluation(
-        self, database_session: Session, benchmark_row: Benchmark, final_score_result: dict[str, Any]
+        self, database_session: Session, benchmark_row: Benchmark, final_score_response: FinalScoreResponse
     ) -> FinalEvaluation:
         final_evaluation_row = FinalEvaluation(
             benchmark=benchmark_row.id,
-            final_score=final_score_result["final_score"],
-            resolved_tasks=final_score_result["resolved_tasks"],
-            unresolved_tasks=final_score_result["unresolved_tasks"],
+            final_score=final_score_response.final_score,
+            properties=final_score_response.metadata,
         )
         database_session.add(final_evaluation_row)
         database_session.flush()
@@ -290,7 +289,7 @@ class TestDatabaseIntegration:
             database_session.flush()
 
             # Request all of the task ids from the benchmark service
-            verify_response = await benchmark_service.request_verify_task_ids(task_ids=None, slice=None)
+            verify_response = await benchmark_service.request_verify_task_ids(task_ids=None, slice_str=None)
 
             # Returned all of the task ids from the swebench service
             assert verify_response.task_ids is not None
@@ -335,12 +334,9 @@ class TestDatabaseIntegration:
             logger.info(f"Final score response: {str(final_score_response)[:250]}")
 
             # Create the final evaluation row and add it to the database
-            response_dict = {
-                "final_score": final_score_response.final_score,
-                "resolved_tasks": final_score_response.metadata.get("resolved_tasks", []),
-                "unresolved_tasks": final_score_response.metadata.get("unresolved_tasks", []),
-            }
-            final_evaluation_row = await self._create_final_evaluation(database_session, benchmark_row, response_dict)
+            final_evaluation_row = await self._create_final_evaluation(
+                database_session, benchmark_row, final_score_response
+            )
 
             # Fetch the evaluation results from the final evaluation row
             fetched_evaluation_results = final_evaluation_row.fetch_evaluation_results(database_session)
@@ -362,8 +358,7 @@ class TestDatabaseIntegration:
 
             # Verify that the final evaluation row matches what we have in the database
             assert final_evaluation_row.final_score == final_score_response.final_score
-            assert final_evaluation_row.resolved_tasks == final_score_response.metadata.get("resolved_tasks", [])
-            assert final_evaluation_row.unresolved_tasks == final_score_response.metadata.get("unresolved_tasks", [])
+            assert final_evaluation_row.properties == final_score_response.metadata
 
         except Exception as e:
             pytest.fail(f"End to end test failed: {e}")

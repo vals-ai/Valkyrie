@@ -128,9 +128,7 @@ async def process_benchmark(
         final_evaluation_row = FinalEvaluation(
             benchmark=benchmark_row.id,
             final_score=final_score_response.final_score,
-            # TODO: Remove these fields because not each task will have a resolved or unresolved task
-            resolved_tasks=final_score_response.metadata.get("resolved_tasks", []),
-            unresolved_tasks=final_score_response.metadata.get("unresolved_tasks", []),
+            properties=final_score_response.metadata,
         )
 
         session.add(final_evaluation_row)

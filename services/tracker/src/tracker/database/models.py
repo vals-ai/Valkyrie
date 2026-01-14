@@ -30,9 +30,8 @@ class FinalEvaluation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     benchmark: UUID = Field(foreign_key="benchmark.id")
     final_score: float = Field(nullable=False)
-
-    resolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
-    unresolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    # NOTE: metadata was reserved by alchemy
+    properties: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 
     @field_serializer("id", "benchmark")
     def serialize_uuid(self, value: UUID | str) -> str:
