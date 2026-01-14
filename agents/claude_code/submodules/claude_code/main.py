@@ -73,6 +73,7 @@ class ClaudeCodeAgent:
             stdin=asyncio.subprocess.DEVNULL,  # NOTE: Daytona does not provide a stdin when executed from command externally
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=1024*1024,  # 1MB
             env={**os.environ, "PATH": f"{os.environ['HOME']}/.local/bin:{os.environ['PATH']}"},
         )
 
