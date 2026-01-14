@@ -6,12 +6,12 @@ from functools import cached_property
 from typing import Any, NamedTuple
 from uuid import UUID
 
+from agentic_harness.logger import get_logger
 from sqlmodel import Session, case, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
-from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox, install_agent_dependencies, run_agent, upload_agent_artifacts
 from tracker.types import (
     BenchmarkDetails,

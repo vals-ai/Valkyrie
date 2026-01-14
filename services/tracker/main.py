@@ -1,5 +1,6 @@
 from uuid import UUID
 
+from agentic_harness.logger import get_logger
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
@@ -8,7 +9,6 @@ from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
-from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
 from tracker.types import (
     FetchBenchmarkResponse,
