@@ -29,30 +29,6 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 
 
-def _collect_parent_directories(filename: str, base_path: PurePosixPath) -> set[str]:
-    """
-    Collect all parent directories that need to be created for a file.
-
-    Args:
-        filename: Relative filename (e.g., "contracts/mycontract/contract.py")
-        base_path: Base path to prepend (e.g., "/bundle")
-
-    Returns:
-        Set of directory paths that need to be created
-    """
-    dirs_to_create: set[str] = set()
-    parent = str(Path(filename).parent)
-
-    if parent and parent != ".":
-        # Add all parent directories in the path
-        parts = Path(filename).parts[:-1]  # Exclude the file itself
-        for i in range(1, len(parts) + 1):
-            dir_path = str(base_path.joinpath(*parts[:i]))
-            dirs_to_create.add(dir_path)
-
-    return dirs_to_create
-
-
 def get_contract_path(contract_name: str) -> PurePosixPath:
     """Get the path to a contract in the sandbox."""
     return bundle_path / contract_name
@@ -93,7 +69,7 @@ async def create_sandbox(
         await daytona.delete(sandbox)
 
 
-async def upload_contract_to_sandbox(sandbox: AsyncSandbox, contract_name: str) -> None:
+async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContract) -> None:
     """
     Upload contract from S3 to the sandbox.
 
@@ -104,9 +80,9 @@ async def upload_contract_to_sandbox(sandbox: AsyncSandbox, contract_name: str) 
     Raises:
         SandboxError: If directory creation or file upload fails
     """
-    logger.info(f"Uploading contract {contract_name} to sandbox {sandbox.name}")
+    logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
-    contract_s3_key = get_contract_s3_key(contract_name)
+    contract_s3_key = get_contract_s3_key(contract.name)
     contract_content = download_from_s3(contract_s3_key)
     files_to_upload: list[FileUpload] = []
     dirs_to_create: set[str] = set()
@@ -114,17 +90,20 @@ async def upload_contract_to_sandbox(sandbox: AsyncSandbox, contract_name: str) 
     # Unzip contract and collect files and directories
     with zipfile.ZipFile(io.BytesIO(contract_content), "r") as zip_ref:
         for file_info in zip_ref.filelist:
-            if not file_info.is_dir():
-                file_content = zip_ref.read(file_info.filename)
+            if file_info.is_dir():
+                continue
 
-                files_to_upload.append(
-                    FileUpload(
-                        source=file_content,
-                        destination=str(bundle_path / file_info.filename),
-                    )
+            file_content = zip_ref.read(file_info.filename)
+
+            files_to_upload.append(
+                FileUpload(
+                    source=file_content,
+                    destination=str(bundle_path / file_info.filename),
                 )
+            )
 
-                dirs_to_create.update(_collect_parent_directories(file_info.filename, bundle_path))
+            parent = Path(file_info.filename).parent
+            dirs_to_create.add(str(parent))
 
     # Create all necessary directories
     if dirs_to_create:
@@ -136,7 +115,7 @@ async def upload_contract_to_sandbox(sandbox: AsyncSandbox, contract_name: str) 
     await sandbox.fs.upload_files(files_to_upload)
 
 
-async def install_dependencies(sandbox: AsyncSandbox, contract: AgentContract) -> None:
+async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContract) -> None:
     """Install agent dependencies in the sandbox."""
     logger.info(f"Installing dependencies for contract: {contract.name}")
 
@@ -164,8 +143,6 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_stat
 
     Raises:
         SandboxError: If the agent fails to run or times out
-
-    TODO: add integration tests
     """
     logger.info(f"Starting agent {contract.name}")
 
@@ -194,6 +171,6 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_stat
     logger.info(logs.output)
 
     if command.exit_code != 0:
-        raise SandboxError(f"Failed to run agent {contract.name}")
+        raise SandboxError(f"Failed to run agent {contract.name}: {run_agent_response.output}")
 
     logger.info(f"Ran agent {contract.name} successfully")

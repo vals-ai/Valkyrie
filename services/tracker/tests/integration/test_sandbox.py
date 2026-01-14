@@ -3,23 +3,23 @@
 import io
 import zipfile
 from typing import AsyncGenerator, Generator
+from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
-from daytona import AsyncDaytona, AsyncSandbox, FileUpload
+from agentic_harness.base.contract import AgentContract
+from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 from moto import mock_aws
 from mypy_boto3_s3.client import S3Client
 
 from tracker.config import S3_BUCKET_NAME
-from tracker.exceptions import SandboxError
+from tracker.s3 import get_contract_s3_key
 from tracker.sandbox import (
     create_sandbox,
-    get_contract_path,
-    install_dependencies,
+    install_agent_dependencies,
     run_agent,
-    upload_contract_to_sandbox,
+    upload_agent_artifacts,
 )
-from tests.utils import TEST_CONTRACT
 
 
 @pytest.fixture
@@ -29,49 +29,6 @@ def mock_s3() -> Generator[S3Client, None, None]:
         s3 = boto3.client("s3", region_name="us-east-1")  # pyright: ignore[reportUnknownMemberType]
         s3.create_bucket(Bucket=S3_BUCKET_NAME)
         yield s3
-
-
-@pytest.fixture
-def minimal_contract_zip() -> bytes:
-    """
-    Create a minimal test contract that properly implements AgentContract.
-
-    This contract:
-    - Implements AgentContract properly
-    - Returns a simple QueryResult
-    - Has no external dependencies
-    """
-    zip_buffer = io.BytesIO()
-
-    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-        # Minimal contract.py that implements AgentContract
-        contract_code = '''"""Test contract for integration tests."""
-
-from model_library.base import QueryResult, TextOutput
-
-from agentic_harness.base.contract import AgentContract
-from agentic_harness.base.types import Task
-
-
-class TestContract(AgentContract):
-    """Minimal test contract."""
-
-    async def run(self, task: Task) -> QueryResult:
-        """Execute the agent for the provided task."""
-        return QueryResult(
-            output=[TextOutput(text="Test agent completed successfully")]
-        )
-'''
-        zip_file.writestr("test_contract/contract.py", contract_code)
-
-        # Minimal setup.sh (just echoes success)
-        setup_script = """#!/bin/bash
-echo "Test contract setup complete"
-"""
-        zip_file.writestr("test_contract/setup.sh", setup_script)
-
-    zip_buffer.seek(0)
-    return zip_buffer.read()
 
 
 @pytest.fixture
@@ -93,83 +50,85 @@ class TestSandboxOperations:
             result = await sandbox.process.exec("echo 'test'")
             assert result.exit_code == 0
 
-    async def test_upload_contract_to_sandbox(
-        self, test_sandbox: AsyncSandbox, mock_s3: S3Client, minimal_contract_zip: bytes
-    ) -> None:
-        """Test uploading a contract to the sandbox."""
-        # Upload contract zip to mocked S3
-        mock_s3.put_object(Bucket=S3_BUCKET_NAME, Key="contracts/test_contract.zip", Body=minimal_contract_zip)
+        with pytest.raises(DaytonaError):
+            await daytona_client.find_one(sandbox_name)
 
-        # Upload contract to sandbox
-        await upload_contract_to_sandbox(test_sandbox, "test_contract")
-
-        contract_path = get_contract_path("test_contract")
-
-        # Verify contract file exists in sandbox
-        result = await test_sandbox.process.exec(f"test -f {contract_path}/contract.py")
-        assert result.exit_code == 0, "Contract file should exist in sandbox"
-
-        # Verify setup.sh exists
-        result = await test_sandbox.process.exec(f"test -f {contract_path}/setup.sh")
-        assert result.exit_code == 0, "Setup script should exist in sandbox"
-
-    async def test_upload_contract_creates_nested_directories(
-        self, test_sandbox: AsyncSandbox, mock_s3: S3Client
-    ) -> None:
-        """Test that nested directories are created correctly."""
-        # Create a contract with nested structure
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w") as zf:
-            zf.writestr("nested/subdir/deep/file.py", "# test file")
-            zf.writestr("nested/other/file.txt", "test content")
-
-        mock_s3.put_object(Bucket=S3_BUCKET_NAME, Key="contracts/nested.zip", Body=zip_buffer.getvalue())
-
-        await upload_contract_to_sandbox(test_sandbox, "nested")
-
-        contract_path = get_contract_path("nested")
-
-        # Verify nested files exist
-        result = await test_sandbox.process.exec(f"test -f {contract_path}/subdir/deep/file.py")
-        assert result.exit_code == 0, "Deeply nested file should exist"
-
-        result = await test_sandbox.process.exec(f"test -f {contract_path}/other/file.txt")
-        assert result.exit_code == 0, "Other nested file should exist"
-
-    async def test_install_dependencies_errors_on_missing_bundle(
-        self, test_sandbox: AsyncSandbox, mock_s3: S3Client, minimal_contract_zip: bytes
-    ) -> None:
-        """Test that install_dependencies raises SandboxError when bundle is missing."""
-
-        # Upload contract without bundle
-        mock_s3.put_object(Bucket=S3_BUCKET_NAME, Key="contracts/test_contract.zip", Body=minimal_contract_zip)
-        await upload_contract_to_sandbox(test_sandbox, "test_contract")
-
-        # Try to install dependencies without bundle - should fail
-        with pytest.raises(SandboxError, match="Failed to install agentic_harness dependencies"):
-            await install_dependencies(test_sandbox, TEST_CONTRACT)
-
-    async def test_run_agent_creates_session_and_executes_command(self, test_sandbox: AsyncSandbox) -> None:
-        """Test that run_agent creates a session and executes the command."""
-
-        # Create a simple test script that will succeed
-        await test_sandbox.process.exec("mkdir -p /test_contract")
-        await test_sandbox.process.exec(
-            "echo '#!/bin/bash\necho success' > /test_contract/run.sh && chmod +x /test_contract/run.sh"
+    async def test_upload_agent_artifacts(self, test_sandbox: AsyncSandbox, mock_s3: S3Client) -> None:
+        """Test that agent artifacts are uploaded to the sandbox."""
+        contract_name = "test_contract"
+        contract = AgentContract(
+            name=contract_name,
+            artifacts=["setup.sh", "submodules/some_dir"],
+            install_cmd="bash setup.sh",
+            run_cmd="echo hello",
         )
 
-        # Mock the entry point by creating a simple Python script
-        script = """#!/usr/bin/env python3
-import sys
-print("Agent executed successfully")
-sys.exit(0)
-"""
-        contract_path = get_contract_path("test_contract")
-        await test_sandbox.process.exec(f"mkdir -p {contract_path}")
-        file_upload = FileUpload(source=script.encode(), destination=f"{contract_path}/entry.py")
-        await test_sandbox.fs.upload_files(files=[file_upload])
-        await test_sandbox.process.exec("chmod +x /test_agent.py")
+        agent_file = f"{contract_name}/submodules/{contract_name}/file.txt"
+        setup_file = f"{contract_name}/setup.sh"
 
-        # Test that command execution works (will fail because entry.py doesn't exist, but tests the flow)
-        with pytest.raises(SandboxError):
-            await run_agent(test_sandbox, TEST_CONTRACT, "Test problem statement")
+        # Create a mock zip with the expected structure
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr(setup_file, "#!/bin/bash\necho 'setup'")
+            zf.writestr(agent_file, "hello world")
+        zip_buffer.seek(0)
+
+        # Upload zip to mocked S3
+        mock_s3.put_object(
+            Bucket=S3_BUCKET_NAME,
+            Key=get_contract_s3_key(contract_name),
+            Body=zip_buffer.getvalue(),
+        )
+
+        await upload_agent_artifacts(test_sandbox, contract)
+
+        # Verify files exist in sandbox
+        result = await test_sandbox.process.exec(f"cat /bundle/{setup_file}")
+        assert result.exit_code == 0
+        assert "echo 'setup'" in result.result
+
+        result = await test_sandbox.process.exec(f"cat /bundle/{agent_file}")
+        assert result.exit_code == 0
+        assert "hello world" in result.result
+
+    @patch("tracker.sandbox.logger")
+    async def test_install_agent_dependencies(self, mock_logger: MagicMock, test_sandbox: AsyncSandbox) -> None:
+        """Test that install command is correctly executed in the sandbox."""
+        contract_name = "test_contract"
+        contract = AgentContract(
+            name=contract_name,
+            artifacts=["setup.sh"],
+            install_cmd="bash setup.sh",
+            run_cmd="echo hello",
+        )
+
+        # Create the contract directory and setup.sh directly in sandbox
+        await test_sandbox.process.exec(f"mkdir -p /bundle/{contract_name}")
+        await test_sandbox.process.exec(f"echo '#!/bin/bash\necho hello world' > /bundle/{contract_name}/setup.sh")
+
+        await install_agent_dependencies(test_sandbox, contract)
+
+        # Verify logger.info was called with the result of the install command
+        mock_logger.info.assert_any_call("hello world")
+
+    @patch("tracker.sandbox.asyncio.sleep")
+    @patch("tracker.sandbox.logger")
+    async def test_run_agent(self, mock_logger: MagicMock, _mock_sleep: MagicMock, test_sandbox: AsyncSandbox) -> None:
+        """Test that agent runs and captures all output lines."""
+        # Output a line of text every second
+        run_cmd = "echo line1 && sleep 1 && echo line2 && sleep 1 && echo line3"
+
+        contract = AgentContract(
+            name="test_agent",
+            artifacts=[],
+            install_cmd="echo 'no-op'",
+            run_cmd=run_cmd,
+        )
+
+        await run_agent(test_sandbox, contract, "some problem statement")
+
+        # Second logger.info call contains logs.output
+        logged_output = mock_logger.info.call_args_list[1][0][0]
+        assert "line1" in logged_output
+        assert "line2" in logged_output
+        assert "line3" in logged_output

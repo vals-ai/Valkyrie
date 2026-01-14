@@ -12,7 +12,7 @@ from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.logger import get_logger
-from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
+from tracker.sandbox import create_sandbox, install_agent_dependencies, run_agent, upload_agent_artifacts
 from tracker.types import (
     BenchmarkDetails,
     FetchBenchmarkResponse,
@@ -47,8 +47,8 @@ async def process_task(
                     env_vars=start_run_request.contract.env,
                 ) as sandbox:
                     # Upload the contract to the sandbox after creating and install the dependencies
-                    await upload_contract_to_sandbox(sandbox, start_run_request.contract.name)
-                    await install_dependencies(sandbox, start_run_request.contract)
+                    await upload_agent_artifacts(sandbox, start_run_request.contract)
+                    await install_agent_dependencies(sandbox, start_run_request.contract)
 
                     # Setup task if requested
                     if task_data.request_setup:

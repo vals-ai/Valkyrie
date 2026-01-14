@@ -98,12 +98,12 @@ class TestProcessBenchmark:
 
         # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
-            "tracker.utils.upload_contract_to_sandbox",
+            "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.install_dependencies",
+            "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
@@ -154,12 +154,12 @@ class TestProcessBenchmark:
 
         # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
-            "tracker.utils.upload_contract_to_sandbox",
+            "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.install_dependencies",
+            "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
@@ -232,7 +232,7 @@ class TestProcessBenchmark:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         monkeypatch.setattr(
-            "tracker.utils.install_dependencies",
+            "tracker.utils.install_agent_dependencies",
             self._mock_install_dependencies,
         )
 
@@ -290,13 +290,13 @@ class TestProcessBenchmark:
 
         # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
-            "tracker.utils.upload_contract_to_sandbox",
+            "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
         # Mock the install dependencies part in case dependencies break it does not affect this test
         monkeypatch.setattr(
-            "tracker.utils.install_dependencies",
+            "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
