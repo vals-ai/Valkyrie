@@ -11,6 +11,7 @@ dependencies = [
   "valsai>=0.1.2",
   "model-library",
   "python-dotenv",
+  "tracker",
 ]
 
 [project.scripts]
@@ -70,7 +71,5 @@ filterwarnings = [
     "ignore::DeprecationWarning"
 ]
 
-[tool.uv.workspace]
-members = [
-    "contracts/claude_code/claude_code",
-]
+[tool.uv.sources]
+"tracker" = { path = "services/tracker" }

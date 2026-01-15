@@ -8,7 +8,6 @@ from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
-from agentic_harness import AgentContract
 from tracker.logger import get_logger
 from daytona import (
     AsyncDaytona,
@@ -21,6 +20,7 @@ from daytona import (
 )
 
 from tracker.exceptions import SandboxError
+from tracker.types import AgentContract
 from tracker.s3 import download_from_s3, get_contract_s3_key
 
 logger = get_logger(__name__)

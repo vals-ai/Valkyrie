@@ -6,8 +6,9 @@ from uuid import UUID
 
 import httpx
 from httpx._models import Response
+from tracker.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest
+
 from agentic_harness import AgentContract
-from agentic_harness.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest
 from agentic_harness.cli.config import TRACKER_URL
 
 

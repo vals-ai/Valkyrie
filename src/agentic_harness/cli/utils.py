@@ -4,7 +4,7 @@ import json
 from uuid import UUID
 
 import click
-from agentic_harness.types import FetchBenchmarkResponse, StartRunResponse
+from tracker.types import FetchBenchmarkResponse, StartRunResponse
 
 from agentic_harness.cli.tracker_service import TrackerService
 

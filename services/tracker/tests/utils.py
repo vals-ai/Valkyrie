@@ -2,15 +2,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from agentic_harness import AgentContract
 from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, DaytonaNotFoundError, Image, Resources
-
-TEST_CONTRACT = AgentContract(
-    name="test_contract",
-    artifacts=["setup.sh"],
-    install_cmd="bash setup.sh",
-    run_cmd="test_agent -p {{problem_statement}}",
-)
 
 
 async def validate_docker_image(image_name: str) -> bool:

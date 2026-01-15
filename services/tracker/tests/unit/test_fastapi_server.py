@@ -20,8 +20,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
-from tests.utils import TEST_CONTRACT
+from tracker.types import AgentContract, HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
 
 client = TestClient(app)
 
@@ -53,7 +52,7 @@ class TestFastapiServer:
 
         assert response.json() == {"status": "ok"}
 
-    async def test_start_run(self, monkeypatch: MonkeyPatch, database_session: Session):
+    async def test_start_run(self, test_contract: AgentContract, monkeypatch: MonkeyPatch, database_session: Session):
         """
         Test start run of the fastapi server.
 
@@ -72,7 +71,7 @@ class TestFastapiServer:
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(
-            contract=TEST_CONTRACT,
+            contract=test_contract,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
@@ -292,7 +291,7 @@ class TestFastapiServer:
         assert response_json.get("final_evaluation")
         assert response_json.get("final_evaluation").get("final_score") == 100
 
-    async def test_benchmark_error_handling(self, database_session: Session, monkeypatch: MonkeyPatch):
+    async def test_benchmark_error_handling(self, test_contract: AgentContract, database_session: Session, monkeypatch: MonkeyPatch):
         """
         Test benchmark error handling of the fastapi server.
 
@@ -314,7 +313,7 @@ class TestFastapiServer:
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(
-            contract=TEST_CONTRACT,
+            contract=test_contract,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,

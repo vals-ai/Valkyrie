@@ -12,7 +12,7 @@ Create a `contract.py` file in your agent directory that exports a `contract` ob
 
 ```python
 import os
-from agentic_harness.base.contract import AgentContract
+from agentic_harness import AgentContract
 from dotenv import load_dotenv
 
 load_dotenv()

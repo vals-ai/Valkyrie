@@ -5,8 +5,7 @@ from uuid import UUID
 
 import click
 
-import agentic_harness.cli.contract_bundler as bundler
-from agentic_harness.cli.contract_bundler import BundlerError
+import agentic_harness.cli.bundler as bundler
 from agentic_harness.cli.tracker_service import TrackerService, TrackerServiceError
 from agentic_harness.cli.utils import (
     check_tracker_service_health,
@@ -14,7 +13,7 @@ from agentic_harness.cli.utils import (
     format_start_run_response,
     stream_benchmark_status,
 )
-from agentic_harness.types import StartRunResponse
+from tracker.types import StartRunResponse
 
 
 @click.group()
@@ -116,7 +115,7 @@ def start_benchmark(
                 return
 
             format_start_run_response(StartRunResponse.model_validate(response.json()))
-    except (BundlerError, TrackerServiceError) as e:
+    except (bundler.BundlerError, TrackerServiceError) as e:
         raise click.ClickException(str(e))
 
 
