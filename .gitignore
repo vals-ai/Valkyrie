@@ -15,4 +15,5 @@ config/**.yaml
 # fab
 logs
 
+tracker.db
 tracker.db*
