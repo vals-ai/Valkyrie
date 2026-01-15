@@ -291,7 +291,9 @@ class TestFastapiServer:
         assert response_json.get("final_evaluation")
         assert response_json.get("final_evaluation").get("final_score") == 100
 
-    async def test_benchmark_error_handling(self, test_contract: AgentContract, database_session: Session, monkeypatch: MonkeyPatch):
+    async def test_benchmark_error_handling(
+        self, test_contract: AgentContract, database_session: Session, monkeypatch: MonkeyPatch
+    ):
         """
         Test benchmark error handling of the fastapi server.
 

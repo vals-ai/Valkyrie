@@ -70,7 +70,11 @@ class TestProcessBenchmark:
             assert task_row.status == TaskStatus.IN_PROGRESS
 
     async def test_process_task(
-        self, test_contract: AgentContract, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
+        self,
+        test_contract: AgentContract,
+        database_session: Session,
+        benchmark_service: BenchmarkService,
+        monkeypatch: MonkeyPatch,
     ):
         task_id = "astropy__astropy-12907"
         task_row_mapping: dict[str, Task] = {}
@@ -136,7 +140,11 @@ class TestProcessBenchmark:
         assert task_row_mapping[task_id].status == TaskStatus.FINISHED
 
     async def test_process_benchmark(
-        self, test_contract: AgentContract, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
+        self,
+        test_contract: AgentContract,
+        database_session: Session,
+        benchmark_service: BenchmarkService,
+        monkeypatch: MonkeyPatch,
     ):
         # Task ids sent by user to be processed
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
@@ -196,7 +204,11 @@ class TestProcessBenchmark:
         assert len(tasks) == len(task_ids)
 
     async def test_process_benchmark_error(
-        self, test_contract: AgentContract, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
+        self,
+        test_contract: AgentContract,
+        database_session: Session,
+        benchmark_service: BenchmarkService,
+        monkeypatch: MonkeyPatch,
     ):
         """
         Test that we are correctly handling when a benchmark errors out
@@ -252,7 +264,11 @@ class TestProcessBenchmark:
         assert benchmark_row.error_message == "Handled database error"
 
     async def test_process_task_error(
-        self, test_contract: AgentContract, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
+        self,
+        test_contract: AgentContract,
+        database_session: Session,
+        benchmark_service: BenchmarkService,
+        monkeypatch: MonkeyPatch,
     ):
         """
         Test that we are correctly handling when a task errors out
