@@ -28,7 +28,7 @@ async def process_task(
     semaphore: Semaphore,
     benchmark_service: BenchmarkService,
     task_id: str,
-) -> tuple[EvaluationResult | None, str]:
+) -> dict[str, dict[str, Any] | None]:
     async with semaphore:
         with Session(bind=engine, expire_on_commit=False) as task_session:
             task_row = task_row_mapping[task_id]
@@ -77,11 +77,11 @@ async def process_task(
                     task_session.add(task_row)
                     task_session.commit()
 
-                    return evaluation_result_row, task_id
+                    return {task_id: evaluation_result_row.result}
             except Exception as e:
                 error_message = str(e)
                 commit_task_error(task_row, task_session, error_message)
-                return None, task_id
+                return {task_id: None}
 
 
 async def process_benchmark(
@@ -108,7 +108,7 @@ async def process_benchmark(
 
         semaphore = Semaphore(start_run_request.concurrency)
 
-        evaluation_result_rows: list[tuple[EvaluationResult | None, str]] = await gather(
+        evaluation_result_rows: list[dict[str, dict[str, Any] | None]] = await gather(
             *[
                 process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
                 for task_id in verified_task_ids
@@ -117,8 +117,9 @@ async def process_benchmark(
 
         # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
         evaluation_results: dict[str, dict[str, Any] | None] = {
-            task_id: evaluation_result.result if isinstance(evaluation_result, EvaluationResult) else evaluation_result
-            for evaluation_result, task_id in evaluation_result_rows
+            task_id: evaluation_result
+            for result_dict in evaluation_result_rows
+            for task_id, evaluation_result in result_dict.items()
         }
 
         # Calculate the final score based off the tasks that were ran

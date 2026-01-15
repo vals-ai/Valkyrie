@@ -120,7 +120,7 @@ class TestProcessBenchmark:
         )
 
         # Starts and evaluates a single task inside using the benchmark service
-        _, _ = await process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
+        _ = await process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
 
         # Ensure that the evaluation result is viewable from the database after the task has been processed
         evaluation_result = database_session.exec(
