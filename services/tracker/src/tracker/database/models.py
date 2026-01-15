@@ -37,11 +37,6 @@ class FinalEvaluation(SQLModel, table=True):
     def serialize_uuid(self, value: UUID | str) -> str:
         return str(value)
 
-    def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
-        from tracker.utils import fetch_evaluation_results
-
-        return fetch_evaluation_results(self.benchmark, session)
-
 
 class BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid"}

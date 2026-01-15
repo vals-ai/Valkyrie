@@ -37,11 +37,11 @@ class TestProcessBenchmark:
         """
         from sqlmodel import Session
 
-        from tracker.utils import engine
+        import tracker.utils
 
         task_id: str = args[0]
 
-        with Session(bind=engine, expire_on_commit=False) as test_session:
+        with Session(bind=tracker.utils.engine, expire_on_commit=False) as test_session:  # type: ignore[attr-defined]
             task_row = test_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
 
             assert task_row is not None, f"Task {task_id} not found"
@@ -53,18 +53,18 @@ class TestProcessBenchmark:
 
         return evaluation_result
 
-    async def _test_run_agent(self, *args: Any, **kwargs: Any) -> None:
+    async def _test_run_agent(self, original_method: Any, *args: Any, **kwargs: Any) -> None:
         """
-        Test task status is pending before we start running the agent
+        Test task status is in progress before we start running the agent
         (confirms we move from starting to in progress status)
         """
         from sqlmodel import Session
 
-        from tracker.utils import engine
+        import tracker.utils
 
         task_id: str = args[2]
 
-        with Session(bind=engine, expire_on_commit=False) as test_session:
+        with Session(bind=tracker.utils.engine, expire_on_commit=False) as test_session:  # type: ignore[attr-defined]
             task_row = test_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
             assert task_row is not None
             assert task_row.status == TaskStatus.IN_PROGRESS
@@ -98,17 +98,18 @@ class TestProcessBenchmark:
         # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
             "tracker.utils.upload_contract_to_sandbox",
-            TestProcessBenchmark._mock_upload_contract,
+            self._mock_upload_contract,
         )
 
         monkeypatch.setattr(
             "tracker.utils.install_dependencies",
-            TestProcessBenchmark._mock_install_dependencies,
+            self._mock_install_dependencies,
         )
 
+        original_run_agent = self._mock_run_agent
         monkeypatch.setattr(
             "tracker.utils.run_agent",
-            TestProcessBenchmark._mock_run_agent,
+            partial(self._test_run_agent, original_run_agent),
         )
 
         original_evaluate = benchmark_service.request_evaluate_instance
@@ -325,6 +326,6 @@ class TestProcessBenchmark:
         final_evaluation = benchmark_row.fetch_final_evaluation(database_session)
         assert final_evaluation
 
-        evaluation_results = final_evaluation.fetch_evaluation_results(database_session)
+        evaluation_results = benchmark_row.fetch_evaluation_results(database_session)
         assert evaluation_results is not None
         assert len(list(evaluation_results.keys())) == 1, "Only one task should be evaluated"

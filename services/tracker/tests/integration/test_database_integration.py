@@ -339,7 +339,7 @@ class TestDatabaseIntegration:
             )
 
             # Fetch the evaluation results from the final evaluation row
-            fetched_evaluation_results = final_evaluation_row.fetch_evaluation_results(database_session)
+            fetched_evaluation_results = benchmark_row.fetch_evaluation_results(database_session)
 
             results = list(fetched_evaluation_results.keys())
             assert len(results) == len(list(evaluation_results.keys()))
