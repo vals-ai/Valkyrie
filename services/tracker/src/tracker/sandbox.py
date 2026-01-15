@@ -5,7 +5,7 @@ import io
 import shlex
 import zipfile
 from contextlib import asynccontextmanager
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 from agentic_harness import AgentContract
@@ -84,33 +84,17 @@ async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContract)
 
     contract_s3_key = get_contract_s3_key(contract.name)
     contract_content = download_from_s3(contract_s3_key)
-    files_to_upload: list[FileUpload] = []
-    dirs_to_create: set[str] = set()
 
     # Unzip contract and collect files and directories
     with zipfile.ZipFile(io.BytesIO(contract_content), "r") as zip_ref:
-        for file_info in zip_ref.filelist:
-            if file_info.is_dir():
-                continue
-
-            file_content = zip_ref.read(file_info.filename)
-
-            files_to_upload.append(
-                FileUpload(
-                    source=file_content,
-                    destination=str(bundle_path / file_info.filename),
-                )
+        files_to_upload = [
+            FileUpload(
+                source=zip_ref.read(file_info),
+                destination=str(bundle_path / file_info.filename),
             )
-
-            parent = Path(file_info.filename).parent
-            dirs_to_create.add(str(parent))
-
-    # Create all necessary directories
-    if dirs_to_create:
-        mkdir_cmd = "mkdir -p " + " ".join(sorted(dirs_to_create))
-        result = await sandbox.process.exec(mkdir_cmd)
-        if result.exit_code != 0:
-            raise SandboxError(f"Failed to create directories: {result.result}")
+            for file_info in zip_ref.infolist()
+            if not file_info.is_dir()
+        ]
 
     await sandbox.fs.upload_files(files_to_upload)
 
