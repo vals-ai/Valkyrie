@@ -10,12 +10,7 @@ from pathlib import Path
 from typing import BinaryIO, Generator
 
 from agentic_harness import AgentContract
-
-
-class BundlerError(Exception):
-    """Exception raised for bundler errors."""
-
-    pass
+from agentic_harness.cli.exceptions import BundlerError
 
 
 def _zip_directory_to_file(directory: Path, output_path: Path) -> None:

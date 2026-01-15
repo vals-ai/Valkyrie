@@ -1,21 +1,24 @@
 """Client for interacting with the tracker service."""
 
+import os
 from collections.abc import Generator
 from typing import Any, BinaryIO
 from uuid import UUID
 
 import httpx
+from dotenv import load_dotenv
 from httpx._models import Response
 from tracker.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest
 
 from agentic_harness import AgentContract
-from agentic_harness.cli.config import TRACKER_URL
+from agentic_harness.cli.exceptions import TrackerServiceError
 
+load_dotenv()
 
-class TrackerServiceError(Exception):
-    """Exception raised for tracker service errors."""
+TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL")
 
-    pass
+if not TRACKER_URL:
+    raise TrackerServiceError("TRACKER_URL environment variable is not set")
 
 
 class TrackerService:

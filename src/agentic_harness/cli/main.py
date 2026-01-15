@@ -5,8 +5,9 @@ from uuid import UUID
 
 import click
 
-import agentic_harness.cli.bundler as bundler
-from agentic_harness.cli.tracker_service import TrackerService, TrackerServiceError
+from agentic_harness.cli.bundler import get_contract, get_agent_zip_stream
+from agentic_harness.cli.exceptions import TrackerServiceError, BundlerError
+from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     check_tracker_service_health,
     format_benchmark_status,
@@ -86,7 +87,7 @@ def start_benchmark(
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
     try:
-        contract = bundler.get_contract(agent / "contract.py")
+        contract = get_contract(agent / "contract.py")
 
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
@@ -94,7 +95,7 @@ def start_benchmark(
 
             click.echo("\r\033[KZipping agent artifacts...", nl=False)
 
-            with bundler.get_agent_zip_stream(contract) as file_stream:
+            with get_agent_zip_stream(contract) as file_stream:
                 click.echo("\r\033[KUploading agent to tracker service...", nl=False)
                 tracker.upload_contract(contract.name, file_stream)
 
@@ -115,7 +116,7 @@ def start_benchmark(
                 return
 
             format_start_run_response(StartRunResponse.model_validate(response.json()))
-    except (bundler.BundlerError, TrackerServiceError) as e:
+    except (BundlerError, TrackerServiceError) as e:
         raise click.ClickException(str(e))
 
 
