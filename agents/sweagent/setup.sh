@@ -23,7 +23,7 @@ uv venv "$SWEAGENT_VENV" --python "$UV_PYTHON"
 source "$SWEAGENT_VENV/bin/activate"
 
 # Clone SWE-agent repo
-git clone --depth 1 https://github.com/SWE-agent/SWE-agent.git "$SWEAGENT_REPO"
+git clone --depth 1 https://github.com/vals-ai/SWE-bench.git "$SWEAGENT_REPO"
 
 # Install SWE-agent package
 uv pip install "$SWEAGENT_REPO"
