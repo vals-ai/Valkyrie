@@ -1,12 +1,12 @@
 from uuid import UUID
 
+from tracker.config import get_benchmark_service_url
 from tracker.logger import get_logger
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.config import BENCHMARK_SERVICE_URL
 from tracker.database.models import Benchmark
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
@@ -112,7 +112,8 @@ async def start_run(
     """
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
-    benchmark_service = BenchmarkService(name=request.benchmark_name, url=BENCHMARK_SERVICE_URL)
+    url = get_benchmark_service_url()
+    benchmark_service = BenchmarkService(name=request.benchmark_name, url=url)
 
     # Check service is running
     _ = await benchmark_service.request_health_check()

@@ -11,7 +11,6 @@ from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 from moto import mock_aws
 from mypy_boto3_s3.client import S3Client
 
-from tracker.config import S3_BUCKET_NAME
 from tracker.types import AgentContract
 from tracker.s3 import get_contract_s3_key
 from tracker.sandbox import (
@@ -20,6 +19,8 @@ from tracker.sandbox import (
     run_agent,
     upload_agent_artifacts,
 )
+
+S3_BUCKET_NAME = "test-bucket"
 
 
 @pytest.fixture
