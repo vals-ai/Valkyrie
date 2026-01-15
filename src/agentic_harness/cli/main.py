@@ -25,10 +25,10 @@ def cli():
 
 @cli.command()
 @click.option(
-    "--contract-path",
+    "--agent",
     type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
     required=True,
-    help="Path to contract directory (e.g., contracts/claude_code)",
+    help="Path to agent directory (e.g., agents/claude_code)",
 )
 @click.option(
     "--benchmark",
@@ -59,7 +59,7 @@ def cli():
     help="Slice string to use for slicing the benchmark (e.g., 1-10)",
 )
 def start_benchmark(
-    contract_path: Path,
+    agent: Path,
     benchmark: str,
     concurrency: int,
     task_ids: str | None,
@@ -73,7 +73,7 @@ def start_benchmark(
     """
     click.echo("Arguments:")
     click.echo(f"  - Benchmark: {benchmark}")
-    click.echo(f"  - Contract: {contract_path}")
+    click.echo(f"  - Agent: {agent}")
     click.echo(f"  - Concurrency: {concurrency}")
     click.echo(f"  - Slice: {slice_str}")
     if task_ids:
@@ -87,7 +87,7 @@ def start_benchmark(
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
     try:
-        contract = bundler.get_contract(contract_path / "contract.py")
+        contract = bundler.get_contract(agent / "contract.py")
 
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):

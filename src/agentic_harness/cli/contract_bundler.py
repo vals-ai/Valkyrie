@@ -113,7 +113,6 @@ def get_contract(contract_path: Path) -> AgentContract:
 
         spec.loader.exec_module(module)
 
-        # TODO: throw nice error if contract is not defined
         contract = module.contract
     except Exception as e:
         raise BundlerError(f"Failed to get contract from {contract_path}: {e}") from e
