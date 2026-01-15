@@ -112,8 +112,7 @@ class TestSandboxOperations:
         mock_logger.info.assert_any_call("hello world")
 
     @patch("tracker.sandbox.asyncio.sleep")
-    @patch("tracker.sandbox.logger")
-    async def test_run_agent(self, mock_logger: MagicMock, _mock_sleep: MagicMock, test_sandbox: AsyncSandbox) -> None:
+    async def test_run_agent(self, _mock_sleep: MagicMock, test_sandbox: AsyncSandbox) -> None:
         """Test that agent runs and captures all output lines."""
         # Output a line of text every second
         run_cmd = "echo line1 && sleep 1 && echo line2 && sleep 1 && echo line3"
@@ -125,10 +124,8 @@ class TestSandboxOperations:
             run_cmd=run_cmd,
         )
 
-        await run_agent(test_sandbox, contract, "some problem statement")
+        agent_output = await run_agent(test_sandbox, contract, "some problem statement")
 
-        # Second logger.info call contains logs.output
-        logged_output = mock_logger.info.call_args_list[1][0][0]
-        assert "line1" in logged_output
-        assert "line2" in logged_output
-        assert "line3" in logged_output
+        assert "line1" in agent_output
+        assert "line2" in agent_output
+        assert "line3" in agent_output

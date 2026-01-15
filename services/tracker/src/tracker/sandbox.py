@@ -132,7 +132,7 @@ async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContr
     logger.info(f"Finished running installing dependencies for contract: {contract.name}")
 
 
-async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_statement: str) -> None:
+async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_statement: str) -> str:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -140,6 +140,9 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_stat
         sandbox: The sandbox to run the agent in
         contract_name: Name of the contract
         problem_statement: Problem statement to pass to the agent
+
+    Retruns:
+        Agent stdout and stderr
 
     Raises:
         SandboxError: If the agent fails to run or times out
@@ -166,11 +169,14 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_stat
         timeout -= polling_interval
         command = await sandbox.process.get_session_command(session_id, command_id)
 
-    # TODO: Stream logs in a separate thread using the get_session_command_logs_async method
-    logs = await sandbox.process.get_session_command_logs(session_id, command_id)
-    logger.info(logs.output)
-
     if command.exit_code != 0:
         raise SandboxError(f"Failed to run agent {contract.name}: {run_agent_response.output}")
 
+    # TODO: Stream logs in a separate thread using the get_session_command_logs_async method
+    logs = await sandbox.process.get_session_command_logs(session_id, command_id)
+    agent_output = logs.output or ""
+
+    logger.info(f"Agent {contract.name} output:\n{agent_output}")
     logger.info(f"Ran agent {contract.name} successfully")
+
+    return agent_output

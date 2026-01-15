@@ -19,8 +19,8 @@ class TestProcessBenchmark:
         pass
 
     @staticmethod
-    async def _mock_run_agent(*args: Any, **kwargs: Any) -> None:
-        pass
+    async def _mock_run_agent(*args: Any, **kwargs: Any) -> str:
+        return "hello world"
 
     @staticmethod
     async def _mock_upload_contract(*args: Any, **kwargs: Any) -> None:
@@ -128,6 +128,9 @@ class TestProcessBenchmark:
         ).first()
 
         assert evaluation_result is not None
+
+        # Ensure that the agent output is correctly saved to EvaluationResult
+        assert evaluation_result.agent_output == "hello world"
 
         # Ensure that the task status has been updated to finished
         database_session.refresh(task_row_mapping[task_id])
