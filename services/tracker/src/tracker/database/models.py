@@ -6,8 +6,18 @@ from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, field_serializer
 from sqlalchemy import Connection, Dialect, event
-from sqlalchemy.orm import Mapper
-from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, TypeDecorator, UniqueConstraint, select
+from sqlalchemy.orm import Mapped, Mapper
+from sqlmodel import (
+    JSON,
+    CheckConstraint,
+    Column,
+    Field,
+    Relationship,
+    Session,
+    SQLModel,
+    TypeDecorator,
+    UniqueConstraint,
+)
 
 from tracker.database.utils import has_field_changed
 
@@ -93,10 +103,9 @@ class Benchmark(SQLModel, table=True):
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
     )
-
-    def fetch_final_evaluation(self, session: Session) -> FinalEvaluation | None:
-        statement = select(FinalEvaluation).where(FinalEvaluation.benchmark == self.id)
-        return session.exec(statement).first()
+    final_evaluation: Mapped[FinalEvaluation | None] = Relationship(
+        sa_relationship_kwargs={"foreign_keys": "[FinalEvaluation.benchmark]"}
+    )
 
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
         from tracker.utils import fetch_evaluation_results

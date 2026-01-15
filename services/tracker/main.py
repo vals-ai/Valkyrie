@@ -2,7 +2,8 @@ from uuid import UUID
 
 from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlmodel import Session
+from sqlalchemy.orm import joinedload
+from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark
@@ -204,7 +205,8 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
     Returns:
         RetrieveResultsResponse
     """
-    benchmark_row = session.get(Benchmark, benchmark_id)
+    statement = select(Benchmark).where(Benchmark.id == benchmark_id).options(joinedload(Benchmark.final_evaluation))
+    benchmark_row = session.exec(statement).first()
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
@@ -213,6 +215,6 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
         status=benchmark_row.status,
         benchmark_id=benchmark_row.id,
         benchmark_arguments=benchmark_row.arguments,
-        final_evaluation=benchmark_row.fetch_final_evaluation(session),
+        final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
     )

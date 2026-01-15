@@ -309,7 +309,7 @@ class TestProcessBenchmark:
         await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
 
         # Benchmark status is still finished even though one task has errored out
-        database_session.refresh(benchmark_row)
+        database_session.refresh(benchmark_row, attribute_names=["final_evaluation"])
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
 
         tasks = database_session.exec(
@@ -323,7 +323,7 @@ class TestProcessBenchmark:
         assert tasks[0].error_message == "Exception raised while setting up the task"
         assert tasks[0].status == TaskStatus.ERROR
 
-        final_evaluation = benchmark_row.fetch_final_evaluation(database_session)
+        final_evaluation = benchmark_row.final_evaluation
         assert final_evaluation
 
         evaluation_results = benchmark_row.fetch_evaluation_results(database_session)
