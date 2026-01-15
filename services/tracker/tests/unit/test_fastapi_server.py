@@ -277,7 +277,7 @@ class TestFastapiServer:
         # Change benchmark status to finished and add final evaluation row
         benchmark_row.status = BenchmarkStatus.FINISHED
         final_evaluation_row = FinalEvaluation(
-            benchmark=benchmark_row.id, final_score=100, resolved_tasks=[], unresolved_tasks=[]
+            benchmark=benchmark_row.id, final_score=100, properties={"resolved_tasks": [], "unresolved_tasks": []}
         )
         database_session.add(benchmark_row)
         database_session.add(final_evaluation_row)
