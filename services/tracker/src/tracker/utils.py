@@ -79,7 +79,7 @@ class TaskMonitor:
 
         return task_row
 
-    def validate_task(self, task_id: str) -> bool:
+    def _validate_task(self, task_id: str) -> bool:
         """
         Runs while waiting to be aquired by the semaphore.
 
@@ -99,7 +99,7 @@ class TaskMonitor:
 
         return True
 
-    def check_is_waiting(self, task: TrackedTask) -> bool:
+    def _check_is_waiting(self, task: TrackedTask) -> bool:
         """
         Checks if the task is waiting to be aquired by the semaphore.
 
@@ -125,10 +125,10 @@ class TaskMonitor:
             for task_id in tasks_to_check:
                 task = self._task_tracking[task_id]
 
-                if not self.check_is_waiting(task):
+                if not self._check_is_waiting(task):
                     del self._task_tracking[task_id]
 
-                if not self.validate_task(task_id) and task.task:
+                if not self._validate_task(task_id) and task.task:
                     task.task.cancel(f"Task {task_id} has been invalidated. Benchmark has been requested to stop")
                     del self._task_tracking[task_id]
 
