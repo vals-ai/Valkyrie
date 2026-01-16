@@ -24,6 +24,8 @@ from tracker.database.utils import has_field_changed
 
 class BenchmarkStatus(str, Enum):
     IN_PROGRESS = "in_progress"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
     FINISHED = "finished"
     ERROR = "error"
 
@@ -32,6 +34,7 @@ class TaskStatus(str, Enum):
     STARTING = "starting"
     IN_PROGRESS = "in_progress"
     EVALUATING = "evaluating"
+    STOPPED = "stopped"
     FINISHED = "finished"
     ERROR = "error"
 

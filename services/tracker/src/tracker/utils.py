@@ -1,7 +1,8 @@
 import asyncio
 import json
 from asyncio import Semaphore, gather
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Coroutine
+from enum import Enum
 from functools import cached_property
 from typing import Any, NamedTuple
 from uuid import UUID
@@ -9,6 +10,7 @@ from uuid import UUID
 from sqlmodel import Session, case, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
+from tracker.config import BENCHMARK_SERVICE_URL, celery
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.logger import get_logger
@@ -22,127 +24,276 @@ from tracker.types import (
 logger = get_logger(__name__, stream=True)
 
 
+class TrackedTaskStatus(str, Enum):
+    WAITING = "waiting"
+    RUNNING = "running"
+    DONE = "done"
+
+
+class TrackedTask:
+    _coro: Coroutine[Any, Any, Any]
+    _status: str
+    _task: asyncio.Task[Any] | None
+
+    def __init__(self, coro: Coroutine[Any, Any, Any]):
+        self._coro = coro
+        self._status = TrackedTaskStatus.WAITING
+        self._task = None
+
+    @property
+    def status(self) -> str:
+        return self._status
+
+    @property
+    def task(self) -> asyncio.Task[Any] | None:
+        return self._task
+
+    async def run(self, semaphore: asyncio.Semaphore, task_id: str) -> dict[str, dict[str, Any] | None]:
+        try:
+            async with semaphore:
+                self._status = TrackedTaskStatus.RUNNING
+                self._task = asyncio.create_task(self._coro)
+                return await self._task
+        except asyncio.CancelledError:
+            # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
+            return {task_id: None}
+        finally:
+            self._status = TrackedTaskStatus.DONE
+
+
+class TaskMonitor:
+    _benchmark_row: Benchmark
+    _session: Session
+    _task_tracking: dict[str, TrackedTask]
+    _TRACK_INTERVAL: int = 2
+
+    def __init__(self, benchmark_row: Benchmark, session: Session, task_tracking: dict[str, TrackedTask]):
+        self._benchmark_row = benchmark_row
+        self._session = session
+        self._task_tracking = task_tracking
+
+    def _fetch_task_row(self, task_id: str) -> Task:
+        task_row = self._session.get(Task, task_id)
+        if not task_row:
+            raise ValueError(f"Task with id {task_id} not found")
+
+        return task_row
+
+    def validate_task(self, task_id: str) -> bool:
+        """
+        Runs while waiting to be aquired by the semaphore.
+
+        If the benchmark is stopping or the task status has been set to stopped we return False to exit the task early.
+
+        Returns:
+            True if the task should continue to be processed, False if the task should be stopped early
+
+        """
+        self._session.expire_all()
+        task_row = self._fetch_task_row(task_id)
+
+        benchmark_row = fetch_benchmark_row(task_row.benchmark, self._session)
+
+        if task_row.status == TaskStatus.STOPPED or benchmark_row.status == BenchmarkStatus.STOPPING:
+            return False
+
+        return True
+
+    def check_is_waiting(self, task: TrackedTask) -> bool:
+        """
+        Checks if the task is waiting to be aquired by the semaphore.
+
+        Returns:
+            True if the task is waiting to be aquired by the semaphore, False if it has been aquired
+        """
+        if task.task is None or task.status == TrackedTaskStatus.WAITING:
+            return True
+
+        return False
+
+    async def track_tasks(self) -> None:
+        """
+        Tracks all the tasks and removes the tasks that are no longer waiting to be aquired by the semaphore.
+
+        Removes the tasks that are no longer waiting to be aquired by the semaphore.
+        """
+
+        exit_condition_met: bool = False
+
+        while not exit_condition_met:
+            tasks_to_check: list[str] = list(self._task_tracking.keys())
+            for task_id in tasks_to_check:
+                task = self._task_tracking[task_id]
+
+                if not self.check_is_waiting(task):
+                    del self._task_tracking[task_id]
+
+                if not self.validate_task(task_id) and task.task:
+                    task.task.cancel(f"Task {task_id} has been invalidated. Benchmark has been requested to stop")
+                    del self._task_tracking[task_id]
+
+            if not self._task_tracking:
+                exit_condition_met = True
+
+            await asyncio.sleep(self._TRACK_INTERVAL)
+
+
+def fetch_benchmark_row(benchmark_id: UUID, session: Session) -> Benchmark:
+    """Util to clean up pattern to fetch benchmark row"""
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise ValueError(f"Benchmark with id {benchmark_id} not found")
+
+    return benchmark_row
+
+
+def handle_early_exit(task_row: Task, task_session: Session) -> None:
+    task_row.status = TaskStatus.STOPPED
+    task_session.add(task_row)
+    task_session.commit()
+
+
 async def process_task(
-    task_row_mapping: dict[str, Task],
+    task_row: Task,
     start_run_request: StartRunRequest,
-    semaphore: Semaphore,
     benchmark_service: BenchmarkService,
+    benchmark_id: UUID,
     task_id: str,
 ) -> dict[str, dict[str, Any] | None]:
-    async with semaphore:
-        with Session(bind=engine, expire_on_commit=False) as task_session:
-            task_row = task_row_mapping[task_id]
-            try:
-                task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
+    with Session(bind=engine, expire_on_commit=False) as task_session:
+        benchmark_row = fetch_benchmark_row(benchmark_id, task_session)
 
-                task_row = task_session.merge(task_row)
-                task_row.status = TaskStatus.IN_PROGRESS
+        # If user has requested to stop the benchmark we exit before we process the task
+        if benchmark_row.status == BenchmarkStatus.STOPPING:
+            handle_early_exit(task_row, task_session)
+            return {task_id: None}
+
+        try:
+            task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
+
+            task_row = task_session.merge(task_row)
+            task_row.status = TaskStatus.IN_PROGRESS
+            task_session.add(task_row)
+            task_session.commit()
+
+            async with create_sandbox(
+                benchmark_service.daytona_client, task_row.task_id, task_data.docker_image
+            ) as sandbox:
+                # Upload the contract to the sandbox after creating and install the dependencies
+                await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
+                await install_dependencies(sandbox, start_run_request.contract_name)
+
+                # Setup task if requested
+                if task_data.request_setup:
+                    _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
+
+                # Run the agent inside of the sandbox
+                # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
+                await run_agent(sandbox, start_run_request.contract_name, task_row.task_id, task_data.problem_statement)
+
+                # Update the status to evaluating once we finish running the agent
+                task_row.status = TaskStatus.EVALUATING
                 task_session.add(task_row)
                 task_session.commit()
 
-                async with create_sandbox(
-                    benchmark_service.daytona_client, task_row.task_id, task_data.docker_image
-                ) as sandbox:
-                    # Upload the contract to the sandbox after creating and install the dependencies
-                    await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
-                    await install_dependencies(sandbox, start_run_request.contract_name)
+                # Evaluate the instance
+                # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
 
-                    # Setup task if requested
-                    if task_data.request_setup:
-                        _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
+                # Save the evaluation result to the database with the task row
+                evaluation_result_row = EvaluationResult(
+                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result
+                )
+                task_session.add(evaluation_result_row)
 
-                    # Run the agent inside of the sandbox
-                    # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
-                    await run_agent(
-                        sandbox, start_run_request.contract_name, task_row.task_id, task_data.problem_statement
-                    )
+                # Mark the task status as finished since we have finished processing the task
+                task_row.status = TaskStatus.FINISHED
+                task_session.add(task_row)
+                task_session.commit()
 
-                    # Update the status to evaluating once we finish running the agent
-                    task_row.status = TaskStatus.EVALUATING
-                    task_session.add(task_row)
-                    task_session.commit()
-
-                    # Evaluate the instance
-                    # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
-                    evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
-
-                    # Save the evaluation result to the database with the task row
-                    evaluation_result_row = EvaluationResult(
-                        task=task_row.id, instance_id=sandbox.id, result=evaluation_result
-                    )
-                    task_session.add(evaluation_result_row)
-
-                    # Mark the task status as finished since we have finished processing the task
-                    task_row.status = TaskStatus.FINISHED
-                    task_session.add(task_row)
-                    task_session.commit()
-
-                    return {task_id: evaluation_result_row.result}
-            except Exception as e:
-                error_message = str(e)
-                commit_task_error(task_row, task_session, error_message)
-                return {task_id: None}
+                return {task_id: evaluation_result_row.result}
+        except Exception as e:
+            error_message = str(e)
+            commit_task_error(task_row, task_session, error_message)
+            return {task_id: None}
 
 
+@celery.task
 async def process_benchmark(
     start_run_request: StartRunRequest,
     benchmark_id: UUID,
     verified_task_ids: list[str],
-    benchmark_service: BenchmarkService,
-    session: Session,
 ) -> None:
-    benchmark_row = session.get(Benchmark, benchmark_id)
+    # NOTE: Will get ugly if we error on session create
+    with Session(bind=engine, expire_on_commit=False) as session:
+        # TODO: Delegate url since in the future this aspect can change
+        benchmark_service = BenchmarkService(name=start_run_request.benchmark_name, url=BENCHMARK_SERVICE_URL)
 
-    if not benchmark_row:
-        raise ValueError(f"Benchmark with id {benchmark_id} not found")
+        benchmark_row = session.get(Benchmark, benchmark_id)
 
-    try:
-        # Create tasks inside of the database for each task id
-        task_row_mapping: dict[str, Task] = {}
-        for task_id in verified_task_ids:
-            task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
-            task_row_mapping[task_id] = task_row
+        # NOTE: Benchmark row is created just before this task is called, so it should always be found
+        # This exists if we are testing an edge case with this method and to satisfy type checker
+        if not benchmark_row:
+            raise ValueError(f"Benchmark with id {benchmark_id} not found")
 
-        session.add_all(list(task_row_mapping.values()))
-        session.commit()
+        try:
+            # Create tasks inside of the database for each task id
+            task_rows: dict[str, Task] = {}
+            for task_id in verified_task_ids:
+                task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
+                task_rows[task_id] = task_row
 
-        semaphore = Semaphore(start_run_request.concurrency)
+            session.add_all(list(task_rows.values()))
+            session.commit()
 
-        evaluation_result_rows: list[dict[str, dict[str, Any] | None]] = await gather(
-            *[
-                process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
-                for task_id in verified_task_ids
-            ]
-        )
+            # Load the tasks we are going to be tracking
+            tracked_tasks: dict[str, TrackedTask] = {
+                task_id: TrackedTask(
+                    process_task(task_row, start_run_request, benchmark_service, benchmark_id, task_id)
+                )
+                for task_id, task_row in task_rows.items()
+            }
 
-        # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
-        evaluation_results: dict[str, dict[str, Any] | None] = {
-            task_id: evaluation_result
-            for result_dict in evaluation_result_rows
-            for task_id, evaluation_result in result_dict.items()
-        }
+            # Start the monitor to track the state the tasks are in and cancel them when no longer valid
+            monitor = TaskMonitor(benchmark_row, session, tracked_tasks)
+            monitor_task = asyncio.create_task(monitor.track_tasks())
 
-        # Calculate the final score based off the tasks that were ran
-        final_score_response = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
+            semaphore = Semaphore(start_run_request.concurrency)
 
-        # Create the final evaluation row and add it to the database
-        final_evaluation_row = FinalEvaluation(
-            benchmark=benchmark_row.id,
-            final_score=final_score_response.final_score,
-            properties=final_score_response.metadata,
-        )
+            evaluation_result_rows: list[dict[str, dict[str, Any] | None]] = await gather(
+                *[tracked_tasks[task_id].run(semaphore, task_id) for task_id in verified_task_ids]
+            )
 
-        session.add(final_evaluation_row)
-        session.commit()
+            await monitor_task
 
-        # Mark benchmark as completed
-        # NOTE: Finished at will be automatically set by an event when the status becomes finished
-        benchmark_row.status = BenchmarkStatus.FINISHED
-        session.add(benchmark_row)
-        session.commit()
-    except Exception as e:
-        error_message = str(e)
-        commit_benchmark_error(benchmark_row, session, error_message)
+            # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
+            evaluation_results: dict[str, dict[str, Any] | None] = {
+                task_id: evaluation_result
+                for result_dict in evaluation_result_rows
+                for task_id, evaluation_result in result_dict.items()
+            }
+
+            # Calculate the final score based off the tasks that were ran
+            final_score_response = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
+
+            # Create the final evaluation row and add it to the database
+            final_evaluation_row = FinalEvaluation(
+                benchmark=benchmark_row.id,
+                final_score=final_score_response.final_score,
+                properties=final_score_response.metadata,
+            )
+
+            session.add(final_evaluation_row)
+            session.commit()
+
+            # Mark benchmark as completed
+            # NOTE: Finished at will be automatically set by an event when the status becomes finished
+            benchmark_row.status = BenchmarkStatus.FINISHED
+            session.add(benchmark_row)
+            session.commit()
+        except Exception as e:
+            error_message = str(e)
+            commit_benchmark_error(benchmark_row, session, error_message)
 
 
 class TaskCounts(NamedTuple):

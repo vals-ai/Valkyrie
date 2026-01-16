@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, select
@@ -92,7 +92,6 @@ async def upload_contract_to_s3(
 async def start_run(
     request: StartRunRequest,
     session: Session = Depends(get_session),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> StartRunResponse:
     """
     Start a benchmark run with the uploaded contract.
@@ -137,8 +136,8 @@ async def start_run(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
-    background_tasks.add_task(
-        process_benchmark, request, benchmark_row.id, verify_response.task_ids, benchmark_service, session
+    process_benchmark.apply_async(
+        args=(request, benchmark_row.id, verify_response.task_ids),
     )
 
     return StartRunResponse(
