@@ -44,7 +44,7 @@ async def process_task(
                     benchmark_service.daytona_client,
                     task_row.task_id,
                     task_data.docker_image,
-                    env_vars=start_run_request.contract.env,
+                    start_run_request.contract.env,
                 ) as sandbox:
                     # Upload the contract to the sandbox after creating and install the dependencies
                     await upload_agent_artifacts(sandbox, start_run_request.contract)

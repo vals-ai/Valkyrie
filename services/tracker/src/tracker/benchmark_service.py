@@ -1,4 +1,3 @@
-import logging
 import os
 from typing import Any
 
@@ -7,6 +6,7 @@ from daytona import AsyncDaytona, DaytonaConfig
 
 from tracker.database.models import Benchmark, BenchmarkArguments
 from tracker.exceptions import BenchmarkServiceError
+from tracker.logger import get_logger
 from tracker.types import (
     FinalScoreResponse,
     HealthCheckResponse,
@@ -16,7 +16,7 @@ from tracker.types import (
     VerifyTaskIdsResponse,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class BenchmarkService:

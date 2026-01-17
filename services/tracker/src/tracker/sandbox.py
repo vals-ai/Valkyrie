@@ -49,7 +49,6 @@ async def create_sandbox(
 
     sandbox = await daytona.create(
         CreateSandboxFromImageParams(
-            env_vars=env_vars,
             name=sandbox_name,
             image=Image.base(image),
             network_block_all=False,
@@ -58,6 +57,7 @@ async def create_sandbox(
                 memory=8,
                 disk=10,
             ),
+            env_vars=env_vars,
         ),
         timeout=360,
     )
@@ -66,7 +66,7 @@ async def create_sandbox(
         yield sandbox
     finally:
         logger.info(f"Deleting sandbox {sandbox.name}")
-        await daytona.delete(sandbox)
+        # await daytona.delete(sandbox)
 
 
 async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContract) -> None:
@@ -131,36 +131,53 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_stat
     Raises:
         SandboxError: If the agent fails to run or times out
     """
-    logger.info(f"Starting agent {contract.name}")
-
     session_id = contract.name
+
     await sandbox.process.create_session(session_id)
 
     run_cmd = contract.run_cmd.replace("{{problem_statement}}", shlex.quote(problem_statement))
-    run_agent_request = SessionExecuteRequest(command=run_cmd)
-    run_agent_response = await sandbox.process.execute_session_command(session_id, run_agent_request)
-    command_id = run_agent_response.cmd_id
+    exec_req = SessionExecuteRequest(command=run_cmd, runAsync=True)
 
-    if command_id is None:
+    logger.info(f"Running agent {contract.name}")
+    exec_resp = await sandbox.process.execute_session_command(session_id, exec_req)
+
+    cmd_id = exec_resp.cmd_id
+    if cmd_id is None:
         raise SandboxError("Session command didn't return a command ID")
 
-    command = await sandbox.process.get_session_command(session_id, command_id)
+    logger.info(f"Streaming logs from agent {contract.name}")
+    log_task = asyncio.create_task(
+        sandbox.process.get_session_command_logs_async(
+            session_id,
+            cmd_id,
+            on_stdout=lambda log: print(log, end=""),
+            on_stderr=lambda log: print(log, end=""),
+        )
+    )
 
-    timeout = 60
-    polling_interval = 5
-    while command.exit_code is None and timeout > 0:
-        await asyncio.sleep(polling_interval)
-        timeout -= polling_interval
-        command = await sandbox.process.get_session_command(session_id, command_id)
+    try:
+        timeout = 300
+        polling_interval = 5
 
-    if command.exit_code != 0:
-        raise SandboxError(f"Failed to run agent {contract.name}: {run_agent_response.output}")
+        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+        while cmd.exit_code is None and timeout > 0:
+            await asyncio.sleep(polling_interval)
+            timeout -= polling_interval
+            cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
-    # TODO: Stream logs in a separate thread using the get_session_command_logs_async method
-    logs = await sandbox.process.get_session_command_logs(session_id, command_id)
-    agent_output = logs.output or ""
+        if cmd.exit_code is not None and cmd.exit_code != 0:
+            raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
 
-    logger.info(f"Agent {contract.name} output:\n{agent_output}")
-    logger.info(f"Ran agent {contract.name} successfully")
+        if timeout <= 0:
+            raise SandboxError(f"Timed out running agent {contract.name}")
+    except Exception as e:
+        logger.error(e)
+        logger.info(f"Deleting session {session_id}")
+        await sandbox.process.delete_session(session_id)
+        raise e
+    finally:
+        logger.info("Awaiting remaining logs")
+        await log_task
 
-    return agent_output
+    logger.info(f"Agent {contract.name} completed successfully")
+    return ""
