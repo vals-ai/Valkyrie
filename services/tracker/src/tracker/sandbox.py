@@ -1,6 +1,5 @@
 """Sandbox management utilities for the tracker service."""
 
-import asyncio
 import io
 import shlex
 import zipfile
@@ -16,7 +15,6 @@ from daytona import (
     FileUpload,
     Image,
     Resources,
-    SessionExecuteRequest,
 )
 
 from tracker.exceptions import SandboxError
@@ -66,7 +64,7 @@ async def create_sandbox(
         yield sandbox
     finally:
         logger.info(f"Deleting sandbox {sandbox.name}")
-        # await daytona.delete(sandbox)
+        await daytona.delete(sandbox)
 
 
 async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContract) -> None:
@@ -131,53 +129,24 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_stat
     Raises:
         SandboxError: If the agent fails to run or times out
     """
-    session_id = contract.name
-
-    await sandbox.process.create_session(session_id)
-
     run_cmd = contract.run_cmd.replace("{{problem_statement}}", shlex.quote(problem_statement))
-    exec_req = SessionExecuteRequest(command=run_cmd, runAsync=True)
 
-    logger.info(f"Running agent {contract.name}")
-    exec_resp = await sandbox.process.execute_session_command(session_id, exec_req)
-
-    cmd_id = exec_resp.cmd_id
-    if cmd_id is None:
-        raise SandboxError("Session command didn't return a command ID")
-
-    logger.info(f"Streaming logs from agent {contract.name}")
-    log_task = asyncio.create_task(
-        sandbox.process.get_session_command_logs_async(
-            session_id,
-            cmd_id,
-            on_stdout=lambda log: print(log, end=""),
-            on_stderr=lambda log: print(log, end=""),
-        )
+    pty_handle = await sandbox.process.create_pty_session(
+        id=contract.name,
+        # TODO: save log outputs to file or s3
+        on_data=lambda data: print(data.decode("utf-8"), end=""),
+        envs=contract.env,
     )
 
-    try:
-        timeout = 300
-        polling_interval = 5
+    await pty_handle.wait_for_connection()
 
-        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
-        while cmd.exit_code is None and timeout > 0:
-            await asyncio.sleep(polling_interval)
-            timeout -= polling_interval
-            cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+    await pty_handle.send_input(run_cmd)
 
-        if cmd.exit_code is not None and cmd.exit_code != 0:
-            raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
+    await pty_handle.send_input("exit\n")
 
-        if timeout <= 0:
-            raise SandboxError(f"Timed out running agent {contract.name}")
-    except Exception as e:
-        logger.error(e)
-        logger.info(f"Deleting session {session_id}")
-        await sandbox.process.delete_session(session_id)
-        raise e
-    finally:
-        logger.info("Awaiting remaining logs")
-        await log_task
+    result = await pty_handle.wait()
 
-    logger.info(f"Agent {contract.name} completed successfully")
+    if result.exit_code != 0:
+        raise SandboxError(f"Failed to run agent {contract.name}, exit code: {result.error}")
+
     return ""
