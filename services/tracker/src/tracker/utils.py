@@ -454,8 +454,10 @@ async def stop_benchmark(benchmark_row: Benchmark, session: Session) -> None:
     """
     # Check if there are any tasks yet that have not been started yet
     tasks = session.exec(
-        select(Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.STARTING)
-    ).all()
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status) == TaskStatus.STARTING)
+    ).one()
 
     if not tasks:
         raise ValueError(
