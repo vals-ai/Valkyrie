@@ -14,8 +14,8 @@ dependencies = [
     "daytona>=0.128.1",
     "sqlmodel>=0.0.31",
     "httpx>=0.28.1",
-    "celery[redis]>=5.6.2",
-    "celery-types>=0.24.0",
+    "taskiq>=0.12.1",
+    "taskiq-redis>=1.1.2",
 ]
 
 [dependency-groups]

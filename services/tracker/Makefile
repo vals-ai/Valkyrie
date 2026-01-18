@@ -17,7 +17,12 @@ build:
 	docker build -t $(IMAGE_NAME) .
 
 run:
-	@echo "Starting Docker container..."
+	@echo "Starting Redis container..."
+	@docker run -d \
+		--name tracker-redis \
+		-p 6379:6379 \
+		redis:7-alpine || echo "Redis container already running"
+	@echo "Starting tracker service container..."
 	@if [ ! -f .env ]; then \
 		echo "Error: .env file not found!"; \
 		exit 1; \
@@ -26,17 +31,20 @@ run:
 		--name $(CONTAINER_NAME) \
 		-p 8000:8000 \
 		--env-file .env \
+		-e REDIS_URL=redis://host.docker.internal:6379 \
 		-v ${HOME}/.aws:/root/.aws:ro \
 		$(IMAGE_NAME)
-	@echo "Container started successfully!"
+	@echo "Containers started successfully!"
 	@echo "Tracker service is running on http://localhost:8000"
 	@echo "Health check: http://localhost:8000/health"
 
 stop:
-	@echo "Stopping and removing container..."
+	@echo "Stopping and removing containers..."
 	@docker stop $(CONTAINER_NAME) 2>/dev/null || true
 	@docker rm $(CONTAINER_NAME) 2>/dev/null || true
-	@echo "Container stopped and removed."
+	@docker stop tracker-redis 2>/dev/null || true
+	@docker rm tracker-redis 2>/dev/null || true
+	@echo "Containers stopped and removed."
 
 clean: stop
 	@echo "Removing Docker image..."

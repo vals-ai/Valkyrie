@@ -9,10 +9,6 @@ DAYTONA_API_URL=https://app.daytona.io/api
 DAYTONA_TARGET=us
 ```
 
-### Broker setup
-
-Install redis `brew install redis`
-
 ### Docker Deployment
 
 Build and run the tracker service in a Docker container:

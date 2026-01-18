@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlmodel import Session, case, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.config import BENCHMARK_SERVICE_URL, celery
+from tracker.config import BENCHMARK_SERVICE_URL, broker
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.logger import get_logger
@@ -56,6 +56,7 @@ class TrackedTask:
                 return await self._coro
 
         try:
+            # TODO: Add session to handle catching non-cancelled execptions and committing the task to the database
             self._task = asyncio.create_task(_wrap_coro())
             return await self._task
         except asyncio.CancelledError:
@@ -225,12 +226,16 @@ async def process_task(
             return {task_id: None}
 
 
-@celery.task
+@broker.task
 async def process_benchmark(
-    start_run_request: StartRunRequest,
-    benchmark_id: UUID,
+    start_run_request_json: dict[str, Any],
+    benchmark_id_str: str,
     verified_task_ids: list[str],
 ) -> None:
+    # Was serialized to make it compatible with the broker
+    start_run_request: StartRunRequest = StartRunRequest(**start_run_request_json)
+    benchmark_id: UUID = UUID(benchmark_id_str)
+
     # NOTE: Will get ugly if we error on session create
     with Session(bind=engine, expire_on_commit=False) as session:
         # TODO: Delegate url since in the future this aspect can change

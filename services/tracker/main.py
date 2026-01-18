@@ -136,8 +136,10 @@ async def start_run(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
-    process_benchmark.apply_async(
-        args=(request, benchmark_row.id, verify_response.task_ids),
+    await process_benchmark.kiq(
+        start_run_request_json=request.model_dump(),
+        benchmark_id_str=str(benchmark_row.id),
+        verified_task_ids=verify_response.task_ids,
     )
 
     return StartRunResponse(
