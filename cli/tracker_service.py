@@ -6,7 +6,13 @@ from uuid import UUID
 
 import httpx
 from httpx._models import Response
-from tracker.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest
+from tracker.types import (
+    FetchBenchmarkResponse,
+    ResumeRunResponse,
+    RetrieveResultsResponse,
+    StartRunRequest,
+    StopRunResponse,
+)
 
 from cli.config import TRACKER_URL
 
@@ -192,3 +198,41 @@ class TrackerService:
             return RetrieveResultsResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
+
+    def stop_run(self, benchmark_id: UUID) -> StopRunResponse:
+        """
+        Stop a benchmark run by its benchmark id.
+
+        Args:
+            benchmark_id: Benchmark id
+
+        Returns:
+            StopRunResponse with status and message
+        """
+        try:
+            response = self._client.post(f"{self._base_url}/stop-run/{benchmark_id}")
+            if response.status_code != 200:
+                raise TrackerServiceError(f"Failed to stop run: {response.text}")
+
+            return StopRunResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to stop run: {e}") from e
+
+    def resume_run(self, benchmark_id: UUID) -> ResumeRunResponse:
+        """
+        Resume a benchmark run by its benchmark id.
+
+        Args:
+            benchmark_id: Benchmark id
+
+        Returns:
+            ResumeRunResponse with status and message
+        """
+        try:
+            response = self._client.post(f"{self._base_url}/resume-run/{benchmark_id}")
+            if response.status_code != 200:
+                raise TrackerServiceError(f"Failed to resume run: {response.text}")
+
+            return ResumeRunResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to resume run: {e}") from e

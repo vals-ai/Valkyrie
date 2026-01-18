@@ -97,6 +97,18 @@ def format_start_run_response(start_run_response: StartRunResponse) -> None:
             fg="cyan",
         )
     )
+    click.echo(
+        click.style(
+            f"Stop run: harness stop-run --benchmark-id {start_run_response.benchmark_id}",
+            fg="cyan",
+        )
+    )
+    click.echo(
+        click.style(
+            f"Resume run: harness resume-run --benchmark-id {start_run_response.benchmark_id}",
+            fg="cyan",
+        )
+    )
     click.echo()
 
 

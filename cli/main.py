@@ -195,5 +195,69 @@ def retrieve_results(benchmark_id: UUID, path: Path):
         raise click.ClickException(str(e))
 
 
+@cli.command()
+@click.option(
+    "--benchmark-id",
+    type=UUID,
+    required=True,
+    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
+)
+def stop_run(benchmark_id: UUID):
+    """
+    Stop a benchmark run by its benchmark id.
+
+    Example:
+        harness stop-run --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+    """
+    click.echo(f"Stopping run for benchmark: {benchmark_id}")
+    try:
+        with TrackerService() as tracker:
+            if not check_tracker_service_health(tracker):
+                return
+
+            _ = tracker.stop_run(benchmark_id)
+            click.echo(click.style("Run stopped successfully!", fg="green", bold=True))
+            click.echo(
+                click.style(
+                    f"Retrieve results: harness retrieve-results --benchmark-id {benchmark_id} --path ./results.json",
+                    fg="cyan",
+                )
+            )
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
+
+
+@cli.command()
+@click.option(
+    "--benchmark-id",
+    type=UUID,
+    required=True,
+    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
+)
+def resume_run(benchmark_id: UUID):
+    """
+    Resume a benchmark run by its benchmark id.
+
+    Example:
+        harness resume-run --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+    """
+    click.echo(f"Resuming run for benchmark: {benchmark_id}")
+    try:
+        with TrackerService() as tracker:
+            if not check_tracker_service_health(tracker):
+                return
+
+            _ = tracker.resume_run(benchmark_id)
+            click.echo(click.style("Run resumed successfully!", fg="green", bold=True))
+            click.echo(
+                click.style(
+                    f"Track progress: harness fetch-benchmark --benchmark-id {benchmark_id} --connect",
+                    fg="cyan",
+                )
+            )
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
+
+
 if __name__ == "__main__":
     cli()
