@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -20,7 +20,9 @@ from sqlmodel import (
 )
 
 from tracker.database.utils import has_field_changed
-from tracker.types import StartRunRequest
+
+if TYPE_CHECKING:
+    from tracker.types import StartRunRequest
 
 
 class BenchmarkStatus(str, Enum):
@@ -117,7 +119,9 @@ class Benchmark(SQLModel, table=True):
         return fetch_evaluation_results(self.id, session)
 
     @property
-    def start_run_request(self) -> StartRunRequest:
+    def start_run_request(self) -> "StartRunRequest":
+        from tracker.types import StartRunRequest
+
         return StartRunRequest(
             contract_name=self.arguments.contract_name,
             benchmark_name=self.name,

@@ -230,7 +230,7 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
     )
 
 
-@app.post("/stop-run")
+@app.post("/stop-run/{benchmark_id}")
 async def stop_run(benchmark_id: UUID, session: Session = Depends(get_session)) -> StopRunResponse:
     """
     Stop a benchmark run by its id.
@@ -245,6 +245,13 @@ async def stop_run(benchmark_id: UUID, session: Session = Depends(get_session)) 
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
+    # Can only pause a in progress benchmark
+    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress benchmark.",
+        )
+
     await stop_benchmark(benchmark_row, session)
 
     return StopRunResponse(
@@ -252,7 +259,7 @@ async def stop_run(benchmark_id: UUID, session: Session = Depends(get_session)) 
     )
 
 
-@app.post("/resume-run")
+@app.post("/resume-run/{benchmark_id}")
 async def resume_run(benchmark_id: UUID, session: Session = Depends(get_session)) -> ResumeRunResponse:
     """
     Resume a benchmark run by its id.

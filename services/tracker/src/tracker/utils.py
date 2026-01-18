@@ -13,6 +13,7 @@ from tracker.benchmark_service import BenchmarkService
 from tracker.config import broker
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
+from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
 from tracker.types import (
@@ -481,31 +482,36 @@ async def stop_benchmark(benchmark_row: Benchmark, session: Session) -> None:
 
     NOTE: Tasks that have already started will continue to run and finish.
     """
-    # Check if there are any tasks yet that have not been started yet
-    tasks = session.exec(
-        select(func.count(col(Task.id)))
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.status) == TaskStatus.STARTING)
-    ).one()
+    try:
+        # Check if there are any tasks yet that have not been started yet
+        tasks = session.exec(
+            select(func.count(col(Task.id)))
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.status) == TaskStatus.STARTING)
+        ).one()
 
-    if not tasks:
-        raise ValueError(
-            f"All tasks for benchmark {benchmark_row.id} have been started. Must wait for the tasks to finish running."
+        if not tasks:
+            raise TrackerServiceError(
+                f"All tasks for benchmark {benchmark_row.id} have been started. Must wait for the tasks to finish running."
+            )
+
+        # Set the benchmark status to stopping to initiate the stopping process
+        benchmark_row.status = BenchmarkStatus.STOPPING
+        session.add(benchmark_row)
+        session.commit()
+
+        # Stop all tasks that have not been started yet from starting by setting the stop flag
+        session.exec(
+            update(Task)
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.status) == TaskStatus.STARTING)
+            .values(status=TaskStatus.STOPPED)
         )
-
-    # Set the benchmark status to stopping to initiate the stopping process
-    benchmark_row.status = BenchmarkStatus.STOPPING
-    session.add(benchmark_row)
-    session.commit()
-
-    # Stop all tasks that have not been started yet from starting by setting the stop flag
-    session.exec(
-        update(Task)
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.status) == TaskStatus.STARTING)
-        .values(status=TaskStatus.STOPPED)
-    )
-    session.commit()
+        session.commit()
+    except TrackerServiceError:
+        raise
+    except Exception as e:
+        raise TrackerServiceError(f"Unexpected error stopping benchmark {benchmark_row.id}: {str(e)}") from e
 
 
 async def resume_benchmark(
@@ -519,33 +525,40 @@ async def resume_benchmark(
 
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
-    # Check if there are any tasks that have been stopped
-    task_ids = session.exec(
-        select(Task.task_id)
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.status) == TaskStatus.STOPPED)
-    ).all()
+    try:
+        # Check if there are any tasks that have been stopped
+        task_ids = session.exec(
+            select(Task.task_id)
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.status) == TaskStatus.STOPPED)
+        ).all()
 
-    if not task_ids:
-        raise ValueError(f"No tasks for benchmark {benchmark_row.id} have been stopped. Cannot resume benchmark.")
+        if not task_ids:
+            raise TrackerServiceError(
+                f"No tasks for benchmark {benchmark_row.id} have been stopped. Cannot resume benchmark."
+            )
 
-    # Verify the task ids are still valid before priming to resume
-    # Raises if any task ids are invalid
-    verify_response = await benchmark_service.request_verify_task_ids(task_ids=list(task_ids), slice_str=None)
+        # Verify the task ids are still valid before priming to resume
+        # Raises if any task ids are invalid
+        verify_response = await benchmark_service.request_verify_task_ids(task_ids=list(task_ids), slice_str=None)
 
-    # Set the benchmark status to in progress to flag resuming the benchmark
-    benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-    session.add(benchmark_row)
-    session.commit()
+        # Set the benchmark status to in progress to flag resuming the benchmark
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        session.add(benchmark_row)
+        session.commit()
 
-    # Set the task status to starting to flag resuming the tasks
-    session.exec(
-        update(Task)
-        .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.status) == TaskStatus.STOPPED)
-        .values(status=TaskStatus.STARTING)
-    )
+        # Set the task status to starting to flag resuming the tasks
+        session.exec(
+            update(Task)
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.status) == TaskStatus.STOPPED)
+            .values(status=TaskStatus.STARTING)
+        )
 
-    session.commit()
+        session.commit()
 
-    return verify_response.task_ids
+        return verify_response.task_ids
+    except TrackerServiceError:
+        raise
+    except Exception as e:
+        raise TrackerServiceError(f"Unexpected error resuming benchmark {benchmark_row.id}: {str(e)}") from e
