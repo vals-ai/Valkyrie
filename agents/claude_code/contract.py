@@ -58,7 +58,7 @@ class ClaudeCodeContract(BaseAgentContract):
             raise ValueError("ClaudeCodeContract only accepts Anthropic models")
 
         args = [
-            "-p {{problem_statement}}",
+            "-p {problem_statement}",
             "--verbose",
             "--output-format stream-json",
             f"--allowedTools {' '.join(self._ALLOWED_TOOLS)}",

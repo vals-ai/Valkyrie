@@ -127,7 +127,7 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, probl
     Raises:
         SandboxError: If the agent fails to run or times out
     """
-    run_cmd = contract.run_cmd.replace("{{problem_statement}}", shlex.quote(problem_statement))
+    run_cmd = contract.run_cmd.replace("{problem_statement}", shlex.quote(problem_statement))
 
     def on_data(data: bytes) -> None:
         # TODO: save logs to disk/s3
