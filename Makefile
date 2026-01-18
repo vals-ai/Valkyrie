@@ -34,6 +34,7 @@ install:
 	uv venv --python $(PYTHON_VERSION)
 	uv cache clean model-library valsai
 	uv sync --group dev
+	uv pip install -e services/tracker
 	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
 
 .PHONY: update-submodules
