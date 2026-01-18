@@ -2,10 +2,12 @@ import asyncio
 import json
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Coroutine
+from datetime import datetime
 from enum import Enum
 from functools import cached_property
 from typing import Any, NamedTuple, Sequence
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, case, col, func, select, update
 
@@ -565,7 +567,7 @@ async def resume_benchmark(
             update(Task)
             .where(col(Task.benchmark) == benchmark_row.id)
             .where(col(Task.status) == TaskStatus.STOPPED)
-            .values(status=TaskStatus.STARTING)
+            .values(status=TaskStatus.STARTING, started_at=datetime.now(ZoneInfo("UTC")))
         )
 
         session.commit()
