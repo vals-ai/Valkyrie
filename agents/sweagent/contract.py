@@ -37,6 +37,7 @@ class SWEAgentContract(BaseAgentContract):
             f"--agent.model.name={model_name}",
             "--problem_statement.text={{problem_statement}}",
             "--config=/bundle/sweagent/submodules/sweagent/config/default.yaml",
+            "--output_dir=/logs",
         ]
 
         run_cmd = "sweagent run " + " ".join(args)
