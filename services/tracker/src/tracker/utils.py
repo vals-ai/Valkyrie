@@ -438,6 +438,7 @@ def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_mes
 
 
 def commit_task_error(task_row: Task, session: Session, error_message: str) -> None:
+    task_row = session.merge(task_row)
     task_row.status = TaskStatus.ERROR
     task_row.error_message = error_message
     session.add(task_row)

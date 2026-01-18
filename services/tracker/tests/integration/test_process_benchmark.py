@@ -265,19 +265,19 @@ class TestProcessBenchmark:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        async def mock_request_setup_task(original_method: Any, task_id: str, instance_id: str) -> SetupTaskResponse:
+        original_request_setup_task = BenchmarkService.request_setup_task
+
+        async def mock_request_setup_task(self: Any, task_id: str, instance_id: str) -> SetupTaskResponse:
             if task_id == "astropy__astropy-13033":
                 raise Exception("Exception raised while setting up the task")
 
-            return await original_method(task_id, instance_id)
-
-        original_request_setup_task = benchmark_service.request_setup_task
+            return await original_request_setup_task(self, task_id, instance_id)
 
         # Setup fails for the second task
         monkeypatch.setattr(
-            benchmark_service,
+            BenchmarkService,
             "request_setup_task",
-            partial(mock_request_setup_task, original_request_setup_task),
+            mock_request_setup_task,
         )
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
@@ -303,7 +303,7 @@ class TestProcessBenchmark:
         await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is still finished even though one task has errored out
-        database_session.refresh(benchmark_row, attribute_names=["final_evaluation"])
+        database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
 
         tasks = database_session.exec(
