@@ -16,6 +16,8 @@ from agentic_harness.cli.utils import (
 )
 from tracker.types import StartRunResponse
 
+from agentic_harness.schemas import AgentConfig
+
 
 @click.group()
 def cli():
@@ -29,6 +31,12 @@ def cli():
     type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
     required=True,
     help="Path to agent directory (e.g., agents/claude_code)",
+)
+@click.option(
+    "--model",
+    type=str,
+    required=False,
+    help="Model key (e.g., openai/gpt-4o)",
 )
 @click.option(
     "--benchmark",
@@ -60,6 +68,7 @@ def cli():
 )
 def start_benchmark(
     agent: Path,
+    model: str | None,
     benchmark: str,
     concurrency: int,
     task_ids: str | None,
@@ -74,6 +83,7 @@ def start_benchmark(
     click.echo("Arguments:")
     click.echo(f"  - Benchmark: {benchmark}")
     click.echo(f"  - Agent: {agent}")
+    click.echo(f"  - Model: {model}")
     click.echo(f"  - Concurrency: {concurrency}")
     click.echo(f"  - Slice: {slice_str}")
     if task_ids:
@@ -87,7 +97,9 @@ def start_benchmark(
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
     try:
-        contract = get_contract(agent / "contract.py")
+        contract_path = agent / "contract.py"
+        agent_config = AgentConfig(model=model) if model else None
+        contract = get_contract(contract_path, agent_config)
 
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
