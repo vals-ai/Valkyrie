@@ -8,9 +8,8 @@ from uuid import UUID
 import httpx
 from dotenv import load_dotenv
 from httpx._models import Response
-from tracker.types import FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest
+from tracker.types import AgentContractRequest, FetchBenchmarkResponse, RetrieveResultsResponse, StartRunRequest
 
-from agentic_harness import AgentContract
 from agentic_harness.cli.exceptions import TrackerServiceError
 
 load_dotenv()
@@ -89,7 +88,7 @@ class TrackerService:
 
     def start_run(
         self,
-        contract: AgentContract,
+        contract: AgentContractRequest,
         benchmark_name: str,
         concurrency: int,
         task_ids: list[str] | None,

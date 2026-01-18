@@ -10,7 +10,7 @@ from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tracker.database.models import *  # noqa: F403
 from tracker.database.models import Benchmark, BenchmarkArguments
-from tracker.types import AgentContract
+from tracker.types import AgentContractRequest
 
 _ = load_dotenv()
 
@@ -44,8 +44,8 @@ def example_benchmark_object() -> Benchmark:
 
 
 @pytest.fixture
-def test_contract() -> AgentContract:
-    return AgentContract(
+def test_contract() -> AgentContractRequest:
+    return AgentContractRequest(
         name="test_contract",
         artifacts=["setup.sh"],
         install_cmd="bash setup.sh",

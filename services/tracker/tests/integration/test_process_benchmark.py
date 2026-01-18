@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import BenchmarkStatus, EvaluationResult, Task, TaskStatus
-from tracker.types import AgentContract, SetupTaskResponse, StartRunRequest
+from tracker.types import AgentContractRequest, SetupTaskResponse, StartRunRequest
 from tracker.utils import process_benchmark, process_task
 
 
@@ -71,7 +71,7 @@ class TestProcessBenchmark:
 
     async def test_process_task(
         self,
-        test_contract: AgentContract,
+        test_contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,
@@ -141,7 +141,7 @@ class TestProcessBenchmark:
 
     async def test_process_benchmark(
         self,
-        test_contract: AgentContract,
+        test_contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,
@@ -205,7 +205,7 @@ class TestProcessBenchmark:
 
     async def test_process_benchmark_error(
         self,
-        test_contract: AgentContract,
+        test_contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,
@@ -265,7 +265,7 @@ class TestProcessBenchmark:
 
     async def test_process_task_error(
         self,
-        test_contract: AgentContract,
+        test_contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,

@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import BaseModel
 
 
-class AgentContract(BaseModel):
+class AgentContractRequest(BaseModel):
     """Contract that defines how to upload, install, and run an agent."""
 
     name: str
@@ -50,7 +50,7 @@ class BenchmarkDetails(BaseModel):
 
 
 class StartRunRequest(BaseModel):
-    contract: AgentContract
+    contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
     task_ids: list[str] | None = None

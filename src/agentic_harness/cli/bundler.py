@@ -9,8 +9,11 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, Generator
 
-from agentic_harness import AgentContract
+from tracker.types import AgentContractRequest
+
 from agentic_harness.cli.exceptions import BundlerError
+from agentic_harness.contract import BaseAgentContract
+from agentic_harness.schemas import AgentConfig
 
 
 def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
@@ -57,7 +60,7 @@ def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
 
 
 @contextmanager
-def get_agent_zip_stream(contract: AgentContract) -> Generator[BinaryIO, None, None]:
+def get_agent_zip_stream(contract: AgentContractRequest) -> Generator[BinaryIO, None, None]:
     """
     Create a zip stream containing the agent artifacts.
 
@@ -97,7 +100,7 @@ def get_agent_zip_stream(contract: AgentContract) -> Generator[BinaryIO, None, N
             yield f
 
 
-def get_contract(contract_path: Path) -> AgentContract:
+def get_contract(contract_path: Path, agent_config: AgentConfig | None = None) -> AgentContractRequest:
     try:
         spec = importlib.util.spec_from_file_location("contract", contract_path)
 
@@ -108,8 +111,10 @@ def get_contract(contract_path: Path) -> AgentContract:
 
         spec.loader.exec_module(module)
 
-        contract = module.contract
+        Contract: type[BaseAgentContract] = module.contract
+
+        contract = Contract(agent_config)
+
+        return contract.to_request()
     except Exception as e:
         raise BundlerError(f"Failed to get contract from {contract_path}: {e}") from e
-
-    return contract

@@ -12,7 +12,7 @@ from moto import mock_aws
 from mypy_boto3_s3.client import S3Client
 
 from tracker.config import get_s3_bucket_name
-from tracker.types import AgentContract
+from tracker.types import AgentContractRequest
 from tracker.s3 import get_contract_s3_key
 from tracker.sandbox import (
     create_sandbox,
@@ -58,7 +58,7 @@ class TestSandboxOperations:
     async def test_upload_agent_artifacts(self, test_sandbox: AsyncSandbox, mock_s3: S3Client) -> None:
         """Test that agent artifacts are uploaded to the sandbox."""
         contract_name = "test_contract"
-        contract = AgentContract(
+        contract = AgentContractRequest(
             name=contract_name,
             artifacts=["setup.sh", "submodules/some_dir"],
             install_cmd="bash setup.sh",
@@ -97,7 +97,7 @@ class TestSandboxOperations:
     async def test_install_agent_dependencies(self, mock_logger: MagicMock, test_sandbox: AsyncSandbox) -> None:
         """Test that install command is correctly executed in the sandbox."""
         contract_name = "test_contract"
-        contract = AgentContract(
+        contract = AgentContractRequest(
             name=contract_name,
             artifacts=["setup.sh"],
             install_cmd="bash setup.sh",
@@ -119,7 +119,7 @@ class TestSandboxOperations:
         # Output a line of text every second
         run_cmd = "echo line1 && sleep 1 && echo line2 && sleep 1 && echo line3"
 
-        contract = AgentContract(
+        contract = AgentContractRequest(
             name="test_agent",
             artifacts=[],
             install_cmd="echo 'no-op'",
