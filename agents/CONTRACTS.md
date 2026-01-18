@@ -8,47 +8,121 @@ An agent contract defines how to install and run an agent in a sandbox environme
 
 ## Contract Definition
 
-Create a `contract.py` file in your agent directory that exports a `contract` object:
+Create a `contract.py` file in your agent directory that defines a contract class inheriting from `BaseAgentContract`:
 
 ```python
 import os
-from agentic_harness import AgentContract
 from dotenv import load_dotenv
+
+from agentic_harness.contract import BaseAgentContract
+from agentic_harness.schemas import AgentConfig
 
 load_dotenv()
 
-contract = AgentContract(
-    name="my_agent",
-    artifacts=[
-        "submodules/my_agent",
-        "setup.sh",
-    ],
-    install_cmd="bash setup.sh",
-    run_cmd="my_agent -p {{problem_statement}}",
-    env={
-        "API_KEY": os.getenv("API_KEY"),
-    },
-)
+
+class MyAgentContract(BaseAgentContract):
+    """My Agent Contract"""
+
+    @property
+    def name(self) -> str:
+        return "my_agent"
+
+    @property
+    def artifacts(self) -> list[str]:
+        return ["setup.sh", "submodules/my_agent"]
+
+    @property
+    def install_cmd(self) -> str:
+        return "bash setup.sh"
+
+    @property
+    def env(self) -> dict[str, str]:
+        return {"API_KEY": os.getenv("API_KEY")}
+
+    @property
+    def run_cmd(self) -> str:
+        return "my_agent --task {problem_statement}"
+
+
+# Export the contract class
+contract = MyAgentContract
 ```
 
-## Contract Fields
+## Required Properties
+
+Your contract class must implement these abstract properties:
+
+### `name: str`
+The name of your agent contract.
 
 ```python
-class AgentContract(BaseModel):
-    name: str
-    """Name of the agent."""
+@property
+def name(self) -> str:
+    return "my_agent"
+```
 
-    artifacts: list[str] = []
-    """Paths to artifacts."""
+### `install_cmd: str`
+Command to install the agent and its dependencies. Runs once during sandbox setup with the working directory set to `/bundle/<agent_name>/`.
 
-    install_cmd: str
-    """Command to install the agent."""
+```python
+@property
+def install_cmd(self) -> str:
+    return "bash setup.sh"
+```
 
-    run_cmd: str
-    """Command to run the agent."""
+### `run_cmd: str`
+Command to run the agent on a task. Use `{problem_statement}` as a placeholder (single braces!) - it will be replaced with the actual task prompt at runtime.
 
-    env: dict[str, str] = {}
-    """Environment variables required to run the agent."""
+```python
+@property
+def run_cmd(self) -> str:
+    # Use single braces for the placeholder
+    return "my_agent --task {problem_statement}"
+```
+
+## Optional Properties
+
+### `artifacts: list[str]`
+Files and directories to bundle with the agent (default: empty list). Paths are relative to your agent directory.
+
+```python
+@property
+def artifacts(self) -> list[str]:
+    return ["setup.sh", "submodules/my_agent", "config/settings.yaml"]
+```
+
+### `env: dict[str, str]`
+Environment variables required by the agent (default: empty dict). Load secrets from your local environment.
+
+```python
+@property
+def env(self) -> dict[str, str]:
+    return {
+        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
+        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+    }
+```
+
+## Using AgentConfig for Dynamic Configuration
+
+The `AgentConfig` parameter allows you to pass runtime configuration (like model selection) from the CLI to your agent:
+
+```python
+class MyAgentContract(BaseAgentContract):
+    @property
+    def run_cmd(self) -> str:
+        # Make agent_config required by removing the default None
+        if not agent_config:
+            raise ValueError("AgentConfig is required")
+
+        # Use the model from agent_config
+        model = self._agent_config.model
+        return f"my_agent --model {model} --task {{problem_statement}}"
+```
+
+Then run from the CLI with:
+```bash
+harness start-benchmark --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
 ```
 
 ## Directory Structure
@@ -64,25 +138,9 @@ agents/
         main.py
 ```
 
-## Artifacts
+## Installation Scripts
 
-The `artifacts` list specifies which files and directories to bundle. Paths are relative to your contract directory.
-
-```python
-artifacts=[
-    "setup.sh",                    # Single file
-    "submodules/my_agent",         # Directory with agent code
-    "config/settings.yaml",        # Config files
-]
-```
-
-## Install Command
-
-The `install_cmd` runs inside the sandbox with the working directory set to your contract folder. Use it to install dependencies and set up your agent.
-
-```python
-install_cmd="bash setup.sh"
-```
+The `install_cmd` runs inside the sandbox with the working directory set to `/bundle/<agent_name>/`. Use it to install dependencies and set up your agent.
 
 Example `setup.sh`:
 ```bash
@@ -92,19 +150,12 @@ set -euo pipefail
 # Install CLI tools
 curl -fsSL https://example.com/install.sh | bash
 
+# Add to PATH if needed
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
 # Install Python dependencies
 cd submodules/my_agent && uv sync
 ```
-
-## Run Command
-
-The `run_cmd` specifies how to execute your agent. Use `{{problem_statement}}` as a placeholder - it will be replaced with the actual task prompt.
-
-```python
-run_cmd="my_agent -p {{problem_statement}}"
-```
-
-The command runs inside the sandbox. If your agent needs a virtual environment, create a wrapper script during installation.
 
 ## Creating Wrapper Scripts
 
@@ -114,35 +165,40 @@ If your agent requires a virtual environment or specific setup before running, c
 # In setup.sh
 cat > /usr/local/bin/my_agent << 'WRAPPER'
 #!/bin/bash
-source $CONTRACT_DIR/submodules/my_agent/.venv/bin/activate
-exec python $CONTRACT_DIR/submodules/my_agent/main.py "$@"
+source /bundle/my_agent/submodules/my_agent/.venv/bin/activate
+exec python /bundle/my_agent/submodules/my_agent/main.py "$@"
 WRAPPER
 chmod +x /usr/local/bin/my_agent
 ```
 
-The `$CONTRACT_DIR` environment variable points to your contract's location in the sandbox (e.g., `/bundle/my_agent`).
+Your agent artifacts are bundled to `/bundle/<agent_name>/` in the sandbox.
 
-## Environment Variables
+## Placeholder Syntax
 
-The `env` field passes environment variables to the sandbox. Load secrets from your local environment:
+Use **single braces** `{problem_statement}` in your `run_cmd`. The placeholder will be replaced with the actual task prompt at runtime:
 
 ```python
-env={
-    "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
-    "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-}
+@property
+def run_cmd(self) -> str:
+    # ✅ Correct - single braces
+    return "my_agent --task {problem_statement}"
+
+    # ❌ Wrong - double braces (use only in f-strings)
+    return f"my_agent --task {{problem_statement}}"
 ```
 
-## Complete Example
+If you're using an f-string to include dynamic values, use double braces for the placeholder:
 
-See `agents/claude_code/` for a complete example:
+```python
+@property
+def run_cmd(self) -> str:
+    model = self._agent_config.model
+    # Double braces in f-string become single braces in output
+    return f"my_agent --model {model} --task {{problem_statement}}"
+```
 
-```
-agents/claude_code/
-  contract.py
-  setup.sh
-  submodules/
-    claude_code/
-      pyproject.toml
-      main.py
-```
+## Complete Examples
+
+See these agent implementations for reference:
+- `agents/claude_code/` - CLI tool installation
+- `agents/sweagent/` - Python agent with dynamic model configuration
