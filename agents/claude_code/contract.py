@@ -2,6 +2,7 @@ import os
 from dotenv import load_dotenv
 
 from agentic_harness.contract import BaseAgentContract
+from model_library.registry_utils import get_model_names_by_provider
 
 load_dotenv()
 
@@ -9,13 +10,35 @@ load_dotenv()
 class ClaudeCodeContract(BaseAgentContract):
     """Claude Code Contract"""
 
+    _ALLOWED_MODELS = get_model_names_by_provider("anthropic")
+
+    _ALLOWED_TOOLS = [
+        "Bash",
+        "Edit",
+        "Write",
+        "Read",
+        "Glob",
+        "Grep",
+        "LS",
+        "WebFetch",
+        "NotebookEdit",
+        "NotebookRead",
+        "TodoRead",
+        "TodoWrite",
+        "Agent",
+        "Skill",
+        "SlashCommand",
+        "Task",
+        "WebSearch",
+    ]
+
     @property
     def name(self) -> str:
         return "claude_code"
 
     @property
     def artifacts(self) -> list[str]:
-        return ["setup.sh", "submodules/claude_code"]
+        return ["setup.sh"]
 
     @property
     def install_cmd(self) -> str:
@@ -27,7 +50,24 @@ class ClaudeCodeContract(BaseAgentContract):
 
     @property
     def run_cmd(self) -> str:
-        return "claude_code -p {{problem_statement}}"
+        if not self._agent_config:
+            raise ValueError("ClaudeCodeContract requires an AgentConfig")
+
+        model_name = self._agent_config.model
+        if model_name not in self._ALLOWED_MODELS:
+            raise ValueError("ClaudeCodeContract only accepts Anthropic models")
+
+        args = [
+            "-p {{problem_statement}}",
+            "--verbose",
+            "--output-format stream-json",
+            f"--allowedTools {' '.join(self._ALLOWED_TOOLS)}",
+            "2>&1 </dev/null | tee /logs/claude_code.log",  # save output to log file
+        ]
+
+        run_cmd = "claude " + " ".join(args)
+
+        return run_cmd
 
 
 contract = ClaudeCodeContract

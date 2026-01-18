@@ -55,6 +55,7 @@ async def process_task(
 
                     # Run the agent inside of the sandbox
                     # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
+                    logger.info(f"Running agent {start_run_request.contract.name} in sandbox {sandbox.name}")
                     agent_output = await run_agent(sandbox, start_run_request.contract, task_data.problem_statement)
 
                     # Update the status to evaluating once we finish running the agent
@@ -64,6 +65,7 @@ async def process_task(
 
                     # Evaluate the instance
                     # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                    logger.info(f"Evaluating agent {start_run_request.contract.name} in sandbox {sandbox.name}")
                     evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
 
                     # Save the evaluation result to the database with the task row
@@ -83,6 +85,7 @@ async def process_task(
                     return evaluation_result_row, task_id
             except Exception as e:
                 error_message = str(e)
+                logger.error(error_message)
                 commit_task_error(task_row, task_session, error_message)
                 return None, task_id
 

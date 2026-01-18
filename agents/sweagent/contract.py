@@ -25,7 +25,7 @@ class SWEAgentContract(BaseAgentContract):
     @property
     def run_cmd(self) -> str:
         if not self._agent_config:
-            raise ValueError("SWEAgentContract requires and AgentConfig")
+            raise ValueError("SWEAgentContract requires an AgentConfig")
 
         model_name = self._agent_config.model
 
@@ -37,7 +37,7 @@ class SWEAgentContract(BaseAgentContract):
             f"--agent.model.name={model_name}",
             "--problem_statement.text={{problem_statement}}",
             "--config=/bundle/sweagent/submodules/sweagent/config/default.yaml",
-            "--output_dir=/logs",
+            "--output_dir=/logs/sweagent",
         ]
 
         run_cmd = "sweagent run " + " ".join(args)
