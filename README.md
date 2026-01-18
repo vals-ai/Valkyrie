@@ -72,6 +72,18 @@ uv run harness fetch-benchmark --benchmark-id <benchmark_id>
 uv run harness retrieve-results --benchmark-id <benchmark_id> --path ./results.json
 ```
 
+### Stop a benchmark
+
+```bash
+uv run harness harness stop-run --benchmark-id <benchmark_id>
+```
+
+### Resume a benchmark
+
+```bash
+uv run harness harness resume-run --benchmark-id <benchmark_id>
+```
+
 ### Supported Benchmarks
 
 - SWE-bench
