@@ -80,7 +80,7 @@ class TrackerService:
         """
         try:
             files = {"contract": (f"{contract_name}.zip", file_stream, "application/zip")}
-            response = self._client.post(f"{self._base_url}/upload", files=files)
+            response = self._client.post(f"{self._base_url}/upload", files=files, timeout=600)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
