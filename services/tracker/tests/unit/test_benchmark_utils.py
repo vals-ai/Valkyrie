@@ -10,7 +10,7 @@ from tests.unit.test_fastapi_server import client
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
-from tracker.types import VerifyTaskIdsResponse
+from tracker.types import StartRunRequest, VerifyTaskIdsResponse
 from tracker.utils import fetch_benchmark_row
 
 
@@ -24,6 +24,15 @@ class TestBenchmarkUtils:
         pass
 
     def test_stop_benchmark(self, example_benchmark_object: Benchmark, database_session: Session):
+        """
+        Tests the flow of updating the benchmark related objects to the proper states when stopping a benchmark
+
+        Test Cases:
+            - Benchmark can be stopped if it is in progress and tasks that have not started yet exist
+            - After stopping, the benchmark status is "stopping" and tasks have been set to "stopped"
+            - Tasks not in starting state are left alone
+        """
+
         def get_test_session():
             yield database_session
 
@@ -82,6 +91,15 @@ class TestBenchmarkUtils:
         assert task_rows == 5
 
     def test_stop_benchmark_edge_cases(self, example_benchmark_object: Benchmark, database_session: Session):
+        """
+        Tests edge cases for stopping a benchmark
+
+        Test Cases:
+            - Cannot stop a benchmark that is not in progress
+            - Cannot stop a benchmark where all tasks have already started
+            - Errors are raised and returned to the client
+        """
+
         def get_test_session():
             yield database_session
 
@@ -117,6 +135,15 @@ class TestBenchmarkUtils:
     def test_resume_benchmark(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch
     ):
+        """
+        Tests the flow of updating the benchmark related objects to the proper states when resuming a benchmark
+
+        Test Cases:
+            - Benchmark can be resumed if it is in a stopped state and a single task with the stopped status exists
+            - After resuming, the benchmark status is "in progress" and tasks have been set to "starting" that were in the stopped state
+            - Only the status of stopped tasks are updated
+        """
+
         def get_test_session():
             yield database_session
 
@@ -173,6 +200,16 @@ class TestBenchmarkUtils:
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
 
     def test_resume_benchmark_edge_cases(self, example_benchmark_object: Benchmark, database_session: Session):
+        """
+        Tests edge cases for resuming a benchmark
+
+        Test Cases:
+            - Cannot resume a benchmark that is not in a stopped state
+            - Cannot resume a benchmark where all tasks have already finished
+            - Errors are raised and returned to the client
+            - Can recreate the same environment the benchmark was started in
+        """
+
         def get_test_session():
             yield database_session
 
@@ -202,3 +239,17 @@ class TestBenchmarkUtils:
         # error is returned because we have no stopped tasks to resume
         response = client.post(f"/resume-run/{benchmark_row.id}")
         assert response.status_code == 500
+
+        # Ensure that we can recreate the environment the benchmark was started in
+        original_start_run_request = StartRunRequest(
+            contract_name="claude_code",
+            benchmark_name="swebench",
+            concurrency=5,
+            task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
+            slice_str=":10",
+        )
+
+        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(original_start_run_request)
+
+        recreated_start_run_request = benchmark_row.start_run_request
+        assert recreated_start_run_request == original_start_run_request
