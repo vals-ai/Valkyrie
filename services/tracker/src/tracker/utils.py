@@ -49,12 +49,19 @@ class TrackedTask:
         return self._task
 
     async def run(self, semaphore: asyncio.Semaphore, task_id: str) -> dict[str, dict[str, Any] | None]:
-        try:
+        async def _wrap_coro():
+            """Need to have a task created even if we are not running the coroutine so that we can cancel it before its running"""
             async with semaphore:
                 self._status = TrackedTaskStatus.RUNNING
-                self._task = asyncio.create_task(self._coro)
-                return await self._task
+                return await self._coro
+
+        try:
+            self._task = asyncio.create_task(_wrap_coro())
+            return await self._task
         except asyncio.CancelledError:
+            # Need to clean up the coroutine if we cancelled the task
+            self._coro.close()
+
             # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
             return {task_id: None}
         finally:
@@ -73,7 +80,7 @@ class TaskMonitor:
         self._task_tracking = task_tracking
 
     def _fetch_task_row(self, task_id: str) -> Task:
-        task_row = self._session.get(Task, task_id)
+        task_row = self._session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
         if not task_row:
             raise ValueError(f"Task with id {task_id} not found")
 
@@ -83,7 +90,7 @@ class TaskMonitor:
         """
         Runs while waiting to be aquired by the semaphore.
 
-        If the benchmark is stopping or the task status has been set to stopped we return False to exit the task early.
+        If the task status has been set to stopped we return False to exit the task early.
 
         Returns:
             True if the task should continue to be processed, False if the task should be stopped early
@@ -92,9 +99,7 @@ class TaskMonitor:
         self._session.expire_all()
         task_row = self._fetch_task_row(task_id)
 
-        benchmark_row = fetch_benchmark_row(task_row.benchmark, self._session)
-
-        if task_row.status == TaskStatus.STOPPED or benchmark_row.status == BenchmarkStatus.STOPPING:
+        if task_row.status == TaskStatus.STOPPED:
             return False
 
         return True
@@ -130,7 +135,9 @@ class TaskMonitor:
 
                 if not self._validate_task(task_id) and task.task:
                     task.task.cancel(f"Task {task_id} has been invalidated. Benchmark has been requested to stop")
-                    del self._task_tracking[task_id]
+
+                    if task_id in self._task_tracking:
+                        del self._task_tracking[task_id]
 
             if not self._task_tracking:
                 exit_condition_met = True
@@ -229,12 +236,7 @@ async def process_benchmark(
         # TODO: Delegate url since in the future this aspect can change
         benchmark_service = BenchmarkService(name=start_run_request.benchmark_name, url=BENCHMARK_SERVICE_URL)
 
-        benchmark_row = session.get(Benchmark, benchmark_id)
-
-        # NOTE: Benchmark row is created just before this task is called, so it should always be found
-        # This exists if we are testing an edge case with this method and to satisfy type checker
-        if not benchmark_row:
-            raise ValueError(f"Benchmark with id {benchmark_id} not found")
+        benchmark_row = fetch_benchmark_row(benchmark_id, session)
 
         try:
             # Create tasks inside of the database for each task id

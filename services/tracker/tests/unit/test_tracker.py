@@ -179,4 +179,18 @@ class TestTracker:
         assert running_task.status == TrackedTaskStatus.RUNNING
         assert waiting_task.status == TrackedTaskStatus.WAITING
 
-        await results
+        # Cancel the waiting task
+        assert waiting_task.task is not None
+        waiting_task.task.cancel()
+
+        task_results = await results
+
+        # All results are now done
+        assert running_task.status == TrackedTaskStatus.DONE
+        assert waiting_task.status == TrackedTaskStatus.DONE
+
+        # Waiting task returns an empty response since we cancelled it
+        assert task_results[1] == {"task_id_5": None}
+
+        # Running task was completed so the result is full
+        assert task_results[0] == {"task_id_4": {"result": "task_id_4"}}
