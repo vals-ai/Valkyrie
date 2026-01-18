@@ -1,17 +1,21 @@
+from datetime import datetime
 from functools import partial
 from typing import Any
+from zoneinfo import ZoneInfo
 
+import pytest
 from httpx._models import Response
 from pytest import MonkeyPatch
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session, col, func, select, update
 
 from main import app
 from tests.unit.test_fastapi_server import client
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
-from tracker.types import StartRunRequest, VerifyTaskIdsResponse
-from tracker.utils import fetch_benchmark_row
+from tracker.exceptions import TrackerServiceError
+from tracker.types import FinalScoreResponse, StartRunRequest, VerifyTaskIdsResponse
+from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
 
 
 class TestBenchmarkUtils:
@@ -22,6 +26,11 @@ class TestBenchmarkUtils:
 
     async def _mock_process_benchmark(self, *args: Any, **kwargs: Any) -> None:
         pass
+
+    async def _mock_request_final_score(
+        self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
+    ) -> FinalScoreResponse:
+        return FinalScoreResponse(final_score=final_score, metadata=metadata, tasks_evaluated=tasks_evaluated)
 
     def test_stop_benchmark(self, example_benchmark_object: Benchmark, database_session: Session):
         """
@@ -253,3 +262,94 @@ class TestBenchmarkUtils:
 
         recreated_start_run_request = benchmark_row.start_run_request
         assert recreated_start_run_request == original_start_run_request
+
+    def test_create_task_rows(self, example_benchmark_object: Benchmark, database_session: Session):
+        """
+        Tests different scenarios for creating task rows
+
+        Test Cases:
+            - No tasks exist in the database already
+            - Some tasks exist in the database already
+            - No duplicate tasks are created
+            - All returned tasks are in the starting state
+        """
+
+        # Create benchmark in progress state
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # Verified tasks to create
+        verified_task_ids = [f"task_{i}" for i in range(5)]
+
+        # Creates all tasks in starting state
+        task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session)
+        assert len(task_rows) == len(verified_task_ids)
+        assert all(task_row[1].status == TaskStatus.STARTING for task_row in task_rows)
+
+        # Same order is returned as the verified task ids are passed in (must be deterministic)
+        for i, task_row in enumerate(task_rows):
+            assert task_row[0] == verified_task_ids[i]
+
+        # Try calling the same method again when the tasks already exist
+        task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session)
+        assert len(task_rows) == len(verified_task_ids)
+        assert all(task_row[1].status == TaskStatus.STARTING for task_row in task_rows)
+
+        # No duplicate tasks are created and they are all in the starting state
+        all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        assert len(all_tasks) == len(verified_task_ids)
+        assert all(task.status == TaskStatus.STARTING for task in all_tasks)
+
+    async def test_set_benchmark_final_status(self, example_benchmark_object: Benchmark, database_session: Session):
+        """
+        Tests the end to end flow when stopping and resuming a benchmark
+        """
+
+        # Create benchmark
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # Create some starting tasks
+        task_ids = [f"task_{i}" for i in range(5)]
+        task_rows = create_task_rows(task_ids, benchmark_row, database_session)
+        assert len(task_rows) == len(task_ids)
+        assert all(task_row[1].status == TaskStatus.STARTING for task_row in task_rows)
+
+        # Error is raised because tasks are still in the starting state
+        with pytest.raises(TrackerServiceError):
+            set_benchmark_final_status(benchmark_row, database_session)
+
+        # Make all tasks in finished state
+        # NOTE: Need to manually set the finished_at timestamp because the event listener is not triggered with bulk updates
+        database_session.exec(
+            update(Task)
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .values(status=TaskStatus.FINISHED, finished_at=datetime.now(ZoneInfo("UTC")))
+        )
+        database_session.commit()
+
+        # Benchmark status is set to finished
+        set_benchmark_final_status(benchmark_row, database_session)
+        database_session.refresh(benchmark_row, attribute_names=["status"])
+        assert benchmark_row.status == BenchmarkStatus.FINISHED
+
+        # Reset benchmark status to in progress
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # Change some tasks to the stopped state
+        stopped_tasks = task_ids[:2]
+        database_session.exec(
+            update(Task)
+            .where(col(Task.task_id).in_(stopped_tasks))
+            .values(status=TaskStatus.STOPPED, finished_at=datetime.now(ZoneInfo("UTC")))
+        )
+        database_session.commit()
+
+        # Benchmark status is set to stopped when stopped tasks exist
+        set_benchmark_final_status(benchmark_row, database_session)
+        database_session.refresh(benchmark_row, attribute_names=["status"])
+        assert benchmark_row.status == BenchmarkStatus.STOPPED

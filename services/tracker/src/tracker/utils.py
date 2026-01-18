@@ -227,10 +227,23 @@ async def process_task(
             return {task_id: None}
 
 
-async def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
+def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
     """
     Delegates status depending on if any tasks have been stopped.
     """
+
+    # Check if any tasks are still in the starting or in progress state
+    tasks_not_finished: int = session.exec(
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status).in_([TaskStatus.STARTING, TaskStatus.IN_PROGRESS]))
+    ).one()
+
+    if tasks_not_finished:
+        raise TrackerServiceError(
+            f"Cannot set final status for benchmark {benchmark_row.id} because tasks are still in the starting or in progress state."
+        )
+
     tasks_stopped: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
@@ -262,6 +275,7 @@ def create_task_rows(
         select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(col(Task.task_id).in_(verified_task_ids))
     ).all()
 
+    # NOTE: Must maintain same order that was passed in
     task_ids_to_create = [task_id for task_id in verified_task_ids if task_id not in existing_task_ids]
 
     created_task_rows: dict[str, Task] = {}
@@ -275,7 +289,6 @@ def create_task_rows(
         session.commit()
 
     # Fetch all task rows with the status of starting
-
     starting_task_rows: Sequence[tuple[str, Task]] = session.exec(
         select(Task.task_id, Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.STARTING)
     ).all()
@@ -344,7 +357,7 @@ async def process_benchmark(
             session.add(final_evaluation_row)
             session.commit()
 
-            await set_benchmark_final_status(benchmark_row, session)
+            set_benchmark_final_status(benchmark_row, session)
         except Exception as e:
             error_message = str(e)
             commit_benchmark_error(benchmark_row, session, error_message)
