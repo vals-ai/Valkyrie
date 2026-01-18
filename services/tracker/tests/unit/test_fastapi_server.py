@@ -29,7 +29,7 @@ class TestFastapiServer:
     async def _mock_request_verify_task_ids(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=["task_id"] * 500)
 
-    def _mock_process_benchmark(self, *args: Any, **kwargs: Any) -> None:
+    async def _mock_process_benchmark_kiq(self, *args: Any, **kwargs: Any) -> None:
         pass
 
     async def _mock_request_health_check(self, *args: Any, **kwargs: Any) -> HealthCheckResponse:
@@ -93,8 +93,8 @@ class TestFastapiServer:
 
         # Ignore background task to run benchmark
         monkeypatch.setattr(
-            "main.process_benchmark",
-            self._mock_process_benchmark,
+            "main.process_benchmark.kiq",
+            self._mock_process_benchmark_kiq,
         )
 
         # Send request to start the run and ensure that the start response is returned
@@ -275,11 +275,15 @@ class TestFastapiServer:
         assert len(response_json.get("evaluation_results")) == 10
 
         # Change benchmark status to finished and add final evaluation row
+        # Refresh to get the latest state
+        database_session.refresh(benchmark_row)
         benchmark_row.status = BenchmarkStatus.FINISHED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
         final_evaluation_row = FinalEvaluation(
             benchmark=benchmark_row.id, final_score=100, properties={"resolved_tasks": [], "unresolved_tasks": []}
         )
-        database_session.add(benchmark_row)
         database_session.add(final_evaluation_row)
         database_session.commit()
 
