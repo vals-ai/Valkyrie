@@ -139,7 +139,8 @@ class TrackerService:
             response = self._client.get(f"{self._base_url}/fetch-benchmark", params={"benchmark_id": str(benchmark_id)})
 
             if response.status_code != 200:
-                raise TrackerServiceError(f"Failed to fetch benchmark: {response.text}")
+                details = response.json().get("detail", response.text)
+                raise TrackerServiceError(f"Failed to fetch benchmark: {details}")
 
             return FetchBenchmarkResponse.model_validate(response.json())
         except httpx.HTTPError as e:
@@ -169,7 +170,8 @@ class TrackerService:
                 timeout=None,
             ) as response:
                 if response.status_code != 200:
-                    raise TrackerServiceError(f"Failed to stream benchmark: {response.status_code}")
+                    details = response.json().get("detail", response.text)
+                    raise TrackerServiceError(f"Failed to stream benchmark: {details}")
 
                 for line in response.iter_lines():
                     if line:
@@ -193,7 +195,8 @@ class TrackerService:
             )
 
             if response.status_code != 200:
-                raise TrackerServiceError(f"Failed to retrieve results: {response.text}")
+                details = response.json().get("detail", response.text)
+                raise TrackerServiceError(f"Failed to retrieve results: {details}")
 
             return RetrieveResultsResponse.model_validate(response.json())
         except httpx.HTTPError as e:
@@ -212,7 +215,8 @@ class TrackerService:
         try:
             response = self._client.post(f"{self._base_url}/stop-run/{benchmark_id}")
             if response.status_code != 200:
-                raise TrackerServiceError(f"Failed to stop run: {response.text}")
+                details = response.json().get("detail", response.text)
+                raise TrackerServiceError(f"Failed to stop run: {details}")
 
             return StopRunResponse.model_validate(response.json())
         except httpx.HTTPError as e:
@@ -231,7 +235,8 @@ class TrackerService:
         try:
             response = self._client.post(f"{self._base_url}/resume-run/{benchmark_id}")
             if response.status_code != 200:
-                raise TrackerServiceError(f"Failed to resume run: {response.text}")
+                details = response.json().get("detail", response.text)
+                raise TrackerServiceError(f"Failed to resume run: {details}")
 
             return ResumeRunResponse.model_validate(response.json())
         except httpx.HTTPError as e:
