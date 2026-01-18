@@ -478,7 +478,7 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> Asyn
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
 
-                if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR]:
+                if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
                     yield EVENT_COMPLETE
                     break
 
