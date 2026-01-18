@@ -304,6 +304,11 @@ class TestBenchmarkUtils:
     async def test_set_benchmark_final_status(self, example_benchmark_object: Benchmark, database_session: Session):
         """
         Tests the end to end flow when stopping and resuming a benchmark
+
+        Test Cases:
+            - Error is raised if tasks are still in the starting or in progress state
+            - Benchmark status is set to finished if all tasks are finished
+            - Benchmark status is set to stopped if any tasks are stopped
         """
 
         # Create benchmark
