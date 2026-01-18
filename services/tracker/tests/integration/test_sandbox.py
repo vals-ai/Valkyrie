@@ -113,8 +113,7 @@ class TestSandboxOperations:
         # Verify logger.info was called with the result of the install command
         mock_logger.info.assert_any_call("hello world")
 
-    @patch("tracker.sandbox.asyncio.sleep")
-    async def test_run_agent(self, _mock_sleep: MagicMock, test_sandbox: AsyncSandbox) -> None:
+    async def test_run_agent(self, test_sandbox: AsyncSandbox) -> None:
         """Test that agent runs and captures all output lines."""
         # Output a line of text every second
         run_cmd = "echo line1 && sleep 1 && echo line2 && sleep 1 && echo line3"
