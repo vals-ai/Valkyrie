@@ -37,6 +37,7 @@ class SWEAgentContract(BaseAgentContract):
             f"--agent.model.name={model_name}",
             "--problem_statement.text={{problem_statement}}",
             "--config=/bundle/sweagent/submodules/sweagent/config/default.yaml",
+            # TODO: add predictable place to store logs/outputs
             "--output_dir=/logs/sweagent",
         ]
 
