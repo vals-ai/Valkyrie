@@ -7,7 +7,7 @@ from functools import cached_property
 from typing import Any, NamedTuple
 from uuid import UUID
 
-from sqlmodel import Session, case, col, func, select
+from sqlmodel import Session, case, col, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import BENCHMARK_SERVICE_URL, broker
@@ -226,6 +226,27 @@ async def process_task(
             return {task_id: None}
 
 
+async def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
+    """
+    Delegates status depending on if any tasks have been stopped.
+    """
+    tasks_stopped: int = session.exec(
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status) == TaskStatus.STOPPED)
+    ).one()
+
+    # Default status is finished, if we stopped any tasks the benchmark status is stopped
+    # Later we can use the stopped status to determine if we can resume the benchmark
+    benchmark_status = BenchmarkStatus.FINISHED
+    if tasks_stopped:
+        benchmark_status = BenchmarkStatus.STOPPED
+
+    benchmark_row.status = benchmark_status
+    session.add(benchmark_row)
+    session.commit()
+
+
 @broker.task
 async def process_benchmark(
     start_run_request_json: dict[str, Any],
@@ -293,11 +314,7 @@ async def process_benchmark(
             session.add(final_evaluation_row)
             session.commit()
 
-            # Mark benchmark as completed
-            # NOTE: Finished at will be automatically set by an event when the status becomes finished
-            benchmark_row.status = BenchmarkStatus.FINISHED
-            session.add(benchmark_row)
-            session.commit()
+            await set_benchmark_final_status(benchmark_row, session)
         except Exception as e:
             error_message = str(e)
             commit_benchmark_error(benchmark_row, session, error_message)
@@ -424,3 +441,37 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> Asyn
     except asyncio.CancelledError:
         logger.info(f"Client disconnected from benchmark {benchmark_id} stream")
         yield DISCONNECT
+
+
+async def stop_benchmark(benchmark_row: Benchmark, session: Session) -> None:
+    """
+    Sets the flags to initiate the stopping process for a benchmark.
+
+    Benchmark - Stopping status
+    Tasks - Stopped status
+
+    NOTE: Tasks that have already started will continue to run and finish.
+    """
+    # Check if there are any tasks yet that have not been started yet
+    tasks = session.exec(
+        select(Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.STARTING)
+    ).all()
+
+    if not tasks:
+        raise ValueError(
+            f"All tasks for benchmark {benchmark_row.id} have been started. Must wait for the tasks to finish running."
+        )
+
+    # Set the benchmark status to stopping to initiate the stopping process
+    benchmark_row.status = BenchmarkStatus.STOPPING
+    session.add(benchmark_row)
+    session.commit()
+
+    # Stop all tasks that have not been started yet from starting by setting the stop flag
+    session.exec(
+        update(Task)
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status) == TaskStatus.STARTING)
+        .values(status=TaskStatus.STOPPED)
+    )
+    session.commit()

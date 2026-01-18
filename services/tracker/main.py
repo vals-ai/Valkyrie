@@ -17,8 +17,15 @@ from tracker.types import (
     StartRunErrorResponse,
     StartRunRequest,
     StartRunResponse,
+    StopRunResponse,
 )
-from tracker.utils import BenchmarkContext, commit_benchmark_error, process_benchmark, stream_benchmark_results
+from tracker.utils import (
+    BenchmarkContext,
+    commit_benchmark_error,
+    process_benchmark,
+    stop_benchmark,
+    stream_benchmark_results,
+)
 
 logger = get_logger(__name__)
 
@@ -218,4 +225,26 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
         benchmark_arguments=benchmark_row.arguments,
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
+    )
+
+
+@app.post("/stop-run")
+async def stop_run(benchmark_id: UUID, session: Session = Depends(get_session)) -> StopRunResponse:
+    """
+    Stop a benchmark run by its id.
+
+    Usage:
+    curl -X POST http://<endpoint>/stop-run/<benchmark_id>
+
+    Returns:
+        StopRunResponse
+    """
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    await stop_benchmark(benchmark_row, session)
+
+    return StopRunResponse(
+        status="success",
     )
