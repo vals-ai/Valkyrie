@@ -20,6 +20,7 @@ from sqlmodel import (
 )
 
 from tracker.database.utils import has_field_changed
+from tracker.types import StartRunRequest
 
 
 class BenchmarkStatus(str, Enum):
@@ -114,6 +115,16 @@ class Benchmark(SQLModel, table=True):
         from tracker.utils import fetch_evaluation_results
 
         return fetch_evaluation_results(self.id, session)
+
+    @property
+    def start_run_request(self) -> StartRunRequest:
+        return StartRunRequest(
+            contract_name=self.arguments.contract_name,
+            benchmark_name=self.name,
+            concurrency=self.arguments.concurrency,
+            task_ids=self.arguments.task_ids,
+            slice_str=self.arguments.slice_str,
+        )
 
 
 @event.listens_for(Benchmark, "before_insert")

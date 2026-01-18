@@ -91,3 +91,7 @@ class VerifyTaskIdsResponse(BaseModel):
 
 class StopRunResponse(StatusResponse):
     pass
+
+
+class ResumeRunResponse(StatusResponse):
+    pass

@@ -6,13 +6,14 @@ from sqlalchemy.orm import joinedload
 from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark
+from tracker.database.models import Benchmark, BenchmarkStatus
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
 from tracker.types import (
     FetchBenchmarkResponse,
+    ResumeRunResponse,
     RetrieveResultsResponse,
     StartRunErrorResponse,
     StartRunRequest,
@@ -23,6 +24,7 @@ from tracker.utils import (
     BenchmarkContext,
     commit_benchmark_error,
     process_benchmark,
+    resume_benchmark,
     stop_benchmark,
     stream_benchmark_results,
 )
@@ -246,5 +248,44 @@ async def stop_run(benchmark_id: UUID, session: Session = Depends(get_session)) 
     await stop_benchmark(benchmark_row, session)
 
     return StopRunResponse(
+        status="success",
+    )
+
+
+@app.post("/resume-run")
+async def resume_run(benchmark_id: UUID, session: Session = Depends(get_session)) -> ResumeRunResponse:
+    """
+    Resume a benchmark run by its id.
+
+    Usage:
+    curl -X POST http://<endpoint>/resume-run/<benchmark_id>
+
+    Returns:
+        ResumeRunResponse
+    """
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    if benchmark_row.status != BenchmarkStatus.STOPPED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Must be in the stopped state to resume.",
+        )
+
+    start_run_request = benchmark_row.start_run_request
+
+    # prepare benchmark and tasks to be resumed
+    verified_task_ids = await resume_benchmark(benchmark_row, session, start_run_request.benchmark_service)
+
+    # start the benchmark with the same args used to create it
+    # we will delegate inside what tasks we are running
+    await process_benchmark.kiq(
+        start_run_request_json=start_run_request.model_dump(),
+        benchmark_id_str=str(benchmark_row.id),
+        verified_task_ids=verified_task_ids,
+    )
+
+    return ResumeRunResponse(
         status="success",
     )

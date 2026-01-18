@@ -4,13 +4,13 @@ from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Coroutine
 from enum import Enum
 from functools import cached_property
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, Sequence
 from uuid import UUID
 
 from sqlmodel import Session, case, col, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.config import BENCHMARK_SERVICE_URL, broker
+from tracker.config import broker
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.logger import get_logger
@@ -247,6 +247,41 @@ async def set_benchmark_final_status(benchmark_row: Benchmark, session: Session)
     session.commit()
 
 
+def create_task_rows(
+    verified_task_ids: list[str], benchmark_row: Benchmark, session: Session
+) -> Sequence[tuple[str, Task]]:
+    """
+    Create task_rows that do not already exist in the database for the benchmark row.
+
+    NOTE: Only return starting tasks to support resuming the benchmark.
+    """
+
+    # Find task ids that already exist so that we can filter them out
+    existing_task_ids: Sequence[str] = session.exec(
+        select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(col(Task.task_id).in_(verified_task_ids))
+    ).all()
+
+    task_ids_to_create = [task_id for task_id in verified_task_ids if task_id not in existing_task_ids]
+
+    created_task_rows: dict[str, Task] = {}
+    for task_id in task_ids_to_create:
+        task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
+        created_task_rows[task_id] = task_row
+
+    # Create the task rows if we need to add any new ones
+    if created_task_rows:
+        session.add_all(list(created_task_rows.values()))
+        session.commit()
+
+    # Fetch all task rows with the status of starting
+
+    starting_task_rows: Sequence[tuple[str, Task]] = session.exec(
+        select(Task.task_id, Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.STARTING)
+    ).all()
+
+    return starting_task_rows
+
+
 @broker.task
 async def process_benchmark(
     start_run_request_json: dict[str, Any],
@@ -260,26 +295,20 @@ async def process_benchmark(
     # NOTE: Will get ugly if we error on session create
     with Session(bind=engine, expire_on_commit=False) as session:
         # TODO: Delegate url since in the future this aspect can change
-        benchmark_service = BenchmarkService(name=start_run_request.benchmark_name, url=BENCHMARK_SERVICE_URL)
+        benchmark_service = start_run_request.benchmark_service
 
         benchmark_row = fetch_benchmark_row(benchmark_id, session)
 
         try:
             # Create tasks inside of the database for each task id
-            task_rows: dict[str, Task] = {}
-            for task_id in verified_task_ids:
-                task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
-                task_rows[task_id] = task_row
-
-            session.add_all(list(task_rows.values()))
-            session.commit()
+            task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session)
 
             # Load the tasks we are going to be tracking
             tracked_tasks: dict[str, TrackedTask] = {
                 task_id: TrackedTask(
                     process_task(task_row, start_run_request, benchmark_service, benchmark_id, task_id)
                 )
-                for task_id, task_row in task_rows.items()
+                for task_id, task_row in task_rows
             }
 
             # Start the monitor to track the state the tasks are in and cancel them when no longer valid
@@ -477,3 +506,46 @@ async def stop_benchmark(benchmark_row: Benchmark, session: Session) -> None:
         .values(status=TaskStatus.STOPPED)
     )
     session.commit()
+
+
+async def resume_benchmark(
+    benchmark_row: Benchmark, session: Session, benchmark_service: BenchmarkService
+) -> list[str]:
+    """
+    Resets benchmark and task status to flag resuming the benchmark.
+
+    Benchmark - In progress status
+    Tasks - Starting status
+
+    NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
+    """
+    # Check if there are any tasks that have been stopped
+    task_ids = session.exec(
+        select(Task.task_id)
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status) == TaskStatus.STOPPED)
+    ).all()
+
+    if not task_ids:
+        raise ValueError(f"No tasks for benchmark {benchmark_row.id} have been stopped. Cannot resume benchmark.")
+
+    # Verify the task ids are still valid before priming to resume
+    # Raises if any task ids are invalid
+    verify_response = await benchmark_service.request_verify_task_ids(task_ids=list(task_ids), slice_str=None)
+
+    # Set the benchmark status to in progress to flag resuming the benchmark
+    benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+    session.add(benchmark_row)
+    session.commit()
+
+    # Set the task status to starting to flag resuming the tasks
+    session.exec(
+        update(Task)
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status) == TaskStatus.STOPPED)
+        .values(status=TaskStatus.STARTING)
+    )
+
+    session.commit()
+
+    return verify_response.task_ids
