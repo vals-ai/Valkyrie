@@ -113,8 +113,8 @@ class TestSandboxOperations:
         # Verify logger.info was called with the result of the install command
         mock_logger.info.assert_any_call("hello world")
 
-    async def test_run_agent(self, test_sandbox: AsyncSandbox) -> None:
-        """Test that agent runs and captures all output lines."""
+    async def test_run_agent(self, test_sandbox: AsyncSandbox, capsys: pytest.CaptureFixture[str]) -> None:
+        """Test that agent runs and prints output lines via on_data function."""
         # Output a line of text every second
         run_cmd = "echo line1 && sleep 1 && echo line2 && sleep 1 && echo line3"
 
@@ -125,8 +125,11 @@ class TestSandboxOperations:
             run_cmd=run_cmd,
         )
 
-        agent_output = await run_agent(test_sandbox, contract, "some problem statement")
+        await run_agent(test_sandbox, contract, "some problem statement")
 
-        assert "line1" in agent_output
-        assert "line2" in agent_output
-        assert "line3" in agent_output
+        # Capture stdout output from the on_data print statements
+        captured = capsys.readouterr()
+
+        assert "line1" in captured.out
+        assert "line2" in captured.out
+        assert "line3" in captured.out

@@ -129,14 +129,9 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, probl
     """
     run_cmd = contract.run_cmd.replace("{{problem_statement}}", shlex.quote(problem_statement))
 
-    # TODO: save logs to disk/s3 instead of in-memory -> database
-    # agent_output_lines: list[str] = []
-
     def on_data(data: bytes) -> None:
-        # nonlocal agent_output_lines
+        # TODO: save logs to disk/s3
         data_str = data.decode("utf-8")
-        # TODO: save logs to file/s3
-        # agent_output_lines.append(data_str)
         print(data_str, end="")
 
     pty_handle = await sandbox.process.create_pty_session(
@@ -156,6 +151,4 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, probl
     if result.exit_code != 0:
         raise SandboxError(f"Failed to run agent {contract.name}, exit code: {result.error}")
 
-    # TODO: return path/s3 url to log file and save that to database
-    # return "".join(agent_output_lines)
     return ""
