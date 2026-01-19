@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 
-from tracker.types import AgentContractRequest
+from tracker.database.models import AgentContractRequest
 from agentic_harness.schemas import AgentConfig
 
 

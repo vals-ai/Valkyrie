@@ -17,6 +17,7 @@ from sqlmodel import (
     SQLModel,
     TypeDecorator,
     UniqueConstraint,
+    select,
 )
 
 from tracker.database.utils import has_field_changed
@@ -42,7 +43,7 @@ class BenchmarkStatus(str, Enum):
     ERROR = "error"
 
 
-class AgentContract(BaseModel):
+class AgentContractRequest(BaseModel):
     name: str
     artifacts: list[str] = []
     install_cmd: str
@@ -53,7 +54,7 @@ class AgentContract(BaseModel):
 class BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid"}
 
-    contract: AgentContract
+    contract: AgentContractRequest
     concurrency: int
     task_ids: list[str] | None = None
     slice_str: str | None = None
@@ -130,6 +131,19 @@ class Benchmark(SQLModel, table=True):
         from tracker.utils import fetch_evaluation_results
 
         return fetch_evaluation_results(self.id, session)
+
+    def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
+        statement = (
+            select(Task.task_id, Task.error_message)
+            .where(Task.benchmark == self.id)
+            .where(Task.status == TaskStatus.ERROR)
+        )
+        tasks = session.exec(statement).all()
+
+        if not tasks:
+            return None
+
+        return {task_id: (error_message or "No error message was provided") for task_id, error_message in tasks}
 
     @property
     def start_run_request(self) -> "StartRunRequest":

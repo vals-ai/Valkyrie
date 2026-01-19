@@ -8,8 +8,8 @@ from uuid import UUID
 import httpx
 from dotenv import load_dotenv
 from httpx._models import Response
+from tracker.database.models import AgentContractRequest
 from tracker.types import (
-    AgentContractRequest,
     FetchBenchmarkResponse,
     ResumeRunResponse,
     RetrieveResultsResponse,

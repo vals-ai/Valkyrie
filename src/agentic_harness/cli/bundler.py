@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, Generator
 
-from tracker.types import AgentContractRequest
+from tracker.database.models import AgentContractRequest
 
 from agentic_harness.cli.exceptions import BundlerError
 from agentic_harness.contract import BaseAgentContract
@@ -65,7 +65,7 @@ def get_agent_zip_stream(contract: AgentContractRequest) -> Generator[BinaryIO, 
     Create a zip stream containing the agent artifacts.
 
     Args:
-        contract: AgentContract instance
+        contract: AgentContractRequest instance
 
     Returns:
         Generator[BinaryIO, None, None]: A generator that yields a zip stream

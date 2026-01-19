@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from tracker.config import BENCHMARK_SERVICE_URL
 from tracker.database.models import (
-    AgentContract,
+    AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
     FinalEvaluation,
@@ -28,7 +28,7 @@ class BenchmarkDetails(BaseModel):
 
 
 class StartRunRequest(BaseModel):
-    contract: AgentContract
+    contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
     task_ids: list[str] | None = None
@@ -66,8 +66,10 @@ class RetrieveResultsResponse(BaseModel):
     status: BenchmarkStatus
     benchmark_id: UUID
     benchmark_arguments: BenchmarkArguments
+    tasks_stopped: int | None
     final_evaluation: FinalEvaluation | None
     evaluation_results: dict[str, dict[str, Any]] | None
+    task_errors: dict[str, str] | None
 
 
 class FinalScoreResponse(BaseModel):

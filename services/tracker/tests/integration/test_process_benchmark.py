@@ -6,8 +6,8 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import BenchmarkStatus, EvaluationResult, Task, TaskStatus
-from tracker.types import AgentContract, SetupTaskResponse, StartRunRequest
+from tracker.database.models import BenchmarkStatus, EvaluationResult, Task, TaskStatus, AgentContractRequest
+from tracker.types import SetupTaskResponse, StartRunRequest
 from tracker.utils import process_benchmark, process_task
 
 
@@ -70,7 +70,7 @@ class TestProcessBenchmark:
 
     async def test_process_task(
         self,
-        contract: AgentContract,
+        contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,
@@ -134,7 +134,7 @@ class TestProcessBenchmark:
         assert task_row_mapping[task_id].status == TaskStatus.FINISHED
 
     async def test_process_benchmark(
-        self, contract: AgentContract, database_session: Session, monkeypatch: MonkeyPatch
+        self, contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
     ):
         # Task ids sent by user to be processed
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
@@ -195,7 +195,7 @@ class TestProcessBenchmark:
 
     async def test_process_benchmark_error(
         self,
-        contract: AgentContract,
+        contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,
@@ -255,7 +255,7 @@ class TestProcessBenchmark:
 
     async def test_process_task_error(
         self,
-        contract: AgentContract,
+        contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,

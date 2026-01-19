@@ -630,7 +630,7 @@ wheels = [
 
 [[package]]
 name = "descope"
-version = "1.9.1"
+version = "1.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "email-validator" },
@@ -638,9 +638,9 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4d/7d/cba9519a5acc4944852e9d604311794b5071006ad8ffd14ae1b0ed44860c/descope-1.9.1.tar.gz", hash = "sha256:7a6e00283a6d7d488ccefd160678c94366345da15bc5c8db16964391e8ee642b", size = 90445, upload-time = "2026-01-15T16:39:12.808Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/96/2e/fbf8d49ffacd3684eb1e754c0b4f6028ece993776ec1c282d5bbd7c949fc/descope-1.10.0.tar.gz", hash = "sha256:755752e5f72f8230a936e6f763d18f69ac2b80b88e9429ae20f5035be54f0d5f", size = 91016, upload-time = "2026-01-19T12:29:05.067Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c2/b4/9a79ed65b3c5b879a8d75e2550504bc2882b3ce6035dc083c31506491b0c/descope-1.9.1-py3-none-any.whl", hash = "sha256:d44e403acf96536a55224cabcf3e3529cc1b925d4c03fbe7ff860df4c0fa437b", size = 97380, upload-time = "2026-01-15T16:39:11.038Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/f0/1af70295b228dfeb0b2ce23bffabdaaff1fc3c88ce003523297d44d84bd9/descope-1.10.0-py3-none-any.whl", hash = "sha256:ba4505a20d33cc850686759ea658ef6983d9b2110ce1bd6ad54bad51b7f382f3", size = 97935, upload-time = "2026-01-19T12:29:03.747Z" },
 ]
 
 [[package]]

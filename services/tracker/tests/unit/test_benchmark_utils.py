@@ -11,10 +11,10 @@ from sqlmodel import Session, col, func, select, update
 from main import app
 from tests.unit.test_fastapi_server import client
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
-from tracker.types import AgentContract, FinalScoreResponse, StartRunRequest, VerifyTaskIdsResponse
+from tracker.types import FinalScoreResponse, StartRunRequest, VerifyTaskIdsResponse
 from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
 
 
@@ -209,7 +209,7 @@ class TestBenchmarkUtils:
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
 
     def test_resume_benchmark_edge_cases(
-        self, contract: AgentContract, example_benchmark_object: Benchmark, database_session: Session
+        self, contract: AgentContractRequest, example_benchmark_object: Benchmark, database_session: Session
     ):
         """
         Tests edge cases for resuming a benchmark
