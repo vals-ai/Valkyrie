@@ -98,7 +98,13 @@ def start_benchmark(
 
     try:
         contract_path = agent / "contract.py"
-        agent_config = AgentConfig(model=model) if model else None
+
+        # Build agent config
+        config_kwargs: dict[str, str] = {}
+        if model:
+            config_kwargs["model"] = model
+        agent_config = AgentConfig(**config_kwargs)
+
         contract = get_contract(contract_path, agent_config)
 
         with TrackerService() as tracker:

@@ -13,7 +13,7 @@ class BaseAgentContract(ABC):
     and can optionally override env and artifacts.
     """
 
-    def __init__(self, agent_config: AgentConfig | None = None):
+    def __init__(self, agent_config: AgentConfig):
         """
         Initialize the agent contract.
 

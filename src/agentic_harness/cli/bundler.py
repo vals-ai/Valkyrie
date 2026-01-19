@@ -100,7 +100,7 @@ def get_agent_zip_stream(contract: AgentContractRequest) -> Generator[BinaryIO, 
             yield f
 
 
-def get_contract(contract_path: Path, agent_config: AgentConfig | None = None) -> AgentContractRequest:
+def get_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
     try:
         spec = importlib.util.spec_from_file_location("contract", contract_path)
 
