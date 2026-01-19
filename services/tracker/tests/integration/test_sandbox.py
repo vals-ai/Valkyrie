@@ -11,7 +11,7 @@ from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 from moto import mock_aws
 from mypy_boto3_s3.client import S3Client
 
-from tracker.config import get_s3_bucket_name
+from tracker.config import AWS_S3_BUCKET
 from tracker.types import AgentContractRequest
 from tracker.s3 import get_contract_s3_key
 from tracker.sandbox import (
@@ -21,15 +21,13 @@ from tracker.sandbox import (
     upload_agent_artifacts,
 )
 
-S3_BUCKET_NAME = get_s3_bucket_name()
-
 
 @pytest.fixture
 def mock_s3() -> Generator[S3Client, None, None]:
     """Mock S3 for testing."""
     with mock_aws():
         s3 = boto3.client("s3", region_name="us-east-1")  # pyright: ignore[reportUnknownMemberType]
-        s3.create_bucket(Bucket=S3_BUCKET_NAME)
+        s3.create_bucket(Bucket=AWS_S3_BUCKET)
         yield s3
 
 
@@ -77,7 +75,7 @@ class TestSandboxOperations:
 
         # Upload zip to mocked S3
         mock_s3.put_object(
-            Bucket=S3_BUCKET_NAME,
+            Bucket=AWS_S3_BUCKET,
             Key=get_contract_s3_key(contract_name),
             Body=zip_buffer.getvalue(),
         )

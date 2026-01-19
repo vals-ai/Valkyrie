@@ -7,6 +7,9 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
+from tracker.benchmark_service import BenchmarkService
+from tracker.config import BENCHMARK_SERVICE_URL
+
 
 class AgentContractRequest(BaseModel):
     """Contract that defines how to upload, install, and run an agent."""
@@ -57,6 +60,10 @@ class StartRunRequest(BaseModel):
     concurrency: int = 5
     task_ids: list[str] | None = None
     slice_str: str | None = None
+
+    @property
+    def benchmark_service(self) -> BenchmarkService:
+        return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
 
 
 class StartRunErrorResponse(BaseModel):

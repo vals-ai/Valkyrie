@@ -2,7 +2,7 @@
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
-from tracker.config import get_s3_bucket_name
+from tracker.config import AWS_S3_BUCKET
 from tracker.exceptions import S3Error
 
 S3_CONTRACTS_PREFIX = "contracts"
@@ -11,9 +11,6 @@ S3_CONTRACTS_PREFIX = "contracts"
 def get_contract_s3_key(contract_name: str) -> str:
     """Get the S3 key for a contract zip file."""
     return f"{S3_CONTRACTS_PREFIX}/{contract_name}.zip"
-
-
-bucket_name = get_s3_bucket_name()
 
 
 def upload_to_s3(file_content: bytes, s3_key: str) -> None:
@@ -30,9 +27,9 @@ def upload_to_s3(file_content: bytes, s3_key: str) -> None:
 
     try:
         s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
-        s3_client.put_object(Bucket=bucket_name, Key=s3_key, Body=file_content)
+        s3_client.put_object(Bucket=AWS_S3_BUCKET, Key=s3_key, Body=file_content)
     except (ClientError, BotoCoreError) as e:
-        raise S3Error(f"Failed to upload to S3 bucket '{bucket_name}' with key '{s3_key}': {str(e)}") from e
+        raise S3Error(f"Failed to upload to S3 bucket '{AWS_S3_BUCKET}' with key '{s3_key}': {str(e)}") from e
 
 
 def download_from_s3(s3_key: str) -> bytes:
@@ -51,7 +48,7 @@ def download_from_s3(s3_key: str) -> bytes:
 
     try:
         s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
-        response = s3_client.get_object(Bucket=bucket_name, Key=s3_key)
+        response = s3_client.get_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
         return response["Body"].read()
     except (ClientError, BotoCoreError) as e:
-        raise S3Error(f"Failed to download from S3 bucket '{bucket_name}' with key '{s3_key}': {str(e)}") from e
+        raise S3Error(f"Failed to download from S3 bucket '{AWS_S3_BUCKET}' with key '{s3_key}': {str(e)}") from e

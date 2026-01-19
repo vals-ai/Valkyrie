@@ -6,7 +6,6 @@ from sqlalchemy.orm import joinedload
 from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.config import get_benchmark_service_url
 from tracker.database.models import Benchmark, BenchmarkStatus
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
@@ -121,8 +120,7 @@ async def start_run(
     """
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
-    url = get_benchmark_service_url()
-    benchmark_service = BenchmarkService(name=request.benchmark_name, url=url)
+    benchmark_service = request.benchmark_service
 
     # Check service is running
     _ = await benchmark_service.request_health_check()
@@ -284,8 +282,7 @@ async def resume_run(benchmark_id: UUID, session: Session = Depends(get_session)
 
     start_run_request = benchmark_row.start_run_request
 
-    url = get_benchmark_service_url()
-    benchmark_service = BenchmarkService(name=start_run_request.benchmark_name, url=url)
+    benchmark_service = start_run_request.benchmark_service
 
     # prepare benchmark and tasks to be resumed
     verified_task_ids = await resume_benchmark(benchmark_row, session, benchmark_service)

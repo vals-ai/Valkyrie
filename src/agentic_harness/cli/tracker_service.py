@@ -21,10 +21,7 @@ from agentic_harness.cli.exceptions import TrackerServiceError
 
 load_dotenv()
 
-TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL")
-
-if not TRACKER_URL:
-    raise TrackerServiceError("TRACKER_URL environment variable is not set")
+TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "http://localhost:8000")
 
 
 class TrackerService:

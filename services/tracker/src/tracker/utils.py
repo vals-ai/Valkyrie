@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from sqlmodel import Session, case, col, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.config import broker, get_benchmark_service_url
+from tracker.config import broker
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
@@ -313,8 +313,7 @@ async def process_benchmark(
 
     # NOTE: Will get ugly if we error on session create
     with Session(bind=engine, expire_on_commit=False) as session:
-        url = get_benchmark_service_url()
-        benchmark_service = BenchmarkService(name=start_run_request.benchmark_name, url=url)
+        benchmark_service = start_run_request.benchmark_service
 
         benchmark_row = fetch_benchmark_row(benchmark_id, session)
 
