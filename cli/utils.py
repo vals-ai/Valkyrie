@@ -204,9 +204,9 @@ def format_fetch_benchmarks_response(
         return
 
     id_width = 36
-    name_width = max(len("Benchmark"), max(len(b.name) for b in benchmarks))
-    contract_width = max(len("Contract"), max(len(b.contract_name) for b in benchmarks))
-    status_width = max(len("Status"), max(len(b.status.value) for b in benchmarks))
+    name_width = max(len("Benchmark"), max(len(benchmark.name) for benchmark in benchmarks))
+    contract_width = max(len("Contract"), max(len(benchmark.contract_name) for benchmark in benchmarks))
+    status_width = max(len("Status"), max(len(benchmark.status.value) for benchmark in benchmarks))
     progress_width = 8
 
     header_line = (
@@ -223,7 +223,7 @@ def format_fetch_benchmarks_response(
     click.echo(separator)
 
     for benchmark in benchmarks:
-        _, progress_pct = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
+        _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
         status_color = BenchmarkFormatter.get_status_color(benchmark.status.value)
         status_display = benchmark.status.value.replace("_", " ").title()
 
@@ -232,7 +232,7 @@ def format_fetch_benchmarks_response(
             f"{benchmark.name:<{name_width}}  "
             f"{benchmark.contract_name:<{contract_width}}  "
             f"{click.style(status_display, fg=status_color):<{status_width + 9}}  "
-            f"{progress_pct:>{progress_width}.1f}%"
+            f"{progress_percentage:>{progress_width}.1f}%"
         )
 
     click.echo(separator)
@@ -286,7 +286,7 @@ def paginate_benchmarks(
         contract_name: Optional contract name filter
         benchmark_name: Optional benchmark name filter
         status: Optional status filter
-        order_by: Order (ASC/DESC)
+        order_by: Order (asc/desc)
         limit: Number of items per page
     """
     current_page = 1
