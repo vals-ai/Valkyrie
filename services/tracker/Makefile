@@ -1,4 +1,4 @@
-.PHONY: help install build run stop clean logs test tracker-service
+.PHONY: help install build run stop clean logs test tracker-service test test-integration test-unit
 
 IMAGE_NAME := tracker-service
 CONTAINER_NAME := tracker-service-container
@@ -14,6 +14,7 @@ help:
 	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
 
 install:
+	@echo "Installing tracker service (separate venv)..."
 	uv venv --python 3.12
 	uv cache clean agentic-harness
 	uv sync --group dev
@@ -68,3 +69,12 @@ tracker-service:
 	@make build
 	@make run
 	@make logs
+
+test:
+	uv run pytest
+
+test-integration:
+	uv run pytest tests/integration
+
+test-unit:
+	uv run pytest tests/unit
