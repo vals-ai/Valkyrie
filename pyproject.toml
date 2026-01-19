@@ -53,6 +53,7 @@ include = ["src", "contracts"]
 
 exclude = [
   "**/submodules/**",
+  "**/contracts/**",
 ]
 
 [build-system]
