@@ -1,3 +1,4 @@
+from asyncio import gather
 from functools import partial
 from sqlite3 import OperationalError
 from typing import Any
@@ -6,7 +7,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import BenchmarkStatus, EvaluationResult, Task, TaskStatus
+from tracker.database.models import Benchmark, BenchmarkArguments, BenchmarkStatus, EvaluationResult, Task, TaskStatus
 from tracker.types import SetupTaskResponse, StartRunRequest
 from tracker.utils import process_benchmark, process_task
 
@@ -187,9 +188,7 @@ class TestProcessBenchmark:
         # All tasks have been marked as finished
         assert len(tasks) == len(task_ids)
 
-    async def test_process_benchmark_error(
-        self, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
-    ):
+    async def test_process_benchmark_error(self, database_session: Session, monkeypatch: MonkeyPatch):
         """
         Test that we are correctly handling when a benchmark errors out
 
@@ -323,3 +322,65 @@ class TestProcessBenchmark:
         evaluation_results = benchmark_row.fetch_evaluation_results(database_session)
         assert evaluation_results is not None
         assert len(list(evaluation_results.keys())) == 1, "Only one task should be evaluated"
+
+    async def test_can_run_same_task(
+        self,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        """
+        Test that we can run the same task at the same time as long as the benchmark is different.
+        NOTE: This is important because we want to be able to run the same benchmark across multiple models at the same time.
+
+        Test Cases:
+            - Sandbox does not crash if we start the same task twice at the same time
+        """
+
+        # We will run the same task across two benchmarks at the same time
+        task_id = "astropy__astropy-12907"
+
+        # Create two benchmarks that we will run the same task across
+        # NOTE: cannot use example object since we cannot clone the object
+        benchmarks: list[Benchmark] = []
+        for _ in range(2):
+            benchmark_row = Benchmark(
+                name="swebench",
+                arguments=BenchmarkArguments(
+                    contract_name="claude_code",
+                    concurrency=5,
+                    task_ids=[task_id],
+                ),
+            )
+            benchmarks.append(benchmark_row)
+            database_session.add(benchmark_row)
+
+        database_session.commit()
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+
+        # Mock installing and running agent part
+        monkeypatch.setattr(
+            "tracker.utils.upload_contract_to_sandbox",
+            TestProcessBenchmark._mock_upload_contract,
+        )
+
+        monkeypatch.setattr(
+            "tracker.utils.install_dependencies",
+            TestProcessBenchmark._mock_install_dependencies,
+        )
+
+        monkeypatch.setattr(
+            "tracker.utils.run_agent",
+            TestProcessBenchmark._mock_run_agent,
+        )
+
+        await gather(
+            *[
+                process_benchmark(
+                    benchmark_row.start_run_request.model_dump(),
+                    str(benchmark_row.id),
+                    benchmark_row.arguments.task_ids or [],
+                )
+                for benchmark_row in benchmarks
+            ]
+        )
