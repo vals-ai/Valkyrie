@@ -20,7 +20,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
+from tracker.types import FetchBenchmarksRequest, HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
 
 client = TestClient(app)
 
@@ -341,3 +341,105 @@ class TestFastapiServer:
         assert benchmark_row
         assert benchmark_row.status == BenchmarkStatus.ERROR
         assert benchmark_row.error_message == detail.get("error_message")
+
+    async def test_fetch_benchmarks(self, database_session: Session, example_benchmark_object: Benchmark):
+        """
+        Test fetch benchmarks of the fastapi server.
+
+        Test Cases:
+            - Fetch using no filters all all, returns 5 benchmarks with total count
+            - can fetch using contract name, benchamrk name and status
+            - Can order by started at
+            - Edge cases with no benchmarks found
+        """
+
+        def get_test_session():
+            yield database_session
+
+        app.dependency_overrides[get_session] = get_test_session
+
+        fetch_benchmarks_request = FetchBenchmarksRequest()
+
+        # When no benchmarks have been created yet, we return a 500 error
+        response = client.get(
+            "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
+        )
+        assert response.status_code == 500
+
+        # Add benchmark row to the database to fetch
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        # Add benchmark name to be a random string (expected no matches)
+        fetch_benchmarks_request.benchmark_name = str(uuid4())
+
+        # When we fetch with no benchmarks found, we return a 500 error
+        response = client.get(
+            "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
+        )
+        assert response.status_code == 500
+
+        # Create 4 more benchmark rows that have the same data
+        benchmark_rows = [
+            Benchmark(id=uuid4(), name="swebench", arguments=example_benchmark_object.arguments) for _ in range(4)
+        ]
+        for benchmark_row in benchmark_rows:
+            database_session.add(benchmark_row)
+            database_session.commit()
+
+        # Create benchmark with unique data
+        unique_benchmark = Benchmark(
+            name="terminal_bench",
+            arguments=BenchmarkArguments(contract_name="terminus_2", concurrency=5, task_ids=None, slice_str=None),
+        )
+        database_session.add(unique_benchmark)
+        database_session.commit()
+
+        # Search for the first 4 benchmarks
+        fetch_benchmarks_request.benchmark_name = "swebench"
+        fetch_benchmarks_request.contract_name = "claude_code"
+        fetch_benchmarks_request.status = BenchmarkStatus.IN_PROGRESS
+
+        # When we fetch with benchmarks found, we return a 200 OK
+        response = client.get(
+            "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
+        )
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json.get("total_count") == 5
+        assert len(response_json.get("benchmarks")) == 5
+
+        # Clear filters and search again (checking limit and total)
+        fetch_benchmarks_request.benchmark_name = None
+        fetch_benchmarks_request.contract_name = None
+        fetch_benchmarks_request.status = None
+
+        response = client.get(
+            "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
+        )
+        assert response.status_code == 200
+        response_json = response.json()
+
+        # There are 6 total benchmarks
+        assert response_json.get("total_count") == 6
+
+        # Limit will always be 5
+        assert len(response_json.get("benchmarks")) == 5
+
+        # Change benchmark status to finished and search again
+        unique_benchmark.status = BenchmarkStatus.FINISHED
+        database_session.add(unique_benchmark)
+        database_session.commit()
+
+        # Search for finished benchmarks
+        fetch_benchmarks_request.status = BenchmarkStatus.FINISHED
+
+        response = client.get(
+            "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
+        )
+        assert response.status_code == 200
+        response_json = response.json()
+
+        # There is 1 finished benchmark
+        assert response_json.get("total_count") == 1
+        assert len(response_json.get("benchmarks")) == 1

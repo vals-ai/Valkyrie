@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -95,3 +96,33 @@ class StopRunResponse(StatusResponse):
 
 class ResumeRunResponse(StatusResponse):
     pass
+
+
+class Order(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+class FetchBenchmarksRequest(BaseModel):
+    contract_name: str | None = None
+    benchmark_name: str | None = None
+    status: BenchmarkStatus | None = None
+    order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
+
+    # Pagination
+    limit: int = 5
+    offset: int = 0
+
+
+class BenchmarkTableRow(BaseModel):
+    id: UUID
+    name: str
+    started_at: datetime
+    status: BenchmarkStatus
+    total_tasks: int
+    finished_tasks: int
+
+
+class FetchBenchmarksResponse(BaseModel):
+    benchmarks: list[BenchmarkTableRow]
+    total_count: int

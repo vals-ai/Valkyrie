@@ -9,7 +9,7 @@ from typing import Any, NamedTuple, Sequence
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from sqlmodel import Session, case, col, func, select, update
+from sqlmodel import Session, asc, case, col, desc, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import broker
@@ -21,6 +21,8 @@ from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upl
 from tracker.types import (
     BenchmarkDetails,
     FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    Order,
     StartRunRequest,
 )
 
@@ -578,3 +580,46 @@ async def resume_benchmark(
         raise
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error resuming benchmark {benchmark_row.id}: {str(e)}") from e
+
+
+def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Session) -> tuple[Sequence[Benchmark], int]:
+    """
+    Creates a query to fetch benchmark rows from the database based on the fetch benchmark request.
+
+    Args:
+        request: FetchBenchmarksRequest
+
+    Returns:
+        tuple[Sequence[Benchmark], int]
+        Sequence of benchmark rows and total count of benchmark rows
+
+    """
+    query = select(Benchmark)
+
+    if request.contract_name:
+        query = query.where(func.json_extract(Benchmark.arguments, "$.contract_name") == request.contract_name)
+
+    if request.benchmark_name:
+        query = query.where(Benchmark.name == request.benchmark_name)
+
+    if request.status:
+        query = query.where(Benchmark.status == request.status)
+
+    if request.order_by == Order.DESC:
+        query = query.order_by(desc(Benchmark.started_at))
+    else:
+        query = query.order_by(asc(Benchmark.started_at))
+
+    total_count = session.exec(select(func.count()).select_from(query.subquery())).one()
+
+    if not total_count:
+        raise TrackerServiceError("No benchmarks have been created yet")
+
+    query = query.limit(request.limit).offset(request.offset)
+
+    benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
+
+    if not benchmark_rows:
+        raise TrackerServiceError("No benchmarks matched the following filters")
+
+    return benchmark_rows, total_count

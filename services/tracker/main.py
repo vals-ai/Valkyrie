@@ -12,7 +12,10 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
 from tracker.types import (
+    BenchmarkTableRow,
     FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    FetchBenchmarksResponse,
     ResumeRunResponse,
     RetrieveResultsResponse,
     StartRunErrorResponse,
@@ -23,6 +26,7 @@ from tracker.types import (
 from tracker.utils import (
     BenchmarkContext,
     commit_benchmark_error,
+    fetch_filtered_benchmark_rows,
     process_benchmark,
     resume_benchmark,
     stop_benchmark,
@@ -295,4 +299,30 @@ async def resume_run(benchmark_id: UUID, session: Session = Depends(get_session)
 
     return ResumeRunResponse(
         status="success",
+    )
+
+
+@app.get("/fetch-benchmarks")
+async def fetch_benchmarks(
+    request: FetchBenchmarksRequest = Depends(), session: Session = Depends(get_session)
+) -> FetchBenchmarksResponse:
+    """
+    Fetch benchmarks based on the request parameters.
+
+    Usage:
+    curl -X GET http://<endpoint>/fetch-benchmarks?contract_name=claude_code&benchmark_name=swebench&status=IN_PROGRESS&order_by=DESC&limit=5&offset=0
+
+    Returns:
+        list[FetchBenchmarksResponse]
+    """
+
+    benchmark_rows, total_count = fetch_filtered_benchmark_rows(request, session)
+
+    benchmark_table_rows: list[BenchmarkTableRow] = [
+        benchmark_row.create_benchmark_table_row(session) for benchmark_row in benchmark_rows
+    ]
+
+    return FetchBenchmarksResponse(
+        benchmarks=benchmark_table_rows,
+        total_count=total_count,
     )
