@@ -1,4 +1,3 @@
-from asyncio import Semaphore
 from functools import partial
 from sqlite3 import OperationalError
 from typing import Any
@@ -18,8 +17,8 @@ class TestProcessBenchmark:
         pass
 
     @staticmethod
-    async def _mock_run_agent(*args: Any, **kwargs: Any) -> str:
-        return "hello world"
+    async def _mock_run_agent(*args: Any, **kwargs: Any) -> None:
+        pass
 
     @staticmethod
     async def _mock_upload_contract(*args: Any, **kwargs: Any) -> None:
@@ -37,11 +36,11 @@ class TestProcessBenchmark:
         """
         from sqlmodel import Session
 
-        from tracker.utils import engine
+        import tracker.utils
 
         task_id: str = args[0]
 
-        with Session(bind=engine, expire_on_commit=False) as test_session:
+        with Session(bind=tracker.utils.engine, expire_on_commit=False) as test_session:  # type: ignore[attr-defined]
             task_row = test_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
 
             assert task_row is not None, f"Task {task_id} not found"
@@ -53,25 +52,27 @@ class TestProcessBenchmark:
 
         return evaluation_result
 
-    async def _test_run_agent(self, *args: Any, **kwargs: Any) -> None:
+    async def _test_run_agent(self, original_method: Any, *args: Any, **kwargs: Any) -> None:
         """
-        Test task status is pending before we start running the agent
+        Test task status is in progress before we start running the agent
         (confirms we move from starting to in progress status)
         """
         from sqlmodel import Session
 
-        from tracker.utils import engine
+        import tracker.utils
 
-        task_id: str = args[2]
+        # The sandbox name is the task_id
+        sandbox = args[0]
+        task_id: str = sandbox.name
 
-        with Session(bind=engine, expire_on_commit=False) as test_session:
+        with Session(bind=tracker.utils.engine, expire_on_commit=False) as test_session:  # type: ignore[attr-defined]
             task_row = test_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
             assert task_row is not None
             assert task_row.status == TaskStatus.IN_PROGRESS
 
     async def test_process_task(
         self,
-        test_contract: AgentContractRequest,
+        contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,
@@ -81,11 +82,8 @@ class TestProcessBenchmark:
 
         # Dependencies required to process the task that the user sends
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract=test_contract, concurrency=5, task_ids=[task_id]
+            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=[task_id]
         )
-
-        # Concurrency control for each task being processed inside of the benchmark
-        semaphore = Semaphore(start_run_request.concurrency)
 
         benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
 
@@ -102,17 +100,18 @@ class TestProcessBenchmark:
         # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
             "tracker.utils.upload_agent_artifacts",
-            TestProcessBenchmark._mock_upload_contract,
+            self._mock_upload_contract,
         )
 
         monkeypatch.setattr(
             "tracker.utils.install_agent_dependencies",
-            TestProcessBenchmark._mock_install_dependencies,
+            self._mock_install_dependencies,
         )
 
+        original_run_agent = self._mock_run_agent
         monkeypatch.setattr(
             "tracker.utils.run_agent",
-            TestProcessBenchmark._mock_run_agent,
+            partial(self._test_run_agent, original_run_agent),
         )
 
         original_evaluate = benchmark_service.request_evaluate_instance
@@ -123,7 +122,7 @@ class TestProcessBenchmark:
         )
 
         # Starts and evaluates a single task inside using the benchmark service
-        _, _ = await process_task(task_row_mapping, start_run_request, semaphore, benchmark_service, task_id)
+        _ = await process_task(task_row, start_run_request, benchmark_service, benchmark_row.id, task_id)
 
         # Ensure that the evaluation result is viewable from the database after the task has been processed
         evaluation_result = database_session.exec(
@@ -132,26 +131,19 @@ class TestProcessBenchmark:
 
         assert evaluation_result is not None
 
-        # Ensure that the agent output is correctly saved to EvaluationResult
-        assert evaluation_result.agent_output == "hello world"
-
         # Ensure that the task status has been updated to finished
         database_session.refresh(task_row_mapping[task_id])
         assert task_row_mapping[task_id].status == TaskStatus.FINISHED
 
     async def test_process_benchmark(
-        self,
-        test_contract: AgentContractRequest,
-        database_session: Session,
-        benchmark_service: BenchmarkService,
-        monkeypatch: MonkeyPatch,
+        self, contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
     ):
         # Task ids sent by user to be processed
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         # Start run request sent by user to start the benchmark
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract=test_contract, concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
@@ -179,7 +171,7 @@ class TestProcessBenchmark:
         )
 
         # Run the benchmark
-        await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
+        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is updated to finished once the benchmark is done running
         database_session.refresh(benchmark_row)
@@ -205,7 +197,7 @@ class TestProcessBenchmark:
 
     async def test_process_benchmark_error(
         self,
-        test_contract: AgentContractRequest,
+        contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,
@@ -221,7 +213,7 @@ class TestProcessBenchmark:
         # Example tasks from swebench
         task_ids: list[str] = ["astropy__astropy-12907"]
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract=test_contract, concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
@@ -256,7 +248,7 @@ class TestProcessBenchmark:
         )
 
         # Run the benchmark (error is not raised and instead handled)
-        await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
+        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is updated to error once the benchmark is done running
         database_session.refresh(benchmark_row)
@@ -265,7 +257,7 @@ class TestProcessBenchmark:
 
     async def test_process_task_error(
         self,
-        test_contract: AgentContractRequest,
+        contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkService,
         monkeypatch: MonkeyPatch,
@@ -281,7 +273,7 @@ class TestProcessBenchmark:
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract=test_contract, concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
@@ -289,19 +281,19 @@ class TestProcessBenchmark:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        async def mock_request_setup_task(original_method: Any, task_id: str, instance_id: str) -> SetupTaskResponse:
+        original_request_setup_task = BenchmarkService.request_setup_task
+
+        async def mock_request_setup_task(self: Any, task_id: str, instance_id: str) -> SetupTaskResponse:
             if task_id == "astropy__astropy-13033":
                 raise Exception("Exception raised while setting up the task")
 
-            return await original_method(task_id, instance_id)
-
-        original_request_setup_task = benchmark_service.request_setup_task
+            return await original_request_setup_task(self, task_id, instance_id)
 
         # Setup fails for the second task
         monkeypatch.setattr(
-            benchmark_service,
+            BenchmarkService,
             "request_setup_task",
-            partial(mock_request_setup_task, original_request_setup_task),
+            mock_request_setup_task,
         )
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
@@ -324,7 +316,7 @@ class TestProcessBenchmark:
             TestProcessBenchmark._mock_run_agent,
         )
 
-        await process_benchmark(start_run_request, benchmark_row.id, task_ids, benchmark_service, database_session)
+        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is still finished even though one task has errored out
         database_session.refresh(benchmark_row)
@@ -341,9 +333,9 @@ class TestProcessBenchmark:
         assert tasks[0].error_message == "Exception raised while setting up the task"
         assert tasks[0].status == TaskStatus.ERROR
 
-        final_evaluation = benchmark_row.fetch_final_evaluation(database_session)
+        final_evaluation = benchmark_row.final_evaluation
         assert final_evaluation
 
-        evaluation_results = final_evaluation.fetch_evaluation_results(database_session)
+        evaluation_results = benchmark_row.fetch_evaluation_results(database_session)
         assert evaluation_results is not None
         assert len(list(evaluation_results.keys())) == 1, "Only one task should be evaluated"

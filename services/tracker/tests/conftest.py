@@ -36,18 +36,19 @@ def database_session() -> Generator[Session, Any, None]:
 
 
 @pytest.fixture
-def example_benchmark_object() -> Benchmark:
-    return Benchmark(
-        name="swebench",
-        arguments=BenchmarkArguments(contract_name="claude_code", concurrency=5, task_ids=None, slice_str=None),
+def contract() -> AgentContractRequest:
+    return AgentContractRequest(
+        name="claude_code",
+        artifacts=[],
+        install_cmd="echo installing dependencies...",
+        run_cmd="echo running agent...",
+        env={},
     )
 
 
 @pytest.fixture
-def test_contract() -> AgentContractRequest:
-    return AgentContractRequest(
-        name="test_contract",
-        artifacts=["setup.sh"],
-        install_cmd="bash setup.sh",
-        run_cmd="test_agent -p {{problem_statement}}",
+def example_benchmark_object(contract: AgentContractRequest) -> Benchmark:
+    return Benchmark(
+        name="swebench",
+        arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=None, slice_str=None),
     )

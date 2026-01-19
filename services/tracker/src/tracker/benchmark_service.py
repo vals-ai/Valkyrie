@@ -77,7 +77,7 @@ class BenchmarkService:
         return Benchmark(
             name=request.benchmark_name,
             arguments=BenchmarkArguments(
-                contract_name=request.contract.name,
+                contract=request.contract,
                 concurrency=request.concurrency,
                 task_ids=request.task_ids,
                 slice_str=request.slice_str,

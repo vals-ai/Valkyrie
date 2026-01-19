@@ -1,22 +1,36 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import field_serializer
 from sqlalchemy import Connection, Dialect, event
-from sqlalchemy.orm import Mapper
-from sqlmodel import JSON, CheckConstraint, Column, Field, Session, SQLModel, TypeDecorator, UniqueConstraint, select
+from sqlalchemy.orm import Mapped, Mapper
+from sqlmodel import (
+    JSON,
+    CheckConstraint,
+    Column,
+    Field,
+    Relationship,
+    Session,
+    SQLModel,
+    TypeDecorator,
+    UniqueConstraint,
+)
 
-from tracker.types import BenchmarkArguments, BenchmarkStatus, FinalEvaluationResponse
 from tracker.database.utils import has_field_changed
+from tracker.types import BenchmarkArguments, BenchmarkStatus, FinalEvaluationResponse
+
+if TYPE_CHECKING:
+    from tracker.types import StartRunRequest
 
 
 class TaskStatus(str, Enum):
     STARTING = "starting"
     IN_PROGRESS = "in_progress"
     EVALUATING = "evaluating"
+    STOPPED = "stopped"
     FINISHED = "finished"
     ERROR = "error"
 
@@ -25,9 +39,8 @@ class FinalEvaluation(FinalEvaluationResponse, SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     benchmark: UUID = Field(foreign_key="benchmark.id")
     final_score: float = Field(nullable=False)
-
-    resolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
-    unresolved_tasks: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    # NOTE: metadata was reserved by alchemy
+    properties: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 
     @field_serializer("id", "benchmark")
     def serialize_uuid(self, value: UUID | str) -> str:
@@ -85,15 +98,26 @@ class Benchmark(SQLModel, table=True):
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
     )
-
-    def fetch_final_evaluation(self, session: Session) -> FinalEvaluation | None:
-        statement = select(FinalEvaluation).where(FinalEvaluation.benchmark == self.id)
-        return session.exec(statement).first()
+    final_evaluation: Mapped[FinalEvaluation | None] = Relationship(
+        sa_relationship_kwargs={"foreign_keys": "[FinalEvaluation.benchmark]"}
+    )
 
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
         from tracker.utils import fetch_evaluation_results
 
         return fetch_evaluation_results(self.id, session)
+
+    @property
+    def start_run_request(self) -> "StartRunRequest":
+        from tracker.types import StartRunRequest
+
+        return StartRunRequest(
+            contract=self.arguments.contract,
+            benchmark_name=self.name,
+            concurrency=self.arguments.concurrency,
+            task_ids=self.arguments.task_ids,
+            slice_str=self.arguments.slice_str,
+        )
 
 
 @event.listens_for(Benchmark, "before_insert")

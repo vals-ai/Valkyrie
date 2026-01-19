@@ -1,24 +1,34 @@
 from uuid import UUID
 
-from tracker.config import get_benchmark_service_url
-from tracker.logger import get_logger
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
-from sqlmodel import Session
+from sqlalchemy.orm import joinedload
+from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark
+from tracker.config import get_benchmark_service_url
+from tracker.database.models import Benchmark, BenchmarkStatus
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
+from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
 from tracker.types import (
     FetchBenchmarkResponse,
+    ResumeRunResponse,
     RetrieveResultsResponse,
     StartRunErrorResponse,
     StartRunRequest,
     StartRunResponse,
+    StopRunResponse,
 )
-from tracker.utils import BenchmarkContext, commit_benchmark_error, process_benchmark, stream_benchmark_results
+from tracker.utils import (
+    BenchmarkContext,
+    commit_benchmark_error,
+    process_benchmark,
+    resume_benchmark,
+    stop_benchmark,
+    stream_benchmark_results,
+)
 
 logger = get_logger(__name__)
 
@@ -77,7 +87,7 @@ async def upload_contract_to_s3(
         raise HTTPException(status_code=400, detail="Contract must be a zip file")
 
     contract_content = await contract.read()
-    # TODO: handle collisions/versioning
+    # Extract contract name from filename (remove .zip extension)
     contract_name = contract.filename.rsplit(".zip", 1)[0]
     contract_s3_key = get_contract_s3_key(contract_name)
     upload_to_s3(contract_content, contract_s3_key)
@@ -92,7 +102,6 @@ async def upload_contract_to_s3(
 async def start_run(
     request: StartRunRequest,
     session: Session = Depends(get_session),
-    background_tasks: BackgroundTasks = BackgroundTasks(),
 ) -> StartRunResponse:
     """
     Start a benchmark run with the uploaded contract.
@@ -138,8 +147,10 @@ async def start_run(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
-    background_tasks.add_task(
-        process_benchmark, request, benchmark_row.id, verify_response.task_ids, benchmark_service, session
+    await process_benchmark.kiq(
+        start_run_request_json=request.model_dump(),
+        benchmark_id_str=str(benchmark_row.id),
+        verified_task_ids=verify_response.task_ids,
     )
 
     return StartRunResponse(
@@ -206,7 +217,8 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
     Returns:
         RetrieveResultsResponse
     """
-    benchmark_row = session.get(Benchmark, benchmark_id)
+    statement = select(Benchmark).where(Benchmark.id == benchmark_id).options(joinedload(Benchmark.final_evaluation))
+    benchmark_row = session.exec(statement).first()
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
@@ -215,6 +227,77 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
         status=benchmark_row.status,
         benchmark_id=benchmark_row.id,
         benchmark_arguments=benchmark_row.arguments,
-        final_evaluation=benchmark_row.fetch_final_evaluation(session),
+        final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
+    )
+
+
+@app.post("/stop-run/{benchmark_id}")
+async def stop_run(benchmark_id: UUID, session: Session = Depends(get_session)) -> StopRunResponse:
+    """
+    Stop a benchmark run by its id.
+
+    Usage:
+    curl -X POST http://<endpoint>/stop-run/<benchmark_id>
+
+    Returns:
+        StopRunResponse
+    """
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    # Can only pause a in progress benchmark
+    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress benchmark.",
+        )
+
+    await stop_benchmark(benchmark_row, session)
+
+    return StopRunResponse(
+        status="success",
+    )
+
+
+@app.post("/resume-run/{benchmark_id}")
+async def resume_run(benchmark_id: UUID, session: Session = Depends(get_session)) -> ResumeRunResponse:
+    """
+    Resume a benchmark run by its id.
+
+    Usage:
+    curl -X POST http://<endpoint>/resume-run/<benchmark_id>
+
+    Returns:
+        ResumeRunResponse
+    """
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    if benchmark_row.status != BenchmarkStatus.STOPPED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Must be in the stopped state to resume.",
+        )
+
+    start_run_request = benchmark_row.start_run_request
+
+    url = get_benchmark_service_url()
+    benchmark_service = BenchmarkService(name=start_run_request.benchmark_name, url=url)
+
+    # prepare benchmark and tasks to be resumed
+    verified_task_ids = await resume_benchmark(benchmark_row, session, benchmark_service)
+
+    # start the benchmark with the same args used to create it
+    # we will delegate inside what tasks we are running
+    await process_benchmark.kiq(
+        start_run_request_json=start_run_request.model_dump(),
+        benchmark_id_str=str(benchmark_row.id),
+        verified_task_ids=verified_task_ids,
+    )
+
+    return ResumeRunResponse(
+        status="success",
     )

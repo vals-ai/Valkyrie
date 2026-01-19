@@ -29,6 +29,8 @@ class AgentContractRequest(BaseModel):
 
 class BenchmarkStatus(str, Enum):
     IN_PROGRESS = "in_progress"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
     FINISHED = "finished"
     ERROR = "error"
 
@@ -36,7 +38,7 @@ class BenchmarkStatus(str, Enum):
 class BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid"}
 
-    contract_name: str
+    contract: AgentContractRequest
     concurrency: int
     task_ids: list[str] | None = None
     slice_str: str | None = None
@@ -81,8 +83,8 @@ class FinalEvaluationResponse(BaseModel):
     id: UUID
     benchmark: UUID
     final_score: float
-    resolved_tasks: list[str] = []
-    unresolved_tasks: list[str] = []
+    # NOTE: metadata was reserved by alchemy
+    properties: dict[str, Any] = {}
 
 
 class RetrieveResultsResponse(BaseModel):
@@ -120,3 +122,11 @@ class RetrieveTaskResponse(BaseModel):
 
 class VerifyTaskIdsResponse(BaseModel):
     task_ids: list[str]
+
+
+class StopRunResponse(StatusResponse):
+    pass
+
+
+class ResumeRunResponse(StatusResponse):
+    pass

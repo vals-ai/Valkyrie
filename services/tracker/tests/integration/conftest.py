@@ -6,18 +6,22 @@ from daytona import AsyncDaytona, DaytonaConfig
 from dotenv import load_dotenv
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import *  # noqa: F403
+from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
 
 _ = load_dotenv()
 
 
 @pytest.fixture(scope="function")
-def benchmark_service() -> BenchmarkService:
+async def benchmark_service() -> AsyncGenerator[BenchmarkService, None]:
     service_ip = os.getenv("BENCHMARK_SERVICE_URL")
     if not service_ip:
         raise ValueError("BENCHMARK_SERVICE_URL is not set")
 
-    return BenchmarkService(name="swebench", url=service_ip)
+    service = BenchmarkService(name="swebench", url=service_ip)
+
+    yield service
+
+    await service.daytona_client.close()
 
 
 @pytest.fixture

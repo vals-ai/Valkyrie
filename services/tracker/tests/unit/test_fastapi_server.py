@@ -29,7 +29,7 @@ class TestFastapiServer:
     async def _mock_request_verify_task_ids(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=["task_id"] * 500)
 
-    def _mock_process_benchmark(self, *args: Any, **kwargs: Any) -> None:
+    async def _mock_process_benchmark_kiq(self, *args: Any, **kwargs: Any) -> None:
         pass
 
     async def _mock_request_health_check(self, *args: Any, **kwargs: Any) -> HealthCheckResponse:
@@ -52,7 +52,7 @@ class TestFastapiServer:
 
         assert response.json() == {"status": "ok"}
 
-    async def test_start_run(self, test_contract: AgentContractRequest, monkeypatch: MonkeyPatch, database_session: Session):
+    async def test_start_run(self, contract: AgentContractRequest, monkeypatch: MonkeyPatch, database_session: Session):
         """
         Test start run of the fastapi server.
 
@@ -71,7 +71,7 @@ class TestFastapiServer:
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(
-            contract=test_contract,
+            contract=contract,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
@@ -93,8 +93,8 @@ class TestFastapiServer:
 
         # Ignore background task to run benchmark
         monkeypatch.setattr(
-            "main.process_benchmark",
-            self._mock_process_benchmark,
+            "main.process_benchmark.kiq",
+            self._mock_process_benchmark_kiq,
         )
 
         # Send request to start the run and ensure that the start response is returned
@@ -113,7 +113,7 @@ class TestFastapiServer:
 
         # Secondary test. Arguments is correct serialized into the database
         assert benchmark_row.arguments == BenchmarkArguments(
-            contract_name=request.contract.name,
+            contract=request.contract,
             concurrency=request.concurrency,
             task_ids=None,
             slice_str=None,
@@ -275,11 +275,15 @@ class TestFastapiServer:
         assert len(response_json.get("evaluation_results")) == 10
 
         # Change benchmark status to finished and add final evaluation row
+        # Refresh to get the latest state
+        database_session.refresh(benchmark_row)
         benchmark_row.status = BenchmarkStatus.FINISHED
-        final_evaluation_row = FinalEvaluation(
-            benchmark=benchmark_row.id, final_score=100, resolved_tasks=[], unresolved_tasks=[]
-        )
         database_session.add(benchmark_row)
+        database_session.commit()
+
+        final_evaluation_row = FinalEvaluation(
+            benchmark=benchmark_row.id, final_score=100, properties={"resolved_tasks": [], "unresolved_tasks": []}
+        )
         database_session.add(final_evaluation_row)
         database_session.commit()
 
@@ -292,7 +296,7 @@ class TestFastapiServer:
         assert response_json.get("final_evaluation").get("final_score") == 100
 
     async def test_benchmark_error_handling(
-        self, test_contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
+        self, contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
     ):
         """
         Test benchmark error handling of the fastapi server.
@@ -315,7 +319,7 @@ class TestFastapiServer:
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(
-            contract=test_contract,
+            contract=contract,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
