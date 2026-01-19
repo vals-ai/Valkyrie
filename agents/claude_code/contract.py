@@ -50,13 +50,6 @@ class ClaudeCodeContract(BaseAgentContract):
 
     @property
     def run_cmd(self) -> str:
-        if not self._agent_config:
-            raise ValueError("ClaudeCodeContract requires an AgentConfig")
-
-        model_name = self._agent_config.model
-        if model_name not in self._ALLOWED_MODELS:
-            raise ValueError("ClaudeCodeContract only accepts Anthropic models")
-
         args = [
             "-p {problem_statement}",
             "--verbose",
