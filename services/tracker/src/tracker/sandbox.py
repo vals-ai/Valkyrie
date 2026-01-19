@@ -112,7 +112,7 @@ async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContr
     logger.info(f"Finished running installing dependencies for contract: {contract.name}")
 
 
-async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_statement: str) -> str:
+async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_statement: str, task_id: str) -> str:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -127,6 +127,8 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_stat
     Raises:
         SandboxError: If the agent fails to run or times out
     """
+    logger.info(f"Running agent {contract.name} on task {task_id}")
+
     run_cmd = contract.run_cmd.replace("{problem_statement}", shlex.quote(problem_statement))
 
     def on_data(data: bytes) -> None:

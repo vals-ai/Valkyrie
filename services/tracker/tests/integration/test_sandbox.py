@@ -123,7 +123,7 @@ class TestSandboxOperations:
             run_cmd=run_cmd,
         )
 
-        await run_agent(test_sandbox, contract, "some problem statement")
+        await run_agent(test_sandbox, contract, "some problem statement", "some task id")
 
         # Capture stdout output from the on_data print statements
         captured = capsys.readouterr()

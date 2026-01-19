@@ -61,9 +61,7 @@ class TestProcessBenchmark:
 
         import tracker.utils
 
-        # The sandbox name is the task_id
-        sandbox = args[0]
-        task_id: str = sandbox.name
+        task_id = args[3]
 
         with Session(bind=tracker.utils.engine, expire_on_commit=False) as test_session:  # type: ignore[attr-defined]
             task_row = test_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
