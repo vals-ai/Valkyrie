@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Coroutine
@@ -187,8 +188,13 @@ async def process_task(
             task_session.add(task_row)
             task_session.commit()
 
+            # Generate a hash suffix shared across all tasks in a single benchmark to ensure that you can run more than one benchmark at a time
+            hash_suffix = hashlib.md5(
+                f"{benchmark_row.id}-{benchmark_row.started_at.isoformat()}".encode()
+            ).hexdigest()[:5]
+
             async with create_sandbox(
-                benchmark_service.daytona_client, task_row.task_id, task_data.docker_image
+                benchmark_service.daytona_client, task_row.task_id, task_data.docker_image, hash_suffix
             ) as sandbox:
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
