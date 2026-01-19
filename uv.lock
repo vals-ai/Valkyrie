@@ -20,6 +20,11 @@ dependencies = [
     { name = "wonderwords" },
 ]
 
+[package.optional-dependencies]
+submodules = [
+    { name = "ioi-agent" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
@@ -27,20 +32,19 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
-submodules = [
-    { name = "ioi-agent" },
-]
 
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "ioi-agent", marker = "extra == 'submodules'", virtual = "contracts/ioi/submodules/ioi_agent" },
     { name = "pypandoc" },
     { name = "tomli-w" },
     { name = "tracker", editable = "services/tracker" },
     { name = "valsai", specifier = ">=0.1.2" },
     { name = "wonderwords", specifier = ">=3.0.1" },
 ]
+provides-extras = ["submodules"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -49,7 +53,6 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
-submodules = [{ name = "ioi-agent", virtual = "contracts/ioi/submodules/ioi_agent" }]
 
 [[package]]
 name = "ai21"

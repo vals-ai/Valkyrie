@@ -1,0 +1,30 @@
+name: tracker-service-tests
+on: [pull_request, push]
+
+jobs:
+  run-tracker-unit-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "services/tracker/uv.lock"
+
+      - name: Install tracker dependencies
+        run: |
+          cd services/tracker
+          uv venv --python 3.12
+          uv sync --group dev
+
+      - name: Run unit tests
+        run: |
+          cd services/tracker
+          uv run pytest tests/unit

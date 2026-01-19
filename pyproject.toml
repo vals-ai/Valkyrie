@@ -18,16 +18,17 @@ dependencies = [
 [project.scripts]
 harness = "cli.main:cli"
 
+[project.optional-dependencies]
+submodules = [
+  "ioi-agent",
+]
+
 [dependency-groups]
 dev = [
   "pytest",
   "pytest-asyncio",
   "ruff",
   "basedpyright",
-]
-
-submodules = [
-  "ioi-agent",
 ]
 
 [tool.ruff]
@@ -80,4 +81,4 @@ filterwarnings = [
 
 [tool.uv.sources]
 tracker = { path = "services/tracker", editable = true }
-ioi-agent = { path = "contracts/ioi/submodules/ioi_agent" }
+# ioi-agent = { path = "contracts/ioi/submodules/ioi_agent" }  # Breaks tests
