@@ -18,11 +18,6 @@ dependencies = [
 [project.scripts]
 harness = "cli.main:cli"
 
-[project.optional-dependencies]
-submodules = [
-  "ioi-agent",
-]
-
 [dependency-groups]
 dev = [
   "pytest",
