@@ -613,13 +613,10 @@ def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Sess
     total_count = session.exec(select(func.count()).select_from(query.subquery())).one()
 
     if not total_count:
-        raise TrackerServiceError("No benchmarks have been created yet")
+        return [], 0
 
     query = query.limit(request.limit).offset(request.offset)
 
     benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
-
-    if not benchmark_rows:
-        raise TrackerServiceError("No benchmarks matched the following filters")
 
     return benchmark_rows, total_count

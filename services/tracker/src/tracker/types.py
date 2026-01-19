@@ -117,6 +117,7 @@ class FetchBenchmarksRequest(BaseModel):
 class BenchmarkTableRow(BaseModel):
     id: UUID
     name: str
+    contract_name: str
     started_at: datetime
     status: BenchmarkStatus
     total_tasks: int

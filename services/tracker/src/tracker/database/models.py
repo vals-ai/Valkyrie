@@ -159,6 +159,7 @@ class Benchmark(SQLModel, table=True):
         return BenchmarkTableRow(
             id=self.id,
             name=self.name,
+            contract_name=self.arguments.contract_name,
             started_at=self.started_at,
             status=self.status,
             total_tasks=total_tasks,
