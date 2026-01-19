@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import field_serializer
+from pydantic import BaseModel, field_serializer
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -20,7 +20,6 @@ from sqlmodel import (
 )
 
 from tracker.database.utils import has_field_changed
-from tracker.types import BenchmarkArguments, BenchmarkStatus, FinalEvaluationResponse
 
 if TYPE_CHECKING:
     from tracker.types import StartRunRequest
@@ -35,7 +34,32 @@ class TaskStatus(str, Enum):
     ERROR = "error"
 
 
-class FinalEvaluation(FinalEvaluationResponse, SQLModel, table=True):
+class BenchmarkStatus(str, Enum):
+    IN_PROGRESS = "in_progress"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+    FINISHED = "finished"
+    ERROR = "error"
+
+
+class AgentContract(BaseModel):
+    name: str
+    artifacts: list[str] = []
+    install_cmd: str
+    run_cmd: str
+    env: dict[str, str] = {}
+
+
+class BenchmarkArguments(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    contract: AgentContract
+    concurrency: int
+    task_ids: list[str] | None = None
+    slice_str: str | None = None
+
+
+class FinalEvaluation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     benchmark: UUID = Field(foreign_key="benchmark.id")
     final_score: float = Field(nullable=False)

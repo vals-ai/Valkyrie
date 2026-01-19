@@ -33,11 +33,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tracker"]
-only-include = [
-    "src/tracker/__init__.py",
-    "src/tracker/types.py",
-    "src/tracker/py.typed",
-]
 
 [tool.ruff]
 line-length = 120

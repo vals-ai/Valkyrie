@@ -18,7 +18,7 @@ from daytona import (
 )
 
 from tracker.exceptions import SandboxError
-from tracker.types import AgentContractRequest
+from tracker.types import AgentContract
 from tracker.s3 import download_from_s3, get_contract_s3_key
 
 logger = get_logger(__name__)
@@ -65,7 +65,7 @@ async def create_sandbox(
         await daytona.delete(sandbox)
 
 
-async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractRequest) -> None:
+async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContract) -> None:
     """
     Upload contract from S3 to the sandbox.
 
@@ -95,7 +95,7 @@ async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractR
     await sandbox.fs.upload_files(files_to_upload)
 
 
-async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContractRequest) -> None:
+async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContract) -> None:
     """Install agent dependencies in the sandbox."""
     logger.info(f"Installing dependencies for contract: {contract.name}")
 
@@ -112,7 +112,7 @@ async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContr
     logger.info(f"Finished running installing dependencies for contract: {contract.name}")
 
 
-async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, problem_statement: str) -> str:
+async def run_agent(sandbox: AsyncSandbox, contract: AgentContract, problem_statement: str) -> str:
     """
     Run the agent inside the sandbox for a given task.
 

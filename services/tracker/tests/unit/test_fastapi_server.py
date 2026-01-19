@@ -20,7 +20,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import AgentContractRequest, HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
+from tracker.types import AgentContract, HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
 
 client = TestClient(app)
 
@@ -52,7 +52,7 @@ class TestFastapiServer:
 
         assert response.json() == {"status": "ok"}
 
-    async def test_start_run(self, contract: AgentContractRequest, monkeypatch: MonkeyPatch, database_session: Session):
+    async def test_start_run(self, contract: AgentContract, monkeypatch: MonkeyPatch, database_session: Session):
         """
         Test start run of the fastapi server.
 
@@ -296,7 +296,7 @@ class TestFastapiServer:
         assert response_json.get("final_evaluation").get("final_score") == 100
 
     async def test_benchmark_error_handling(
-        self, contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
+        self, contract: AgentContract, database_session: Session, monkeypatch: MonkeyPatch
     ):
         """
         Test benchmark error handling of the fastapi server.

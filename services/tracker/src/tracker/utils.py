@@ -13,13 +13,14 @@ from sqlmodel import Session, case, col, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import broker
-from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
+from tracker.database.models import Benchmark, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox, install_agent_dependencies, run_agent, upload_agent_artifacts
 from tracker.types import (
     BenchmarkDetails,
+    BenchmarkStatus,
     FetchBenchmarkResponse,
     StartRunRequest,
 )

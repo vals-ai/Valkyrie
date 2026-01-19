@@ -1,50 +1,23 @@
-"""Internal types for the tracker service."""
+"""API request and response types for the tracker service."""
+
+from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from pydantic import BaseModel
 
-from tracker.benchmark_service import BenchmarkService
 from tracker.config import BENCHMARK_SERVICE_URL
+from tracker.database.models import (
+    AgentContract,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    FinalEvaluation,
+)
 
-
-class AgentContractRequest(BaseModel):
-    """Contract that defines how to upload, install, and run an agent."""
-
-    name: str
-    """Name of the agent."""
-
-    artifacts: list[str] = []
-    """Paths to artifacts."""
-
-    install_cmd: str
-    """Command to install the agent."""
-
-    run_cmd: str
-    """Command to run the agent."""
-
-    env: dict[str, str] = {}
-    """Environment variables required to run the agent."""
-
-
-class BenchmarkStatus(str, Enum):
-    IN_PROGRESS = "in_progress"
-    STOPPING = "stopping"
-    STOPPED = "stopped"
-    FINISHED = "finished"
-    ERROR = "error"
-
-
-class BenchmarkArguments(BaseModel):
-    model_config = {"extra": "forbid"}
-
-    contract: AgentContractRequest
-    concurrency: int
-    task_ids: list[str] | None = None
-    slice_str: str | None = None
+if TYPE_CHECKING:
+    from tracker.benchmark_service import BenchmarkService
 
 
 class BenchmarkDetails(BaseModel):
@@ -55,14 +28,16 @@ class BenchmarkDetails(BaseModel):
 
 
 class StartRunRequest(BaseModel):
-    contract: AgentContractRequest
+    contract: AgentContract
     benchmark_name: str
     concurrency: int = 5
     task_ids: list[str] | None = None
     slice_str: str | None = None
 
     @property
-    def benchmark_service(self) -> BenchmarkService:
+    def benchmark_service(self) -> "BenchmarkService":
+        from tracker.benchmark_service import BenchmarkService
+
         return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
 
 
@@ -86,20 +61,12 @@ class FetchBenchmarkResponse(BaseModel):
     details: BenchmarkDetails
 
 
-class FinalEvaluationResponse(BaseModel):
-    id: UUID
-    benchmark: UUID
-    final_score: float
-    # NOTE: metadata was reserved by alchemy
-    properties: dict[str, Any] = {}
-
-
 class RetrieveResultsResponse(BaseModel):
     benchmark_name: str
     status: BenchmarkStatus
     benchmark_id: UUID
     benchmark_arguments: BenchmarkArguments
-    final_evaluation: FinalEvaluationResponse | None
+    final_evaluation: FinalEvaluation | None
     evaluation_results: dict[str, dict[str, Any]] | None
 
 
