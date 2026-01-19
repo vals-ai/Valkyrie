@@ -3,10 +3,10 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session, select
+from sqlmodel import Session, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark, BenchmarkStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
@@ -220,13 +220,21 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
+    tasks_stopped: int = session.exec(
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status) == TaskStatus.STOPPED)
+    ).one()
+
     return RetrieveResultsResponse(
         benchmark_name=benchmark_row.name,
         status=benchmark_row.status,
         benchmark_id=benchmark_row.id,
         benchmark_arguments=benchmark_row.arguments,
+        tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
+        task_errors=benchmark_row.fetch_tasks_with_errors(session),
     )
 
 
