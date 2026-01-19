@@ -83,7 +83,7 @@ def start_benchmark(
     click.echo("Arguments:")
     click.echo(f"  - Benchmark: {benchmark}")
     click.echo(f"  - Agent: {agent}")
-    click.echo(f"  - Model: {model}")
+    click.echo(f"  - Model: {model or 'no model specified'}")
     click.echo(f"  - Concurrency: {concurrency}")
     click.echo(f"  - Slice: {slice_str}")
     if task_ids:
