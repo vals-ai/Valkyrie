@@ -360,11 +360,14 @@ class TestFastapiServer:
 
         fetch_benchmarks_request = FetchBenchmarksRequest()
 
-        # When no benchmarks have been created yet, we return a 500 error
+        # When no benchmarks have been created yet, we return an empty list and total count of 0
         response = client.get(
             "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
         )
-        assert response.status_code == 500
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json.get("benchmarks") == []
+        assert response_json.get("total_count") == 0
 
         # Add benchmark row to the database to fetch
         database_session.add(example_benchmark_object)
@@ -373,11 +376,14 @@ class TestFastapiServer:
         # Add benchmark name to be a random string (expected no matches)
         fetch_benchmarks_request.benchmark_name = str(uuid4())
 
-        # When we fetch with no benchmarks found, we return a 500 error
+        # When we fetch with no benchmarks found, we return an empty list and total count of 0
         response = client.get(
             "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
         )
-        assert response.status_code == 500
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json.get("benchmarks") == []
+        assert response_json.get("total_count") == 0
 
         # Create 4 more benchmark rows that have the same data
         benchmark_rows = [
