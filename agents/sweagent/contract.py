@@ -24,22 +24,20 @@ class SWEAgentContract(BaseAgentContract):
 
     @property
     def run_cmd(self) -> str:
-        if not self._agent_config:
-            raise ValueError("SWEAgentContract requires an AgentConfig")
-
-        model_name = self._agent_config.model
-
         args = [
             "--env.deployment.type=local",
             "--env.repo.type=preexisting",
             "--env.repo.repo_name=/testbed",
             "--agent.model.provider=vals",
-            f"--agent.model.name={model_name}",
             "--problem_statement.text={problem_statement}",
             "--config=/bundle/sweagent/submodules/sweagent/config/default.yaml",
             # TODO: add predictable place to store logs/outputs
             "--output_dir=/logs/sweagent",
         ]
+
+        model_name = self._agent_config.model
+        if model_name:
+            args.append(f"--agent.model.name={model_name}")
 
         run_cmd = "sweagent run " + " ".join(args)
 
