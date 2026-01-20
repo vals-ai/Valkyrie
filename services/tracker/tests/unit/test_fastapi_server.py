@@ -21,7 +21,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import HealthCheckResponse, StartRunRequest, VerifyTaskIdsResponse
+from tracker.types import HealthCheckResponse, RetrieveResultsResponse, StartRunRequest, VerifyTaskIdsResponse
 
 client = TestClient(app)
 
@@ -271,11 +271,13 @@ class TestFastapiServer:
 
         response = client.get("/retrieve-results", params=query_params)
         assert response.status_code == 200
-        response_json = response.json()
+
+        # NOTE: We have defaults so we need to exclude none to get the same response as the user
+        response_json = RetrieveResultsResponse(**response.json()).model_dump(exclude_none=True)
 
         # Test case 5. Evaluation results are returned if they exist even if benchmark has not finished yet
         assert response_json.get("evaluation_results")
-        assert len(response_json.get("evaluation_results")) == 10
+        assert len(response_json.get("evaluation_results", {})) == 10
 
         # No stopped tasks or task_errors fields in response
         assert "tasks_stopped" not in response_json
