@@ -7,7 +7,6 @@ from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
-from tracker.logger import get_logger
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
@@ -18,8 +17,9 @@ from daytona import (
 )
 
 from tracker.exceptions import SandboxError
-from tracker.types import AgentContractRequest
+from tracker.logger import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key
+from tracker.types import AgentContractRequest
 
 logger = get_logger(__name__)
 
@@ -67,6 +67,7 @@ async def create_sandbox(
     finally:
         logger.info(f"Deleting sandbox {sandbox.name}")
         await daytona.delete(sandbox)
+        await daytona.close()
 
 
 async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractRequest) -> None:
