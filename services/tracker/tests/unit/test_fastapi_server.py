@@ -472,7 +472,7 @@ class TestFastapiServer:
         database_session.add(unique_benchmark)
         database_session.commit()
 
-        # Search for the first 4 benchmarks
+        # Search for the 4 benchmarks just created + the original one we added before
         fetch_benchmarks_request.benchmark_name = "swebench"
         fetch_benchmarks_request.contract_name = "claude_code"
         fetch_benchmarks_request.status = BenchmarkStatus.IN_PROGRESS
