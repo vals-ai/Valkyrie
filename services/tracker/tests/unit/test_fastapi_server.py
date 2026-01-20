@@ -11,6 +11,7 @@ from sqlmodel import Session
 from main import app
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import (
+    AgentContractRequest,
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
@@ -52,7 +53,7 @@ class TestFastapiServer:
 
         assert response.json() == {"status": "ok"}
 
-    async def test_start_run(self, monkeypatch: MonkeyPatch, database_session: Session):
+    async def test_start_run(self, contract: AgentContractRequest, monkeypatch: MonkeyPatch, database_session: Session):
         """
         Test start run of the fastapi server.
 
@@ -71,7 +72,7 @@ class TestFastapiServer:
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(
-            contract_name="claude_code",
+            contract=contract,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
@@ -113,7 +114,7 @@ class TestFastapiServer:
 
         # Secondary test. Arguments is correct serialized into the database
         assert benchmark_row.arguments == BenchmarkArguments(
-            contract_name=request.contract_name,
+            contract=request.contract,
             concurrency=request.concurrency,
             task_ids=None,
             slice_str=None,
@@ -127,7 +128,7 @@ class TestFastapiServer:
 
         # Remaining fields match what we passed into the request
         assert json_response["benchmark_name"] == request.benchmark_name
-        assert json_response["contract_name"] == request.contract_name
+        assert json_response["contract_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
@@ -222,6 +223,8 @@ class TestFastapiServer:
             - Evaluation results are returned as the tasks are being completed
             - Works when no tasks are completed
             - Base fields are included within response
+            - Tasks stopped field is populated when we stop the benchmark
+            - Task errors field is populated when we encounter an error
         """
 
         def get_test_session():
@@ -274,6 +277,10 @@ class TestFastapiServer:
         assert response_json.get("evaluation_results")
         assert len(response_json.get("evaluation_results")) == 10
 
+        # No stopped tasks or task_errors fields in response
+        assert "tasks_stopped" not in response_json
+        assert "task_errors" not in response_json
+
         # Change benchmark status to finished and add final evaluation row
         # Refresh to get the latest state
         database_session.refresh(benchmark_row)
@@ -295,7 +302,64 @@ class TestFastapiServer:
         assert response_json.get("final_evaluation")
         assert response_json.get("final_evaluation").get("final_score") == 100
 
-    async def test_benchmark_error_handling(self, database_session: Session, monkeypatch: MonkeyPatch):
+        # Test case 7. Tasks stopped field is populated when we stop the benchmark
+        # Stop the benchmark
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # Add some new tasks with the status stopped
+        task_rows = [
+            Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(11, 21)
+        ]
+        database_session.add_all(task_rows)
+        database_session.commit()
+
+        response = client.get("/retrieve-results", params=query_params)
+        assert response.status_code == 200
+        response_json = response.json()
+
+        # NOTE: We chose to use a number instead of a list or string since some benchmarks have a lot of tasks
+        assert response_json.get("tasks_stopped") == 10
+        assert len(response_json.get("evaluation_results")) == 10
+
+        # Test case 8. Task errors field is populated when we encounter an error
+        # Add some new tasks with the status error (One with erro message and one without)
+        error_message = "Error occured during task execution or evaluation"
+        task_rows = [
+            Task(
+                task_id=f"task_{i}",
+                benchmark=benchmark_row.id,
+                status=TaskStatus.ERROR,
+                error_message=error_message if i == 22 else None,
+            )
+            for i in range(22, 24)
+        ]
+        database_session.add_all(task_rows)
+        database_session.commit()
+
+        response = client.get("/retrieve-results", params=query_params)
+        assert response.status_code == 200
+        response_json = response.json()
+
+        # Ensure we did not lose any previous data
+        assert response_json.get("tasks_stopped") == 10
+        assert len(response_json.get("evaluation_results")) == 10
+        assert response_json.get("final_evaluation")
+
+        # Check for tasks with erorrs
+        assert response_json.get("task_errors")
+        assert len(response_json.get("task_errors")) == 2
+
+        # Error message we saved was returned in the response
+        assert response_json.get("task_errors").get("task_22") == error_message
+
+        # If we did not get an error message, we return a default message
+        assert response_json.get("task_errors").get("task_23") == "No error message was provided"
+
+    async def test_benchmark_error_handling(
+        self, contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
+    ):
         """
         Test benchmark error handling of the fastapi server.
 
@@ -317,7 +381,7 @@ class TestFastapiServer:
 
         # Example request sent from the cli to the fastapi server
         request = StartRunRequest(
-            contract_name="claude_code",
+            contract=contract,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,

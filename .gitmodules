@@ -1,16 +1,6 @@
-[submodule "submodules/ioi_agent"]
-	path = contracts/ioi/submodules/ioi_agent
-	url = git@github.com:vals-ai/ioi-agent.git
-	branch = agent-harness
-[submodule "submodules/finance_agent"]
-	path = contracts/finance_agent/submodules/finance_agent
-	url = git@github.com:vals-ai/finance-agent.git
 [submodule "services/benchmarks/swebench"]
 	path = services/benchmarks/swebench
 	url = git@github.com:vals-ai/SWEBenchBenchmarkService.git
-[submodule "finance-agent"]
-	path = finance-agent
-	url = git@github.com:vals-ai/finance-agent.git
-[submodule "contracts/finance_agent/submodules"]
-	path = contracts/finance_agent/submodules
-	url = git@github.com:vals-ai/finance-agent.git
+[submodule "agents/sweagent/submodules/sweagent"]
+	path = agents/sweagent/submodules/sweagent
+	url = git@github.com:vals-ai/SWE-bench.git

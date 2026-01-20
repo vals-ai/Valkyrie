@@ -1,16 +1,24 @@
-.PHONY: help build run stop clean logs test tracker-service
+.PHONY: help install build run stop clean logs test tracker-service test test-integration test-unit
 
 IMAGE_NAME := tracker-service
 CONTAINER_NAME := tracker-service-container
 
 help:
 	@echo "Available commands:"
+	@echo "  make install - Install local development environment"
 	@echo "  make build  - Build the Docker image"
 	@echo "  make run    - Run the Docker container with environment variables from .env"
 	@echo "  make stop   - Stop and remove the Docker container"
 	@echo "  make clean  - Remove the Docker image and container"
 	@echo "  make logs   - View container logs"
 	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
+
+install:
+	@echo "Installing tracker service (separate venv)..."
+	uv venv --python 3.12
+	uv cache clean agentic-harness
+	uv sync --group dev
+	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
 
 build:
 	@echo "Building Docker image..."
@@ -61,3 +69,12 @@ tracker-service:
 	@make build
 	@make run
 	@make logs
+
+test:
+	uv run pytest
+
+test-integration:
+	uv run pytest tests/integration
+
+test-unit:
+	uv run pytest tests/unit

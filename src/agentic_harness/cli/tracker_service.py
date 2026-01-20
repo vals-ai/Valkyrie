@@ -1,11 +1,14 @@
 """Client for interacting with the tracker service."""
 
+import os
 from collections.abc import Generator
 from typing import Any, BinaryIO
 from uuid import UUID
 
 import httpx
+from dotenv import load_dotenv
 from httpx._models import Response
+from tracker.database.models import AgentContractRequest
 from tracker.types import (
     FetchBenchmarkResponse,
     ResumeRunResponse,
@@ -14,13 +17,11 @@ from tracker.types import (
     StopRunResponse,
 )
 
-from cli.config import TRACKER_URL
+from agentic_harness.cli.exceptions import TrackerServiceError
 
+load_dotenv()
 
-class TrackerServiceError(Exception):
-    """Exception raised for tracker service errors."""
-
-    pass
+TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "http://localhost:8000")
 
 
 class TrackerService:
@@ -83,7 +84,7 @@ class TrackerService:
         """
         try:
             files = {"contract": (f"{contract_name}.zip", file_stream, "application/zip")}
-            response = self._client.post(f"{self._base_url}/upload", files=files)
+            response = self._client.post(f"{self._base_url}/upload", files=files, timeout=600)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as e:
@@ -91,7 +92,7 @@ class TrackerService:
 
     def start_run(
         self,
-        contract_name: str,
+        contract: AgentContractRequest,
         benchmark_name: str,
         concurrency: int,
         task_ids: list[str] | None,
@@ -112,7 +113,7 @@ class TrackerService:
         """
         try:
             payload = StartRunRequest(
-                contract_name=contract_name,
+                contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
                 task_ids=task_ids,

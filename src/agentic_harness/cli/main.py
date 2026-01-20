@@ -5,16 +5,18 @@ from uuid import UUID
 
 import click
 
-import cli.contract_bundler as bundler
-from cli.contract_bundler import BundlerError
-from cli.tracker_service import TrackerService, TrackerServiceError
-from cli.utils import (
+from agentic_harness.cli.bundler import get_contract, get_agent_zip_stream
+from agentic_harness.cli.exceptions import TrackerServiceError, BundlerError
+from agentic_harness.cli.tracker_service import TrackerService
+from agentic_harness.cli.utils import (
     check_tracker_service_health,
     format_benchmark_status,
     format_start_run_response,
     stream_benchmark_status,
 )
-from services.tracker.src.tracker.types import StartRunResponse
+from tracker.types import StartRunResponse
+
+from agentic_harness.schemas import AgentConfig
 
 
 @click.group()
@@ -25,10 +27,16 @@ def cli():
 
 @cli.command()
 @click.option(
-    "--contract",
+    "--agent",
     type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
     required=True,
-    help="Path to contract directory (e.g., contracts/claude_code)",
+    help="Path to agent directory (e.g., agents/claude_code)",
+)
+@click.option(
+    "--model",
+    type=str,
+    required=False,
+    help="Model key (e.g., openai/gpt-4o)",
 )
 @click.option(
     "--benchmark",
@@ -59,7 +67,8 @@ def cli():
     help="Slice string to use for slicing the benchmark (e.g., 1-10)",
 )
 def start_benchmark(
-    contract: Path,
+    agent: Path,
+    model: str | None,
     benchmark: str,
     concurrency: int,
     task_ids: str | None,
@@ -73,7 +82,8 @@ def start_benchmark(
     """
     click.echo("Arguments:")
     click.echo(f"  - Benchmark: {benchmark}")
-    click.echo(f"  - Contract: {contract}")
+    click.echo(f"  - Agent: {agent}")
+    click.echo(f"  - Model: {model or 'no model specified'}")
     click.echo(f"  - Concurrency: {concurrency}")
     click.echo(f"  - Slice: {slice_str}")
     if task_ids:
@@ -86,22 +96,36 @@ def start_benchmark(
         formatted_task_ids = task_ids.split(",")
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
-    click.echo("Validating contract...", nl=False)
-    bundler.validate_contract(contract)
-
     try:
+        contract_path = agent / "contract.py"
+
+        # Build agent config
+        config_kwargs: dict[str, str] = {}
+        if model:
+            config_kwargs["model"] = model
+        agent_config = AgentConfig(**config_kwargs)
+
+        contract = get_contract(contract_path, agent_config)
+
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            click.echo("\r\033[KZipping bundle...", nl=False)
+            click.echo("\r\033[KZipping agent artifacts...", nl=False)
 
-            with bundler.create_contract_bundle_stream(contract) as file_stream:
-                click.echo("\r\033[KUploading bundle to tracker service...", nl=False)
+            with get_agent_zip_stream(contract) as file_stream:
+                click.echo("\r\033[KUploading agent to tracker service...", nl=False)
                 tracker.upload_contract(contract.name, file_stream)
 
             click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
-            response = tracker.start_run(contract.name, benchmark, concurrency, formatted_task_ids, slice_str)
+
+            response = tracker.start_run(
+                contract,
+                benchmark,
+                concurrency,
+                formatted_task_ids,
+                slice_str,
+            )
 
             click.echo("\r\033[K", nl=False)
             if response.status_code != 200:

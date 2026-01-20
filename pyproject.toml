@@ -8,15 +8,15 @@ requires-python = ">=3.12"
 dependencies = [
   "pypandoc",
   "click>=8.1.0",
-  "wonderwords>=3.0.1",
   "httpx>=0.28.1",
-  "tomli-w",
+  "python-dotenv",
   "tracker",
   "valsai>=0.1.2",
+  "model_library",
 ]
 
 [project.scripts]
-harness = "cli.main:cli"
+harness = "agentic_harness.cli.main:cli"
 
 [dependency-groups]
 dev = [
@@ -24,10 +24,6 @@ dev = [
   "pytest-asyncio",
   "ruff",
   "basedpyright",
-]
-
-submodules = [
-  "ioi-agent",
 ]
 
 [tool.ruff]
@@ -49,10 +45,11 @@ reportAny = false
 reportMissingTypeStubs = false
 enableTypeIgnoreComments = true
 
-include = ["src", "contracts"]
+include = ["src", "agents"]
 
 exclude = [
   "**/submodules/**",
+  "**/contracts/**",
 ]
 
 [build-system]
@@ -63,7 +60,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agentic_harness", "cli", "contracts"]
+packages = ["src/agentic_harness"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"
@@ -76,7 +73,5 @@ filterwarnings = [
     "ignore::DeprecationWarning"
 ]
 
-
 [tool.uv.sources]
 tracker = { path = "services/tracker", editable = true }
-ioi-agent = { path = "contracts/ioi/submodules/ioi_agent" }

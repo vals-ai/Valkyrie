@@ -2,21 +2,21 @@ name: basedpyright
 on: [pull_request, push]
 
 jobs:
-  setup-uv:
-    uses: ./.github/_setup_uv.yaml
-    with:
-      python-version: "3.11"
-
   run-basedpyright:
-    needs: setup-uv
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: webfactory/ssh-agent@v0.9.0
+      - uses: actions/setup-python@v5
         with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
         run: make install

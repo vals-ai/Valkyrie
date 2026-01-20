@@ -3,10 +3,10 @@ from uuid import UUID
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session, select
+from sqlmodel import Session, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark, BenchmarkStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
@@ -118,7 +118,7 @@ async def start_run(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if run fails to start
     """
-    logger.info(f"Starting benchmark run - contract: {request.contract_name}, benchmark: {request.benchmark_name}")
+    logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
 
@@ -153,7 +153,7 @@ async def start_run(
 
     return StartRunResponse(
         benchmark_name=benchmark_row.name,
-        contract_name=request.contract_name,
+        contract_name=request.contract.name,
         benchmark_id=benchmark_row.id,
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
@@ -220,13 +220,21 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
+    tasks_stopped: int = session.exec(
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status) == TaskStatus.STOPPED)
+    ).one()
+
     return RetrieveResultsResponse(
         benchmark_name=benchmark_row.name,
         status=benchmark_row.status,
         benchmark_id=benchmark_row.id,
         benchmark_arguments=benchmark_row.arguments,
+        tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
+        task_errors=benchmark_row.fetch_tasks_with_errors(session),
     )
 
 
@@ -282,8 +290,10 @@ async def resume_run(benchmark_id: UUID, session: Session = Depends(get_session)
 
     start_run_request = benchmark_row.start_run_request
 
+    benchmark_service = start_run_request.benchmark_service
+
     # prepare benchmark and tasks to be resumed
-    verified_task_ids = await resume_benchmark(benchmark_row, session, start_run_request.benchmark_service)
+    verified_task_ids = await resume_benchmark(benchmark_row, session, benchmark_service)
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running

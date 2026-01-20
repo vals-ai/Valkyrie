@@ -7,7 +7,15 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark, BenchmarkArguments, BenchmarkStatus, EvaluationResult, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    EvaluationResult,
+    Task,
+    TaskStatus,
+)
 from tracker.types import SetupTaskResponse, StartRunRequest
 from tracker.utils import process_benchmark, process_task
 
@@ -62,7 +70,7 @@ class TestProcessBenchmark:
 
         import tracker.utils
 
-        task_id: str = args[2]
+        task_id = args[3]
 
         with Session(bind=tracker.utils.engine, expire_on_commit=False) as test_session:  # type: ignore[attr-defined]
             task_row = test_session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
@@ -70,14 +78,18 @@ class TestProcessBenchmark:
             assert task_row.status == TaskStatus.IN_PROGRESS
 
     async def test_process_task(
-        self, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        benchmark_service: BenchmarkService,
+        monkeypatch: MonkeyPatch,
     ):
         task_id = "astropy__astropy-12907"
         task_row_mapping: dict[str, Task] = {}
 
         # Dependencies required to process the task that the user sends
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=[task_id]
+            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=[task_id]
         )
 
         benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
@@ -94,12 +106,12 @@ class TestProcessBenchmark:
 
         # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
-            "tracker.utils.upload_contract_to_sandbox",
+            "tracker.utils.upload_agent_artifacts",
             self._mock_upload_contract,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.install_dependencies",
+            "tracker.utils.install_agent_dependencies",
             self._mock_install_dependencies,
         )
 
@@ -130,13 +142,15 @@ class TestProcessBenchmark:
         database_session.refresh(task_row_mapping[task_id])
         assert task_row_mapping[task_id].status == TaskStatus.FINISHED
 
-    async def test_process_benchmark(self, database_session: Session, monkeypatch: MonkeyPatch):
+    async def test_process_benchmark(
+        self, contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
+    ):
         # Task ids sent by user to be processed
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         # Start run request sent by user to start the benchmark
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
@@ -149,12 +163,12 @@ class TestProcessBenchmark:
 
         # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
-            "tracker.utils.upload_contract_to_sandbox",
+            "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.install_dependencies",
+            "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
@@ -188,7 +202,12 @@ class TestProcessBenchmark:
         # All tasks have been marked as finished
         assert len(tasks) == len(task_ids)
 
-    async def test_process_benchmark_error(self, database_session: Session, monkeypatch: MonkeyPatch):
+    async def test_process_benchmark_error(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
         """
         Test that we are correctly handling when a benchmark errors out
 
@@ -200,7 +219,7 @@ class TestProcessBenchmark:
         # Example tasks from swebench
         task_ids: list[str] = ["astropy__astropy-12907"]
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
@@ -225,7 +244,7 @@ class TestProcessBenchmark:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         monkeypatch.setattr(
-            "tracker.utils.install_dependencies",
+            "tracker.utils.install_agent_dependencies",
             self._mock_install_dependencies,
         )
 
@@ -243,7 +262,10 @@ class TestProcessBenchmark:
         assert benchmark_row.error_message == "Handled database error"
 
     async def test_process_task_error(
-        self, database_session: Session, benchmark_service: BenchmarkService, monkeypatch: MonkeyPatch
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
     ):
         """
         Test that we are correctly handling when a task errors out
@@ -256,7 +278,7 @@ class TestProcessBenchmark:
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         start_run_request = StartRunRequest(
-            benchmark_name="swebench", contract_name="claude_code", concurrency=5, task_ids=task_ids
+            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
@@ -283,13 +305,13 @@ class TestProcessBenchmark:
 
         # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
-            "tracker.utils.upload_contract_to_sandbox",
+            "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
         # Mock the install dependencies part in case dependencies break it does not affect this test
         monkeypatch.setattr(
-            "tracker.utils.install_dependencies",
+            "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
@@ -325,6 +347,7 @@ class TestProcessBenchmark:
 
     async def test_can_run_same_task(
         self,
+        contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: MonkeyPatch,
     ):
@@ -346,7 +369,7 @@ class TestProcessBenchmark:
             benchmark_row = Benchmark(
                 name="swebench",
                 arguments=BenchmarkArguments(
-                    contract_name="claude_code",
+                    contract=contract,
                     concurrency=5,
                     task_ids=[task_id],
                 ),
