@@ -72,16 +72,35 @@ uv run harness fetch-benchmark --benchmark-id <benchmark_id>
 uv run harness retrieve-results --benchmark-id <benchmark_id> --path ./results.json
 ```
 
-### Stop a benchmark
+#### Stop a benchmark
 
 ```bash
 uv run harness stop-run --benchmark-id <benchmark_id>
 ```
 
-### Resume a benchmark
+#### Resume a benchmark
 
 ```bash
 uv run harness resume-run --benchmark-id <benchmark_id>
+```
+
+#### List and filter benchmarks
+
+```bash
+uv run harness fetch-benchmarks --contract-name <contract_name> --benchmark-name <benchmark_name> --status <benchmark_status> --order-by <preferred_order>
+```
+
+```
+# Status Options (Case insensitive)
+> IN_PROGRESS
+> STOPPING
+> STOPPED
+> FINISHED
+> ERROR
+
+# Order by options based off when the benchmark was started (Case insensitive)
+> DESC - default
+> ASC
 ```
 
 ### Supported Benchmarks

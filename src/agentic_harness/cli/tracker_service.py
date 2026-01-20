@@ -11,6 +11,8 @@ from httpx._models import Response
 from tracker.database.models import AgentContractRequest
 from tracker.types import (
     FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    FetchBenchmarksResponse,
     ResumeRunResponse,
     RetrieveResultsResponse,
     StartRunRequest,
@@ -242,3 +244,25 @@ class TrackerService:
             return ResumeRunResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to resume run: {e}") from e
+
+    def fetch_benchmarks(self, request: FetchBenchmarksRequest) -> FetchBenchmarksResponse:
+        """
+        Fetch benchmarks based on the request parameters.
+
+        Args:
+            request: FetchBenchmarksRequest
+
+        Returns:
+            FetchBenchmarksResponse
+        """
+        try:
+            response = self._client.get(
+                f"{self._base_url}/fetch-benchmarks", params=request.model_dump(exclude_none=True, mode="json")
+            )
+            if response.status_code != 200:
+                details = response.json().get("detail", response.text)
+                raise TrackerServiceError(f"Failed to fetch benchmarks: {details}")
+
+            return FetchBenchmarksResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to fetch benchmarks: {e}") from e

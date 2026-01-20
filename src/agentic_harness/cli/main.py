@@ -4,18 +4,19 @@ from pathlib import Path
 from uuid import UUID
 
 import click
+from tracker.database.models import BenchmarkStatus
+from tracker.types import Order, StartRunResponse
 
-from agentic_harness.cli.bundler import get_contract, get_agent_zip_stream
-from agentic_harness.cli.exceptions import TrackerServiceError, BundlerError
+from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract
+from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
 from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     check_tracker_service_health,
     format_benchmark_status,
     format_start_run_response,
+    paginate_benchmarks,
     stream_benchmark_status,
 )
-from tracker.types import StartRunResponse
-
 from agentic_harness.schemas import AgentConfig
 
 
@@ -212,7 +213,7 @@ def retrieve_results(benchmark_id: UUID, path: Path):
                     raise click.Abort()
 
             with open(path, "w") as f:
-                f.write(results_response.model_dump_json(indent=4))
+                f.write(results_response.model_dump_json(indent=4, exclude_none=True))
 
             click.echo(f"Results saved to '{path}'")
     except TrackerServiceError as e:
@@ -285,6 +286,57 @@ def resume_run(benchmark_id: UUID):
                     fg="cyan",
                 )
             )
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
+
+
+@cli.command()
+@click.option(
+    "--contract-name",
+    type=str,
+    required=False,
+    help="Contract name (e.g., claude_code)",
+)
+@click.option(
+    "--benchmark-name",
+    type=str,
+    required=False,
+    help="Benchmark name (e.g., swebench)",
+)
+@click.option(
+    "--status",
+    type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
+    required=False,
+    default=None,
+    help="Status of the benchmarks to fetch (e.g., in_progress, finished, error)",
+)
+@click.option(
+    "--order-by",
+    type=click.Choice([option.value for option in Order], case_sensitive=False),
+    required=False,
+    default=Order.DESC.value,
+    help="Order by the benchmarks to fetch (e.g., desc, asc)",
+)
+def fetch_benchmarks(
+    contract_name: str | None,
+    benchmark_name: str | None,
+    status: str | None,
+    order_by: str = "desc",
+):
+    """
+    Fetch benchmarks based on the request parameters.
+
+    Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
+
+    Example:
+        harness fetch-benchmarks --contract-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
+    """
+    try:
+        with TrackerService() as tracker:
+            if not check_tracker_service_health(tracker):
+                return
+
+            paginate_benchmarks(tracker, contract_name, benchmark_name, status, order_by)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
