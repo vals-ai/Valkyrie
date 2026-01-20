@@ -57,7 +57,4 @@ asyncio_mode = "auto"
 pythonpath = ["."]
 env = [
     "BROKER_ENVIRONMENT=testing",
-    "DAYTONA_API_KEY=test_key",
-    "DAYTONA_API_URL=http://test.url",
-    "DAYTONA_TARGET=test_target"
 ]
