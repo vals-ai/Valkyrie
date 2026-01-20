@@ -42,6 +42,7 @@ async def create_sandbox(
     sandbox_name: str,
     image: str,
     hash_suffix: str | None = None,
+    env_vars: dict[str, str] | None = None,
 ) -> AsyncGenerator[AsyncSandbox, Any]:
     """
     Create a sandbox with the given name and image.
@@ -62,6 +63,7 @@ async def create_sandbox(
                 memory=8,
                 disk=10,
             ),
+            env_vars=env_vars,
         ),
         timeout=360,
     )

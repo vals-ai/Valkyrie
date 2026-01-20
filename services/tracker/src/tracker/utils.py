@@ -197,7 +197,11 @@ async def process_task(
             ).hexdigest()[:5]
 
             async with create_sandbox(
-                benchmark_service.daytona_client, task_row.task_id, task_data.docker_image, hash_suffix
+                benchmark_service.daytona_client,
+                task_row.task_id,
+                task_data.docker_image,
+                hash_suffix,
+                start_run_request.contract.env,
             ) as sandbox:
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(sandbox, start_run_request.contract)
