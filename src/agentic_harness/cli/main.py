@@ -4,9 +4,10 @@ from pathlib import Path
 from uuid import UUID
 
 import click
+from tracker.types import StartRunResponse
 
-from agentic_harness.cli.bundler import get_contract, get_agent_zip_stream
-from agentic_harness.cli.exceptions import TrackerServiceError, BundlerError
+from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract
+from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
 from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     check_tracker_service_health,
@@ -14,8 +15,6 @@ from agentic_harness.cli.utils import (
     format_start_run_response,
     stream_benchmark_status,
 )
-from tracker.types import StartRunResponse
-
 from agentic_harness.schemas import AgentConfig
 
 
@@ -212,7 +211,7 @@ def retrieve_results(benchmark_id: UUID, path: Path):
                     raise click.Abort()
 
             with open(path, "w") as f:
-                f.write(results_response.model_dump_json(indent=4))
+                f.write(results_response.model_dump_json(indent=4, exclude_none=True))
 
             click.echo(f"Results saved to '{path}'")
     except TrackerServiceError as e:
