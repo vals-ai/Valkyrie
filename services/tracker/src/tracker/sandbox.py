@@ -15,6 +15,7 @@ from daytona import (
     FileUpload,
     Image,
     Resources,
+    SessionExecuteRequest,
 )
 
 from tracker.exceptions import SandboxError
@@ -135,26 +136,31 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, probl
 
     run_cmd = contract.run_cmd.replace("{problem_statement}", shlex.quote(problem_statement))
 
-    def on_data(data: bytes) -> None:
+    def on_data(data: str) -> None:
         # TODO: save logs to disk/s3
-        data_str = data.decode("utf-8")
-        print(data_str, end="")
+        print(data, end="")
 
-    pty_handle = await sandbox.process.create_pty_session(
-        id=contract.name,
-        on_data=on_data,
-        envs=contract.env,
+    session_id = f"{contract.name}-{task_id}"
+    await sandbox.process.create_session(session_id)
+
+    session_exec_req = SessionExecuteRequest(command=run_cmd, runAsync=True)
+    session_exec_resp = await sandbox.process.execute_session_command(session_id, session_exec_req)
+    cmd_id = session_exec_resp.cmd_id
+
+    if not cmd_id:
+        raise SandboxError(f"Failed to execute command {run_cmd} in session {session_id}")
+
+    # Stream logs from the command unitl it completes
+    await sandbox.process.get_session_command_logs_async(
+        session_id=session_id,
+        command_id=cmd_id,
+        on_stdout=on_data,
+        on_stderr=on_data,
     )
 
-    await pty_handle.wait_for_connection()
+    cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
-    await pty_handle.send_input(run_cmd)
-
-    await pty_handle.send_input("\nexit\n")
-
-    result = await pty_handle.wait()
-
-    if result.exit_code != 0:
-        raise SandboxError(f"Failed to run agent {contract.name}, exit code: {result.error}")
+    if cmd.exit_code != 0:
+        raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
 
     return ""
