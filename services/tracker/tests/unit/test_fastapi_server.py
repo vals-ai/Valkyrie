@@ -406,12 +406,7 @@ class TestFastapiServer:
         assert benchmark_row.status == BenchmarkStatus.ERROR
         assert benchmark_row.error_message == detail.get("error_message")
 
-    async def test_fetch_benchmarks(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        example_benchmark_object: Benchmark,
-    ):
+    async def test_fetch_benchmarks(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test fetch benchmarks of the fastapi server.
 
@@ -463,9 +458,16 @@ class TestFastapiServer:
             database_session.commit()
 
         # Create benchmark with unique data
+        unique_contract = AgentContractRequest(
+            name="terminus_2",
+            artifacts=[],
+            install_cmd="echo installing dependencies...",
+            run_cmd="echo running agent...",
+            env={},
+        )
         unique_benchmark = Benchmark(
             name="terminal_bench",
-            arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=None, slice_str=None),
+            arguments=BenchmarkArguments(contract=unique_contract, concurrency=5, task_ids=None, slice_str=None),
         )
         database_session.add(unique_benchmark)
         database_session.commit()

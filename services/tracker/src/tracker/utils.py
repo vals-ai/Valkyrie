@@ -604,7 +604,7 @@ def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Sess
     query = select(Benchmark)
 
     if request.contract_name:
-        query = query.where(func.json_extract(Benchmark.arguments, "$.contract_name") == request.contract_name)
+        query = query.where(func.json_extract(Benchmark.arguments, "$.contract.name") == request.contract_name)
 
     if request.benchmark_name:
         query = query.where(Benchmark.name == request.benchmark_name)
