@@ -140,7 +140,7 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, probl
     run_cmd = contract.run_cmd.replace("{problem_statement}", shlex.quote(problem_statement))
 
     def on_data(data: str) -> None:
-        stream_logger.info(data)
+        stream_logger.info(data.strip("\n"))
 
     session_id = f"{contract.name}-{task_id.replace(' ', '_')}"
 
