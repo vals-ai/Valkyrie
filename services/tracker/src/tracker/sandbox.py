@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import io
 import shlex
 import zipfile
@@ -7,7 +8,6 @@ from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
-from tracker.logger import get_logger
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
@@ -19,10 +19,13 @@ from daytona import (
 )
 
 from tracker.exceptions import SandboxError
-from tracker.types import AgentContractRequest
+from tracker.logger import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key
+from tracker.types import AgentContractRequest
 
 logger = get_logger(__name__)
+
+stream_logger = get_logger(__name__, stream=True)
 
 
 bundle_path = PurePosixPath("/bundle")
@@ -137,30 +140,38 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, probl
     run_cmd = contract.run_cmd.replace("{problem_statement}", shlex.quote(problem_statement))
 
     def on_data(data: str) -> None:
-        # TODO: save logs to disk/s3
-        print(data, end="")
+        stream_logger.info(data)
 
-    session_id = f"{contract.name}-{task_id}"
-    await sandbox.process.create_session(session_id)
+    session_id = f"{contract.name}-{task_id.replace(' ', '_')}"
 
-    session_exec_req = SessionExecuteRequest(command=run_cmd, runAsync=True)
-    session_exec_resp = await sandbox.process.execute_session_command(session_id, session_exec_req)
-    cmd_id = session_exec_resp.cmd_id
+    try:
+        await sandbox.process.create_session(session_id)
 
-    if not cmd_id:
-        raise SandboxError(f"Failed to execute command {run_cmd} in session {session_id}")
+        session_exec_resp = await sandbox.process.execute_session_command(
+            session_id, SessionExecuteRequest(command=run_cmd, runAsync=True)
+        )
 
-    # Stream logs from the command unitl it completes
-    await sandbox.process.get_session_command_logs_async(
-        session_id=session_id,
-        command_id=cmd_id,
-        on_stdout=on_data,
-        on_stderr=on_data,
-    )
+        cmd_id = session_exec_resp.cmd_id
 
-    cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+        if not cmd_id:
+            raise SandboxError(f"Failed to execute command {run_cmd} in session {session_id}")
 
-    if cmd.exit_code != 0:
-        raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
+        log_task = asyncio.create_task(
+            sandbox.process.get_session_command_logs_async(
+                session_id=session_id,
+                command_id=cmd_id,
+                on_stdout=on_data,
+                on_stderr=on_data,
+            )
+        )
 
-    return ""
+        await log_task
+
+        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+
+        if cmd.exit_code != 0:
+            raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
+
+        return ""
+    finally:
+        await sandbox.process.delete_session(session_id)
