@@ -16,6 +16,7 @@ dependencies = [
     "httpx>=0.28.1",
     "taskiq>=0.12.1",
     "taskiq-redis>=1.1.2",
+    "alembic>=1.18.1",
 ]
 
 [dependency-groups]
@@ -51,6 +52,8 @@ reportExplicitAny = false
 reportAny = false
 reportMissingTypeStubs = false
 enableTypeIgnoreComments = true
+
+exclude=["src/tracker/database/migrations/versions"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
