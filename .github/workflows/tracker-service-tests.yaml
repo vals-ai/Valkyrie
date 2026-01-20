@@ -27,4 +27,4 @@ jobs:
       - name: Run unit tests
         run: |
           cd services/tracker
-          uv run pytest tests/unit
+          uv run pytest tests/unit --test-alembic

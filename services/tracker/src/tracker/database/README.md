@@ -45,6 +45,12 @@ Change the database to use the latest changes
 
 `uv run -m alembic upgrade head`
 
+### Run Alembic Tests
+
+These tests are installed via `pytest-alembic`, these will also be ran on push and pull.
+
+`uv run pytest --test-alembic -m alembic`
+
 ### Known Defects
 
 #### Custom TypeDecorator not being sourced on migration

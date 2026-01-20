@@ -1,4 +1,4 @@
-.PHONY: help install build run stop clean logs test tracker-service test test-integration test-unit
+.PHONY: help install build run stop clean logs test tracker-service test test-integration test-unit test-alembic
 
 IMAGE_NAME := tracker-service
 CONTAINER_NAME := tracker-service-container
@@ -77,4 +77,7 @@ test-integration:
 	uv run pytest tests/integration
 
 test-unit:
-	uv run pytest tests/unit
+	uv run pytest tests/unit --test-alembic
+
+test-alembic:
+	uv run pytest --test-alembic -m alembic

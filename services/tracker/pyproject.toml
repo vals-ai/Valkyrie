@@ -26,6 +26,7 @@ dev = [
     "ruff",
     "basedpyright",
     "pytest-env>=1.2.0",
+    "pytest-alembic>=0.12.1",
 ]
 
 [build-system]
