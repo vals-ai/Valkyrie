@@ -56,5 +56,5 @@ enableTypeIgnoreComments = true
 asyncio_mode = "auto"
 pythonpath = ["."]
 env = [
-    "BROKER_ENVIRONMENT=testing"
+    "BROKER_ENVIRONMENT=testing",
 ]

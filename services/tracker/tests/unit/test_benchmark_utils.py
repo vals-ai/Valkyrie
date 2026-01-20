@@ -11,7 +11,7 @@ from sqlmodel import Session, col, func, select, update
 from main import app
 from tests.unit.test_fastapi_server import client
 from tracker.benchmark_service import BenchmarkService
-from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.types import FinalScoreResponse, StartRunRequest, VerifyTaskIdsResponse
@@ -208,7 +208,9 @@ class TestBenchmarkUtils:
         benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session)
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
 
-    def test_resume_benchmark_edge_cases(self, example_benchmark_object: Benchmark, database_session: Session):
+    def test_resume_benchmark_edge_cases(
+        self, contract: AgentContractRequest, example_benchmark_object: Benchmark, database_session: Session
+    ):
         """
         Tests edge cases for resuming a benchmark
 
@@ -251,7 +253,7 @@ class TestBenchmarkUtils:
 
         # Ensure that we can recreate the environment the benchmark was started in
         original_start_run_request = StartRunRequest(
-            contract_name="claude_code",
+            contract=contract,
             benchmark_name="swebench",
             concurrency=5,
             task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],

@@ -1,13 +1,14 @@
-import logging
 import os
 from typing import Any
 
 import httpx
 from daytona import AsyncDaytona, DaytonaConfig
 
-from tracker.database.models import Benchmark, BenchmarkArguments
+from tracker.database.models import Benchmark
 from tracker.exceptions import BenchmarkServiceError
+from tracker.logger import get_logger
 from tracker.types import (
+    BenchmarkArguments,
     FinalScoreResponse,
     HealthCheckResponse,
     RetrieveTaskResponse,
@@ -16,7 +17,7 @@ from tracker.types import (
     VerifyTaskIdsResponse,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class BenchmarkService:
@@ -77,7 +78,7 @@ class BenchmarkService:
         return Benchmark(
             name=request.benchmark_name,
             arguments=BenchmarkArguments(
-                contract_name=request.contract_name,
+                contract=request.contract,
                 concurrency=request.concurrency,
                 task_ids=request.task_ids,
                 slice_str=request.slice_str,

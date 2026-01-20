@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Coroutine
@@ -13,13 +14,14 @@ from sqlmodel import Session, asc, case, col, desc, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import broker
-from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
+from tracker.database.models import Benchmark, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
-from tracker.sandbox import create_sandbox, install_dependencies, run_agent, upload_contract_to_sandbox
+from tracker.sandbox import create_sandbox, install_agent_dependencies, run_agent, upload_agent_artifacts
 from tracker.types import (
     BenchmarkDetails,
+    BenchmarkStatus,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     Order,
@@ -189,12 +191,17 @@ async def process_task(
             task_session.add(task_row)
             task_session.commit()
 
+            # Generate a hash suffix shared across all tasks in a single benchmark to ensure that you can run more than one benchmark at a time
+            hash_suffix = hashlib.md5(
+                f"{benchmark_row.id}-{benchmark_row.started_at.isoformat()}".encode()
+            ).hexdigest()[:5]
+
             async with create_sandbox(
-                benchmark_service.daytona_client, task_row.task_id, task_data.docker_image
+                benchmark_service.daytona_client, task_row.task_id, task_data.docker_image, hash_suffix
             ) as sandbox:
                 # Upload the contract to the sandbox after creating and install the dependencies
-                await upload_contract_to_sandbox(sandbox, start_run_request.contract_name)
-                await install_dependencies(sandbox, start_run_request.contract_name)
+                await upload_agent_artifacts(sandbox, start_run_request.contract)
+                await install_agent_dependencies(sandbox, start_run_request.contract)
 
                 # Setup task if requested
                 if task_data.request_setup:
@@ -202,7 +209,7 @@ async def process_task(
 
                 # Run the agent inside of the sandbox
                 # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
-                await run_agent(sandbox, start_run_request.contract_name, task_row.task_id, task_data.problem_statement)
+                await run_agent(sandbox, start_run_request.contract, task_data.problem_statement, task_id)
 
                 # Update the status to evaluating once we finish running the agent
                 task_row.status = TaskStatus.EVALUATING
@@ -211,6 +218,7 @@ async def process_task(
 
                 # Evaluate the instance
                 # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                logger.info(f"Evaluating agent {start_run_request.contract.name} in sandbox {sandbox.name}")
                 evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
 
                 # Save the evaluation result to the database with the task row
@@ -227,6 +235,7 @@ async def process_task(
                 return {task_id: evaluation_result_row.result}
         except Exception as e:
             error_message = str(e)
+            logger.error(error_message)
             commit_task_error(task_row, task_session, error_message)
             return {task_id: None}
 
@@ -312,7 +321,6 @@ async def process_benchmark(
 
     # NOTE: Will get ugly if we error on session create
     with Session(bind=engine, expire_on_commit=False) as session:
-        # TODO: Delegate url since in the future this aspect can change
         benchmark_service = start_run_request.benchmark_service
 
         benchmark_row = fetch_benchmark_row(benchmark_id, session)
@@ -440,7 +448,6 @@ def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_mes
 
 
 def commit_task_error(task_row: Task, session: Session, error_message: str) -> None:
-    task_row = session.merge(task_row)
     task_row.status = TaskStatus.ERROR
     task_row.error_message = error_message
     session.add(task_row)
