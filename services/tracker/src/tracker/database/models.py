@@ -17,13 +17,15 @@ from sqlmodel import (
     SQLModel,
     TypeDecorator,
     UniqueConstraint,
+    col,
+    func,
     select,
 )
 
 from tracker.database.utils import has_field_changed
 
 if TYPE_CHECKING:
-    from tracker.types import StartRunRequest
+    from tracker.types import BenchmarkTableRow, StartRunRequest
 
 
 class TaskStatus(str, Enum):
@@ -155,6 +157,39 @@ class Benchmark(SQLModel, table=True):
             concurrency=self.arguments.concurrency,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
+        )
+
+    def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
+        """
+        Creates a benchmark table row object used to display the current data from this benchmark row.
+        Used in a table like feature amongst other benchmarks rows.
+
+        Args:
+            session: Session to use to fetch the total and finished tasks
+
+        Returns:
+            BenchmarkTableRow
+        """
+        from tracker.types import BenchmarkTableRow
+
+        total_tasks: int = session.exec(
+            select(func.count(col(Task.task_id))).where(col(Task.benchmark) == self.id)
+        ).one()
+
+        finished_tasks: int = session.exec(
+            select(func.count(col(Task.task_id)))
+            .where(col(Task.benchmark) == self.id)
+            .where(col(Task.status).in_([TaskStatus.FINISHED, TaskStatus.ERROR]))
+        ).one()
+
+        return BenchmarkTableRow(
+            id=self.id,
+            name=self.name,
+            contract_name=self.arguments.contract.name,
+            started_at=self.started_at,
+            status=self.status,
+            total_tasks=total_tasks,
+            finished_tasks=finished_tasks,
         )
 
 

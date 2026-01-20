@@ -4,7 +4,14 @@ import json
 from uuid import UUID
 
 import click
-from tracker.types import FetchBenchmarkResponse, StartRunResponse
+from tracker.database.models import BenchmarkStatus
+from tracker.types import (
+    FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    FetchBenchmarksResponse,
+    Order,
+    StartRunResponse,
+)
 
 from agentic_harness.cli.tracker_service import TrackerService
 
@@ -174,3 +181,151 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
     except KeyboardInterrupt:
         click.echo("\n")
         click.echo(click.style("Stopped streaming", fg="yellow"))
+
+
+def format_fetch_benchmarks_response(
+    fetch_benchmarks_response: FetchBenchmarksResponse,
+    current_page: int = 1,
+    total_pages: int = 1,
+    show_nav: bool = False,
+) -> None:
+    """
+    Format and display benchmarks in a table format.
+    NOTE: I'm not an artist (This was created using opus)
+
+    Args:
+        fetch_benchmarks_response: FetchBenchmarksResponse containing list of benchmarks
+        current_page: Current page number (1-indexed)
+        total_pages: Total number of pages
+        show_nav: Whether to show navigation hints
+    """
+    benchmarks = fetch_benchmarks_response.benchmarks
+
+    if not benchmarks:
+        click.echo(click.style("No benchmarks found.", fg="yellow"))
+        return
+
+    id_width = 36
+    name_width = max(len("Benchmark"), max(len(benchmark.name) for benchmark in benchmarks))
+    contract_width = max(len("Contract"), max(len(benchmark.contract_name) for benchmark in benchmarks))
+    status_width = max(len("Status"), max(len(benchmark.status.value) for benchmark in benchmarks))
+    progress_width = 8
+
+    header_line = (
+        f"{'ID':<{id_width}}  "
+        f"{'Benchmark':<{name_width}}  "
+        f"{'Contract':<{contract_width}}  "
+        f"{'Status':<{status_width}}  "
+        f"{'Progress':>{progress_width}}"
+    )
+    separator = "─" * len(header_line)
+
+    click.echo()
+    click.echo(click.style(header_line, bold=True))
+    click.echo(separator)
+
+    for benchmark in benchmarks:
+        _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
+        status_color = BenchmarkFormatter.get_status_color(benchmark.status.value)
+        status_display = benchmark.status.value.replace("_", " ").title()
+
+        click.echo(
+            f"{str(benchmark.id):<{id_width}}  "
+            f"{benchmark.name:<{name_width}}  "
+            f"{benchmark.contract_name:<{contract_width}}  "
+            f"{click.style(status_display, fg=status_color):<{status_width + 9}}  "
+            f"{progress_percentage:>{progress_width}.1f}%"
+        )
+
+    click.echo(separator)
+
+    total_text = f"Total: {fetch_benchmarks_response.total_count} benchmark(s)"
+    if show_nav and total_pages > 1:
+        nav_text = click.style(f"[h] ← prev  {current_page}/{total_pages}  next → [l]  [q] quit", fg="bright_black")
+        padding = (
+            len(separator) - len(total_text) - len(f"[h] ← prev  {current_page}/{total_pages}  next → [l]  [q] quit")
+        )
+        click.echo(f"{total_text}{' ' * padding}{nav_text}")
+    else:
+        click.echo(total_text)
+
+
+def format_no_benchmarks_found(contract_name: str | None, benchmark_name: str | None, status: str | None) -> None:
+    """
+    Handle the case where no benchmarks are found matching the specified filters.
+
+    Args:
+        contract_name: Contract name filter
+        benchmark_name: Benchmark name filter
+        status: Status filter
+    """
+    click.echo()
+    click.echo(click.style("No benchmarks found matching the specified filters.", fg="yellow"))
+    click.echo()
+    if any([contract_name, benchmark_name, status]):
+        click.echo("Filters applied:")
+        if contract_name:
+            click.echo(f"  • Contract: {contract_name}")
+        if benchmark_name:
+            click.echo(f"  • Benchmark: {benchmark_name}")
+        if status:
+            click.echo(f"  • Status: {status}")
+
+
+def paginate_benchmarks(
+    tracker: TrackerService,
+    contract_name: str | None,
+    benchmark_name: str | None,
+    status: str | None,
+    order_by: str,
+    limit: int = 5,
+) -> None:
+    """
+    Interactive paginated display of benchmarks with vim-style navigation.
+
+    Args:
+        tracker: TrackerService instance
+        contract_name: Optional contract name filter
+        benchmark_name: Optional benchmark name filter
+        status: Optional status filter
+        order_by: Order (asc/desc)
+        limit: Number of items per page
+    """
+    current_page = 1
+    offset = 0
+
+    while True:
+        request = FetchBenchmarksRequest(
+            contract_name=contract_name,
+            benchmark_name=benchmark_name,
+            status=BenchmarkStatus(status) if status else None,
+            order_by=Order(order_by),
+            limit=limit,
+            offset=offset,
+        )
+
+        response = tracker.fetch_benchmarks(request)
+        total_count = response.total_count
+        total_pages = max(1, (total_count + limit - 1) // limit)
+
+        click.clear()
+
+        if total_count == 0:
+            format_no_benchmarks_found(contract_name, benchmark_name, status)
+            break
+
+        format_fetch_benchmarks_response(response, current_page, total_pages, show_nav=True)
+
+        if total_pages <= 1:
+            break
+
+        char = click.getchar()
+
+        if char == "l" and current_page < total_pages:
+            current_page += 1
+            offset += limit
+        elif char == "h" and current_page > 1:
+            current_page -= 1
+            offset -= limit
+        elif char == "q" or char == "\x03":
+            break
