@@ -1,66 +1,52 @@
-.PHONY: help install build run stop clean logs test tracker-service test test-integration test-unit test-alembic
-
-IMAGE_NAME := tracker-service
-CONTAINER_NAME := tracker-service-container
+.PHONY: help setup build run stop clean logs tracker-service test test-integration test-unit test-alembic
 
 help:
 	@echo "Available commands:"
-	@echo "  make install - Install local development environment"
-	@echo "  make build  - Build the Docker image"
-	@echo "  make run    - Run the Docker container with environment variables from .env"
-	@echo "  make stop   - Stop and remove the Docker container"
-	@echo "  make clean  - Remove the Docker image and container"
-	@echo "  make logs   - View container logs"
+	@echo "  make setup           - Install local development environment and dependencies"
+	@echo "  make build           - Build Docker images"
+	@echo "  make run             - Start all services with docker-compose"
+	@echo "  make stop            - Stop all services"
+	@echo "  make clean           - Stop services and remove images"
+	@echo "  make logs            - View container logs"
 	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
 
-install:
+setup:
 	@echo "Installing tracker service (separate venv)..."
 	uv venv --python 3.12
 	uv cache clean agentic-harness
 	uv sync --group dev
 	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
+	@echo "Setting up database..."
+	uv run python src/tracker/database/session.py
+	@echo "Database setup complete."
 
 build:
-	@echo "Building Docker image..."
-	docker build -t $(IMAGE_NAME) .
+	@echo "Building Docker images..."
+	@docker-compose build
 
 run:
-	@echo "Starting Redis container..."
-	@docker run -d \
-		--name tracker-redis \
-		-p 6379:6379 \
-		redis:7-alpine || echo "Redis container already running"
-	@echo "Starting tracker service container..."
+	@echo "Starting services with docker-compose..."
 	@if [ ! -f .env ]; then \
 		echo "Error: .env file not found!"; \
 		exit 1; \
 	fi
-	@docker run -d \
-		--name $(CONTAINER_NAME) \
-		-p 8000:8000 \
-		--env-file .env \
-		-e REDIS_URL=redis://host.docker.internal:6379 \
-		-v ${HOME}/.aws:/root/.aws:ro \
-		$(IMAGE_NAME)
-	@echo "Containers started successfully!"
+	@docker-compose up -d
+	@echo "Services started successfully!"
 	@echo "Tracker service is running on http://localhost:8000"
 	@echo "Health check: http://localhost:8000/health"
 
 stop:
-	@echo "Stopping and removing containers..."
-	@docker stop $(CONTAINER_NAME) 2>/dev/null || true
-	@docker rm $(CONTAINER_NAME) 2>/dev/null || true
-	@docker stop tracker-redis 2>/dev/null || true
-	@docker rm tracker-redis 2>/dev/null || true
-	@echo "Containers stopped and removed."
+	@echo "Stopping services..."
+	@docker-compose down
+	@echo "Services stopped."
 
-clean: stop
-	@echo "Removing Docker image..."
-	@docker rmi $(IMAGE_NAME) 2>/dev/null || true
+clean:
+	@echo "Stopping services and removing images..."
+	@docker-compose down --rmi local
 	@echo "Cleanup complete."
 
 logs:
-	@docker logs -f $(CONTAINER_NAME)
+	@docker-compose logs -f tracker
 
 
 tracker-service:

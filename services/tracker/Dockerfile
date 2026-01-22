@@ -17,8 +17,6 @@ COPY src ./src
 COPY main.py ./
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-RUN uv run python src/tracker/database/session.py
-
 EXPOSE 8000
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
