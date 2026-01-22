@@ -3,7 +3,7 @@
 Create a `.env` file in the project root with the following variables:
 
 ```env
-BENCHMARK_SERVICE_URL=http://98....
+BENCHMARK_SERVICE_URL=https://benchmark-service.vals.ai
 DAYTONA_API_KEY=...
 DAYTONA_API_URL=https://app.daytona.io/api
 DAYTONA_TARGET=us
