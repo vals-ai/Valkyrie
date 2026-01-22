@@ -313,16 +313,19 @@ class TestDatabaseIntegration:
             evaluation_results: dict[str, dict[str, Any] | None] = {}
 
             async def process_task(task_id: str) -> None:
-                async with semaphore:
-                    task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
-                    task_row = task_row_mapping[task_id]
-                    evaluation_result = await self._evaluate_instance(
-                        database_session, benchmark_service, daytona_client, task_row, task_data
-                    )
-                    evaluation_result_row = await self._create_evaluation_result(
-                        database_session, task_row, evaluation_result
-                    )
-                    evaluation_results[task_id] = evaluation_result_row.result
+                try:
+                    async with semaphore:
+                        task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
+                        task_row = task_row_mapping[task_id]
+                        evaluation_result = await self._evaluate_instance(
+                            database_session, benchmark_service, daytona_client, task_row, task_data
+                        )
+                        evaluation_result_row = await self._create_evaluation_result(
+                            database_session, task_row, evaluation_result
+                        )
+                        evaluation_results[task_id] = evaluation_result_row.result
+                except Exception as e:
+                    logger.error(f"Process task failed: {e}")
 
             _ = await gather(*[process_task(task_id) for task_id in task_ids])
 
