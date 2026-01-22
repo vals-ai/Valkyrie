@@ -4,7 +4,7 @@
 
 Only need to generate the session if it is your first time / tracker.db does not exist
 
-`uv run src/tracker/database/session.py`
+`make migrate` (Also handled by `make setup`)
 
 You should see the `tracker.db` located at `src/tracker/database/tracker.db`
 

@@ -9,31 +9,11 @@ DAYTONA_API_URL=https://app.daytona.io/api
 DAYTONA_TARGET=us
 ```
 
-### Docker Deployment
+### Docker Compose Environmnet
 
-Build and run the tracker service in a Docker container:
+`make setup`: Install dependencies and create database (host machine database used in container)
 
-```bash
-# ----- Main command -----
-# Clean, build and run the tracker service
-make tracker-service
-
-# ----- Helper commands -----
-# Build the Docker image
-make build
-
-# Run the container (automatically loads .env file)
-make run
-
-# View container logs
-make logs
-
-# Stop the container
-make stop
-
-# Clean up (remove container and image)
-make clean
-```
+`make tracker-service`: Build and run the tracker service in a Docker container
 
 The service will be available at `http://localhost:8000`
 

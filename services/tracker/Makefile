@@ -1,4 +1,4 @@
-.PHONY: help setup build run stop clean logs tracker-service test test-integration test-unit test-alembic
+.PHONY: help setup build run stop clean logs tracker-service test test-integration test-unit test-alembic migrate
 
 help:
 	@echo "Available commands:"
@@ -9,16 +9,16 @@ help:
 	@echo "  make clean           - Stop services and remove images"
 	@echo "  make logs            - View container logs"
 	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
+	@echo "  make migrate         - Run database migrations"
 
 setup:
 	@echo "Installing tracker service (separate venv)..."
 	uv venv --python 3.12
 	uv cache clean agentic-harness
 	uv sync --group dev
-	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
-	@echo "Setting up database..."
-	uv run python src/tracker/database/session.py
-	@echo "Database setup complete."
+	@echo "Creating database..."
+	make migrate
+	@echo "Database created and migrations applied."
 
 build:
 	@echo "Building Docker images..."
@@ -67,3 +67,7 @@ test-unit:
 
 test-alembic:
 	uv run pytest --test-alembic -m alembic
+
+migrate:
+	@echo "Running database migrations..."
+	uv run alembic upgrade head

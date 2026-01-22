@@ -11,11 +11,11 @@ RUN pip install uv
 
 COPY pyproject.toml uv.lock ./
 
-RUN uv sync --frozen --no-dev
-
 COPY src ./src
 COPY main.py ./
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
+
+RUN uv sync --frozen --no-dev
 
 EXPOSE 8000
 
