@@ -9,7 +9,7 @@ DAYTONA_API_URL=https://app.daytona.io/api
 DAYTONA_TARGET=us
 ```
 
-### Docker Compose Environmnet
+### Docker Compose Environment
 
 `make setup`: Install dependencies and create database (host machine database used in container)
 
