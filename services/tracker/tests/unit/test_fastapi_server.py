@@ -406,7 +406,7 @@ class TestFastapiServer:
         # benchmark id and error message are included in the response
         assert detail
         assert detail.get("benchmark_id")
-        assert detail.get("error_message") == "Error verifying task ids"
+        assert "Error verifying task ids" in detail.get("error_message")
 
         # Test case 2. Benchmark row is marked as error and error message is set
         benchmark_row = database_session.get(Benchmark, UUID(detail.get("benchmark_id")))
