@@ -54,17 +54,15 @@ class BenchmarkFormatter:
         return bar, progress_pct
 
     @staticmethod
-    def format_task_breakdown(task_breakdown: dict[TaskStatus, int]) -> str | None:
+    def format_task_breakdown(task_breakdown: dict[TaskStatus, int]) -> str:
         """
         Format task breakdown with colored status counts.
 
         Returns:
             Formatted string with colored task counts
         """
-        if not task_breakdown:
-            return None
 
-        # Define status order: starting, in progress, evaluation, error, stopped, finished
+        # Order we display statuses in
         status_order = [
             TaskStatus.STARTING,
             TaskStatus.IN_PROGRESS,
@@ -77,11 +75,10 @@ class BenchmarkFormatter:
         parts: list[str] = []
         for status in status_order:
             count = task_breakdown.get(status, 0)
-            if count > 0:
-                color = BenchmarkFormatter.fetch_status_color(status.value)
-                label = status.value.replace("_", " ").title()
-                colored_part = click.style(f"{label}: {count}", fg=color)
-                parts.append(colored_part)
+            color = BenchmarkFormatter.fetch_status_color(status.value)
+            label = status.value.replace("_", " ").title()
+            colored_part = click.style(f"{label}: {count}", fg=color)
+            parts.append(colored_part)
 
         return f"│ {' │ '.join(parts)} │" if parts else ""
 
@@ -133,8 +130,7 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(f"[{bar}] {finished_tasks}/{total_tasks} ({progress_pct:.1f}%) • {status_text}")
 
     breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
-    if breakdown_text:
-        click.echo(f"  {breakdown_text}")
+    click.echo(f"  {breakdown_text}")
 
 
 def format_start_run_response(start_run_response: StartRunResponse) -> None:
@@ -211,10 +207,7 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
                 )
                 breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
 
-                if breakdown_text:
-                    click.echo(f"\r\033[K{progress_line}\n  {breakdown_text}\033[F", nl=False)
-                else:
-                    click.echo(f"\r\033[K{progress_line}", nl=False)
+                click.echo(f"\r\033[K{progress_line}\n  {breakdown_text}\033[F", nl=False)
 
             elif event.startswith("event: complete"):
                 click.echo("\n")
