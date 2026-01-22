@@ -4,11 +4,10 @@ from typing import Any
 import httpx
 from daytona import AsyncDaytona, DaytonaConfig
 
-from tracker.database.models import Benchmark
+from tracker.database.models import Benchmark, BenchmarkArguments
 from tracker.exceptions import BenchmarkServiceError
 from tracker.logger import get_logger
 from tracker.types import (
-    BenchmarkArguments,
     FinalScoreResponse,
     HealthCheckResponse,
     RetrieveTaskResponse,
