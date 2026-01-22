@@ -75,6 +75,10 @@ class BenchmarkFormatter:
         parts: list[str] = []
         for status in status_order:
             count = task_breakdown.get(status, 0)
+
+            if count == 0:
+                continue
+
             color = BenchmarkFormatter.fetch_status_color(status.value)
             label = status.value.replace("_", " ").title()
             colored_part = click.style(f"{label}: {count}", fg=color)
