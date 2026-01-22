@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import json
+import traceback
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Coroutine
 from datetime import datetime
@@ -377,7 +378,7 @@ async def process_benchmark(
 
             set_benchmark_final_status(benchmark_row, session)
         except Exception as e:
-            error_message = str(e)
+            error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(benchmark_row, session, error_message)
 
 

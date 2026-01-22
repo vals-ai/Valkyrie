@@ -1,3 +1,4 @@
+import traceback
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -140,7 +141,7 @@ async def start_run(
             task_ids=request.task_ids, slice_str=request.slice_str
         )
     except Exception as e:
-        error_message = str(e)
+        error_message = f"{str(e)}\n{traceback.format_exc()}"
         commit_benchmark_error(benchmark_row, session, error_message)
         error_response = StartRunErrorResponse(
             benchmark_id=benchmark_row.id,
