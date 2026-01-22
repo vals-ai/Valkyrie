@@ -15,6 +15,7 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     FinalEvaluation,
+    TaskStatus,
 )
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ class BenchmarkDetails(BaseModel):
     started_at: datetime
     total_tasks: int
     finished_tasks: int
+    task_breakdown: dict[TaskStatus, int]
 
 
 class StartRunRequest(BaseModel):
