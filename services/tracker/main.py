@@ -233,6 +233,7 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
     return RetrieveResultsResponse(
         benchmark_name=benchmark_row.name,
         status=benchmark_row.status,
+        error_message=benchmark_row.error_message,
         benchmark_id=benchmark_row.id,
         benchmark_arguments=benchmark_row.arguments,
         tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark

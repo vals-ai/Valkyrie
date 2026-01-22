@@ -134,7 +134,7 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(f"[{bar}] {finished_tasks}/{total_tasks} ({progress_pct:.1f}%) • {status_text}")
 
     breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
-    click.echo(f"  {breakdown_text}")
+    click.echo(breakdown_text)
 
 
 def format_start_run_response(start_run_response: StartRunResponse) -> None:
@@ -211,7 +211,7 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
                 )
                 breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
 
-                click.echo(f"\r\033[K{progress_line}\n  {breakdown_text}\033[F", nl=False)
+                click.echo(f"\r\033[K{progress_line}\n{breakdown_text}\033[F", nl=False)
 
             elif event.startswith("event: complete"):
                 click.echo("\n")
