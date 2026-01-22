@@ -135,7 +135,7 @@ class TestSandboxOperations:
             run_cmd=run_cmd,
         )
 
-        await run_agent(test_sandbox, contract, "some problem statement", "some task id")
+        await run_agent(test_sandbox, contract, "some problem statement", "some task id", cwd="/")
 
         output = "\n".join(logged_messages)
         assert "line1" in output
