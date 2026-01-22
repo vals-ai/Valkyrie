@@ -123,7 +123,9 @@ async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContr
     logger.info(f"Finished running installing dependencies for contract: {contract.name}")
 
 
-async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, problem_statement: str, task_id: str) -> str:
+async def run_agent(
+    sandbox: AsyncSandbox, contract: AgentContractRequest, problem_statement: str, task_id: str, cwd: str
+) -> str:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -151,7 +153,7 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, probl
         await sandbox.process.create_session(session_id)
 
         session_exec_resp = await sandbox.process.execute_session_command(
-            session_id, SessionExecuteRequest(command=run_cmd, runAsync=True)
+            session_id, SessionExecuteRequest(command=f"cd {cwd} && {run_cmd}", runAsync=True)
         )
 
         cmd_id = session_exec_resp.cmd_id

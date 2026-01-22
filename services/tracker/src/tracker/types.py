@@ -95,6 +95,7 @@ class RetrieveTaskResponse(BaseModel):
     docker_image: str
     problem_statement: str
     request_setup: bool
+    cwd: str
 
 
 class VerifyTaskIdsResponse(BaseModel):

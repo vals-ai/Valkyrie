@@ -213,7 +213,9 @@ async def process_task(
 
                 # Run the agent inside of the sandbox
                 # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
-                await run_agent(sandbox, start_run_request.contract, task_data.problem_statement, task_id)
+                await run_agent(
+                    sandbox, start_run_request.contract, task_data.problem_statement, task_id, task_data.cwd
+                )
 
                 # Update the status to evaluating once we finish running the agent
                 task_row.status = TaskStatus.EVALUATING
