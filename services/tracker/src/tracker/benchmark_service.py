@@ -144,7 +144,7 @@ class BenchmarkService:
 
         async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
             response = await client.post(
-                f"{self._url}/setup-task/",
+                f"{self._url}/setup-task",
                 json={"task_id": task_id, "instance_id": instance_id},
                 headers={
                     "Content-Type": "application/json",
