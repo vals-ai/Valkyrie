@@ -8,7 +8,7 @@ from main import app
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
-from tracker.types import StartRunRequest, VerifyTaskIdsResponse
+from tracker.types import FinalScoreResponse, RetrieveTaskResponse, StartRunRequest, VerifyTaskIdsResponse
 from tracker.utils import process_benchmark, resume_benchmark, stop_benchmark
 
 
@@ -29,6 +29,26 @@ class TestStopAndResume:
         self, *args: Any, task_ids: list[str], **kwargs: Any
     ) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=task_ids)
+
+    @staticmethod
+    async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
+        return RetrieveTaskResponse(
+            docker_image="test-image:latest",
+            problem_statement="Test problem statement",
+            request_setup=False,
+            cwd="/testbed",
+        )
+
+    @staticmethod
+    async def _mock_request_final_score(
+        *args: Any, evaluation_results: dict[str, Any], **kwargs: Any
+    ) -> FinalScoreResponse:
+        tasks_evaluated = list(evaluation_results.keys())
+        return FinalScoreResponse(
+            tasks_evaluated=tasks_evaluated,
+            final_score=50.0,
+            metadata={"resolved_tasks": [], "unresolved_tasks": tasks_evaluated},
+        )
 
     async def test_stop_and_resume(
         self,
@@ -75,6 +95,8 @@ class TestStopAndResume:
         monkeypatch.setattr("tracker.utils.upload_agent_artifacts", self._mock_upload_contract)
         monkeypatch.setattr("tracker.utils.install_agent_dependencies", self._mock_install_dependencies)
         monkeypatch.setattr("tracker.utils.run_agent", self._mock_run_agent)
+        monkeypatch.setattr(BenchmarkService, "request_retrieve_task", self._mock_request_retrieve_task)
+        monkeypatch.setattr(BenchmarkService, "request_final_score", self._mock_request_final_score)
 
         # Create tasks - 2 tasks are finished, 3 tasks are starting
         finished_task_ids = task_ids[:2]
