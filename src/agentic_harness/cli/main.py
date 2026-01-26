@@ -227,7 +227,14 @@ def retrieve_results(benchmark_id: UUID, path: Path):
     required=True,
     help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
 )
-def stop_run(benchmark_id: UUID):
+@click.option(
+    "--force",
+    is_flag=True,
+    required=False,
+    default=False,
+    help="Force stop the benchmark run",
+)
+def stop_run(benchmark_id: UUID, force: bool):
     """
     Stop a benchmark run by its benchmark id.
 
@@ -235,12 +242,15 @@ def stop_run(benchmark_id: UUID):
         harness stop-run --benchmark-id 123e4567-e89b-12d3-a456-426614174000
     """
     click.echo(f"Stopping run for benchmark: {benchmark_id}")
+
+    if force:
+        click.echo(click.style("Force stopping the benchmark", fg="yellow", bold=True))
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            _ = tracker.stop_run(benchmark_id)
+            _ = tracker.stop_run(benchmark_id, force)
             click.echo(
                 click.style(
                     "Run is currently being stopped. Will be stopped when all tasks in flight are finished.",

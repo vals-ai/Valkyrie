@@ -205,7 +205,7 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
 
-    def stop_run(self, benchmark_id: UUID) -> StopRunResponse:
+    def stop_run(self, benchmark_id: UUID, force: bool) -> StopRunResponse:
         """
         Stop a benchmark run by its benchmark id.
 
@@ -216,7 +216,7 @@ class TrackerService:
             StopRunResponse with status and message
         """
         try:
-            response = self._client.post(f"{self._base_url}/stop-run/{benchmark_id}")
+            response = self._client.post(f"{self._base_url}/stop-run/{benchmark_id}", params={"force": force})
             if response.status_code != 200:
                 details = response.json().get("detail", response.text)
                 raise TrackerServiceError(f"Failed to stop run: {details}")
