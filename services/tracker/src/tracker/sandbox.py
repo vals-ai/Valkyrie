@@ -13,7 +13,6 @@ from daytona import (
     AsyncSandbox,
     CreateSandboxFromImageParams,
     FileUpload,
-    Image,
     Resources,
     SessionExecuteRequest,
 )
@@ -41,22 +40,20 @@ async def create_sandbox(
     daytona: AsyncDaytona,
     sandbox_name: str,
     image: str,
-    hash_suffix: str | None = None,
+    labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
 ) -> AsyncGenerator[AsyncSandbox, Any]:
     """
-    Create a sandbox with the given name and image.
+    Create a sandbox with the given name, image, and labels.
     Automatically cleans up the sandbox when the context manager exits.
     """
     logger.info(f"Creating sandbox {sandbox_name} with image {image}")
 
-    if hash_suffix:
-        sandbox_name = f"{sandbox_name}-{hash_suffix}"
-
     sandbox = await daytona.create(
         CreateSandboxFromImageParams(
             name=sandbox_name,
-            image=Image.base(image),
+            labels=labels,
+            image=image,
             network_block_all=False,
             resources=Resources(
                 cpu=4,

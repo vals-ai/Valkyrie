@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, computed_field, field_serializer
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -22,6 +22,7 @@ from sqlmodel import (
     select,
 )
 
+from tracker.benchmark_service import BenchmarkService
 from tracker.database.utils import has_field_changed
 
 if TYPE_CHECKING:
@@ -159,6 +160,10 @@ class Benchmark(SQLModel, table=True):
             slice_str=self.arguments.slice_str,
         )
 
+    @property
+    def benchmark_service(self) -> BenchmarkService:
+        return self.start_run_request.benchmark_service
+
     def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
         """
         Creates a benchmark table row object used to display the current data from this benchmark row.
@@ -233,6 +238,12 @@ class Task(SQLModel, table=True):
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
     benchmark: UUID = Field(foreign_key="benchmark.id")
+
+    @computed_field
+    @property
+    def alias(self) -> str:
+        """Unique alias for the task that is used to uniquely identify the same task when creating sandboxes"""
+        return f"{self.task_id}_{self.id.hex[:5]}"
 
 
 @event.listens_for(Task, "before_insert")

@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import traceback
 from asyncio import Semaphore, gather
@@ -11,6 +10,9 @@ from typing import Any, NamedTuple, Sequence
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from daytona import AsyncSandbox
+from daytona._async.daytona import AsyncDaytona
+from daytona._async.sandbox import AsyncPaginatedSandboxes
 from sqlmodel import Session, asc, case, col, desc, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
@@ -192,17 +194,18 @@ async def process_task(
             task_session.add(task_row)
             task_session.commit()
 
-            # Generate a hash suffix shared across all tasks in a single benchmark to ensure that you can run more than one benchmark at a time
-            hash_suffix = hashlib.md5(
-                f"{benchmark_row.id}-{benchmark_row.started_at.isoformat()}".encode()
-            ).hexdigest()[:5]
+            labels = {
+                "Benchmark": benchmark_row.name,
+                "Id": str(benchmark_row.id),
+                "Task": task_row.task_id,
+            }
 
             async with create_sandbox(
-                benchmark_service.daytona_client,
-                task_row.task_id,
-                task_data.docker_image,
-                hash_suffix,
-                start_run_request.contract.env,
+                daytona=benchmark_service.daytona_client,
+                sandbox_name=task_row.alias,
+                image=task_data.docker_image,
+                labels=labels,
+                env_vars=start_run_request.contract.env,
             ) as sandbox:
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(sandbox, start_run_request.contract)
@@ -576,6 +579,93 @@ async def stop_benchmark(benchmark_row: Benchmark, session: Session) -> None:
         raise
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping benchmark {benchmark_row.id}: {str(e)}") from e
+
+
+async def stop_sandbox(
+    sandbox: AsyncSandbox, daytona_client: AsyncDaytona, session: Session, task_id: str | None
+) -> str | None:
+    try:
+        # Wait for the sandbox to be in a valid deletion state
+        await sandbox.wait_for_sandbox_start(timeout=0)
+
+        # Delete the sandbox
+        await daytona_client.delete(sandbox)
+
+        # Only update the task row if it is still in progress
+        if task_id:
+            session.exec(update(Task).where(col(Task.id) == task_id).values(status=TaskStatus.STOPPED))
+            session.commit()
+
+        return None
+    except Exception as e:
+        return f"{str(e)}: {traceback.format_exc()}"
+
+
+async def sandbox_generator(benchmark_row: Benchmark) -> AsyncGenerator[AsyncSandbox, None]:
+    """
+    Generator that yields all sandboxes for a given benchmark in paginated chunks of 10.
+    """
+    daytona_client: AsyncDaytona = benchmark_row.benchmark_service.daytona_client
+
+    async def fetch_sandboxes(page: int) -> AsyncPaginatedSandboxes:
+        return await daytona_client.list(
+            labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)}, limit=10, page=page
+        )
+
+    paginated_sandboxes: AsyncPaginatedSandboxes = await fetch_sandboxes(1)
+
+    total_pages = paginated_sandboxes.total_pages
+    while paginated_sandboxes.page < total_pages:
+        sandboxes = paginated_sandboxes.items
+        for sandbox in sandboxes:
+            yield sandbox
+
+        paginated_sandboxes = await fetch_sandboxes(int(paginated_sandboxes.page) + 1)
+
+
+async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> None:
+    """
+    Stops and deletes all sandboxes which are in progress or evaluating.
+    NOTE: If task is not in progress but sandbox exists, we kill it and leave the task status as is.
+
+    Raises:
+        TrackerServiceError: If there are any errors stopping the sandboxes
+    """
+    daytona_client: AsyncDaytona = benchmark_row.benchmark_service.daytona_client
+    try:
+        # Create a mapping between all task primary key id and their task_id (that are pending or evaluating)
+        task_rows: Sequence[Task] = session.exec(
+            select(Task)
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.status).in_([TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
+        ).all()
+
+        # Create a mapping upfront that we can use to update the task rows after stopping the sandboxes
+        task_metadata: dict[str, str] = {task.alias: str(task.id) for task in task_rows}
+
+        # Iterate through each running sandbox and stop it, collecting erorr messages
+        results: dict[str, str | None] = {}
+        async for sandbox in sandbox_generator(benchmark_row):
+            # If task id does not exist, the task is finished and we can just close the sandbox
+            # Edge case where the sandbox is hanging
+            task_id = task_metadata.get(sandbox.name)
+            result = await stop_sandbox(sandbox, daytona_client, session, task_id)
+
+            results[sandbox.name] = result
+
+        error_mapping: dict[str, str] = {}
+        for sandbox_name, error_message in results.items():
+            if error_message:
+                error_mapping[sandbox_name] = error_message
+
+        if error_mapping:
+            error_message = "\n".join(
+                [f"{task_alias}: {error_message}" for task_alias, error_message in error_mapping.items()]
+            )
+
+            raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
+    finally:
+        await daytona_client.close()
 
 
 async def resume_benchmark(
