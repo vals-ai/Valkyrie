@@ -339,7 +339,7 @@ async def process_benchmark(
             missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
             if missing_task_ids:
                 raise TrackerServiceError(
-                    f"Race condition occured when resuming benchmark {benchmark_id}. Missing task ids: {missing_task_ids}"
+                    f"Race condition occured when resuming benchmark {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
                 )
 
             # Load the tasks we are going to be tracking
