@@ -78,6 +78,12 @@ uv run harness retrieve-results --benchmark-id <benchmark_id> --path ./results.j
 uv run harness stop-run --benchmark-id <benchmark_id>
 ```
 
+Flags
+```
+--force: Force stops all tasks in progress or evaluating (default: false)
+```
+
+
 #### Resume a benchmark
 
 ```bash
