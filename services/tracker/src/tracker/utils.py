@@ -194,6 +194,7 @@ async def process_task(
             task_session.add(task_row)
             task_session.commit()
 
+            # Labels that show up in the UI we can use to filter sandboxes
             labels = {
                 "Benchmark": benchmark_row.name,
                 "Id": str(benchmark_row.id),
@@ -244,9 +245,14 @@ async def process_task(
 
                 return {task_id: evaluation_result_row.result}
         except Exception as e:
-            error_message = str(e)
-            logger.error(error_message)
-            commit_task_error(task_row, task_session, error_message)
+            # If the task status is stopped its because we killed the sandbox early
+            # In that case we can skip to just returning the final result, else its an error we need to report
+            task_session.refresh(task_row)
+            if task_row.status != TaskStatus.STOPPED:
+                error_message = str(e)
+                logger.error(error_message)
+                commit_task_error(task_row, task_session, error_message)
+
             return {task_id: None}
 
 
