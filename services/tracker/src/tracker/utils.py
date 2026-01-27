@@ -10,7 +10,7 @@ from typing import Any, NamedTuple, Sequence
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, DaytonaNotFoundError, SandboxState
+from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from sqlmodel import Session, asc, case, col, desc, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
@@ -168,20 +168,6 @@ def handle_early_exit(task_row: Task, task_session: Session) -> None:
     task_session.commit()
 
 
-async def check_force_stop(sandbox: AsyncSandbox) -> bool:
-    """
-    Checks if the sandbox has been destroyed and returns True if it has
-    """
-    try:
-        await sandbox.refresh_data()
-        if sandbox.state in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
-            return True
-
-        return False
-    except DaytonaNotFoundError:
-        return True
-
-
 async def process_task(
     task_row: Task,
     start_run_request: StartRunRequest,
@@ -267,7 +253,7 @@ async def process_task(
                 except Exception as e:
                     # Error can come from the sandbox being destroyed
                     task_session.refresh(task_row)
-                    if task_row.status == TaskStatus.STOPPED or (await check_force_stop(sandbox)):
+                    if task_row.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
                     raise e from e
