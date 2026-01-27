@@ -65,7 +65,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Test request to stop the benchmark
-        response: Response = client.post(f"/stop-run/{benchmark_row.id}")
+        response: Response = client.post(f"/stop-run/{benchmark_row.id}?force=false")
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
@@ -121,25 +121,8 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Fail to stop the run
-        response: Response = client.post(f"/stop-run/{benchmark_row.id}")
+        response: Response = client.post(f"/stop-run/{benchmark_row.id}?force=false")
         assert response.status_code == 400
-
-        # Cannot stop a run with no tasks yet to start
-        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(benchmark_row)
-        database_session.commit()
-
-        # Add some tasks, all have already started
-
-        task_rows = [
-            Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS) for i in range(5)
-        ]
-        database_session.add_all(task_rows)
-        database_session.commit()
-
-        # Error is returned because we have no starting tasks left to stop
-        response = client.post(f"/stop-run/{benchmark_row.id}")
-        assert response.status_code == 500
 
     def test_resume_benchmark(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch

@@ -113,7 +113,7 @@ class TestStopAndResume:
         database_session.commit()
 
         # Stop benchmark - only tasks that are starting become stopped
-        await stop_benchmark(benchmark_row, database_session)
+        await stop_benchmark(benchmark_row, database_session, force=False)
 
         # Verify: 2 tasks are finished, 3 tasks are stopped
         finished_count = len(

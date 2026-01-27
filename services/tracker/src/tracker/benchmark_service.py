@@ -23,6 +23,7 @@ class BenchmarkService:
     _name: str
     _url: str
     _environment_keys: dict[str, str]
+    _daytona_client: AsyncDaytona | None = None
 
     def __init__(self, name: str, url: str):
         self._name = name
@@ -39,12 +40,18 @@ class BenchmarkService:
 
     @property
     def daytona_client(self) -> AsyncDaytona:
+        if self._daytona_client:
+            return self._daytona_client
+
         config = DaytonaConfig(
             api_key=self.environment_keys["DAYTONA_API_KEY"],
             api_url=self.environment_keys["DAYTONA_API_URL"],
             target=self.environment_keys["DAYTONA_TARGET"],
         )
-        return AsyncDaytona(config=config)
+
+        self._daytona_client = AsyncDaytona(config=config)
+
+        return self._daytona_client
 
     @staticmethod
     def daytona_keys() -> dict[str, str]:

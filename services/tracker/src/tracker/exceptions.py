@@ -14,12 +14,6 @@ class SandboxError(TrackerServiceError):
         return "Sandbox error: " + super().__str__()
 
 
-class SandboxDestroyedError(SandboxError):
-    """Exception raised for when a sandbox has been destroyed"""
-
-    pass
-
-
 class BenchmarkServiceError(TrackerServiceError):
     """Exception raised for benchmark service communication errors."""
 

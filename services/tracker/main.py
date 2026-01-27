@@ -270,7 +270,7 @@ async def stop_run(
             detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress benchmark.",
         )
 
-    await stop_benchmark(benchmark_row, session)
+    await stop_benchmark(benchmark_row, session, force)
 
     if force:
         await force_stop_sandboxes(benchmark_row, session)

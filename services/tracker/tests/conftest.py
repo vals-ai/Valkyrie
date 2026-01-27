@@ -9,8 +9,7 @@ from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tracker.database.models import *  # noqa: F403
-from tracker.database.models import Benchmark, BenchmarkArguments
-from tracker.types import AgentContractRequest
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments
 
 _ = load_dotenv()
 

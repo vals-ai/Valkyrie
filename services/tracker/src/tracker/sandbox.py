@@ -12,6 +12,7 @@ from daytona import (
     AsyncDaytona,
     AsyncSandbox,
     CreateSandboxFromImageParams,
+    DaytonaNotFoundError,
     FileUpload,
     Resources,
     SandboxState,
@@ -69,9 +70,15 @@ async def create_sandbox(
     try:
         yield sandbox
     finally:
-        await sandbox.refresh_data()
-        if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
-            await daytona.delete(sandbox)
+        try:
+            await sandbox.refresh_data()
+            if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
+                await daytona.delete(sandbox)
+        except DaytonaNotFoundError:
+            # If we error here that means the sandbox has just been deleted before we could refresh the state
+            pass
+        except Exception as e:
+            logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 
 
 async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractRequest) -> None:
@@ -151,7 +158,7 @@ async def run_agent(
         await sandbox.process.create_session(session_id)
 
         session_exec_resp = await sandbox.process.execute_session_command(
-            session_id, SessionExecuteRequest(command=f"cd {cwd} && {run_cmd}", runAsync=True)
+            session_id, SessionExecuteRequest(command=f"cd {cwd} && {run_cmd}", run_async=True)
         )
 
         cmd_id = session_exec_resp.cmd_id
