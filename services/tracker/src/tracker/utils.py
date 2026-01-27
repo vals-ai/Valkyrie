@@ -10,16 +10,14 @@ from typing import Any, NamedTuple, Sequence
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from daytona import AsyncSandbox
-from daytona._async.daytona import AsyncDaytona
-from daytona._async.sandbox import AsyncPaginatedSandboxes
+from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from sqlmodel import Session, asc, case, col, desc, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import broker
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
-from tracker.exceptions import TrackerServiceError
+from tracker.exceptions import SandboxDestroyedError, TrackerServiceError
 from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox, install_agent_dependencies, run_agent, upload_agent_artifacts
 from tracker.types import (
@@ -27,6 +25,7 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     Order,
+    RetrieveTaskResponse,
     StartRunRequest,
 )
 
@@ -170,6 +169,76 @@ def handle_early_exit(task_row: Task, task_session: Session) -> None:
     task_session.commit()
 
 
+async def monitor_sandbox(sandbox: AsyncSandbox) -> None:
+    """
+    Monitors a sandbox until its been destroyed
+
+    Raises:
+        SandboxDestroyedError: If the sandbox has been destroyed
+    """
+    while True:
+        await sandbox.refresh_data()
+
+        if sandbox.state in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
+            raise SandboxDestroyedError("Sandbox has been destroyed")
+
+        await asyncio.sleep(1)
+
+
+async def run_task(
+    task_row: Task,
+    start_run_request: StartRunRequest,
+    benchmark_service: BenchmarkService,
+    task_session: Session,
+    task_id: str,
+    sandbox: AsyncSandbox,
+    task_data: RetrieveTaskResponse,
+) -> dict[str, dict[str, Any] | None]:
+    """
+    Runs a task and returns the evaluation result
+
+    Exceptions should be propagated up one level where they are handled
+    """
+
+    task_row = task_session.merge(task_row)
+    task_row.status = TaskStatus.IN_PROGRESS
+    task_session.add(task_row)
+    task_session.commit()
+
+    # Upload the contract to the sandbox after creating and install the dependencies
+    await upload_agent_artifacts(sandbox, start_run_request.contract)
+    await install_agent_dependencies(sandbox, start_run_request.contract)
+
+    # Setup task if requested
+    if task_data.request_setup:
+        _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
+
+    # Run the agent inside of the sandbox
+    # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
+    await run_agent(sandbox, start_run_request.contract, task_data.problem_statement, task_id, task_data.cwd)
+
+    # Update the status to evaluating once we finish running the agent
+    task_row.status = TaskStatus.EVALUATING
+    task_session.add(task_row)
+    task_session.commit()
+
+    # Evaluate the instance
+    # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+    logger.info(f"Evaluating agent {start_run_request.contract.name} in sandbox {sandbox.name}")
+    evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
+
+    # Save the evaluation result to the database with the task row
+    evaluation_result_row = EvaluationResult(task=task_row.id, instance_id=sandbox.id, result=evaluation_result)
+    task_session.add(evaluation_result_row)
+
+    # Mark the task status as finished since we have finished processing the task
+    task_row.status = TaskStatus.FINISHED
+    task_session.add(task_row)
+    task_session.commit()
+
+    return {task_id: evaluation_result_row.result}
+
+
 async def process_task(
     task_row: Task,
     start_run_request: StartRunRequest,
@@ -177,6 +246,21 @@ async def process_task(
     benchmark_id: UUID,
     task_id: str,
 ) -> dict[str, dict[str, Any] | None]:
+    """
+    Processes a task and returns the evaluation result
+
+    NOTE: We run the task and sandbox monitor at the same time,
+    if the sandbox is destroyed before the task is completed we propagate the error up and end the task early.
+
+
+    Returns:
+        A dictionary with the task id as the key and the evaluation result as the value, or None if the task was stopped early (not forced)
+
+    Raises:
+        SandboxDestroyedError: If the sandbox has been destroyed intentionally
+        TrackerServiceError: If the result is not the expected type
+        Exception: Unexpected error occured that was not handled
+    """
     with Session(bind=engine, expire_on_commit=False) as task_session:
         benchmark_row = fetch_benchmark_row(benchmark_id, task_session)
 
@@ -187,11 +271,6 @@ async def process_task(
 
         try:
             task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
-
-            task_row = task_session.merge(task_row)
-            task_row.status = TaskStatus.IN_PROGRESS
-            task_session.add(task_row)
-            task_session.commit()
 
             # Labels that show up in the UI we can use to filter sandboxes
             labels = {
@@ -207,50 +286,50 @@ async def process_task(
                 labels=labels,
                 env_vars=start_run_request.contract.env,
             ) as sandbox:
-                # Upload the contract to the sandbox after creating and install the dependencies
-                await upload_agent_artifacts(sandbox, start_run_request.contract)
-                await install_agent_dependencies(sandbox, start_run_request.contract)
-
-                # Setup task if requested
-                if task_data.request_setup:
-                    _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
-
-                # Run the agent inside of the sandbox
-                # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
-                await run_agent(
-                    sandbox, start_run_request.contract, task_data.problem_statement, task_id, task_data.cwd
+                run_task_task = asyncio.create_task(
+                    run_task(
+                        sandbox=sandbox,
+                        task_row=task_row,
+                        start_run_request=start_run_request,
+                        benchmark_service=benchmark_service,
+                        task_session=task_session,
+                        task_id=task_id,
+                        task_data=task_data,
+                    )
                 )
+                monitor_task = asyncio.create_task(monitor_sandbox(sandbox))
 
-                # Update the status to evaluating once we finish running the agent
-                task_row.status = TaskStatus.EVALUATING
-                task_session.add(task_row)
-                task_session.commit()
+                # Run the task and sandbox monitor at the same time and wait for the first to complete
+                done, pending = await asyncio.wait([monitor_task, run_task_task], return_when=asyncio.FIRST_COMPLETED)
 
-                # Evaluate the instance
-                # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
-                logger.info(f"Evaluating agent {start_run_request.contract.name} in sandbox {sandbox.name}")
-                evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
+                # We are only interested in what has been completed first
+                for task in pending:
+                    task.cancel()
 
-                # Save the evaluation result to the database with the task row
-                evaluation_result_row = EvaluationResult(
-                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result
-                )
-                task_session.add(evaluation_result_row)
+                result = done.pop()
 
-                # Mark the task status as finished since we have finished processing the task
-                task_row.status = TaskStatus.FINISHED
-                task_session.add(task_row)
-                task_session.commit()
+                # Raise any exception that occured
+                # Main use case is for the SandboxDestroyedError, since we want to propagate this so that it can be handled
+                if result.exception():
+                    raise result.exception()  # type: ignore
 
-                return {task_id: evaluation_result_row.result}
+                # Otherwise its going to be the evaluation result (check the type to be sure)
+                result = result.result()
+                if not isinstance(result, dict):
+                    raise TrackerServiceError(f"Unexpected result type: {type(result)}")
+
+                return result
+
+        except SandboxDestroyedError:
+            # If the sandbox has been destroyed intentionally we don't need to do anything
+            # NOTE: State changes are already handled at this point
+
+            return {task_id: None}
         except Exception as e:
-            # If the task status is stopped its because we killed the sandbox early
-            # In that case we can skip to just returning the final result, else its an error we need to report
-            task_session.refresh(task_row)
-            if task_row.status != TaskStatus.STOPPED:
-                error_message = str(e)
-                logger.error(error_message)
-                commit_task_error(task_row, task_session, error_message)
+            error_message = str(e)
+            logger.error(error_message)
+
+            commit_task_error(task_row, task_session, error_message)
 
             return {task_id: None}
 
