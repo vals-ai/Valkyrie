@@ -19,10 +19,10 @@ from daytona import (
     SessionExecuteRequest,
 )
 
+from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key
-from tracker.types import AgentContractRequest
 
 logger = get_logger(__name__)
 

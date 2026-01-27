@@ -265,14 +265,14 @@ async def process_task(
 
                     return {task_id: evaluation_result_row.result}
                 except Exception as e:
-                    # Validate that the sandbox has not been destroyed
+                    # Error can come from the sandbox being destroyed
                     task_session.refresh(task_row)
-                    if task_row.status == TaskStatus.STOPPED and await check_force_stop(sandbox):
+                    if task_row.status == TaskStatus.STOPPED or (await check_force_stop(sandbox)):
                         return {task_id: None}
 
                     raise e from e
         except Exception as e:
-            error_message = str(e)
+            error_message = f"{str(e)}\n{traceback.format_exc()}"
             logger.error(error_message)
 
             commit_task_error(task_row, task_session, error_message)
