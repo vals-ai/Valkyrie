@@ -192,16 +192,8 @@ async def process_task(
     """
     Processes a task and returns the evaluation result
 
-    NOTE: We run the task and sandbox monitor at the same time,
-    if the sandbox is destroyed before the task is completed we propagate the error up and end the task early.
-
-
-    Returns:
-        A dictionary with the task id as the key and the evaluation result as the value, or None if the task was stopped early (not forced)
-
-    Raises:
-        TrackerServiceError: If the result is not the expected type
-        Exception: Unexpected error occured that was not handled
+    NOTE: When we close the sandbox the agent process will be killed and we will instantly go to evaluating,
+    the evaluation will fail since the instance no longer exists. We handle this inside of the exception caught.
     """
     with Session(bind=engine, expire_on_commit=False) as task_session:
         benchmark_row = fetch_benchmark_row(benchmark_id, task_session)
