@@ -37,6 +37,19 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
+async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
+    """Delete sandbox if it is not already destroyed or being destroyed"""
+    try:
+        await sandbox.refresh_data()
+        if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
+            await daytona.delete(sandbox)
+    except DaytonaNotFoundError:
+        # If we error here that means the sandbox has just been deleted before we could refresh the state
+        pass
+    except Exception as e:
+        logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+
+
 @asynccontextmanager
 async def create_sandbox(
     daytona: AsyncDaytona,
@@ -70,15 +83,7 @@ async def create_sandbox(
     try:
         yield sandbox
     finally:
-        try:
-            await sandbox.refresh_data()
-            if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
-                await daytona.delete(sandbox)
-        except DaytonaNotFoundError:
-            # If we error here that means the sandbox has just been deleted before we could refresh the state
-            pass
-        except Exception as e:
-            logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+        await delete_sandbox(sandbox, daytona)
 
 
 async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractRequest) -> None:
