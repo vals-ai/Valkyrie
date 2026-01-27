@@ -213,7 +213,13 @@ def retrieve_results(benchmark_id: UUID, path: Path):
                     raise click.Abort()
 
             with open(path, "w") as f:
-                f.write(results_response.model_dump_json(indent=4, exclude_none=True))
+                f.write(
+                    results_response.model_dump_json(
+                        indent=4,
+                        exclude_none=True,
+                        exclude={"benchmark_arguments": {"contract": {"env"}}},
+                    )
+                )
 
             click.echo(f"Results saved to '{path}'")
     except TrackerServiceError as e:
