@@ -14,6 +14,7 @@ from daytona import (
     CreateSandboxFromImageParams,
     FileUpload,
     Resources,
+    SandboxState,
     SessionExecuteRequest,
 )
 
@@ -68,9 +69,9 @@ async def create_sandbox(
     try:
         yield sandbox
     finally:
-        logger.info(f"Deleting sandbox {sandbox.name}")
-        await daytona.delete(sandbox)
-        await daytona.close()
+        await sandbox.refresh_data()
+        if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
+            await daytona.delete(sandbox)
 
 
 async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractRequest) -> None:
