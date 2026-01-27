@@ -565,7 +565,7 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> Asyn
                     yield EVENT_COMPLETE
                     break
 
-            await asyncio.sleep(60)
+            await asyncio.sleep(5)
 
     except asyncio.CancelledError:
         logger.info(f"Client disconnected from benchmark {benchmark_id} stream")
