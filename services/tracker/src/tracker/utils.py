@@ -17,14 +17,13 @@ from sqlmodel import Session, asc, case, col, desc, func, select, update
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import broker
-from tracker.database.models import Benchmark, EvaluationResult, FinalEvaluation, Task, TaskStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox, install_agent_dependencies, run_agent, upload_agent_artifacts
 from tracker.types import (
     BenchmarkDetails,
-    BenchmarkStatus,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     Order,
@@ -396,6 +395,8 @@ async def process_benchmark(
         except Exception as e:
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(benchmark_row, session, error_message)
+        finally:
+            await benchmark_service.daytona_client.close()
 
 
 class TaskCounts(NamedTuple):
@@ -588,7 +589,7 @@ async def stop_benchmark(benchmark_row: Benchmark, session: Session) -> None:
 
 
 async def stop_sandbox(
-    sandbox: AsyncSandbox, daytona_client: AsyncDaytona, session: Session, task_id: str | None
+    sandbox: AsyncSandbox, daytona_client: AsyncDaytona, session: Session, task_id: UUID | None
 ) -> str | None:
     try:
         # Wait for the sandbox to be in a valid deletion state
@@ -621,7 +622,7 @@ async def sandbox_generator(benchmark_row: Benchmark) -> AsyncGenerator[AsyncSan
     paginated_sandboxes: AsyncPaginatedSandboxes = await fetch_sandboxes(1)
 
     total_pages = paginated_sandboxes.total_pages
-    while paginated_sandboxes.page < total_pages:
+    while paginated_sandboxes.page <= total_pages:
         sandboxes = paginated_sandboxes.items
         for sandbox in sandboxes:
             yield sandbox
@@ -655,7 +656,7 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
             # If task id does not exist, the task is finished and we can just close the sandbox
             # Edge case where the sandbox is hanging
             task_id = task_metadata.get(sandbox.name)
-            result = await stop_sandbox(sandbox, daytona_client, session, task_id)
+            result = await stop_sandbox(sandbox, daytona_client, session, UUID(task_id))
 
             results[sandbox.name] = result
 
