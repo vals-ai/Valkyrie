@@ -159,34 +159,31 @@ async def run_agent(
 
     session_id = f"{contract.name}-{task_id.replace(' ', '_')}"
 
-    try:
-        await sandbox.process.create_session(session_id)
+    await sandbox.process.create_session(session_id)
 
-        session_exec_resp = await sandbox.process.execute_session_command(
-            session_id, SessionExecuteRequest(command=f"cd {cwd} && {run_cmd}", run_async=True)
+    session_exec_resp = await sandbox.process.execute_session_command(
+        session_id, SessionExecuteRequest(command=f"cd {cwd} && {run_cmd}", run_async=True)
+    )
+
+    cmd_id = session_exec_resp.cmd_id
+
+    if not cmd_id:
+        raise SandboxError(f"Failed to execute command {run_cmd} in session {session_id}")
+
+    log_task = asyncio.create_task(
+        sandbox.process.get_session_command_logs_async(
+            session_id=session_id,
+            command_id=cmd_id,
+            on_stdout=on_data,
+            on_stderr=on_data,
         )
+    )
 
-        cmd_id = session_exec_resp.cmd_id
+    await log_task
 
-        if not cmd_id:
-            raise SandboxError(f"Failed to execute command {run_cmd} in session {session_id}")
+    cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
-        log_task = asyncio.create_task(
-            sandbox.process.get_session_command_logs_async(
-                session_id=session_id,
-                command_id=cmd_id,
-                on_stdout=on_data,
-                on_stderr=on_data,
-            )
-        )
+    if cmd.exit_code != 0:
+        raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
 
-        await log_task
-
-        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
-
-        if cmd.exit_code != 0:
-            raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
-
-        return ""
-    finally:
-        await sandbox.process.delete_session(session_id)
+    return ""
