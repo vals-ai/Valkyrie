@@ -239,7 +239,7 @@ class TrackerService:
         """
         try:
             response = self._client.post(
-                f"{self._base_url}/resume-run/{benchmark_id}", params={"retry": retry}, json={"force": force}
+                f"{self._base_url}/resume-run/{benchmark_id}", params={"retry": retry}, json=force
             )
             if response.status_code != 200:
                 details = response.json().get("detail", response.text)
