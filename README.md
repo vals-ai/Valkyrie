@@ -94,6 +94,7 @@ Flags
 
 ```
 --retry: Retry tasks with the status `error`
+--force task_1 task_2: force retry tasks with the specified space separated ids
 ```
 
 #### List and filter benchmarks
