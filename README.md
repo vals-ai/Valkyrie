@@ -79,15 +79,21 @@ uv run harness stop-run --benchmark-id <benchmark_id>
 ```
 
 Flags
+
 ```
 --force: Force stops all tasks in progress or evaluating (default: false)
 ```
-
 
 #### Resume a benchmark
 
 ```bash
 uv run harness resume-run --benchmark-id <benchmark_id>
+```
+
+Flags
+
+```
+--retry: Retry tasks with the status `error`
 ```
 
 #### List and filter benchmarks
