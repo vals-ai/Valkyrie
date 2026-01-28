@@ -1,7 +1,7 @@
 import traceback
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, func, select
@@ -282,14 +282,17 @@ async def stop_run(
 
 @app.post("/resume-run/{benchmark_id}")
 async def resume_run(
-    benchmark_id: UUID, retry: bool = Query(default=False), session: Session = Depends(get_session)
+    benchmark_id: UUID,
+    retry: bool = Query(default=False),
+    force: list[str] = Body(default=[]),
+    session: Session = Depends(get_session),
 ) -> ResumeRunResponse:
     """
     Resume a benchmark run by its id.
 
     Usage:
     curl -X POST http://<endpoint>/resume-run/<benchmark_id>?retry=true
-
+      -d '{"force": ["task_id_1", "task_id_2"]}'
     Returns:
         ResumeRunResponse
     """
@@ -308,7 +311,7 @@ async def resume_run(
     benchmark_service = start_run_request.benchmark_service
 
     # prepare benchmark and tasks to be resumed
-    verified_task_ids = await resume_benchmark(benchmark_row, session, benchmark_service, retry)
+    verified_task_ids = await resume_benchmark(benchmark_row, session, benchmark_service, retry, force)
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running

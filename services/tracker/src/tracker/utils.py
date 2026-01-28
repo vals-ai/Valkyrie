@@ -684,11 +684,13 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
 
 
 async def resume_benchmark(
-    benchmark_row: Benchmark, session: Session, benchmark_service: BenchmarkService, retry: bool
+    benchmark_row: Benchmark, session: Session, benchmark_service: BenchmarkService, retry: bool, force: list[str]
 ) -> list[str]:
     """
     Resets benchmark and task status to flag resuming the benchmark.
-    if user requests to retry tasks, we reset objects with an error status ontop of the stopped status
+
+    Retry: we reset objects with an error status ontop of the stopped status
+    Force: even if task has been finished we restart it
 
     Benchmark - In progress status
     Tasks - Starting status
@@ -700,7 +702,11 @@ async def resume_benchmark(
         if retry:
             retry_statuses.append(TaskStatus.ERROR)
 
-        filter_query = (col(Task.benchmark) == benchmark_row.id, col(Task.status).in_(retry_statuses))
+        filter_query = [col(Task.benchmark) == benchmark_row.id, col(Task.status).in_(retry_statuses)]
+
+        # If force is provided, we add the task ids to the filter query
+        if force:
+            filter_query.append(col(Task.task_id).in_(force))
 
         # Check if there are any tasks that have been stopped
         task_ids = session.exec(select(Task.id, Task.task_id).where(*filter_query)).all()
