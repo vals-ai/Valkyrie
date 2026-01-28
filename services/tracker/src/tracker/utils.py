@@ -703,7 +703,7 @@ async def resume_benchmark(
         filter_query = (col(Task.benchmark) == benchmark_row.id, col(Task.status).in_(retry_statuses))
 
         # Check if there are any tasks that have been stopped
-        task_ids = session.exec(select(Task.task_id).where(*filter_query)).all()
+        task_ids = session.exec(select(Task.id, Task.task_id).where(*filter_query)).all()
 
         if not task_ids:
             raise TrackerServiceError(
@@ -712,7 +712,9 @@ async def resume_benchmark(
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
-        verify_response = await benchmark_service.request_verify_task_ids(task_ids=list(task_ids), slice_str=None)
+        verify_response = await benchmark_service.request_verify_task_ids(
+            task_ids=[task_id for _, task_id in task_ids], slice_str=None
+        )
 
         # Set the benchmark status to in progress to flag resuming the benchmark
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
@@ -732,7 +734,7 @@ async def resume_benchmark(
         )
 
         # Delete all evaluation results for the tasks (unlikely they exist)
-        session.exec(delete(EvaluationResult).where(col(EvaluationResult.task).in_(task_ids)))
+        session.exec(delete(EvaluationResult).where(col(EvaluationResult.task).in_([id for id, _ in task_ids])))
 
         session.commit()
 
