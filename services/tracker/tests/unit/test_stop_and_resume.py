@@ -141,7 +141,9 @@ class TestStopAndResume:
             partial(self._mock_request_verify_task_ids, task_ids=starting_task_ids),
         )
 
-        verified_task_ids = await resume_benchmark(benchmark_row, database_session, start_run_request.benchmark_service)
+        verified_task_ids = await resume_benchmark(
+            benchmark_row, database_session, start_run_request.benchmark_service, retry=False
+        )
 
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
         assert len(verified_task_ids) == 3

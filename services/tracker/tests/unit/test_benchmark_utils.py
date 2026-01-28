@@ -1,6 +1,6 @@
 from datetime import datetime
 from functools import partial
-from typing import Any
+from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -134,6 +134,7 @@ class TestBenchmarkUtils:
             - Benchmark can be resumed if it is in a stopped state and a single task with the stopped status exists
             - After resuming, the benchmark status is "in progress" and tasks have been set to "starting" that were in the stopped state
             - Only the status of stopped tasks are updated
+            - Can resume a benchmark with tasks that have the status error
         """
 
         def get_test_session():
@@ -177,8 +178,8 @@ class TestBenchmarkUtils:
         )
 
         # Test request to resume the benchmark
-        response: Response = client.post(f"/resume-run/{benchmark_row.id}")
-        assert response.status_code == 200
+        response: Response = client.post(f"/resume-run/{benchmark_row.id}?retry=false")
+        assert response.status_code == 200, response.text
         assert response.json() == {"status": "success"}
 
         # Validate stopped tasks are now in starting state
@@ -190,6 +191,36 @@ class TestBenchmarkUtils:
         # Validate the benchmark is now in progress state
         benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session)
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+        # Reset benchmark row to stopped state
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # Fetch all tasks
+        fetched_task_rows: Sequence[Task] = database_session.exec(
+            select(Task).where(col(Task.benchmark) == benchmark_row.id)
+        ).all()
+        assert len(fetched_task_rows) == 10
+
+        # Change half of them to error and the other half reset to stopped
+        for i, task_row in enumerate(fetched_task_rows):
+            if i < 5:
+                task_row.status = TaskStatus.ERROR
+            else:
+                task_row.status = TaskStatus.STOPPED
+
+        database_session.commit()
+
+        # Call resume benchmark with retry enabled
+        response = client.post(f"/resume-run/{benchmark_row.id}?retry=true")
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+
+        # Validate all tasks are now in starting state
+        fetched_task_rows = database_session.exec(select(Task).where(col(Task.benchmark) == benchmark_row.id)).all()
+        assert len(fetched_task_rows) == 10
+        assert all(task_row.status == TaskStatus.STARTING for task_row in fetched_task_rows)
 
     def test_resume_benchmark_edge_cases(
         self, contract: AgentContractRequest, example_benchmark_object: Benchmark, database_session: Session
@@ -215,7 +246,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # failure code to resume the benchmark
-        response: Response = client.post(f"/resume-run/{benchmark_row.id}")
+        response: Response = client.post(f"/resume-run/{benchmark_row.id}?retry=false")
         assert response.status_code == 400
 
         # Set benchmark to stopped state but add only finished tasks
@@ -231,7 +262,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # error is returned because we have no stopped tasks to resume
-        response = client.post(f"/resume-run/{benchmark_row.id}")
+        response = client.post(f"/resume-run/{benchmark_row.id}?retry=false")
         assert response.status_code == 500
 
         # Ensure that we can recreate the environment the benchmark was started in
