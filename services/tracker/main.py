@@ -281,12 +281,14 @@ async def stop_run(
 
 
 @app.post("/resume-run/{benchmark_id}")
-async def resume_run(benchmark_id: UUID, session: Session = Depends(get_session)) -> ResumeRunResponse:
+async def resume_run(
+    benchmark_id: UUID, retry: bool = Query(default=False), session: Session = Depends(get_session)
+) -> ResumeRunResponse:
     """
     Resume a benchmark run by its id.
 
     Usage:
-    curl -X POST http://<endpoint>/resume-run/<benchmark_id>
+    curl -X POST http://<endpoint>/resume-run/<benchmark_id>?retry=true
 
     Returns:
         ResumeRunResponse
@@ -306,7 +308,7 @@ async def resume_run(benchmark_id: UUID, session: Session = Depends(get_session)
     benchmark_service = start_run_request.benchmark_service
 
     # prepare benchmark and tasks to be resumed
-    verified_task_ids = await resume_benchmark(benchmark_row, session, benchmark_service)
+    verified_task_ids = await resume_benchmark(benchmark_row, session, benchmark_service, retry)
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
