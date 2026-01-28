@@ -142,7 +142,7 @@ class TestStopAndResume:
         )
 
         verified_task_ids = await resume_benchmark(
-            benchmark_row, database_session, start_run_request.benchmark_service, retry=False
+            benchmark_row, database_session, start_run_request.benchmark_service, retry=False, force=[]
         )
 
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
