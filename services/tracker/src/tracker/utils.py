@@ -711,7 +711,7 @@ async def resume_benchmark(
             )
 
         # id is task row primary key, task_id is the task id
-        task_mapping: dict[str, str] = {id: task_id for id, task_id in task_ids}
+        task_mapping: dict[UUID, str] = {id: task_id for id, task_id in task_ids}
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
