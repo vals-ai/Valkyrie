@@ -719,6 +719,13 @@ async def resume_benchmark(
         # id is task row primary key, task_id is the task id
         task_mapping: dict[UUID, str] = {id: task_id for id, task_id in task_ids}
 
+        # Ensure we are not missing any tasks that were requested (skips if force is empty)
+        missing_task_ids = [task_id for task_id in force if task_id not in task_mapping.values()]
+        if missing_task_ids:
+            raise TrackerServiceError(
+                f"Task ids {', '.join(missing_task_ids)} were requested to be force resumed but do not exist"
+            )
+
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
         verify_response = await benchmark_service.request_verify_task_ids(
