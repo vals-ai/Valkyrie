@@ -281,12 +281,19 @@ def stop_run(benchmark_id: UUID, force: bool):
     required=True,
     help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
 )
-def resume_run(benchmark_id: UUID):
+@click.option(
+    "--retry",
+    is_flag=True,
+    required=False,
+    default=False,
+    help="Retry tasks with the status error",
+)
+def resume_run(benchmark_id: UUID, retry: bool):
     """
     Resume a benchmark run by its benchmark id.
 
     Example:
-        harness resume-run --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+        harness resume-run --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry
     """
     click.echo(f"Resuming run for benchmark: {benchmark_id}")
     try:
@@ -294,7 +301,7 @@ def resume_run(benchmark_id: UUID):
             if not check_tracker_service_health(tracker):
                 return
 
-            _ = tracker.resume_run(benchmark_id)
+            _ = tracker.resume_run(benchmark_id, retry)
             click.echo(click.style("Run resumed successfully!", fg="green", bold=True))
             click.echo(
                 click.style(

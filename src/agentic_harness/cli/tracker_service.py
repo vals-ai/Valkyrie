@@ -225,18 +225,18 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to stop run: {e}") from e
 
-    def resume_run(self, benchmark_id: UUID) -> ResumeRunResponse:
+    def resume_run(self, benchmark_id: UUID, retry: bool) -> ResumeRunResponse:
         """
         Resume a benchmark run by its benchmark id.
 
         Args:
             benchmark_id: Benchmark id
-
+            retry: Whether to retry tasks with the status error
         Returns:
             ResumeRunResponse with status and message
         """
         try:
-            response = self._client.post(f"{self._base_url}/resume-run/{benchmark_id}")
+            response = self._client.post(f"{self._base_url}/resume-run/{benchmark_id}", params={"retry": retry})
             if response.status_code != 200:
                 details = response.json().get("detail", response.text)
                 raise TrackerServiceError(f"Failed to resume run: {details}")
