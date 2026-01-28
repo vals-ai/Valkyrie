@@ -700,12 +700,10 @@ async def resume_benchmark(
         if retry:
             retry_statuses.append(TaskStatus.ERROR)
 
+        filter_query = (col(Task.benchmark) == benchmark_row.id, col(Task.status).in_(retry_statuses))
+
         # Check if there are any tasks that have been stopped
-        task_ids = session.exec(
-            select(Task.task_id)
-            .where(col(Task.benchmark) == benchmark_row.id)
-            .where(col(Task.status).in_(retry_statuses))
-        ).all()
+        task_ids = session.exec(select(Task.task_id).where(*filter_query)).all()
 
         if not task_ids:
             raise TrackerServiceError(
@@ -724,8 +722,7 @@ async def resume_benchmark(
         # Set the task status to starting to flag resuming the tasks
         session.exec(
             update(Task)
-            .where(col(Task.benchmark) == benchmark_row.id)
-            .where(col(Task.status).in_(retry_statuses))
+            .where(*filter_query)
             .values(  # Reset to defaults
                 status=TaskStatus.STARTING,
                 started_at=datetime.now(ZoneInfo("UTC")),
