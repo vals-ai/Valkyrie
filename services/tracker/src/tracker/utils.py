@@ -11,7 +11,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
-from sqlmodel import Session, asc, case, col, delete, desc, func, select, update
+from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.config import broker
@@ -702,19 +702,16 @@ async def resume_benchmark(
         if retry:
             retry_statuses.append(TaskStatus.ERROR)
 
-        filter_query = [col(Task.benchmark) == benchmark_row.id, col(Task.status).in_(retry_statuses)]
-
-        # If force is provided, we add the task ids to the filter query
-        if force:
-            filter_query.append(col(Task.task_id).in_(force))
+        filter_query = [
+            col(Task.benchmark) == benchmark_row.id,
+            or_(
+                col(Task.status).in_(retry_statuses),
+                col(Task.task_id).in_(force),
+            ),
+        ]
 
         # Check if there are any tasks that have been stopped
         task_ids = session.exec(select(Task.id, Task.task_id).where(*filter_query)).all()
-
-        if not task_ids:
-            raise TrackerServiceError(
-                f"No tasks for benchmark {benchmark_row.id} can be resumed because all tasks are finished"
-            )
 
         # id is task row primary key, task_id is the task id
         task_mapping: dict[UUID, str] = {id: task_id for id, task_id in task_ids}
@@ -723,7 +720,12 @@ async def resume_benchmark(
         missing_task_ids = [task_id for task_id in force if task_id not in task_mapping.values()]
         if missing_task_ids:
             raise TrackerServiceError(
-                f"Task ids {', '.join(missing_task_ids)} were requested to be force resumed but do not exist"
+                f"{', '.join(missing_task_ids)} was requested to be force resumed but does not exist in the dataset"
+            )
+
+        if not task_ids:
+            raise TrackerServiceError(
+                f"No tasks for benchmark {benchmark_row.id} can be resumed because all tasks are finished"
             )
 
         # Verify the task ids are still valid before priming to resume

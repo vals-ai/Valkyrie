@@ -223,7 +223,11 @@ class TestBenchmarkUtils:
         assert all(task_row.status == TaskStatus.STARTING for task_row in fetched_task_rows)
 
     def test_resume_benchmark_edge_cases(
-        self, contract: AgentContractRequest, example_benchmark_object: Benchmark, database_session: Session
+        self,
+        contract: AgentContractRequest,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
     ):
         """
         Tests edge cases for resuming a benchmark
@@ -233,6 +237,7 @@ class TestBenchmarkUtils:
             - Cannot resume a benchmark where all tasks have already finished
             - Errors are raised and returned to the client
             - Can recreate the same environment the benchmark was started in
+            - Can force resume a task and validate the task ids passed in
         """
 
         def get_test_session():
@@ -278,6 +283,48 @@ class TestBenchmarkUtils:
 
         recreated_start_run_request = benchmark_row.start_run_request
         assert recreated_start_run_request == original_start_run_request
+
+        # Assert we have 5 tasks in the database
+        task_rows = database_session.exec(select(Task).where(col(Task.benchmark) == example_benchmark_object.id)).all()
+        assert len(task_rows) == 5
+
+        # Change one task to stopped state
+        database_session.exec(
+            update(Task).where(col(Task.task_id) == task_rows[0].task_id).values(status=TaskStatus.STOPPED)
+        )
+        database_session.commit()
+
+        # Task id is provided as a force parameter but does not exist in dataset
+        response = client.post(f"/resume-run/{example_benchmark_object.id}?retry=false", json=["task_5"])
+        assert response.status_code == 500
+        assert "task_5" in response.json()["detail"]
+
+        # Assert all tasks but 0 are in finished state
+        task_rows = database_session.exec(
+            select(Task).where(
+                (col(Task.benchmark) == example_benchmark_object.id) & (col(Task.task_id) != task_rows[0].task_id)
+            )
+        ).all()
+        task_ids = [task_row.task_id for task_row in task_rows]
+
+        monkeypatch.setattr(
+            BenchmarkService,
+            "request_verify_task_ids",
+            partial(self._mock_request_verify_task_ids, task_ids=task_ids),
+        )
+
+        assert all(task_row.status == TaskStatus.FINISHED for task_row in task_rows)
+
+        # Try again with the correct task ids
+
+        response = client.post(f"/resume-run/{example_benchmark_object.id}?retry=false", json=task_ids)
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+
+        # Validate the tasks are now in starting state
+        task_rows = database_session.exec(select(Task).where(col(Task.benchmark) == example_benchmark_object.id)).all()
+        assert len(task_rows) == 5
+        assert all(task_row.status == TaskStatus.STARTING for task_row in task_rows)
 
     def test_create_task_rows(self, example_benchmark_object: Benchmark, database_session: Session):
         """
