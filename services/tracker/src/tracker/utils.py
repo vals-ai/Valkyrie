@@ -710,10 +710,13 @@ async def resume_benchmark(
                 f"No tasks for benchmark {benchmark_row.id} can be resumed because all tasks are finished"
             )
 
+        # id is task row primary key, task_id is the task id
+        task_mapping: dict[str, str] = {id: task_id for id, task_id in task_ids}
+
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
         verify_response = await benchmark_service.request_verify_task_ids(
-            task_ids=[task_id for _, task_id in task_ids], slice_str=None
+            task_ids=list(task_mapping.values()), slice_str=None
         )
 
         # Set the benchmark status to in progress to flag resuming the benchmark
@@ -734,7 +737,7 @@ async def resume_benchmark(
         )
 
         # Delete all evaluation results for the tasks (unlikely they exist)
-        session.exec(delete(EvaluationResult).where(col(EvaluationResult.task).in_([id for id, _ in task_ids])))
+        session.exec(delete(EvaluationResult).where(col(EvaluationResult.task).in_(list(task_mapping.keys()))))
 
         session.commit()
 
