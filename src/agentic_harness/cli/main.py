@@ -288,7 +288,14 @@ def stop_run(benchmark_id: UUID, force: bool):
     default=False,
     help="Retry tasks with the status error",
 )
-def resume_run(benchmark_id: UUID, retry: bool):
+@click.option(
+    "--force",
+    nargs=-1,
+    required=False,
+    default=[],
+    help="Force retry tasks with the given task ids (e.g., task_1_id task_2_id)",
+)
+def resume_run(benchmark_id: UUID, retry: bool, force: list[str]):
     """
     Resume a benchmark run by its benchmark id.
 
@@ -301,7 +308,7 @@ def resume_run(benchmark_id: UUID, retry: bool):
             if not check_tracker_service_health(tracker):
                 return
 
-            _ = tracker.resume_run(benchmark_id, retry)
+            _ = tracker.resume_run(benchmark_id, retry, force)
             click.echo(click.style("Run resumed successfully!", fg="green", bold=True))
             click.echo(
                 click.style(
