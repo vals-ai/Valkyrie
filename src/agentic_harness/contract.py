@@ -93,7 +93,7 @@ class BaseAgentContract(ABC):
     @abstractmethod
     def final_output(self) -> Path | None:
         """
-        Path to the final output of the agent.
+        Path to the final output of the agent. Needs to be an absolute path.
 
         Returns:
             Path to the final output of the agent or None if no final output is required
