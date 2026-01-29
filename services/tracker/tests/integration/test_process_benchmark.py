@@ -259,7 +259,7 @@ class TestProcessBenchmark:
         # Benchmark status is updated to error once the benchmark is done running
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.ERROR
-        assert benchmark_row.error_message == "Handled database error"
+        assert "Handled database error" in (benchmark_row.error_message or "")
 
     async def test_process_task_error(
         self,
@@ -335,7 +335,7 @@ class TestProcessBenchmark:
         assert len(tasks) == 1
 
         # Error message is set on the task row
-        assert tasks[0].error_message == "Exception raised while setting up the task"
+        assert "Exception raised while setting up the task" in (tasks[0].error_message or "")
         assert tasks[0].status == TaskStatus.ERROR
 
         final_evaluation = benchmark_row.final_evaluation

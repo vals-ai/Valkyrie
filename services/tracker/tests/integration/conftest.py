@@ -21,6 +21,9 @@ async def benchmark_service() -> AsyncGenerator[BenchmarkService, None]:
 
     yield service
 
+    if service.daytona_client:
+        await service.daytona_client.close()
+
 
 @pytest.fixture
 async def daytona_client(benchmark_service: BenchmarkService) -> AsyncGenerator[AsyncDaytona, None]:
