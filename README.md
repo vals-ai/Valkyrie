@@ -50,7 +50,7 @@ Each service maintains its own isolated virtual environment:
 ```bash
 # With specific task IDs:
 uv run harness start-benchmark \
-  --contract <contract_path> \
+  --agent <agent_path> \
   --benchmark <benchmark_name> \
   --concurrency 1 \
   --task-ids "task_1_id,task_2_id" \
@@ -58,7 +58,7 @@ uv run harness start-benchmark \
 
 # Or run whole benchmark (not recommended for development):
 uv run harness start-benchmark \
-  --contract <contract_path> \
+  --agent <agent_path> \
   --benchmark <benchmark_name> \
   --concurrency 1 \
   --slice "start:stop:step"
