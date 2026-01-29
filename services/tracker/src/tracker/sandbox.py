@@ -189,6 +189,9 @@ async def run_agent(
         if cmd.exit_code != 0:
             raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
 
+        if not contract.final_output:
+            return {}
+
         # Check if a agent_output.json file exists
         agent_output_exists = await sandbox.process.exec(f"[ -f {contract.final_output} ]")
 

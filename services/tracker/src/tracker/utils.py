@@ -223,7 +223,6 @@ async def process_task(
                         _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
 
                     # Run the agent inside of the sandbox
-                    # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
                     agent_output = await run_agent(
                         sandbox, start_run_request.contract, task_data.problem_statement, task_id, task_data.cwd
                     )
