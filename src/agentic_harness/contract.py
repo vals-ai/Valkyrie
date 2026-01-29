@@ -113,4 +113,5 @@ class BaseAgentContract(ABC):
             install_cmd=self.install_cmd,
             env=self.env,
             artifacts=self.artifacts,
+            final_output=self.final_output,
         )
