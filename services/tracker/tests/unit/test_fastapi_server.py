@@ -134,7 +134,7 @@ class TestFastapiServer:
 
         # Remaining fields match what we passed into the request
         assert json_response["benchmark_name"] == request.benchmark_name
-        assert json_response["contract_name"] == request.contract.name
+        assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
@@ -482,7 +482,7 @@ class TestFastapiServer:
 
         # Search for the 4 benchmarks just created + the original one we added before
         fetch_benchmarks_request.benchmark_name = "swebench"
-        fetch_benchmarks_request.contract_name = "claude_code"
+        fetch_benchmarks_request.agent_name = "claude_code"
         fetch_benchmarks_request.status = BenchmarkStatus.IN_PROGRESS
 
         # When we fetch with benchmarks found, we return a 200 OK
@@ -496,7 +496,7 @@ class TestFastapiServer:
 
         # Clear filters and search again (checking limit and total)
         fetch_benchmarks_request.benchmark_name = None
-        fetch_benchmarks_request.contract_name = None
+        fetch_benchmarks_request.agent_name = None
         fetch_benchmarks_request.status = None
 
         response = client.get(

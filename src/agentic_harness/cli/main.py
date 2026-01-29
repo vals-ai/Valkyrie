@@ -79,7 +79,7 @@ def start_benchmark(
     Run an agent on a benchmark.
 
     Example:
-        harness run --contract contracts/claude_code --benchmark swebench
+        harness run --agent agents/claude_code --benchmark swebench
     """
     click.echo("Arguments:")
     click.echo(f"  - Benchmark: {benchmark}")
@@ -323,10 +323,10 @@ def resume_run(benchmark_id: UUID, retry: bool, force: str | None):
 
 @cli.command()
 @click.option(
-    "--contract-name",
+    "--agent-name",
     type=str,
     required=False,
-    help="Contract name (e.g., claude_code)",
+    help="Agent name (e.g., claude_code)",
 )
 @click.option(
     "--benchmark-name",
@@ -349,7 +349,7 @@ def resume_run(benchmark_id: UUID, retry: bool, force: str | None):
     help="Order by the benchmarks to fetch (e.g., desc, asc)",
 )
 def fetch_benchmarks(
-    contract_name: str | None,
+    agent_name: str | None,
     benchmark_name: str | None,
     status: str | None,
     order_by: str = "desc",
@@ -360,14 +360,14 @@ def fetch_benchmarks(
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
 
     Example:
-        harness fetch-benchmarks --contract-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
+        harness fetch-benchmarks --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
     """
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            paginate_benchmarks(tracker, contract_name, benchmark_name, status, order_by)
+            paginate_benchmarks(tracker, agent_name, benchmark_name, status, order_by)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 

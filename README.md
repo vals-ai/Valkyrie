@@ -110,7 +110,7 @@ Flags
 #### List and filter benchmarks
 
 ```bash
-uv run harness fetch-benchmarks --contract-name <contract_name> --benchmark-name <benchmark_name> --status <benchmark_status> --order-by <preferred_order>
+uv run harness fetch-benchmarks --agent-name <agent_name> --benchmark-name <benchmark_name> --status <benchmark_status> --order-by <preferred_order>
 ```
 
 ```

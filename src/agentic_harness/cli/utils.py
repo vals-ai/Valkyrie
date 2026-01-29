@@ -148,7 +148,7 @@ def format_start_run_response(start_run_response: StartRunResponse) -> None:
     click.echo()
     click.echo("┌─ Benchmark Details " + "─" * 58)
     click.echo(f"│ Benchmark:     {start_run_response.benchmark_name}")
-    click.echo(f"│ Contract:      {start_run_response.contract_name}")
+    click.echo(f"│ Agent:      {start_run_response.agent_name}")
     click.echo(f"│ Benchmark ID:  {start_run_response.benchmark_id}")
     click.echo(f"│ Started at:    {start_run_response.started_at}")
     click.echo(f"│ Concurrency:   {start_run_response.concurrency}")
@@ -257,14 +257,14 @@ def format_fetch_benchmarks_response(
 
     id_width = 36
     name_width = max(len("Benchmark"), max(len(benchmark.name) for benchmark in benchmarks))
-    contract_width = max(len("Contract"), max(len(benchmark.contract_name) for benchmark in benchmarks))
+    agent_width = max(len("Agent"), max(len(benchmark.agent_name) for benchmark in benchmarks))
     status_width = max(len("Status"), max(len(benchmark.status.value) for benchmark in benchmarks))
     progress_width = 8
 
     header_line = (
         f"{'ID':<{id_width}}  "
         f"{'Benchmark':<{name_width}}  "
-        f"{'Contract':<{contract_width}}  "
+        f"{'Agent':<{agent_width}}  "
         f"{'Status':<{status_width}}  "
         f"{'Progress':>{progress_width}}"
     )
@@ -282,7 +282,7 @@ def format_fetch_benchmarks_response(
         click.echo(
             f"{str(benchmark.id):<{id_width}}  "
             f"{benchmark.name:<{name_width}}  "
-            f"{benchmark.contract_name:<{contract_width}}  "
+            f"{benchmark.agent_name:<{agent_width}}  "
             f"{click.style(status_display, fg=status_color):<{status_width + 9}}  "
             f"{progress_percentage:>{progress_width}.1f}%"
         )
@@ -300,22 +300,22 @@ def format_fetch_benchmarks_response(
         click.echo(total_text)
 
 
-def format_no_benchmarks_found(contract_name: str | None, benchmark_name: str | None, status: str | None) -> None:
+def format_no_benchmarks_found(agent_name: str | None, benchmark_name: str | None, status: str | None) -> None:
     """
     Handle the case where no benchmarks are found matching the specified filters.
 
     Args:
-        contract_name: Contract name filter
+        agent_name: Agent name filter
         benchmark_name: Benchmark name filter
         status: Status filter
     """
     click.echo()
     click.echo(click.style("No benchmarks found matching the specified filters.", fg="yellow"))
     click.echo()
-    if any([contract_name, benchmark_name, status]):
+    if any([agent_name, benchmark_name, status]):
         click.echo("Filters applied:")
-        if contract_name:
-            click.echo(f"  • Contract: {contract_name}")
+        if agent_name:
+            click.echo(f"  • Agent: {agent_name}")
         if benchmark_name:
             click.echo(f"  • Benchmark: {benchmark_name}")
         if status:
@@ -324,7 +324,7 @@ def format_no_benchmarks_found(contract_name: str | None, benchmark_name: str | 
 
 def paginate_benchmarks(
     tracker: TrackerService,
-    contract_name: str | None,
+    agent_name: str | None,
     benchmark_name: str | None,
     status: str | None,
     order_by: str,
@@ -335,7 +335,7 @@ def paginate_benchmarks(
 
     Args:
         tracker: TrackerService instance
-        contract_name: Optional contract name filter
+        agent_name: Optional agent name filter
         benchmark_name: Optional benchmark name filter
         status: Optional status filter
         order_by: Order (asc/desc)
@@ -346,7 +346,7 @@ def paginate_benchmarks(
 
     while True:
         request = FetchBenchmarksRequest(
-            contract_name=contract_name,
+            agent_name=agent_name,
             benchmark_name=benchmark_name,
             status=BenchmarkStatus(status) if status else None,
             order_by=Order(order_by),
@@ -361,7 +361,7 @@ def paginate_benchmarks(
         click.clear()
 
         if total_count == 0:
-            format_no_benchmarks_found(contract_name, benchmark_name, status)
+            format_no_benchmarks_found(agent_name, benchmark_name, status)
             break
 
         format_fetch_benchmarks_response(response, current_page, total_pages, show_nav=True)

@@ -114,7 +114,7 @@ async def start_run(
     Usage:
     curl -X POST http://<endpoint>/start-run \
       -H "Content-Type: application/json" \
-      -d '{"contract_name": "claude_code", "benchmark_name": "swebench", "task_ids": ["astropy__astropy-12907"]}'
+      -d '{"agent_name": "claude_code", "benchmark_name": "swebench", "task_ids": ["astropy__astropy-12907"]}'
 
     Returns:
         StartRunResponse
@@ -159,7 +159,7 @@ async def start_run(
 
     return StartRunResponse(
         benchmark_name=benchmark_row.name,
-        contract_name=request.contract.name,
+        agent_name=request.contract.name,
         benchmark_id=benchmark_row.id,
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
@@ -334,7 +334,7 @@ async def fetch_benchmarks(
     Fetch benchmarks based on the request parameters.
 
     Usage:
-    curl -X GET http://<endpoint>/fetch-benchmarks?contract_name=claude_code&benchmark_name=swebench&status=IN_PROGRESS&order_by=DESC&limit=5&offset=0
+    curl -X GET http://<endpoint>/fetch-benchmarks?agent_name=claude_code&benchmark_name=swebench&status=IN_PROGRESS&order_by=DESC&limit=5&offset=0
 
     Returns:
         list[FetchBenchmarksResponse]
