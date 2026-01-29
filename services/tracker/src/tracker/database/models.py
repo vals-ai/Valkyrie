@@ -1,5 +1,6 @@
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -51,6 +52,7 @@ class AgentContractRequest(BaseModel):
     artifacts: list[str] = []
     install_cmd: str
     run_cmd: str
+    final_output: Path | None = None
     env: dict[str, str] = {}
 
 
