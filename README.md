@@ -26,6 +26,14 @@ make install
 
 Creates `.venv` and installs dependencies for CLI and harness from `pyproject.toml`.
 
+**Harness (Tool)**
+
+```bash
+make tool-install
+```
+
+Installs an executable into the bin which allows the cli to be ran without the prefix `uv run ...`. Installed using -e, for developing changes will update the executable. `make install` is still required for development.
+
 **Services**
 
 Each service maintains its own isolated virtual environment:
@@ -34,6 +42,8 @@ Each service maintains its own isolated virtual environment:
 - **SWE-bench service**: `make swebench-install` — Creates `services/benchmarks/swebench/.venv`
 
 ### Usage
+
+!!!! If installed with `make tool-install`, the prefix `uv run ...` is not nessecary, remove it and run from just `harness ...`. Confirm installation works using `harness --help`. If it was not added to the path, run `uv tool update-shell` and it will be.
 
 #### Start a benchmark
 

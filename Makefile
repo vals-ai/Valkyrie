@@ -1,7 +1,7 @@
 .PHONY: help install test test-unit test-integration test-all style style-check typecheck \
 	tracker-install tracker-dev tracker-service tracker-test tracker-test-unit tracker-test-integration \
 	swebench-install swebench-dev swebench-test swebench-test-unit swebench-test-integration \
-	validate-workspace format lint update-submodules venv_check
+	validate-workspace format lint update-submodules venv_check tool-install
 
 PYTHON_VERSION := 3.12
 
@@ -42,6 +42,9 @@ install:
 	uv cache clean model-library valsai
 	uv sync --group dev
 	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
+
+tool-install:
+	uv tool install -e .
 
 update-submodules:
 	git submodule update --remote --merge
