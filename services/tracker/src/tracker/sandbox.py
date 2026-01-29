@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import shlex
 import zipfile
 from contextlib import asynccontextmanager
@@ -136,7 +137,7 @@ async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContr
 
 async def run_agent(
     sandbox: AsyncSandbox, contract: AgentContractRequest, problem_statement: str, task_id: str, cwd: str
-) -> str:
+) -> dict[str, Any]:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -145,8 +146,8 @@ async def run_agent(
         contract_name: Name of the contract
         problem_statement: Problem statement to pass to the agent
 
-    Retruns:
-        Agent stdout and stderr
+    Returns:
+        Agent output
 
     Raises:
         SandboxError: If the agent fails to run or times out
@@ -188,7 +189,25 @@ async def run_agent(
         if cmd.exit_code != 0:
             raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
 
-        return ""
+        agent_output_path = "/tmp/agent_output.json"
+
+        # Check if a agent_output.json file exists
+        agent_output_exists = await sandbox.process.exec(f"[ -f {agent_output_path} ]")
+
+        # If agent output does not exist, return an empty result
+        if agent_output_exists.exit_code != 0:
+            return {}
+
+        # If agent output exists, try to load it as a json, if not, return the result as a string
+        agent_output = await sandbox.process.exec(f"cat {agent_output_path}")
+
+        try:
+            return json.loads(agent_output.result)
+        except Exception:
+            pass
+
+        return {"result": agent_output.result}
+
     finally:
         try:
             await sandbox.process.delete_session(session_id)
