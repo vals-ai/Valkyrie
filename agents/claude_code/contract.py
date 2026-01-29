@@ -1,8 +1,10 @@
 import os
+from pathlib import Path
+
 from dotenv import load_dotenv
+from model_library.registry_utils import get_model_names_by_provider
 
 from agentic_harness.contract import BaseAgentContract
-from model_library.registry_utils import get_model_names_by_provider
 
 load_dotenv()
 
@@ -47,6 +49,10 @@ class ClaudeCodeContract(BaseAgentContract):
     @property
     def env(self) -> dict[str, str]:
         return {"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]}
+
+    @property
+    def final_output(self) -> Path | None:
+        return None
 
     @property
     def run_cmd(self) -> str:

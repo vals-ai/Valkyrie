@@ -96,9 +96,9 @@ class BaseAgentContract(ABC):
         Path to the final output of the agent. Needs to be an absolute path.
 
         Returns:
-            Path to the final output of the agent or None if no final output is required
+            Path | None: The path to the final output that the agent writes to.
         """
-        return None
+        pass
 
     def to_request(self) -> AgentContractRequest:
         """
