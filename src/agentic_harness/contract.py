@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 from tracker.database.models import AgentContractRequest
+
 from agentic_harness.schemas import AgentConfig
 
 
@@ -86,6 +88,17 @@ class BaseAgentContract(ABC):
             List of artifact paths (default: empty list)
         """
         return []
+
+    @property
+    @abstractmethod
+    def final_output(self) -> Path | None:
+        """
+        Path to the final output of the agent.
+
+        Returns:
+            Path to the final output of the agent or None if no final output is required
+        """
+        return None
 
     def to_request(self) -> AgentContractRequest:
         """

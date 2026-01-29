@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from dotenv import dotenv_values
 
 from agentic_harness.contract import BaseAgentContract
@@ -21,6 +23,10 @@ class SWEAgentContract(BaseAgentContract):
     @property
     def env(self) -> dict[str, str]:
         return {k: v for k, v in dotenv_values().items() if v is not None}
+
+    @property
+    def final_output(self) -> Path | None:
+        return Path("/logs/sweagent/stats.json")
 
     @property
     def run_cmd(self) -> str:
