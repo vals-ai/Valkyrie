@@ -147,7 +147,7 @@ async def run_agent(
         problem_statement: Problem statement to pass to the agent
 
     Returns:
-        Agent output
+        Agent output if the final output is a valid json, otherwise an empty dict
 
     Raises:
         SandboxError: If the agent fails to run or times out
@@ -156,8 +156,18 @@ async def run_agent(
 
     run_cmd = contract.run_cmd.replace("{problem_statement}", shlex.quote(problem_statement))
 
+    # Tracks last line from the agent
+    # NOTE: Basedpyright gives us an unreachable error if we use str | None here
+    output: list[str] = []
+
     def on_data(data: str) -> None:
-        stream_logger.info(data.strip("\n"))
+        data = data.strip("\n")
+        stream_logger.info(data)
+
+        if output:
+            output[-1] = data
+        else:
+            output.append(data)
 
     session_id = f"{contract.name}-{task_id.replace(' ', '_')}"
 
@@ -189,24 +199,15 @@ async def run_agent(
         if cmd.exit_code != 0:
             raise SandboxError(f"Failed to run agent {contract.name}, exit code: {cmd.exit_code}")
 
-        agent_output_path = "/tmp/agent_output.json"
-
-        # Check if a agent_output.json file exists
-        agent_output_exists = await sandbox.process.exec(f"[ -f {agent_output_path} ]")
-
-        # If agent output does not exist, return an empty result
-        if agent_output_exists.exit_code != 0:
+        if not output:
             return {}
 
-        # If agent output exists, try to load it as a json, if not, return the result as a string
-        agent_output = await sandbox.process.exec(f"cat {agent_output_path}")
-
         try:
-            return json.loads(agent_output.result)
+            return json.loads(output[-1])
         except Exception:
             pass
 
-        return {"result": agent_output.result}
+        return {}
 
     finally:
         try:

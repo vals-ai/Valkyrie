@@ -224,7 +224,7 @@ async def process_task(
 
                     # Run the agent inside of the sandbox
                     # NOTE: Currently only testing when agent does not need a response, in the future run agent will return a json to evaluate it needed
-                    await run_agent(
+                    agent_output = await run_agent(
                         sandbox, start_run_request.contract, task_data.problem_statement, task_id, task_data.cwd
                     )
 
@@ -240,7 +240,7 @@ async def process_task(
 
                     # Save the evaluation result to the database with the task row
                     evaluation_result_row = EvaluationResult(
-                        task=task_row.id, instance_id=sandbox.id, result=evaluation_result
+                        task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_output=agent_output
                     )
                     task_session.add(evaluation_result_row)
 
