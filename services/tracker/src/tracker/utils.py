@@ -494,6 +494,9 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session) -> dict[str, 
     evaluation_results: dict[str, dict[str, Any]] = {}
     for evaluation_result, task_id in results:
         result_data = evaluation_result.result
+        if evaluation_result.agent_output:
+            result_data["agent_output"] = evaluation_result.agent_output
+
         evaluation_results[task_id] = result_data
 
     return evaluation_results

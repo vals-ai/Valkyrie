@@ -2,7 +2,6 @@
 
 import io
 import zipfile
-from pathlib import Path
 from typing import AsyncGenerator, Generator
 from unittest.mock import MagicMock, patch
 
@@ -134,7 +133,7 @@ class TestSandboxOperations:
             artifacts=[],
             install_cmd="echo 'no-op'",
             run_cmd=run_cmd,
-            final_output=Path("/tmp/agent_output.json"),
+            final_output="/tmp/agent_output.json",
         )
 
         final_output = await run_agent(test_sandbox, contract, "some problem statement", "some task id", cwd="/")
