@@ -205,6 +205,7 @@ async def run_agent(
         try:
             return json.loads(agent_output.result)
         except Exception:
+            logger.warning("Failed to load agent output as a json, creating a fallback result")
             pass
 
         return {
