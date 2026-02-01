@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator, Coroutine
 from datetime import datetime
 from enum import Enum
 from functools import cached_property
-from typing import Any, NamedTuple, Sequence
+from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -396,6 +396,23 @@ async def process_benchmark(
                 for result_dict in evaluation_result_rows
                 for task_id, evaluation_result in result_dict.items()
             }
+
+            # Fetch remaining tasks (in case this benchmark was resumed)
+            remaining_task_results_query = cast(
+                Sequence[tuple[str, dict[str, Any]]],
+                session.exec(
+                    select(Task.task_id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
+                    .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task))
+                    .where(col(Task.benchmark) == benchmark_row.id)
+                    .where(col(Task.task_id).notin_(list(evaluation_results.keys())))
+                ).all(),
+            )
+
+            remaining_task_results: dict[str, dict[str, Any] | None] = {
+                task_id: evaluation_result for task_id, evaluation_result in remaining_task_results_query
+            }
+
+            evaluation_results.update(remaining_task_results)
 
             # Calculate the final score based off the tasks that were ran
             final_score_response = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
