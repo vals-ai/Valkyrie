@@ -131,7 +131,6 @@ async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContr
         logger.error(error_msg)
         raise SandboxError(error_msg)
 
-    logger.info(response.result)
     logger.info(f"Finished running installing dependencies for contract: {contract.name}")
 
 
