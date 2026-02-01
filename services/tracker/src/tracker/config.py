@@ -22,5 +22,8 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
 broker = (
     InMemoryBroker()
     if BROKER_ENVIRONMENT == "testing"
-    else RedisStreamBroker(url=REDIS_URL).with_result_backend(result_backend)
+    else RedisStreamBroker(
+        url=REDIS_URL,
+        idle_timeout=86400000,  # 24 hours
+    ).with_result_backend(result_backend)
 )
