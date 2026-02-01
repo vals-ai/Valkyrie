@@ -45,6 +45,7 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
             await daytona.delete(sandbox)
     except DaytonaNotFoundError:
         # If we error here that means the sandbox has just been deleted before we could refresh the state
+        logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
         pass
     except Exception as e:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
@@ -193,4 +194,5 @@ async def run_agent(
             await sandbox.process.delete_session(session_id)
         except Exception:
             # NOTE: If we kill the sandbox this sometimes errors
+            logger.error(f"Caught failure to delete session `{session_id}`")
             pass

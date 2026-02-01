@@ -51,7 +51,7 @@ class BenchmarkFormatter:
         progress_pct = (finished_tasks / total_tasks * 100) if total_tasks > 0 else 0
         filled_width = int(bar_width * progress_pct / 100)
         bar = "█" * filled_width + "░" * (bar_width - filled_width)
-        return str(bar), progress_pct
+        return bar, progress_pct
 
     @staticmethod
     def format_task_breakdown(task_breakdown: dict[TaskStatus, int]) -> str:

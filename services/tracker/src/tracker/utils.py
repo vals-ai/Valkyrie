@@ -524,10 +524,13 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> Asyn
     Returns:
         AsyncGenerator[str]
     """
+    PULL_INTERVAL = 5
+
     EVENT_COMPLETE = "event: complete\n\n"
     EVENT_ERROR = "event: error\ndata:"
     DATA_PREFIX = "data:"
     DISCONNECT = "event: disconnect\n\n"
+
     try:
         while True:
             with Session(bind=session.bind) as fresh_session:
@@ -551,7 +554,7 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> Asyn
                     yield EVENT_COMPLETE
                     break
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(PULL_INTERVAL)
 
     except asyncio.CancelledError:
         logger.info(f"Client disconnected from benchmark {benchmark_id} stream")
@@ -568,34 +571,20 @@ async def stop_benchmark(benchmark_row: Benchmark, session: Session, force: bool
     NOTE: Tasks that have already started will continue to run and finish.
     """
     try:
-        # Check if there are any tasks yet that have not been started yet
-        tasks = session.exec(
-            select(func.count(col(Task.id)))
-            .where(col(Task.benchmark) == benchmark_row.id)
-            .where(col(Task.status) == TaskStatus.STARTING)
-        ).one()
-
-        # If we are forcing we want to update the benchmark status to stopping anyway
-        if not tasks and not force:
-            return None
-
-        # Set the benchmark status to stopping to initiate the stopping process
-        benchmark_row.status = BenchmarkStatus.STOPPING
-        session.add(benchmark_row)
-        session.commit()
-
-        # Can return early if no starting tasks exist
-        if not tasks:
-            return None
-
-        # Stop all tasks that have not been started yet from starting by setting the stop flag
-        session.exec(
+        # Update all rows where tasks are starting to stopped
+        result = session.exec(
             update(Task)
             .where(col(Task.benchmark) == benchmark_row.id)
             .where(col(Task.status) == TaskStatus.STARTING)
             .values(status=TaskStatus.STOPPED)
         )
         session.commit()
+
+        # If we have stopped any tasks or are forcing the benchmark to stop, set the benchmark status to stopping
+        if result.rowcount > 0 or force:
+            benchmark_row.status = BenchmarkStatus.STOPPING
+            session.add(benchmark_row)
+            session.commit()
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping benchmark {benchmark_row.id}: {str(e)}") from e
 
@@ -671,31 +660,26 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
     ).all()
 
     # Create a mapping upfront that we can use to update the task rows after stopping the sandboxes
-    task_metadata: dict[str, str] = {task.alias: str(task.id) for task in task_rows}
+    task_metadata: dict[str, UUID] = {task.alias: task.id for task in task_rows}
 
-    # Iterate through each running sandbox and stop it, collecting erorr messages
+    # Iterate through each running sandbox and stop it, collecting error messages
     results: dict[str, str | None] = {}
     async for sandbox in sandbox_generator(benchmark_row, daytona_client):
         # If task id does not exist, the task is finished and we can just close the sandbox
         # Edge case where the sandbox is hanging
-        task_id = task_metadata.get(sandbox.name)
+        task_id: UUID | None = task_metadata.get(sandbox.name)
         if not task_id:
             logger.info(f"Discovered sandbox not being tracked with the name {sandbox.name}. Closing sandbox.")
 
-        result = await stop_sandbox(sandbox, daytona_client, session, UUID(task_id) if task_id else None)
+        result = await stop_sandbox(sandbox, daytona_client, session, task_id if task_id else None)
 
         results[sandbox.name] = result
 
-    error_mapping: dict[str, str] = {}
-    for sandbox_name, error_message in results.items():
-        if error_message:
-            error_mapping[sandbox_name] = error_message
+    error_message: str = "\n".join(
+        f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
+    )
 
-    if error_mapping:
-        error_message = "\n".join(
-            [f"{task_alias}: {error_message}" for task_alias, error_message in error_mapping.items()]
-        )
-
+    if error_message:
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
 
 

@@ -355,7 +355,7 @@ class TestFastapiServer:
         assert len(response_json.get("evaluation_results")) == 10
         assert response_json.get("final_evaluation")
 
-        # Check for tasks with erorrs
+        # Check for tasks with error
         assert response_json.get("task_errors")
         assert len(response_json.get("task_errors")) == 2
 
