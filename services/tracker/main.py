@@ -300,10 +300,10 @@ async def resume_benchmark(
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
-    if benchmark_row.status != BenchmarkStatus.STOPPED:
+    if benchmark_row.status not in [BenchmarkStatus.STOPPED, BenchmarkStatus.ERROR]:
         raise HTTPException(
             status_code=400,
-            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Must be in the stopped state to resume.",
+            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Must be in the stopped or error state to resume.",
         )
 
     start_benchmark_request = benchmark_row.start_benchmark_request
