@@ -114,9 +114,12 @@ class TaskMonitor:
 
         """
         self._session.expire_all()
+        self._session.refresh(self._benchmark_row)
+
         task_row = self._fetch_task_row(task_id)
 
-        if task_row.status == TaskStatus.STOPPED:
+        # If task has been stopped or benchmark has occured an error we need to exit
+        if task_row.status == TaskStatus.STOPPED or self._benchmark_row.status == BenchmarkStatus.ERROR:
             return False
 
         return True
@@ -330,6 +333,7 @@ def create_task_rows(
         session.add(task_row)
 
     session.commit()
+    session.expire_all()
 
     # Fetch all task rows with the status of pending
     pending_task_rows: Sequence[tuple[str, Task]] = session.exec(
