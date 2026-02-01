@@ -151,7 +151,7 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ Agent:      {start_benchmark_response.agent_name}")
     click.echo(f"│ Benchmark ID:  {start_benchmark_response.benchmark_id}")
     click.echo(f"│ Started at:    {start_benchmark_response.started_at}")
-    click.echo(f"│ Concurrency:   {start_benchmark_response.concurrency}")
+    click.echo(f"│ Max concurrency:   {start_benchmark_response.concurrency}")
     click.echo(f"│ Total tasks:   {start_benchmark_response.task_count}")
     click.echo("└" + "─" * 79)
     click.echo()
