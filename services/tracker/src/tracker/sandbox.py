@@ -124,14 +124,45 @@ async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContr
 
     contract_path = get_contract_path(contract.name)
 
-    response = await sandbox.process.exec(contract.install_cmd, cwd=str(contract_path))
+    def on_data(data: str) -> None:
+        stream_logger.info(data.strip("\n"))
 
-    if response.exit_code != 0:
-        error_msg = f"Failed to install dependencies for contract {contract.name}: {response.result}"
-        logger.error(error_msg)
-        raise SandboxError(error_msg)
+    try:
+        session_id = f"{contract.name}-install"
 
-    logger.info(f"Finished running installing dependencies for contract: {contract.name}")
+        await sandbox.process.create_session(session_id)
+
+        session_exec_resp = await sandbox.process.execute_session_command(
+            session_id, SessionExecuteRequest(command=f"cd {contract_path} && {contract.install_cmd}", run_async=True)
+        )
+
+        cmd_id = session_exec_resp.cmd_id
+
+        if not cmd_id:
+            raise SandboxError(f"Failed to execute install command for {contract.name}")
+
+        await sandbox.process.get_session_command_logs_async(
+            session_id=session_id,
+            command_id=cmd_id,
+            # on_stdout=on_data,
+            # on_stderr=on_data,
+        )
+
+        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+
+        if cmd.exit_code != 0:
+            error_msg = f"Failed to install dependencies for contract {contract.name}"
+            logger.error(error_msg)
+            raise SandboxError(error_msg)
+
+        logger.info(f"Finished running installing dependencies for contract: {contract.name}")
+
+    finally:
+        try:
+            await sandbox.process.delete_session(session_id)
+        except Exception:
+            logger.error(f"Caught failure to delete session `{session_id}`")
+            pass
 
 
 async def run_agent(
