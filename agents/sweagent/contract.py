@@ -26,7 +26,8 @@ class SWEAgentContract(BaseAgentContract):
 
     @property
     def final_output(self) -> Path | None:
-        return Path("/logs/sweagent/stats.json")
+        # return Path("/logs/sweagent/stats.json")
+        return None
 
     @property
     def run_cmd(self) -> str:
