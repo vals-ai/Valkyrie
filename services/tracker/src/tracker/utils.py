@@ -325,15 +325,11 @@ def create_task_rows(
     # NOTE: Must maintain same order that was passed in
     task_ids_to_create = [task_id for task_id in verified_task_ids if task_id not in existing_task_ids]
 
-    created_task_rows: dict[str, Task] = {}
     for task_id in task_ids_to_create:
         task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
-        created_task_rows[task_id] = task_row
+        session.add(task_row)
 
-    # Create the task rows if we need to add any new ones
-    if created_task_rows:
-        session.add_all(list(created_task_rows.values()))
-        session.commit()
+    session.commit()
 
     # Fetch all task rows with the status of pending
     pending_task_rows: Sequence[tuple[str, Task]] = session.exec(
