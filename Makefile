@@ -47,6 +47,7 @@ tool-install:
 	uv tool install -e .
 
 update-submodules:
+	git submodule update --init --recursive
 	git submodule update --remote --merge
 	uv sync
 

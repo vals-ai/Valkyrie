@@ -5,6 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     supervisor \
     gcc \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install uv

@@ -1,0 +1,199 @@
+"""Tracker service stack - public-facing API gateway to all other services."""
+
+from typing import Any
+
+import aws_cdk as cdk
+from aws_cdk import (
+    Duration,
+    Stack,
+    aws_ec2,
+    aws_ecs,
+    aws_ecs_patterns,
+    aws_elasticloadbalancingv2,
+    aws_logs,
+    aws_route53,
+    aws_s3,
+    aws_secretsmanager,
+    aws_servicediscovery,
+)
+from aws_cdk.aws_ecr_assets import Platform
+from constants import (
+    ALB_HEALTH_INTERVAL_SECONDS,
+    ALB_IDLE_TIMEOUT_SECONDS,
+    CONTAINER_HEALTH_INTERVAL_SECONDS,
+    CONTAINER_HEALTH_RETRIES,
+    CONTAINER_HEALTH_START_PERIOD_SECONDS,
+    CONTAINER_HEALTH_TIMEOUT_SECONDS,
+    DAYTONA_API_URL,
+    DAYTONA_SECRET_NAME,
+    DAYTONA_TARGET,
+    NAMESPACE,
+    REDIS_HEALTH_INTERVAL_SECONDS,
+    REDIS_HEALTH_START_PERIOD_SECONDS,
+    REDIS_PORT,
+    SWEBENCH_PORT,
+    TRACKER_CPU,
+    TRACKER_DOMAIN,
+    TRACKER_MAX_TASKS,
+    TRACKER_MEMORY,
+    TRACKER_MIN_TASKS,
+    TRACKER_PORT,
+    TRACKER_SCALING_CPU_PERCENT,
+)
+from constructs import Construct
+
+
+class TrackerStack(Stack):
+    """Tracker service: public API that orchestrates benchmark runs."""
+
+    _SERVICE_NAME: str = "Tracker"
+
+    def __init__(
+        self,
+        scope: Construct,
+        id: str,
+        vpc: aws_ec2.IVpc,
+        cluster: aws_ecs.ICluster,
+        namespace: aws_servicediscovery.IPrivateDnsNamespace,
+        hosted_zone: aws_route53.IHostedZone,
+        bucket: aws_s3.IBucket,
+        **kwargs: Any,
+    ):
+        super().__init__(scope, id, **kwargs)
+
+        # Reference existing Daytona secret (must be created manually with DAYTONA_API_KEY)
+        daytona_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "DaytonaSecret",
+            secret_name=DAYTONA_SECRET_NAME,
+        )
+
+        # fargate task
+        task_def = aws_ecs.FargateTaskDefinition(
+            self,
+            f"{self._SERVICE_NAME}TaskDef",
+            cpu=TRACKER_CPU,
+            memory_limit_mib=TRACKER_MEMORY,
+            runtime_platform=aws_ecs.RuntimePlatform(
+                cpu_architecture=aws_ecs.CpuArchitecture.X86_64,
+                operating_system_family=aws_ecs.OperatingSystemFamily.LINUX,
+            ),
+        )
+
+        # redis sidecar container
+        redis_container = task_def.add_container(
+            f"{self._SERVICE_NAME}RedisContainer",
+            container_name="redis",
+            image=aws_ecs.ContainerImage.from_registry("redis:7-alpine"),
+            logging=aws_ecs.LogDriver.aws_logs(
+                stream_prefix=f"{self._SERVICE_NAME}Redis",
+                log_group=aws_logs.LogGroup(
+                    self,
+                    f"{self._SERVICE_NAME}RedisLogGroup",
+                    retention=aws_logs.RetentionDays.ONE_WEEK,
+                    removal_policy=cdk.RemovalPolicy.DESTROY,
+                ),
+            ),
+            health_check=aws_ecs.HealthCheck(
+                command=["CMD", "redis-cli", "ping"],
+                interval=Duration.seconds(REDIS_HEALTH_INTERVAL_SECONDS),
+                retries=CONTAINER_HEALTH_RETRIES,
+                start_period=Duration.seconds(REDIS_HEALTH_START_PERIOD_SECONDS),
+                timeout=Duration.seconds(CONTAINER_HEALTH_TIMEOUT_SECONDS),
+            ),
+        )
+        redis_container.add_port_mappings(aws_ecs.PortMapping(container_port=REDIS_PORT))
+
+        tracker_container = task_def.add_container(
+            f"{self._SERVICE_NAME}Container",
+            image=aws_ecs.ContainerImage.from_asset(
+                "../services/tracker",
+                file="Dockerfile",
+                platform=Platform.LINUX_AMD64,
+            ),
+            logging=aws_ecs.LogDriver.aws_logs(
+                stream_prefix=self._SERVICE_NAME,
+                log_group=aws_logs.LogGroup(
+                    self,
+                    f"{self._SERVICE_NAME}LogGroup",
+                    retention=aws_logs.RetentionDays.ONE_WEEK,
+                    removal_policy=cdk.RemovalPolicy.DESTROY,
+                ),
+            ),
+            port_mappings=[aws_ecs.PortMapping(container_port=TRACKER_PORT)],
+            environment={
+                "REDIS_URL": f"redis://localhost:{REDIS_PORT}",
+                "BROKER_ENVIRONMENT": "production",
+                "BENCHMARK_SERVICE_URL": f"http://swebench.{NAMESPACE}:{SWEBENCH_PORT}",
+                "AWS_S3_BUCKET": bucket.bucket_name,
+                "DAYTONA_API_URL": DAYTONA_API_URL,
+                "DAYTONA_TARGET": DAYTONA_TARGET,
+            },
+            secrets={
+                "DAYTONA_API_KEY": aws_ecs.Secret.from_secrets_manager(daytona_secret),
+            },
+            health_check=aws_ecs.HealthCheck(
+                command=["CMD-SHELL", f"curl -f http://localhost:{TRACKER_PORT}/health || exit 1"],
+                interval=Duration.seconds(CONTAINER_HEALTH_INTERVAL_SECONDS),
+                retries=CONTAINER_HEALTH_RETRIES,
+                start_period=Duration.seconds(CONTAINER_HEALTH_START_PERIOD_SECONDS),
+                timeout=Duration.seconds(CONTAINER_HEALTH_TIMEOUT_SECONDS),
+            ),
+        )
+
+        # redis dependency
+        tracker_container.add_container_dependencies(
+            aws_ecs.ContainerDependency(
+                container=redis_container,
+                condition=aws_ecs.ContainerDependencyCondition.HEALTHY,
+            )
+        )
+
+        task_def.default_container = tracker_container
+
+        # fargate service with public domain
+        self.service = aws_ecs_patterns.ApplicationLoadBalancedFargateService(
+            self,
+            f"{self._SERVICE_NAME}Service",
+            cluster=cluster,
+            desired_count=TRACKER_MIN_TASKS,
+            task_definition=task_def,
+            service_name=self._SERVICE_NAME,
+            circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
+            domain_name=TRACKER_DOMAIN,
+            domain_zone=hosted_zone,
+            protocol=aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS,
+            redirect_http=True,
+            open_listener=False,  # security group not configured, manually add whitelisted IPs (no public access by default)
+            assign_public_ip=True,
+            public_load_balancer=True,
+        )
+
+        # register with service discovery for internal access
+        self.service.service.enable_cloud_map(
+            name="tracker",
+            cloud_map_namespace=namespace,
+        )
+
+        # load balancer health check
+        self.service.target_group.configure_health_check(
+            path="/health",
+            port=str(TRACKER_PORT),
+            interval=Duration.seconds(ALB_HEALTH_INTERVAL_SECONDS),
+        )
+
+        # request timeout
+        self.service.load_balancer.set_attribute("idle_timeout.timeout_seconds", str(ALB_IDLE_TIMEOUT_SECONDS))
+
+        # auto-scaling
+        scaling = self.service.service.auto_scale_task_count(
+            min_capacity=TRACKER_MIN_TASKS,
+            max_capacity=TRACKER_MAX_TASKS,
+        )
+        scaling.scale_on_cpu_utilization(
+            "CpuScaling",
+            target_utilization_percent=TRACKER_SCALING_CPU_PERCENT,
+        )
+
+        # Grant S3 read/write permissions to the task
+        bucket.grant_read_write(task_def.task_role)
