@@ -264,10 +264,10 @@ async def stop_benchmark(
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
     # Can only pause a in progress benchmark
-    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+    if benchmark_row.status not in [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR]:
         raise HTTPException(
             status_code=400,
-            detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress benchmark.",
+            detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error benchmark.",
         )
 
     await initiate_stop_benchmark(benchmark_row, session, force)

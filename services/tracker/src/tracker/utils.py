@@ -617,20 +617,13 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
         raise TrackerServiceError(f"Unexpected error stopping benchmark {benchmark_row.id}: {str(e)}") from e
 
 
-async def stop_sandbox(
-    sandbox: AsyncSandbox, daytona_client: AsyncDaytona, session: Session, task_id: UUID | None
-) -> str | None:
+async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> str | None:
     try:
         # Wait for the sandbox to be in a valid deletion state
         await sandbox.wait_for_sandbox_start(timeout=0)
 
         # Delete the sandbox
         await daytona_client.delete(sandbox)
-
-        # Only update the task row if it is still in progress
-        if task_id:
-            session.exec(update(Task).where(col(Task.id) == task_id).values(status=TaskStatus.STOPPED))
-            session.commit()
 
         return None
     except Exception as e:
@@ -680,26 +673,20 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
     """
     daytona_client: AsyncDaytona = benchmark_row.benchmark_service.daytona_client
 
-    # Create a mapping between all task primary key id and their task_id (that are pending or evaluating)
-    task_rows: Sequence[Task] = session.exec(
-        select(Task)
+    # Update all tasks being processed to stopped
+    session.exec(
+        update(Task)
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.status).in_([TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
-    ).all()
+        .values(status=TaskStatus.STOPPED)
+    )
 
-    # Create a mapping upfront that we can use to update the task rows after stopping the sandboxes
-    task_metadata: dict[str, UUID] = {task.alias: task.id for task in task_rows}
+    session.commit()
 
     # Iterate through each running sandbox and stop it, collecting error messages
     results: dict[str, str | None] = {}
     async for sandbox in sandbox_generator(benchmark_row, daytona_client):
-        # If task id does not exist, the task is finished and we can just close the sandbox
-        # Edge case where the sandbox is hanging
-        task_id: UUID | None = task_metadata.get(sandbox.name)
-        if not task_id:
-            logger.info(f"Discovered sandbox not being tracked with the name {sandbox.name}. Closing sandbox.")
-
-        result = await stop_sandbox(sandbox, daytona_client, session, task_id if task_id else None)
+        result = await stop_sandbox(sandbox, daytona_client)
 
         results[sandbox.name] = result
 
