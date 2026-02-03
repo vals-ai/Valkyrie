@@ -17,7 +17,7 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
-    ResumeRunResponse,
+    ResumeBenchmarkResponse,
     RetrieveResultsResponse,
     StartBenchmarkErrorResponse,
     StartBenchmarkRequest,
@@ -29,9 +29,9 @@ from tracker.utils import (
     commit_benchmark_error,
     fetch_filtered_benchmark_rows,
     force_stop_sandboxes,
+    initiate_resume_benchmark,
     initiate_stop_benchmark,
     process_benchmark,
-    resume_benchmark,
     stream_benchmark_results,
 )
 
@@ -280,21 +280,21 @@ async def stop_benchmark(
     )
 
 
-@app.post("/resume-run/{benchmark_id}")
-async def resume_run(
+@app.post("/resume-benchmark/{benchmark_id}")
+async def resume_benchmark(
     benchmark_id: UUID,
     retry: bool = Query(default=False),
     force: list[str] = Body(default=[]),
     session: Session = Depends(get_session),
-) -> ResumeRunResponse:
+) -> ResumeBenchmarkResponse:
     """
     Resume a benchmark run by its id.
 
     Usage:
-    curl -X POST http://<endpoint>/resume-run/<benchmark_id>?retry=true
+    curl -X POST http://<endpoint>/resume-benchmark/<benchmark_id>?retry=true
       -d '{"force": ["task_id_1", "task_id_2"]}'
     Returns:
-        ResumeRunResponse
+        ResumeBenchmarkResponse
     """
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
@@ -311,7 +311,7 @@ async def resume_run(
     benchmark_service = start_benchmark_request.benchmark_service
 
     # prepare benchmark and tasks to be resumed
-    verified_task_ids = await resume_benchmark(benchmark_row, session, benchmark_service, retry, force)
+    verified_task_ids = await initiate_resume_benchmark(benchmark_row, session, benchmark_service, retry, force)
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
@@ -321,7 +321,7 @@ async def resume_run(
         verified_task_ids=verified_task_ids,
     )
 
-    return ResumeRunResponse(
+    return ResumeBenchmarkResponse(
         status="success",
     )
 

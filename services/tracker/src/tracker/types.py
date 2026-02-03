@@ -109,7 +109,7 @@ class StopBenchmarkResponse(StatusResponse):
     pass
 
 
-class ResumeRunResponse(StatusResponse):
+class ResumeBenchmarkResponse(StatusResponse):
     pass
 
 

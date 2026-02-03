@@ -97,7 +97,7 @@ Flags
 #### Resume a benchmark
 
 ```bash
-uv run harness resume-run --benchmark-id <benchmark_id>
+uv run harness resume-benchmark --benchmark-id <benchmark_id>
 ```
 
 Flags

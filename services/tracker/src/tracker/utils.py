@@ -685,7 +685,7 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
 
 
-async def resume_benchmark(
+async def initiate_resume_benchmark(
     benchmark_row: Benchmark, session: Session, benchmark_service: BenchmarkService, retry: bool, force: list[str]
 ) -> list[str]:
     """

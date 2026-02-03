@@ -175,7 +175,7 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     )
     click.echo(
         click.style(
-            f"Resume run: harness resume-run --benchmark-id {start_benchmark_response.benchmark_id}",
+            f"Resume benchmark: harness resume-benchmark --benchmark-id {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
