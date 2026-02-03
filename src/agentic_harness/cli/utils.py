@@ -30,7 +30,7 @@ class BenchmarkFormatter:
             Color name for the status
         """
         status_colors = {
-            "starting": "yellow",
+            "pending": "yellow",
             "in_progress": "blue",
             "evaluating": "magenta",
             "stopping": "magenta",
@@ -64,7 +64,7 @@ class BenchmarkFormatter:
 
         # Order we display statuses in
         status_order = [
-            TaskStatus.STARTING,
+            TaskStatus.PENDING,
             TaskStatus.IN_PROGRESS,
             TaskStatus.EVALUATING,
             TaskStatus.ERROR,

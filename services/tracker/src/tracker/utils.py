@@ -270,16 +270,16 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> No
     Delegates status depending on if any tasks have been stopped.
     """
 
-    # Check if any tasks are still in the starting or in progress state
+    # Check if any tasks are still in the pending or in progress state
     tasks_not_finished: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
-        .where(col(Task.status).in_([TaskStatus.STARTING, TaskStatus.IN_PROGRESS]))
+        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]))
     ).one()
 
     if tasks_not_finished:
         raise TrackerServiceError(
-            f"Cannot set final status for benchmark {benchmark_row.id} because tasks are still in the starting or in progress state."
+            f"Cannot set final status for benchmark {benchmark_row.id} because tasks are still in the pending or in progress state."
         )
 
     tasks_stopped: int = session.exec(
@@ -305,7 +305,7 @@ def create_task_rows(
     """
     Create task_rows that do not already exist in the database for the benchmark row.
 
-    NOTE: Only return starting tasks to support resuming the benchmark.
+    NOTE: Only return pending tasks to support resuming the benchmark.
     """
 
     # Find task ids that already exist so that we can filter them out
@@ -326,12 +326,12 @@ def create_task_rows(
         session.add_all(list(created_task_rows.values()))
         session.commit()
 
-    # Fetch all task rows with the status of starting
-    starting_task_rows: Sequence[tuple[str, Task]] = session.exec(
-        select(Task.task_id, Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.STARTING)
+    # Fetch all task rows with the status of pending
+    pending_task_rows: Sequence[tuple[str, Task]] = session.exec(
+        select(Task.task_id, Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.PENDING)
     ).all()
 
-    return starting_task_rows
+    return pending_task_rows
 
 
 @broker.task
@@ -573,11 +573,11 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
     NOTE: Tasks that have already started will continue to run and finish.
     """
     try:
-        # Update all rows where tasks are starting to stopped
+        # Update all rows where tasks are pending to stopped
         result = session.exec(
             update(Task)
             .where(col(Task.benchmark) == benchmark_row.id)
-            .where(col(Task.status) == TaskStatus.STARTING)
+            .where(col(Task.status) == TaskStatus.PENDING)
             .values(status=TaskStatus.STOPPED)
         )
         session.commit()
@@ -695,7 +695,7 @@ async def initiate_resume_benchmark(
     Force: even if task has been finished we restart it
 
     Benchmark - In progress status
-    Tasks - Starting status
+    Tasks - Pending status
 
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
@@ -741,12 +741,12 @@ async def initiate_resume_benchmark(
         session.add(benchmark_row)
         session.commit()
 
-        # Set the task status to starting to flag resuming the tasks
+        # Set the task status to pending to flag resuming the tasks
         session.exec(
             update(Task)
             .where(*filter_query)
             .values(  # Reset to defaults
-                status=TaskStatus.STARTING,
+                status=TaskStatus.PENDING,
                 started_at=datetime.now(ZoneInfo("UTC")),
                 error_message=None,
                 finished_at=None,

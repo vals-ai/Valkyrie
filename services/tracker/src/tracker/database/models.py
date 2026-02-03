@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 
 
 class TaskStatus(str, Enum):
-    STARTING = "starting"
+    PENDING = "pending"
     IN_PROGRESS = "in_progress"
     EVALUATING = "evaluating"
     STOPPED = "stopped"
@@ -234,7 +234,7 @@ class Task(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     task_id: str
-    status: TaskStatus = Field(default=TaskStatus.STARTING)
+    status: TaskStatus = Field(default=TaskStatus.PENDING)
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None

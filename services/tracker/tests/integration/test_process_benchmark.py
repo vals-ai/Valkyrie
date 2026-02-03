@@ -64,7 +64,7 @@ class TestProcessBenchmark:
     async def _test_run_agent(self, original_method: Any, *args: Any, **kwargs: Any) -> None:
         """
         Test task status is in progress before we start running the agent
-        (confirms we move from starting to in progress status)
+        (confirms we move from pending to in progress status)
         """
         from sqlmodel import Session
 

@@ -161,11 +161,11 @@ class TestForceStop:
 
         await benchmark_task
 
-        # Ensure no tasks are in starting state
+        # Ensure no tasks are in pending state
         pending_tasks = database_session.exec(
             select(Task)
             .where(Task.benchmark == example_benchmark_object.id)
-            .where(Task.status in [TaskStatus.STARTING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING])
+            .where(Task.status in [TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING])
         ).all()
         assert len(pending_tasks) == 0
 

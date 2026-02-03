@@ -37,9 +37,9 @@ class TestBenchmarkUtils:
         Tests the flow of updating the benchmark related objects to the proper states when stopping a benchmark
 
         Test Cases:
-            - Benchmark can be stopped if it is in progress and tasks that have not started yet exist
+            - Benchmark can be stopped if it is in progress and tasks that have not pending yet exist
             - After stopping, the benchmark status is "stopping" and tasks have been set to "stopped"
-            - Tasks not in starting state are left alone
+            - Tasks not in pending state are left alone
         """
 
         def get_test_session():
@@ -53,10 +53,10 @@ class TestBenchmarkUtils:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        # create tasks, some which are starting and some which are in progress
+        # create tasks, some which are pending and some which are in progress
         initial_task_rows: list[Task] = []
         for i in range(5):
-            initial_task_rows.append(Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STARTING))
+            initial_task_rows.append(Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING))
         for i in range(5, 10):
             initial_task_rows.append(
                 Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
@@ -73,11 +73,11 @@ class TestBenchmarkUtils:
         benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
-        # Task status in starting state should be set to "stopped" / otherwise known as no starting tasks left
+        # Task status in pending state should be set to "stopped" / otherwise known as no pending tasks left
         task_rows = database_session.exec(
             select(func.count(col(Task.id)))
             .where(Task.benchmark == benchmark_row.id)
-            .where(Task.status == TaskStatus.STARTING)
+            .where(Task.status == TaskStatus.PENDING)
         ).one()
 
         assert task_rows == 0
@@ -132,7 +132,7 @@ class TestBenchmarkUtils:
 
         Test Cases:
             - Benchmark can be resumed if it is in a stopped state and a single task with the stopped status exists
-            - After resuming, the benchmark status is "in progress" and tasks have been set to "starting" that were in the stopped state
+            - After resuming, the benchmark status is "in progress" and tasks have been set to "pending" that were in the stopped state
             - Only the status of stopped tasks are updated
             - Can resume a benchmark with tasks that have the status error
         """
@@ -148,7 +148,7 @@ class TestBenchmarkUtils:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        # Add some tasks, non-starting (stopped and finished tasks only)
+        # Add some tasks, non-pending (stopped and finished tasks only)
         task_rows: list[Task] = []
         for i in range(5):
             task_rows.append(Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED))
@@ -182,9 +182,9 @@ class TestBenchmarkUtils:
         assert response.status_code == 200, response.text
         assert response.json() == {"status": "success"}
 
-        # Validate stopped tasks are now in starting state
+        # Validate stopped tasks are now in pending state
         task_ids = database_session.exec(
-            select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.STARTING)
+            select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.PENDING)
         ).all()
         assert len(task_ids) == 5
 
@@ -217,10 +217,10 @@ class TestBenchmarkUtils:
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
-        # Validate all tasks are now in starting state
+        # Validate all tasks are now in pending state
         fetched_task_rows = database_session.exec(select(Task).where(col(Task.benchmark) == benchmark_row.id)).all()
         assert len(fetched_task_rows) == 10
-        assert all(task_row.status == TaskStatus.STARTING for task_row in fetched_task_rows)
+        assert all(task_row.status == TaskStatus.PENDING for task_row in fetched_task_rows)
 
     def test_resume_benchmark_edge_cases(
         self,
@@ -321,10 +321,10 @@ class TestBenchmarkUtils:
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
-        # Validate the tasks are now in starting state
+        # Validate the tasks are now in pending state
         task_rows = database_session.exec(select(Task).where(col(Task.benchmark) == example_benchmark_object.id)).all()
         assert len(task_rows) == 5
-        assert all(task_row.status == TaskStatus.STARTING for task_row in task_rows)
+        assert all(task_row.status == TaskStatus.PENDING for task_row in task_rows)
 
     def test_create_task_rows(self, example_benchmark_object: Benchmark, database_session: Session):
         """
@@ -334,7 +334,7 @@ class TestBenchmarkUtils:
             - No tasks exist in the database already
             - Some tasks exist in the database already
             - No duplicate tasks are created
-            - All returned tasks are in the starting state
+            - All returned tasks are in the pending state
         """
 
         # Create benchmark in progress state
@@ -345,10 +345,10 @@ class TestBenchmarkUtils:
         # Verified tasks to create
         verified_task_ids = [f"task_{i}" for i in range(5)]
 
-        # Creates all tasks in starting state
+        # Creates all tasks in pending state
         task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session)
         assert len(task_rows) == len(verified_task_ids)
-        assert all(task_row[1].status == TaskStatus.STARTING for task_row in task_rows)
+        assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
         # Same order is returned as the verified task ids are passed in (must be deterministic)
         for i, task_row in enumerate(task_rows):
@@ -357,19 +357,19 @@ class TestBenchmarkUtils:
         # Try calling the same method again when the tasks already exist
         task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session)
         assert len(task_rows) == len(verified_task_ids)
-        assert all(task_row[1].status == TaskStatus.STARTING for task_row in task_rows)
+        assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
-        # No duplicate tasks are created and they are all in the starting state
+        # No duplicate tasks are created and they are all in the pending state
         all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(all_tasks) == len(verified_task_ids)
-        assert all(task.status == TaskStatus.STARTING for task in all_tasks)
+        assert all(task.status == TaskStatus.PENDING for task in all_tasks)
 
     async def test_set_benchmark_final_status(self, example_benchmark_object: Benchmark, database_session: Session):
         """
         Tests the end to end flow when stopping and resuming a benchmark
 
         Test Cases:
-            - Error is raised if tasks are still in the starting or in progress state
+            - Error is raised if tasks are still in the pending or in progress state
             - Benchmark status is set to finished if all tasks are finished
             - Benchmark status is set to stopped if any tasks are stopped
         """
@@ -379,13 +379,13 @@ class TestBenchmarkUtils:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        # Create some starting tasks
+        # Create some pending tasks
         task_ids = [f"task_{i}" for i in range(5)]
         task_rows = create_task_rows(task_ids, benchmark_row, database_session)
         assert len(task_rows) == len(task_ids)
-        assert all(task_row[1].status == TaskStatus.STARTING for task_row in task_rows)
+        assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
-        # Error is raised because tasks are still in the starting state
+        # Error is raised because tasks are still in the pending state
         with pytest.raises(TrackerServiceError):
             set_benchmark_final_status(benchmark_row, database_session)
 
