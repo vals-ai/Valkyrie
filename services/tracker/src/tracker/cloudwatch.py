@@ -1,5 +1,3 @@
-"""CloudWatch Logs utilities for streaming benchmark logs."""
-
 import time
 
 import boto3
