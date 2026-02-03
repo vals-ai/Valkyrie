@@ -55,7 +55,9 @@ class TrackedTask:
     def task(self) -> asyncio.Task[Any] | None:
         return self._task
 
-    async def run(self, semaphore: asyncio.Semaphore, task_id: str) -> dict[str, dict[str, Any] | None]:
+    async def run(
+        self, semaphore: asyncio.Semaphore, task_row: Task, session: Session
+    ) -> dict[str, dict[str, Any] | None]:
         async def _wrap_coro():
             """Need to have a task created even if we are not running the coroutine so that we can cancel it before its running"""
             async with semaphore:
@@ -63,7 +65,6 @@ class TrackedTask:
                 return await self._coro
 
         try:
-            # TODO: Add session to handle catching non-cancelled execptions and committing the task to the database
             self._task = asyncio.create_task(_wrap_coro())
             return await self._task
         except asyncio.CancelledError:
@@ -71,7 +72,13 @@ class TrackedTask:
             self._coro.close()
 
             # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
-            return {task_id: None}
+            return {task_row.alias: None}
+        except Exception as e:
+            error_message = f"Task error was not handled: {str(e)}\n{traceback.format_exc()}"
+            task_row_merged = session.merge(task_row)
+            commit_task_error(task_row_merged, session, error_message)
+
+            return {task_row.alias: None}
         finally:
             self._status = TrackedTaskStatus.DONE
 
@@ -376,7 +383,7 @@ async def process_benchmark(
             semaphore = Semaphore(start_benchmark_request.concurrency)
 
             evaluation_result_rows: list[dict[str, dict[str, Any] | None]] = await gather(
-                *[tracked_tasks[task_id].run(semaphore, task_id) for task_id in verified_task_ids]
+                *[tracked_tasks[task_id].run(semaphore, task_row, session) for task_id, task_row in task_rows]
             )
 
             await monitor_task
