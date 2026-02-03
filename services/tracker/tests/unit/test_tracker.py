@@ -1,6 +1,7 @@
 import asyncio
 from asyncio import Semaphore, gather
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from sqlmodel import Session
@@ -111,7 +112,14 @@ class TestTracker:
 
         # Pass in a blank method to replace process_task
         mock_coro = self._mock_coro(task_id="task_id_1")
+
+        mock_task_row = MagicMock(spec=Task)
+        mock_task_row.task_id = "task_id_1"
+        mock_task_row_2 = MagicMock(spec=Task)
+        mock_task_row_2.task_id = "task_id_2"
+
         tracked_task = TrackedTask(coro=mock_coro)
+        mock_session = MagicMock(spec=Session)
 
         # Test case 1. When first created, it is in the waiting state
         assert tracked_task.status == TrackedTaskStatus.WAITING
@@ -122,7 +130,10 @@ class TestTracker:
         tracked_task_2 = TrackedTask(coro=self._validate_task_state_before_run(tracked_task, "task_id_2"))
 
         semaphore = Semaphore(value=2)
-        tasks = [tracked_task.run(semaphore, "task_id_1"), tracked_task_2.run(semaphore, "task_id_2")]
+        tasks = [
+            tracked_task.run(semaphore, mock_task_row, mock_session),
+            tracked_task_2.run(semaphore, mock_task_row_2, mock_session),
+        ]
         results = await gather(*tasks)
         assert results == [{"task_id_1": {"result": "task_id_1"}}, {"task_id_2": None}]
 
@@ -140,7 +151,9 @@ class TestTracker:
 
         # Create semaphore to run task instantly
         semaphore = Semaphore(value=1)
-        run_task = asyncio.create_task(tracked_task.run(semaphore, "task_id_3"))
+        mock_task_row = MagicMock(spec=Task)
+        mock_task_row.task_id = "task_id_3"
+        run_task = asyncio.create_task(tracked_task.run(semaphore, mock_task_row, mock_session))
 
         # Wait for the task to start running and ensure that the status is running
         await asyncio.sleep(1)
@@ -167,8 +180,13 @@ class TestTracker:
         waiting_task = TrackedTask(coro=self._mock_coro(task_id="task_id_5"))
 
         semaphore = Semaphore(value=1)
-        running_task_coro = running_task.run(semaphore, "task_id_4")
-        waiting_task_coro = waiting_task.run(semaphore, "task_id_5")
+        mock_task_row = MagicMock(spec=Task)
+        mock_task_row.task_id = "task_id_4"
+        mock_task_row_2 = MagicMock(spec=Task)
+        mock_task_row_2.task_id = "task_id_5"
+
+        running_task_coro = running_task.run(semaphore, mock_task_row, mock_session)
+        waiting_task_coro = waiting_task.run(semaphore, mock_task_row_2, mock_session)
 
         results = asyncio.gather(running_task_coro, waiting_task_coro)
 
