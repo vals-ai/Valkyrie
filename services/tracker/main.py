@@ -22,16 +22,16 @@ from tracker.types import (
     StartBenchmarkErrorResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
-    StopRunResponse,
+    StopBenchmarkResponse,
 )
 from tracker.utils import (
     BenchmarkContext,
     commit_benchmark_error,
     fetch_filtered_benchmark_rows,
     force_stop_sandboxes,
+    initiate_stop_benchmark,
     process_benchmark,
     resume_benchmark,
-    stop_benchmark,
     stream_benchmark_results,
 )
 
@@ -245,19 +245,19 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
     )
 
 
-@app.post("/stop-run/{benchmark_id}")
-async def stop_run(
+@app.post("/stop-benchmark/{benchmark_id}")
+async def stop_benchmark(
     benchmark_id: UUID, force: bool = Query(default=False), session: Session = Depends(get_session)
-) -> StopRunResponse:
+) -> StopBenchmarkResponse:
     """
-    Stop a benchmark run by its id.
+    Stop a benchmark by its id.
     If force is True, the sandboxes will be stopped and deleted, even if the tasks are in progress.
 
     Usage:
-    curl -X POST http://<endpoint>/stop-run/<benchmark_id>?force=true
+    curl -X POST http://<endpoint>/stop-benchmark/<benchmark_id>?force=true
 
     Returns:
-        StopRunResponse
+        StopBenchmarkResponse
     """
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
@@ -270,12 +270,12 @@ async def stop_run(
             detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress benchmark.",
         )
 
-    await stop_benchmark(benchmark_row, session, force)
+    await initiate_stop_benchmark(benchmark_row, session, force)
 
     if force:
         await force_stop_sandboxes(benchmark_row, session)
 
-    return StopRunResponse(
+    return StopBenchmarkResponse(
         status="success",
     )
 

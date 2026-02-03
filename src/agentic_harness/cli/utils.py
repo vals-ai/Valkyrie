@@ -169,7 +169,7 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     )
     click.echo(
         click.style(
-            f"Stop run: harness stop-run --benchmark-id {start_benchmark_response.benchmark_id}",
+            f"Stop benchmark: harness stop-benchmark --benchmark-id {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )

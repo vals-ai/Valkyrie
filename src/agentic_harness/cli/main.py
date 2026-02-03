@@ -240,14 +240,14 @@ def retrieve_results(benchmark_id: UUID, path: Path):
     default=False,
     help="Force stop the benchmark run",
 )
-def stop_run(benchmark_id: UUID, force: bool):
+def stop_benchmark(benchmark_id: UUID, force: bool):
     """
-    Stop a benchmark run by its benchmark id.
+    Stop a benchmark by its benchmark id.
 
     Example:
-        harness stop-run --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+        harness stop-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000
     """
-    click.echo(f"Stopping run for benchmark: {benchmark_id}")
+    click.echo(f"Stopping benchmark for benchmark: {benchmark_id}")
 
     if force:
         click.echo(click.style("Force stopping the benchmark", fg="yellow", bold=True))
@@ -256,7 +256,7 @@ def stop_run(benchmark_id: UUID, force: bool):
             if not check_tracker_service_health(tracker):
                 return
 
-            _ = tracker.stop_run(benchmark_id, force)
+            _ = tracker.stop_benchmark(benchmark_id, force)
             click.echo(
                 click.style(
                     "Run is currently being stopped. Will be stopped when all tasks in flight are finished.",

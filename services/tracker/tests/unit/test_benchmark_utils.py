@@ -65,7 +65,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Test request to stop the benchmark
-        response: Response = client.post(f"/stop-run/{benchmark_row.id}?force=false")
+        response: Response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=false")
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
@@ -121,7 +121,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Fail to stop the run
-        response: Response = client.post(f"/stop-run/{benchmark_row.id}?force=false")
+        response: Response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=false")
         assert response.status_code == 400
 
     def test_resume_benchmark(

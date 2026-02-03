@@ -563,7 +563,7 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> Asyn
         yield DISCONNECT
 
 
-async def stop_benchmark(benchmark_row: Benchmark, session: Session, force: bool) -> None:
+async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, force: bool) -> None:
     """
     Sets the flags to initiate the stopping process for a benchmark.
 

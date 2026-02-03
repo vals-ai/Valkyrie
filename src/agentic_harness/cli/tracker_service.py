@@ -16,7 +16,7 @@ from tracker.types import (
     ResumeRunResponse,
     RetrieveResultsResponse,
     StartBenchmarkRequest,
-    StopRunResponse,
+    StopBenchmarkResponse,
 )
 
 from agentic_harness.cli.exceptions import TrackerServiceError
@@ -205,25 +205,25 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
 
-    def stop_run(self, benchmark_id: UUID, force: bool) -> StopRunResponse:
+    def stop_benchmark(self, benchmark_id: UUID, force: bool) -> StopBenchmarkResponse:
         """
-        Stop a benchmark run by its benchmark id.
+        Stop a benchmark by its benchmark id.
 
         Args:
             benchmark_id: Benchmark id
 
         Returns:
-            StopRunResponse with status and message
+            StopBenchmarkResponse with status and message
         """
         try:
-            response = self._client.post(f"{self._base_url}/stop-run/{benchmark_id}", params={"force": force})
+            response = self._client.post(f"{self._base_url}/stop-benchmark/{benchmark_id}", params={"force": force})
             if response.status_code != 200:
                 details = response.json().get("detail", response.text)
-                raise TrackerServiceError(f"Failed to stop run: {details}")
+                raise TrackerServiceError(f"Failed to stop benchmark: {details}")
 
-            return StopRunResponse.model_validate(response.json())
+            return StopBenchmarkResponse.model_validate(response.json())
         except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to stop run: {e}") from e
+            raise TrackerServiceError(f"Failed to stop benchmark: {e}") from e
 
     def resume_run(self, benchmark_id: UUID, retry: bool, force: list[str]) -> ResumeRunResponse:
         """

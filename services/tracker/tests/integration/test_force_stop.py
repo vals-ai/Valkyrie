@@ -155,7 +155,7 @@ class TestForceStop:
         await asyncio.sleep(15)
 
         # Force stop the benchmark run with all sandboxes
-        response = client.post(f"/stop-run/{example_benchmark_object.id}?force=true")
+        response = client.post(f"/stop-benchmark/{example_benchmark_object.id}?force=true")
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 

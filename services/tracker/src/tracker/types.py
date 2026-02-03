@@ -105,7 +105,7 @@ class VerifyTaskIdsResponse(BaseModel):
     task_ids: list[str]
 
 
-class StopRunResponse(StatusResponse):
+class StopBenchmarkResponse(StatusResponse):
     pass
 
 
