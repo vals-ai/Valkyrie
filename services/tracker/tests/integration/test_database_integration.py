@@ -38,8 +38,9 @@ class TestDatabaseIntegration:
     async def _create_evaluation_result(
         self, database_session: Session, task_row: Task, evaluation_result: dict[str, Any]
     ) -> EvaluationResult:
-        instance_id = evaluation_result["instance_id"]
-        evaluation_result_row = EvaluationResult(task=task_row.id, instance_id=instance_id, result=evaluation_result)
+        evaluation_result_row = EvaluationResult(
+            task=task_row.id, instance_id=str(uuid.uuid4()), result=evaluation_result
+        )
         database_session.add(evaluation_result_row)
 
         task_row.status = TaskStatus.FINISHED

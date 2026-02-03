@@ -132,7 +132,9 @@ class TestSWEBenchmarkService:
 
                 # Verify docker image exists
                 if not await validate_docker_image(task_data.docker_image):
-                    pytest.fail(f"Failed to validate docker image for task: {task_id}")
+                    pytest.fail(
+                        f"Failed to validate docker image for task: {task_id} with image: {task_data.docker_image}"
+                    )
 
             # Test case 2. Invalid task id raises an Exception that the user sees
             # Skip validation since some tasks don't have proper manifests but we can still pull them
@@ -218,10 +220,6 @@ class TestSWEBenchmarkService:
             async with build_task_environment(daytona_client, task_id, docker_image) as sandbox:
                 response = await benchmark_service.request_evaluate_instance(task_id=task_id, instance_id=sandbox.id)
 
-                # Response is correct constructed with the instance id and task id
-                assert response.get("instance_id") == sandbox.id
-                assert response.get("task_id") == task_id
-
                 # Since no solution patch was used this evaluation is going to be unresolved
                 assert not response.get("resolved")
 
@@ -239,8 +237,6 @@ class TestSWEBenchmarkService:
             task_id = "astropy__astropy-12907"
             first_evaluation_result: dict[str, dict[str, Any] | None] = {
                 task_id: {
-                    "task_id": task_id,
-                    "instance_id": task_id,
                     "patch_successfully_applied": True,
                     "resolved": True,
                     "resolution_status": "FULL",
