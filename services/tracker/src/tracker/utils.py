@@ -72,13 +72,13 @@ class TrackedTask:
             self._coro.close()
 
             # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
-            return {task_row.alias: None}
+            return {task_row.task_id: None}
         except Exception as e:
             error_message = f"Task error was not handled: {str(e)}\n{traceback.format_exc()}"
             task_row_merged = session.merge(task_row)
             commit_task_error(task_row_merged, session, error_message)
 
-            return {task_row.alias: None}
+            return {task_row.task_id: None}
         finally:
             self._status = TrackedTaskStatus.DONE
 
@@ -95,7 +95,9 @@ class TaskMonitor:
         self._task_tracking = task_tracking
 
     def _fetch_task_row(self, task_id: str) -> Task:
-        task_row = self._session.exec(select(Task).where(Task.task_id == task_id).limit(1)).first()
+        task_row = self._session.exec(
+            select(Task).where(Task.task_id == task_id).where(Task.benchmark == self._benchmark_row.id).limit(1)
+        ).first()
         if not task_row:
             raise ValueError(f"Task with id {task_id} not found")
 
