@@ -18,3 +18,5 @@ logs
 
 tracker.db*
 dump.rdb*
+dist
+build
