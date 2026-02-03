@@ -99,9 +99,9 @@ class TestStopAndResume:
         database_session.commit()
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.upload_agent_artifacts", self._mock_upload_contract)
-        monkeypatch.setattr("tracker.utils.install_agent_dependencies", self._mock_install_dependencies)
-        monkeypatch.setattr("tracker.utils.run_agent", self._mock_run_agent)
+        monkeypatch.setattr("tracker.sandbox.upload_agent_artifacts", self._mock_upload_contract)
+        monkeypatch.setattr("tracker.sandbox.install_agent_dependencies", self._mock_install_dependencies)
+        monkeypatch.setattr("tracker.sandbox.run_agent", self._mock_run_agent)
         monkeypatch.setattr(BenchmarkService, "request_retrieve_task", self._mock_request_retrieve_task)
         monkeypatch.setattr(BenchmarkService, "request_final_score", self._mock_request_final_score)
 

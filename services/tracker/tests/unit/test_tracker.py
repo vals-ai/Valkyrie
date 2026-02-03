@@ -110,6 +110,11 @@ class TestTracker:
             - When cancelled or finished, it is in the done state
         """
 
+        # Create mock task_row and session for the new TrackedTask.run() signature
+        mock_task_row = MagicMock(spec=Task)
+        mock_task_row.task_id = "task_id_1"
+        mock_session = MagicMock(spec=Session)
+
         # Pass in a blank method to replace process_task
         mock_coro = self._mock_coro(task_id="task_id_1")
 
@@ -128,6 +133,9 @@ class TestTracker:
         # Create another task that tracks the status of the first task
         # Allows us to test that the task status changes to running once the semaphore is aquired.
         tracked_task_2 = TrackedTask(coro=self._validate_task_state_before_run(tracked_task, "task_id_2"))
+
+        mock_task_row_2 = MagicMock(spec=Task)
+        mock_task_row_2.task_id = "task_id_2"
 
         semaphore = Semaphore(value=2)
         tasks = [
@@ -148,6 +156,9 @@ class TestTracker:
 
         # Test case 3. When the task is cancelled, it is in the done state and default response is returned
         tracked_task = TrackedTask(coro=self._mock_coro(task_id="task_id_3"))
+
+        mock_task_row_3 = MagicMock(spec=Task)
+        mock_task_row_3.task_id = "task_id_3"
 
         # Create semaphore to run task instantly
         semaphore = Semaphore(value=1)
@@ -178,6 +189,11 @@ class TestTracker:
         # Test case 4. When a task is waiting to be aquired it is kept inside of the waiting state
         running_task = TrackedTask(coro=self._mock_coro(task_id="task_id_4"))
         waiting_task = TrackedTask(coro=self._mock_coro(task_id="task_id_5"))
+
+        mock_task_row_4 = MagicMock(spec=Task)
+        mock_task_row_4.task_id = "task_id_4"
+        mock_task_row_5 = MagicMock(spec=Task)
+        mock_task_row_5.task_id = "task_id_5"
 
         semaphore = Semaphore(value=1)
         mock_task_row = MagicMock(spec=Task)
