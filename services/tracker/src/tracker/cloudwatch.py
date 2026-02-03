@@ -1,0 +1,75 @@
+"""CloudWatch Logs utilities for streaming benchmark logs."""
+
+import time
+
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
+
+from tracker.exceptions import CloudWatchError
+
+_client = boto3.client("logs")
+_created_streams: set[str] = set()
+
+ROOT_LOG_GROUP = "benchmarks"
+
+
+def create_benchmark_group(benchmark_id: str) -> str:
+    """
+    Create a log group for a benchmark with 1-day retention.
+
+    Args:
+        benchmark_id: The benchmark identifier
+
+    Returns:
+        The log group name
+    """
+    log_group_name: str = f"{ROOT_LOG_GROUP}/{benchmark_id}"
+
+    try:
+        _client.create_log_group(logGroupName=log_group_name)
+        _client.put_retention_policy(logGroupName=log_group_name, retentionInDays=1)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+            raise CloudWatchError(f"Failed to create log group '{log_group_name}': {e}") from e
+    except BotoCoreError as e:
+        raise CloudWatchError(f"Failed to create log group '{log_group_name}': {e}") from e
+
+    return log_group_name
+
+
+def cloudwatch_stream(stream_key: str, message: str) -> None:
+    """
+    Stream a log message to CloudWatch.
+
+    Creates the log stream if it doesn't exist.
+
+    Args:
+        stream_key: The stream key (benchmark_id:task_id)
+        message: The log message
+    """
+    if not message:
+        return
+
+    benchmark_id, task_id = stream_key.split(":")
+
+    if not benchmark_id or not task_id:
+        raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")
+
+    if stream_key not in _created_streams:
+        try:
+            _client.create_log_stream(logGroupName=f"{ROOT_LOG_GROUP}/{benchmark_id}", logStreamName=task_id)
+        except ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+                raise CloudWatchError(f"Failed to create log stream '{task_id}': {e}") from e
+        except BotoCoreError as e:
+            raise CloudWatchError(f"Failed to create log stream '{task_id}': {e}") from e
+        _created_streams.add(stream_key)
+
+    try:
+        _client.put_log_events(
+            logGroupName=f"{ROOT_LOG_GROUP}/{benchmark_id}",
+            logStreamName=task_id,
+            logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],
+        )
+    except (ClientError, BotoCoreError) as e:
+        raise CloudWatchError(f"Failed to put log event: {e}") from e

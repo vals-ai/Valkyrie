@@ -26,3 +26,10 @@ class S3Error(TrackerServiceError):
 
     def __str__(self) -> str:
         return "S3 error: " + super().__str__()
+
+
+class CloudWatchError(TrackerServiceError):
+    """Exception raised for CloudWatch operation errors."""
+
+    def __str__(self) -> str:
+        return "CloudWatch error: " + super().__str__()

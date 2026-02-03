@@ -14,13 +14,20 @@ from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, Sandbox
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
 from tracker.benchmark_service import BenchmarkService
+from tracker.cloudwatch import create_benchmark_group
 from tracker.config import broker
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
-from tracker.sandbox import create_sandbox, install_agent_dependencies, run_agent, upload_agent_artifacts
-from tracker.types import BenchmarkDetails, FetchBenchmarkResponse, FetchBenchmarksRequest, Order, StartBenchmarkRequest
+from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.types import (
+    BenchmarkDetails,
+    FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    Order,
+    StartBenchmarkRequest,
+)
 
 logger = get_logger(__name__)
 
@@ -62,6 +69,7 @@ class TrackedTask:
             self._task = asyncio.create_task(_wrap_coro())
             return await self._task
         except asyncio.CancelledError:
+            logger.error(f"Task {task_row.task_id} was cancelled")
             # Need to clean up the coroutine if we cancelled the task
             self._coro.close()
 
@@ -69,6 +77,7 @@ class TrackedTask:
             return {task_row.task_id: None}
         except Exception as e:
             error_message = f"Task error was not handled: {str(e)}\n{traceback.format_exc()}"
+            logger.error(error_message)
             task_row_merged = session.merge(task_row)
             commit_task_error(task_row_merged, session, error_message)
 
@@ -223,7 +232,6 @@ async def process_task(
 
                     # Upload the contract to the sandbox after creating and install the dependencies
                     await upload_agent_artifacts(sandbox, start_benchmark_request.contract)
-                    await install_agent_dependencies(sandbox, start_benchmark_request.contract)
 
                     # Setup task if requested
                     if task_data.request_setup:
@@ -231,7 +239,11 @@ async def process_task(
 
                     # Run the agent inside of the sandbox
                     agent_output = await run_agent(
-                        sandbox, start_benchmark_request.contract, task_data.problem_statement, task_id, task_data.cwd
+                        sandbox,
+                        start_benchmark_request.contract,
+                        task_data.problem_statement,
+                        f"{benchmark_id}:{task_id}",
+                        task_data.cwd,
                     )
 
                     # Update the status to evaluating once we finish running the agent
@@ -374,6 +386,9 @@ async def process_benchmark(
         benchmark_row = fetch_benchmark_row(benchmark_id, session)
 
         try:
+            # Create benchmark cloudwatch log group
+            create_benchmark_group(str(benchmark_id))
+
             # Create tasks inside of the database for each task id
             task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session)
 
