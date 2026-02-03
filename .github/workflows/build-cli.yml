@@ -11,10 +11,12 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
-            artifact: harness-linux
+          - os: ubuntu-20.04
+            artifact: harness-linux-amd64
+          - os: macos-13
+            artifact: harness-darwin-amd64
           - os: macos-latest
-            artifact: harness-macos
+            artifact: harness-darwin-arm64
 
     runs-on: ${{ matrix.os }}
 
