@@ -20,6 +20,7 @@ from aws_cdk.aws_ecr_assets import Platform
 from constants import (
     ALB_HEALTH_INTERVAL_SECONDS,
     ALB_IDLE_TIMEOUT_SECONDS,
+    ALLOWED_IPS,
     CONTAINER_HEALTH_INTERVAL_SECONDS,
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
@@ -184,6 +185,21 @@ class TrackerStack(Stack):
 
         # request timeout
         self.service.load_balancer.set_attribute("idle_timeout.timeout_seconds", str(ALB_IDLE_TIMEOUT_SECONDS))
+
+        # allow HTTP to HTTPS redirect
+        self.service.load_balancer.connections.allow_from(
+            aws_ec2.Peer.any_ipv4(),
+            aws_ec2.Port.tcp(80),
+            description="Allow HTTP from anywhere (redirects to HTTPS)",
+        )
+
+        # allow HTTPS from whitelisted IPs only
+        for ip, desc in ALLOWED_IPS:
+            self.service.load_balancer.connections.allow_from(
+                aws_ec2.Peer.ipv4(ip),
+                aws_ec2.Port.tcp(443),
+                description=f"Allow HTTPS from {desc}",
+            )
 
         # auto-scaling
         scaling = self.service.service.auto_scale_task_count(

@@ -7,6 +7,11 @@ VPC_NAT_GATEWAYS = 0
 # ECS Cluster
 CLUSTER_NAME = "AgenticHarnessCluster"
 
+ALLOWED_IPS: list[tuple[str, str]] = [
+    # (CIDR, description)
+    ("108.192.23.51/32", "Vals Office"),
+]
+
 # Service Discovery
 NAMESPACE = "local"
 

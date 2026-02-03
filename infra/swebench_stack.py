@@ -6,6 +6,7 @@ import aws_cdk as cdk
 from aws_cdk import Duration, Stack, aws_ec2, aws_ecs, aws_logs, aws_servicediscovery
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
+    ALLOWED_IPS,
     CONTAINER_HEALTH_INTERVAL_SECONDS,
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
@@ -103,6 +104,14 @@ class SwebenchStack(Stack):
             port_range=aws_ec2.Port.tcp(SWEBENCH_PORT),
             description="Allow HTTP access from Tracker only",
         )
+
+        # allow inbound from whitelisted IPs for testing
+        for ip, desc in ALLOWED_IPS:
+            self.service.connections.allow_from(
+                aws_ec2.Peer.ipv4(ip),
+                port_range=aws_ec2.Port.tcp(SWEBENCH_PORT),
+                description=f"Allow HTTP access from {desc}",
+            )
 
         # auto-scaling
         scaling = self.service.auto_scale_task_count(
