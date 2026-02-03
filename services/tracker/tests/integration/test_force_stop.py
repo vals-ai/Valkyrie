@@ -145,7 +145,7 @@ class TestForceStop:
         # Start the benchmark run with just 5 tasks
         benchmark_task = asyncio.create_task(
             process_benchmark(
-                start_run_request_json=example_benchmark_object.start_run_request.model_dump(),
+                start_benchmark_request_json=example_benchmark_object.start_benchmark_request.model_dump(),
                 benchmark_id_str=str(example_benchmark_object.id),
                 verified_task_ids=verify_response.task_ids,
             )

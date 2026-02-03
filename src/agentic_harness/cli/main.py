@@ -5,7 +5,7 @@ from uuid import UUID
 
 import click
 from tracker.database.models import BenchmarkStatus
-from tracker.types import Order, StartRunResponse
+from tracker.types import Order, StartBenchmarkResponse
 
 from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract
 from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
@@ -13,7 +13,7 @@ from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     check_tracker_service_health,
     format_benchmark_status,
-    format_start_run_response,
+    format_start_benchmark_response,
     paginate_benchmarks,
     stream_benchmark_status,
 )
@@ -120,7 +120,7 @@ def start_benchmark(
 
             click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
 
-            response = tracker.start_run(
+            response = tracker.start_benchmark(
                 contract,
                 benchmark,
                 concurrency,
@@ -134,7 +134,7 @@ def start_benchmark(
                 click.echo(response.text)
                 return
 
-            format_start_run_response(StartRunResponse.model_validate(response.json()))
+            format_start_benchmark_response(StartBenchmarkResponse.model_validate(response.json()))
     except (BundlerError, TrackerServiceError) as e:
         raise click.ClickException(str(e))
 

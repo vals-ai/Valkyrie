@@ -12,7 +12,7 @@ from tracker.types import (
     HealthCheckResponse,
     RetrieveTaskResponse,
     SetupTaskResponse,
-    StartRunRequest,
+    StartBenchmarkRequest,
     VerifyTaskIdsResponse,
 )
 
@@ -74,7 +74,7 @@ class BenchmarkService:
         return environment_keys
 
     @staticmethod
-    def start_run_request_to_benchmark_object(request: StartRunRequest) -> Benchmark:
+    def start_benchmark_request_to_benchmark_object(request: StartBenchmarkRequest) -> Benchmark:
         return Benchmark(
             name=request.benchmark_name,
             arguments=BenchmarkArguments(

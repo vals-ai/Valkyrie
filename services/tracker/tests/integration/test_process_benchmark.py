@@ -16,7 +16,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.types import SetupTaskResponse, StartRunRequest
+from tracker.types import SetupTaskResponse, StartBenchmarkRequest
 from tracker.utils import process_benchmark, process_task
 
 
@@ -88,11 +88,11 @@ class TestProcessBenchmark:
         task_row_mapping: dict[str, Task] = {}
 
         # Dependencies required to process the task that the user sends
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=[task_id]
         )
 
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -129,7 +129,7 @@ class TestProcessBenchmark:
         )
 
         # Starts and evaluates a single task inside using the benchmark service
-        _ = await process_task(task_row, start_run_request, benchmark_service, benchmark_row.id, task_id)
+        _ = await process_task(task_row, start_benchmark_request, benchmark_service, benchmark_row.id, task_id)
 
         # Ensure that the evaluation result is viewable from the database after the task has been processed
         evaluation_result = database_session.exec(
@@ -149,12 +149,12 @@ class TestProcessBenchmark:
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         # Start run request sent by user to start the benchmark
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -178,7 +178,7 @@ class TestProcessBenchmark:
         )
 
         # Run the benchmark
-        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
+        await process_benchmark(start_benchmark_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is updated to finished once the benchmark is done running
         database_session.refresh(benchmark_row)
@@ -218,12 +218,12 @@ class TestProcessBenchmark:
 
         # Example tasks from swebench
         task_ids: list[str] = ["astropy__astropy-12907"]
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -254,7 +254,7 @@ class TestProcessBenchmark:
         )
 
         # Run the benchmark (error is not raised and instead handled)
-        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
+        await process_benchmark(start_benchmark_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is updated to error once the benchmark is done running
         database_session.refresh(benchmark_row)
@@ -277,11 +277,11 @@ class TestProcessBenchmark:
 
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -321,7 +321,7 @@ class TestProcessBenchmark:
             TestProcessBenchmark._mock_run_agent,
         )
 
-        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
+        await process_benchmark(start_benchmark_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is still finished even though one task has errored out
         database_session.refresh(benchmark_row)
@@ -400,7 +400,7 @@ class TestProcessBenchmark:
         await gather(
             *[
                 process_benchmark(
-                    benchmark_row.start_run_request.model_dump(),
+                    benchmark_row.start_benchmark_request.model_dump(),
                     str(benchmark_row.id),
                     benchmark_row.arguments.task_ids or [],
                 )

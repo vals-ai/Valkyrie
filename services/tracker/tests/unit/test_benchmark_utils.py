@@ -14,7 +14,7 @@ from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
-from tracker.types import FinalScoreResponse, StartRunRequest, VerifyTaskIdsResponse
+from tracker.types import FinalScoreResponse, StartBenchmarkRequest, VerifyTaskIdsResponse
 from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
 
 
@@ -271,7 +271,7 @@ class TestBenchmarkUtils:
         assert response.status_code == 500
 
         # Ensure that we can recreate the environment the benchmark was started in
-        original_start_run_request = StartRunRequest(
+        original_start_benchmark_request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
             concurrency=5,
@@ -279,10 +279,10 @@ class TestBenchmarkUtils:
             slice_str=":10",
         )
 
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(original_start_run_request)
+        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(original_start_benchmark_request)
 
-        recreated_start_run_request = benchmark_row.start_run_request
-        assert recreated_start_run_request == original_start_run_request
+        recreated_start_benchmark_request = benchmark_row.start_benchmark_request
+        assert recreated_start_benchmark_request == original_start_benchmark_request
 
         # Assert we have 5 tasks in the database
         task_rows = database_session.exec(select(Task).where(col(Task.benchmark) == example_benchmark_object.id)).all()

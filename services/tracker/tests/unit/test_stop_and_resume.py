@@ -8,7 +8,7 @@ from main import app
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
-from tracker.types import FinalScoreResponse, RetrieveTaskResponse, StartRunRequest, VerifyTaskIdsResponse
+from tracker.types import FinalScoreResponse, RetrieveTaskResponse, StartBenchmarkRequest, VerifyTaskIdsResponse
 from tracker.utils import process_benchmark, resume_benchmark, stop_benchmark
 
 
@@ -80,14 +80,14 @@ class TestStopAndResume:
             "django__django-12858",
         ]
 
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench",
             contract=contract,
             concurrency=2,
             task_ids=task_ids,
         )
 
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -142,7 +142,7 @@ class TestStopAndResume:
         )
 
         verified_task_ids = await resume_benchmark(
-            benchmark_row, database_session, start_run_request.benchmark_service, retry=False, force=[]
+            benchmark_row, database_session, start_benchmark_request.benchmark_service, retry=False, force=[]
         )
 
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
@@ -151,7 +151,7 @@ class TestStopAndResume:
 
         # Run process_benchmark to complete the remaining tasks (the 3 tasks that are starting)
         await process_benchmark(
-            start_run_request.model_dump(),
+            start_benchmark_request.model_dump(),
             str(benchmark_row.id),
             verified_task_ids,
         )

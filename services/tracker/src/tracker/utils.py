@@ -25,7 +25,7 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     Order,
-    StartRunRequest,
+    StartBenchmarkRequest,
 )
 
 logger = get_logger(__name__)
@@ -170,7 +170,7 @@ def handle_early_exit(task_row: Task, task_session: Session) -> None:
 
 async def process_task(
     task_row: Task,
-    start_run_request: StartRunRequest,
+    start_benchmark_request: StartBenchmarkRequest,
     benchmark_service: BenchmarkService,
     benchmark_id: UUID,
     task_id: str,
@@ -207,7 +207,7 @@ async def process_task(
                 sandbox_name=task_row.alias,
                 image=task_data.docker_image,
                 labels=labels,
-                env_vars=start_run_request.contract.env,
+                env_vars=start_benchmark_request.contract.env,
             ) as sandbox:
                 try:
                     task_row.status = TaskStatus.IN_PROGRESS
@@ -215,8 +215,8 @@ async def process_task(
                     task_session.commit()
 
                     # Upload the contract to the sandbox after creating and install the dependencies
-                    await upload_agent_artifacts(sandbox, start_run_request.contract)
-                    await install_agent_dependencies(sandbox, start_run_request.contract)
+                    await upload_agent_artifacts(sandbox, start_benchmark_request.contract)
+                    await install_agent_dependencies(sandbox, start_benchmark_request.contract)
 
                     # Setup task if requested
                     if task_data.request_setup:
@@ -224,7 +224,7 @@ async def process_task(
 
                     # Run the agent inside of the sandbox
                     agent_output = await run_agent(
-                        sandbox, start_run_request.contract, task_data.problem_statement, task_id, task_data.cwd
+                        sandbox, start_benchmark_request.contract, task_data.problem_statement, task_id, task_data.cwd
                     )
 
                     # Update the status to evaluating once we finish running the agent
@@ -234,7 +234,7 @@ async def process_task(
 
                     # Evaluate the instance
                     # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
-                    logger.info(f"Evaluating agent {start_run_request.contract.name} in sandbox {sandbox.name}")
+                    logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                     evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
 
                     # Save the evaluation result to the database with the task row
@@ -336,17 +336,17 @@ def create_task_rows(
 
 @broker.task
 async def process_benchmark(
-    start_run_request_json: dict[str, Any],
+    start_benchmark_request_json: dict[str, Any],
     benchmark_id_str: str,
     verified_task_ids: list[str],
 ) -> None:
     # Was serialized to make it compatible with the broker
-    start_run_request: StartRunRequest = StartRunRequest(**start_run_request_json)
+    start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
 
     # NOTE: Will get ugly if we error on session create
     with Session(bind=engine, expire_on_commit=False) as session:
-        benchmark_service = start_run_request.benchmark_service
+        benchmark_service = start_benchmark_request.benchmark_service
 
         benchmark_row = fetch_benchmark_row(benchmark_id, session)
 
@@ -364,7 +364,7 @@ async def process_benchmark(
             # Load the tasks we are going to be tracking
             tracked_tasks: dict[str, TrackedTask] = {
                 task_id: TrackedTask(
-                    process_task(task_row, start_run_request, benchmark_service, benchmark_id, task_id)
+                    process_task(task_row, start_benchmark_request, benchmark_service, benchmark_id, task_id)
                 )
                 for task_id, task_row in task_rows
             }
@@ -373,7 +373,7 @@ async def process_benchmark(
             monitor = TaskMonitor(benchmark_row, session, tracked_tasks)
             monitor_task = asyncio.create_task(monitor.track_tasks())
 
-            semaphore = Semaphore(start_run_request.concurrency)
+            semaphore = Semaphore(start_benchmark_request.concurrency)
 
             evaluation_result_rows: list[dict[str, dict[str, Any] | None]] = await gather(
                 *[tracked_tasks[task_id].run(semaphore, task_id) for task_id in verified_task_ids]

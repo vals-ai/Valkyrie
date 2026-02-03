@@ -30,7 +30,7 @@ class BenchmarkDetails(BaseModel):
     task_breakdown: dict[TaskStatus, int]
 
 
-class StartRunRequest(BaseModel):
+class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -44,12 +44,12 @@ class StartRunRequest(BaseModel):
         return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
 
 
-class StartRunErrorResponse(BaseModel):
+class StartBenchmarkErrorResponse(BaseModel):
     benchmark_id: UUID
     error_message: str
 
 
-class StartRunResponse(BaseModel):
+class StartBenchmarkResponse(BaseModel):
     benchmark_name: str
     agent_name: str
     benchmark_id: UUID

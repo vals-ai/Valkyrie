@@ -15,7 +15,7 @@ from tracker.types import (
     FetchBenchmarksResponse,
     ResumeRunResponse,
     RetrieveResultsResponse,
-    StartRunRequest,
+    StartBenchmarkRequest,
     StopRunResponse,
 )
 
@@ -92,7 +92,7 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Upload failed: {e}") from e
 
-    def start_run(
+    def start_benchmark(
         self,
         contract: AgentContractRequest,
         benchmark_name: str,
@@ -114,7 +114,7 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
-            payload = StartRunRequest(
+            payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
@@ -122,11 +122,11 @@ class TrackerService:
                 slice_str=slice_str,
             )
 
-            response = self._client.post(f"{self._base_url}/start-run", json=payload.model_dump())
+            response = self._client.post(f"{self._base_url}/start-benchmark", json=payload.model_dump())
 
             return response
         except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to start run: {e}") from e
+            raise TrackerServiceError(f"Failed to start benchmark: {e}") from e
 
     def fetch_benchmark(self, benchmark_id: UUID) -> FetchBenchmarkResponse:
         """

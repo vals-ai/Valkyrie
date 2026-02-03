@@ -25,7 +25,7 @@ from tracker.types import (
     FetchBenchmarksRequest,
     HealthCheckResponse,
     RetrieveResultsResponse,
-    StartRunRequest,
+    StartBenchmarkRequest,
     VerifyTaskIdsResponse,
 )
 
@@ -59,9 +59,11 @@ class TestFastapiServer:
 
         assert response.json() == {"status": "ok"}
 
-    async def test_start_run(self, contract: AgentContractRequest, monkeypatch: MonkeyPatch, database_session: Session):
+    async def test_start_benchmark(
+        self, contract: AgentContractRequest, monkeypatch: MonkeyPatch, database_session: Session
+    ):
         """
-        Test start run of the fastapi server.
+        Test start benchmark of the fastapi server.
 
         Test Cases:
             - Returns 200 OK
@@ -77,7 +79,7 @@ class TestFastapiServer:
         app.dependency_overrides[get_session] = get_test_session
 
         # Example request sent from the cli to the fastapi server
-        request = StartRunRequest(
+        request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
             concurrency=10,
@@ -106,7 +108,7 @@ class TestFastapiServer:
 
         # Send request to start the run and ensure that the start response is returned
         response = client.post(
-            "/start-run",
+            "/start-benchmark",
             json=request.model_dump(),
         )
 
@@ -388,15 +390,15 @@ class TestFastapiServer:
         monkeypatch.setattr(BenchmarkService, "request_verify_task_ids", self._mock_request_verify_task_ids_error)
 
         # Example request sent from the cli to the fastapi server
-        request = StartRunRequest(
+        request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
         )
 
-        # Send request to start the run and ensure that the start response is returned
-        response = client.post("/start-run", json=request.model_dump())
+        # Send request to start the benchmark and ensure that the start response is returned
+        response = client.post("/start-benchmark", json=request.model_dump())
 
         # Test case 1. Returns error message from exception
         assert response.status_code == 500

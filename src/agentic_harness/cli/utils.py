@@ -10,7 +10,7 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     Order,
-    StartRunResponse,
+    StartBenchmarkResponse,
 )
 
 from agentic_harness.cli.tracker_service import TrackerService
@@ -137,45 +137,45 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(breakdown_text)
 
 
-def format_start_run_response(start_run_response: StartRunResponse) -> None:
+def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse) -> None:
     """
     Format and display the start run response.
 
     Args:
-        data: Dictionary containing StartRunResponse data
+        start_benchmark_response: StartBenchmarkResponse
     """
 
     click.echo()
     click.echo("┌─ Benchmark Details " + "─" * 58)
-    click.echo(f"│ Benchmark:     {start_run_response.benchmark_name}")
-    click.echo(f"│ Agent:      {start_run_response.agent_name}")
-    click.echo(f"│ Benchmark ID:  {start_run_response.benchmark_id}")
-    click.echo(f"│ Started at:    {start_run_response.started_at}")
-    click.echo(f"│ Concurrency:   {start_run_response.concurrency}")
-    click.echo(f"│ Total tasks:   {start_run_response.task_count}")
+    click.echo(f"│ Benchmark:     {start_benchmark_response.benchmark_name}")
+    click.echo(f"│ Agent:      {start_benchmark_response.agent_name}")
+    click.echo(f"│ Benchmark ID:  {start_benchmark_response.benchmark_id}")
+    click.echo(f"│ Started at:    {start_benchmark_response.started_at}")
+    click.echo(f"│ Concurrency:   {start_benchmark_response.concurrency}")
+    click.echo(f"│ Total tasks:   {start_benchmark_response.task_count}")
     click.echo("└" + "─" * 79)
     click.echo()
     click.echo(
         click.style(
-            f"Track progress: harness fetch-benchmark --benchmark-id {start_run_response.benchmark_id} --connect",
+            f"Track progress: harness fetch-benchmark --benchmark-id {start_benchmark_response.benchmark_id} --connect",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Retrieve results: harness retrieve-results --benchmark-id {start_run_response.benchmark_id} --path ./results.json",
+            f"Retrieve results: harness retrieve-results --benchmark-id {start_benchmark_response.benchmark_id} --path ./results.json",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Stop run: harness stop-run --benchmark-id {start_run_response.benchmark_id}",
+            f"Stop run: harness stop-run --benchmark-id {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Resume run: harness resume-run --benchmark-id {start_run_response.benchmark_id}",
+            f"Resume run: harness resume-run --benchmark-id {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )

@@ -26,7 +26,7 @@ from tracker.database.utils import has_field_changed
 
 if TYPE_CHECKING:
     from tracker.benchmark_service import BenchmarkService
-    from tracker.types import BenchmarkTableRow, StartRunRequest
+    from tracker.types import BenchmarkTableRow, StartBenchmarkRequest
 
 
 class TaskStatus(str, Enum):
@@ -150,10 +150,10 @@ class Benchmark(SQLModel, table=True):
         return {task_id: (error_message or "No error message was provided") for task_id, error_message in tasks}
 
     @property
-    def start_run_request(self) -> "StartRunRequest":
-        from tracker.types import StartRunRequest
+    def start_benchmark_request(self) -> "StartBenchmarkRequest":
+        from tracker.types import StartBenchmarkRequest
 
-        return StartRunRequest(
+        return StartBenchmarkRequest(
             contract=self.arguments.contract,
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,
@@ -163,7 +163,7 @@ class Benchmark(SQLModel, table=True):
 
     @property
     def benchmark_service(self) -> "BenchmarkService":
-        return self.start_run_request.benchmark_service
+        return self.start_benchmark_request.benchmark_service
 
     def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
         """
