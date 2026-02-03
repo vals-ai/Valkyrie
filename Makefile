@@ -1,7 +1,7 @@
 .PHONY: help install test test-unit test-integration test-all style style-check typecheck \
 	tracker-install tracker-dev tracker-service tracker-test tracker-test-unit tracker-test-integration \
 	swebench-install swebench-dev swebench-test swebench-test-unit swebench-test-integration \
-	validate-workspace format lint update-submodules venv_check tool-install
+	validate-workspace format lint update-submodules venv_check tool-install build
 
 PYTHON_VERSION := 3.12
 
@@ -33,6 +33,9 @@ help:
 	@echo "  make swebench-test-unit  			Run swebench unit tests"
 	@echo "  make swebench-test-integration 	Run swebench integration tests"
 	@echo ""
+	@echo "Build:"
+	@echo "  make build               			Build harness CLI binary to dist/"
+	@echo ""
 	@echo "Services (development mode):"
 	@echo "  make tracker-service     			Start tracker service docker container"
 	@echo "  make swebench-dev        			Start swebench service on port $(SWEBENCH_PORT)"
@@ -45,6 +48,18 @@ install:
 
 tool-install:
 	uv tool install -e .
+
+build: venv_check
+	@echo "Building harness CLI binary..."
+	@uv run pyinstaller \
+		--onefile \
+		--name harness \
+		--distpath dist \
+		--workpath build \
+		--specpath build \
+		--clean \
+		src/agentic_harness/cli/main.py
+	@echo "✓ Binary built at dist/harness"
 
 update-submodules:
 	git submodule update --init --recursive

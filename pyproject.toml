@@ -24,6 +24,7 @@ dev = [
   "pytest-asyncio",
   "ruff",
   "basedpyright",
+  "pyinstaller",
 ]
 
 [tool.ruff]
