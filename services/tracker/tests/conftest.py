@@ -14,6 +14,18 @@ from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkAr
 _ = load_dotenv()
 
 
+@pytest.fixture(autouse=True)
+def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _mock_create_benchmark_group(benchmark_id: str) -> str:
+        return f"mock-group-{benchmark_id}"
+
+    def _mock_cloudwatch_stream(_stream_key: str, _message: str) -> None:
+        pass
+
+    monkeypatch.setattr("tracker.cloudwatch.create_benchmark_group", _mock_create_benchmark_group)
+    monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
+
+
 @pytest.fixture(scope="function")
 def database_session() -> Generator[Session, Any, None]:
     """Create an in-memory database and mock the session engine."""
