@@ -29,6 +29,11 @@ from constants import (
     DAYTONA_SECRET_NAME,
     DAYTONA_TARGET,
     NAMESPACE,
+    POSTGRES_DB,
+    POSTGRES_HEALTH_INTERVAL_SECONDS,
+    POSTGRES_HEALTH_START_PERIOD_SECONDS,
+    POSTGRES_PORT,
+    POSTGRES_USER,
     REDIS_HEALTH_INTERVAL_SECONDS,
     REDIS_HEALTH_START_PERIOD_SECONDS,
     REDIS_PORT,
@@ -105,6 +110,35 @@ class TrackerStack(Stack):
         )
         redis_container.add_port_mappings(aws_ecs.PortMapping(container_port=REDIS_PORT))
 
+        # postgres sidecar container
+        postgres_container = task_def.add_container(
+            f"{self._SERVICE_NAME}PostgresContainer",
+            container_name="postgres",
+            image=aws_ecs.ContainerImage.from_registry("postgres:16-alpine"),
+            logging=aws_ecs.LogDriver.aws_logs(
+                stream_prefix=f"{self._SERVICE_NAME}Postgres",
+                log_group=aws_logs.LogGroup(
+                    self,
+                    f"{self._SERVICE_NAME}PostgresLogGroup",
+                    retention=aws_logs.RetentionDays.ONE_WEEK,
+                    removal_policy=cdk.RemovalPolicy.DESTROY,
+                ),
+            ),
+            environment={
+                "POSTGRES_USER": POSTGRES_USER,
+                "POSTGRES_PASSWORD": POSTGRES_USER,  # Same as user for simplicity
+                "POSTGRES_DB": POSTGRES_DB,
+            },
+            health_check=aws_ecs.HealthCheck(
+                command=["CMD-SHELL", f"pg_isready -U {POSTGRES_USER} -d {POSTGRES_DB}"],
+                interval=Duration.seconds(POSTGRES_HEALTH_INTERVAL_SECONDS),
+                retries=CONTAINER_HEALTH_RETRIES,
+                start_period=Duration.seconds(POSTGRES_HEALTH_START_PERIOD_SECONDS),
+                timeout=Duration.seconds(CONTAINER_HEALTH_TIMEOUT_SECONDS),
+            ),
+        )
+        postgres_container.add_port_mappings(aws_ecs.PortMapping(container_port=POSTGRES_PORT))
+
         tracker_container = task_def.add_container(
             f"{self._SERVICE_NAME}Container",
             image=aws_ecs.ContainerImage.from_asset(
@@ -124,6 +158,7 @@ class TrackerStack(Stack):
             port_mappings=[aws_ecs.PortMapping(container_port=TRACKER_PORT)],
             environment={
                 "REDIS_URL": f"redis://localhost:{REDIS_PORT}",
+                "DATABASE_URL": f"postgresql://{POSTGRES_USER}:{POSTGRES_USER}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}",
                 "BROKER_ENVIRONMENT": "production",
                 "BENCHMARK_SERVICE_URL": f"http://swebench.{NAMESPACE}:{SWEBENCH_PORT}",
                 "AWS_S3_BUCKET": bucket.bucket_name,
@@ -142,12 +177,16 @@ class TrackerStack(Stack):
             ),
         )
 
-        # redis dependency
+        # sidecar dependencies
         tracker_container.add_container_dependencies(
             aws_ecs.ContainerDependency(
                 container=redis_container,
                 condition=aws_ecs.ContainerDependencyCondition.HEALTHY,
-            )
+            ),
+            aws_ecs.ContainerDependency(
+                container=postgres_container,
+                condition=aws_ecs.ContainerDependencyCondition.HEALTHY,
+            ),
         )
 
         task_def.default_container = tracker_container

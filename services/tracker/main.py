@@ -8,7 +8,7 @@ from sqlmodel import Session, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
-from tracker.database.session import get_session
+from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import get_contract_s3_key, upload_to_s3
@@ -49,7 +49,7 @@ async def tracker_service_error_handler(_request: Request, exc: TrackerServiceEr
 @app.get("/health")
 def health_check() -> dict[str, str]:
     """
-    Health check to ensure that the tracker service is running.
+    Health check to ensure that the tracker service is running correctly.
 
     Usage:
     curl -X GET http://<endpoint>/health
@@ -60,9 +60,11 @@ def health_check() -> dict[str, str]:
     }
 
     Returns:
-    - 200 OK if the server is running
-    - 500 Internal Server Error if the server is not running
+    - 200 OK if the server is running and database is accessible
+    - 503 Service Unavailable if the database is not accessible
     """
+    if not check_database_connection():
+        raise HTTPException(status_code=503, detail="Database is not accessible")
     return {"status": "ok"}
 
 

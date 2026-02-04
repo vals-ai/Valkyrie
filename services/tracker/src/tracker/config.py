@@ -14,6 +14,7 @@ BENCHMARK_SERVICE_URL = os.environ.get("BENCHMARK_SERVICE_URL", "http://localhos
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://tracker:tracker@localhost:5432/tracker")
 
 result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=REDIS_URL,

@@ -13,6 +13,7 @@ dependencies = [
     "fastapi[standard]>=0.127.1",
     "daytona>=0.135.0",
     "sqlmodel>=0.0.31",
+    "psycopg2-binary>=2.9.9",
     "httpx>=0.28.1",
     "taskiq>=0.12.1",
     "taskiq-redis>=1.1.2",
