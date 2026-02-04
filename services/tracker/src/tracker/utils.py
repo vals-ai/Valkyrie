@@ -343,6 +343,25 @@ def create_task_rows(
     return pending_task_rows
 
 
+async def fetch_missing_tasks(
+    session: Session, benchmark_row: Benchmark, evaluation_results: dict[str, dict[str, Any]]
+):
+    remaining_task_results_query = cast(
+        Sequence[tuple[str, dict[str, Any]]],
+        session.exec(
+            select(Task.task_id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
+            .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task))
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.task_id).notin_(list(evaluation_results.keys())))
+        ).all(),
+    )
+
+    remaining_task_results: dict[str, dict[str, Any] | None] = {
+        task_id: evaluation_result for task_id, evaluation_result in remaining_task_results_query
+    }
+    return remaining_task_results
+
+
 @broker.task
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any],
@@ -398,19 +417,7 @@ async def process_benchmark(
             }
 
             # Fetch remaining tasks (in case this benchmark was resumed)
-            remaining_task_results_query = cast(
-                Sequence[tuple[str, dict[str, Any]]],
-                session.exec(
-                    select(Task.task_id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
-                    .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task))
-                    .where(col(Task.benchmark) == benchmark_row.id)
-                    .where(col(Task.task_id).notin_(list(evaluation_results.keys())))
-                ).all(),
-            )
-
-            remaining_task_results: dict[str, dict[str, Any] | None] = {
-                task_id: evaluation_result for task_id, evaluation_result in remaining_task_results_query
-            }
+            remaining_task_results = await fetch_missing_tasks(session, benchmark_row, evaluation_results)
 
             evaluation_results.update(remaining_task_results)
 
