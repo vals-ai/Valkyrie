@@ -344,7 +344,7 @@ def create_task_rows(
 
 
 async def fetch_missing_tasks(
-    session: Session, benchmark_row: Benchmark, evaluation_results: dict[str, dict[str, Any]]
+    session: Session, benchmark_row: Benchmark, evaluation_results: dict[str, dict[str, Any] | None]
 ):
     remaining_task_results_query = cast(
         Sequence[tuple[str, dict[str, Any]]],
