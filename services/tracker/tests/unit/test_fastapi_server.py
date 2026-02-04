@@ -45,7 +45,7 @@ class TestFastapiServer:
     async def _mock_request_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
-    def test_health_check(self):
+    def test_health_check(self, monkeypatch: MonkeyPatch):
         """
         Test health check of the fastapi server.
 
@@ -53,6 +53,9 @@ class TestFastapiServer:
             - Returns 200 OK
             - Response contains expected format
         """
+        # Mock database connection check for unit tests
+        monkeypatch.setattr("main.check_database_connection", lambda: True)
+
         response = client.get("/health")
 
         assert response.status_code == 200

@@ -1,16 +1,13 @@
 import logging
-import traceback
 import uuid
-from asyncio import Semaphore, create_subprocess_exec, gather
-from pathlib import Path
+from asyncio import Semaphore, gather
 from random import sample
 from typing import Any
 from uuid import UUID
 
 import pytest
 from daytona import AsyncDaytona
-from pytest import MonkeyPatch
-from sqlmodel import Session, col, create_engine, inspect, select
+from sqlmodel import Session, col, inspect, select
 
 from tests.utils import build_task_environment
 from tracker.benchmark_service import BenchmarkService
@@ -62,46 +59,22 @@ class TestDatabaseIntegration:
 
         return final_evaluation_row
 
-    async def test_create_tables(self, monkeypatch: MonkeyPatch, tmp_path: Path):
+    async def test_create_tables(self, postgres_engine):
         """
-        Test that the session.py file creates the database and tables when ran
+        Test that the database tables are created correctly.
 
         Test Cases:
-        - When the session.py file is ran, the tracker.db file is created where expected
-        - More than one table is created in the tracker.db file
+        - All expected tables are created in the database
+        - More than one table is created
         """
+        inspector = inspect(postgres_engine)
+        tables = inspector.get_table_names()
 
-        try:
-            database_location = tmp_path / "tracker.db"
-            monkeypatch.setattr("tracker.database.session._DATABASE_LOCATION", str(database_location))
-            monkeypatch.setenv("TEST_DATABASE_LOCATION", str(database_location))
+        assert len(tables) > 0, "Tables were not created in the database as expected"
 
-            result = await create_subprocess_exec(
-                "uv",
-                "run",
-                "python",
-                "-m",
-                "tracker.database.session",
-            )
-            stdout, stderr = await result.communicate()
-            return_code = result.returncode
-
-            if return_code != 0:
-                pytest.fail(
-                    f"Failed to create tables: {(stdout or b'').decode('utf-8')}: {(stderr or b'').decode('utf-8')}",
-                )
-
-            assert database_location.exists(), "Database file exists in location specified"
-
-            engine = create_engine(f"sqlite:///{database_location}")
-
-            inspector = inspect(engine)
-            tables = inspector.get_table_names()
-            assert len(tables) > 0, "Tables were not created in the database as expected"
-        except Exception as e:
-            pytest.fail(
-                f"Failed to create tables: {e}: {traceback.format_exc()}",
-            )
+        # Verify expected tables exist
+        expected_tables = {"benchmark", "task", "evaluationresult", "finalevaluation"}
+        assert expected_tables.issubset(set(tables)), f"Missing tables. Found: {tables}"
 
     async def test_database_integrity(self, database_session: Session, example_benchmark_object: Benchmark):
         """

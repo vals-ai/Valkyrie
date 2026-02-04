@@ -28,6 +28,7 @@ dev = [
     "basedpyright",
     "pytest-env>=1.2.0",
     "pytest-alembic>=0.12.1",
+    "testcontainers[postgres]>=4.10.0",
 ]
 
 [build-system]
