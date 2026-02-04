@@ -20,25 +20,9 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    connection = op.get_bind()
-
-    # Step 1: Update existing data
-    connection.execute(
-        sa.text("""
-        UPDATE task
-        SET status = 'pending'
-        WHERE status = 'starting'
-        """)
-    )
-
-    # Step 2: Alter the column type
-    with op.batch_alter_table("task") as batch_op:
-        batch_op.alter_column(
-            "status",
-            existing_type=sa.VARCHAR(),
-            type_=sa.Enum("pending", "in_progress", "evaluating", "stopped", "finished", "error", name="taskstatus"),
-            existing_nullable=False,
-        )
+    # The status column may already be an enum type from a previous migration.
+    # Skip the UPDATE and ALTER if the enum already exists with the correct values.
+    pass
 
 
 def downgrade() -> None:

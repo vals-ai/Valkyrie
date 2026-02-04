@@ -1,4 +1,4 @@
-.PHONY: help setup build run stop clean logs tracker-service test test-integration test-unit test-alembic migrate
+.PHONY: help setup build run stop clean logs tracker-service test test-integration test-unit test-alembic migrate migrate-gen
 
 help:
 	@echo "Available commands:"
@@ -10,6 +10,7 @@ help:
 	@echo "  make logs            - View container logs"
 	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
 	@echo "  make migrate         - Run database migrations"
+	@echo "  make migrate-gen     - Generate a new migration from model changes"
 
 setup:
 	@echo "Installing tracker service (separate venv)..."
@@ -71,3 +72,7 @@ test-alembic:
 migrate:
 	@echo "Running database migrations..."
 	uv run alembic upgrade head
+
+migrate-gen:
+	@read -p "Migration message: " msg; \
+	uv run alembic revision --autogenerate -m "$$msg"

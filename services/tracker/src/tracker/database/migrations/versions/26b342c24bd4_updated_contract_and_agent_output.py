@@ -32,9 +32,10 @@ def upgrade() -> None:
     """)
     )
 
-    # Now change the column type using batch mode
-    with op.batch_alter_table("evaluationresult") as batch_op:
-        batch_op.alter_column("agent_output", existing_type=sa.VARCHAR(), type_=sa.JSON(), existing_nullable=False)
+    # Use raw SQL for PostgreSQL to specify the USING clause for type cast
+    connection.execute(
+        text("ALTER TABLE evaluationresult ALTER COLUMN agent_output TYPE JSON USING agent_output::json")
+    )
 
 
 def downgrade() -> None:
