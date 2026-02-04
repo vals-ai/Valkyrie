@@ -11,6 +11,7 @@ from aws_cdk import (
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
     aws_logs,
+    aws_rds,
     aws_route53,
     aws_s3,
     aws_secretsmanager,
@@ -30,10 +31,10 @@ from constants import (
     DAYTONA_TARGET,
     NAMESPACE,
     POSTGRES_DB,
-    POSTGRES_HEALTH_INTERVAL_SECONDS,
-    POSTGRES_HEALTH_START_PERIOD_SECONDS,
     POSTGRES_PORT,
     POSTGRES_USER,
+    RDS_ALLOCATED_STORAGE_GB,
+    RDS_INSTANCE_CLASS,
     REDIS_HEALTH_INTERVAL_SECONDS,
     REDIS_HEALTH_START_PERIOD_SECONDS,
     REDIS_PORT,
@@ -74,6 +75,41 @@ class TrackerStack(Stack):
             secret_name=DAYTONA_SECRET_NAME,
         )
 
+        # RDS PostgreSQL instance
+        db_security_group = aws_ec2.SecurityGroup(
+            self,
+            f"{self._SERVICE_NAME}DbSecurityGroup",
+            vpc=vpc,
+            description="Security group for Tracker RDS instance",
+            allow_all_outbound=False,
+        )
+
+        # RDS credentials stored in Secrets Manager
+        db_credentials = aws_rds.DatabaseSecret(
+            self,
+            f"{self._SERVICE_NAME}DbCredentials",
+            username=POSTGRES_USER,
+        )
+
+        self.database = aws_rds.DatabaseInstance(
+            self,
+            f"{self._SERVICE_NAME}Database",
+            engine=aws_rds.DatabaseInstanceEngine.postgres(
+                version=aws_rds.PostgresEngineVersion.VER_16,
+            ),
+            instance_type=aws_ec2.InstanceType(RDS_INSTANCE_CLASS),
+            vpc=vpc,
+            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
+            security_groups=[db_security_group],
+            credentials=aws_rds.Credentials.from_secret(db_credentials),
+            database_name=POSTGRES_DB,
+            allocated_storage=RDS_ALLOCATED_STORAGE_GB,
+            publicly_accessible=True,  # Required for public subnet, access controlled by security group
+            deletion_protection=True,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            backup_retention=Duration.days(7),
+        )
+
         # fargate task
         task_def = aws_ecs.FargateTaskDefinition(
             self,
@@ -110,35 +146,6 @@ class TrackerStack(Stack):
         )
         redis_container.add_port_mappings(aws_ecs.PortMapping(container_port=REDIS_PORT))
 
-        # postgres sidecar container
-        postgres_container = task_def.add_container(
-            f"{self._SERVICE_NAME}PostgresContainer",
-            container_name="postgres",
-            image=aws_ecs.ContainerImage.from_registry("postgres:16-alpine"),
-            logging=aws_ecs.LogDriver.aws_logs(
-                stream_prefix=f"{self._SERVICE_NAME}Postgres",
-                log_group=aws_logs.LogGroup(
-                    self,
-                    f"{self._SERVICE_NAME}PostgresLogGroup",
-                    retention=aws_logs.RetentionDays.ONE_WEEK,
-                    removal_policy=cdk.RemovalPolicy.DESTROY,
-                ),
-            ),
-            environment={
-                "POSTGRES_USER": POSTGRES_USER,
-                "POSTGRES_PASSWORD": POSTGRES_USER,  # Same as user for simplicity
-                "POSTGRES_DB": POSTGRES_DB,
-            },
-            health_check=aws_ecs.HealthCheck(
-                command=["CMD-SHELL", f"pg_isready -U {POSTGRES_USER} -d {POSTGRES_DB}"],
-                interval=Duration.seconds(POSTGRES_HEALTH_INTERVAL_SECONDS),
-                retries=CONTAINER_HEALTH_RETRIES,
-                start_period=Duration.seconds(POSTGRES_HEALTH_START_PERIOD_SECONDS),
-                timeout=Duration.seconds(CONTAINER_HEALTH_TIMEOUT_SECONDS),
-            ),
-        )
-        postgres_container.add_port_mappings(aws_ecs.PortMapping(container_port=POSTGRES_PORT))
-
         tracker_container = task_def.add_container(
             f"{self._SERVICE_NAME}Container",
             image=aws_ecs.ContainerImage.from_asset(
@@ -158,15 +165,19 @@ class TrackerStack(Stack):
             port_mappings=[aws_ecs.PortMapping(container_port=TRACKER_PORT)],
             environment={
                 "REDIS_URL": f"redis://localhost:{REDIS_PORT}",
-                "DATABASE_URL": f"postgresql://{POSTGRES_USER}:{POSTGRES_USER}@localhost:{POSTGRES_PORT}/{POSTGRES_DB}",
                 "BROKER_ENVIRONMENT": "production",
                 "BENCHMARK_SERVICE_URL": f"http://swebench.{NAMESPACE}:{SWEBENCH_PORT}",
                 "AWS_S3_BUCKET": bucket.bucket_name,
                 "DAYTONA_API_URL": DAYTONA_API_URL,
                 "DAYTONA_TARGET": DAYTONA_TARGET,
+                "DB_HOST": self.database.db_instance_endpoint_address,
+                "DB_PORT": self.database.db_instance_endpoint_port,
+                "DB_NAME": POSTGRES_DB,
             },
             secrets={
                 "DAYTONA_API_KEY": aws_ecs.Secret.from_secrets_manager(daytona_secret),
+                "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials, field="username"),
+                "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
             },
             health_check=aws_ecs.HealthCheck(
                 command=["CMD-SHELL", f"curl -f http://localhost:{TRACKER_PORT}/health || exit 1"],
@@ -181,10 +192,6 @@ class TrackerStack(Stack):
         tracker_container.add_container_dependencies(
             aws_ecs.ContainerDependency(
                 container=redis_container,
-                condition=aws_ecs.ContainerDependencyCondition.HEALTHY,
-            ),
-            aws_ecs.ContainerDependency(
-                container=postgres_container,
                 condition=aws_ecs.ContainerDependencyCondition.HEALTHY,
             ),
         )
@@ -252,3 +259,10 @@ class TrackerStack(Stack):
 
         # Grant S3 read/write permissions to the task
         bucket.grant_read_write(task_def.task_role)
+
+        # Allow Fargate service to connect to RDS
+        self.database.connections.allow_from(
+            self.service.service,
+            aws_ec2.Port.tcp(POSTGRES_PORT),
+            description="Allow Tracker Fargate service to connect to RDS",
+        )

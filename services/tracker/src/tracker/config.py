@@ -14,7 +14,22 @@ BENCHMARK_SERVICE_URL = os.environ.get("BENCHMARK_SERVICE_URL", "http://localhos
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://tracker:tracker@localhost:5432/tracker")
+
+
+def _build_database_url() -> str:
+    """Build DATABASE_URL from individual components or use direct URL."""
+    if url := os.environ.get("DATABASE_URL"):
+        return url
+    # Build from individual components (used with RDS secrets)
+    db_user = os.environ.get("DB_USERNAME", "tracker")
+    db_pass = os.environ.get("DB_PASSWORD", "tracker")
+    db_host = os.environ.get("DB_HOST", "localhost")
+    db_port = os.environ.get("DB_PORT", "5432")
+    db_name = os.environ.get("DB_NAME", "tracker")
+    return f"postgresql://{db_user}:{db_pass}@{db_host}:{db_port}/{db_name}"
+
+
+DATABASE_URL = _build_database_url()
 
 result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=REDIS_URL,

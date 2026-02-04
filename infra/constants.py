@@ -53,6 +53,11 @@ POSTGRES_HEALTH_START_PERIOD_SECONDS = 10
 POSTGRES_USER = "tracker"
 POSTGRES_DB = "tracker"
 
+# RDS
+RDS_INSTANCE_CLASS = "db.t4g.micro"  # Smallest instance, ~$12/month
+RDS_ALLOCATED_STORAGE_GB = 20
+RDS_SECRET_NAME = "tracker-db-credentials"
+
 # Load Balancer
 ALB_IDLE_TIMEOUT_SECONDS = 60
 
