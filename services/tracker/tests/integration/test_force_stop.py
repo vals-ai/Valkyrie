@@ -50,7 +50,7 @@ class TestForceStop:
             await asyncio.sleep(0.5)
             sandbox = await daytona_client.get(sandbox_name)
 
-            await stop_sandbox(sandbox, daytona_client, database_session, task.id)
+            await stop_sandbox(sandbox, daytona_client)
 
         # Start sandbox and immediately try to stop it, expected to wait until its started to delete
         await asyncio.gather(

@@ -20,13 +20,7 @@ from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox, install_agent_dependencies, run_agent, upload_agent_artifacts
-from tracker.types import (
-    BenchmarkDetails,
-    FetchBenchmarkResponse,
-    FetchBenchmarksRequest,
-    Order,
-    StartBenchmarkRequest,
-)
+from tracker.types import BenchmarkDetails, FetchBenchmarkResponse, FetchBenchmarksRequest, Order, StartBenchmarkRequest
 
 logger = get_logger(__name__)
 
@@ -220,6 +214,7 @@ async def process_task(
                 image=task_data.docker_image,
                 labels=labels,
                 env_vars=start_benchmark_request.contract.env,
+                resources=task_data.resources,
             ) as sandbox:
                 try:
                     task_row.status = TaskStatus.IN_PROGRESS

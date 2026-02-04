@@ -8,7 +8,13 @@ from main import app
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import get_session
-from tracker.types import FinalScoreResponse, RetrieveTaskResponse, StartBenchmarkRequest, VerifyTaskIdsResponse
+from tracker.types import (
+    FinalScoreResponse,
+    Resources,
+    RetrieveTaskResponse,
+    StartBenchmarkRequest,
+    VerifyTaskIdsResponse,
+)
 from tracker.utils import initiate_resume_benchmark, initiate_stop_benchmark, process_benchmark
 
 
@@ -37,6 +43,7 @@ class TestStopAndResume:
             problem_statement="Test problem statement",
             request_setup=False,
             cwd="/testbed",
+            resources=Resources(vcpu=2, memory=4, disk=5),
         )
 
     @staticmethod
