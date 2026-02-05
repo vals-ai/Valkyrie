@@ -110,7 +110,7 @@ class BenchmarkService:
         Returns the result from a websock connection, logs and handles other types of responses returned
 
         Yields:
-            Any: The data from the websocket message
+            str | dict[str, Any]: The message that we can log or the result object that we can return
         """
         try:
             async for message in websocket:
@@ -185,7 +185,7 @@ class BenchmarkService:
         return RetrieveTaskResponse.model_validate(response.json())
 
     async def request_setup_task(
-        self, task_id: str, instance_id: str, on_message: Callable[[str], None]
+        self, task_id: str, instance_id: str, on_message: Callable[[str], None] | None = None
     ) -> SetupTaskResponse:
         """
         Requests setup task from benchmark service
@@ -204,12 +204,13 @@ class BenchmarkService:
                 if isinstance(data, dict):
                     return SetupTaskResponse.model_validate(data)
 
-                on_message(data)
+                if on_message:
+                    on_message(data)
 
         raise BenchmarkServiceError("Exited websocket without returning final result")
 
     async def request_evaluate_instance(
-        self, task_id: str, instance_id: str, on_message: Callable[[str], None]
+        self, task_id: str, instance_id: str, on_message: Callable[[str], None] | None = None
     ) -> dict[str, str]:
         """
         Requests evaluate instance from benchmark service
@@ -228,7 +229,8 @@ class BenchmarkService:
                 if isinstance(data, dict):
                     return data
 
-                on_message(data)
+                if on_message:
+                    on_message(data)
 
         raise BenchmarkServiceError("Exited websocket without returning final result")
 
