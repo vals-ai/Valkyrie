@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 from main import app, get_session
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.logger import get_logger
-from tracker.utils import fetch_sandboxes, force_stop_sandboxes, process_benchmark, stop_sandbox
+from tracker.utils import fetch_sandboxes, force_stop_sandboxes, process_benchmark
 
 logger = get_logger(__name__)
 
@@ -48,9 +48,8 @@ class TestForceStop:
 
         async def force_stop_sandbox(sandbox_name: str) -> None:
             await asyncio.sleep(0.5)
-            sandbox = await daytona_client.get(sandbox_name)
 
-            await stop_sandbox(sandbox, daytona_client)
+            await force_stop_sandboxes(example_benchmark_object, database_session)
 
         # Start sandbox and immediately try to stop it, expected to wait until its started to delete
         await asyncio.gather(
