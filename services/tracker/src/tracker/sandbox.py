@@ -3,6 +3,7 @@
 import io
 import json
 import shlex
+import uuid
 import zipfile
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -148,7 +149,7 @@ async def stream_command_output(
     Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
     """
     try:
-        await sandbox.process.create_session(sandbox.id)
+        await sandbox.process.create_session(f"{sandbox.id}:{str(uuid.uuid4())}")
 
         session_exec_resp = await sandbox.process.execute_session_command(
             sandbox.id, SessionExecuteRequest(command=command, run_async=True)
