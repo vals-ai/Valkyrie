@@ -1,6 +1,5 @@
 """Sandbox management utilities for the tracker service."""
 
-import asyncio
 import io
 import json
 import shlex
@@ -160,16 +159,12 @@ async def stream_command_output(
         if not cmd_id:
             raise SandboxError(f"Failed to execute command {command} in session {sandbox.id}")
 
-        log_task = asyncio.create_task(
-            sandbox.process.get_session_command_logs_async(
-                session_id=sandbox.id,
-                command_id=cmd_id,
-                on_stdout=on_output,
-                on_stderr=on_output,
-            )
+        await sandbox.process.get_session_command_logs_async(
+            session_id=sandbox.id,
+            command_id=cmd_id,
+            on_stdout=on_output,
+            on_stderr=on_output,
         )
-
-        await log_task
 
         cmd = await sandbox.process.get_session_command(sandbox.id, cmd_id)
 
