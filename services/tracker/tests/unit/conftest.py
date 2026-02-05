@@ -1,4 +1,19 @@
+import unittest.mock
+from typing import Any
+from unittest.mock import MagicMock
+
 import pytest
+
+_patcher = unittest.mock.patch("boto3.client")
+
+mock_boto3_client = _patcher.start()
+
+
+def _client(_service_name: str, *_args: Any, **_kwargs: Any) -> MagicMock:
+    return MagicMock()
+
+
+mock_boto3_client.side_effect = _client
 
 
 @pytest.fixture(autouse=True)
