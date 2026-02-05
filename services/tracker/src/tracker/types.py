@@ -126,14 +126,6 @@ class StopBenchmarkResponse(StatusResponse):
     pass
 
 
-class ResumeBenchmarkResponse(StatusResponse):
-    pass
-
-
-class RetryBenchmarkResponse(StatusResponse):
-    pass
-
-
 class RetryOrResumeBenchmarkResponse(StatusResponse):
     pass
 
