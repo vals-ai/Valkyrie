@@ -183,6 +183,20 @@ def handle_early_exit(task_row: Task, task_session: Session) -> None:
     task_session.commit()
 
 
+def buffer_logs(log_queue: asyncio.Queue[str], stream_key: str, force_flush: bool = False) -> None:
+    """
+    Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
+    """
+    if not log_queue.full() and not force_flush:
+        return
+
+    messages: list[str] = []
+    while not log_queue.empty():
+        messages.append(log_queue.get_nowait())
+
+    cloudwatch_stream(stream_key, "".join(messages))
+
+
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -217,8 +231,14 @@ async def process_task(
                 "Task": task_row.task_id,
             }
 
+            stream_key: str = f"{benchmark_id}:{task_id}"
+
+            log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
+
+            # Collects the logs and dumps them when the queue is full
             def log_output(data: str) -> None:
-                cloudwatch_stream(f"{benchmark_id}:{task_id}", data)
+                log_queue.put_nowait(data)
+                buffer_logs(log_queue, stream_key)
 
             async with create_sandbox(
                 daytona=benchmark_service.daytona_client,
@@ -242,6 +262,9 @@ async def process_task(
                             task_row.task_id, sandbox.id, on_message=log_output
                         )
 
+                        # Force flush the logs if anything has been buffered
+                        buffer_logs(log_queue, stream_key, force_flush=True)
+
                     # Run the agent inside of the sandbox
                     agent_output = await run_agent(
                         sandbox,
@@ -262,6 +285,9 @@ async def process_task(
                     evaluation_result = await benchmark_service.request_evaluate_instance(
                         task_row.task_id, sandbox.id, on_message=log_output
                     )
+
+                    # Force flush the logs
+                    buffer_logs(log_queue, stream_key, force_flush=True)
 
                     # Save the evaluation result to the database with the task row
                     evaluation_result_row = EvaluationResult(

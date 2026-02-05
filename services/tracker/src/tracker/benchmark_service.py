@@ -130,7 +130,7 @@ class BenchmarkService:
         """
         Requests health check from benchmark service
         """
-        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(f"{self._url}/health")
 
         logger.debug(f"Health check response: {response.text}")
@@ -154,7 +154,7 @@ class BenchmarkService:
         if slice_str is not None:
             params["slice"] = slice_str
 
-        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(f"{self._url}/verify-task-ids/", params=params)
 
         logger.debug(f"Verify task ids response: {response.text}")
@@ -172,7 +172,7 @@ class BenchmarkService:
         """
 
         params = {"task_id": task_id, "skip_validation": skip_validation}
-        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(f"{self._url}/retrieve-task/", params=params)
 
         logger.debug(f"Retrieve task response: {response.text}")
@@ -238,7 +238,7 @@ class BenchmarkService:
         """
         Requests final score from benchmark service
         """
-        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.post(
                 f"{self._url}/final-score/",
                 json={"evaluation_results": evaluation_results},
