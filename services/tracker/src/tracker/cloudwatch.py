@@ -5,7 +5,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker.exceptions import CloudWatchError
 
-_client = boto3.client("logs")
+_client = boto3.client("logs")  # pyright: ignore[reportUnknownMemberType] # type: ignore[reportUnknownReturnType]
 _created_streams: set[str] = set()
 
 ROOT_LOG_GROUP = "benchmarks"
@@ -24,8 +24,8 @@ def create_benchmark_group(benchmark_id: str) -> str:
     log_group_name: str = f"{ROOT_LOG_GROUP}/{benchmark_id}"
 
     try:
-        _client.create_log_group(logGroupName=log_group_name)
-        _client.put_retention_policy(logGroupName=log_group_name, retentionInDays=1)
+        _client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
+        _client.put_retention_policy(logGroupName=log_group_name, retentionInDays=1)  # pyright: ignore[reportUnknownMemberType]
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
             raise CloudWatchError(f"Failed to create log group '{log_group_name}': {e}") from e
@@ -45,7 +45,7 @@ def cloudwatch_stream(stream_key: str, message: str) -> None:
         stream_key: The stream key (benchmark_id:task_id)
         message: The log message
     """
-    if not message:
+    if not message.strip():
         return
 
     benchmark_id, task_id = stream_key.split(":")
@@ -55,7 +55,7 @@ def cloudwatch_stream(stream_key: str, message: str) -> None:
 
     if stream_key not in _created_streams:
         try:
-            _client.create_log_stream(logGroupName=f"{ROOT_LOG_GROUP}/{benchmark_id}", logStreamName=task_id)
+            _client.create_log_stream(logGroupName=f"{ROOT_LOG_GROUP}/{benchmark_id}", logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
                 raise CloudWatchError(f"Failed to create log stream '{task_id}': {e}") from e
@@ -64,7 +64,7 @@ def cloudwatch_stream(stream_key: str, message: str) -> None:
         _created_streams.add(stream_key)
 
     try:
-        _client.put_log_events(
+        _client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
             logGroupName=f"{ROOT_LOG_GROUP}/{benchmark_id}",
             logStreamName=task_id,
             logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],

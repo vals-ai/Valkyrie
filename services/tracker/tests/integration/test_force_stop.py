@@ -46,7 +46,7 @@ class TestForceStop:
 
         daytona_client = example_benchmark_object.benchmark_service.daytona_client
 
-        async def force_stop_sandbox(sandbox_name: str) -> None:
+        async def force_stop_sandbox() -> None:
             await asyncio.sleep(0.5)
 
             await force_stop_sandboxes(example_benchmark_object, database_session)
@@ -63,7 +63,7 @@ class TestForceStop:
                     disk=10,
                 ),  # Large sandbox to take more time to load (if it loads instantly its hard to know if the test is working)
             ),
-            force_stop_sandbox("test-sandbox"),
+            force_stop_sandbox(),
         )
 
         await daytona_client.close()
