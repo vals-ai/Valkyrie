@@ -94,11 +94,18 @@ class HealthCheckResponse(StatusResponse):
     pass
 
 
+class Resources(BaseModel):
+    vcpu: int
+    memory: int
+    disk: int
+
+
 class RetrieveTaskResponse(BaseModel):
     docker_image: str
     problem_statement: str
     request_setup: bool
     cwd: str
+    resources: Resources
 
 
 class VerifyTaskIdsResponse(BaseModel):
