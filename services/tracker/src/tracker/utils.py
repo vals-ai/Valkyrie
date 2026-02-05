@@ -14,7 +14,7 @@ from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, Sandbox
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.cloudwatch import create_benchmark_group
+from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group
 from tracker.config import broker
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
@@ -217,6 +217,9 @@ async def process_task(
                 "Task": task_row.task_id,
             }
 
+            def log_output(data: str) -> None:
+                cloudwatch_stream(f"{benchmark_id}:{task_id}", data)
+
             async with create_sandbox(
                 daytona=benchmark_service.daytona_client,
                 sandbox_name=task_row.alias,
@@ -235,14 +238,16 @@ async def process_task(
 
                     # Setup task if requested
                     if task_data.request_setup:
-                        _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id)
+                        _ = await benchmark_service.request_setup_task(
+                            task_row.task_id, sandbox.id, on_message=log_output
+                        )
 
                     # Run the agent inside of the sandbox
                     agent_output = await run_agent(
                         sandbox,
                         start_benchmark_request.contract,
                         task_data.problem_statement,
-                        f"{benchmark_id}:{task_id}",
+                        log_output,
                         task_data.cwd,
                     )
 
@@ -254,7 +259,9 @@ async def process_task(
                     # Evaluate the instance
                     # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
                     logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                    evaluation_result = await benchmark_service.request_evaluate_instance(task_row.task_id, sandbox.id)
+                    evaluation_result = await benchmark_service.request_evaluate_instance(
+                        task_row.task_id, sandbox.id, on_message=log_output
+                    )
 
                     # Save the evaluation result to the database with the task row
                     evaluation_result_row = EvaluationResult(

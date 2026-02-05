@@ -21,7 +21,6 @@ from daytona import (
     SessionExecuteRequest,
 )
 
-from tracker.cloudwatch import cloudwatch_stream
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
@@ -126,22 +125,19 @@ async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractR
 async def install_agent_dependencies(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
-    stream_key: str,
+    log_output: Callable[[str], None],
 ) -> None:
     """Install agent dependencies in the sandbox."""
     if not contract.install_cmd:
         return
 
-    cloudwatch_stream(stream_key, f"Installing dependencies for contract: {contract.name}")
+    log_output(f"Installing dependencies for contract: {contract.name}")
 
     contract_path = get_contract_path(contract.name)
 
-    def on_output(data: str) -> None:
-        cloudwatch_stream(stream_key, data)
+    await stream_command_output(sandbox, f"cd {str(contract_path)} && {contract.install_cmd}", log_output)
 
-    await stream_command_output(sandbox, f"cd {str(contract_path)} && {contract.install_cmd}", on_output)
-
-    cloudwatch_stream(stream_key, f"Finished installing dependencies for contract: {contract.name}")
+    log_output(f"Finished installing dependencies for contract: {contract.name}")
 
 
 async def stream_command_output(
@@ -193,7 +189,7 @@ async def run_agent(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
     problem_statement: str,
-    stream_key: str,
+    log_output: Callable[[str], None],
     cwd: str,
 ) -> dict[str, Any]:
     """
@@ -203,7 +199,7 @@ async def run_agent(
         sandbox: The sandbox to run the agent in
         contract: The agent contract configuration
         problem_statement: Problem statement to pass to the agent
-        stream_key: Stream key for CloudWatch (benchmark_id:task_id)
+        log_output: Callback to log output
         cwd: Working directory to run the agent in
 
     Returns:
@@ -212,16 +208,13 @@ async def run_agent(
     Raises:
         SandboxError: If the agent fails to run or times out
     """
-    cloudwatch_stream(stream_key, f"Running agent {contract.name} on task {stream_key}")
+    log_output(f"Running agent {contract.name}")
 
-    await install_agent_dependencies(sandbox, contract, stream_key)
+    await install_agent_dependencies(sandbox, contract, log_output)
 
     run_cmd = contract.run_cmd.replace("{problem_statement}", shlex.quote(problem_statement))
 
-    def on_output(data: str) -> None:
-        cloudwatch_stream(stream_key, data)
-
-    await stream_command_output(sandbox, f"cd {cwd} && {run_cmd}", on_output)
+    await stream_command_output(sandbox, f"cd {cwd} && {run_cmd}", log_output)
 
     if not contract.final_output:
         return {}
