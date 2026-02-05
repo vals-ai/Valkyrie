@@ -15,7 +15,7 @@ from tracker.types import (
     StartBenchmarkRequest,
     VerifyTaskIdsResponse,
 )
-from tracker.utils import initiate_resume_benchmark, initiate_stop_benchmark, process_benchmark
+from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 
 
 class TestStopAndResume:
@@ -148,8 +148,12 @@ class TestStopAndResume:
             partial(self._mock_request_verify_task_ids, task_ids=pending_task_ids),
         )
 
-        verified_task_ids = await initiate_resume_benchmark(
-            benchmark_row, database_session, start_benchmark_request.benchmark_service, retry=False, force=[]
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=start_benchmark_request.benchmark_service,
+            retry=False,
+            rerun_task_ids=[],
         )
 
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
