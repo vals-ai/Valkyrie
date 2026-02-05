@@ -134,6 +134,10 @@ class RetryBenchmarkResponse(StatusResponse):
     pass
 
 
+class RetryOrResumeBenchmarkResponse(StatusResponse):
+    pass
+
+
 class Order(str, Enum):
     ASC = "asc"
     DESC = "desc"

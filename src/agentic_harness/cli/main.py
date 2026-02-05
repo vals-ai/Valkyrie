@@ -289,28 +289,28 @@ def stop_benchmark(benchmark_id: UUID, force: bool):
     help="Retry tasks with the status error",
 )
 @click.option(
-    "--force",
+    "--task-ids",
     type=str,
     required=False,
     default=None,
-    help="Force retry tasks with the given task ids (e.g., task_1_id task_2_id)",
+    help="Comma-separated list of task IDs (e.g., astropy__astropy-12907,astropy__astropy-12908)",
 )
-def resume_benchmark(benchmark_id: UUID, retry: bool, force: str | None):
+def resume_benchmark(benchmark_id: UUID, retry: bool, task_ids: str | None):
     """
     Resume a benchmark run by its benchmark id.
 
     Example:
         harness resume-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry
     """
-    click.echo(f"Resuming run for benchmark: {benchmark_id}")
+    click.echo("Selected to run a benchmark that has already been created, will rerun valid tasks.")
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            force_task_ids = force.split() if force else []
-            _ = tracker.resume_benchmark(benchmark_id, retry, force_task_ids)
-            click.echo(click.style("Run resumed successfully!", fg="green", bold=True))
+            retry_task_ids = task_ids.split() if task_ids else []
+            _ = tracker.retry_or_resume_benchmark(benchmark_id, retry, retry_task_ids)
+            click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
                 click.style(
                     f"Track progress: harness fetch-benchmark --benchmark-id {benchmark_id} --connect",
@@ -319,6 +319,10 @@ def resume_benchmark(benchmark_id: UUID, retry: bool, force: str | None):
             )
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
+
+
+# Alias for resume-benchmark, the logic is the same under the hood
+cli.add_command(resume_benchmark, name="retry-benchmark")
 
 
 @cli.command()

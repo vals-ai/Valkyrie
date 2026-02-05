@@ -13,8 +13,8 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
-    ResumeBenchmarkResponse,
     RetrieveResultsResponse,
+    RetryOrResumeBenchmarkResponse,
     StartBenchmarkRequest,
     StopBenchmarkResponse,
 )
@@ -225,29 +225,33 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to stop benchmark: {e}") from e
 
-    def resume_benchmark(self, benchmark_id: UUID, retry: bool, force: list[str]) -> ResumeBenchmarkResponse:
+    def retry_or_resume_benchmark(
+        self, benchmark_id: UUID, retry: bool, task_ids: list[str]
+    ) -> RetryOrResumeBenchmarkResponse:
         """
-        Resume a benchmark run by its benchmark id.
+        Run a benchmark that has already been created by its benchmark id.
 
         Args:
             benchmark_id: Benchmark id
             retry: Whether to retry tasks with the status error
-            force: List of task ids to force retry
+            task_ids: List of task ids to force retry
 
         Returns:
-            ResumeBenchmarkResponse with status and message
+            RetryOrResumeBenchmarkResponse with status and message
         """
         try:
             response = self._client.post(
-                f"{self._base_url}/resume-benchmark/{benchmark_id}", params={"retry": retry}, json=force
+                f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",
+                params={"retry": retry},
+                json=task_ids,
             )
             if response.status_code != 200:
                 details = response.json().get("detail", response.text)
-                raise TrackerServiceError(f"Failed to resume benchmark: {details}")
+                raise TrackerServiceError(f"Failed to run benchmark: {details}")
 
-            return ResumeBenchmarkResponse.model_validate(response.json())
+            return RetryOrResumeBenchmarkResponse.model_validate(response.json())
         except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to resume benchmark: {e}") from e
+            raise TrackerServiceError(f"Failed to run benchmark: {e}") from e
 
     def fetch_benchmarks(self, request: FetchBenchmarksRequest) -> FetchBenchmarksResponse:
         """

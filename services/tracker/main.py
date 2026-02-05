@@ -17,9 +17,8 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
-    ResumeBenchmarkResponse,
     RetrieveResultsResponse,
-    RetryBenchmarkResponse,
+    RetryOrResumeBenchmarkResponse,
     StartBenchmarkErrorResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
@@ -32,7 +31,7 @@ from tracker.utils import (
     force_stop_sandboxes,
     initiate_stop_benchmark,
     process_benchmark,
-    restart_benchmark,
+    reset_to_in_progress_status,
     stream_benchmark_results,
 )
 
@@ -284,34 +283,36 @@ async def stop_benchmark(
     )
 
 
-@app.post("/resume-benchmark/{benchmark_id}")
-async def resume_benchmark(
+@app.post("/retry-or-resume-benchmark/{benchmark_id}")
+async def retry_or_resume_benchmark(
     benchmark_id: UUID,
     retry: bool = Query(default=False),
     task_ids: list[str] = Body(default=[]),
     session: Session = Depends(get_session),
-) -> ResumeBenchmarkResponse:
+) -> RetryOrResumeBenchmarkResponse:
     """
-    Resume a benchmark run by its id, we only can resume a benchmark that is in a stopped state.
+    Retry or resume a benchmark run by its id, we only can retry or resume a benchmark if its not currently running.
 
     Usage:
-    curl -X POST http://<endpoint>/resume-benchmark/<benchmark_id>?retry=true
+    curl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true
       -d '{"task_ids": ["task_id_1", "task_id_2"]}'
     Returns:
-        ResumeBenchmarkResponse
+        RetryOrResumeBenchmarkResponse
     """
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
-    if benchmark_row.status != BenchmarkStatus.STOPPED:
+    invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
+
+    if benchmark_row.status in invalid_states:
         raise HTTPException(
             status_code=400,
-            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Must be in the stopped or error state to resume.",
+            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a benchmark that is currently running.",
         )
 
-    # Reset tasks and resume benchmark
-    await restart_benchmark(
+    # Reset tasks and retry or resume benchmark
+    verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
         benchmark_service=benchmark_row.start_benchmark_request.benchmark_service,
@@ -319,58 +320,15 @@ async def resume_benchmark(
         rerun_task_ids=task_ids,
     )
 
-    return ResumeBenchmarkResponse(
-        status="success",
+    # start the benchmark with the same args used to create it
+    # we will delegate inside what tasks we are running
+    await process_benchmark.kiq(
+        start_benchmark_request_json=benchmark_row.start_benchmark_request.model_dump(),
+        benchmark_id_str=str(benchmark_row.id),
+        verified_task_ids=verified_task_ids,
     )
 
-
-async def retry_benchmark(
-    benchmark_id: UUID,
-    retry: bool = Query(default=False),
-    task_ids: list[str] = Body(default=[]),
-    session: Session = Depends(get_session),
-) -> RetryBenchmarkResponse:
-    """
-    Retry a benchmark by its id, difference between this and resume is that we allow to retry a benchmark that has been finished or errored out.
-
-    Usage:
-    curl -X POST http://<endpoint>/retry-benchmark/<benchmark_id>?retry=true
-      -d '{"task_ids": ["task_id_1", "task_id_2"]}'
-    Returns:
-        RetryBenchmarkResponse
-
-    Returns:
-    - 200 OK if benchmark is retried successfully
-    - 400 Bad Request if benchmark is not in the correct state
-    - 404 Not Found if benchmark is not found
-    """
-    benchmark_row = session.get(Benchmark, benchmark_id)
-    if not benchmark_row:
-        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
-
-    if benchmark_row.status == BenchmarkStatus.STOPPED:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Benchmark {benchmark_id} is in the stopped state. Use the resume benchmark endpoint to resume the benchmark.",
-        )
-
-    valid_retry_states = [BenchmarkStatus.ERROR, BenchmarkStatus.FINISHED]
-    if benchmark_row.status not in valid_retry_states:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Must be in the error or finished state to retry.",
-        )
-
-    # Reset tasks and resume benchmark
-    await restart_benchmark(
-        benchmark_row=benchmark_row,
-        session=session,
-        benchmark_service=benchmark_row.start_benchmark_request.benchmark_service,
-        retry=retry,
-        rerun_task_ids=task_ids,
-    )
-
-    return RetryBenchmarkResponse(
+    return RetryOrResumeBenchmarkResponse(
         status="success",
     )
 

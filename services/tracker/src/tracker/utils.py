@@ -748,7 +748,7 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
 
 
-async def initiate_resume_benchmark(
+async def reset_to_in_progress_status(
     benchmark_row: Benchmark,
     session: Session,
     benchmark_service: BenchmarkService,
@@ -756,7 +756,7 @@ async def initiate_resume_benchmark(
     rerun_task_ids: list[str],
 ) -> list[str]:
     """
-    Resets benchmark and task status to flag resuming the benchmark.
+    Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
 
     Retry: we reset objects with an error status ontop of the stopped status
     Rerun Task IDs: even if task has been finished we restart it
@@ -870,30 +870,3 @@ def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Sess
     benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
 
     return benchmark_rows, total_count
-
-
-async def restart_benchmark(
-    benchmark_row: Benchmark,
-    session: Session,
-    benchmark_service: BenchmarkService,
-    retry: bool,
-    rerun_task_ids: list[str],
-) -> None:
-    """
-    Effectively restarts a benchmark by resetting the tasks specified
-    """
-    verified_task_ids = await initiate_resume_benchmark(
-        benchmark_row=benchmark_row,
-        session=session,
-        benchmark_service=benchmark_service,
-        retry=retry,
-        rerun_task_ids=rerun_task_ids,
-    )
-
-    # start the benchmark with the same args used to create it
-    # we will delegate inside what tasks we are running
-    await process_benchmark.kiq(
-        start_benchmark_request_json=benchmark_row.start_benchmark_request.model_dump(),
-        benchmark_id_str=str(benchmark_row.id),
-        verified_task_ids=verified_task_ids,
-    )
