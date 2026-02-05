@@ -20,6 +20,7 @@ from tracker.sandbox import (
     run_agent,
     upload_agent_artifacts,
 )
+from tracker.types import Resources
 
 
 @pytest.fixture
@@ -32,20 +33,26 @@ def mock_s3() -> Generator[S3Client, None, None]:
 
 
 @pytest.fixture
-async def test_sandbox(daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
+def test_resources() -> Resources:
+    """Create a test resources object."""
+    return Resources(vcpu=2, memory=4, disk=5)
+
+
+@pytest.fixture
+async def test_sandbox(daytona_client: AsyncDaytona, test_resources: Resources) -> AsyncGenerator[AsyncSandbox, None]:
     """Create a test sandbox with Python."""
-    async with create_sandbox(daytona_client, "test-sandbox", "python:3.11-slim") as sandbox:
+    async with create_sandbox(daytona_client, "test-sandbox", "python:3.11-slim", test_resources) as sandbox:
         yield sandbox
 
 
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
 
-    async def test_create_and_cleanup_sandbox(self, daytona_client: AsyncDaytona) -> None:
+    async def test_create_and_cleanup_sandbox(self, daytona_client: AsyncDaytona, test_resources: Resources) -> None:
         """Test that sandbox is created and cleaned up properly."""
         sandbox_name = "test-cleanup-sandbox"
 
-        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim") as sandbox:
+        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox:
             assert sandbox.name == sandbox_name
             result = await sandbox.process.exec("echo 'test'")
             assert result.exit_code == 0

@@ -24,6 +24,7 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key
+from tracker.types import Resources as TrackerResources
 
 logger = get_logger(__name__)
 
@@ -57,6 +58,7 @@ async def create_sandbox(
     daytona: AsyncDaytona,
     sandbox_name: str,
     image: str,
+    resources: TrackerResources,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
 ) -> AsyncGenerator[AsyncSandbox, Any]:
@@ -73,9 +75,9 @@ async def create_sandbox(
             image=image,
             network_block_all=False,
             resources=Resources(
-                cpu=4,
-                memory=8,
-                disk=10,
+                cpu=resources.vcpu,
+                memory=resources.memory,
+                disk=resources.disk,
             ),
             env_vars=env_vars,
         ),
