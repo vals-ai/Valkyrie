@@ -749,13 +749,17 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
 
 
 async def initiate_resume_benchmark(
-    benchmark_row: Benchmark, session: Session, benchmark_service: BenchmarkService, retry: bool, force: list[str]
+    benchmark_row: Benchmark,
+    session: Session,
+    benchmark_service: BenchmarkService,
+    retry: bool,
+    rerun_task_ids: list[str],
 ) -> list[str]:
     """
     Resets benchmark and task status to flag resuming the benchmark.
 
     Retry: we reset objects with an error status ontop of the stopped status
-    Force: even if task has been finished we restart it
+    Rerun Task IDs: even if task has been finished we restart it
 
     Benchmark - In progress status
     Tasks - Pending status
@@ -771,7 +775,7 @@ async def initiate_resume_benchmark(
             col(Task.benchmark) == benchmark_row.id,
             or_(
                 col(Task.status).in_(retry_statuses),
-                col(Task.task_id).in_(force),
+                col(Task.task_id).in_(rerun_task_ids),
             ),
         ]
 
@@ -782,7 +786,7 @@ async def initiate_resume_benchmark(
         task_mapping: dict[UUID, str] = {id: task_id for id, task_id in task_ids}
 
         # Ensure we are not missing any tasks that were requested (skips if force is empty)
-        missing_task_ids = [task_id for task_id in force if task_id not in task_mapping.values()]
+        missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in task_mapping.values()]
         if missing_task_ids:
             raise TrackerServiceError(
                 f"{', '.join(missing_task_ids)} was requested to be force resumed but does not exist in the dataset"
@@ -866,3 +870,30 @@ def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Sess
     benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
 
     return benchmark_rows, total_count
+
+
+async def restart_benchmark(
+    benchmark_row: Benchmark,
+    session: Session,
+    benchmark_service: BenchmarkService,
+    retry: bool,
+    rerun_task_ids: list[str],
+) -> None:
+    """
+    Effectively restarts a benchmark by resetting the tasks specified
+    """
+    verified_task_ids = await initiate_resume_benchmark(
+        benchmark_row=benchmark_row,
+        session=session,
+        benchmark_service=benchmark_service,
+        retry=retry,
+        rerun_task_ids=rerun_task_ids,
+    )
+
+    # start the benchmark with the same args used to create it
+    # we will delegate inside what tasks we are running
+    await process_benchmark.kiq(
+        start_benchmark_request_json=benchmark_row.start_benchmark_request.model_dump(),
+        benchmark_id_str=str(benchmark_row.id),
+        verified_task_ids=verified_task_ids,
+    )
