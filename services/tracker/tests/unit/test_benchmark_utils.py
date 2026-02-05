@@ -178,7 +178,7 @@ class TestBenchmarkUtils:
         )
 
         # Test request to resume the benchmark
-        response: Response = client.post(f"/resume-benchmark/{benchmark_row.id}?retry=false")
+        response: Response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
         assert response.status_code == 200, response.text
         assert response.json() == {"status": "success"}
 
@@ -213,7 +213,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Call resume benchmark with retry enabled
-        response = client.post(f"/resume-benchmark/{benchmark_row.id}?retry=true")
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
@@ -251,7 +251,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # failure code to resume the benchmark
-        response: Response = client.post(f"/resume-benchmark/{benchmark_row.id}?retry=false")
+        response: Response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
         assert response.status_code == 400
 
         # Set benchmark to stopped state but add only finished tasks
@@ -267,7 +267,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # error is returned because we have no stopped tasks to resume
-        response = client.post(f"/resume-benchmark/{benchmark_row.id}?retry=false")
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
         assert response.status_code == 500
 
         # Ensure that we can recreate the environment the benchmark was started in
@@ -295,7 +295,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Task id is provided as a force parameter but does not exist in dataset
-        response = client.post(f"/resume-benchmark/{example_benchmark_object.id}?retry=false", json=["task_5"])
+        response = client.post(f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false", json=["task_5"])
         assert response.status_code == 500
         assert "task_5" in response.json()["detail"]
 
@@ -317,7 +317,7 @@ class TestBenchmarkUtils:
 
         # Try again with the correct task ids
 
-        response = client.post(f"/resume-benchmark/{example_benchmark_object.id}?retry=false", json=task_ids)
+        response = client.post(f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false", json=task_ids)
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
