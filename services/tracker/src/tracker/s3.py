@@ -59,3 +59,15 @@ def download_from_s3(s3_key: str) -> bytes:
         return response["Body"].read()
     except (ClientError, BotoCoreError) as e:
         raise S3Error(f"Failed to download from S3 bucket '{AWS_S3_BUCKET}' with key '{s3_key}': {str(e)}") from e
+
+
+def delete_from_s3(s3_key: str) -> None:
+    """
+    Delete file from S3
+    """
+
+    try:
+        s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
+        s3_client.delete_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
+    except (ClientError, BotoCoreError) as e:
+        raise S3Error(f"Failed to delete from S3 bucket '{AWS_S3_BUCKET}' with key '{s3_key}': {str(e)}") from e
