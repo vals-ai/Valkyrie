@@ -1,6 +1,7 @@
 """Integration tests for sandbox operations."""
 
 import io
+import uuid
 import zipfile
 from typing import AsyncGenerator, Generator
 
@@ -40,7 +41,10 @@ def test_resources() -> Resources:
 @pytest.fixture
 async def test_sandbox(daytona_client: AsyncDaytona, test_resources: Resources) -> AsyncGenerator[AsyncSandbox, None]:
     """Create a test sandbox with Python."""
-    async with create_sandbox(daytona_client, "test-sandbox", "python:3.11-slim", test_resources) as sandbox:
+
+    sandbox_name = f"test-sandbox-{str(uuid.uuid4())}"
+
+    async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox:
         yield sandbox
 
 
@@ -97,16 +101,12 @@ class TestSandboxOperations:
         assert result.exit_code == 0
         assert "hello world" in result.result
 
-    async def test_install_agent_dependencies(
-        self, test_sandbox: AsyncSandbox, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_install_agent_dependencies(self, test_sandbox: AsyncSandbox) -> None:
         """Test that install command is correctly executed in the sandbox."""
         logged_messages: list[str] = []
 
-        def capture_cloudwatch_stream(_stream_key: str, message: str) -> None:
+        def log_callback(message: str) -> None:
             logged_messages.append(message)
-
-        monkeypatch.setattr("tracker.sandbox.cloudwatch_stream", capture_cloudwatch_stream)
 
         contract_name = "test_contract"
         contract = AgentContractRequest(
@@ -120,31 +120,29 @@ class TestSandboxOperations:
         await test_sandbox.process.exec(f"mkdir -p /bundle/{contract_name}")
         await test_sandbox.process.exec(f"echo '#!/bin/bash\necho hello world' > /bundle/{contract_name}/setup.sh")
 
-        await install_agent_dependencies(test_sandbox, contract, "mock-stream-key")
+        await install_agent_dependencies(test_sandbox, contract, log_callback)
 
         # Verify messages were logged
         output = "\n".join(logged_messages)
+        assert "Installing dependencies" in output
         assert "hello world" in output
 
     async def test_run_agent(
         self,
         test_sandbox: AsyncSandbox,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Test that agent runs and prints output lines."""
         logged_messages: list[str] = []
 
-        def capture_cloudwatch_stream(_stream_key: str, message: str) -> None:
+        def log_callback(message: str) -> None:
             logged_messages.append(message)
-
-        monkeypatch.setattr("tracker.sandbox.cloudwatch_stream", capture_cloudwatch_stream)
 
         run_cmd = 'echo line1 && sleep 1 && echo line2 && sleep 1 && echo line3 && echo \'{"result": "hello world"}\' > /tmp/agent_output.json'
 
         contract = AgentContractRequest(
             name="test_agent",
             artifacts=[],
-            install_cmd="true",  # Anything goes
+            install_cmd="true",
             run_cmd=run_cmd,
             final_output="/tmp/agent_output.json",
         )
@@ -152,7 +150,7 @@ class TestSandboxOperations:
         # Expecting bundle directory to exist
         await test_sandbox.process.exec("mkdir -p /bundle/test_agent")
 
-        final_output = await run_agent(test_sandbox, contract, "some problem statement", "mock-stream-key", cwd="/")
+        final_output = await run_agent(test_sandbox, contract, "some problem statement", log_callback, cwd="/")
 
         assert final_output == {"result": "hello world"}
 

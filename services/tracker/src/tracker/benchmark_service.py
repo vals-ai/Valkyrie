@@ -197,7 +197,13 @@ class BenchmarkService:
             headers=self._headers,
         )
 
-        async with websockets.connect(f"{self.ws_url}/ws/setup-task") as websocket:
+        extra_headers = {
+            "X-Api-Key": self._headers.x_api_key,
+            "X-Api-Url": self._headers.x_api_url,
+            "X-Target": self._headers.x_target,
+        }
+
+        async with websockets.connect(f"{self.ws_url}/ws/setup-task", additional_headers=extra_headers) as websocket:
             await websocket.send(request.model_dump_json())
 
             async for data in self._return_websocket_result(websocket):
@@ -222,7 +228,15 @@ class BenchmarkService:
             headers=self._headers,
         )
 
-        async with websockets.connect(f"{self.ws_url}/ws/evaluate-instance") as websocket:
+        extra_headers = {
+            "X-Api-Key": self._headers.x_api_key,
+            "X-Api-Url": self._headers.x_api_url,
+            "X-Target": self._headers.x_target,
+        }
+
+        async with websockets.connect(
+            f"{self.ws_url}/ws/evaluate-instance", additional_headers=extra_headers
+        ) as websocket:
             await websocket.send(request.model_dump_json())
 
             async for data in self._return_websocket_result(websocket):

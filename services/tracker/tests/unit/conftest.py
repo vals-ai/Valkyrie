@@ -31,9 +31,12 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_get_contract_s3_key(contract_name: str) -> str:
         return f"contracts/{contract_name}.zip"
 
+    monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
+    monkeypatch.setattr("tracker.s3.get_contract_s3_key", _mock_get_contract_s3_key)
+
+
+@pytest.fixture(autouse=True)
+def mock_aws_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
-
-    monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
-    monkeypatch.setattr("tracker.s3.get_contract_s3_key", _mock_get_contract_s3_key)

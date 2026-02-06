@@ -25,6 +25,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.cloudwatch.create_benchmark_group", _mock_create_benchmark_group)
     monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
     monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
+    monkeypatch.setattr("tracker.utils.cloudwatch_stream", _mock_cloudwatch_stream)
 
 
 @pytest.fixture(scope="function")
