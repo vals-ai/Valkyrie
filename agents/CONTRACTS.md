@@ -38,7 +38,7 @@ class MyAgentContract(BaseAgentContract):
 
     @property
     def final_output(self) -> Path | str:
-        return Path("path/to/agent_output.json")
+        return Path("path/to/output")
 
     @property
     def env(self) -> dict[str, str]:
@@ -79,12 +79,14 @@ def install_cmd(self) -> str:
 
 ### `final_output: Path | None`
 
-Path to the file with the final output you want to parse. This will be returned within a `agent_output` field inside of the evaluation result json. Use this to include metadata about the agent run you would like to see after. If `None` the field will be ommited from the evaluation result. Parses jsons automatically, will put text from a `.txt` file inside of a result field.
+Path to the file with the final output you want to parse. The artifact found here will be copied into the corresponding s3 bucket that can be found at benchmark/benchmark_id/task_id/
+
+Supported path could be to a directory or a file. Will be copied as a tar file
 
 ```python
 @property
 def final_output(self) -> Path | None:
-    return Path("/absolute/path/file.txt")
+    return Path("/absolute/path/to/output")
 ```
 
 ### `run_cmd: str`
