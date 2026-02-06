@@ -183,7 +183,7 @@ async def stream_command_output(
 
 
 async def archive_and_upload_output(sandbox: AsyncSandbox, output_path: str, agent_output_s3_key: str) -> None:
-    """Compress a file in the sandbox into a tar.gz and upload it to S3."""
+    """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
 
     tar_result = await sandbox.process.exec(f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")

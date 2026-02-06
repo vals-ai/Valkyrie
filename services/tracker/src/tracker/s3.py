@@ -62,10 +62,6 @@ def download_from_s3(s3_key: str) -> bytes:
 
 
 def delete_from_s3(s3_key: str) -> None:
-    """
-    Delete file from S3
-    """
-
     try:
         s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
         s3_client.delete_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
