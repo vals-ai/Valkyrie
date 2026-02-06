@@ -1,4 +1,5 @@
 from asyncio import gather
+from collections.abc import Callable
 from functools import partial
 from sqlite3 import OperationalError
 from typing import Any
@@ -288,11 +289,13 @@ class TestProcessBenchmark:
 
         original_request_setup_task = BenchmarkService.request_setup_task
 
-        async def mock_request_setup_task(self: Any, task_id: str, instance_id: str) -> SetupTaskResponse:
+        async def mock_request_setup_task(
+            self: Any, task_id: str, instance_id: str, on_message: Callable[[str], None] | None = None
+        ) -> SetupTaskResponse:
             if task_id == "astropy__astropy-13033":
                 raise Exception("Exception raised while setting up the task")
 
-            return await original_request_setup_task(self, task_id, instance_id)
+            return await original_request_setup_task(self, task_id, instance_id, on_message)
 
         # Setup fails for the second task
         monkeypatch.setattr(

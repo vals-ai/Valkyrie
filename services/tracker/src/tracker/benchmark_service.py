@@ -67,9 +67,9 @@ class BenchmarkService:
     @property
     def _headers(self) -> dict[str, str]:
         return {
-            "X-Api-Key": self._environment_keys["DAYTONA_API_KEY"],
-            "X-Api-Url": self._environment_keys["DAYTONA_API_URL"],
-            "X-Target": self._environment_keys["DAYTONA_TARGET"],
+            "x-api-key": self._environment_keys["DAYTONA_API_KEY"],
+            "x-api-url": self._environment_keys["DAYTONA_API_URL"],
+            "x-target": self._environment_keys["DAYTONA_TARGET"],
         }
 
     @staticmethod
