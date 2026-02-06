@@ -108,22 +108,14 @@ class RetrieveTaskResponse(BaseModel):
     resources: Resources
 
 
-class HeaderRequest(BaseModel):
-    x_api_key: str
-    x_api_url: str
-    x_target: str
-
-
 class SetupTaskRequest(BaseModel):
     task_id: str
     instance_id: str
-    headers: HeaderRequest
 
 
 class EvaluateInstanceRequest(BaseModel):
     task_id: str
     instance_id: str
-    headers: HeaderRequest
 
 
 class VerifyTaskIdsResponse(BaseModel):

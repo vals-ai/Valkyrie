@@ -15,7 +15,6 @@ from tracker.logger import get_logger
 from tracker.types import (
     EvaluateInstanceRequest,
     FinalScoreResponse,
-    HeaderRequest,
     HealthCheckResponse,
     RetrieveTaskResponse,
     SetupTaskRequest,
@@ -66,12 +65,12 @@ class BenchmarkService:
         return self._url.replace("http://", "ws://").replace("https://", "wss://")
 
     @property
-    def _headers(self) -> HeaderRequest:
-        return HeaderRequest(
-            x_api_key=self._environment_keys["DAYTONA_API_KEY"],
-            x_api_url=self._environment_keys["DAYTONA_API_URL"],
-            x_target=self._environment_keys["DAYTONA_TARGET"],
-        )
+    def _headers(self) -> dict[str, str]:
+        return {
+            "X-Api-Key": self._environment_keys["DAYTONA_API_KEY"],
+            "X-Api-Url": self._environment_keys["DAYTONA_API_URL"],
+            "X-Target": self._environment_keys["DAYTONA_TARGET"],
+        }
 
     @staticmethod
     def daytona_keys() -> dict[str, str]:
@@ -194,16 +193,9 @@ class BenchmarkService:
         request = SetupTaskRequest(
             task_id=task_id,
             instance_id=instance_id,
-            headers=self._headers,
         )
 
-        extra_headers = {
-            "X-Api-Key": self._headers.x_api_key,
-            "X-Api-Url": self._headers.x_api_url,
-            "X-Target": self._headers.x_target,
-        }
-
-        async with websockets.connect(f"{self.ws_url}/ws/setup-task", additional_headers=extra_headers) as websocket:
+        async with websockets.connect(f"{self.ws_url}/ws/setup-task", additional_headers=self._headers) as websocket:
             await websocket.send(request.model_dump_json())
 
             async for data in self._return_websocket_result(websocket):
@@ -225,17 +217,10 @@ class BenchmarkService:
         request = EvaluateInstanceRequest(
             task_id=task_id,
             instance_id=instance_id,
-            headers=self._headers,
         )
 
-        extra_headers = {
-            "X-Api-Key": self._headers.x_api_key,
-            "X-Api-Url": self._headers.x_api_url,
-            "X-Target": self._headers.x_target,
-        }
-
         async with websockets.connect(
-            f"{self.ws_url}/ws/evaluate-instance", additional_headers=extra_headers
+            f"{self.ws_url}/ws/evaluate-instance", additional_headers=self._headers
         ) as websocket:
             await websocket.send(request.model_dump_json())
 
