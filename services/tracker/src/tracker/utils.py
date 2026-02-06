@@ -20,6 +20,7 @@ from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
+from tracker.s3 import get_agent_result_s3_key
 from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     BenchmarkDetails,
@@ -265,13 +266,19 @@ async def process_task(
                         # Force flush the logs if anything has been buffered
                         buffer_logs(log_queue, stream_key, force_flush=True)
 
+                    # Compute the S3 key for the agent's output archive
+                    agent_output_s3_key = None
+                    if start_benchmark_request.contract.final_output:
+                        agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
+
                     # Run the agent inside of the sandbox
-                    agent_output = await run_agent(
+                    await run_agent(
                         sandbox,
                         start_benchmark_request.contract,
                         task_data.problem_statement,
                         log_output,
                         task_data.cwd,
+                        agent_output_s3_key=agent_output_s3_key,
                     )
 
                     # Update the status to evaluating once we finish running the agent
@@ -291,7 +298,7 @@ async def process_task(
 
                     # Save the evaluation result to the database with the task row
                     evaluation_result_row = EvaluationResult(
-                        task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_output=agent_output
+                        task=task_row.id, instance_id=sandbox.id, result=evaluation_result
                     )
                     task_session.add(evaluation_result_row)
 
@@ -570,9 +577,6 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session) -> dict[str, 
     evaluation_results: dict[str, dict[str, Any]] = {}
     for evaluation_result, task_id in results:
         result_data = evaluation_result.result
-        if evaluation_result.agent_output:
-            result_data["agent_output"] = evaluation_result.agent_output
-
         evaluation_results[task_id] = result_data
 
     return evaluation_results

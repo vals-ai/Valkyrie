@@ -270,4 +270,3 @@ class EvaluationResult(SQLModel, table=True):
     task: UUID = Field(foreign_key="task.id")
     instance_id: str = Field(unique=True)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
-    agent_output: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))

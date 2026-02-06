@@ -2,15 +2,22 @@
 
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
+
 from tracker.config import AWS_S3_BUCKET
 from tracker.exceptions import S3Error
 
 S3_CONTRACTS_PREFIX = "contracts"
+S3_BENCHMARKS_PREFIX = "benchmark"
 
 
 def get_contract_s3_key(contract_name: str) -> str:
     """Get the S3 key for a contract zip file."""
     return f"{S3_CONTRACTS_PREFIX}/{contract_name}.zip"
+
+
+def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -> str:
+    """Get the S3 key for an agent output archive."""
+    return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/{output_name}.tar.gz"
 
 
 def upload_to_s3(file_content: bytes, s3_key: str) -> None:

@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import base64
 import io
 import json
 import shlex
@@ -24,7 +25,7 @@ from daytona import (
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
-from tracker.s3 import download_from_s3, get_contract_s3_key
+from tracker.s3 import download_from_s3, get_contract_s3_key, upload_to_s3
 from tracker.types import Resources as TrackerResources
 
 logger = get_logger(__name__)
@@ -181,12 +182,31 @@ async def stream_command_output(
             pass
 
 
+async def archive_and_upload_output(sandbox: AsyncSandbox, output_path: str, agent_output_s3_key: str) -> None:
+    """Compress a file in the sandbox into a tar.gz and upload it to S3."""
+    archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
+
+    tar_result = await sandbox.process.exec(f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
+    if tar_result.exit_code != 0:
+        raise SandboxError(f"Failed to create archive from {output_path}")
+
+    try:
+        b64_result = await sandbox.process.exec(f"base64 {shlex.quote(archive_path)}")
+        if b64_result.exit_code != 0:
+            raise SandboxError(f"Failed to read archive from {output_path}")
+
+        upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key)
+    finally:
+        await sandbox.process.exec(f"rm -f {shlex.quote(archive_path)}")
+
+
 async def run_agent(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
     problem_statement: str,
     log_output: Callable[[str], None],
     cwd: str,
+    agent_output_s3_key: str | None = None,
 ) -> dict[str, Any]:
     """
     Run the agent inside the sandbox for a given task.
@@ -197,6 +217,7 @@ async def run_agent(
         problem_statement: Problem statement to pass to the agent
         log_output: Callback to log output
         cwd: Working directory to run the agent in
+        agent_output_s3_key: S3 key to where we will upload the final output archive to
 
     Returns:
         Agent output as a dictionary
@@ -215,22 +236,18 @@ async def run_agent(
     if not contract.final_output:
         return {}
 
-    # Check if a agent_output.json file exists
-    agent_output_exists = await sandbox.process.exec(f"[ -f {contract.final_output} ]")
-
-    # If agent output does not exist, return an empty result
-    if agent_output_exists.exit_code != 0:
+    result = await sandbox.process.exec(f"test -f {shlex.quote(contract.final_output)}")
+    if result.exit_code != 0:
         return {}
 
-    # If agent output exists, try to load it as a json, if not, return the result as a string
-    agent_output = await sandbox.process.exec(f"cat {contract.final_output}")
+    if agent_output_s3_key:
+        await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key)
+
+    agent_output = await sandbox.process.exec(f"cat {shlex.quote(contract.final_output)}")
 
     try:
         return json.loads(agent_output.result)
     except Exception:
         logger.warning("Failed to load agent output as a json, creating a fallback result")
-        pass
 
-    return {
-        "result": agent_output.result,
-    }
+    return {"result": agent_output.result}
