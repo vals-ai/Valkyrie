@@ -4,7 +4,6 @@ from typing import Any
 import pytest
 from sqlmodel import Session
 
-from main import app
 from tracker.database.session import get_session
 from tracker.types import (
     HealthCheckResponse,
@@ -16,6 +15,9 @@ from tracker.types import (
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+
+# Needs to be after the environment variable setup
+from main import app
 
 
 @pytest.fixture(autouse=True)
