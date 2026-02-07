@@ -3,6 +3,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from sqlmodel import Session
+
+from main import app
+from tracker.database.session import get_session
 
 _patcher = unittest.mock.patch("boto3.client")
 
@@ -40,3 +44,13 @@ def mock_aws_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
+
+
+@pytest.fixture(autouse=True)
+def override_database_session(database_session: Session) -> None:
+    """Overrides the database that the fastapi client uses with the in memory database session"""
+
+    def get_test_session():
+        yield database_session
+
+        app.dependency_overrides[get_session] = get_test_session

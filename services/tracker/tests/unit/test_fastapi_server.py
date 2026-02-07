@@ -20,7 +20,6 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.database.session import get_session
 from tracker.types import (
     FetchBenchmarksRequest,
     HealthCheckResponse,
@@ -74,12 +73,6 @@ class TestFastapiServer:
             - Returning task count provided from the request_verify_task_ids function
             - Benchmark row has been created and pushed to the database
         """
-
-        # We use a Depends on the session for this endpoint
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         # Example request sent from the cli to the fastapi server
         request = StartBenchmarkRequest(
@@ -152,11 +145,6 @@ class TestFastapiServer:
             - Benchmark details are returned in the response
             - Benchmark details are updated as benchmark progresses
         """
-
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         # Test case 1. Return 404 Not Found if benchmark does not exist
         query_params = {"benchmark_id": str(uuid4())}
@@ -237,11 +225,6 @@ class TestFastapiServer:
             - Tasks stopped field is populated when we stop the benchmark
             - Task errors field is populated when we encounter an error
         """
-
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         # Test case 1. 404 on invalid benchmark id
         query_params = {"benchmark_id": str(uuid4())}
@@ -381,11 +364,6 @@ class TestFastapiServer:
             - Benchmark row is marked as error and error message is set
         """
 
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
-
         # Mock health check to benchmark service
         monkeypatch.setattr(BenchmarkService, "request_health_check", self._mock_request_health_check)
 
@@ -429,11 +407,6 @@ class TestFastapiServer:
             - Can order by started at
             - Edge cases with no benchmarks found
         """
-
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         fetch_benchmarks_request = FetchBenchmarksRequest()
 

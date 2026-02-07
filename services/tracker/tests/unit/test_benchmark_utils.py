@@ -8,11 +8,9 @@ from httpx._models import Response
 from pytest import MonkeyPatch
 from sqlmodel import Session, col, func, select, update
 
-from main import app
 from tests.unit.test_fastapi_server import client
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
-from tracker.database.session import get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.types import FinalScoreResponse, StartBenchmarkRequest, VerifyTaskIdsResponse
 from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
@@ -41,11 +39,6 @@ class TestBenchmarkUtils:
             - After stopping, the benchmark status is "stopping" and tasks have been set to "stopped"
             - Tasks not in pending state are left alone
         """
-
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         # Create benchmark that has already been started
         benchmark_row = example_benchmark_object
@@ -109,11 +102,6 @@ class TestBenchmarkUtils:
             - Errors are raised and returned to the client
         """
 
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
-
         # Cannot stop a benchmark that is not in progress
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.FINISHED
@@ -136,11 +124,6 @@ class TestBenchmarkUtils:
             - Only the status of stopped tasks are updated
             - Can resume a benchmark with tasks that have the status error
         """
-
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         # Create benchmark that has already been stopped
         benchmark_row = example_benchmark_object
@@ -239,11 +222,6 @@ class TestBenchmarkUtils:
             - Can recreate the same environment the benchmark was started in
             - Can force resume a task and validate the task ids passed in
         """
-
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         # Benchmark is not in a stopped state
         benchmark_row = example_benchmark_object

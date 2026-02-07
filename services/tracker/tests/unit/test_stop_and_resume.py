@@ -4,10 +4,8 @@ from typing import Any
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
-from main import app
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
-from tracker.database.session import get_session
 from tracker.types import (
     FinalScoreResponse,
     Resources,
@@ -73,11 +71,6 @@ class TestStopAndResume:
             - Resume benchmark - only the 3 tasks that are stopped should be resumed
             - Process benchmark - all 5 tasks should have evaluation results after completion
         """
-
-        def get_test_session():
-            yield database_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         task_ids: list[str] = [
             "astropy__astropy-12907",
