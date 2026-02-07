@@ -72,6 +72,14 @@ class TestFastapiServer:
             task_ids=None,
         )
 
+        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[f"task_{i}" for i in range(500)])
+
+        monkeypatch.setattr(
+            "tracker.benchmark_service.BenchmarkService.request_verify_task_ids",
+            _mock_request_verify_task_ids,
+        )
+
         # Send request to start the run and ensure that the start response is returned
         response = client.post(
             "/start-benchmark",

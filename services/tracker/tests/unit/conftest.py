@@ -1,12 +1,11 @@
 import unittest.mock
-from typing import Any, Callable
-from unittest.mock import MagicMock, create_autospec
+from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from sqlmodel import Session
 
 from main import app
-from tracker.benchmark_service import BenchmarkService
 from tracker.database.session import get_session
 from tracker.types import (
     HealthCheckResponse,
@@ -64,34 +63,29 @@ def override_database_session(database_session: Session) -> None:
     def get_test_session():
         yield database_session
 
-        app.dependency_overrides[get_session] = get_test_session
+    app.dependency_overrides[get_session] = get_test_session
 
 
-@pytest.fixture
-def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Any]:
+@pytest.fixture(autouse=True)
+def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Mock the benchmark service class
+    Mock frequently used benchmark service methods
     """
-    mock_instance = create_autospec(BenchmarkService, instance=True)
 
-    # Endpoints always expected to succeed
-    mock_instance.request_health_check.return_value = HealthCheckResponse(status="ok")
-    mock_instance.request_setup_task.return_value = SetupTaskResponse(status="ok")
+    async def _mock_health_check(*_args: Any, **_kwargs: Any) -> HealthCheckResponse:
+        return HealthCheckResponse(status="ok")
 
-    # Verify task ids always return the same task ids passed in
-    async def _mock_request_verify_task_ids(
-        *_args: Any, task_ids: list[str] | None = None, _slice_str: str | None = None, **_kwargs: Any
-    ) -> VerifyTaskIdsResponse:
-        return VerifyTaskIdsResponse(task_ids=task_ids or [])
+    async def _mock_request_setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+        return SetupTaskResponse(status="ok")
 
-    mock_instance.request_verify_task_ids.side_effect = _mock_request_verify_task_ids
+    async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=[])
 
-    benchmark_service_mock: Callable[..., Any] = lambda *args: mock_instance
-
-    # When we call the BenchmarkService class, we will return the mock instance
-    monkeypatch.setattr("tracker.benchmark_service.BenchmarkService", benchmark_service_mock)
-
-    return benchmark_service_mock
+    monkeypatch.setattr("tracker.benchmark_service.BenchmarkService.request_health_check", _mock_health_check)
+    monkeypatch.setattr("tracker.benchmark_service.BenchmarkService.request_setup_task", _mock_request_setup_task)
+    monkeypatch.setattr(
+        "tracker.benchmark_service.BenchmarkService.request_verify_task_ids", _mock_request_verify_task_ids
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -106,13 +100,3 @@ def mock_agent_utilities(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("tracker.sandbox.upload_agent_artifacts", _mock_upload_contract)
     monkeypatch.setattr("tracker.sandbox.run_agent", _mock_run_agent)
-
-
-@pytest.fixture(autouse=True)
-def mock_process_benchmark(monkeypatch: pytest.MonkeyPatch) -> None:
-    """When we call upon process_benchmark, it will be ignored"""
-
-    async def _mock_process_benchmark(*_args: Any, **_kwargs: Any) -> None:
-        pass
-
-    monkeypatch.setattr("tracker.utils.process_benchmark", _mock_process_benchmark)

@@ -1,8 +1,10 @@
 from typing import Any
 
+from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
+from main import app
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
 from tracker.types import (
@@ -12,6 +14,8 @@ from tracker.types import (
     StartBenchmarkRequest,
 )
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
+
+client = TestClient(app)
 
 
 class TestStopAndResume:
@@ -50,7 +54,7 @@ class TestStopAndResume:
             - 2 tasks are completed (finished), 3 are still pending
             - Stop benchmark - 3 tasks are stopped (pending -> stopped)
             - Resume benchmark - only the 3 tasks that are stopped should be resumed
-            - Process benchmark - all 5 tasks should have evaluation results after completion
+            - Retry or resume benchmark - all 5 tasks should have evaluation results after completion
         """
 
         task_ids: list[str] = [
@@ -119,16 +123,15 @@ class TestStopAndResume:
             retry=False,
             rerun_task_ids=[],
         )
-
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
         assert len(verified_task_ids) == 3
         assert set(verified_task_ids) == set(pending_task_ids)
 
         # Run process_benchmark to complete the remaining tasks (the 3 tasks that are pending)
         await process_benchmark(
-            start_benchmark_request.model_dump(),
-            str(benchmark_row.id),
-            verified_task_ids,
+            start_benchmark_request_json=benchmark_row.start_benchmark_request.model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=verified_task_ids,
         )
 
         database_session.refresh(benchmark_row)
