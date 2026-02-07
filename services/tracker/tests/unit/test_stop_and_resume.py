@@ -12,6 +12,7 @@ from tracker.types import (
     Resources,
     RetrieveTaskResponse,
     StartBenchmarkRequest,
+    VerifyTaskIdsResponse,
 )
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 
@@ -115,6 +116,11 @@ class TestStopAndResume:
         benchmark_row.status = BenchmarkStatus.STOPPED
         database_session.add(benchmark_row)
         database_session.commit()
+
+        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=pending_task_ids)
+
+        monkeypatch.setattr(BenchmarkService, "request_verify_task_ids", _mock_request_verify_task_ids)
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
