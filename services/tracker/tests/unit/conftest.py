@@ -1,6 +1,5 @@
-import unittest.mock
+import os
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from sqlmodel import Session
@@ -13,15 +12,10 @@ from tracker.types import (
     VerifyTaskIdsResponse,
 )
 
-_patcher = unittest.mock.patch("boto3.client")
-mock_boto3_client = _patcher.start()
-
-
-def _client(_service_name: str, *_args: Any, **_kwargs: Any) -> MagicMock:
-    return MagicMock()
-
-
-mock_boto3_client.side_effect = _client
+# Sets default aws credentials in the environment for moto to work
+os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
+os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
+os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 
 @pytest.fixture(autouse=True)
@@ -45,15 +39,6 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
     monkeypatch.setattr("tracker.s3.get_contract_s3_key", _mock_get_contract_s3_key)
-
-
-@pytest.fixture(autouse=True)
-def mock_aws_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Sets default aws credentials that are expected to be in the environment"""
-
-    monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
 
 
 @pytest.fixture(autouse=True)
