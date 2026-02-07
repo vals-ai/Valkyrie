@@ -42,6 +42,8 @@ packages = ["src/tracker"]
 line-length = 120
 target-version = "py311"
 
+ignore =["E731"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"

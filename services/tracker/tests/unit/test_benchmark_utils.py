@@ -1,5 +1,4 @@
 from datetime import datetime
-from functools import partial
 from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
@@ -12,19 +11,11 @@ from tests.unit.test_fastapi_server import client
 from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import TrackerServiceError
-from tracker.types import FinalScoreResponse, StartBenchmarkRequest, VerifyTaskIdsResponse
+from tracker.types import FinalScoreResponse, StartBenchmarkRequest
 from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
 
 
 class TestBenchmarkUtils:
-    async def _mock_request_verify_task_ids(
-        self, *args: Any, task_ids: list[str], **kwargs: Any
-    ) -> VerifyTaskIdsResponse:
-        return VerifyTaskIdsResponse(task_ids=task_ids)
-
-    async def _mock_process_benchmark(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
     ) -> FinalScoreResponse:
@@ -146,19 +137,6 @@ class TestBenchmarkUtils:
         ).all()
 
         assert len(task_ids) == 5
-
-        # Patch the verify endpoint to return the same task ids
-        monkeypatch.setattr(
-            BenchmarkService,
-            "request_verify_task_ids",
-            partial(self._mock_request_verify_task_ids, task_ids=list(task_ids)),
-        )
-
-        # Ignore the process benchmark task (not testing that here)
-        monkeypatch.setattr(
-            "main.process_benchmark.kiq",
-            self._mock_process_benchmark,
-        )
 
         # Test request to resume the benchmark
         response: Response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
@@ -284,12 +262,6 @@ class TestBenchmarkUtils:
             )
         ).all()
         task_ids = [task_row.task_id for task_row in task_rows]
-
-        monkeypatch.setattr(
-            BenchmarkService,
-            "request_verify_task_ids",
-            partial(self._mock_request_verify_task_ids, task_ids=task_ids),
-        )
 
         assert all(task_row.status == TaskStatus.FINISHED for task_row in task_rows)
 

@@ -1,4 +1,3 @@
-from functools import partial
 from typing import Any
 
 from pytest import MonkeyPatch
@@ -11,29 +10,11 @@ from tracker.types import (
     Resources,
     RetrieveTaskResponse,
     StartBenchmarkRequest,
-    VerifyTaskIdsResponse,
 )
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 
 
 class TestStopAndResume:
-    @staticmethod
-    async def _mock_install_dependencies(*args: Any, **kwargs: Any) -> None:
-        pass
-
-    @staticmethod
-    async def _mock_run_agent(*args: Any, **kwargs: Any) -> None:
-        pass
-
-    @staticmethod
-    async def _mock_upload_contract(*args: Any, **kwargs: Any) -> None:
-        pass
-
-    async def _mock_request_verify_task_ids(
-        self, *args: Any, task_ids: list[str], **kwargs: Any
-    ) -> VerifyTaskIdsResponse:
-        return VerifyTaskIdsResponse(task_ids=task_ids)
-
     @staticmethod
     async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
         return RetrieveTaskResponse(
@@ -92,9 +73,6 @@ class TestStopAndResume:
         database_session.commit()
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.sandbox.upload_agent_artifacts", self._mock_upload_contract)
-        monkeypatch.setattr("tracker.sandbox.install_agent_dependencies", self._mock_install_dependencies)
-        monkeypatch.setattr("tracker.sandbox.run_agent", self._mock_run_agent)
         monkeypatch.setattr(BenchmarkService, "request_retrieve_task", self._mock_request_retrieve_task)
         monkeypatch.setattr(BenchmarkService, "request_final_score", self._mock_request_final_score)
 
@@ -133,13 +111,6 @@ class TestStopAndResume:
         benchmark_row.status = BenchmarkStatus.STOPPED
         database_session.add(benchmark_row)
         database_session.commit()
-
-        # Resume benchmark - mock verify to return only the pending task IDs
-        monkeypatch.setattr(
-            BenchmarkService,
-            "request_verify_task_ids",
-            partial(self._mock_request_verify_task_ids, task_ids=pending_task_ids),
-        )
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,

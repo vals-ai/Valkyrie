@@ -22,7 +22,6 @@ from tracker.database.models import (
 )
 from tracker.types import (
     FetchBenchmarksRequest,
-    HealthCheckResponse,
     RetrieveResultsResponse,
     StartBenchmarkRequest,
     VerifyTaskIdsResponse,
@@ -32,15 +31,6 @@ client = TestClient(app)
 
 
 class TestFastapiServer:
-    async def _mock_request_verify_task_ids(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
-        return VerifyTaskIdsResponse(task_ids=["task_id"] * 500)
-
-    async def _mock_process_benchmark_kiq(self, *args: Any, **kwargs: Any) -> None:
-        pass
-
-    async def _mock_request_health_check(self, *args: Any, **kwargs: Any) -> HealthCheckResponse:
-        return HealthCheckResponse(status="ok")
-
     async def _mock_request_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
@@ -80,26 +70,6 @@ class TestFastapiServer:
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
-        )
-
-        # Mock health check to benchmark service
-        monkeypatch.setattr(
-            BenchmarkService,
-            "request_health_check",
-            self._mock_request_health_check,
-        )
-
-        # Expected 500 task ids to be returned from benchmark service
-        monkeypatch.setattr(
-            BenchmarkService,
-            "request_verify_task_ids",
-            self._mock_request_verify_task_ids,
-        )
-
-        # Ignore background task to run benchmark
-        monkeypatch.setattr(
-            "main.process_benchmark.kiq",
-            self._mock_process_benchmark_kiq,
         )
 
         # Send request to start the run and ensure that the start response is returned
@@ -363,9 +333,6 @@ class TestFastapiServer:
             - Returns error message from exception
             - Benchmark row is marked as error and error message is set
         """
-
-        # Mock health check to benchmark service
-        monkeypatch.setattr(BenchmarkService, "request_health_check", self._mock_request_health_check)
 
         # Expection is raised if verify task ids fails
         monkeypatch.setattr(BenchmarkService, "request_verify_task_ids", self._mock_request_verify_task_ids_error)
