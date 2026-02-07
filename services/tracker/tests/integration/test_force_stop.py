@@ -1,4 +1,6 @@
 import asyncio
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Resources
 from fastapi.testclient import TestClient
@@ -14,6 +16,7 @@ logger = get_logger(__name__)
 
 
 class TestForceStop:
+    @asynccontextmanager
     async def _create_sandbox_without_manager(
         self,
         daytona: AsyncDaytona,
@@ -21,7 +24,7 @@ class TestForceStop:
         image: str,
         labels: dict[str, str] = {},
         resources: Resources = Resources(cpu=2, memory=4, disk=5),
-    ) -> AsyncSandbox:
+    ) -> AsyncGenerator[AsyncSandbox, None]:
         sandbox = await daytona.create(
             CreateSandboxFromImageParams(
                 name=sandbox_name,
@@ -33,7 +36,13 @@ class TestForceStop:
             timeout=360,
         )
 
-        return sandbox
+        try:
+            yield sandbox
+        finally:
+            try:
+                await daytona.delete(sandbox)
+            except Exception:
+                pass
 
     async def test_force_stop_sandbox(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
         database_session.add(example_benchmark_object)
@@ -51,18 +60,24 @@ class TestForceStop:
 
             await force_stop_sandboxes(example_benchmark_object, database_session)
 
+        async def _generator_to_courtine():
+            async with (
+                self._create_sandbox_without_manager(
+                    daytona_client,
+                    "test-sandbox",
+                    "ghcr.io/epoch-research/swe-bench.eval.x86_64.scikit-learn__scikit-learn-13142:latest",
+                    resources=Resources(
+                        cpu=4,
+                        memory=8,
+                        disk=10,
+                    ),  # Large sandbox to take more time to load (if it loads instantly its hard to know if the test is working)
+                ) as _
+            ):
+                pass
+
         # Start sandbox and immediately try to stop it, expected to wait until its started to delete
         await asyncio.gather(
-            self._create_sandbox_without_manager(
-                daytona_client,
-                "test-sandbox",
-                "ghcr.io/epoch-research/swe-bench.eval.x86_64.scikit-learn__scikit-learn-13142:latest",
-                resources=Resources(
-                    cpu=4,
-                    memory=8,
-                    disk=10,
-                ),  # Large sandbox to take more time to load (if it loads instantly its hard to know if the test is working)
-            ),
+            _generator_to_courtine(),
             force_stop_sandbox(),
         )
 
@@ -82,12 +97,11 @@ class TestForceStop:
 
         async def create_sandbox_with_delay(sandbox_name: str) -> None:
             """Create sandbox that will not be closed automatically"""
-            _ = await self._create_sandbox_without_manager(
+            async with self._create_sandbox_without_manager(
                 daytona=daytona_client, sandbox_name=sandbox_name, image="python:3.11-slim", labels=labels
-            )
-
-            # NOTE: Will not exit when we delete the sandbox so keep the sleep short
-            await asyncio.sleep(20)
+            ) as _:
+                # NOTE: Will not exit when we delete the sandbox so keep the sleep short
+                await asyncio.sleep(20)
 
         # Create 12 tasks that are in progress and evaluating
         tasks: list[Task] = []
