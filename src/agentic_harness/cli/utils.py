@@ -179,6 +179,12 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
             fg="cyan",
         )
     )
+    click.echo(
+        click.style(
+            f"Retry benchmark: harness retry-benchmark --benchmark-id {start_benchmark_response.benchmark_id}",
+            fg="cyan",
+        )
+    )
     click.echo()
 
 
