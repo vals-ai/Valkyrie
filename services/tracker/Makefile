@@ -52,7 +52,6 @@ logs:
 
 tracker-service:
 	@echo "Building tracker service..."
-	@make migrate
 	@make clean
 	@make build
 	@make run

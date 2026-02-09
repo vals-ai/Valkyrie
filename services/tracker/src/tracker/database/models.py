@@ -30,20 +30,20 @@ if TYPE_CHECKING:
 
 
 class TaskStatus(str, Enum):
-    PENDING = "pending"
-    IN_PROGRESS = "in_progress"
-    EVALUATING = "evaluating"
-    STOPPED = "stopped"
-    FINISHED = "finished"
-    ERROR = "error"
+    PENDING = "PENDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    EVALUATING = "EVALUATING"
+    STOPPED = "STOPPED"
+    FINISHED = "FINISHED"
+    ERROR = "ERROR"
 
 
 class BenchmarkStatus(str, Enum):
-    IN_PROGRESS = "in_progress"
-    STOPPING = "stopping"
-    STOPPED = "stopped"
-    FINISHED = "finished"
-    ERROR = "error"
+    IN_PROGRESS = "IN_PROGRESS"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    FINISHED = "FINISHED"
+    ERROR = "ERROR"
 
 
 class AgentContractRequest(BaseModel):

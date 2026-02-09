@@ -173,6 +173,7 @@ class TrackerService:
                 timeout=None,
             ) as response:
                 if response.status_code != 200:
+                    response.read()
                     details = response.json().get("detail", response.text)
                     raise TrackerServiceError(f"Failed to stream benchmark: {details}")
 
