@@ -236,7 +236,7 @@ async def run_agent(
     if not contract.final_output:
         return {}
 
-    result = await sandbox.process.exec(f"test -f {shlex.quote(contract.final_output)}")
+    result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
     if result.exit_code != 0:
         return {}
 
