@@ -100,6 +100,12 @@ Flags
 uv run harness resume-benchmark --benchmark-id <benchmark_id>
 ```
 
+#### Retry a benchmark
+
+```bash
+uv run harness retry-benchmark --benchmark-id <benchmark_id>
+```
+
 Flags
 
 ```
