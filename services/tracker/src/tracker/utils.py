@@ -293,7 +293,7 @@ async def process_task(
                         task_row.task_id, sandbox.id, on_message=log_output
                     )
 
-                    # Force flush the logs
+                    # Force flush the logs, maybe redundant since we have the one in finally:
                     buffer_logs(log_queue, stream_key, force_flush=True)
 
                     # Save the evaluation result to the database with the task row
@@ -319,13 +319,15 @@ async def process_task(
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             logger.error(error_message)
 
-            # Flush any buffered logs and include the error message
+            # include the error message
             log_output(f"\n[ERROR] {error_message}")
-            buffer_logs(log_queue, stream_key, force_flush=True)
 
             commit_task_error(task_row, task_session, error_message)
 
             return {task_id: None}
+        finally:
+            # force flush the logs
+            buffer_logs(log_queue, stream_key, force_flush=True)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
