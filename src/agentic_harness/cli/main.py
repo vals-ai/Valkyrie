@@ -405,7 +405,7 @@ def fetch_agent_outputs(benchmark_id: UUID, output_dir: Path | None):
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    click.echo(f"Fetching agent outputs for benchmark {benchmark_id}...")
+    click.echo(f"\r\033[KFetching agent outputs for benchmark {benchmark_id}...", nl=False)
 
     try:
         with TrackerService() as tracker:
@@ -416,19 +416,19 @@ def fetch_agent_outputs(benchmark_id: UUID, output_dir: Path | None):
 
             with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_file:
                 tmp_path = Path(tmp_file.name)
-                click.echo("Downloading...")
+                click.echo("\r\033[KDownloading...", nl=False)
 
                 for chunk in response.iter_bytes():
                     tmp_file.write(chunk)
 
-            click.echo(f"Extracting archives to {output_dir}...")
+            click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False)
 
             with tarfile.open(tmp_path, "r") as tar:
                 tar.extractall(output_dir)
 
             nested_tars = list(output_dir.rglob("*.tar.gz"))
             if nested_tars:
-                click.echo(f"Unpacking {len(nested_tars)} nested tar.gz files...")
+                click.echo(f"\r\033[KUnpacking {len(nested_tars)} nested tar.gz files...", nl=False)
 
                 for nested_tar in nested_tars:
                     extract_dir = nested_tar.parent / nested_tar.stem.replace(".tar", "")
@@ -441,7 +441,7 @@ def fetch_agent_outputs(benchmark_id: UUID, output_dir: Path | None):
 
             tmp_path.unlink()
 
-            click.echo(click.style(f"✓ Agent outputs extracted to: {output_dir}", fg="green"))
+            click.echo(click.style(f"\r\033[K✓ Agent outputs extracted to: {output_dir}", fg="green"))
 
     except TrackerServiceError as e:
         click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)
