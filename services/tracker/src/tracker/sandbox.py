@@ -3,7 +3,6 @@
 import asyncio
 import base64
 import io
-import json
 import shlex
 import uuid
 import zipfile
@@ -245,7 +244,7 @@ async def run_agent(
     log_output: Callable[[str], None],
     cwd: str,
     agent_output_s3_key: str | None = None,
-) -> dict[str, Any]:
+) -> None:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -280,12 +279,3 @@ async def run_agent(
 
     if agent_output_s3_key:
         await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key)
-
-    agent_output = await sandbox.process.exec(f"cat {shlex.quote(contract.final_output)}")
-
-    try:
-        return json.loads(agent_output.result)
-    except Exception:
-        logger.warning("Failed to load agent output as a json, creating a fallback result")
-
-    return {"result": agent_output.result}

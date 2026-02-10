@@ -4,7 +4,7 @@
 
 PYTHON_VERSION := 3.12
 PYTEST := uv run pytest
-COMPOSE := docker-compose
+COMPOSE := docker compose
 
 help:
 	@echo "Available commands:"
