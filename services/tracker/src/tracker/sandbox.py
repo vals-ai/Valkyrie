@@ -13,7 +13,6 @@ from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 import websockets.asyncio.client as ws_client
-
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
@@ -26,24 +25,27 @@ from daytona import (
     SessionExecuteRequest,
 )
 
-# Monkey-patch websockets to use longer ping timeouts for long-running tasks
-_original_connect = ws_client.connect
-
-
-def _patched_connect(*args, **kwargs):
-    kwargs.setdefault("ping_interval", 60)
-    kwargs.setdefault("ping_timeout", 120)
-    kwargs.setdefault("close_timeout", 30)
-    return _original_connect(*args, **kwargs)
-
-
-ws_client.connect = _patched_connect
-
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key, upload_to_s3
 from tracker.types import Resources as TrackerResources
+
+"""
+Monkey-patch websockets to use longer ping timeouts for long-running tasks
+"""
+
+_original_connect = ws_client.connect
+
+
+def _patched_connect(*args: object, **kwargs: object):
+    kwargs.setdefault("ping_interval", 60)
+    kwargs.setdefault("ping_timeout", 120)
+    kwargs.setdefault("close_timeout", 30)
+    return _original_connect(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+
+ws_client.connect = _patched_connect
 
 logger = get_logger(__name__)
 

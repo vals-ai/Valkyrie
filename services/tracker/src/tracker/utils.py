@@ -222,6 +222,15 @@ async def process_task(
             handle_early_exit(task_row, task_session)
             return {task_id: None}
 
+        # Setup logging infrastructure before try block so it's always available
+        stream_key: str = f"{benchmark_id}:{task_id}"
+        log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
+
+        # Collects the logs and dumps them when the queue is full
+        def log_output(data: str) -> None:
+            log_queue.put_nowait(data)
+            buffer_logs(log_queue, stream_key)
+
         try:
             task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
 
@@ -231,15 +240,6 @@ async def process_task(
                 "Id": str(benchmark_row.id),
                 "Task": task_row.task_id,
             }
-
-            stream_key: str = f"{benchmark_id}:{task_id}"
-
-            log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
-
-            # Collects the logs and dumps them when the queue is full
-            def log_output(data: str) -> None:
-                log_queue.put_nowait(data)
-                buffer_logs(log_queue, stream_key)
 
             async with create_sandbox(
                 daytona=benchmark_service.daytona_client,
@@ -318,6 +318,10 @@ async def process_task(
         except Exception as e:
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             logger.error(error_message)
+
+            # Flush any buffered logs and include the error message
+            log_output(f"\n[ERROR] {error_message}")
+            buffer_logs(log_queue, stream_key, force_flush=True)
 
             commit_task_error(task_row, task_session, error_message)
 
