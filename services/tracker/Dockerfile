@@ -10,7 +10,8 @@ RUN apt-get update && apt-get install -y \
     && wget -qO- https://github.com/jwilder/dockerize/releases/download/v0.7.0/dockerize-linux-amd64-v0.7.0.tar.gz | tar xz -C /usr/local/bin \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install uv
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 COPY pyproject.toml uv.lock alembic.ini ./
 
@@ -19,7 +20,8 @@ COPY main.py ./
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY entrypoint.sh /entrypoint.sh
 
-RUN uv sync --frozen --no-dev && chmod +x /entrypoint.sh
+RUN uv sync --frozen --no-dev
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 8000
 

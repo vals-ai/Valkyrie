@@ -1,7 +1,6 @@
 networks:
   tracker-network:
     name: tracker-network
-    driver: bridge
 
 services:
   postgres:
