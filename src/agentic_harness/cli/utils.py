@@ -17,28 +17,14 @@ from agentic_harness.cli.tracker_service import TrackerService
 
 
 class BenchmarkFormatter:
-    @staticmethod
-    def fetch_status_color(status_value: str) -> str:
-        """
-        Get color for a status value string.
-        NOTE: Used for both benchmark and task statuses, thats why we pass in a string value instead of using an enum.
-
-        Args:
-            status_value: Status value as string (e.g., "in_progress", "finished")
-
-        Returns:
-            Color name for the status
-        """
-        status_colors = {
-            "pending": "yellow",
-            "in_progress": "blue",
-            "evaluating": "magenta",
-            "stopping": "magenta",
-            "stopped": "cyan",
-            "finished": "green",
-            "error": "red",
-        }
-        return status_colors.get(status_value, "white")
+    STATUS_COLORS = {
+        "PENDING": "yellow",
+        "IN_PROGRESS": "blue",
+        "EVALUATING": "magenta",
+        "STOPPED": "cyan",
+        "FINISHED": "green",
+        "ERROR": "red",
+    }
 
     @staticmethod
     def create_progress_bar(finished_tasks: int, total_tasks: int, bar_width: int = 30) -> tuple[str, float]:
@@ -79,7 +65,7 @@ class BenchmarkFormatter:
             if count == 0:
                 continue
 
-            color = BenchmarkFormatter.fetch_status_color(status.value)
+            color = BenchmarkFormatter.STATUS_COLORS[status]
             label = status.value.replace("_", " ").title()
             colored_part = click.style(f"{label}: {count}", fg=color)
             parts.append(colored_part)
@@ -123,7 +109,7 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     finished_tasks = details.finished_tasks
 
     bar, progress_pct = BenchmarkFormatter.create_progress_bar(finished_tasks, total_tasks)
-    status_color = BenchmarkFormatter.fetch_status_color(status.value)
+    status_color = BenchmarkFormatter.STATUS_COLORS[status.value]
 
     click.echo(f"{click.style('Benchmark:', bold=True)} {benchmark_name}")
     click.echo(f"{click.style('Started at:', bold=True)} {started_at}")
@@ -210,7 +196,7 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
                 details = response.details
 
                 bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
-                status_color = BenchmarkFormatter.fetch_status_color(details.status.value)
+                status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
                 status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
 
                 progress_line = (
@@ -283,7 +269,7 @@ def format_fetch_benchmarks_response(
 
     for benchmark in benchmarks:
         _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
-        status_color = BenchmarkFormatter.fetch_status_color(benchmark.status.value)
+        status_color = BenchmarkFormatter.STATUS_COLORS[benchmark.status.value]
         status_display = benchmark.status.value.replace("_", " ").title()
 
         click.echo(
