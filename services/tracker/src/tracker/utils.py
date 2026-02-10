@@ -3,7 +3,7 @@ import io
 import json
 import traceback
 from asyncio import Semaphore, gather
-from collections.abc import AsyncGenerator, Coroutine
+from collections.abc import AsyncGenerator, Buffer, Coroutine
 from datetime import datetime
 from enum import Enum
 from functools import cached_property
@@ -11,7 +11,6 @@ from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-from _typeshed import ReadableBuffer
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
@@ -897,7 +896,7 @@ class YieldingWriter(io.RawIOBase):
     def writable(self) -> bool:
         return True
 
-    def write(self, b: ReadableBuffer) -> int:
+    def write(self, b: Buffer) -> int:
         data = bytes(b)
         self._buffer.extend(data)
 

@@ -132,6 +132,18 @@ uv run harness fetch-benchmarks --agent-name <agent_name> --benchmark-name <benc
 > ASC
 ```
 
+#### Download all agent outputs from benchmark
+
+```
+uv run harness fetch-agent-outputs --benchmark-id <benchmark_id> --output-dir <download_directory>
+```
+
+Flags
+
+```
+--output-dir: where you would like the agent outputs to be downloaded (default: ./agent_outputs/<benchmark-id>)
+```
+
 ### Supported Benchmarks
 
 - SWE-bench

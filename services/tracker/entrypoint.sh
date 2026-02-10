@@ -1,9 +1,6 @@
 #!/bin/bash
 set -e
 
-echo "Waiting for database..."
-dockerize -wait tcp://${DB_HOST}:${DB_PORT} -timeout 120s
-
 echo "Running database migrations..."
 uv run alembic upgrade head
 
