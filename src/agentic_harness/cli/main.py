@@ -1,7 +1,5 @@
 """CLI views/commands for the agentic harness."""
 
-import tarfile
-import tempfile
 from pathlib import Path
 from uuid import UUID
 
@@ -14,6 +12,7 @@ from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
 from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     check_tracker_service_health,
+    download_agent_outputs,
     format_benchmark_status,
     format_start_benchmark_response,
     paginate_benchmarks,
@@ -411,39 +410,11 @@ def fetch_agent_outputs(benchmark_id: UUID, output_dir: Path | None):
                     f"{metadata.benchmark_name}_{metadata.benchmark_arguments.contract.name}_{metadata.benchmark_id}"
                 )
 
-            output_dir = output_dir.resolve()
-            output_dir.mkdir(parents=True, exist_ok=True)
-
             click.echo(f"\r\033[KFetching agent outputs for benchmark {benchmark_id}...", nl=False)
 
             response = tracker.fetch_agent_outputs(benchmark_id)
 
-            with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_file:
-                tmp_path = Path(tmp_file.name)
-                click.echo("\r\033[KDownloading...", nl=False)
-
-                for chunk in response.iter_bytes():
-                    tmp_file.write(chunk)
-
-            click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False)
-
-            with tarfile.open(tmp_path, "r") as tar:
-                tar.extractall(output_dir)
-
-            nested_tars = list(output_dir.rglob("*.tar.gz"))
-            if nested_tars:
-                click.echo(f"\r\033[KUnpacking {len(nested_tars)} nested tar.gz files...", nl=False)
-
-                for nested_tar in nested_tars:
-                    extract_dir = nested_tar.parent / nested_tar.stem.replace(".tar", "")
-                    extract_dir.mkdir(parents=True, exist_ok=True)
-
-                    with tarfile.open(nested_tar, "r:gz") as tar:
-                        tar.extractall(extract_dir)
-
-                    nested_tar.unlink()
-
-            tmp_path.unlink()
+            download_agent_outputs(response, output_dir)
 
             click.echo(click.style(f"\r\033[K✓ Agent outputs extracted to: {output_dir}", fg="green"))
 
