@@ -31,6 +31,7 @@ class BenchmarkService:
     _url: str
     _environment_keys: dict[str, str]
     _daytona_client: AsyncDaytona | None = None
+    _timeout: int = 60
 
     def __init__(self, name: str, url: str):
         self._name = name
@@ -129,7 +130,7 @@ class BenchmarkService:
         """
         Requests health check from benchmark service
         """
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=self._timeout) as client:
             response = await client.get(f"{self._url}/health")
 
         logger.debug(f"Health check response: {response.text}")
@@ -153,7 +154,7 @@ class BenchmarkService:
         if slice_str is not None:
             params["slice"] = slice_str
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=self._timeout) as client:
             response = await client.get(f"{self._url}/verify-task-ids/", params=params)
 
         logger.debug(f"Verify task ids response: {response.text}")
@@ -171,7 +172,7 @@ class BenchmarkService:
         """
 
         params = {"task_id": task_id, "skip_validation": skip_validation}
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=self._timeout) as client:
             response = await client.get(f"{self._url}/retrieve-task/", params=params)
 
         logger.debug(f"Retrieve task response: {response.text}")
@@ -195,7 +196,11 @@ class BenchmarkService:
             instance_id=instance_id,
         )
 
-        async with websockets.connect(f"{self.ws_url}/ws/setup-task", additional_headers=self._headers) as websocket:
+        async with websockets.connect(
+            f"{self.ws_url}/ws/setup-task",
+            additional_headers=self._headers,
+            open_timeout=60,
+        ) as websocket:
             await websocket.send(request.model_dump_json())
 
             async for data in self._return_websocket_result(websocket):
@@ -220,7 +225,9 @@ class BenchmarkService:
         )
 
         async with websockets.connect(
-            f"{self.ws_url}/ws/evaluate-instance", additional_headers=self._headers
+            f"{self.ws_url}/ws/evaluate-instance",
+            additional_headers=self._headers,
+            open_timeout=60,
         ) as websocket:
             await websocket.send(request.model_dump_json())
 
@@ -237,7 +244,7 @@ class BenchmarkService:
         """
         Requests final score from benchmark service
         """
-        async with httpx.AsyncClient(follow_redirects=True) as client:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=self._timeout) as client:
             response = await client.post(
                 f"{self._url}/final-score/",
                 json={"evaluation_results": evaluation_results},

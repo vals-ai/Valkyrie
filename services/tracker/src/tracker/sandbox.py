@@ -12,12 +12,10 @@ from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
-import websockets.asyncio.client as ws_client
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
     CreateSandboxFromImageParams,
-    DaytonaError,
     DaytonaNotFoundError,
     FileUpload,
     Resources,
@@ -30,23 +28,6 @@ from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key, upload_to_s3
 from tracker.types import Resources as TrackerResources
-
-"""
-Monkey-patch websockets to use longer ping timeouts for long-running tasks
-"""
-
-_original_connect = ws_client.connect
-
-
-# NOTE: can probably remove completely and rely on fallback to polling
-def _patched_connect(*args: object, **kwargs: object):
-    kwargs.setdefault("ping_interval", 60)
-    kwargs.setdefault("ping_timeout", 120)
-    kwargs.setdefault("close_timeout", 30)
-    return _original_connect(*args, **kwargs)  # pyright: ignore[reportArgumentType]
-
-
-ws_client.connect = _patched_connect
 
 logger = get_logger(__name__)
 
@@ -161,23 +142,25 @@ async def install_agent_dependencies(
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 
 
-async def _poll_until_complete(
+async def poll_until_complete(
     sandbox: AsyncSandbox,
     session_id: str,
     cmd_id: str,
     on_output: Callable[[str], None],
-    poll_interval: float = 5.0,
-) -> None:
+    poll_interval: float = 1.0,
+) -> int:
     """
     Poll for command completion when WebSocket streaming fails.
     Fetches logs periodically until the command completes.
+
+    Returns:
+        Exit code of the command
     """
     last_log_length = 0
 
-    while True:
-        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+    cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
-        # Fetch current logs
+    while True:
         try:
             logs = await sandbox.process.get_session_command_logs(session_id, cmd_id)
             current_output = logs.output or ""
@@ -192,7 +175,7 @@ async def _poll_until_complete(
 
         # Check if command completed
         if cmd.exit_code is not None:
-            break
+            return cmd.exit_code
 
         await asyncio.sleep(poll_interval)
 
@@ -219,25 +202,10 @@ async def stream_command_output(
         if not cmd_id:
             raise SandboxError(f"Failed to execute command {command} in session {session_id}")
 
-        try:
-            await sandbox.process.get_session_command_logs_async(
-                session_id=session_id,
-                command_id=cmd_id,
-                on_stdout=on_output,
-                on_stderr=on_output,
-            )
-        except DaytonaError as e:
-            error_msg = str(e).lower()
-            if not ("ping timeout" in error_msg or "websocket" in error_msg):
-                raise
+        exit_code = await poll_until_complete(sandbox, session_id, cmd_id, on_output)
 
-            logger.warning(f"WebSocket streaming failed, falling back to polling: {e}")
-            await _poll_until_complete(sandbox, session_id, cmd_id, on_output)
-
-        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
-
-        if cmd.exit_code != 0:
-            raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
+        if exit_code != 0:
+            raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}")
 
     finally:
         try:
@@ -262,7 +230,12 @@ async def archive_and_upload_output(sandbox: AsyncSandbox, output_path: str, age
 
         upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key)
     finally:
-        await sandbox.process.exec(f"rm -f {shlex.quote(archive_path)}")
+        # Check if file exists and remove it if it does
+        result = await sandbox.process.exec(f"test -e {shlex.quote(archive_path)}")
+        if result.exit_code == 0:
+            await sandbox.process.exec(f"rm -f {shlex.quote(archive_path)}")
+        else:
+            logger.warning(f"File {archive_path} does not exist, skipping removal")
 
 
 async def run_agent(

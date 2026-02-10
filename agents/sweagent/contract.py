@@ -35,10 +35,9 @@ class SWEAgentContract(BaseAgentContract):
             "--env.repo.type=preexisting",
             "--env.repo.repo_name=/testbed",
             "--agent.model.provider=vals",
-            "--agent.max_steps=5",
             "--problem_statement.text={problem_statement}",
+            # "--problem_statement.id={task_id}",
             "--config=/bundle/sweagent/submodules/sweagent/config/default.yaml",
-            # TODO: add predictable place to store logs/outputs
             "--output_dir=/logs/sweagent",
         ]
 
