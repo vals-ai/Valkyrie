@@ -28,6 +28,16 @@ def cli():
 
 
 @cli.command()
+def init():
+    """
+    Creates config for user and ensures that we have correct environment variables set to run the harness
+
+    config path is ~/.vals/config.yaml
+    """
+    ...
+
+
+@cli.command()
 @click.option(
     "--agent",
     type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
