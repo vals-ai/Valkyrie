@@ -28,6 +28,16 @@ def cli():
     pass
 
 
+@cli.command()
+def init():
+    """
+    Creates config for user and ensures that we have correct environment variables set to run the harness
+
+    config path is ~/.vals/config.yaml
+    """
+    ...
+
+
 @cli.command(
     help="Start a benchmark run by its benchmark id. \n\nExample:\nharness start-benchmark --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
