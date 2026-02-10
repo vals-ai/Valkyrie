@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import traceback
 from asyncio import Semaphore, gather
@@ -10,6 +11,7 @@ from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+from _typeshed import ReadableBuffer
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
@@ -881,3 +883,31 @@ def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Sess
     benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
 
     return benchmark_rows, total_count
+
+
+class YieldingWriter(io.RawIOBase):
+    """
+    Custom writer that collects bytes and returns them to stream.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._buffer: bytearray = bytearray()
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b: ReadableBuffer) -> int:
+        data = bytes(b)
+        self._buffer.extend(data)
+
+        return len(data)
+
+    def pop(self) -> bytes:
+        if not self._buffer:
+            return b""
+
+        chunk = bytes(self._buffer)
+        self._buffer.clear()
+
+        return chunk
