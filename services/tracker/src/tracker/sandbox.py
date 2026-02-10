@@ -158,11 +158,11 @@ async def poll_until_complete(
     """
     last_log_length = 0
 
-    cmd = await sandbox.process.get_session_command(session_id, cmd_id)
-
     while True:
         try:
+            cmd = await sandbox.process.get_session_command(session_id, cmd_id)
             logs = await sandbox.process.get_session_command_logs(session_id, cmd_id)
+
             current_output = logs.output or ""
 
             # Output only new content
@@ -170,12 +170,12 @@ async def poll_until_complete(
                 new_content = current_output[last_log_length:]
                 on_output(new_content)
                 last_log_length = len(current_output)
+
+            # Check if command completed
+            if cmd.exit_code is not None:
+                return cmd.exit_code
         except Exception as e:
             logger.warning(f"Failed to fetch logs during polling: {e}")
-
-        # Check if command completed
-        if cmd.exit_code is not None:
-            return cmd.exit_code
 
         await asyncio.sleep(poll_interval)
 
