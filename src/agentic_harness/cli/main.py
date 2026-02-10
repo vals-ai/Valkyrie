@@ -399,18 +399,22 @@ def fetch_agent_outputs(benchmark_id: UUID, output_dir: Path | None):
         harness fetch-agent-outputs --benchmark-id 123e4567-e89b-12d3-a456-426614174000
     """
 
-    if output_dir is None:
-        output_dir = Path("agent_outputs") / str(benchmark_id)
-
-    output_dir = output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    click.echo(f"\r\033[KFetching agent outputs for benchmark {benchmark_id}...", nl=False)
-
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
+
+            metadata = tracker.fetch_benchmark_metadata(benchmark_id)
+
+            if output_dir is None:
+                output_dir = Path(
+                    f"{metadata.benchmark_name}_{metadata.benchmark_arguments.contract.name}_{metadata.benchmark_id}"
+                )
+
+            output_dir = output_dir.resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            click.echo(f"\r\033[KFetching agent outputs for benchmark {benchmark_id}...", nl=False)
 
             response = tracker.fetch_agent_outputs(benchmark_id)
 

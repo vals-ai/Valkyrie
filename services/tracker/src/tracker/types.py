@@ -160,3 +160,9 @@ class BenchmarkTableRow(BaseModel):
 class FetchBenchmarksResponse(BaseModel):
     benchmarks: list[BenchmarkTableRow]
     total_count: int
+
+
+class FetchBenchmarkMetadataResponse(BaseModel):
+    benchmark_id: UUID
+    benchmark_name: str
+    benchmark_arguments: BenchmarkArguments

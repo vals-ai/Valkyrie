@@ -16,6 +16,7 @@ from tracker.logger import get_logger
 from tracker.s3 import S3_BENCHMARKS_PREFIX, download_from_s3_stream, get_contract_s3_key, list_s3_objects, upload_to_s3
 from tracker.types import (
     BenchmarkTableRow,
+    FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
@@ -361,6 +362,27 @@ async def fetch_benchmarks(
         benchmarks=benchmark_table_rows,
         total_count=total_count,
     )
+
+
+@app.get("/fetch-benchmark-metadata/{benchmark_id}")
+async def fetch_benchmark_metadata(
+    benchmark_id: UUID, session: Session = Depends(get_session)
+) -> FetchBenchmarkMetadataResponse:
+    """
+    Fetch benchmark metadata by its id.
+
+    Usage:
+    curl -X GET http://<endpoint>/fetch-benchmark-metadata/<benchmark_id>
+
+    Returns:
+        FetchBenchmarkMetadataResponse
+    """
+    benchmark_row: Benchmark | None = session.get(Benchmark, benchmark_id)
+
+    if not benchmark_row:
+        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    return benchmark_row.benchmark_metadata
 
 
 @app.get("/fetch-agent-outputs/{benchmark_id}")

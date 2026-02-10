@@ -26,7 +26,7 @@ from tracker.database.utils import has_field_changed
 
 if TYPE_CHECKING:
     from tracker.benchmark_service import BenchmarkService
-    from tracker.types import BenchmarkTableRow, StartBenchmarkRequest
+    from tracker.types import BenchmarkTableRow, FetchBenchmarkMetadataResponse, StartBenchmarkRequest
 
 
 class TaskStatus(str, Enum):
@@ -164,6 +164,16 @@ class Benchmark(SQLModel, table=True):
     @property
     def benchmark_service(self) -> "BenchmarkService":
         return self.start_benchmark_request.benchmark_service
+
+    @property
+    def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":
+        from tracker.types import FetchBenchmarkMetadataResponse
+
+        return FetchBenchmarkMetadataResponse(
+            benchmark_id=self.id,
+            benchmark_name=self.name,
+            benchmark_arguments=self.arguments,
+        )
 
     def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
         """
