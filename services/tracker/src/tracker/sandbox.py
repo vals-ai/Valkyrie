@@ -38,6 +38,7 @@ Monkey-patch websockets to use longer ping timeouts for long-running tasks
 _original_connect = ws_client.connect
 
 
+# NOTE: can probably remove completely and rely on fallback to polling
 def _patched_connect(*args: object, **kwargs: object):
     kwargs.setdefault("ping_interval", 60)
     kwargs.setdefault("ping_timeout", 120)
@@ -227,11 +228,11 @@ async def stream_command_output(
             )
         except DaytonaError as e:
             error_msg = str(e).lower()
-            if "ping timeout" in error_msg or "websocket" in error_msg:
-                logger.warning(f"WebSocket streaming failed, falling back to polling: {e}")
-                await _poll_until_complete(sandbox, session_id, cmd_id, on_output)
-            else:
+            if not ("ping timeout" in error_msg or "websocket" in error_msg):
                 raise
+
+            logger.warning(f"WebSocket streaming failed, falling back to polling: {e}")
+            await _poll_until_complete(sandbox, session_id, cmd_id, on_output)
 
         cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
