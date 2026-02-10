@@ -275,3 +275,23 @@ class TrackerService:
             return FetchBenchmarksResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch benchmarks: {e}") from e
+
+    def fetch_agent_outputs(self, benchmark_id: UUID) -> Response:
+        """
+        Fetch agent outputs for a benchmark by its benchmark id.
+
+        Args:
+            benchmark_id: Benchmark id
+
+        Returns:
+            httpx Response with agent outputs
+        """
+        try:
+            response = self._client.get(f"{self._base_url}/fetch-agent-outputs/{benchmark_id}")
+            if response.status_code != 200:
+                details = response.json().get("detail", response.text)
+                raise TrackerServiceError(f"Failed to fetch agent outputs: {details}")
+
+            return response
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to fetch agent outputs: {e}") from e
