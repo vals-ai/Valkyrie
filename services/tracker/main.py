@@ -386,7 +386,16 @@ async def fetch_benchmark_metadata(
 
 
 @app.get("/fetch-agent-outputs/{benchmark_id}")
-def fetch_agent_outputs(benchmark_id: UUID) -> StreamingResponse:
+async def fetch_agent_outputs(benchmark_id: UUID) -> StreamingResponse:
+    """
+    Stream a tar file with agent outputs to the client.
+
+    Usage:
+    curl -X GET http://<endpoint>/fetch-agent-outputs/<benchmark_id>
+
+    Returns:
+        StreamingResponse
+    """
     prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
     s3_keys = list_s3_objects(prefix)
 
