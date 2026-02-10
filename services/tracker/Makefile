@@ -8,7 +8,7 @@ COMPOSE := docker-compose
 
 help:
 	@echo "Available commands:"
-	@echo "  make setup           - Install local development environment and dependencies"
+	@echo "  make install         - Install local development environment and dependencies"
 	@echo "  make build           - Build Docker images"
 	@echo "  make run             - Start all services with docker-compose"
 	@echo "  make stop            - Stop all services"
@@ -28,7 +28,7 @@ env-check:
 		echo "❌ Env not found! Create a .env file first."; \
 		exit 1; \
 	fi
-setup:
+install:
 	uv venv --python $(PYTHON_VERSION)
 	@echo "Installing tracker service dependencies..."
 	uv cache clean agentic-harness
@@ -54,15 +54,12 @@ logs:
 tracker-service: build run logs
 
 # --- Tests ---
-DIR ?= tests/
-test: venv-check
-	$(PYTEST) $(DIR)
-test-integration: venv-check env-check
-	$(PYTEST) tests/integration
 test-unit: venv-check
 	$(PYTEST) tests/unit --test-alembic
 test-alembic: venv-check
 	$(PYTEST) --test-alembic -m alembic
+test-integration: venv-check env-check
+	$(PYTEST) tests/integration
 
 # --- Migrations ---
 migrate-gen: venv-check
