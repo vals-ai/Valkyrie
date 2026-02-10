@@ -22,6 +22,7 @@ class BenchmarkFormatter:
         "IN_PROGRESS": "blue",
         "EVALUATING": "magenta",
         "STOPPED": "cyan",
+        "STOPPING": "magenta",
         "FINISHED": "green",
         "ERROR": "red",
     }
