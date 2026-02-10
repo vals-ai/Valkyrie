@@ -153,6 +153,7 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ Started at:    {start_benchmark_response.started_at}")
     click.echo(f"│ Max concurrency:   {start_benchmark_response.concurrency}")
     click.echo(f"│ Total tasks:   {start_benchmark_response.task_count}")
+    click.echo(f"│ CloudWatch:    {start_benchmark_response.cloudwatch_url}")
     click.echo("└" + "─" * 79)
     click.echo()
     click.echo(

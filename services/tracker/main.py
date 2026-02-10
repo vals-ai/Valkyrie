@@ -7,6 +7,7 @@ from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
+from tracker.cloudwatch import get_cloudwatch_url
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
@@ -166,6 +167,7 @@ async def start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
+        cloudwatch_url=get_cloudwatch_url(str(benchmark_row.id)),
     )
 
 

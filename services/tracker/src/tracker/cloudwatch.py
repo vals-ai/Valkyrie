@@ -11,6 +11,25 @@ _created_streams: set[str] = set()
 ROOT_LOG_GROUP = "benchmarks"
 
 
+def get_cloudwatch_url(benchmark_id: str, task_id: str | None = None) -> str:
+    """
+    Get the CloudWatch console URL for a benchmark or specific task.
+
+    Args:
+        benchmark_id: The benchmark identifier
+        task_id: Optional task identifier for task-specific logs
+
+    Returns:
+        CloudWatch console URL
+    """
+    region = _client.meta.region_name  # pyright: ignore
+    base = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
+    log_group = f"benchmarks$252F{benchmark_id}"
+    if task_id:
+        return f"{base}#logsV2:log-groups/log-group/{log_group}/log-events/{task_id}"
+    return f"{base}#logsV2:log-groups/log-group/{log_group}"
+
+
 def create_benchmark_group(benchmark_id: str) -> str:
     """
     Create a log group for a benchmark with 1-day retention.

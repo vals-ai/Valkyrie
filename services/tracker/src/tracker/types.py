@@ -56,6 +56,7 @@ class StartBenchmarkResponse(BaseModel):
     concurrency: int
     started_at: datetime
     task_count: int
+    cloudwatch_url: str
 
 
 class FetchBenchmarkResponse(BaseModel):
