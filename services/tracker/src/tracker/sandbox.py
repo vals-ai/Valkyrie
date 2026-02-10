@@ -271,11 +271,11 @@ async def run_agent(
     await stream_command_output(sandbox, f"cd {cwd} && {run_cmd}", log_output)
 
     if not contract.final_output:
-        return {}
+        return
 
     result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
     if result.exit_code != 0:
-        return {}
+        return
 
     if agent_output_s3_key:
         await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key)
