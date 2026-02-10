@@ -1,9 +1,13 @@
 """Utility functions for the CLI."""
 
 import json
+import tarfile
+import tempfile
+from pathlib import Path
 from uuid import UUID
 
 import click
+from httpx import Response
 from tracker.database.models import BenchmarkStatus, TaskStatus
 from tracker.types import (
     FetchBenchmarkResponse,
@@ -373,3 +377,47 @@ def paginate_benchmarks(
             offset -= limit
         elif char == "q" or char == "\x03":
             break
+
+
+def download_agent_outputs(agent_outputs_response: Response, output_dir: Path) -> None:
+    """
+    Download agent outputs from a response and extract them to a directory.
+
+    Args:
+        agent_outputs_response: Response with agent outputs
+        output_dir: Directory to save agent outputs
+    """
+
+    # Create the output directory if it doesn't exist
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Download the agent outputs to a temporary file
+    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+        click.echo("\r\033[KDownloading...", nl=False)
+
+        for chunk in agent_outputs_response.iter_bytes():
+            tmp_file.write(chunk)
+
+    click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False)
+
+    # Extract the agent outputs to the output directory
+    with tarfile.open(tmp_path, "r") as tar:
+        tar.extractall(output_dir)
+
+    # Unpack any nested tar.gz files
+    nested_tars = list(output_dir.rglob("*.tar.gz"))
+    if nested_tars:
+        click.echo(f"\r\033[KUnpacking {len(nested_tars)} nested tar.gz files...", nl=False)
+
+        for nested_tar in nested_tars:
+            extract_dir = nested_tar.parent / nested_tar.stem.replace(".tar", "")
+            extract_dir.mkdir(parents=True, exist_ok=True)
+
+            with tarfile.open(nested_tar, "r:gz") as tar:
+                tar.extractall(extract_dir)
+
+            nested_tar.unlink()
+
+    tmp_path.unlink()
