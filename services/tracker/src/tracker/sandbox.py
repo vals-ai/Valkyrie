@@ -193,7 +193,7 @@ async def stream_command_output(
         await sandbox.process.create_session(session_id)
 
         session_exec_resp = await sandbox.process.execute_session_command(
-            session_id, SessionExecuteRequest(command=command, run_async=True)
+            session_id, SessionExecuteRequest(command=command)
         )
 
         cmd_id = session_exec_resp.cmd_id
@@ -201,10 +201,10 @@ async def stream_command_output(
         if not cmd_id:
             raise SandboxError(f"Failed to execute command {command} in session {session_id}")
 
-        exit_code = await poll_until_complete(sandbox, session_id, cmd_id, on_output)
+        # exit_code = await poll_until_complete(sandbox, session_id, cmd_id, on_output)
 
-        if exit_code != 0:
-            raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}")
+        # if exit_code != 0:
+        #     raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}")
 
     finally:
         try:
