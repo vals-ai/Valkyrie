@@ -194,7 +194,7 @@ async def stream_command_output(
         await sandbox.process.create_session(session_id)
 
         session_exec_resp = await sandbox.process.execute_session_command(
-            session_id, SessionExecuteRequest(command=command)
+            session_id, SessionExecuteRequest(command=command, run_async=True)
         )
 
         cmd_id = session_exec_resp.cmd_id
