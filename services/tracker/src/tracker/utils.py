@@ -226,15 +226,12 @@ async def process_task(
 
         # Setup logging infrastructure before try block so it's always available
         stream_key: str = f"{benchmark_id}:{task_id}"
-        log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
+        log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
         # Collects the logs and dumps them when the queue is full
         def log_output(data: str) -> None:
-            for i in range(0, len(data), MAX_CHUNK_SIZE):
-                chunk = data[i : i + MAX_CHUNK_SIZE]
-                log_queue.put_nowait(chunk)
-
-                buffer_logs(log_queue, stream_key, force_flush=True)
+            log_queue.put_nowait(data)
+            buffer_logs(log_queue, stream_key)
 
         try:
             task_data = await benchmark_service.request_retrieve_task(task_id=task_id)

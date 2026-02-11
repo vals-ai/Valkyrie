@@ -15,6 +15,7 @@ from daytona import (
     AsyncDaytona,
     AsyncSandbox,
     CreateSandboxFromImageParams,
+    DaytonaError,
     DaytonaNotFoundError,
     FileUpload,
     Resources,
@@ -201,10 +202,24 @@ async def stream_command_output(
         if not cmd_id:
             raise SandboxError(f"Failed to execute command {command} in session {session_id}")
 
-        # exit_code = await poll_until_complete(sandbox, session_id, cmd_id, on_output)
+        try:
+            await sandbox.process.get_session_command_logs_async(
+                session_id=session_id,
+                command_id=cmd_id,
+                on_stdout=on_output,
+                on_stderr=on_output,
+            )
+        except DaytonaError as e:
+            error_msg = str(e).lower()
+            if not ("ping timeout" in error_msg or "websocket" in error_msg):
+                raise
 
-        # if exit_code != 0:
-        #     raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}")
+            logger.warning(f"WebSocket streaming failed, falling back to polling: {e}")
+
+        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+
+        if cmd.exit_code != 0:
+            raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
 
     finally:
         try:
