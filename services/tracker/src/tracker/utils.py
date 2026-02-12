@@ -32,8 +32,6 @@ from tracker.types import (
 
 logger = get_logger(__name__)
 
-MAX_CHUNK_SIZE = 250_000
-
 
 class TrackedTaskStatus(str, Enum):
     WAITING = "waiting"
