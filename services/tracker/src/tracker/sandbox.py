@@ -1,6 +1,5 @@
 """Sandbox management utilities for the tracker service."""
 
-import asyncio
 import base64
 import io
 import shlex
@@ -139,44 +138,6 @@ async def install_agent_dependencies(
     await stream_command_output(sandbox, f"cd {str(contract_path)} && {contract.install_cmd}", log_output)
 
     log_output(f"Finished installing dependencies for contract: {contract.name}")
-
-
-async def poll_until_complete(
-    sandbox: AsyncSandbox,
-    session_id: str,
-    cmd_id: str,
-    on_output: Callable[[str], None],
-    poll_interval: float = 1.0,
-) -> int:
-    """
-    Poll for command completion when WebSocket streaming fails.
-    Fetches logs periodically until the command completes.
-
-    Returns:
-        Exit code of the command
-    """
-    last_log_length = 0
-
-    while True:
-        try:
-            cmd = await sandbox.process.get_session_command(session_id, cmd_id)
-            logs = await sandbox.process.get_session_command_logs(session_id, cmd_id)
-
-            current_output = logs.output or ""
-
-            # Output only new content
-            if len(current_output) > last_log_length:
-                new_content = current_output[last_log_length:]
-                on_output(new_content)
-                last_log_length = len(current_output)
-
-            # Check if command completed
-            if cmd.exit_code is not None:
-                return cmd.exit_code
-        except Exception as e:
-            logger.warning(f"Failed to fetch logs during polling: {e}")
-
-        await asyncio.sleep(poll_interval)
 
 
 async def stream_command_output(

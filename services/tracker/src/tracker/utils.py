@@ -233,7 +233,7 @@ async def process_task(
         # Collects the logs and dumps them when the queue is full
         def log_output(data: str) -> None:
             log_queue.put_nowait(data)
-            buffer_logs(log_queue, stream_key, force_flush=False)
+            buffer_logs(log_queue, stream_key)
 
         try:
             task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
