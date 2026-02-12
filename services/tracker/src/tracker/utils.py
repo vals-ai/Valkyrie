@@ -225,84 +225,86 @@ async def process_task(
             handle_early_exit(task_row, task_session)
             return {task_id: None}
 
-        # Setup logging infrastructure before try block so it's always available
-        stream_key: str = f"{benchmark_id}:{task_id}"
-        log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
+    # Setup logging infrastructure before try block so it's always available
+    stream_key: str = f"{benchmark_id}:{task_id}"
+    log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
-        # Collects the logs and dumps them when the queue is full
-        def log_output(data: str) -> None:
-            log_queue.put_nowait(data)
-            buffer_logs(log_queue, stream_key)
+    # Collects the logs and dumps them when the queue is full
+    def log_output(data: str) -> None:
+        log_queue.put_nowait(data)
+        buffer_logs(log_queue, stream_key)
 
-        try:
-            task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
+    try:
+        task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
 
-            # Labels that show up in the UI we can use to filter sandboxes
-            labels = {
-                "Benchmark": benchmark_row.name,
-                "Id": str(benchmark_row.id),
-                "Task": task_row.task_id,
-            }
+        # Labels that show up in the UI we can use to filter sandboxes
+        labels = {
+            "Benchmark": benchmark_row.name,
+            "Id": str(benchmark_row.id),
+            "Task": task_row.task_id,
+        }
 
-            async with create_sandbox(
-                daytona=benchmark_service.daytona_client,
-                sandbox_name=task_row.alias,
-                image=task_data.docker_image,
-                labels=labels,
-                env_vars=start_benchmark_request.contract.env,
-                resources=task_data.resources,
-            ) as sandbox:
-                try:
+        async with create_sandbox(
+            daytona=benchmark_service.daytona_client,
+            sandbox_name=task_row.alias,
+            image=task_data.docker_image,
+            labels=labels,
+            env_vars=start_benchmark_request.contract.env,
+            resources=task_data.resources,
+        ) as sandbox:
+            try:
+                with Session(bind=engine, expire_on_commit=False) as task_session:
                     task_row.status = TaskStatus.IN_PROGRESS
                     task_session.add(task_row)
                     task_session.commit()
 
-                    # Upload the contract to the sandbox after creating and install the dependencies
-                    await upload_agent_artifacts(sandbox, start_benchmark_request.contract)
+                # Upload the contract to the sandbox after creating and install the dependencies
+                await upload_agent_artifacts(sandbox, start_benchmark_request.contract)
 
-                    # Setup task if requested
-                    if task_data.request_setup:
-                        _ = await benchmark_service.request_setup_task(
-                            task_row.task_id, sandbox.id, on_message=log_output
-                        )
+                # Setup task if requested
+                if task_data.request_setup:
+                    _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id, on_message=log_output)
 
-                        # Force flush the logs if anything has been buffered
-                        buffer_logs(log_queue, stream_key, force_flush=True)
+                    # Force flush the logs if anything has been buffered
+                    buffer_logs(log_queue, stream_key, force_flush=True)
 
-                    # Compute the S3 key for the agent's output archive
-                    agent_output_s3_key = None
-                    if start_benchmark_request.contract.final_output:
-                        agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
+                # Compute the S3 key for the agent's output archive
+                agent_output_s3_key = None
+                if start_benchmark_request.contract.final_output:
+                    agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                    # Run the agent inside of the sandbox
-                    await run_agent(
-                        sandbox,
-                        start_benchmark_request.contract,
-                        task_data.problem_statement,
-                        log_output,
-                        task_data.cwd,
-                        agent_output_s3_key=agent_output_s3_key,
-                    )
+                # Run the agent inside of the sandbox
+                await run_agent(
+                    sandbox,
+                    start_benchmark_request.contract,
+                    task_data.problem_statement,
+                    log_output,
+                    task_data.cwd,
+                    agent_output_s3_key=agent_output_s3_key,
+                )
 
+                with Session(bind=engine, expire_on_commit=False) as task_session:
                     # Update the status to evaluating once we finish running the agent
                     task_row.status = TaskStatus.EVALUATING
                     task_session.add(task_row)
                     task_session.commit()
 
-                    # Evaluate the instance
-                    # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
-                    logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                    evaluation_result = await benchmark_service.request_evaluate_instance(
-                        task_row.task_id, sandbox.id, on_message=log_output
-                    )
+                # Evaluate the instance
+                # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
+                evaluation_result = await benchmark_service.request_evaluate_instance(
+                    task_row.task_id, sandbox.id, on_message=log_output
+                )
 
-                    # Force flush the logs, maybe redundant since we have the one in finally:
-                    buffer_logs(log_queue, stream_key, force_flush=True)
+                # Force flush the logs, maybe redundant since we have the one in finally:
+                buffer_logs(log_queue, stream_key, force_flush=True)
 
-                    # Save the evaluation result to the database with the task row
-                    evaluation_result_row = EvaluationResult(
-                        task=task_row.id, instance_id=sandbox.id, result=evaluation_result
-                    )
+                # Save the evaluation result to the database with the task row
+                evaluation_result_row = EvaluationResult(
+                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result
+                )
+
+                with Session(bind=engine, expire_on_commit=False) as task_session:
                     task_session.add(evaluation_result_row)
 
                     # Mark the task status as finished since we have finished processing the task
@@ -310,26 +312,28 @@ async def process_task(
                     task_session.add(task_row)
                     task_session.commit()
 
-                    return {task_id: evaluation_result_row.result}
-                except Exception as e:
+                return {task_id: evaluation_result_row.result}
+            except Exception as e:
+                with Session(bind=engine, expire_on_commit=False) as task_session:
                     # Error can come from the sandbox being destroyed
                     task_session.refresh(task_row)
                     if task_row.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
-                    raise e from e
-        except Exception as e:
-            error_message = f"{str(e)}\n{traceback.format_exc()}"
-            logger.error(error_message)
+                raise e from e
+    except Exception as e:
+        error_message = f"{str(e)}\n{traceback.format_exc()}"
+        logger.error(error_message)
 
-            # include the error message
-            log_output(f"\n[ERROR] {error_message}")
+        # include the error message
+        log_output(f"\n[ERROR] {error_message}")
 
+        with Session(bind=engine, expire_on_commit=False) as task_session:
             commit_task_error(task_row, task_session, error_message)
 
-            return {task_id: None}
-        finally:
-            buffer_logs(log_queue, stream_key, force_flush=True)
+        return {task_id: None}
+    finally:
+        buffer_logs(log_queue, stream_key, force_flush=True)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
