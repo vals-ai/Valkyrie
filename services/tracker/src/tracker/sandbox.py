@@ -5,6 +5,7 @@ import io
 import shlex
 import uuid
 import zipfile
+from asyncio import Semaphore
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
@@ -52,6 +53,10 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 
 
+_SANBDOX_CREATION_CAP: int = 10
+_sandbox_creation_semaphore = Semaphore(_SANBDOX_CREATION_CAP)
+
+
 @asynccontextmanager
 async def create_sandbox(
     daytona: AsyncDaytona,
@@ -67,21 +72,24 @@ async def create_sandbox(
     """
     logger.info(f"Creating sandbox {sandbox_name} with image {image}")
 
-    sandbox = await daytona.create(
-        CreateSandboxFromImageParams(
-            name=sandbox_name,
-            labels=labels,
-            image=image,
-            network_block_all=False,
-            resources=Resources(
-                cpu=resources.vcpu,
-                memory=resources.memory,
-                disk=resources.disk,
+    # If we run too many at once it can cause hanging issues with the daytona api
+    # NOTE does not block how many context managers we can have open, just how many at once we can create at once
+    async with _sandbox_creation_semaphore:
+        sandbox = await daytona.create(
+            CreateSandboxFromImageParams(
+                name=sandbox_name,
+                labels=labels,
+                image=image,
+                network_block_all=False,
+                resources=Resources(
+                    cpu=resources.vcpu,
+                    memory=resources.memory,
+                    disk=resources.disk,
+                ),
+                env_vars=env_vars,
             ),
-            env_vars=env_vars,
-        ),
-        timeout=360,
-    )
+            timeout=360,
+        )
 
     try:
         yield sandbox
