@@ -21,6 +21,7 @@ from daytona import (
     SandboxState,
     SessionExecuteRequest,
 )
+from tenacity import before_sleep_log, retry, stop_after_attempt, wait_fixed
 
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
@@ -57,6 +58,47 @@ _SANBDOX_CREATION_CAP: int = 10
 _sandbox_creation_semaphore = Semaphore(_SANBDOX_CREATION_CAP)
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(120),
+    before_sleep=before_sleep_log(logger, logger.level),
+    reraise=True,
+)
+async def create_sandbox_with_retry(
+    daytona: AsyncDaytona,
+    sandbox_name: str,
+    image: str,
+    resources: TrackerResources,
+    labels: dict[str, str] | None = None,
+    env_vars: dict[str, str] | None = None,
+) -> AsyncSandbox:
+    try:
+        sandbox = await daytona.get(sandbox_name)
+
+        await sandbox.wait_for_sandbox_start(timeout=0)
+
+        return sandbox
+    except DaytonaNotFoundError:
+        pass
+
+    return await daytona.create(
+        CreateSandboxFromImageParams(
+            auto_delete_interval=360,
+            name=sandbox_name,
+            labels=labels,
+            image=image,
+            network_block_all=False,
+            resources=Resources(
+                cpu=resources.vcpu,
+                memory=resources.memory,
+                disk=resources.disk,
+            ),
+            env_vars=env_vars,
+        ),
+        timeout=360,
+    )
+
+
 @asynccontextmanager
 async def create_sandbox(
     daytona: AsyncDaytona,
@@ -75,21 +117,7 @@ async def create_sandbox(
     # If we run too many at once it can cause hanging issues with the daytona api
     # NOTE does not block how many context managers we can have open, just how many at once we can create at once
     async with _sandbox_creation_semaphore:
-        sandbox = await daytona.create(
-            CreateSandboxFromImageParams(
-                name=sandbox_name,
-                labels=labels,
-                image=image,
-                network_block_all=False,
-                resources=Resources(
-                    cpu=resources.vcpu,
-                    memory=resources.memory,
-                    disk=resources.disk,
-                ),
-                env_vars=env_vars,
-            ),
-            timeout=360,
-        )
+        sandbox = await create_sandbox_with_retry(daytona, sandbox_name, image, resources, labels, env_vars)
 
     try:
         yield sandbox
