@@ -292,6 +292,7 @@ async def stop_benchmark(
 async def retry_or_resume_benchmark(
     benchmark_id: UUID,
     retry: bool = Query(default=False),
+    concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     session: Session = Depends(get_session),
 ) -> RetryOrResumeBenchmarkResponse:
@@ -299,8 +300,15 @@ async def retry_or_resume_benchmark(
     Retry or resume a benchmark run by its id, we only can retry or resume a benchmark if its not currently running.
 
     Usage:
-    curl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true
+    curl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20
       -d '{"task_ids": ["task_id_1", "task_id_2"]}'
+
+    Args:
+        benchmark_id: The benchmark ID to retry/resume
+        retry: If true, retry failed tasks. If false, resume from where it left off
+        concurrency: Optional new concurrency level (overrides original value)
+        task_ids: Optional list of specific task IDs to run
+
     Returns:
         RetryOrResumeBenchmarkResponse
     """
@@ -315,6 +323,11 @@ async def retry_or_resume_benchmark(
             status_code=400,
             detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a benchmark that is currently running.",
         )
+
+    if concurrency is not None:
+        benchmark_row.arguments.concurrency = concurrency
+        session.add(benchmark_row)
+        session.commit()
 
     # Reset tasks and retry or resume benchmark
     verified_task_ids = await reset_to_in_progress_status(

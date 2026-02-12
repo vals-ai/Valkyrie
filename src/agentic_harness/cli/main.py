@@ -290,18 +290,25 @@ def stop_benchmark(benchmark_id: UUID, force: bool):
     help="Retry tasks with the status error",
 )
 @click.option(
+    "--concurrency",
+    type=int,
+    required=False,
+    default=None,
+    help="Override concurrency level (e.g., 20)",
+)
+@click.option(
     "--task-ids",
     type=str,
     required=False,
     default=None,
     help="Comma-separated list of task IDs (e.g., astropy__astropy-12907,astropy__astropy-12908)",
 )
-def resume_benchmark(benchmark_id: UUID, retry: bool, task_ids: str | None):
+def resume_benchmark(benchmark_id: UUID, retry: bool, concurrency: int | None, task_ids: str | None):
     """
     Resume a benchmark run by its benchmark id.
 
     Example:
-        harness resume-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry
+        harness resume-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
     click.echo("Selected to run a benchmark that has already been created, will rerun valid tasks.")
     try:
@@ -310,7 +317,7 @@ def resume_benchmark(benchmark_id: UUID, retry: bool, task_ids: str | None):
                 return
 
             retry_task_ids = task_ids.split() if task_ids else []
-            _ = tracker.retry_or_resume_benchmark(benchmark_id, retry, retry_task_ids)
+            _ = tracker.retry_or_resume_benchmark(benchmark_id, retry, concurrency, retry_task_ids)
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
                 click.style(

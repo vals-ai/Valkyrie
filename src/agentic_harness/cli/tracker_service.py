@@ -228,7 +228,7 @@ class TrackerService:
             raise TrackerServiceError(f"Failed to stop benchmark: {e}") from e
 
     def retry_or_resume_benchmark(
-        self, benchmark_id: UUID, retry: bool, task_ids: list[str]
+        self, benchmark_id: UUID, retry: bool, concurrency: int | None, task_ids: list[str]
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -236,15 +236,20 @@ class TrackerService:
         Args:
             benchmark_id: Benchmark id
             retry: Whether to retry tasks with the status error
+            concurrency: Optional new concurrency level to override original value
             task_ids: List of task ids to force retry
 
         Returns:
             RetryOrResumeBenchmarkResponse with status and message
         """
         try:
+            params: dict[str, Any] = {"retry": retry}
+            if concurrency is not None:
+                params["concurrency"] = concurrency
+
             response = self._client.post(
                 f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",
-                params={"retry": retry},
+                params=params,
                 json=task_ids,
             )
             if response.status_code != 200:
