@@ -55,6 +55,33 @@ def create_benchmark_group(benchmark_id: str) -> str:
     return log_group_name
 
 
+def reset_cloudwatch_stream(stream_key: str) -> None:
+    """
+    Delete and recreate a CloudWatch log stream to reset it.
+
+    Useful when restarting a task to clear old logs.
+
+    Args:
+        stream_key: The stream key (benchmark_id:task_id)
+    """
+    benchmark_id, task_id = stream_key.split(":")
+
+    if not benchmark_id or not task_id:
+        raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")
+
+    log_group_name = f"{ROOT_LOG_GROUP}/{benchmark_id}"
+
+    try:
+        _client.delete_log_stream(logGroupName=log_group_name, logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
+            raise CloudWatchError(f"Failed to delete log stream '{task_id}': {e}") from e
+    except BotoCoreError as e:
+        raise CloudWatchError(f"Failed to delete log stream '{task_id}': {e}") from e
+
+    _created_streams.discard(stream_key)
+
+
 def cloudwatch_stream(stream_key: str, message: str) -> None:
     """
     Stream a log message to CloudWatch.

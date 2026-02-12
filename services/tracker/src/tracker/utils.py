@@ -15,7 +15,7 @@ from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, Sandbox
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
 from tracker.benchmark_service import BenchmarkService
-from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group
+from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group, reset_cloudwatch_stream
 from tracker.config import broker
 from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.database.session import engine
@@ -232,6 +232,9 @@ async def process_task(
     # Setup logging infrastructure before try block so it's always available
     stream_key: str = f"{benchmark_id}:{task_id}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
+
+    # Reset CloudWatch stream to clear any old logs from previous runs
+    reset_cloudwatch_stream(stream_key)
 
     # Collects the logs and dumps them when the queue is full
     def log_output(data: str) -> None:
