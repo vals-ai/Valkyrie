@@ -313,7 +313,7 @@ async def process_task(
                     task.status = TaskStatus.FINISHED
                     task_session.commit()
 
-                return {task_id: evaluation_result_row.result}
+                    return {task_id: evaluation_result_row.result}
             except Exception as e:
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session)
