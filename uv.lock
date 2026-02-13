@@ -3135,6 +3135,7 @@ dependencies = [
     { name = "sqlmodel" },
     { name = "taskiq" },
     { name = "taskiq-redis" },
+    { name = "tenacity" },
 ]
 
 [package.metadata]
@@ -3150,6 +3151,7 @@ requires-dist = [
     { name = "sqlmodel", specifier = ">=0.0.31" },
     { name = "taskiq", specifier = ">=0.12.1" },
     { name = "taskiq-redis", specifier = ">=1.1.2" },
+    { name = "tenacity", specifier = ">=8.3.0,<9.0.0" },
 ]
 
 [package.metadata.requires-dev]
