@@ -105,20 +105,19 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
-            "tracker.sandbox.upload_agent_artifacts",
+            "tracker.utils.upload_agent_artifacts",
             self._mock_upload_contract,
         )
 
         monkeypatch.setattr(
-            "tracker.sandbox.install_agent_dependencies",
+            "tracker.utils.install_agent_dependencies",
             self._mock_install_dependencies,
         )
 
         original_run_agent = self._mock_run_agent
         monkeypatch.setattr(
-            "tracker.sandbox.run_agent",
+            "tracker.utils.run_agent",
             partial(self._test_run_agent, original_run_agent),
         )
 
@@ -162,19 +161,18 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
             "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
         monkeypatch.setattr(
-            "tracker.sandbox.install_agent_dependencies",
+            "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
         monkeypatch.setattr(
-            "tracker.sandbox.run_agent",
+            "tracker.utils.run_agent",
             TestProcessBenchmark._mock_run_agent,
         )
 
@@ -240,17 +238,16 @@ class TestProcessBenchmark:
 
             original_commit(self)
 
-        # Monkey patch failure to push benchmark row to the database
         monkeypatch.setattr(Session, "commit", mock_commit_with_error)
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         monkeypatch.setattr(
-            "tracker.sandbox.install_agent_dependencies",
+            "tracker.utils.install_agent_dependencies",
             self._mock_install_dependencies,
         )
 
         monkeypatch.setattr(
-            "tracker.sandbox.run_agent",
+            "tracker.utils.run_agent",
             self._mock_run_agent,
         )
 
@@ -306,21 +303,18 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
             "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
-        # Mock the install dependencies part in case dependencies break it does not affect this test
         monkeypatch.setattr(
-            "tracker.sandbox.install_agent_dependencies",
+            "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
-        # Mock run agent part because we don't have an agent inside of the sandbox
         monkeypatch.setattr(
-            "tracker.sandbox.run_agent",
+            "tracker.utils.run_agent",
             TestProcessBenchmark._mock_run_agent,
         )
 
@@ -384,19 +378,18 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        # Mock installing and running agent part
         monkeypatch.setattr(
             "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
         monkeypatch.setattr(
-            "tracker.sandbox.install_agent_dependencies",
+            "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
         monkeypatch.setattr(
-            "tracker.sandbox.run_agent",
+            "tracker.utils.run_agent",
             TestProcessBenchmark._mock_run_agent,
         )
 

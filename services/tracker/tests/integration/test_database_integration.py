@@ -7,6 +7,7 @@ from uuid import UUID
 
 import pytest
 from daytona import AsyncDaytona
+from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, inspect, select
 
 from tests.utils import build_task_environment
@@ -59,7 +60,7 @@ class TestDatabaseIntegration:
 
         return final_evaluation_row
 
-    async def test_create_tables(self, postgres_engine):
+    async def test_create_tables(self, postgres_engine: Engine):
         """
         Test that the database tables are created correctly.
 
