@@ -32,7 +32,7 @@ Creates `.venv` and installs dependencies for CLI and harness from `pyproject.to
 make tool-install
 ```
 
-Installs an executable into the bin which allows the cli to be ran without the prefix `uv run ...`. Installed using -e, for developing changes will update the executable. `make install` is still required for development.
+Installs an executable into the bin which allows the cli to be ran without the prefix `uv run ...`. Installed using -e, for developing changes will update the executable. `make install` is still required for development. If not added to the path, run `uv tool update-shell` and it will be.
 
 **Services**
 
@@ -43,13 +43,11 @@ Each service maintains its own isolated virtual environment:
 
 ### Usage
 
-!!!! If installed with `make tool-install`, the prefix `uv run ...` is not nessecary, remove it and run from just `harness ...`. Confirm installation works using `harness --help`. If it was not added to the path, run `uv tool update-shell` and it will be.
-
 #### Start a benchmark
 
 ```bash
 # With specific task IDs:
-uv run harness start-benchmark \
+harness start-benchmark \
   --agent <agent_path> \
   --benchmark <benchmark_name> \
   --concurrency 1 \
@@ -57,7 +55,7 @@ uv run harness start-benchmark \
   --slice "start:stop:step"
 
 # Or run whole benchmark (not recommended for development):
-uv run harness start-benchmark \
+harness start-benchmark \
   --agent <agent_path> \
   --benchmark <benchmark_name> \
   --concurrency 1 \
@@ -70,22 +68,22 @@ Starts the benchmark and exits once successfully created.
 
 ```bash
 # Live updates every 60 seconds
-uv run harness fetch-benchmark --benchmark-id <benchmark_id> --connect
+harness fetch-benchmark --benchmark-id <benchmark_id> --connect
 
 # One-time status check
-uv run harness fetch-benchmark --benchmark-id <benchmark_id>
+harness fetch-benchmark --benchmark-id <benchmark_id>
 ```
 
 #### Download results
 
 ```bash
-uv run harness retrieve-results --benchmark-id <benchmark_id> --path ./results.json
+harness retrieve-results --benchmark-id <benchmark_id> --path ./results.json
 ```
 
 #### Stop a benchmark
 
 ```bash
-uv run harness stop-benchmark --benchmark-id <benchmark_id>
+harness stop-benchmark --benchmark-id <benchmark_id>
 ```
 
 Flags
@@ -97,13 +95,13 @@ Flags
 #### Resume a benchmark
 
 ```bash
-uv run harness resume-benchmark --benchmark-id <benchmark_id>
+harness resume-benchmark --benchmark-id <benchmark_id>
 ```
 
 #### Retry a benchmark
 
 ```bash
-uv run harness retry-benchmark --benchmark-id <benchmark_id>
+harness retry-benchmark --benchmark-id <benchmark_id>
 ```
 
 Flags
@@ -117,7 +115,7 @@ Flags
 #### List and filter benchmarks
 
 ```bash
-uv run harness fetch-benchmarks --agent-name <agent_name> --benchmark-name <benchmark_name> --status <benchmark_status> --order-by <preferred_order>
+harness fetch-benchmarks --agent-name <agent_name> --benchmark-name <benchmark_name> --status <benchmark_status> --order-by <preferred_order>
 ```
 
 ```
@@ -136,7 +134,7 @@ uv run harness fetch-benchmarks --agent-name <agent_name> --benchmark-name <benc
 #### Download all agent outputs from benchmark
 
 ```bash
-uv run harness fetch-agent-outputs --benchmark-id <benchmark_id> --output-dir <download_directory>
+harness fetch-agent-outputs --benchmark-id <benchmark_id> --output-dir <download_directory>
 ```
 
 Flags
