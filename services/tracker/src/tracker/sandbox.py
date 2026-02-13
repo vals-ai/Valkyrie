@@ -64,7 +64,7 @@ _sandbox_creation_semaphore = Semaphore(_SANBDOX_CREATION_CAP)
     before_sleep=before_sleep_log(logger, logger.level),
     reraise=True,
 )
-async def create_sandbox_with_retry(
+async def _create_sandbox(
     daytona: AsyncDaytona,
     sandbox_name: str,
     image: str,
@@ -72,6 +72,14 @@ async def create_sandbox_with_retry(
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
 ) -> AsyncSandbox:
+    """
+    Creates a sandbox and takes into account timeouts and retries.
+
+    This retry only works in the following case:
+    - Client times out while sandbox is being created
+    """
+
+    # If the container already exists we reuse it
     try:
         sandbox = await daytona.get(sandbox_name)
 
@@ -81,9 +89,10 @@ async def create_sandbox_with_retry(
     except DaytonaNotFoundError:
         pass
 
+    # Create a new sandbox from scratch, if it stops we delete it within a minute
     return await daytona.create(
         CreateSandboxFromImageParams(
-            auto_delete_interval=360,
+            auto_delete_interval=60,
             name=sandbox_name,
             labels=labels,
             image=image,
@@ -109,15 +118,25 @@ async def create_sandbox(
     env_vars: dict[str, str] | None = None,
 ) -> AsyncGenerator[AsyncSandbox, Any]:
     """
-    Create a sandbox with the given name, image, and labels.
-    Automatically cleans up the sandbox when the context manager exits.
+    Yeild a sandbox to be used within a context manager.
+
+    Args:
+        daytona: The daytona client
+        sandbox_name: The name of the sandbox
+        image: The image to use for the sandbox
+        resources: The resources to use for the sandbox
+        labels: The labels to use for the sandbox
+        env_vars: The environment variables to use for the sandbox
+
+    Returns:
+        A context manager that yields the sandbox
     """
     logger.info(f"Creating sandbox {sandbox_name} with image {image}")
 
-    # If we run too many at once it can cause hanging issues with the daytona api
-    # NOTE does not block how many context managers we can have open, just how many at once we can create at once
+    # If we run too many at once it can cause hanging issues
+    # NOTE does not block how many context managers we can have open, just how many sandboxes we can create at once
     async with _sandbox_creation_semaphore:
-        sandbox = await create_sandbox_with_retry(daytona, sandbox_name, image, resources, labels, env_vars)
+        sandbox = await _create_sandbox(daytona, sandbox_name, image, resources, labels, env_vars)
 
     try:
         yield sandbox
