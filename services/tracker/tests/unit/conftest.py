@@ -4,7 +4,6 @@ from typing import Any
 import pytest
 from sqlmodel import Session
 
-from tracker import utils
 from tracker.database.session import get_session
 from tracker.types import (
     HealthCheckResponse,

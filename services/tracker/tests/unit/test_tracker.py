@@ -113,7 +113,6 @@ class TestTracker:
         # Create mock task_row and session for the new TrackedTask.run() signature
         mock_task_row = MagicMock(spec=Task)
         mock_task_row.task_id = "task_id_1"
-        mock_session = MagicMock(spec=Session)
 
         # Pass in a blank method to replace process_task
         mock_coro = self._mock_coro(task_id="task_id_1")
@@ -124,7 +123,6 @@ class TestTracker:
         mock_task_row_2.task_id = "task_id_2"
 
         tracked_task = TrackedTask(coro=mock_coro)
-        mock_session = MagicMock(spec=Session)
 
         # Test case 1. When first created, it is in the waiting state
         assert tracked_task.status == TrackedTaskStatus.WAITING
