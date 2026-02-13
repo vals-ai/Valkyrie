@@ -1,4 +1,6 @@
+from contextlib import asynccontextmanager
 from typing import Any
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -31,6 +33,10 @@ class TestStopAndResume:
         )
 
     @staticmethod
+    async def _mock_request_evaluate_instance(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return {"status": "success", "score": 1.0}
+
+    @staticmethod
     async def _mock_request_final_score(
         *args: Any, evaluation_results: dict[str, Any], **kwargs: Any
     ) -> FinalScoreResponse:
@@ -58,6 +64,12 @@ class TestStopAndResume:
             - Retry or resume benchmark - all 5 tasks should have evaluation results after completion
         """
 
+        @asynccontextmanager
+        async def _mock_create_sandbox(*args: Any, **kwargs: Any):
+            mock_sandbox = AsyncMock()
+            mock_sandbox.id = "mock-sandbox-id"
+            yield mock_sandbox
+
         task_ids: list[str] = [
             "astropy__astropy-12907",
             "astropy__astropy-13033",
@@ -78,7 +90,9 @@ class TestStopAndResume:
         database_session.commit()
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(BenchmarkService, "request_retrieve_task", self._mock_request_retrieve_task)
+        monkeypatch.setattr(BenchmarkService, "request_evaluate_instance", self._mock_request_evaluate_instance)
         monkeypatch.setattr(BenchmarkService, "request_final_score", self._mock_request_final_score)
 
         # Create tasks - 2 tasks are finished, 3 tasks are pending

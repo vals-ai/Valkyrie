@@ -4,6 +4,7 @@ from typing import Any
 import pytest
 from sqlmodel import Session
 
+from tracker import utils
 from tracker.database.session import get_session
 from tracker.types import (
     HealthCheckResponse,
@@ -77,13 +78,27 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def mock_agent_utilities(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Mock the upload contract and run agent functions"""
-
     async def _mock_upload_contract(*_args: Any, **_kwargs: Any) -> None:
         pass
 
     async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    monkeypatch.setattr("tracker.sandbox.upload_agent_artifacts", _mock_upload_contract)
-    monkeypatch.setattr("tracker.sandbox.run_agent", _mock_run_agent)
+    def _mock_reset_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _mock_upload_contract)
+    monkeypatch.setattr("tracker.utils.run_agent", _mock_run_agent)
+    monkeypatch.setattr("tracker.utils.reset_cloudwatch_stream", _mock_reset_cloudwatch_stream)
+    monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
+
+
+@pytest.fixture(autouse=True)
+def mock_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _mock_kiq(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    monkeypatch.setattr("main.process_benchmark.kiq", _mock_kiq)
