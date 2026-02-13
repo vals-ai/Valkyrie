@@ -27,7 +27,9 @@ def cli():
     pass
 
 
-@cli.command()
+@cli.command(
+    help="Start a benchmark run by its benchmark id. \n\nExample:\nharness start-benchmark --agent agents/claude_code --benchmark swebench --concurrency 5"
+)
 @click.option(
     "--agent",
     type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
@@ -85,7 +87,8 @@ def start_benchmark(
     click.echo("Arguments:")
     click.echo(f"  - Benchmark: {benchmark}")
     click.echo(f"  - Agent: {agent}")
-    click.echo(f"  - Model: {model or 'no model specified'}")
+    if model:
+        click.echo(f"  - Model: {model}")
     click.echo(f"  - Concurrency: {concurrency}")
     click.echo(f"  - Slice: {slice_str}")
     if task_ids:
@@ -140,7 +143,9 @@ def start_benchmark(
         raise click.ClickException(str(e))
 
 
-@cli.command()
+@cli.command(
+    help="Fetch a benchmark by its benchmark id. \n\nExample:\nharness fetch-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --connect"
+)
 @click.option(
     "--benchmark-id",
     type=UUID,
@@ -176,7 +181,9 @@ def fetch_benchmark(benchmark_id: UUID, connect: bool):
         raise click.ClickException(str(e))
 
 
-@cli.command()
+@cli.command(
+    help="Retrieve benchmark results by its benchmark id. \n\nExample:\nharness retrieve-results --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --path ./results.json"
+)
 @click.option(
     "--benchmark-id",
     type=UUID,
@@ -227,7 +234,9 @@ def retrieve_results(benchmark_id: UUID, path: Path):
         raise click.ClickException(str(e))
 
 
-@cli.command()
+@cli.command(
+    help="Stop a benchmark run by its benchmark id. \n\nExample:\nharness stop-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --force"
+)
 @click.option(
     "--benchmark-id",
     type=UUID,
@@ -275,7 +284,9 @@ def stop_benchmark(benchmark_id: UUID, force: bool):
         raise click.ClickException(str(e))
 
 
-@cli.command()
+@cli.command(
+    help="Resume a benchmark run by its benchmark id. \n\nExample:\nharness resume-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
+)
 @click.option(
     "--benchmark-id",
     type=UUID,
@@ -338,10 +349,19 @@ def resume_benchmark(
 
 
 # Alias for resume-benchmark, the logic is the same under the hood
-cli.add_command(resume_benchmark, name="retry-benchmark")
+retry_benchmark_command = click.Command(
+    name="retry-benchmark",
+    callback=resume_benchmark.callback,
+    params=resume_benchmark.params,
+    help="Retry a benchmark run by its benchmark id. \n\nExample:\nharness retry-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20",
+    short_help="Retry a benchmark run by its benchmark id.",
+)
+cli.add_command(retry_benchmark_command)
 
 
-@cli.command()
+@cli.command(
+    help="Fetch benchmarks by providing filter values. \n\nExample:\nharness fetch-benchmarks --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC"
+)
 @click.option(
     "--agent-name",
     type=str,
@@ -392,7 +412,9 @@ def fetch_benchmarks(
         raise click.ClickException(str(e))
 
 
-@cli.command()
+@cli.command(
+    help="Fetch agent outputs by benchmark id. \n\nExample:\nharness fetch-agent-outputs --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --output-dir ./agent_outputs"
+)
 @click.option(
     "--benchmark-id",
     type=UUID,

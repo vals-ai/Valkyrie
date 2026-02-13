@@ -135,13 +135,13 @@ uv run harness fetch-benchmarks --agent-name <agent_name> --benchmark-name <benc
 
 #### Download all agent outputs from benchmark
 
-```
+```bash
 uv run harness fetch-agent-outputs --benchmark-id <benchmark_id> --output-dir <download_directory>
 ```
 
 Flags
 
-```
+```bash
 --output-dir: where you would like the agent outputs to be downloaded (default: ./agent_outputs/<benchmark-id>)
 ```
 
