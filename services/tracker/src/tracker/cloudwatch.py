@@ -6,7 +6,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker.exceptions import CloudWatchError
 
-_client = boto3.client("logs", config=Config(max_pool_connections=50))  # pyright: ignore[reportUnknownMemberType] # type: ignore[reportUnknownReturnType]
+_client = boto3.client("logs", config=Config(max_pool_connections=75))  # pyright: ignore[reportUnknownMemberType] # type: ignore[reportUnknownReturnType]
 _created_streams: set[str] = set()
 
 ROOT_LOG_GROUP = "benchmarks"
