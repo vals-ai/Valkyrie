@@ -303,7 +303,10 @@ def stop_benchmark(benchmark_id: UUID, force: bool):
     default=None,
     help="Comma-separated list of task IDs (e.g., astropy__astropy-12907,astropy__astropy-12908)",
 )
-def resume_benchmark(benchmark_id: UUID, retry: bool, concurrency: int | None, task_ids: str | None):
+@click.pass_context
+def resume_benchmark(
+    ctx: click.Context, benchmark_id: UUID, retry: bool, concurrency: int | None, task_ids: str | None
+):
     """
     Resume a benchmark run by its benchmark id.
 
@@ -311,6 +314,11 @@ def resume_benchmark(benchmark_id: UUID, retry: bool, concurrency: int | None, t
         harness resume-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
     click.echo("Selected to run a benchmark that has already been created, will rerun valid tasks.")
+
+    # NOTE: workaround for auto retrying tasks when using the retry-benchmark command
+    if ctx.info_name == "retry-benchmark":
+        retry = True
+
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
