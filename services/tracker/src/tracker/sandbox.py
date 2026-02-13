@@ -224,16 +224,23 @@ async def stream_command_output(
             on_stderr=on_output,
         )
 
-        cmd = await sandbox.process.get_session_command(session_id, cmd_id)
+        try:
+            cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
-        if cmd.exit_code != 0:
-            raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
+            if cmd.exit_code != 0:
+                raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
+
+        except SandboxError:
+            raise
+        except Exception as e:
+            logger.warning(f"Failed to get session command for {session_id}: {e}")
+            pass
 
     finally:
         try:
             await sandbox.process.delete_session(session_id)
         except Exception:
-            logger.error(f"Caught failure to delete session `{session_id}`")
+            logger.warning(f"Caught failure to delete session `{session_id}`")
             pass
 
 
