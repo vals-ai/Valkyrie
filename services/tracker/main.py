@@ -324,7 +324,8 @@ async def retry_or_resume_benchmark(
             detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a benchmark that is currently running.",
         )
 
-    if concurrency is not None:
+    # NOTE: 0 is not acceptable
+    if concurrency:
         benchmark_row.arguments.concurrency = concurrency
         session.add(benchmark_row)
         session.commit()

@@ -244,7 +244,9 @@ class TrackerService:
         """
         try:
             params: dict[str, Any] = {"retry": retry}
-            if concurrency is not None:
+
+            # NOTE: 0 is not acceptable
+            if concurrency:
                 params["concurrency"] = concurrency
 
             response = self._client.post(
