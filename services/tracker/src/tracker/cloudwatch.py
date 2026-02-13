@@ -59,7 +59,7 @@ def reset_cloudwatch_stream(stream_key: str) -> None:
     """
     Delete and recreate a CloudWatch log stream to reset it.
 
-    Useful when restarting a task to clear old logs.
+    Used when restarting a task to clear old logs from previous runs.
 
     Args:
         stream_key: The stream key (benchmark_id:task_id)

@@ -233,7 +233,7 @@ async def process_task(
     stream_key: str = f"{benchmark_id}:{task_id}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
-    # Reset CloudWatch stream to clear any old logs from previous runs
+    # If we are retrying the task we clear logs from previous run
     reset_cloudwatch_stream(stream_key)
 
     # Collects the logs and dumps them when the queue is full
