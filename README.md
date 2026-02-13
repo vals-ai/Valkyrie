@@ -139,7 +139,7 @@ harness fetch-agent-outputs --benchmark-id <benchmark_id> --output-dir <download
 
 Flags
 
-```bash
+```
 --output-dir: where you would like the agent outputs to be downloaded (default: ./agent_outputs/<benchmark-id>)
 ```
 
