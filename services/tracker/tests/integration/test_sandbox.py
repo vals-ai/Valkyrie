@@ -158,3 +158,15 @@ class TestSandboxOperations:
         assert "line1" in output
         assert "line2" in output
         assert "line3" in output
+
+    async def test_create_sandbox_reuse(self, daytona_client: AsyncDaytona, test_resources: Resources) -> None:
+        """Test that create_sandbox reuses existing sandbox instead of creating new one."""
+        sandbox_name = f"test-reuse-{str(uuid.uuid4())[:8]}"
+
+        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox1:
+            result = await sandbox1.process.exec("echo 'test'")
+            assert result.exit_code == 0
+            first_id = sandbox1.id
+
+            async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox2:
+                assert sandbox2.id == first_id
