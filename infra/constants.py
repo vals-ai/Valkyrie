@@ -70,3 +70,7 @@ DAYTONA_SECRET_NAME = "prodAgenticHarnessDaytonaKey"
 # Daytona
 DAYTONA_API_URL = "https://app.daytona.io/api"
 DAYTONA_TARGET = "us"
+
+# Slack notifications
+SLACK_WORKSPACE_ID = "T05929786PK"
+SLACK_CHANNEL_ID = "C0AF4987EF6"

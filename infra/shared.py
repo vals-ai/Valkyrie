@@ -3,8 +3,16 @@
 from typing import Any
 
 import aws_cdk as cdk
-from aws_cdk import Stack, aws_ec2, aws_ecs, aws_route53, aws_s3, aws_servicediscovery
-from constants import CLUSTER_NAME, NAMESPACE, S3_BUCKET_NAME, VPC_MAX_AZS, VPC_NAT_GATEWAYS
+from aws_cdk import Stack, aws_chatbot, aws_ec2, aws_ecs, aws_route53, aws_s3, aws_servicediscovery, aws_sns
+from constants import (
+    CLUSTER_NAME,
+    NAMESPACE,
+    S3_BUCKET_NAME,
+    SLACK_CHANNEL_ID,
+    SLACK_WORKSPACE_ID,
+    VPC_MAX_AZS,
+    VPC_NAT_GATEWAYS,
+)
 from constructs import Construct
 
 
@@ -27,6 +35,32 @@ class SharedStack(Stack):
                     map_public_ip_on_launch=True,
                 )
             ],
+        )
+
+        # SNS topic for stack notifications
+        self.notification_topic = aws_sns.Topic(
+            self,
+            "StackNotificationTopic",
+            display_name="Stack Deployment Notifications",
+        )
+
+        # Slack channel configuration
+        slack = aws_chatbot.SlackChannelConfiguration(
+            self,
+            "DeploymentNotificationsSlackChannel",
+            slack_channel_configuration_name="deployment-notifications",
+            slack_workspace_id=SLACK_WORKSPACE_ID,
+            slack_channel_id=SLACK_CHANNEL_ID,
+        )
+
+        # Subscribe Slack to stack notifications
+        slack.add_notification_topic(self.notification_topic)
+
+        cdk.CfnOutput(
+            self,
+            "NotificationTopicArn",
+            value=self.notification_topic.topic_arn,
+            export_name="StackNotificationTopicArn",
         )
 
         # shared ECS cluster
