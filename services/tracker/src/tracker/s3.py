@@ -155,3 +155,49 @@ def list_s3_objects(prefix: str) -> list[str]:
         raise S3Error(
             f"Failed to list objects from S3 bucket '{AWS_S3_BUCKET}' with prefix '{prefix}': {str(e)}"
         ) from e
+
+
+def create_presigned_url(s3_key: str, expiration: int = 86400) -> str:
+    """
+    Create a presigned URL for an S3 object.
+
+    Args:
+        s3_key: S3 object key (path in bucket)
+        expiration: URL expiration time in seconds (default: 1 day)
+
+    Returns:
+        Presigned URL as a string
+
+    Raises:
+        S3Error: If presigned URL creation fails
+    """
+    try:
+        s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
+        presigned_url: str = s3_client.generate_presigned_url(
+            "get_object", Params={"Bucket": AWS_S3_BUCKET, "Key": s3_key}, ExpiresIn=expiration
+        )
+        return presigned_url
+    except (ClientError, BotoCoreError) as e:
+        raise S3Error(
+            f"Failed to create presigned URL for S3 bucket '{AWS_S3_BUCKET}' with key '{s3_key}': {str(e)}"
+        ) from e
+
+
+def create_console_url(s3_key: str) -> str:
+    """
+    Create an AWS console URL for an S3 object.
+
+    Args:
+        s3_key: S3 object key (path in bucket)
+
+    Returns:
+        AWS console URL as a string
+    """
+    try:
+        s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
+        region = s3_client.meta.region_name  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+        return f"https://{region}.console.aws.amazon.com/s3/object/{AWS_S3_BUCKET}?region={region}&prefix={s3_key}"
+    except (ClientError, BotoCoreError) as e:
+        raise S3Error(
+            f"Failed to create console URL for S3 bucket '{AWS_S3_BUCKET}' with key '{s3_key}': {str(e)}"
+        ) from e

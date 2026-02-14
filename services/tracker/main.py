@@ -17,6 +17,8 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
+    create_console_url,
+    create_presigned_url,
     download_from_s3_stream,
     get_contract_s3_key,
     list_s3_objects,
@@ -278,7 +280,10 @@ async def retrieve_results(
         upload_to_s3(final_view.model_dump_json(indent=2).encode(), s3_key)
 
         https_url = f"https://{AWS_S3_BUCKET}.s3.amazonaws.com/{s3_key}"
-        return S3UploadResultsResponse(s3_url=https_url)
+        presigned_url = create_presigned_url(s3_key)
+        console_url = create_console_url(s3_key)
+
+        return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)
 
     return final_view
 

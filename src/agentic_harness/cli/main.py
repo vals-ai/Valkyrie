@@ -225,12 +225,15 @@ def retrieve_results(benchmark_id: UUID, path: Path, s3: bool):
                         raise click.Abort()
 
             results_response = tracker.retrieve_results(benchmark_id, s3)
-            click.echo(click.style("Results retrieved successfully!", fg="green", bold=True))
 
             if isinstance(results_response, FinalViewResponse):
                 download_final_view(path, results_response)
             else:
-                click.echo(f"Results saved in s3 at '{results_response.s3_url}'")
+                click.echo(click.style("Download (expires in 1 day):", fg="cyan", bold=True))
+                click.echo(f"  {results_response.presigned_url}")
+                click.echo()
+                click.echo(click.style("AWS Console:", fg="cyan", bold=True))
+                click.echo(f"  {results_response.console_url}")
 
     except TrackerServiceError as e:
         raise click.ClickException(str(e))

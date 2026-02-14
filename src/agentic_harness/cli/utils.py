@@ -441,4 +441,4 @@ def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
             )
         )
 
-    click.echo(f"Results saved to '{path}'")
+    click.echo(click.style(f"View the  '{path}'", fg="green", bold=True))

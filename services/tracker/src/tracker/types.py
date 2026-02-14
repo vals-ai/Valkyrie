@@ -79,6 +79,8 @@ class FinalViewResponse(BaseModel):
 
 class S3UploadResultsResponse(BaseModel):
     s3_url: str
+    presigned_url: str
+    console_url: str
 
 
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
