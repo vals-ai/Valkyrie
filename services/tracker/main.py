@@ -1,3 +1,4 @@
+import logging
 import tarfile
 import traceback
 from uuid import UUID
@@ -42,6 +43,15 @@ from tracker.utils import (
 logger = get_logger(__name__)
 
 app = FastAPI()
+
+
+# Ignore verbose health check logs
+class HealthCheckFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage().find("/health") == -1
+
+
+logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 
 @app.exception_handler(TrackerServiceError)
