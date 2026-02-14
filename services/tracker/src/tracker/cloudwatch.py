@@ -45,7 +45,7 @@ def create_benchmark_group(benchmark_id: str) -> str:
 
     try:
         _client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
-        _client.put_retention_policy(logGroupName=log_group_name, retentionInDays=1)  # pyright: ignore[reportUnknownMemberType]
+        _client.put_retention_policy(logGroupName=log_group_name, retentionInDays=365)  # pyright: ignore[reportUnknownMemberType]
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
             raise CloudWatchError(f"Failed to create log group '{log_group_name}': {e}") from e
