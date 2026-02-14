@@ -1,4 +1,5 @@
 import time
+from functools import wraps
 
 import boto3
 from botocore.config import Config
@@ -10,6 +11,20 @@ _client = boto3.client("logs", config=Config(max_pool_connections=75))  # pyrigh
 _created_streams: set[str] = set()
 
 ROOT_LOG_GROUP = "benchmarks"
+
+
+def handle_cloudwatch_error(message: str):
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            try:
+                return func(*args, **kwargs)
+            except (ClientError, BotoCoreError) as e:
+                raise CloudWatchError(f"{message}: {e}") from e
+
+        return wrapper
+
+    return decorator
 
 
 def get_cloudwatch_url(benchmark_id: str, task_id: str | None = None) -> str:
@@ -28,9 +43,11 @@ def get_cloudwatch_url(benchmark_id: str, task_id: str | None = None) -> str:
     log_group = f"benchmarks$252F{benchmark_id}"
     if task_id:
         return f"{base}#logsV2:log-groups/log-group/{log_group}/log-events/{task_id}"
+
     return f"{base}#logsV2:log-groups/log-group/{log_group}"
 
 
+@handle_cloudwatch_error(message="Failed to create log group")
 def create_benchmark_group(benchmark_id: str) -> str:
     """
     Create a log group for a benchmark with 1-day retention.
@@ -48,13 +65,12 @@ def create_benchmark_group(benchmark_id: str) -> str:
         _client.put_retention_policy(logGroupName=log_group_name, retentionInDays=365)  # pyright: ignore[reportUnknownMemberType]
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
-            raise CloudWatchError(f"Failed to create log group '{log_group_name}': {e}") from e
-    except BotoCoreError as e:
-        raise CloudWatchError(f"Failed to create log group '{log_group_name}': {e}") from e
+            raise
 
     return log_group_name
 
 
+@handle_cloudwatch_error(message="Failed to delete log stream")
 def reset_cloudwatch_stream(stream_key: str) -> None:
     """
     Delete and recreate a CloudWatch log stream to reset it.
@@ -75,13 +91,12 @@ def reset_cloudwatch_stream(stream_key: str) -> None:
         _client.delete_log_stream(logGroupName=log_group_name, logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
-            raise CloudWatchError(f"Failed to delete log stream '{task_id}': {e}") from e
-    except BotoCoreError as e:
-        raise CloudWatchError(f"Failed to delete log stream '{task_id}': {e}") from e
+            raise
 
     _created_streams.discard(stream_key)
 
 
+@handle_cloudwatch_error(message="Failed to create cloudwatch stream")
 def cloudwatch_stream(stream_key: str, message: str) -> None:
     """
     Stream a log message to CloudWatch.
@@ -105,7 +120,7 @@ def cloudwatch_stream(stream_key: str, message: str) -> None:
             _client.create_log_stream(logGroupName=f"{ROOT_LOG_GROUP}/{benchmark_id}", logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
-                raise CloudWatchError(f"Failed to create log stream '{task_id}': {e}") from e
+                raise
         except BotoCoreError as e:
             raise CloudWatchError(f"Failed to create log stream '{task_id}': {e}") from e
         _created_streams.add(stream_key)
