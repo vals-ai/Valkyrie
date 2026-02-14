@@ -22,7 +22,7 @@ from tracker.database.models import (
 )
 from tracker.types import (
     FetchBenchmarksRequest,
-    RetrieveResultsResponse,
+    FinalViewResponse,
     StartBenchmarkRequest,
     VerifyTaskIdsResponse,
 )
@@ -245,7 +245,7 @@ class TestFastapiServer:
         assert response.status_code == 200
 
         # NOTE: We have defaults so we need to exclude none to get the same response as the user
-        response_json = RetrieveResultsResponse(**response.json()).model_dump(exclude_none=True)
+        response_json = FinalViewResponse(**response.json()).model_dump(exclude_none=True)
 
         # Test case 5. Evaluation results are returned if they exist even if benchmark has not finished yet
         assert response_json.get("evaluation_results")
