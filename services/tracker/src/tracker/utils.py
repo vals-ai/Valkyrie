@@ -472,6 +472,9 @@ async def process_benchmark(
 
         await monitor_task
 
+        if not any(result_dict for result_dict in evaluation_result_rows):
+            raise TrackerServiceError("No tasks were completed successfully")
+
         # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
         evaluation_results: dict[str, dict[str, Any] | None] = {
             task_id: evaluation_result

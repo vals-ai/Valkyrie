@@ -296,9 +296,13 @@ async def run_agent(
 
     await install_agent_dependencies(sandbox, contract, log_output)
 
-    run_cmd = contract.run_cmd.replace("{problem_statement}", shlex.quote(problem_statement))
+    problem_statement_path = "/tmp/problem_statement.txt"
+    await sandbox.fs.upload_file(problem_statement.encode(), problem_statement_path)
 
-    await stream_command_output(sandbox, f"cd {cwd} && {run_cmd}", log_output)
+    run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_statement_path)
+
+    # Run the agent without including task directory dependencies
+    await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
 
     if not contract.final_output:
         return

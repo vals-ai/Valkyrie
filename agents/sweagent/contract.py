@@ -35,7 +35,7 @@ class SWEAgentContract(BaseAgentContract):
             "--env.repo.type=preexisting",
             "--env.repo.repo_name=/testbed",
             "--agent.model.provider=vals",
-            "--problem_statement.text={problem_statement}",
+            "--problem_statement.path={problem_statement_path}",
             "--config=/bundle/sweagent/submodules/sweagent/config/default.yaml",
             "--output_dir=/logs/sweagent",
         ]
