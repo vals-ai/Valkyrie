@@ -272,13 +272,15 @@ def stop_benchmark(benchmark_id: UUID, force: bool):
                 return
 
             _ = tracker.stop_benchmark(benchmark_id, force)
-            click.echo(
-                click.style(
-                    "Run is currently being stopped. Will be stopped when all tasks in flight are finished.",
-                    fg="yellow",
-                    bold=True,
+
+            if not force:
+                click.echo(
+                    click.style(
+                        "Run is currently being stopped. Will be stopped when all tasks in flight are finished.",
+                        fg="yellow",
+                        bold=True,
+                    )
                 )
-            )
             click.echo(
                 click.style(
                     f"Retrieve results: harness retrieve-results --benchmark-id {benchmark_id} --path ./results.json",
