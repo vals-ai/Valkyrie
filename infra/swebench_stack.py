@@ -1,9 +1,9 @@
 """SWE-bench service stack - private benchmark execution engine."""
 
-from typing import Any
+from typing import Any, cast
 
 import aws_cdk as cdk
-from aws_cdk import Duration, Stack, aws_ec2, aws_ecs, aws_logs, aws_servicediscovery
+from aws_cdk import CfnStack, Duration, Stack, aws_ec2, aws_ecs, aws_logs, aws_servicediscovery, aws_sns
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
     ALLOWED_IPS,
@@ -39,9 +39,14 @@ class SwebenchStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         tracker_security_group: aws_ec2.ISecurityGroup,
+        notification_topic: aws_sns.Topic,
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
+
+        # Subscribe to stack notifications
+        cfn_stack = cast(CfnStack, self.node.default_child)
+        cfn_stack.notification_arns = [notification_topic.topic_arn]
 
         # fargate task
         task_def = aws_ecs.FargateTaskDefinition(
