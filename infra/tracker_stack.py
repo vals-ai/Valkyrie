@@ -1,10 +1,9 @@
 """Tracker service stack - public-facing API gateway to all other services."""
 
-from typing import Any, cast
+from typing import Any
 
 import aws_cdk as cdk
 from aws_cdk import (
-    CfnStack,
     Duration,
     Stack,
     aws_ec2,
@@ -17,7 +16,6 @@ from aws_cdk import (
     aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
-    aws_sns,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
@@ -65,15 +63,10 @@ class TrackerStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         hosted_zone: aws_route53.IHostedZone,
-        notification_topic: aws_sns.Topic,
         bucket: aws_s3.IBucket,
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
-
-        # Subscribe to stack notifications
-        cfn_stack = cast(CfnStack, self.node.default_child)
-        cfn_stack.notification_arns = [notification_topic.topic_arn]
 
         # Reference existing Daytona secret (must be created manually with DAYTONA_API_KEY)
         daytona_secret = aws_secretsmanager.Secret.from_secret_name_v2(

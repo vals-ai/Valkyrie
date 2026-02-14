@@ -24,7 +24,6 @@ tracker = TrackerStack(
     vpc=shared.vpc,
     cluster=shared.cluster,
     namespace=shared.namespace,
-    notification_topic=shared.notification_topic,
     hosted_zone=shared.hosted_zone,
     bucket=shared.bucket,
     env=env,
@@ -37,7 +36,6 @@ swebench = SwebenchStack(
     vpc=shared.vpc,
     cluster=shared.cluster,
     namespace=shared.namespace,
-    notification_topic=shared.notification_topic,
     tracker_security_group=tracker.service.service.connections.security_groups[0],
     env=env,
 )
