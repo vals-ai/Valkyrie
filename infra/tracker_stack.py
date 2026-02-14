@@ -262,12 +262,14 @@ class TrackerStack(Stack):
         bucket.grant_read_write(task_def.task_role)
 
         # CloudWatch Logs permissions for log groups
-        task_def.task_role.add_to_principal_policy(
+        task_def.add_to_task_role_policy(
             aws_iam.PolicyStatement(
                 actions=[
                     "logs:CreateLogGroup",
                     "logs:CreateLogStream",
                     "logs:PutLogEvents",
+                    "logs:PutRetentionPolicy",
+                    "logs:DeleteLogStream",
                     "logs:DescribeLogGroups",
                     "logs:DescribeLogStreams",
                 ],
