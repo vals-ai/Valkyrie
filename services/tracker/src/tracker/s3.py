@@ -104,6 +104,28 @@ def download_from_s3_stream(s3_key: str) -> tuple[StreamingBody, int]:
         ) from e
 
 
+def s3_object_exists(s3_key: str) -> bool:
+    """
+    Check if an S3 object exists.
+
+    Args:
+        s3_key: S3 object key (path in bucket)
+
+    Returns:
+        True if the object exists, False otherwise
+    """
+    try:
+        s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
+        s3_client.head_object(Bucket=AWS_S3_BUCKET, Key=s3_key)
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "404":
+            return False
+        raise S3Error(f"Failed to check S3 object existence for '{s3_key}': {str(e)}") from e
+    except BotoCoreError as e:
+        raise S3Error(f"Failed to check S3 object existence for '{s3_key}': {str(e)}") from e
+
+
 def list_s3_objects(prefix: str) -> list[str]:
     """
     List all S3 object keys with the given prefix.

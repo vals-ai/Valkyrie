@@ -10,19 +10,29 @@ from sqlmodel import Session, col, func, select
 
 from tracker.benchmark_service import BenchmarkService
 from tracker.cloudwatch import get_cloudwatch_url
+from tracker.config import AWS_S3_BUCKET
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
-from tracker.s3 import S3_BENCHMARKS_PREFIX, download_from_s3_stream, get_contract_s3_key, list_s3_objects, upload_to_s3
+from tracker.s3 import (
+    S3_BENCHMARKS_PREFIX,
+    download_from_s3_stream,
+    get_contract_s3_key,
+    list_s3_objects,
+    s3_object_exists,
+    upload_to_s3,
+)
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FinalViewResponse,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
+    S3UploadResultsResponse,
     StartBenchmarkErrorResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
@@ -228,12 +238,14 @@ async def fetch_benchmark(
 
 
 @app.get("/retrieve-results")
-async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_session)) -> RetrieveResultsResponse:
+async def retrieve_results(
+    benchmark_id: UUID, s3: bool = Query(default=False), session: Session = Depends(get_session)
+) -> RetrieveResultsResponse:
     """
     Retrieve the results of a benchmark by its id.
 
     Usage:
-    curl -X GET http://<endpoint>/retrieve-results/<benchmark_id>
+    curl -X GET http://<endpoint>/retrieve-results/<benchmark_id>?s3=false
 
     Returns:
         RetrieveResultsResponse
@@ -249,7 +261,7 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
         .where(col(Task.status) == TaskStatus.STOPPED)
     ).one()
 
-    return RetrieveResultsResponse(
+    final_view: FinalViewResponse = FinalViewResponse(
         benchmark_name=benchmark_row.name,
         status=benchmark_row.status,
         error_message=benchmark_row.error_message,
@@ -260,6 +272,31 @@ async def retrieve_results(benchmark_id: UUID, session: Session = Depends(get_se
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
         task_errors=benchmark_row.fetch_tasks_with_errors(session),
     )
+
+    if s3:
+        s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
+        upload_to_s3(final_view.model_dump_json(indent=2).encode(), s3_key)
+
+        https_url = f"https://{AWS_S3_BUCKET}.s3.amazonaws.com/{s3_key}"
+        return S3UploadResultsResponse(s3_url=https_url)
+
+    return final_view
+
+
+@app.get("/check-results-exist")
+async def check_results_exist(benchmark_id: UUID) -> dict[str, bool]:
+    """
+    Check if results.json already exists in S3 for the given benchmark.
+
+    Usage:
+    curl -X GET http://<endpoint>/check-results-exist?benchmark_id=<uuid>
+
+    Returns:
+        {"exists": true/false}
+    """
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
+    exists = s3_object_exists(s3_key)
+    return {"exists": exists}
 
 
 @app.post("/stop-benchmark/{benchmark_id}")

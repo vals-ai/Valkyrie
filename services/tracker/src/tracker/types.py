@@ -65,7 +65,7 @@ class FetchBenchmarkResponse(BaseModel):
     details: BenchmarkDetails
 
 
-class RetrieveResultsResponse(BaseModel):
+class FinalViewResponse(BaseModel):
     benchmark_name: str
     status: BenchmarkStatus
     error_message: str | None
@@ -75,6 +75,13 @@ class RetrieveResultsResponse(BaseModel):
     final_evaluation: FinalEvaluation | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
+
+
+class S3UploadResultsResponse(BaseModel):
+    s3_url: str
+
+
+RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
 
 
 class FinalScoreResponse(BaseModel):

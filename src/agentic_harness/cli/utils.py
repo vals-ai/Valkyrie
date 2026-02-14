@@ -13,6 +13,7 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FinalViewResponse,
     Order,
     StartBenchmarkResponse,
 )
@@ -421,3 +422,23 @@ def download_agent_outputs(agent_outputs_response: Response, output_dir: Path) -
             nested_tar.unlink()
 
     tmp_path.unlink()
+
+
+def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
+    if not path.parent.exists():
+        raise click.ClickException(f"'{path.parent}' directory does not exist! Please create it first.")
+
+    if path.exists():
+        if not click.confirm(f"File '{path}' already exists. Overwrite?"):
+            raise click.Abort()
+
+    with open(path, "w") as f:
+        f.write(
+            final_view.model_dump_json(
+                indent=4,
+                exclude_none=True,
+                exclude={"benchmark_arguments": {"contract": {"env"}}},
+            )
+        )
+
+    click.echo(f"Results saved to '{path}'")

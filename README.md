@@ -96,7 +96,14 @@ harness fetch-benchmark --benchmark-id <benchmark_id>
 #### Download results
 
 ```bash
-harness retrieve-results --benchmark-id <benchmark_id> --path ./results.json
+harness retrieve-results --benchmark-id <benchmark_id>
+```
+
+Flags
+
+```
+--path: Downloads the final view to disk (default: ./results.json)
+--s3: Download the final view to s3, found in bucket://benchmarks/benchmark_id/results.json
 ```
 
 #### Stop a benchmark

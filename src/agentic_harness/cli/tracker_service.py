@@ -14,8 +14,10 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FinalViewResponse,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
+    S3UploadResultsResponse,
     StartBenchmarkRequest,
     StopBenchmarkResponse,
 )
@@ -184,7 +186,7 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to stream benchmark: {e}") from e
 
-    def retrieve_results(self, benchmark_id: UUID) -> RetrieveResultsResponse:
+    def retrieve_results(self, benchmark_id: UUID, s3: bool) -> RetrieveResultsResponse:
         """
         Retrieve the results of a benchmark by its benchmark id.
 
@@ -196,16 +198,47 @@ class TrackerService:
         """
         try:
             response = self._client.get(
-                f"{self._base_url}/retrieve-results", params={"benchmark_id": str(benchmark_id)}
+                f"{self._base_url}/retrieve-results", params={"benchmark_id": str(benchmark_id), "s3": s3}
             )
 
             if response.status_code != 200:
                 details = response.json().get("detail", response.text)
                 raise TrackerServiceError(f"Failed to retrieve results: {details}")
 
-            return RetrieveResultsResponse.model_validate(response.json())
+            response_data = response.json()
+            if not s3:
+                return FinalViewResponse.model_validate(response_data)
+
+            return S3UploadResultsResponse.model_validate(response_data)
+
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
+
+    def check_results_exist_in_s3(self, benchmark_id: UUID) -> bool:
+        """
+        Check if results already exist in S3 for the given benchmark.
+
+        Args:
+            benchmark_id: Benchmark id
+
+        Returns:
+            True if results exist in S3, False otherwise
+
+        Raises:
+            TrackerServiceError if request fails
+        """
+        try:
+            response = self._client.get(
+                f"{self._base_url}/check-results-exist", params={"benchmark_id": str(benchmark_id)}
+            )
+
+            if response.status_code != 200:
+                details = response.json().get("detail", response.text)
+                raise TrackerServiceError(f"Failed to check S3 results: {details}")
+
+            return response.json()["exists"]
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to check S3 results: {e}") from e
 
     def stop_benchmark(self, benchmark_id: UUID, force: bool) -> StopBenchmarkResponse:
         """

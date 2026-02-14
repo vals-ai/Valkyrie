@@ -5,7 +5,7 @@ from uuid import UUID
 
 import click
 from tracker.database.models import BenchmarkStatus
-from tracker.types import Order, StartBenchmarkResponse
+from tracker.types import FinalViewResponse, Order, StartBenchmarkResponse
 
 from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract
 from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
@@ -13,6 +13,7 @@ from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     check_tracker_service_health,
     download_agent_outputs,
+    download_final_view,
     format_benchmark_status,
     format_start_benchmark_response,
     paginate_benchmarks,
@@ -193,10 +194,18 @@ def fetch_benchmark(benchmark_id: UUID, connect: bool):
 @click.option(
     "--path",
     type=click.Path(path_type=Path, file_okay=True, dir_okay=False),
-    required=True,
+    default="./results.json",
+    required=False,
     help="Path to save the results (e.g., ./results.json)",
 )
-def retrieve_results(benchmark_id: UUID, path: Path):
+@click.option(
+    "--s3",
+    is_flag=True,
+    default=False,
+    required=False,
+    help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/benchmark_id/results.json",
+)
+def retrieve_results(benchmark_id: UUID, path: Path, s3: bool):
     """
     Retrieve the results of a benchmark by its benchmark id.
 
@@ -210,26 +219,19 @@ def retrieve_results(benchmark_id: UUID, path: Path):
             if not check_tracker_service_health(tracker):
                 return
 
-            results_response = tracker.retrieve_results(benchmark_id)
+            if s3:
+                if tracker.check_results_exist_in_s3(benchmark_id):
+                    if not click.confirm("Results already exist in S3. Overwrite?"):
+                        raise click.Abort()
+
+            results_response = tracker.retrieve_results(benchmark_id, s3)
             click.echo(click.style("Results retrieved successfully!", fg="green", bold=True))
 
-            if not path.parent.exists():
-                raise click.ClickException(f"'{path.parent}' directory does not exist! Please create it first.")
+            if isinstance(results_response, FinalViewResponse):
+                download_final_view(path, results_response)
+            else:
+                click.echo(f"Results saved in s3 at '{results_response.s3_url}'")
 
-            if path.exists():
-                if not click.confirm(f"File '{path}' already exists. Overwrite?"):
-                    raise click.Abort()
-
-            with open(path, "w") as f:
-                f.write(
-                    results_response.model_dump_json(
-                        indent=4,
-                        exclude_none=True,
-                        exclude={"benchmark_arguments": {"contract": {"env"}}},
-                    )
-                )
-
-            click.echo(f"Results saved to '{path}'")
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
