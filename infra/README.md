@@ -17,6 +17,14 @@ AWS CDK infrastructure for the Agentic Harness benchmark platform.
 
 ## Setup
 
+Install cdk
+
+```bash
+brew install cdk
+```
+
+Install dev dependencies
+
 ```bash
 make install
 ```
@@ -55,11 +63,13 @@ make hotswap
 Private services (like SWE-bench) can be accessed directly via their task's public IP for debugging:
 
 1. Whitelist your IP:
+
    ```bash
    ./scripts/whitelist-ip.sh --add
    ```
 
 2. Get the service IP:
+
    ```bash
    ./scripts/service-ips.sh
    ```
