@@ -10,6 +10,7 @@ from aws_cdk import (
     aws_ecs,
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
+    aws_iam,
     aws_logs,
     aws_rds,
     aws_route53,
@@ -259,6 +260,22 @@ class TrackerStack(Stack):
 
         # Grant S3 read/write permissions to the task
         bucket.grant_read_write(task_def.task_role)
+
+        # CloudWatch Logs permissions for log groups
+        task_def.task_role.add_to_principal_policy(
+            aws_iam.PolicyStatement(
+                actions=[
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:DescribeLogGroups",
+                    "logs:DescribeLogStreams",
+                ],
+                resources=[
+                    f"arn:aws:logs:{self.region}:{self.account}:log-group:benchmarks/*",
+                ],
+            )
+        )
 
         # Allow Fargate service to connect to RDS
         self.database.connections.allow_from(
