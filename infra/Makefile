@@ -24,23 +24,23 @@ venv_check:
 	fi
 
 deploy: venv_check
-	uv run cdk deploy --all --require-approval never
+	cdk deploy --all --require-approval never
 
 deploy-shared: venv_check
-	uv run cdk deploy SharedStack --require-approval never
+	cdk deploy SharedStack --require-approval never
 
 deploy-tracker: venv_check
-	uv run cdk deploy TrackerStack --require-approval never
+	cdk deploy TrackerStack --require-approval never
 
 deploy-swebench: venv_check
-	uv run cdk deploy SwebenchStack --require-approval never
+	cdk deploy SwebenchStack --require-approval never
 
 hotswap: venv_check
-	uv run cdk deploy --all --hotswap
+	cdk deploy --all --hotswap
 
 diff: venv_check
-	uv run cdk diff
+	cdk diff
 
 destroy: venv_check
 	@read -p "Are you sure you want to destroy all stacks? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	uv run cdk destroy --all
+	cdk destroy --all
