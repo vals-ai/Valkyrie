@@ -30,7 +30,7 @@ class MyAgentContract(BaseAgentContract):
 
     @property
     def artifacts(self) -> list[str]:
-        return ["setup.sh", "submodules/my_agent"]
+        return ["setup.sh", "submodule/my_agent"]
 
     @property
     def install_cmd(self) -> str:
@@ -109,7 +109,7 @@ Files and directories to bundle with the agent (default: empty list). Paths are 
 ```python
 @property
 def artifacts(self) -> list[str]:
-    return ["setup.sh", "submodules/my_agent", "config/settings.yaml"]
+    return ["setup.sh", "submodule/my_agent", "config/settings.yaml"]
 ```
 
 ### `env: dict[str, str]`
@@ -155,7 +155,7 @@ agents/
   my_agent/
     contract.py           # Contract definition (required)
     setup.sh              # Installation script (optional)
-    submodules/           # Agent code and dependencies (optional)
+    submodule/           # Agent code and dependencies (optional)
       my_agent/
         pyproject.toml
         main.py
@@ -178,7 +178,7 @@ curl -fsSL https://example.com/install.sh | bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 # Install Python dependencies
-cd submodules/my_agent && uv sync
+cd submodule/my_agent && uv sync
 ```
 
 ## Creating Wrapper Scripts
@@ -189,8 +189,8 @@ If your agent requires a virtual environment or specific setup before running, c
 # In setup.sh
 cat > /usr/local/bin/my_agent << 'WRAPPER'
 #!/bin/bash
-source /bundle/my_agent/submodules/my_agent/.venv/bin/activate
-exec python /bundle/my_agent/submodules/my_agent/main.py "$@"
+source /bundle/my_agent/submodule/my_agent/.venv/bin/activate
+exec python /bundle/my_agent/submodule/my_agent/main.py "$@"
 WRAPPER
 chmod +x /usr/local/bin/my_agent
 ```

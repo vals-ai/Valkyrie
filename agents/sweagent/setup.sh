@@ -13,12 +13,12 @@ curl -LsSf https://astral.sh/uv/0.7.13/install.sh | sh
 source "$HOME/.local/bin/env" 2>/dev/null || true
 
 # Install the sweagent Python package
-cd submodules/sweagent && uv sync 
+cd sweagent && uv sync
 
 # Wrapper script so `sweagent` is on PATH
 cat > /usr/local/bin/sweagent << 'WRAPPER'
 #!/bin/bash
-source /bundle/sweagent/submodules/sweagent/.venv/bin/activate
+source /bundle/sweagent/sweagent/.venv/bin/activate
 exec python -m sweagent.run.run "$@"
 WRAPPER
 chmod +x /usr/local/bin/sweagent

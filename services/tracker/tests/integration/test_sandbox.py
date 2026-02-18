@@ -73,7 +73,7 @@ class TestSandboxOperations:
             run_cmd="echo hello",
         )
 
-        agent_file = f"{contract_name}/submodules/{contract_name}/file.txt"
+        agent_file = f"{contract_name}/{contract_name}/file.txt"
         setup_file = f"{contract_name}/setup.sh"
 
         # Create a mock zip with the expected structure

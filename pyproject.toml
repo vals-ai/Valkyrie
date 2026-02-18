@@ -49,7 +49,6 @@ enableTypeIgnoreComments = true
 include = ["src", "agents"]
 
 exclude = [
-  "**/submodules/**",
   "**/contracts/**",
 ]
 
