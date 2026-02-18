@@ -34,7 +34,7 @@ class BaseAgentContract(ABC):
         Returns:
             Agent name (e.g., "claude_code", "sweagent")
         """
-        pass
+        ...
 
     @abstractmethod
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
@@ -63,7 +63,7 @@ class BaseAgentContract(ABC):
         Returns:
             Shell command to install the agent (e.g., "bash setup.sh")
         """
-        pass
+        ...
 
     @property
     def env(self) -> dict[str, str]:
@@ -76,7 +76,7 @@ class BaseAgentContract(ABC):
         Returns:
             Dictionary of environment variable names and values (default: empty dict)
         """
-        return {}
+        ...
 
     @property
     def artifacts(self) -> list[str]:
@@ -89,7 +89,7 @@ class BaseAgentContract(ABC):
         Returns:
             List of artifact paths (default: empty list)
         """
-        return []
+        ...
 
     @property
     @abstractmethod
@@ -100,7 +100,7 @@ class BaseAgentContract(ABC):
         Returns:
             Path | None: The path to the final output that the agent writes to.
         """
-        pass
+        ...
 
     def to_request(self) -> AgentContractRequest:
         """
@@ -111,9 +111,9 @@ class BaseAgentContract(ABC):
         """
         return AgentContractRequest(
             name=self.name,
-            run_cmd=self.run_cmd(  # NOTE: Template text to preserve originally utility
-                problem_statement_path="{\tmp/problem-statement.txt}",
-                task_id="{\task_id}",
+            run_cmd=self.run_cmd(  # NOTE: We replace these fillers in the tracker
+                problem_statement_path="{problem_statement_path}",
+                task_id="{task_id}",
                 kwargs=self._agent_config.kwargs,
             ),
             install_cmd=self.install_cmd,

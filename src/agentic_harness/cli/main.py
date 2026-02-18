@@ -75,6 +75,7 @@ def cli():
 @click.option(
     "--kwarg",
     "-k",
+    "kwargs",
     multiple=True,
     nargs=2,
     type=(str, str),

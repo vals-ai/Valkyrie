@@ -271,6 +271,7 @@ async def run_agent(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
     problem_statement: str,
+    task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
     agent_output_s3_key: str | None = None,
@@ -299,7 +300,7 @@ async def run_agent(
     problem_statement_path = "/tmp/problem_statement.txt"
     await sandbox.fs.upload_file(problem_statement.encode(), problem_statement_path)
 
-    run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_statement_path)
+    run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_statement_path).replace("{task_id}", task_id)
 
     # Run the agent without including task directory dependencies
     await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)

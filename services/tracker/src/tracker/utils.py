@@ -285,6 +285,7 @@ async def process_task(
                     sandbox,
                     start_benchmark_request.contract,
                     task_data.problem_statement,
+                    task_id,
                     log_output,
                     task_data.cwd,
                     agent_output_s3_key=agent_output_s3_key,
