@@ -64,6 +64,13 @@ def cli():
     help="Comma-separated list of task IDs (e.g., astropy__astropy-12907,astropy__astropy-12908)",
 )
 @click.option(
+    "--task-ids-file",
+    type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=False),
+    required=False,
+    default=None,
+    help="Path to a text file with one task ID per line",
+)
+@click.option(
     "--slice",
     "slice_str",
     type=str,
@@ -77,6 +84,7 @@ def start_benchmark(
     benchmark: str,
     concurrency: int,
     task_ids: str | None,
+    task_ids_file: Path | None,
     slice_str: str | None,
 ):
     """
@@ -85,6 +93,13 @@ def start_benchmark(
     Example:
         harness run --agent agents/claude_code --benchmark swebench
     """
+    if task_ids and task_ids_file:
+        raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
+
+    if task_ids_file:
+        lines = task_ids_file.read_text().splitlines()
+        task_ids = ",".join(line.strip() for line in lines if line.strip())
+
     click.echo("Arguments:")
     click.echo(f"  - Benchmark: {benchmark}")
     click.echo(f"  - Agent: {agent}")
@@ -321,9 +336,16 @@ def stop_benchmark(benchmark_id: UUID, force: bool):
     default=None,
     help="Comma-separated list of task IDs (e.g., astropy__astropy-12907,astropy__astropy-12908)",
 )
+@click.option(
+    "--task-ids-file",
+    type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=False),
+    required=False,
+    default=None,
+    help="Path to a text file with one task ID per line",
+)
 @click.pass_context
 def resume_benchmark(
-    ctx: click.Context, benchmark_id: UUID, retry: bool, concurrency: int | None, task_ids: str | None
+    ctx: click.Context, benchmark_id: UUID, retry: bool, concurrency: int | None, task_ids: str | None, task_ids_file: Path | None
 ):
     """
     Resume a benchmark run by its benchmark id.
@@ -331,6 +353,13 @@ def resume_benchmark(
     Example:
         harness resume-benchmark --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
+    if task_ids and task_ids_file:
+        raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
+
+    if task_ids_file:
+        lines = task_ids_file.read_text().splitlines()
+        task_ids = ",".join(line.strip() for line in lines if line.strip())
+
     click.echo("Selected to run a benchmark that has already been created, will rerun valid tasks.")
 
     # NOTE: workaround for auto retrying tasks when using the retry-benchmark command
@@ -342,7 +371,7 @@ def resume_benchmark(
             if not check_tracker_service_health(tracker):
                 return
 
-            retry_task_ids = task_ids.split() if task_ids else []
+            retry_task_ids = task_ids.split(",") if task_ids else []
             _ = tracker.retry_or_resume_benchmark(benchmark_id, retry, concurrency, retry_task_ids)
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
