@@ -276,7 +276,7 @@ async def retrieve_results(
     )
 
     if s3:
-        s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
+        s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
         upload_to_s3(
             final_view.model_dump_json(
                 indent=4, exclude_none=True, exclude={"benchmark_arguments": {"contract": {"env"}}}
