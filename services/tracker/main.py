@@ -277,7 +277,12 @@ async def retrieve_results(
 
     if s3:
         s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
-        upload_to_s3(final_view.model_dump_json(indent=2).encode(), s3_key)
+        upload_to_s3(
+            final_view.model_dump_json(
+                indent=4, exclude_none=True, exclude={"benchmark_arguments": {"contract": {"env"}}}
+            ).encode(),
+            s3_key,
+        )
 
         https_url = f"https://{AWS_S3_BUCKET}.s3.amazonaws.com/{s3_key}"
         presigned_url = create_presigned_url(s3_key)
