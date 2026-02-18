@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any, override
 
 from dotenv import dotenv_values
 
@@ -28,21 +29,25 @@ class SWEAgentContract(BaseAgentContract):
     def final_output(self) -> Path | None:
         return Path("/logs/sweagent")
 
-    @property
-    def run_cmd(self) -> str:
+    @override
+    def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
+        model_name = self._agent_config.model
+
+        if not model_name:
+            raise ValueError(
+                "Model key not detected, model is required to run sweagent. Use --model to assign a model to run"
+            )
+
         args = [
             "--env.deployment.type=local",
             "--env.repo.type=preexisting",
             "--env.repo.repo_name=/testbed",
             "--agent.model.provider=vals",
-            "--problem_statement.path={problem_statement_path}",
+            f"--problem_statement.path={problem_statement_path}",
             "--config=/bundle/sweagent/submodules/sweagent/config/default.yaml",
             "--output_dir=/logs/sweagent",
+            f"--agent.model.name={model_name}",
         ]
-
-        model_name = self._agent_config.model
-        if model_name:
-            args.append(f"--agent.model.name={model_name}")
 
         run_cmd = "sweagent run " + " ".join(args)
 

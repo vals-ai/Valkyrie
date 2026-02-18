@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Any
 
 from tracker.database.models import AgentContractRequest
 
@@ -35,19 +36,20 @@ class BaseAgentContract(ABC):
         """
         pass
 
-    @property
     @abstractmethod
-    def run_cmd(self) -> str:
+    def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
         """
         Command to run the agent on a task.
 
-        The command should include {{problem_statement}} as a placeholder,
-        which will be replaced with the actual task prompt at runtime.
+        Args:
+            problem_statement_path: str - Where the problem statement is copied in the sandbox (default: tmp/problem_statement)
+            task_id: str - The readable task id (e.x astropy__astropy-12907)
+            kwargs: dict[str, Any] - Extra args the user specified at run time
 
         Returns:
-            Shell command to execute the agent (e.g., "claude code -p {{problem_statement}}")
+            Shell command to execute the agent (e.g., "claude code -p path/to/problem_statement")
         """
-        pass
+        ...
 
     @property
     @abstractmethod
@@ -109,7 +111,11 @@ class BaseAgentContract(ABC):
         """
         return AgentContractRequest(
             name=self.name,
-            run_cmd=self.run_cmd,
+            run_cmd=self.run_cmd(  # NOTE: Template text to preserve originally utility
+                problem_statement_path="{\tmp/problem-statement.txt}",
+                task_id="{\task_id}",
+                kwargs=self._agent_config.kwargs,
+            ),
             install_cmd=self.install_cmd,
             env=self.env,
             artifacts=self.artifacts,

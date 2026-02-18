@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Any, override
 
 from dotenv import load_dotenv
 from model_library.registry_utils import get_model_names_by_provider
@@ -52,12 +53,12 @@ class ClaudeCodeContract(BaseAgentContract):
 
     @property
     def final_output(self) -> Path | None:
-        return None
+        return Path("/logs")
 
-    @property
-    def run_cmd(self) -> str:
+    @override
+    def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
         args = [
-            "-p {problem_statement}",
+            f"cat {problem_statement_path}| -p",
             "--verbose",
             "--output-format stream-json",
             f"--allowedTools {' '.join(self._ALLOWED_TOOLS)}",

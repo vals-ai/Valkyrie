@@ -1,6 +1,7 @@
 """CLI views/commands for the agentic harness."""
 
 from pathlib import Path
+from typing import Any
 from uuid import UUID
 
 import click
@@ -71,6 +72,14 @@ def cli():
     default=None,
     help="Slice string to use for slicing the benchmark (e.g., 1-10)",
 )
+@click.option(
+    "--kwarg",
+    "-k",
+    multiple=True,
+    nargs=2,
+    type=(str, str),
+    help="Kwargs as key value (e.g., -k temperature 7 -k max_tokens 1000)",
+)
 def start_benchmark(
     agent: Path,
     model: str | None,
@@ -78,6 +87,7 @@ def start_benchmark(
     concurrency: int,
     task_ids: str | None,
     slice_str: str | None,
+    kwargs: tuple[tuple[str, str]],
 ):
     """
     Run an agent on a benchmark.
@@ -106,9 +116,11 @@ def start_benchmark(
         contract_path = agent / "contract.py"
 
         # Build agent config
-        config_kwargs: dict[str, str] = {}
+        config_kwargs: dict[str, Any] = {}
         if model:
             config_kwargs["model"] = model
+
+        config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
 
         contract = get_contract(contract_path, agent_config)
