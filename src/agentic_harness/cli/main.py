@@ -6,7 +6,7 @@ from uuid import UUID
 
 import click
 from tracker.database.models import BenchmarkStatus
-from tracker.types import FinalViewResponse, Order, StartBenchmarkResponse
+from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
 from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract
 from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
@@ -220,18 +220,18 @@ def fetch(benchmark_id: UUID, connect: bool):
 @click.option(
     "--path",
     type=click.Path(path_type=Path, file_okay=True, dir_okay=False),
-    default="./results.json",
+    default=None,
     required=False,
-    help="Path to save the results (e.g., ./results.json)",
+    help="Path to save the results (default: ./<benchmark>.json)",
 )
 @click.option(
     "--s3",
     is_flag=True,
     default=False,
     required=False,
-    help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/benchmark_id/results.json",
+    help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/benchmark_id/<benchmark>.json",
 )
-def results(benchmark_id: UUID, path: Path, s3: bool):
+def results(benchmark_id: UUID, path: Path | None, s3: bool):
     """
     Retrieve the results of a benchmark by its benchmark id.
 
@@ -250,10 +250,12 @@ def results(benchmark_id: UUID, path: Path, s3: bool):
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response = tracker.retrieve_results(benchmark_id, s3)
+            results_response: RetrieveResultsResponse = tracker.retrieve_results(benchmark_id, s3)
 
             if isinstance(results_response, FinalViewResponse):
-                download_final_view(path, results_response)
+                default_path: Path = Path(f"./{results_response.benchmark_name}.json")
+
+                download_final_view(path or default_path, results_response)
             else:
                 click.echo(click.style("Download (expires in 1 day):", fg="cyan", bold=True))
                 click.echo(f"  {results_response.presigned_url}")
