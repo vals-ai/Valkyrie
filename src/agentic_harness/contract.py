@@ -76,7 +76,7 @@ class BaseAgentContract(ABC):
         Returns:
             Dictionary of environment variable names and values (default: empty dict)
         """
-        ...
+        return {}
 
     @property
     def artifacts(self) -> list[str]:
@@ -89,13 +89,14 @@ class BaseAgentContract(ABC):
         Returns:
             List of artifact paths (default: empty list)
         """
-        ...
+        return []
 
     @property
     @abstractmethod
     def final_output(self) -> Path | None:
         """
         Path to the final output of the agent. Needs to be an absolute path.
+        Will be saved in s3 when the task is done being processed
 
         Returns:
             Path | None: The path to the final output that the agent writes to.
