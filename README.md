@@ -53,9 +53,17 @@ On prod push all changes will be deployed, slack notifications are setup
 Create `services/tracker/.env` with the following configuration:
 
 ```env
+# Sandbox credentials
 DAYTONA_API_KEY=dtn_5ebxx_xxxx
 DAYTONA_API_URL=https://app.daytona.io/api
 DAYTONA_TARGET=us
+
+# AWS credentials
+AWS_ACCESS_KEY_ID=...
+AWS_SECRET_ACCESS_KEY=...
+AWS_REGION=...
+
+# Where the benchmark service is hosted
 BENCHMARK_SERVICE_URL=http://98.xx.xx:8000
 ```
 
