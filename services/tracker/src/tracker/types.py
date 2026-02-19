@@ -10,16 +10,6 @@ from uuid import UUID
 from pydantic import BaseModel
 
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import (
-    EvaluateInstanceRequest,
-    FinalScoreResponse,
-    HealthCheckResponse,
-    Resources,
-    RetrieveTaskResponse,
-    SetupTaskRequest,
-    SetupTaskResponse,
-    VerifyTaskIdsResponse,
-)
 from tracker.config import BENCHMARK_SERVICE_URL
 from tracker.database.models import (
     AgentContractRequest,

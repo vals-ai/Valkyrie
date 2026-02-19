@@ -873,9 +873,7 @@ async def reset_to_in_progress_status(
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
-        verify_response = await benchmark_service.verify_task_ids(
-            task_ids=list(task_mapping.values()), slice_str=None
-        )
+        verify_response = await benchmark_service.verify_task_ids(task_ids=list(task_mapping.values()), slice_str=None)
 
         # Set the benchmark status to in progress to flag resuming the benchmark
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS

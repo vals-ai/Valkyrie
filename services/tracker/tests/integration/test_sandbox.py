@@ -20,7 +20,7 @@ from tracker.sandbox import (
     run_agent,
     upload_agent_artifacts,
 )
-from tracker.types import Resources
+from benchmark_service.schemas import Resources
 
 
 @pytest.fixture

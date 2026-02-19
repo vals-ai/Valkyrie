@@ -11,7 +11,8 @@ from tests.unit.test_fastapi_server import client
 from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import TrackerServiceError
-from tracker.types import FinalScoreResponse, StartBenchmarkRequest
+from benchmark_service.schemas import FinalScoreResponse
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
 
 

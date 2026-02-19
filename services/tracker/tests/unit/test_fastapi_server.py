@@ -20,11 +20,11 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from benchmark_service.schemas import VerifyTaskIdsResponse
 from tracker.types import (
     FetchBenchmarksRequest,
     FinalViewResponse,
     StartBenchmarkRequest,
-    VerifyTaskIdsResponse,
 )
 
 client = TestClient(app)

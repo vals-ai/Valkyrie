@@ -345,7 +345,12 @@ def stop_benchmark(benchmark_id: UUID, force: bool):
 )
 @click.pass_context
 def resume_benchmark(
-    ctx: click.Context, benchmark_id: UUID, retry: bool, concurrency: int | None, task_ids: str | None, task_ids_file: Path | None
+    ctx: click.Context,
+    benchmark_id: UUID,
+    retry: bool,
+    concurrency: int | None,
+    task_ids: str | None,
+    task_ids_file: Path | None,
 ):
     """
     Resume a benchmark run by its benchmark id.

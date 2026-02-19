@@ -10,13 +10,8 @@ from main import app
 from benchmark_service.client import BenchmarkServiceClient
 from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
-from tracker.types import (
-    FinalScoreResponse,
-    Resources,
-    RetrieveTaskResponse,
-    StartBenchmarkRequest,
-    VerifyTaskIdsResponse,
-)
+from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 
 client = TestClient(app)

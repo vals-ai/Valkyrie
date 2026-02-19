@@ -18,7 +18,8 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.types import SetupTaskResponse, StartBenchmarkRequest
+from benchmark_service.schemas import SetupTaskResponse
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import process_benchmark, process_task
 
 

@@ -6,11 +6,7 @@ from sqlmodel import Session
 
 from benchmark_service.client import BenchmarkServiceClient
 from tracker.database.session import get_session
-from tracker.types import (
-    HealthCheckResponse,
-    SetupTaskResponse,
-    VerifyTaskIdsResponse,
-)
+from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, VerifyTaskIdsResponse
 
 # Sets default aws credentials in the environment for moto to work
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")

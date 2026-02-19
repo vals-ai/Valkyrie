@@ -3,7 +3,7 @@ import uuid
 from tracker.database.models import Benchmark
 from tracker.s3 import delete_from_s3, download_from_s3, get_agent_result_s3_key
 from tracker.sandbox import archive_and_upload_output, create_sandbox
-from tracker.types import Resources
+from benchmark_service.schemas import Resources
 
 
 class TestUploadToS3:
