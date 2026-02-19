@@ -58,7 +58,7 @@ class ClaudeCodeContract(BaseAgentContract):
     @override
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
         args = [
-            f"cat {problem_statement_path}| -p",
+            f"cat {problem_statement_path} | -p",
             "--verbose",
             "--output-format stream-json",
             f"--allowedTools {' '.join(self._ALLOWED_TOOLS)}",
