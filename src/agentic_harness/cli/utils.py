@@ -180,7 +180,7 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     )
     click.echo(
         click.style(
-            f"harness agent outputs --benchmark-id {start_benchmark_response.benchmark_id} --output-dir .",
+            f"Fetch agent outputs: harness agent outputs --benchmark-id {start_benchmark_response.benchmark_id} --output-dir .",
             fg="cyan",
         )
     )
