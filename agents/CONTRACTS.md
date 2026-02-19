@@ -14,6 +14,7 @@ Create a `contract.py` file in your agent directory that defines a contract clas
 import os
 from dotenv import load_dotenv
 from pathlib import Path
+from typing import Any
 
 from agentic_harness.contract import BaseAgentContract
 from agentic_harness.schemas import AgentConfig
@@ -44,9 +45,9 @@ class MyAgentContract(BaseAgentContract):
     def env(self) -> dict[str, str]:
         return {"API_KEY": os.getenv("API_KEY")}
 
-    @property
-    def run_cmd(self) -> str:
-        return "my_agent --task {problem_statement}"
+    @override
+    def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
+        return f"my_agent --task {problem_statement_path}"
 
 
 # Export the contract class
@@ -89,15 +90,16 @@ def final_output(self) -> Path | None:
     return Path("/absolute/path/to/output")
 ```
 
-### `run_cmd: str`
+### `run_cmd(problem_statement_path, task_id, extra_args) -> str`
 
-Command to run the agent on a task. Use `{problem_statement}` as a placeholder (single braces!) - it will be replaced with the actual task prompt at runtime.
+Method to build the shell command that runs the agent on a task. The harness calls this method at serialization time with literal placeholder strings — `problem_statement_path` will be `"{problem_statement_path}"` and `task_id` will be `"{task_id}"`. The tracker substitutes the real values at runtime just before executing the command in the sandbox.
+
+> **Do not splice, slice, or transform `problem_statement_path` or `task_id`.** Use them only as-is inside an f-string or string concatenation. If you manipulate the strings (e.g. `problem_statement_path.split("/")[-1]`) the placeholder will be destroyed and the tracker will not be able to substitute the real value.
 
 ```python
-@property
-def run_cmd(self) -> str:
-    # Use single braces for the placeholder
-    return "my_agent --task {problem_statement}"
+@override
+def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
+    return f"my_agent --task {problem_statement_path}"
 ```
 
 ## Optional Properties
@@ -131,8 +133,8 @@ The `AgentConfig` parameter allows you to pass runtime configuration (like model
 
 ```python
 class MyAgentContract(BaseAgentContract):
-    @property
-    def run_cmd(self) -> str:
+    @abstractmethod
+    def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
         # Make agent_config required by removing the default None
         if not agent_config:
             raise ValueError("AgentConfig is required")
