@@ -151,7 +151,7 @@ class TestForceStop:
 
         benchmark_service = example_benchmark_object.benchmark_service
 
-        verify_response = await benchmark_service.request_verify_task_ids(
+        verify_response = await benchmark_service.verify_task_ids(
             task_ids=example_benchmark_object.arguments.task_ids, slice_str=example_benchmark_object.arguments.slice_str
         )
 

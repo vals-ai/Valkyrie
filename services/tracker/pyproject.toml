@@ -19,6 +19,7 @@ dependencies = [
     "taskiq-redis>=1.1.2",
     "alembic>=1.18.1",
     "tenacity>=8.3.0,<9.0.0",
+    "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@main",
 ]
 
 [dependency-groups]
@@ -35,6 +36,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tracker"]

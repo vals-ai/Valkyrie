@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 import traceback
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Buffer, Coroutine
@@ -14,10 +15,18 @@ from zoneinfo import ZoneInfo
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
-from tracker.benchmark_service import BenchmarkService
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group, reset_cloudwatch_stream
 from tracker.config import broker
-from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, FinalEvaluation, Task, TaskStatus
+from tracker.database.models import (
+    Benchmark,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    EvaluationResult,
+    FinalEvaluation,
+    Task,
+    TaskStatus,
+)
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
@@ -32,6 +41,45 @@ from tracker.types import (
 )
 
 logger = get_logger(__name__)
+
+
+def get_daytona_headers() -> dict[str, str]:
+    """Read and validate Daytona environment variables, returning headers for BenchmarkServiceClient."""
+    keys = {
+        "DAYTONA_API_KEY": os.getenv("DAYTONA_API_KEY") or "",
+        "DAYTONA_API_URL": os.getenv("DAYTONA_API_URL") or "",
+        "DAYTONA_TARGET": os.getenv("DAYTONA_TARGET") or "",
+    }
+
+    missing = [k for k, v in keys.items() if not v]
+    if missing:
+        raise ValueError(
+            f"The following environment variables are not set: {', '.join(missing)}. Please set them in your `.env` file so that they can be sourced."
+        )
+
+    return {
+        "x-api-key": keys["DAYTONA_API_KEY"],
+        "x-api-url": keys["DAYTONA_API_URL"],
+        "x-target": keys["DAYTONA_TARGET"],
+    }
+
+
+def create_benchmark_service_client(url: str) -> BenchmarkServiceClient:
+    """Create a BenchmarkServiceClient using Daytona environment variables."""
+    return BenchmarkServiceClient(url=url, headers=get_daytona_headers())
+
+
+def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benchmark:
+    """Convert a StartBenchmarkRequest to a Benchmark database model."""
+    return Benchmark(
+        name=request.benchmark_name,
+        arguments=BenchmarkArguments(
+            contract=request.contract,
+            concurrency=request.concurrency,
+            task_ids=request.task_ids,
+            slice_str=request.slice_str,
+        ),
+    )
 
 
 class TrackedTaskStatus(str, Enum):
@@ -210,7 +258,7 @@ def buffer_logs(log_queue: asyncio.Queue[str], stream_key: str, force_flush: boo
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
-    benchmark_service: BenchmarkService,
+    benchmark_service: BenchmarkServiceClient,
     benchmark_id: UUID,
     task_id: str,
 ) -> dict[str, dict[str, Any] | None]:
@@ -242,11 +290,11 @@ async def process_task(
         buffer_logs(log_queue, stream_key)
 
     try:
-        task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
+        task_data = await benchmark_service.retrieve_task(task_id=task_id)
 
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
-            "Benchmark": benchmark_service.name,
+            "Benchmark": start_benchmark_request.benchmark_name,
             "Id": str(benchmark_id),
             "Task": task_row.task_id,
         }
@@ -270,7 +318,7 @@ async def process_task(
 
                 # Setup task if requested
                 if task_data.request_setup:
-                    _ = await benchmark_service.request_setup_task(task_row.task_id, sandbox.id, on_message=log_output)
+                    _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output)
 
                     # Force flush the logs if anything has been buffered
                     buffer_logs(log_queue, stream_key, force_flush=True)
@@ -298,7 +346,7 @@ async def process_task(
                 # Evaluate the instance
                 # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                evaluation_result = await benchmark_service.request_evaluate_instance(
+                evaluation_result = await benchmark_service.evaluate_instance(
                     task_row.task_id, sandbox.id, on_message=log_output
                 )
 
@@ -490,7 +538,7 @@ async def process_benchmark(
         evaluation_results.update(remaining_task_results)
 
         # Calculate the final score based off the tasks that were ran
-        final_score_response = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
+        final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results)
 
         # Create the final evaluation row and add it to the database
         final_evaluation_row = FinalEvaluation(
@@ -511,7 +559,7 @@ async def process_benchmark(
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(benchmark_row, session, error_message)
     finally:
-        await benchmark_service.daytona_client.close()
+        await benchmark_service.close()
 
 
 class TaskCounts(NamedTuple):
@@ -777,7 +825,7 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
 async def reset_to_in_progress_status(
     benchmark_row: Benchmark,
     session: Session,
-    benchmark_service: BenchmarkService,
+    benchmark_service: BenchmarkServiceClient,
     retry: bool,
     rerun_task_ids: list[str],
 ) -> list[str]:
@@ -825,7 +873,7 @@ async def reset_to_in_progress_status(
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
-        verify_response = await benchmark_service.request_verify_task_ids(
+        verify_response = await benchmark_service.verify_task_ids(
             task_ids=list(task_mapping.values()), slice_str=None
         )
 
@@ -852,7 +900,7 @@ async def reset_to_in_progress_status(
         session.commit()
 
         return verify_response.task_ids
-    except TrackerServiceError:
+    except (TrackerServiceError, BenchmarkServiceError):
         raise
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error resuming benchmark {benchmark_row.id}: {str(e)}") from e
