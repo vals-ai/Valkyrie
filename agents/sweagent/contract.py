@@ -41,7 +41,7 @@ class SWEAgentContract(BaseAgentContract):
         args = [
             "--env.deployment.type=local",
             "--env.repo.type=preexisting",
-            "--env.repo.repo_name=/testbed",
+            "--env.repo.repo_name=testbed",
             "--agent.model.provider=vals",
             f"--problem_statement.path={problem_statement_path}",
             "--config=/bundle/sweagent/sweagent/config/default.yaml",
