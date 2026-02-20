@@ -25,7 +25,7 @@ from sqlmodel import (
 from tracker.database.utils import has_field_changed
 
 if TYPE_CHECKING:
-    from tracker.benchmark_service import BenchmarkService
+    from benchmark_service.client import BenchmarkServiceClient
     from tracker.types import BenchmarkTableRow, FetchBenchmarkMetadataResponse, StartBenchmarkRequest
 
 
@@ -162,7 +162,7 @@ class Benchmark(SQLModel, table=True):
         )
 
     @property
-    def benchmark_service(self) -> "BenchmarkService":
+    def benchmark_service(self) -> "BenchmarkServiceClient":
         return self.start_benchmark_request.benchmark_service
 
     @property

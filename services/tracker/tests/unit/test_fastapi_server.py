@@ -9,7 +9,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session
 
 from main import app
-from tracker.benchmark_service import BenchmarkService
+from benchmark_service.client import BenchmarkServiceClient
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -20,18 +20,18 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from benchmark_service.schemas import VerifyTaskIdsResponse
 from tracker.types import (
     FetchBenchmarksRequest,
     FinalViewResponse,
     StartBenchmarkRequest,
-    VerifyTaskIdsResponse,
 )
 
 client = TestClient(app)
 
 
 class TestFastapiServer:
-    async def _mock_request_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
+    async def _mock_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
     def test_health_check(self, monkeypatch: MonkeyPatch):
@@ -60,7 +60,7 @@ class TestFastapiServer:
         Test Cases:
             - Returns 200 OK
             - Start timestamp is in UTC timezone
-            - Returning task count provided from the request_verify_task_ids function
+            - Returning task count provided from the verify_task_ids function
             - Benchmark row has been created and pushed to the database
         """
 
@@ -72,12 +72,13 @@ class TestFastapiServer:
             task_ids=None,
         )
 
-        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=[f"task_{i}" for i in range(500)])
 
         monkeypatch.setattr(
-            "tracker.benchmark_service.BenchmarkService.request_verify_task_ids",
-            _mock_request_verify_task_ids,
+            BenchmarkServiceClient,
+            "verify_task_ids",
+            _mock_verify_task_ids,
         )
 
         # Send request to start the run and ensure that the start response is returned
@@ -105,7 +106,7 @@ class TestFastapiServer:
         # Test case 3. Start timestamp is in UTC timezone and matches the benchmark row
         assert isoparse(json_response["started_at"]) == benchmark_row.started_at.replace(tzinfo=timezone.utc)
 
-        # Test case 4. Returning task count provided from the request_verify_task_ids function
+        # Test case 4. Returning task count provided from the verify_task_ids function
         assert json_response["task_count"] == 500
 
         # Remaining fields match what we passed into the request
@@ -343,7 +344,7 @@ class TestFastapiServer:
         """
 
         # Expection is raised if verify task ids fails
-        monkeypatch.setattr(BenchmarkService, "request_verify_task_ids", self._mock_request_verify_task_ids_error)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", self._mock_verify_task_ids_error)
 
         # Example request sent from the cli to the fastapi server
         request = StartBenchmarkRequest(

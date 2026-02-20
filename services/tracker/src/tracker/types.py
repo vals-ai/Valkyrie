@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel
 
+from benchmark_service.client import BenchmarkServiceClient
 from tracker.config import BENCHMARK_SERVICE_URL
 from tracker.database.models import (
     AgentContractRequest,
@@ -17,9 +18,6 @@ from tracker.database.models import (
     FinalEvaluation,
     TaskStatus,
 )
-
-if TYPE_CHECKING:
-    from tracker.benchmark_service import BenchmarkService
 
 
 class BenchmarkDetails(BaseModel):
@@ -38,10 +36,10 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
 
     @property
-    def benchmark_service(self) -> "BenchmarkService":
-        from tracker.benchmark_service import BenchmarkService
+    def benchmark_service(self) -> BenchmarkServiceClient:
+        from tracker.utils import create_benchmark_service_client
 
-        return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
+        return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL)
 
 
 class StartBenchmarkErrorResponse(BaseModel):
@@ -86,50 +84,8 @@ class S3UploadResultsResponse(BaseModel):
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
 
 
-class FinalScoreResponse(BaseModel):
-    tasks_evaluated: list[str]
-    final_score: float
-    metadata: dict[str, Any]
-
-
 class StatusResponse(BaseModel):
     status: str
-
-
-class SetupTaskResponse(StatusResponse):
-    pass
-
-
-class HealthCheckResponse(StatusResponse):
-    pass
-
-
-class Resources(BaseModel):
-    vcpu: int
-    memory: int
-    disk: int
-
-
-class RetrieveTaskResponse(BaseModel):
-    docker_image: str
-    problem_statement: str
-    request_setup: bool
-    cwd: str
-    resources: Resources
-
-
-class SetupTaskRequest(BaseModel):
-    task_id: str
-    instance_id: str
-
-
-class EvaluateInstanceRequest(BaseModel):
-    task_id: str
-    instance_id: str
-
-
-class VerifyTaskIdsResponse(BaseModel):
-    task_ids: list[str]
 
 
 class StopBenchmarkResponse(StatusResponse):

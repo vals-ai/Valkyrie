@@ -7,6 +7,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     curl \
     wget \
+    git \
     && wget -qO- https://github.com/jwilder/dockerize/releases/download/v0.7.0/dockerize-linux-amd64-v0.7.0.tar.gz | tar xz -C /usr/local/bin \
     && rm -rf /var/lib/apt/lists/*
 

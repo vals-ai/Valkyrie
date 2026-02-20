@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, col, func, select
 
-from tracker.benchmark_service import BenchmarkService
+from benchmark_service.client import BenchmarkServiceError
 from tracker.cloudwatch import get_cloudwatch_url
 from tracker.config import AWS_S3_BUCKET
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
@@ -49,6 +49,7 @@ from tracker.utils import (
     initiate_stop_benchmark,
     process_benchmark,
     reset_to_in_progress_status,
+    start_benchmark_request_to_benchmark,
     stream_benchmark_results,
 )
 
@@ -68,6 +69,12 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 @app.exception_handler(TrackerServiceError)
 async def tracker_service_error_handler(_request: Request, exc: TrackerServiceError):
+    logger.error(exc, exc_info=True)
+    raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.exception_handler(BenchmarkServiceError)
+async def benchmark_service_error_handler(_request: Request, exc: BenchmarkServiceError):
     logger.error(exc, exc_info=True)
     raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -157,16 +164,16 @@ async def start_benchmark(
     benchmark_service = request.benchmark_service
 
     # Check service is running
-    _ = await benchmark_service.request_health_check()
+    _ = await benchmark_service.health_check()
 
     # Create benchmark row inside of database to mark start of the benchmark
-    benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(request)
+    benchmark_row = start_benchmark_request_to_benchmark(request)
     session.add(benchmark_row)
     session.commit()
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
-        verify_response = await benchmark_service.request_verify_task_ids(
+        verify_response = await benchmark_service.verify_task_ids(
             task_ids=request.task_ids, slice_str=request.slice_str
         )
     except Exception as e:

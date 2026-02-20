@@ -27,7 +27,7 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key, upload_to_s3
-from tracker.types import Resources as TrackerResources
+from benchmark_service.schemas import Resources as TrackerResources
 
 logger = get_logger(__name__)
 

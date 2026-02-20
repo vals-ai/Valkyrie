@@ -7,15 +7,11 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app
-from tracker.benchmark_service import BenchmarkService
+from benchmark_service.client import BenchmarkServiceClient
+from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
-from tracker.types import (
-    FinalScoreResponse,
-    Resources,
-    RetrieveTaskResponse,
-    StartBenchmarkRequest,
-    VerifyTaskIdsResponse,
-)
+from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 
 client = TestClient(app)
@@ -85,15 +81,15 @@ class TestStopAndResume:
             task_ids=task_ids,
         )
 
-        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
         database_session.add(benchmark_row)
         database_session.commit()
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
-        monkeypatch.setattr(BenchmarkService, "request_retrieve_task", self._mock_request_retrieve_task)
-        monkeypatch.setattr(BenchmarkService, "request_evaluate_instance", self._mock_request_evaluate_instance)
-        monkeypatch.setattr(BenchmarkService, "request_final_score", self._mock_request_final_score)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", self._mock_request_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", self._mock_request_evaluate_instance)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", self._mock_request_final_score)
 
         # Create tasks - 2 tasks are finished, 3 tasks are pending
         finished_task_ids = task_ids[:2]
@@ -134,7 +130,7 @@ class TestStopAndResume:
         async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=pending_task_ids)
 
-        monkeypatch.setattr(BenchmarkService, "request_verify_task_ids", _mock_request_verify_task_ids)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,

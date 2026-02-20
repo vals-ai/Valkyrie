@@ -4,12 +4,9 @@ from typing import Any
 import pytest
 from sqlmodel import Session
 
+from benchmark_service.client import BenchmarkServiceClient
 from tracker.database.session import get_session
-from tracker.types import (
-    HealthCheckResponse,
-    SetupTaskResponse,
-    VerifyTaskIdsResponse,
-)
+from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, VerifyTaskIdsResponse
 
 # Sets default aws credentials in the environment for moto to work
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -62,17 +59,15 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_health_check(*_args: Any, **_kwargs: Any) -> HealthCheckResponse:
         return HealthCheckResponse(status="ok")
 
-    async def _mock_request_setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+    async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
         return SetupTaskResponse(status="ok")
 
-    async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+    async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=[])
 
-    monkeypatch.setattr("tracker.benchmark_service.BenchmarkService.request_health_check", _mock_health_check)
-    monkeypatch.setattr("tracker.benchmark_service.BenchmarkService.request_setup_task", _mock_request_setup_task)
-    monkeypatch.setattr(
-        "tracker.benchmark_service.BenchmarkService.request_verify_task_ids", _mock_request_verify_task_ids
-    )
+    monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
+    monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
 
 
 @pytest.fixture(autouse=True)

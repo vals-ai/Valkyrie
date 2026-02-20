@@ -8,10 +8,11 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, col, func, select, update
 
 from tests.unit.test_fastapi_server import client
-from tracker.benchmark_service import BenchmarkService
+from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import TrackerServiceError
-from tracker.types import FinalScoreResponse, StartBenchmarkRequest
+from benchmark_service.schemas import FinalScoreResponse
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
 
 
@@ -235,7 +236,7 @@ class TestBenchmarkUtils:
             slice_str=":10",
         )
 
-        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(original_start_benchmark_request)
+        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request)
 
         recreated_start_benchmark_request = benchmark_row.start_benchmark_request
         assert recreated_start_benchmark_request == original_start_benchmark_request

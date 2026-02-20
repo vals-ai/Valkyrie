@@ -7,7 +7,8 @@ from typing import Any
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
-from tracker.benchmark_service import BenchmarkService
+from benchmark_service.client import BenchmarkServiceClient
+from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -17,7 +18,8 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.types import SetupTaskResponse, StartBenchmarkRequest
+from benchmark_service.schemas import SetupTaskResponse
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import process_benchmark, process_task
 
 
@@ -34,7 +36,7 @@ class TestProcessBenchmark:
     async def _mock_upload_contract(*args: Any, **kwargs: Any) -> None:
         pass
 
-    async def _test_request_evaluate_instance(
+    async def _test_evaluate_instance(
         self,
         original_method: Any,
         *args: Any,
@@ -82,7 +84,7 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        benchmark_service: BenchmarkService,
+        benchmark_service: BenchmarkServiceClient,
         monkeypatch: MonkeyPatch,
     ):
         task_id = "astropy__astropy-12907"
@@ -93,7 +95,7 @@ class TestProcessBenchmark:
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=[task_id]
         )
 
-        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -121,11 +123,11 @@ class TestProcessBenchmark:
             partial(self._test_run_agent, original_run_agent),
         )
 
-        original_evaluate = benchmark_service.request_evaluate_instance
+        original_evaluate = benchmark_service.evaluate_instance
         monkeypatch.setattr(
             benchmark_service,
-            "request_evaluate_instance",
-            partial(self._test_request_evaluate_instance, original_evaluate),
+            "evaluate_instance",
+            partial(self._test_evaluate_instance, original_evaluate),
         )
 
         # Starts and evaluates a single task inside using the benchmark service
@@ -154,7 +156,7 @@ class TestProcessBenchmark:
         )
 
         # Create benchmark row inside of start run request
-        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -222,7 +224,7 @@ class TestProcessBenchmark:
         )
 
         # Create benchmark row inside of start run request
-        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -279,26 +281,26 @@ class TestProcessBenchmark:
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
-        benchmark_row = BenchmarkService.start_benchmark_request_to_benchmark_object(start_benchmark_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
 
-        original_request_setup_task = BenchmarkService.request_setup_task
+        original_setup_task = BenchmarkServiceClient.setup_task
 
-        async def mock_request_setup_task(
+        async def mock_setup_task(
             self: Any, task_id: str, instance_id: str, on_message: Callable[[str], None] | None = None
         ) -> SetupTaskResponse:
             if task_id == "astropy__astropy-13033":
                 raise Exception("Exception raised while setting up the task")
 
-            return await original_request_setup_task(self, task_id, instance_id, on_message)
+            return await original_setup_task(self, task_id, instance_id, on_message)
 
         # Setup fails for the second task
         monkeypatch.setattr(
-            BenchmarkService,
-            "request_setup_task",
-            mock_request_setup_task,
+            BenchmarkServiceClient,
+            "setup_task",
+            mock_setup_task,
         )
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)

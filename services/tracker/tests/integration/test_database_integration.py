@@ -11,7 +11,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, inspect, select
 
 from tests.utils import build_task_environment
-from tracker.benchmark_service import BenchmarkService
+from benchmark_service.client import BenchmarkServiceClient
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -20,7 +20,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.types import FinalScoreResponse, RetrieveTaskResponse
+from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,7 @@ class TestDatabaseIntegration:
     async def _evaluate_instance(
         self,
         database_session: Session,
-        benchmark_service: BenchmarkService,
+        benchmark_service: BenchmarkServiceClient,
         daytona_client: AsyncDaytona,
         task_row: Task,
         task_data: RetrieveTaskResponse,
@@ -225,21 +225,17 @@ class TestDatabaseIntegration:
         async with build_task_environment(daytona_client, task_row.task_id, docker_image) as sandbox:
             request_setup = task_data.request_setup
             if request_setup:
-                response = await benchmark_service.request_setup_task(
-                    task_id=task_row.task_id, instance_id=str(sandbox.id)
-                )
+                response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
                 assert response.status == "ok"
 
-            response = await benchmark_service.request_evaluate_instance(
-                task_id=task_row.task_id, instance_id=sandbox.id
-            )
+            response = await benchmark_service.evaluate_instance(task_id=task_row.task_id, instance_id=sandbox.id)
 
             return response
 
     async def test_end_to_end(
         self,
         database_session: Session,
-        benchmark_service: BenchmarkService,
+        benchmark_service: BenchmarkServiceClient,
         daytona_client: AsyncDaytona,
         example_benchmark_object: Benchmark,
     ):
@@ -255,7 +251,7 @@ class TestDatabaseIntegration:
 
         try:
             # Ensure that the benchmark service is running
-            response = await benchmark_service.request_health_check()
+            response = await benchmark_service.health_check()
             assert response.status == "ok"
 
             # Create benchmark row to initiate a benchmark
@@ -264,7 +260,7 @@ class TestDatabaseIntegration:
             database_session.flush()
 
             # Request all of the task ids from the benchmark service
-            verify_response = await benchmark_service.request_verify_task_ids(task_ids=None, slice_str=None)
+            verify_response = await benchmark_service.verify_task_ids(task_ids=None, slice_str=None)
 
             # Returned all of the task ids from the swebench service
             assert verify_response.task_ids is not None
@@ -290,7 +286,7 @@ class TestDatabaseIntegration:
             async def process_task(task_id: str) -> None:
                 try:
                     async with semaphore:
-                        task_data = await benchmark_service.request_retrieve_task(task_id=task_id)
+                        task_data = await benchmark_service.retrieve_task(task_id=task_id)
                         task_row = task_row_mapping[task_id]
                         evaluation_result = await self._evaluate_instance(
                             database_session, benchmark_service, daytona_client, task_row, task_data
@@ -307,7 +303,7 @@ class TestDatabaseIntegration:
             logger.info(f"Sample of evaluation results: {str(list(evaluation_results.values())[:100])}")
 
             # When all tasks have been evaluated, we can make a request to get the final evaluation score
-            final_score_response = await benchmark_service.request_final_score(evaluation_results=evaluation_results)
+            final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results)
 
             logger.info(f"Final score response: {str(final_score_response)[:250]}")
 
