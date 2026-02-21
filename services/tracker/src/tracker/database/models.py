@@ -26,11 +26,13 @@ from tracker.database.utils import has_field_changed
 
 if TYPE_CHECKING:
     from benchmark_service.client import BenchmarkServiceClient
+
     from tracker.types import BenchmarkTableRow, FetchBenchmarkMetadataResponse, StartBenchmarkRequest
 
 
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
+    BUILDING = "BUILDING"
     IN_PROGRESS = "IN_PROGRESS"
     EVALUATING = "EVALUATING"
     STOPPED = "STOPPED"

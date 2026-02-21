@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -568,7 +568,7 @@ wheels = [
 
 [[package]]
 name = "daytona"
-version = "0.143.0"
+version = "0.144.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -589,14 +589,14 @@ dependencies = [
     { name = "toml" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f4/6c/4cc4ea64c741823ce79d495a6741634202f100c8f76d262da5ca8d94e99a/daytona-0.143.0.tar.gz", hash = "sha256:2ea75dfe1750bed2c12d3f646d2bde8af309d892b7488fc3517cc901f23b8a50", size = 125398, upload-time = "2026-02-13T14:17:54.743Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/8b/9f/0c3ee3da95e690320beef497a609ca7a17c0da3ecfd9950bfa1c02895943/daytona-0.144.0.tar.gz", hash = "sha256:c6aaee0f1202cb51e441a5e43ad406becc6b649d0d6c66e6001d21976bda9aef", size = 125341, upload-time = "2026-02-20T16:06:22.843Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/cf/fa/bdbf725c9ed8ffec3fa966f059cdc82718238868f35a5e3da62e47ed35d2/daytona-0.143.0-py3-none-any.whl", hash = "sha256:e44115fabfcd58fd8a2a2ec60ccc3dc85928d479074bd4e2c4cf8b0347c443d6", size = 155430, upload-time = "2026-02-13T14:17:52.842Z" },
+    { url = "https://files.pythonhosted.org/packages/75/98/a9d6a94c0810fd0bd04a80b11773c8c7e42b22c1e2143b17e0c7f7a146e4/daytona-0.144.0-py3-none-any.whl", hash = "sha256:b96524aa672c95eb5be2f2bd8b383c51ab9f1e1b9fcf895e16a646d736336661", size = 155400, upload-time = "2026-02-20T16:06:21.037Z" },
 ]
 
 [[package]]
 name = "daytona-api-client"
-version = "0.143.0"
+version = "0.144.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
@@ -604,14 +604,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/97/cd/d069f206ba6d29bcc66869c4c350d997b76bed3179f4840348e884c146da/daytona_api_client-0.143.0.tar.gz", hash = "sha256:1953b9459501938d10597ec17793121f771d3efe159d6697b2e81016f7860e14", size = 140245, upload-time = "2026-02-13T14:17:01.395Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/fc/984eb19cde47e0d19e31c68211f0457e2df070ba278b525db7bee1433338/daytona_api_client-0.144.0.tar.gz", hash = "sha256:6ed71601da126da0ae731d5eae733e3ca1c7aac7ab7a727f0f8ce04eb8670c4e", size = 140247, upload-time = "2026-02-20T16:05:24.302Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/48/09/b24a90671debd79d7daf5dcc0cd1ac620347526dde9c33c4e22c5478e094/daytona_api_client-0.143.0-py3-none-any.whl", hash = "sha256:7c3d4be0df729d3d35ced00347fbb573ab79d00864393d7ec3293dd0283dbc98", size = 393444, upload-time = "2026-02-13T14:16:59.205Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/0b/d9aa1efe07722362f575cb2969c853e43ab327995319b1893f2a390a86fb/daytona_api_client-0.144.0-py3-none-any.whl", hash = "sha256:a9c63910476349c69dbf8f3f2bd1ae76cd4d63ea3a5acb90deec934ba5d15032", size = 393455, upload-time = "2026-02-20T16:05:22.535Z" },
 ]
 
 [[package]]
 name = "daytona-api-client-async"
-version = "0.143.0"
+version = "0.144.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -621,14 +621,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/54/2d/3e3aea28ef49f1acb21085d9e946620f60d8dc16469bd8f007ebaaedddb4/daytona_api_client_async-0.143.0.tar.gz", hash = "sha256:687c9cfc5761e3f5579580fd627cdc189be2d699b5c6d7e260b2edcaa5690d8a", size = 140276, upload-time = "2026-02-13T14:17:26.304Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/97/28/9996d53f6198b99c03a39f7102626b4531b8239db36fd4f4a4c8c0cfcf52/daytona_api_client_async-0.144.0.tar.gz", hash = "sha256:f43288507ae3012c96177ab545bd0b0e6aa36c2c543218023ed43ed9716e5f7f", size = 140301, upload-time = "2026-02-20T16:05:34.397Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2a/f8/2f444d3db0dfa008eaca9a359768701226802bfdcafcbbedb45c1f90fb1f/daytona_api_client_async-0.143.0-py3-none-any.whl", hash = "sha256:6fa2c9e1d39893be845cc652b04e549ff22a150ce99082bd33d0409ed572d9d3", size = 396405, upload-time = "2026-02-13T14:17:24.999Z" },
+    { url = "https://files.pythonhosted.org/packages/35/dc/1bc7e63cc09a740336bbc900ddbd1e26d1c714329603774d681124f644f1/daytona_api_client_async-0.144.0-py3-none-any.whl", hash = "sha256:572d25f70a53508c1687d935454e183e877865fa01abc076b9b192c9e1bf55f3", size = 396418, upload-time = "2026-02-20T16:05:32.698Z" },
 ]
 
 [[package]]
 name = "daytona-toolbox-api-client"
-version = "0.143.0"
+version = "0.144.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
@@ -636,14 +636,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/d6/379dbc404e60b7544cac6c0ccd35ec24f50a8d33da21792acfe589194e68/daytona_toolbox_api_client-0.143.0.tar.gz", hash = "sha256:fa2c2896fe67180e43520831aa4832313bca585b83da55795ace790179df50f7", size = 64751, upload-time = "2026-02-13T14:17:05.891Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/aa/de/8390976f1bf1844ea3a714858b87335e3705beafa98b74a5049e61bc4406/daytona_toolbox_api_client-0.144.0.tar.gz", hash = "sha256:0e1361d0c379a85c0a6e65b56a17acdb9b4b046d38b0de12fb86437bd56f4b24", size = 64752, upload-time = "2026-02-20T16:05:26.429Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/24/56/b71bc976ec44480245f9822be9ec36747e8a73c2bfa7526414b59245286c/daytona_toolbox_api_client-0.143.0-py3-none-any.whl", hash = "sha256:9b96af06793ecbdb5c1cef9ffdff8a73bc54b6297cf493e9b27e83b49c4b38a9", size = 174361, upload-time = "2026-02-13T14:17:04.552Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/d3/5845eb69d75c363a3f16951a4382131d709b71d8253e0f0528178b5c49fe/daytona_toolbox_api_client-0.144.0-py3-none-any.whl", hash = "sha256:f9595c00c4feaac98e353a020b31302859f4fb54d87a68c00301fd9a4bdbc6c1", size = 174403, upload-time = "2026-02-20T16:05:25.184Z" },
 ]
 
 [[package]]
 name = "daytona-toolbox-api-client-async"
-version = "0.143.0"
+version = "0.144.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -653,9 +653,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/08/ae/5affe84d1b014eded77c126e0c77643d33f9456d0c8769ce1ef41155a9db/daytona_toolbox_api_client_async-0.143.0.tar.gz", hash = "sha256:ab18a90e9a53545437bb1c47114bda8ee58c611559327148377bc39c2412bd94", size = 61769, upload-time = "2026-02-13T14:17:11.191Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/57/a5644be058439d5c1ddd605c54fd157ccd844a66682b958a1ff88cee5e56/daytona_toolbox_api_client_async-0.144.0.tar.gz", hash = "sha256:7547eda15e1a6b92017a69de793243406c975e0c624ac3fb678777e56685a46e", size = 61851, upload-time = "2026-02-20T16:05:49.551Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/ec/f221e4e75319f119bdf932c7c79229fc55b9a121f0daa74f060674cd831d/daytona_toolbox_api_client_async-0.143.0-py3-none-any.whl", hash = "sha256:d2aa984dc386ef57f2fc7d920770ff6282a9bca412981a5092fa381b91438227", size = 175733, upload-time = "2026-02-13T14:17:10.034Z" },
+    { url = "https://files.pythonhosted.org/packages/52/28/124e0d3b7001cbb9650ae6439f8800c702f0db1276dfdbbe7cf43356e826/daytona_toolbox_api_client_async-0.144.0-py3-none-any.whl", hash = "sha256:9da355e1e02e10d6b4e93727e844617c97f22d522b4f2082b7ef443c95bb6481", size = 175773, upload-time = "2026-02-20T16:05:48.224Z" },
 ]
 
 [[package]]
@@ -1140,6 +1140,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/0a/a3871375c7b9727edaeeea994bfff7c63ff7804c9829c19309ba2e058807/greenlet-3.3.0-cp312-cp312-macosx_11_0_universal2.whl", hash = "sha256:b01548f6e0b9e9784a2c99c5651e5dc89ffcbe870bc5fb2e5ef864e9cc6b5dcb", size = 276379, upload-time = "2025-12-04T14:23:30.498Z" },
     { url = "https://files.pythonhosted.org/packages/43/ab/7ebfe34dce8b87be0d11dae91acbf76f7b8246bf9d6b319c741f99fa59c6/greenlet-3.3.0-cp312-cp312-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:349345b770dc88f81506c6861d22a6ccd422207829d2c854ae2af8025af303e3", size = 597294, upload-time = "2025-12-04T14:50:06.847Z" },
     { url = "https://files.pythonhosted.org/packages/a4/39/f1c8da50024feecd0793dbd5e08f526809b8ab5609224a2da40aad3a7641/greenlet-3.3.0-cp312-cp312-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:e8e18ed6995e9e2c0b4ed264d2cf89260ab3ac7e13555b8032b25a74c6d18655", size = 607742, upload-time = "2025-12-04T14:57:42.349Z" },
+    { url = "https://files.pythonhosted.org/packages/77/cb/43692bcd5f7a0da6ec0ec6d58ee7cddb606d055ce94a62ac9b1aa481e969/greenlet-3.3.0-cp312-cp312-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:c024b1e5696626890038e34f76140ed1daf858e37496d33f2af57f06189e70d7", size = 622297, upload-time = "2025-12-04T15:07:13.552Z" },
     { url = "https://files.pythonhosted.org/packages/75/b0/6bde0b1011a60782108c01de5913c588cf51a839174538d266de15e4bf4d/greenlet-3.3.0-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:047ab3df20ede6a57c35c14bf5200fcf04039d50f908270d3f9a7a82064f543b", size = 609885, upload-time = "2025-12-04T14:26:02.368Z" },
     { url = "https://files.pythonhosted.org/packages/49/0e/49b46ac39f931f59f987b7cd9f34bfec8ef81d2a1e6e00682f55be5de9f4/greenlet-3.3.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:2d9ad37fc657b1102ec880e637cccf20191581f75c64087a549e66c57e1ceb53", size = 1567424, upload-time = "2025-12-04T15:04:23.757Z" },
     { url = "https://files.pythonhosted.org/packages/05/f5/49a9ac2dff7f10091935def9165c90236d8f175afb27cbed38fb1d61ab6b/greenlet-3.3.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:83cd0e36932e0e7f36a64b732a6f60c2fc2df28c351bae79fbaf4f8092fe7614", size = 1636017, upload-time = "2025-12-04T14:27:29.688Z" },
@@ -1147,6 +1148,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/02/2f/28592176381b9ab2cafa12829ba7b472d177f3acc35d8fbcf3673d966fff/greenlet-3.3.0-cp313-cp313-macosx_11_0_universal2.whl", hash = "sha256:a1e41a81c7e2825822f4e068c48cb2196002362619e2d70b148f20a831c00739", size = 275140, upload-time = "2025-12-04T14:23:01.282Z" },
     { url = "https://files.pythonhosted.org/packages/2c/80/fbe937bf81e9fca98c981fe499e59a3f45df2a04da0baa5c2be0dca0d329/greenlet-3.3.0-cp313-cp313-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:9f515a47d02da4d30caaa85b69474cec77b7929b2e936ff7fb853d42f4bf8808", size = 599219, upload-time = "2025-12-04T14:50:08.309Z" },
     { url = "https://files.pythonhosted.org/packages/c2/ff/7c985128f0514271b8268476af89aee6866df5eec04ac17dcfbc676213df/greenlet-3.3.0-cp313-cp313-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:7d2d9fd66bfadf230b385fdc90426fcd6eb64db54b40c495b72ac0feb5766c54", size = 610211, upload-time = "2025-12-04T14:57:43.968Z" },
+    { url = "https://files.pythonhosted.org/packages/79/07/c47a82d881319ec18a4510bb30463ed6891f2ad2c1901ed5ec23d3de351f/greenlet-3.3.0-cp313-cp313-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:30a6e28487a790417d036088b3bcb3f3ac7d8babaa7d0139edbaddebf3af9492", size = 624311, upload-time = "2025-12-04T15:07:14.697Z" },
     { url = "https://files.pythonhosted.org/packages/fd/8e/424b8c6e78bd9837d14ff7df01a9829fc883ba2ab4ea787d4f848435f23f/greenlet-3.3.0-cp313-cp313-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:087ea5e004437321508a8d6f20efc4cfec5e3c30118e1417ea96ed1d93950527", size = 612833, upload-time = "2025-12-04T14:26:03.669Z" },
     { url = "https://files.pythonhosted.org/packages/b5/ba/56699ff9b7c76ca12f1cdc27a886d0f81f2189c3455ff9f65246780f713d/greenlet-3.3.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:ab97cf74045343f6c60a39913fa59710e4bd26a536ce7ab2397adf8b27e67c39", size = 1567256, upload-time = "2025-12-04T15:04:25.276Z" },
     { url = "https://files.pythonhosted.org/packages/1e/37/f31136132967982d698c71a281a8901daf1a8fbab935dce7c0cf15f942cc/greenlet-3.3.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:5375d2e23184629112ca1ea89a53389dddbffcf417dad40125713d88eb5f96e8", size = 1636483, upload-time = "2025-12-04T14:27:30.804Z" },
@@ -1154,6 +1156,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/7c/f0a6d0ede2c7bf092d00bc83ad5bafb7e6ec9b4aab2fbdfa6f134dc73327/greenlet-3.3.0-cp314-cp314-macosx_11_0_universal2.whl", hash = "sha256:60c2ef0f578afb3c8d92ea07ad327f9a062547137afe91f38408f08aacab667f", size = 275671, upload-time = "2025-12-04T14:23:05.267Z" },
     { url = "https://files.pythonhosted.org/packages/44/06/dac639ae1a50f5969d82d2e3dd9767d30d6dbdbab0e1a54010c8fe90263c/greenlet-3.3.0-cp314-cp314-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:0a5d554d0712ba1de0a6c94c640f7aeba3f85b3a6e1f2899c11c2c0428da9365", size = 646360, upload-time = "2025-12-04T14:50:10.026Z" },
     { url = "https://files.pythonhosted.org/packages/e0/94/0fb76fe6c5369fba9bf98529ada6f4c3a1adf19e406a47332245ef0eb357/greenlet-3.3.0-cp314-cp314-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:3a898b1e9c5f7307ebbde4102908e6cbfcb9ea16284a3abe15cab996bee8b9b3", size = 658160, upload-time = "2025-12-04T14:57:45.41Z" },
+    { url = "https://files.pythonhosted.org/packages/93/79/d2c70cae6e823fac36c3bbc9077962105052b7ef81db2f01ec3b9bf17e2b/greenlet-3.3.0-cp314-cp314-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:dcd2bdbd444ff340e8d6bdf54d2f206ccddbb3ccfdcd3c25bf4afaa7b8f0cf45", size = 671388, upload-time = "2025-12-04T15:07:15.789Z" },
     { url = "https://files.pythonhosted.org/packages/b8/14/bab308fc2c1b5228c3224ec2bf928ce2e4d21d8046c161e44a2012b5203e/greenlet-3.3.0-cp314-cp314-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5773edda4dc00e173820722711d043799d3adb4f01731f40619e07ea2750b955", size = 660166, upload-time = "2025-12-04T14:26:05.099Z" },
     { url = "https://files.pythonhosted.org/packages/4b/d2/91465d39164eaa0085177f61983d80ffe746c5a1860f009811d498e7259c/greenlet-3.3.0-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:ac0549373982b36d5fd5d30beb8a7a33ee541ff98d2b502714a09f1169f31b55", size = 1615193, upload-time = "2025-12-04T15:04:27.041Z" },
     { url = "https://files.pythonhosted.org/packages/42/1b/83d110a37044b92423084d52d5d5a3b3a73cafb51b547e6d7366ff62eff1/greenlet-3.3.0-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:d198d2d977460358c3b3a4dc844f875d1adb33817f0613f663a656f463764ccc", size = 1683653, upload-time = "2025-12-04T14:27:32.366Z" },
@@ -1161,6 +1164,7 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/66/bd6317bc5932accf351fc19f177ffba53712a202f9df10587da8df257c7e/greenlet-3.3.0-cp314-cp314t-macosx_11_0_universal2.whl", hash = "sha256:d6ed6f85fae6cdfdb9ce04c9bf7a08d666cfcfb914e7d006f44f840b46741931", size = 282638, upload-time = "2025-12-04T14:25:20.941Z" },
     { url = "https://files.pythonhosted.org/packages/30/cf/cc81cb030b40e738d6e69502ccbd0dd1bced0588e958f9e757945de24404/greenlet-3.3.0-cp314-cp314t-manylinux_2_24_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:d9125050fcf24554e69c4cacb086b87b3b55dc395a8b3ebe6487b045b2614388", size = 651145, upload-time = "2025-12-04T14:50:11.039Z" },
     { url = "https://files.pythonhosted.org/packages/9c/ea/1020037b5ecfe95ca7df8d8549959baceb8186031da83d5ecceff8b08cd2/greenlet-3.3.0-cp314-cp314t-manylinux_2_24_ppc64le.manylinux_2_28_ppc64le.whl", hash = "sha256:87e63ccfa13c0a0f6234ed0add552af24cc67dd886731f2261e46e241608bee3", size = 654236, upload-time = "2025-12-04T14:57:47.007Z" },
+    { url = "https://files.pythonhosted.org/packages/69/cc/1e4bae2e45ca2fa55299f4e85854606a78ecc37fead20d69322f96000504/greenlet-3.3.0-cp314-cp314t-manylinux_2_24_s390x.manylinux_2_28_s390x.whl", hash = "sha256:2662433acbca297c9153a4023fe2161c8dcfdcc91f10433171cf7e7d94ba2221", size = 662506, upload-time = "2025-12-04T15:07:16.906Z" },
     { url = "https://files.pythonhosted.org/packages/57/b9/f8025d71a6085c441a7eaff0fd928bbb275a6633773667023d19179fe815/greenlet-3.3.0-cp314-cp314t-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:3c6e9b9c1527a78520357de498b0e709fb9e2f49c3a513afd5a249007261911b", size = 653783, upload-time = "2025-12-04T14:26:06.225Z" },
     { url = "https://files.pythonhosted.org/packages/f6/c7/876a8c7a7485d5d6b5c6821201d542ef28be645aa024cfe1145b35c120c1/greenlet-3.3.0-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:286d093f95ec98fdd92fcb955003b8a3d054b4e2cab3e2707a5039e7b50520fd", size = 1614857, upload-time = "2025-12-04T15:04:28.484Z" },
     { url = "https://files.pythonhosted.org/packages/4f/dc/041be1dff9f23dac5f48a43323cd0789cb798342011c19a248d9c9335536/greenlet-3.3.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:6c10513330af5b8ae16f023e8ddbfb486ab355d04467c4679c5cfe4659975dd9", size = 1676034, upload-time = "2025-12-04T14:27:33.531Z" },
@@ -3198,7 +3202,7 @@ requires-dist = [
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
     { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=main" },
-    { name = "daytona", specifier = ">=0.140.0" },
+    { name = "daytona", specifier = ">=0.144.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.127.1" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "moto", extras = ["s3"] },

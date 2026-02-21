@@ -123,6 +123,7 @@ Flags
 --slice: Takes a slice from the dataset between the given values "start:stop:step"
 --kwarg (-k): Single kwarg that is passed into the agent run command
 --task-ids: comma separated list of task ids to run
+--task-ids-file: Path to a .txt file with tasks newline separated
 ```
 
 Starts the benchmark and exits once successfully created.

@@ -30,6 +30,7 @@ def local_time(dt: datetime) -> str:
 class BenchmarkFormatter:
     STATUS_COLORS = {
         "PENDING": "yellow",
+        "BUILDING": "cyan",
         "IN_PROGRESS": "blue",
         "EVALUATING": "magenta",
         "STOPPED": "cyan",
@@ -63,6 +64,7 @@ class BenchmarkFormatter:
         # Order we display statuses in
         status_order = [
             TaskStatus.PENDING,
+            TaskStatus.BUILDING,
             TaskStatus.IN_PROGRESS,
             TaskStatus.EVALUATING,
             TaskStatus.ERROR,
@@ -201,7 +203,8 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
         tracker: TrackerService instance
         benchmark_id: Benchmark UUID to stream
     """
-    click.echo(click.style("Streaming benchmark updates (Ctrl+C to stop)...\n", fg="cyan"))
+    click.echo(click.style("Streaming benchmark updates (Ctrl+C to stop)...", fg="cyan"))
+    click.echo()
 
     try:
         for event in tracker.stream_benchmark(benchmark_id):
@@ -222,7 +225,7 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
                 )
                 breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
 
-                click.echo(f"\r\033[K{progress_line}\n{breakdown_text}\033[F", nl=False)
+                click.echo(f"\033[F\033[K{progress_line}\n\033[K{breakdown_text}", nl=False)
 
             elif event.startswith("event: complete"):
                 click.echo("\n")
