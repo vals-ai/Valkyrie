@@ -161,7 +161,7 @@ async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractR
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = get_contract_s3_key(contract.name)
-    contract_content = download_from_s3(contract_s3_key)
+    contract_content = await download_from_s3(contract_s3_key)
 
     # Unzip contract and collect files and directories
     with zipfile.ZipFile(io.BytesIO(contract_content), "r") as zip_ref:
@@ -257,7 +257,7 @@ async def archive_and_upload_output(sandbox: AsyncSandbox, output_path: str, age
         if b64_result.exit_code != 0:
             raise SandboxError(f"Failed to read archive from {output_path}")
 
-        upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key)
+        await upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key)
     finally:
         # Check if file exists and remove it if it does
         result = await sandbox.process.exec(f"test -e {shlex.quote(archive_path)}")

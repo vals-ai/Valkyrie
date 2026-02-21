@@ -30,7 +30,7 @@ def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
 def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mocks all s3 related functionality"""
 
-    def _mock_download_from_s3(_s3_key: str) -> bytes:
+    async def _mock_download_from_s3(_s3_key: str) -> bytes:
         return b"mock-contract-content"
 
     def _mock_get_contract_s3_key(contract_name: str) -> str:
@@ -78,10 +78,10 @@ def mock_agent_utilities(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    def _mock_reset_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
+    async def _mock_reset_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> None:
+    async def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> None:
         pass
 
     monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _mock_upload_contract)

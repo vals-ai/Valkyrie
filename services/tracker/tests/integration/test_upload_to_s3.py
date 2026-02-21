@@ -27,12 +27,12 @@ class TestUploadToS3:
 
                 await archive_and_upload_output(sandbox, file_path, s3_key)
 
-                downloaded_content = download_from_s3(s3_key)
+                downloaded_content = await download_from_s3(s3_key)
 
                 assert len(downloaded_content) > 0
                 assert downloaded_content.startswith(b"\x1f\x8b")
         finally:
-            delete_from_s3(s3_key)
+            await delete_from_s3(s3_key)
 
     async def test_archive_and_upload_directory(self, example_benchmark_object: Benchmark) -> None:
         """Test creating a tar.gz from a directory in sandbox and uploading to S3."""
@@ -57,8 +57,8 @@ class TestUploadToS3:
 
                 await archive_and_upload_output(sandbox, dir_path, s3_key)
 
-                downloaded_content = download_from_s3(s3_key)
+                downloaded_content = await download_from_s3(s3_key)
                 assert len(downloaded_content) > 0
                 assert downloaded_content.startswith(b"\x1f\x8b")
         finally:
-            delete_from_s3(s3_key)
+            await delete_from_s3(s3_key)

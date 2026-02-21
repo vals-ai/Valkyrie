@@ -239,7 +239,7 @@ def fetch_task_row(task_id: UUID, session: Session) -> Task:
     return task_row
 
 
-def buffer_logs(log_queue: asyncio.Queue[str], stream_key: str, force_flush: bool = False) -> None:
+async def buffer_logs(log_queue: asyncio.Queue[str], stream_key: str, force_flush: bool = False) -> None:
     """
     Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
     """
@@ -251,8 +251,7 @@ def buffer_logs(log_queue: asyncio.Queue[str], stream_key: str, force_flush: boo
         messages.append(log_queue.get_nowait())
 
     message = "".join(messages)
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, cloudwatch_stream, stream_key, message)
+    await cloudwatch_stream(stream_key, message)
 
 
 async def process_task(
@@ -282,12 +281,12 @@ async def process_task(
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     # If we are retrying the task we clear logs from previous run
-    reset_cloudwatch_stream(stream_key)
+    await reset_cloudwatch_stream(stream_key)
 
     # Collects the logs and dumps them when the queue is full
-    def log_output(data: str) -> None:
+    async def log_output(data: str) -> None:
         log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key)
+        await buffer_logs(log_queue, stream_key)
 
     try:
         task_data = await benchmark_service.retrieve_task(task_id=task_id)
@@ -326,7 +325,7 @@ async def process_task(
                     _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output)
 
                     # Force flush the logs if anything has been buffered
-                    buffer_logs(log_queue, stream_key, force_flush=True)
+                    await buffer_logs(log_queue, stream_key, force_flush=True)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
@@ -357,7 +356,7 @@ async def process_task(
                 )
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, force_flush=True)
+                await buffer_logs(log_queue, stream_key, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
                 evaluation_result_row = EvaluationResult(
@@ -391,7 +390,7 @@ async def process_task(
 
         return {task_id: None}
     finally:
-        buffer_logs(log_queue, stream_key, force_flush=True)
+        await buffer_logs(log_queue, stream_key, force_flush=True)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
@@ -493,7 +492,7 @@ async def process_benchmark(
 
     try:
         # Create benchmark cloudwatch log group
-        create_benchmark_group(str(benchmark_id))
+        await create_benchmark_group(str(benchmark_id))
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:

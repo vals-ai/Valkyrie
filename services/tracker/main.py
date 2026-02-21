@@ -1,3 +1,4 @@
+import io
 import logging
 import tarfile
 import traceback
@@ -130,7 +131,7 @@ async def upload_contract_to_s3(
     # Extract contract name from filename (remove .zip extension)
     contract_name = contract.filename.rsplit(".zip", 1)[0]
     contract_s3_key = get_contract_s3_key(contract_name)
-    upload_to_s3(contract_content, contract_s3_key)
+    await upload_to_s3(contract_content, contract_s3_key)
 
     return {
         "status": "success",
@@ -284,7 +285,7 @@ async def retrieve_results(
 
     if s3:
         s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
-        upload_to_s3(
+        await upload_to_s3(
             final_view.model_dump_json(
                 indent=4, exclude_none=True, exclude={"benchmark_arguments": {"contract": {"env"}}}
             ).encode(),
@@ -292,7 +293,7 @@ async def retrieve_results(
         )
 
         https_url = f"https://{AWS_S3_BUCKET}.s3.amazonaws.com/{s3_key}"
-        presigned_url = create_presigned_url(s3_key)
+        presigned_url = await create_presigned_url(s3_key)
         console_url = create_console_url(s3_key)
 
         return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)
@@ -312,7 +313,7 @@ async def check_results_exist(benchmark_id: UUID) -> dict[str, bool]:
         {"exists": true/false}
     """
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
-    exists = s3_object_exists(s3_key)
+    exists = await s3_object_exists(s3_key)
     return {"exists": exists}
 
 
@@ -475,7 +476,7 @@ async def fetch_agent_outputs(benchmark_id: UUID) -> StreamingResponse:
         StreamingResponse
     """
     prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
-    s3_keys = list_s3_objects(prefix)
+    s3_keys = await list_s3_objects(prefix)
 
     if not s3_keys:
         raise HTTPException(
@@ -483,7 +484,7 @@ async def fetch_agent_outputs(benchmark_id: UUID) -> StreamingResponse:
             detail=f"No outputs found for benchmark '{benchmark_id}'",
         )
 
-    def tar_generator():
+    async def tar_generator():
         writer: YieldingWriter = YieldingWriter()
 
         with tarfile.open(fileobj=writer, mode="w|") as tar:
@@ -491,12 +492,12 @@ async def fetch_agent_outputs(benchmark_id: UUID) -> StreamingResponse:
                 relative_path: str = s3_key.removeprefix(prefix)
 
                 try:
-                    body, size = download_from_s3_stream(s3_key)
+                    body, size = await download_from_s3_stream(s3_key)
 
                     tarinfo = tarfile.TarInfo(name=relative_path)
                     tarinfo.size = size
 
-                    tar.addfile(tarinfo, fileobj=body)
+                    tar.addfile(tarinfo, fileobj=io.BytesIO(body))
 
                     chunk = writer.pop()
                     if chunk:

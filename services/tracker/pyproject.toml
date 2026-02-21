@@ -7,7 +7,7 @@ authors = [
 ]
 requires-python = "==3.12.*"
 dependencies = [
-    "boto3>=1.42.20",
+    "aiobotocore>=2.21.1",
     "boto3-stubs[s3]",
     "moto[s3]",
     "fastapi[standard]>=0.127.1",
