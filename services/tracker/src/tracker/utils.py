@@ -566,6 +566,9 @@ async def process_benchmark(
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(benchmark_row, session, error_message)
     finally:
+        with Session(bind=engine) as session:
+            catch_errors_during_cleanup(benchmark_id, session)
+
         await benchmark_service.close()
 
 
@@ -664,6 +667,38 @@ def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_mes
     benchmark_row.error_message = error_message
     session.add(benchmark_row)
     session.commit()
+
+
+def catch_errors_during_cleanup(benchmark_id: UUID, session: Session) -> None:
+    """
+    On task exit we must clean up any edge cases so that it does not affect the users experience.
+    There are sometimes fishy things that may occur with the sandboxes that if not dealt with could become an issue.
+
+    1. Benchmark status must be in a finished state
+    2. All tasks must be in a finished state
+    """
+    terminal_statuses = [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]
+
+    benchmark_row = fetch_benchmark_row(benchmark_id, session)
+    if benchmark_row.status in terminal_statuses:
+        return
+
+    # Force non exited tasks to be ERROR
+    task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
+    session.exec(
+        update(Task)
+        .where(col(Task.benchmark) == benchmark_id)
+        .where(col(Task.status).notin_(task_terminal_statuses))
+        .values(status=TaskStatus.ERROR, error_message="Undetected exit of task")
+    )
+    session.commit()
+
+    # Force benchmark to ERROR so that the user knows they can retry any failed tasks
+    commit_benchmark_error(
+        benchmark_row,
+        session,
+        f"Benchmark {benchmark_id} exited without finishing",
+    )
 
 
 def commit_task_error(task_row: Task, session: Session, error_message: str) -> None:
