@@ -393,8 +393,6 @@ def resume(
         lines = task_ids_file.read_text().splitlines()
         task_ids = ",".join(line.strip() for line in lines if line.strip())
 
-    click.echo("Selected to run a benchmark that has already been created, will rerun valid tasks.")
-
     # NOTE: workaround for auto retrying tasks when using the retry-benchmark command
     if ctx.info_name == "retry-benchmark":
         retry = True
