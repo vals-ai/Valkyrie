@@ -16,9 +16,10 @@ source "$HOME/.local/bin/env" 2>/dev/null || true
 cd sweagent && uv sync
 
 # Wrapper script so `sweagent` is on PATH
+# Changes the name of the process to sweagent so pkill -f python cannot find it
 cat > /usr/local/bin/sweagent << 'WRAPPER'
 #!/bin/bash
 source /bundle/sweagent/sweagent/.venv/bin/activate
-exec python -m sweagent.run.run "$@"
+exec -a sweagent python -m sweagent.run.run "$@"
 WRAPPER
 chmod +x /usr/local/bin/sweagent
