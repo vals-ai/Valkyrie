@@ -109,6 +109,7 @@ harness benchmark start \
   -k temperature 7 -k max_tokens 1000 \
   --benchmark <benchmark_name> \
   --concurrency 1 \
+  --lambda <aws_lambda_function_name> \
   --task-ids "task_1_id,task_2_id" \
   --slice "start:stop:step"
 ```
@@ -120,6 +121,7 @@ Flags
 --model: Model key
 --benchmark: Name of the benchmark
 --concurrency: The amount of concurrent tasks that are processed concurrently
+--lambda: The name of the lambda function you would like to be ran after the benchmark is done running
 --slice: Takes a slice from the dataset between the given values "start:stop:step"
 --kwarg (-k): Single kwarg that is passed into the agent run command
 --task-ids: comma separated list of task ids to run
