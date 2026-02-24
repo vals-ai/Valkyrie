@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import os
+import time
 import traceback
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Buffer, Coroutine
@@ -292,10 +293,24 @@ async def process_task(
     # If we are retrying the task we clear logs from previous run
     reset_cloudwatch_stream(stream_key)
 
+    last_log_time: float = time.monotonic()
+
     # Collects the logs and dumps them when the queue is full
     def log_output(data: str) -> None:
+        nonlocal last_log_time
+        last_log_time = time.monotonic()
         log_queue.put_nowait(data)
         buffer_logs(log_queue, stream_key)
+
+    # Auto flush if process takes a while to produce next log
+    # If a process pauses without producing anymore logs, the logs we have collected get stuck
+    async def auto_flush_logs() -> None:
+        while True:
+            await asyncio.sleep(1)
+            if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
+                buffer_logs(log_queue, stream_key, force_flush=True)
+
+    flush_task = asyncio.create_task(auto_flush_logs())
 
     try:
         task_data = await benchmark_service.retrieve_task(task_id=task_id)
@@ -399,6 +414,7 @@ async def process_task(
 
         return {task_id: None}
     finally:
+        flush_task.cancel()
         buffer_logs(log_queue, stream_key, force_flush=True)
 
 
