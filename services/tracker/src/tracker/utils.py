@@ -566,7 +566,11 @@ async def process_benchmark(
             # We are indeed obligated to run it even if it does not succeed
             arguments = benchmark_row.arguments
             if arguments.lambda_function:
-                invoke_lambda(arguments.lambda_function, arguments.model_dump())
+                # Expose the benchmark arguments and the benchmark id inside of the lambda
+                lambda_payload: dict[str, Any] = arguments.model_dump()
+                lambda_payload["benchmark_id"] = benchmark_id
+
+                invoke_lambda(arguments.lambda_function, lambda_payload)
     except Exception as e:
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session)
