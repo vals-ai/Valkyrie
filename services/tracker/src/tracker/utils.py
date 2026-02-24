@@ -79,6 +79,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benc
             concurrency=request.concurrency,
             task_ids=request.task_ids,
             slice_str=request.slice_str,
+            lambda_function=request.lambda_function,
         ),
     )
 

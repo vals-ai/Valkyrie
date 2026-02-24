@@ -34,6 +34,7 @@ class StartBenchmarkRequest(BaseModel):
     concurrency: int = 5
     task_ids: list[str] | None = None
     slice_str: str | None = None
+    lambda_function: str | None = None
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:

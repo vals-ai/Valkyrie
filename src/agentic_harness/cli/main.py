@@ -70,6 +70,14 @@ def agent():
     help="Number of concurrent tasks to run (e.g., 5)",
 )
 @click.option(
+    "--lambda",
+    "lambda_function",
+    type=str,
+    default=None,
+    required=False,
+    help="Lambda function to invoke at the end of the benchmark run",
+)
+@click.option(
     "--task-ids",
     type=str,
     required=False,
@@ -105,6 +113,7 @@ def start(
     model: str | None,
     benchmark: str,
     concurrency: int,
+    lambda_function: str | None,
     task_ids: str | None,
     task_ids_file: Path | None,
     slice_str: str | None,
@@ -171,6 +180,7 @@ def start(
                 concurrency,
                 formatted_task_ids,
                 slice_str,
+                lambda_function,
             )
 
             click.echo("\r\033[K", nl=False)

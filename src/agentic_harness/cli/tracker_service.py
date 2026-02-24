@@ -102,6 +102,7 @@ class TrackerService:
         concurrency: int,
         task_ids: list[str] | None,
         slice_str: str | None,
+        lambda_function: str | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -123,6 +124,7 @@ class TrackerService:
                 concurrency=concurrency,
                 task_ids=task_ids,
                 slice_str=slice_str,
+                lambda_function=lambda_function,
             )
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=payload.model_dump())

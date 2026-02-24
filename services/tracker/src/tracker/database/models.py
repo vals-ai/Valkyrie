@@ -162,6 +162,7 @@ class Benchmark(SQLModel, table=True):
             concurrency=self.arguments.concurrency,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
+            lambda_function=self.arguments.lambda_function,
         )
 
     @property
