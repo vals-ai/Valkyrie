@@ -128,6 +128,8 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(f"{click.style('Benchmark:', bold=True)} {benchmark_name}")
     click.echo(f"{click.style('Started at:', bold=True)} {local_time(started_at)}")
     click.echo(f"{click.style('Benchmark ID:', bold=True)} {benchmark_id}")
+    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
+    click.echo(f"{benchmark_response.s3_bucket_url}")
     click.echo()
 
     status_text = click.style(status.value.replace("_", " ").title(), fg=status_color, bold=True)
@@ -154,7 +156,11 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ Max concurrency:   {start_benchmark_response.concurrency}")
     click.echo(f"│ Total tasks:   {start_benchmark_response.task_count}")
     click.echo(f"│ CloudWatch:    {start_benchmark_response.cloudwatch_url}")
+    click.echo(f"│ S3 Bucket:     {start_benchmark_response.s3_bucket_url}")
     click.echo("└" + "─" * 79)
+    click.echo()
+    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
+    click.echo(f"{start_benchmark_response.s3_bucket_url}")
     click.echo()
     click.echo(
         click.style(
@@ -203,6 +209,10 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
         tracker: TrackerService instance
         benchmark_id: Benchmark UUID to stream
     """
+    initial = tracker.fetch_benchmark(benchmark_id)
+    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
+    click.echo(f"{initial.s3_bucket_url}")
+    click.echo()
     click.echo(click.style("Streaming benchmark updates (Ctrl+C to stop)...", fg="cyan"))
     click.echo()
 

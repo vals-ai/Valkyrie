@@ -203,3 +203,22 @@ def create_console_url(s3_key: str) -> str:
     region = s3_client.meta.region_name  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
 
     return f"https://{region}.console.aws.amazon.com/s3/object/{AWS_S3_BUCKET}?region={region}&prefix={s3_key}"
+
+
+@handle_s3_error(message=f"Failed to create benchmark URL for S3 bucket '{AWS_S3_BUCKET}'")
+def create_benchmark_url(benchmark_id: str) -> str:
+    """
+    Create the AWS Console URL for a benchmark's S3 folder.
+
+    Args:
+        benchmark_id: Benchmark UUID as a string
+
+    Returns:
+        AWS Console URL pointing to the benchmark folder prefix
+    """
+
+    s3_client = boto3.client("s3")  # pyright: ignore[reportUnknownMemberType]
+    region = s3_client.meta.region_name  # pyright: ignore[reportUnknownMemberType,reportUnknownVariableType]
+    prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
+
+    return f"https://{region}.console.aws.amazon.com/s3/buckets/{AWS_S3_BUCKET}?region={region}&prefix={prefix}"

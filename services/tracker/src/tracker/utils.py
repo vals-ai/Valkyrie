@@ -33,6 +33,7 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
+    create_benchmark_url,
     get_agent_result_s3_key,
     upload_to_s3,
 )
@@ -772,6 +773,7 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> Asyn
                     benchmark_name=fresh_benchmark.name,
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
+                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id)),
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"

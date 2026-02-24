@@ -56,12 +56,14 @@ class StartBenchmarkResponse(BaseModel):
     started_at: datetime
     task_count: int
     cloudwatch_url: str
+    s3_bucket_url: str
 
 
 class FetchBenchmarkResponse(BaseModel):
     benchmark_name: str
     benchmark_id: UUID
     details: BenchmarkDetails
+    s3_bucket_url: str
 
 
 class FinalViewResponse(BaseModel):

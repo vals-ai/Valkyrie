@@ -17,6 +17,7 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
+    create_benchmark_url,
     create_console_url,
     create_presigned_url,
     download_from_s3_stream,
@@ -201,6 +202,7 @@ async def start_benchmark(
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
         cloudwatch_url=get_cloudwatch_url(str(benchmark_row.id)),
+        s3_bucket_url=create_benchmark_url(str(benchmark_row.id)),
     )
 
 
@@ -244,6 +246,7 @@ async def fetch_benchmark(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
+        s3_bucket_url=create_benchmark_url(str(benchmark_row.id)),
     )
 
 
@@ -270,7 +273,7 @@ async def retrieve_results(
     if s3:
         s3_key = upload_final_view(benchmark_row, final_view)
 
-        https_url = f"https://{AWS_S3_BUCKET}.s3.amazonaws.com/{s3_key}"
+        https_url = f"s3://{AWS_S3_BUCKET}/{s3_key}"
         presigned_url = create_presigned_url(s3_key)
         console_url = create_console_url(s3_key)
 
