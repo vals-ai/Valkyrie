@@ -101,6 +101,34 @@ def init() -> None:
     click.echo(click.style(f"\nConfig written to {config_location}", fg="green", bold=True))
 
 
+@config.command()
+@click.argument("key")
+@click.argument("value")
+def modify(key: str, value: str) -> None:
+    """
+    Modify a single key in the harness config.
+
+    Example: harness config modify AWS_DEFAULT_REGION us-west-2
+    """
+    config_location = Path("~/.config/harness/harness.yaml").expanduser()
+
+    if not config_location.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+
+    with open(config_location) as f:
+        current: dict[str, str] = yaml.safe_load(f) or {}
+
+    if key not in current:
+        raise click.ClickException(f"Key '{key}' not found in config. Valid keys: {', '.join(current)}")
+
+    current[key] = value
+
+    with open(config_location, "w") as f:
+        yaml.dump(current, f, default_flow_style=False)
+
+    click.echo(click.style(f"  {key} updated.", fg="green"))
+
+
 @benchmark.command(
     help="Start a benchmark run. \n\nExample:\nharness benchmark start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
