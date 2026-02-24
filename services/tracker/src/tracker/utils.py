@@ -432,6 +432,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> No
         benchmark_status = BenchmarkStatus.STOPPED
 
     benchmark_row.status = benchmark_status
+    benchmark_row.error_message = None
     session.add(benchmark_row)
     session.commit()
 
