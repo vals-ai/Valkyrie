@@ -568,6 +568,11 @@ async def process_benchmark(
 
             set_benchmark_final_status(benchmark_row, session)
 
+            # Push the final benchmark view to the bucket
+            final_view: FinalViewResponse = create_final_view(benchmark_row, session)
+
+            upload_final_view(benchmark_row, final_view)
+
             # If the user has chosen to evoke a lambda function at the end of the benchmark
             # We are indeed obligated to run it even if it does not succeed
             arguments = benchmark_row.arguments
