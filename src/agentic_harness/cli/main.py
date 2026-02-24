@@ -49,13 +49,15 @@ def config():
     pass
 
 
+CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml")
+
+
 @config.command()
 def init() -> None:
     """
     Initializes a config we can trust to have references to dependencies to run the harness,
     this becomes our source of truth for secrets required to run the harness
     """
-    config_location: Path = Path("~/.config/harness/harness.yaml")
 
     # Mapping between the expected key and default value
     # None means its user provided if not found
@@ -92,7 +94,7 @@ def init() -> None:
 
         collected_keys[key] = value
 
-    config_location = config_location.expanduser()
+    config_location = CONFIG_LOCATION.expanduser()
     config_location.parent.mkdir(parents=True, exist_ok=True)
 
     with open(config_location, "w") as f:
@@ -110,7 +112,7 @@ def modify(key: str, value: str) -> None:
 
     Example: harness config modify AWS_DEFAULT_REGION us-west-2
     """
-    config_location = Path("~/.config/harness/harness.yaml").expanduser()
+    config_location = CONFIG_LOCATION.expanduser()
 
     if not config_location.exists():
         raise click.ClickException("Config not found. Run `harness config init` first.")
