@@ -16,6 +16,7 @@ from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceErr
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
+from tracker._lambda import invoke_lambda
 from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group, reset_cloudwatch_stream
 from tracker.config import broker
 from tracker.database.models import (
@@ -560,6 +561,12 @@ async def process_benchmark(
             session.commit()
 
             set_benchmark_final_status(benchmark_row, session)
+
+            # If the user has chosen to evoke a lambda function at the end of the benchmark
+            # We are indeed obligated to run it even if it does not succeed
+            arguments = benchmark_row.arguments
+            if arguments.lambda_function:
+                invoke_lambda(arguments.lambda_function, arguments.model_dump())
     except Exception as e:
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session)
@@ -567,6 +574,7 @@ async def process_benchmark(
             commit_benchmark_error(benchmark_row, session, error_message)
     finally:
         with Session(bind=engine) as session:
+            # Handle any misalignments between the benchmark status and tasks
             catch_errors_during_cleanup(benchmark_id, session)
 
         await benchmark_service.close()

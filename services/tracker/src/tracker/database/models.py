@@ -64,6 +64,7 @@ class BenchmarkArguments(BaseModel):
     concurrency: int
     task_ids: list[str] | None = None
     slice_str: str | None = None
+    lambda_function: str | None = None
 
 
 class FinalEvaluation(SQLModel, table=True):
