@@ -1,10 +1,12 @@
 """CLI views/commands for the agentic harness."""
 
+import os
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import click
+import yaml
 from tracker.database.models import BenchmarkStatus
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
@@ -39,6 +41,64 @@ def benchmark():
 def agent():
     """Agent command group"""
     pass
+
+
+@cli.group()
+def config():
+    """Config command group"""
+    pass
+
+
+@config.command()
+def init() -> None:
+    """
+    Initializes a config we can trust to have references to dependencies to run the harness,
+    this becomes our source of truth for secrets required to run the harness
+    """
+    config_location: Path = Path("~/.config/harness/harness.yaml")
+
+    # Mapping between the expected key and default value
+    # None means its user provided if not found
+    environment_variables: dict[str, str | None | int] = {
+        "AWS_ACCESS_KEY_ID": None,  # AWS ACCESS KEY
+        "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
+        "AWS_DEFAULT_REGION": None,  # What region your secrets are in
+        "AWS_S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
+        "ROOT_LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
+        "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
+    }
+
+    collected_keys: dict[str, str] = {}
+
+    for key, default in environment_variables.items():
+        sourced = os.environ.get(key)
+        if sourced:
+            click.echo(f"  {key}: sourced from environment")
+            collected_keys[key] = sourced
+            continue
+
+        if not default:
+            value = click.prompt(
+                f"  {key} (required, Enter to cancel)",
+                default="",
+                show_default=False,
+            )
+
+            if not value.strip():
+                click.echo(click.style(f"\n  {key} is required. Aborting.", fg="red"))
+                raise click.Abort()
+        else:
+            value = click.prompt(f"  {key}", default=str(default))
+
+        collected_keys[key] = value
+
+    config_location = config_location.expanduser()
+    config_location.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(config_location, "w") as f:
+        yaml.dump(collected_keys, f, default_flow_style=False)
+
+    click.echo(click.style(f"\nConfig written to {config_location}", fg="green", bold=True))
 
 
 @benchmark.command(
