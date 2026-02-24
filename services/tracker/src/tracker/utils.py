@@ -203,7 +203,7 @@ class TaskMonitor:
 
         exit_condition_met: bool = False
 
-        while not exit_condition_met:
+        while not exit_condition_met and self._task_tracking:
             tasks_to_check: list[str] = list(self._task_tracking.keys())
             for task_id in tasks_to_check:
                 task = self._task_tracking[task_id]
@@ -534,15 +534,14 @@ async def process_benchmark(
 
         await monitor_task
 
-        if not any(result_dict for result_dict in evaluation_result_rows):
-            raise TrackerServiceError("No tasks were completed successfully")
-
-        # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
-        evaluation_results: dict[str, dict[str, Any] | None] = {
-            task_id: evaluation_result
-            for result_dict in evaluation_result_rows
-            for task_id, evaluation_result in result_dict.items()
-        }
+        evaluation_results: dict[str, dict[str, Any] | None] = {}
+        if any(result_dict for result_dict in evaluation_result_rows):
+            # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
+            evaluation_results: dict[str, dict[str, Any] | None] = {
+                task_id: evaluation_result
+                for result_dict in evaluation_result_rows
+                for task_id, evaluation_result in result_dict.items()
+            }
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session)
@@ -550,6 +549,9 @@ async def process_benchmark(
             remaining_task_results = await fetch_missing_tasks(session, benchmark_row, evaluation_results)
 
         evaluation_results.update(remaining_task_results)
+
+        if not evaluation_results:
+            raise TrackerServiceError("No tasks were completed successfully")
 
         # Calculate the final score based off the tasks that were ran
         final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results)
@@ -563,6 +565,11 @@ async def process_benchmark(
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session)
+            # Delete existing final evaluation if re-running
+            if benchmark_row.final_evaluation:
+                session.delete(benchmark_row.final_evaluation)
+                session.flush()
+
             session.add(final_evaluation_row)
             session.commit()
 
@@ -573,15 +580,16 @@ async def process_benchmark(
 
             upload_final_view(benchmark_row, final_view)
 
-            # If the user has chosen to evoke a lambda function at the end of the benchmark
-            # We are indeed obligated to run it even if it does not succeed
+            # If the user has chosen to invoke a lambda function at the end of the benchmark
+            # We run it but do not let a failure affect the benchmark status
             arguments = benchmark_row.arguments
             if arguments.lambda_function:
                 # Expose the benchmark arguments and the benchmark id inside of the lambda
                 lambda_payload: dict[str, Any] = arguments.model_dump()
-                lambda_payload["benchmark_id"] = benchmark_id
+                lambda_payload["benchmark_id"] = str(benchmark_id)
 
                 invoke_lambda(arguments.lambda_function, lambda_payload)
+
     except Exception as e:
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session)
@@ -931,10 +939,9 @@ async def reset_to_in_progress_status(
                 f"{', '.join(missing_task_ids)} was requested to be force resumed but does not exist in the dataset"
             )
 
+        # Allow re-running the end of the benchmark without running any tasks
         if not task_ids:
-            raise TrackerServiceError(
-                f"No tasks for benchmark {benchmark_row.id} can be resumed because all tasks are finished"
-            )
+            return []
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
