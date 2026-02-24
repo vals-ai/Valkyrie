@@ -31,12 +31,17 @@ from tracker.database.models import (
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
-from tracker.s3 import get_agent_result_s3_key
+from tracker.s3 import (
+    S3_BENCHMARKS_PREFIX,
+    get_agent_result_s3_key,
+    upload_to_s3,
+)
 from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     BenchmarkDetails,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
+    FinalViewResponse,
     Order,
     StartBenchmarkRequest,
 )
@@ -1025,3 +1030,39 @@ class YieldingWriter(io.RawIOBase):
         self._buffer.clear()
 
         return chunk
+
+
+def create_final_view(benchmark_row: Benchmark, session: Session) -> FinalViewResponse:
+    """Creates final view of a benchmark that includes metadata about evaluations and score"""
+    tasks_stopped: int = session.exec(
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status) == TaskStatus.STOPPED)
+    ).one()
+
+    final_view: FinalViewResponse = FinalViewResponse(
+        benchmark_name=benchmark_row.name,
+        status=benchmark_row.status,
+        error_message=benchmark_row.error_message,
+        benchmark_id=benchmark_row.id,
+        benchmark_arguments=benchmark_row.arguments,
+        tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
+        final_evaluation=benchmark_row.final_evaluation,
+        evaluation_results=benchmark_row.fetch_evaluation_results(session),
+        task_errors=benchmark_row.fetch_tasks_with_errors(session),
+    )
+
+    return final_view
+
+
+def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse) -> str:
+    """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
+    upload_to_s3(
+        final_view.model_dump_json(
+            indent=4, exclude_none=True, exclude={"benchmark_arguments": {"contract": {"env"}}}
+        ).encode(),
+        s3_key,
+    )
+
+    return s3_key
