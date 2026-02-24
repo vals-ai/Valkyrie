@@ -538,7 +538,7 @@ async def process_benchmark(
         evaluation_results: dict[str, dict[str, Any] | None] = {}
         if any(result_dict for result_dict in evaluation_result_rows):
             # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
-            evaluation_results: dict[str, dict[str, Any] | None] = {
+            evaluation_results = {
                 task_id: evaluation_result
                 for result_dict in evaluation_result_rows
                 for task_id, evaluation_result in result_dict.items()
