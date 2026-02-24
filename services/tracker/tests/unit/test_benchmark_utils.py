@@ -223,9 +223,9 @@ class TestBenchmarkUtils:
         database_session.add_all(task_rows)
         database_session.commit()
 
-        # error is returned because we have no stopped tasks to resume
+        # No stopped tasks to resume, but this is allowed (re-runs post-task steps like lambda)
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
-        assert response.status_code == 500
+        assert response.status_code == 200
 
         # Ensure that we can recreate the environment the benchmark was started in
         original_start_benchmark_request = StartBenchmarkRequest(

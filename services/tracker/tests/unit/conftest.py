@@ -36,8 +36,12 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_get_contract_s3_key(contract_name: str) -> str:
         return f"contracts/{contract_name}.zip"
 
+    def _mock_upload_to_s3(_file_content: bytes, _s3_key: str) -> None:
+        pass
+
     monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
     monkeypatch.setattr("tracker.s3.get_contract_s3_key", _mock_get_contract_s3_key)
+    monkeypatch.setattr("tracker.utils.upload_to_s3", _mock_upload_to_s3)
 
 
 @pytest.fixture(autouse=True)
