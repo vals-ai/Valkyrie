@@ -18,6 +18,7 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
+    HarnessConfig,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -169,7 +170,7 @@ class TrackerService:
                 task_ids=task_ids,
                 slice_str=slice_str,
                 lambda_function=lambda_function,
-                harness_config=self._build_harness_config_payload(),
+                harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
             )
 
             body = payload.model_dump()
