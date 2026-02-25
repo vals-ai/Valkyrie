@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 from agentic_harness.contract import BaseAgentContract
 
@@ -8,7 +9,6 @@ class DCFAgentContract(BaseAgentContract):
     def name(self) -> str:
         return "dcf_agent"
 
-    @property
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
         model = self._agent_config.model
         assert model is not None, "Model must be specified in AgentConfig for DCF Agent"
