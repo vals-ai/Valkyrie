@@ -10,11 +10,12 @@ class DCFAgentContract(BaseAgentContract):
         return "dcf_agent"
 
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
-        model = self._agent_config.model
-        assert model is not None, "Model must be specified in AgentConfig for DCF Agent"
-        return model.query("{{problem_statement}}")
+        return f"echo '=== Problem Statement ===' && cat {problem_statement_path} && echo '=== Workspace Files ===' && find /workspace -type f | sort"
 
     @property
     def final_output(self) -> Path:
         # TODO: inherit this from problem definition
         return Path("/workspace/financial_statement.xlsx")
+
+
+contract = DCFAgentContract
