@@ -44,6 +44,7 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FinalViewResponse,
+    HarnessConfig,
     Order,
     StartBenchmarkRequest,
 )
@@ -248,7 +249,9 @@ def fetch_task_row(task_id: UUID, session: Session) -> Task:
     return task_row
 
 
-def buffer_logs(log_queue: asyncio.Queue[str], stream_key: str, force_flush: bool = False) -> None:
+def buffer_logs(
+    log_queue: asyncio.Queue[str], stream_key: str, harness_config: HarnessConfig, force_flush: bool = False
+) -> None:
     """
     Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
     """
@@ -261,7 +264,7 @@ def buffer_logs(log_queue: asyncio.Queue[str], stream_key: str, force_flush: boo
 
     message = "".join(messages)
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, cloudwatch_stream, stream_key, message)
+    loop.run_in_executor(None, cloudwatch_stream, stream_key, message, harness_config)
 
 
 async def process_task(
@@ -270,6 +273,7 @@ async def process_task(
     benchmark_service: BenchmarkServiceClient,
     benchmark_id: UUID,
     task_id: str,
+    harness_config: HarnessConfig,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -291,7 +295,7 @@ async def process_task(
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     # If we are retrying the task we clear logs from previous run
-    reset_cloudwatch_stream(stream_key)
+    reset_cloudwatch_stream(stream_key, harness_config)
 
     last_log_time: float = time.monotonic()
 
@@ -300,7 +304,7 @@ async def process_task(
         nonlocal last_log_time
         last_log_time = time.monotonic()
         log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key)
+        buffer_logs(log_queue, stream_key, harness_config)
 
     # Auto flush if process takes a while to produce next log
     # If a process pauses without producing anymore logs, the logs we have collected get stuck
@@ -308,7 +312,7 @@ async def process_task(
         while True:
             await asyncio.sleep(1)
             if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, force_flush=True)
+                buffer_logs(log_queue, stream_key, harness_config, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
 
@@ -349,7 +353,7 @@ async def process_task(
                     _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output)
 
                     # Force flush the logs if anything has been buffered
-                    buffer_logs(log_queue, stream_key, force_flush=True)
+                    buffer_logs(log_queue, stream_key, harness_config, force_flush=True)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
@@ -415,7 +419,7 @@ async def process_task(
         return {task_id: None}
     finally:
         flush_task.cancel()
-        buffer_logs(log_queue, stream_key, force_flush=True)
+        buffer_logs(log_queue, stream_key, harness_config, force_flush=True)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
@@ -515,10 +519,11 @@ async def process_benchmark(
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
     benchmark_service = start_benchmark_request.benchmark_service
+    harness_config: HarnessConfig = start_benchmark_request.harness_config
 
     try:
         # Create benchmark cloudwatch log group
-        create_benchmark_group(str(benchmark_id))
+        create_benchmark_group(str(benchmark_id), harness_config)
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
@@ -535,7 +540,7 @@ async def process_benchmark(
         # Load the tasks we are going to be tracking
         tracked_tasks: dict[str, TrackedTask] = {
             task_id: TrackedTask(
-                process_task(task_row, start_benchmark_request, benchmark_service, benchmark_id, task_id)
+                process_task(task_row, start_benchmark_request, benchmark_service, benchmark_id, task_id, harness_config)
             )
             for task_id, task_row in task_rows
         }
@@ -596,7 +601,7 @@ async def process_benchmark(
             # Push the final benchmark view to the bucket
             final_view: FinalViewResponse = create_final_view(benchmark_row, session)
 
-            upload_final_view(benchmark_row, final_view)
+            upload_final_view(benchmark_row, final_view, harness_config)
 
             # If the user has chosen to invoke a lambda function at the end of the benchmark
             # We run it but do not let a failure affect the benchmark status
@@ -1086,7 +1091,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session) -> FinalViewRe
     return final_view
 
 
-def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse) -> str:
+def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig) -> str:
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
     upload_to_s3(
@@ -1094,6 +1099,7 @@ def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse) -
             indent=4, exclude_none=True, exclude={"benchmark_arguments": {"contract": {"env"}}}
         ).encode(),
         s3_key,
+        harness_config,
     )
 
     return s3_key

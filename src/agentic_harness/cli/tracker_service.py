@@ -1,11 +1,14 @@
 """Client for interacting with the tracker service."""
 
 import os
+import re
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any, BinaryIO
 from uuid import UUID
 
 import httpx
+import yaml
 from dotenv import load_dotenv
 from httpx._models import Response
 from tracker.database.models import AgentContractRequest
@@ -27,10 +30,19 @@ from agentic_harness.cli.exceptions import TrackerServiceError
 load_dotenv()
 
 TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
+_CONFIG_LOCATION = Path("~/.config/harness/harness.yaml")
+_REQUIRED_CONFIG_KEYS = {
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_DEFAULT_REGION",
+    "AWS_S3_BUCKET",
+}
 
 
 class TrackerService:
     """Client for tracker service API."""
+
+    _config_values: dict[str, str] = {}
 
     def __init__(self, base_url: str = TRACKER_URL, timeout: int = 120):
         """
@@ -40,9 +52,10 @@ class TrackerService:
             base_url: Base URL of tracker service
             timeout: Request timeout in seconds
         """
+        self._config_values = self.parse_config_keys()
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.Client(timeout=timeout, headers=self._build_harness_headers())
 
     def __enter__(self) -> "TrackerService":
         """Context manager entry."""
@@ -55,6 +68,37 @@ class TrackerService:
     def close(self) -> None:
         """Close the HTTP client."""
         self._client.close()
+
+    @staticmethod
+    def parse_config_keys() -> dict[str, str]:
+        """Parses expected config keys and handles edge cases"""
+        config_path: Path = _CONFIG_LOCATION.expanduser()
+        config_keys: dict[str, str] = {}
+        if not config_path.exists():
+            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `harness config init`")
+
+        with open(config_path) as f:
+            harness_config: dict[str, str] = yaml.safe_load(f) or {}
+
+        missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
+        if missing:
+            raise TrackerServiceError(
+                f"Missing required config keys: {', '.join(sorted(missing))}."
+                + "Run `harness config init` to initialize the harness config or run harness config modify to change a value to a already created config"
+            )
+
+        for key, value in harness_config.items():
+            config_keys[key] = str(value)
+
+        return config_keys
+
+    def _build_harness_headers(self) -> dict[str, str]:
+        """Build the X-Harness-* headers from the loaded config values."""
+        return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
+
+    def _build_harness_config_payload(self) -> dict[str, str]:
+        """Build the harness_config dict for inclusion in request bodies."""
+        return {key.lower(): value for key, value in self._config_values.items()}
 
     def health_check(self) -> Response:
         """
@@ -125,9 +169,12 @@ class TrackerService:
                 task_ids=task_ids,
                 slice_str=slice_str,
                 lambda_function=lambda_function,
+                harness_config=self._build_harness_config_payload(),
             )
 
-            response = self._client.post(f"{self._base_url}/start-benchmark", json=payload.model_dump())
+            body = payload.model_dump()
+
+            response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
 
             return response
         except httpx.HTTPError as e:

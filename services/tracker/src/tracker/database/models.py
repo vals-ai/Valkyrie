@@ -27,7 +27,7 @@ from tracker.database.utils import has_field_changed
 if TYPE_CHECKING:
     from benchmark_service.client import BenchmarkServiceClient
 
-    from tracker.types import BenchmarkTableRow, FetchBenchmarkMetadataResponse, StartBenchmarkRequest
+    from tracker.types import BenchmarkTableRow, FetchBenchmarkMetadataResponse, HarnessConfig, StartBenchmarkRequest
 
 
 class TaskStatus(str, Enum):
@@ -152,8 +152,7 @@ class Benchmark(SQLModel, table=True):
 
         return {task_id: (error_message or "No error message was provided") for task_id, error_message in tasks}
 
-    @property
-    def start_benchmark_request(self) -> "StartBenchmarkRequest":
+    def start_benchmark_request(self, harness_config: "HarnessConfig") -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
         return StartBenchmarkRequest(
@@ -163,11 +162,15 @@ class Benchmark(SQLModel, table=True):
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
+            harness_config=harness_config,
         )
 
     @property
     def benchmark_service(self) -> "BenchmarkServiceClient":
-        return self.start_benchmark_request.benchmark_service
+        from tracker.config import BENCHMARK_SERVICE_URL
+        from tracker.utils import create_benchmark_service_client
+
+        return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL)
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":

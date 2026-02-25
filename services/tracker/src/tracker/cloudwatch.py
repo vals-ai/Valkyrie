@@ -1,5 +1,6 @@
 import time
 from functools import wraps
+from typing import TYPE_CHECKING, Any
 
 import boto3
 from botocore.config import Config
@@ -7,10 +8,21 @@ from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker.exceptions import CloudWatchError
 
-_client = boto3.client("logs", config=Config(max_pool_connections=75))  # pyright: ignore[reportUnknownMemberType] # type: ignore[reportUnknownReturnType]
+if TYPE_CHECKING:
+    from tracker.types import HarnessConfig
+
 _created_streams: set[str] = set()
 
-ROOT_LOG_GROUP = "benchmarks"
+
+def _cloudwatch_client(harness_config: "HarnessConfig") -> Any:
+    """Create a CloudWatch Logs client from harness config credentials."""
+    return boto3.client(  # pyright: ignore[reportUnknownMemberType]
+        "logs",
+        aws_access_key_id=harness_config.aws_access_key_id,
+        aws_secret_access_key=harness_config.aws_secret_access_key,
+        region_name=harness_config.aws_default_region,
+        config=Config(max_pool_connections=75),
+    )
 
 
 def handle_cloudwatch_error(message: str):
@@ -27,42 +39,46 @@ def handle_cloudwatch_error(message: str):
     return decorator
 
 
-def get_cloudwatch_url(benchmark_id: str, task_id: str | None = None) -> str:
+def get_cloudwatch_url(benchmark_id: str, harness_config: "HarnessConfig", task_id: str | None = None) -> str:
     """
     Get the CloudWatch console URL for a benchmark or specific task.
 
     Args:
         benchmark_id: The benchmark identifier
+        harness_config: Harness config providing the region and log group
         task_id: Optional task identifier for task-specific logs
 
     Returns:
         CloudWatch console URL
     """
-    region = _client.meta.region_name  # pyright: ignore
+    region = harness_config.aws_default_region
+    root_log_group = harness_config.root_log_group
     base = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
-    log_group = f"benchmarks$252F{benchmark_id}"
+    encoded_log_group = f"{root_log_group}$252F{benchmark_id}"
     if task_id:
-        return f"{base}#logsV2:log-groups/log-group/{log_group}/log-events/{task_id}"
+        return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{task_id}"
 
-    return f"{base}#logsV2:log-groups/log-group/{log_group}"
+    return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}"
 
 
 @handle_cloudwatch_error(message="Failed to create log group")
-def create_benchmark_group(benchmark_id: str) -> str:
+def create_benchmark_group(benchmark_id: str, harness_config: "HarnessConfig") -> str:
     """
-    Create a log group for a benchmark with 1-day retention.
+    Create a log group for a benchmark.
 
     Args:
         benchmark_id: The benchmark identifier
+        harness_config: Harness config providing credentials, log group, and retention policy
 
     Returns:
         The log group name
     """
-    log_group_name: str = f"{ROOT_LOG_GROUP}/{benchmark_id}"
+    client = _cloudwatch_client(harness_config)
+    log_group_name: str = f"{harness_config.root_log_group}/{benchmark_id}"
 
     try:
-        _client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
-        _client.put_retention_policy(logGroupName=log_group_name, retentionInDays=365)  # pyright: ignore[reportUnknownMemberType]
+        client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
+        client.put_retention_policy(logGroupName=log_group_name, retentionInDays=harness_config.log_retention_policy)  # pyright: ignore[reportUnknownMemberType]
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
             raise
@@ -71,7 +87,7 @@ def create_benchmark_group(benchmark_id: str) -> str:
 
 
 @handle_cloudwatch_error(message="Failed to delete log stream")
-def reset_cloudwatch_stream(stream_key: str) -> None:
+def reset_cloudwatch_stream(stream_key: str, harness_config: "HarnessConfig") -> None:
     """
     Delete and recreate a CloudWatch log stream to reset it.
 
@@ -79,16 +95,18 @@ def reset_cloudwatch_stream(stream_key: str) -> None:
 
     Args:
         stream_key: The stream key (benchmark_id:task_id)
+        harness_config: Harness config providing credentials and log group
     """
     benchmark_id, task_id = stream_key.split(":")
 
     if not benchmark_id or not task_id:
         raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")
 
-    log_group_name = f"{ROOT_LOG_GROUP}/{benchmark_id}"
+    client = _cloudwatch_client(harness_config)
+    log_group_name = f"{harness_config.root_log_group}/{benchmark_id}"
 
     try:
-        _client.delete_log_stream(logGroupName=log_group_name, logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
+        client.delete_log_stream(logGroupName=log_group_name, logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
     except ClientError as e:
         if e.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
             raise
@@ -97,7 +115,7 @@ def reset_cloudwatch_stream(stream_key: str) -> None:
 
 
 @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
-def cloudwatch_stream(stream_key: str, message: str) -> None:
+def cloudwatch_stream(stream_key: str, message: str, harness_config: "HarnessConfig") -> None:
     """
     Stream a log message to CloudWatch.
 
@@ -106,6 +124,7 @@ def cloudwatch_stream(stream_key: str, message: str) -> None:
     Args:
         stream_key: The stream key (benchmark_id:task_id)
         message: The log message
+        harness_config: Harness config providing credentials and log group
     """
     if not message.strip():
         return
@@ -115,9 +134,12 @@ def cloudwatch_stream(stream_key: str, message: str) -> None:
     if not benchmark_id or not task_id:
         raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")
 
+    client = _cloudwatch_client(harness_config)
+    log_group = f"{harness_config.root_log_group}/{benchmark_id}"
+
     if stream_key not in _created_streams:
         try:
-            _client.create_log_stream(logGroupName=f"{ROOT_LOG_GROUP}/{benchmark_id}", logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
+            client.create_log_stream(logGroupName=log_group, logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
                 raise
@@ -126,8 +148,8 @@ def cloudwatch_stream(stream_key: str, message: str) -> None:
         _created_streams.add(stream_key)
 
     try:
-        _client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
-            logGroupName=f"{ROOT_LOG_GROUP}/{benchmark_id}",
+        client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
+            logGroupName=log_group,
             logStreamName=task_id,
             logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],
         )
