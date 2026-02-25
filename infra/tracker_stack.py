@@ -279,6 +279,14 @@ class TrackerStack(Stack):
             )
         )
 
+        # Lambda invoke permissions
+        task_def.add_to_task_role_policy(
+            aws_iam.PolicyStatement(
+                actions=["lambda:InvokeFunction"],
+                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:*"],
+            )
+        )
+
         # Allow Fargate service to connect to RDS
         self.database.connections.allow_from(
             self.service.service,
