@@ -244,7 +244,7 @@ async def fetch_benchmark(
     # and additional updates about the tasks completed
     if connect:
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, session),
+            stream_benchmark_results(benchmark_id, session, harness_config),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

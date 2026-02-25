@@ -346,7 +346,7 @@ async def process_task(
                     task_session.commit()
 
                 # Upload the contract to the sandbox after creating and install the dependencies
-                await upload_agent_artifacts(sandbox, start_benchmark_request.contract)
+                await upload_agent_artifacts(sandbox, start_benchmark_request.contract, harness_config)
 
                 # Setup task if requested
                 if task_data.request_setup:
@@ -368,6 +368,7 @@ async def process_task(
                     task_id,
                     log_output,
                     task_data.cwd,
+                    harness_config=harness_config,
                     agent_output_s3_key=agent_output_s3_key,
                 )
 
@@ -384,7 +385,7 @@ async def process_task(
                 )
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, force_flush=True)
+                buffer_logs(log_queue, stream_key, harness_config, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
                 evaluation_result_row = EvaluationResult(
@@ -762,7 +763,7 @@ def commit_task_error(task_row: Task, session: Session, error_message: str) -> N
     session.commit()
 
 
-async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> AsyncGenerator[str]:
+async def stream_benchmark_results(benchmark_id: UUID, session: Session, harness_config: HarnessConfig) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
 
@@ -794,7 +795,7 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session) -> Asyn
                     benchmark_name=fresh_benchmark.name,
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
-                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id)),
+                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), harness_config),
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
