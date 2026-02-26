@@ -56,8 +56,17 @@ logger = get_logger(__name__)
 
 def fetch_daytona_headers(daytona_secret_name: str) -> dict[str, str]:
     """Fetch Daytona credentials from AWS Secrets Manager and return as headers for BenchmarkServiceClient."""
+    daytona_keys: list[str] = ["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"]
 
     secret = fetch_aws_secret(daytona_secret_name)
+
+    missing_keys = set(daytona_keys) - set(secret.keys())
+    if missing_keys:
+        raise TrackerServiceError(f"Missing following keys to use daytona {', '.join(missing_keys)}")
+
+    missing_values = [key for key, value in secret.items() if not value]
+    if missing_values:
+        raise TrackerServiceError(f"Missing values for the following keys {', '.join(missing_values)}")
 
     return {
         "x-api-key": secret["DAYTONA_API_KEY"],
