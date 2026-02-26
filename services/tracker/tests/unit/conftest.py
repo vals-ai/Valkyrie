@@ -27,6 +27,7 @@ TEST_HARNESS_CONFIG = HarnessConfig(
     s3_bucket="test-bucket",
     log_group="test-log-group",
     log_retention_policy=7,
+    daytona_secret_name="test-daytona-secret",
 )
 
 
@@ -37,11 +38,16 @@ def harness_config() -> HarnessConfig:
 
 @pytest.fixture(autouse=True)
 def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
-    """Sets default environment variables that are expected to be in the environment"""
+    """Mocks AWS Secrets Manager to return test Daytona credentials"""
 
-    monkeypatch.setenv("DAYTONA_API_KEY", "test_key")
-    monkeypatch.setenv("DAYTONA_API_URL", "http://test.url")
-    monkeypatch.setenv("DAYTONA_TARGET", "test_target")
+    def _mock_fetch_aws_secret(secret_name: str) -> dict[str, str]:
+        return {
+            "DAYTONA_API_KEY": "test_key",
+            "DAYTONA_API_URL": "http://test.url",
+            "DAYTONA_TARGET": "test_target",
+        }
+
+    monkeypatch.setattr("tracker.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
 
 
 @pytest.fixture(autouse=True)

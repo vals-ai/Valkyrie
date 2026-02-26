@@ -165,12 +165,11 @@ class Benchmark(SQLModel, table=True):
             harness_config=harness_config,
         )
 
-    @property
-    def benchmark_service(self) -> "BenchmarkServiceClient":
+    def benchmark_service(self, daytona_secret_name: str) -> "BenchmarkServiceClient":
         from tracker.config import BENCHMARK_SERVICE_URL
         from tracker.utils import create_benchmark_service_client
 
-        return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL)
+        return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL, daytona_secret_name=daytona_secret_name)
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":

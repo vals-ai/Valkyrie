@@ -54,30 +54,22 @@ from tracker.types import (
 logger = get_logger(__name__)
 
 
-def get_daytona_headers() -> dict[str, str]:
-    """Read and validate Daytona environment variables, returning headers for BenchmarkServiceClient."""
-    keys = {
-        "DAYTONA_API_KEY": os.getenv("DAYTONA_API_KEY") or "",
-        "DAYTONA_API_URL": os.getenv("DAYTONA_API_URL") or "",
-        "DAYTONA_TARGET": os.getenv("DAYTONA_TARGET") or "",
-    }
+def get_daytona_headers(daytona_secret_name: str) -> dict[str, str]:
+    """Fetch Daytona credentials from AWS Secrets Manager and return as headers for BenchmarkServiceClient."""
+    from tracker.secrets import fetch_aws_secret
 
-    missing = [k for k, v in keys.items() if not v]
-    if missing:
-        raise ValueError(
-            f"The following environment variables are not set: {', '.join(missing)}. Please set them in your `.env` file so that they can be sourced."
-        )
+    secret = fetch_aws_secret(daytona_secret_name)
 
     return {
-        "x-api-key": keys["DAYTONA_API_KEY"],
-        "x-api-url": keys["DAYTONA_API_URL"],
-        "x-target": keys["DAYTONA_TARGET"],
+        "x-api-key": secret["DAYTONA_API_KEY"],
+        "x-api-url": secret["DAYTONA_API_URL"],
+        "x-target": secret["DAYTONA_TARGET"],
     }
 
 
-def create_benchmark_service_client(url: str) -> BenchmarkServiceClient:
-    """Create a BenchmarkServiceClient using Daytona environment variables."""
-    return BenchmarkServiceClient(url=url, headers=get_daytona_headers())
+def create_benchmark_service_client(url: str, daytona_secret_name: str) -> BenchmarkServiceClient:
+    """Create a BenchmarkServiceClient using Daytona credentials from AWS Secrets Manager."""
+    return BenchmarkServiceClient(url=url, headers=get_daytona_headers(daytona_secret_name))
 
 
 def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benchmark:
@@ -898,7 +890,7 @@ async def sandbox_generator(
         paginated_sandboxes = await fetch_sandboxes(benchmark_row, daytona_client, int(paginated_sandboxes.page))
 
 
-async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> None:
+async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session, daytona_secret_name: str) -> None:
     """
     Stops and deletes all sandboxes which are in progress or evaluating.
     NOTE: If task is not in progress but sandbox exists, we kill it and leave the task status as is.
@@ -906,7 +898,7 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session) -> No
     Raises:
         TrackerServiceError: If there are any errors stopping the sandboxes
     """
-    daytona_client: AsyncDaytona = benchmark_row.benchmark_service.daytona_client
+    daytona_client: AsyncDaytona = benchmark_row.benchmark_service(daytona_secret_name).daytona_client
 
     # Update all tasks being processed to stopped
     session.exec(
@@ -1135,4 +1127,5 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
         s3_bucket=flat["s3_bucket"],
         log_group=flat["log_group"],
         log_retention_policy=int(flat["log_retention_policy"]),
+        daytona_secret_name=flat["daytona_secret_name"],
     )

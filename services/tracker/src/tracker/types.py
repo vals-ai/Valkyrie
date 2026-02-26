@@ -39,6 +39,7 @@ class HarnessConfig(BaseModel):
     s3_bucket: str
     log_group: str
     log_retention_policy: int
+    daytona_secret_name: str
 
 
 class StartBenchmarkRequest(BaseModel):
@@ -54,7 +55,7 @@ class StartBenchmarkRequest(BaseModel):
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
 
-        return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL)
+        return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL, daytona_secret_name=self.harness_config.daytona_secret_name)
 
 
 class StartBenchmarkErrorResponse(BaseModel):

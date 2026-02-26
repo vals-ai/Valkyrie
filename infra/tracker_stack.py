@@ -27,9 +27,7 @@ from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
-    DAYTONA_API_URL,
     DAYTONA_SECRET_NAME,
-    DAYTONA_TARGET,
     NAMESPACE,
     POSTGRES_DB,
     POSTGRES_PORT,
@@ -169,14 +167,11 @@ class TrackerStack(Stack):
                 "BROKER_ENVIRONMENT": "production",
                 "BENCHMARK_SERVICE_URL": f"http://swebench.{NAMESPACE}:{SWEBENCH_PORT}",
                 "AWS_S3_BUCKET": bucket.bucket_name,
-                "DAYTONA_API_URL": DAYTONA_API_URL,
-                "DAYTONA_TARGET": DAYTONA_TARGET,
                 "DB_HOST": self.database.db_instance_endpoint_address,
                 "DB_PORT": self.database.db_instance_endpoint_port,
                 "DB_NAME": POSTGRES_DB,
             },
             secrets={
-                "DAYTONA_API_KEY": aws_ecs.Secret.from_secrets_manager(daytona_secret),
                 "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials, field="username"),
                 "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
             },
@@ -286,6 +281,9 @@ class TrackerStack(Stack):
                 resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:*"],
             )
         )
+
+        # Allow task to read Daytona secret from Secrets Manager
+        daytona_secret.grant_read(task_def.task_role)
 
         # Allow Fargate service to connect to RDS
         self.database.connections.allow_from(
