@@ -1,7 +1,6 @@
 import asyncio
 import io
 import json
-import os
 import time
 import traceback
 from asyncio import Semaphore, gather
@@ -40,6 +39,7 @@ from tracker.s3 import (
     upload_to_s3,
 )
 from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.secrets import fetch_aws_secret
 from tracker.types import (
     AWSCredentials,
     BenchmarkDetails,
@@ -54,9 +54,8 @@ from tracker.types import (
 logger = get_logger(__name__)
 
 
-def get_daytona_headers(daytona_secret_name: str) -> dict[str, str]:
+def fetch_daytona_headers(daytona_secret_name: str) -> dict[str, str]:
     """Fetch Daytona credentials from AWS Secrets Manager and return as headers for BenchmarkServiceClient."""
-    from tracker.secrets import fetch_aws_secret
 
     secret = fetch_aws_secret(daytona_secret_name)
 
@@ -69,7 +68,7 @@ def get_daytona_headers(daytona_secret_name: str) -> dict[str, str]:
 
 def create_benchmark_service_client(url: str, daytona_secret_name: str) -> BenchmarkServiceClient:
     """Create a BenchmarkServiceClient using Daytona credentials from AWS Secrets Manager."""
-    return BenchmarkServiceClient(url=url, headers=get_daytona_headers(daytona_secret_name))
+    return BenchmarkServiceClient(url=url, headers=fetch_daytona_headers(daytona_secret_name))
 
 
 def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benchmark:

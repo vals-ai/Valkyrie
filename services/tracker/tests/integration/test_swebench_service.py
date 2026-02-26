@@ -2,13 +2,13 @@ import os
 from typing import Any
 
 import pytest
+from benchmark_service.client import BenchmarkServiceClient
 from daytona import AsyncDaytona, AsyncSandbox
 from pytest import MonkeyPatch
 from requests.exceptions import ConnectTimeout
 
-from benchmark_service.client import BenchmarkServiceClient
 from tests.utils import build_task_environment, validate_docker_image
-from tracker.utils import create_benchmark_service_client, get_daytona_headers
+from tracker.utils import create_benchmark_service_client, fetch_daytona_headers
 
 
 @pytest.fixture
@@ -53,7 +53,7 @@ class TestSWEBenchmarkService:
         # User sets the api url environment variable after finding out that they are missing it
         monkeypatch.setenv("DAYTONA_API_URL", "https://app.daytona.io/api")
         try:
-            assert get_daytona_headers() == {
+            assert fetch_daytona_headers() == {
                 "x-api-key": "xyz",
                 "x-api-url": "https://app.daytona.io/api",
                 "x-target": "us",

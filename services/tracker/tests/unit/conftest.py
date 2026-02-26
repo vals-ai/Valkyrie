@@ -2,13 +2,13 @@ import os
 from typing import Any
 
 import pytest
+from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, VerifyTaskIdsResponse
 from sqlmodel import Session
 
-from benchmark_service.client import BenchmarkServiceClient
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import fetch_harness_config
-from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, VerifyTaskIdsResponse
 
 # Sets default aws credentials in the environment for moto to work
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
