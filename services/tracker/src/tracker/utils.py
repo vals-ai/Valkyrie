@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
+from fastapi import Request
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
 from tracker._lambda import invoke_lambda
@@ -1117,3 +1118,21 @@ def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, h
     )
 
     return s3_key
+
+
+def fetch_harness_config(request: Request) -> HarnessConfig:
+    """Constructs HarnessConfig from X-Harness-* request headers."""
+    prefix = "x-harness-"
+    flat = {
+        key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
+    }
+    return HarnessConfig(
+        aws=AWSCredentials(
+            aws_access_key_id=flat["aws_access_key_id"],
+            aws_secret_access_key=flat["aws_secret_access_key"],
+            aws_default_region=flat["aws_default_region"],
+        ),
+        s3_bucket=flat["s3_bucket"],
+        log_group=flat["log_group"],
+        log_retention_policy=int(flat["log_retention_policy"]),
+    )

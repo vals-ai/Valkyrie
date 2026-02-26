@@ -26,7 +26,6 @@ from tracker.s3 import (
     upload_to_s3,
 )
 from tracker.types import (
-    AWSCredentials,
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
@@ -47,6 +46,7 @@ from tracker.utils import (
     commit_benchmark_error,
     create_final_view,
     fetch_filtered_benchmark_rows,
+    fetch_harness_config,
     force_stop_sandboxes,
     initiate_stop_benchmark,
     process_benchmark,
@@ -59,24 +59,6 @@ from tracker.utils import (
 logger = get_logger(__name__)
 
 app = FastAPI()
-
-
-def fetch_harness_config(request: Request) -> HarnessConfig:
-    """FastAPI dependency that reconstructs HarnessConfig from X-Harness-* request headers."""
-    prefix = "x-harness-"
-    flat = {
-        key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
-    }
-    return HarnessConfig(
-        aws=AWSCredentials(
-            aws_access_key_id=flat["aws_access_key_id"],
-            aws_secret_access_key=flat["aws_secret_access_key"],
-            aws_default_region=flat["aws_default_region"],
-        ),
-        s3_bucket=flat["s3_bucket"],
-        log_group=flat["log_group"],
-        log_retention_policy=int(flat["log_retention_policy"]),
-    )
 
 
 # Ignore verbose health check logs
