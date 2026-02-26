@@ -11,8 +11,9 @@ from benchmark_service.client import BenchmarkServiceClient
 from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
 from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
-from tracker.types import StartBenchmarkRequest
+from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
+from tests.unit.conftest import TEST_HARNESS_CONFIG
 
 client = TestClient(app)
 
@@ -79,6 +80,7 @@ class TestStopAndResume:
             contract=contract,
             concurrency=2,
             task_ids=task_ids,
+            harness_config=TEST_HARNESS_CONFIG,
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
@@ -145,7 +147,7 @@ class TestStopAndResume:
 
         # Run process_benchmark to complete the remaining tasks (the 3 tasks that are pending)
         await process_benchmark(
-            start_benchmark_request_json=benchmark_row.start_benchmark_request.model_dump(),
+            start_benchmark_request_json=benchmark_row.start_benchmark_request(TEST_HARNESS_CONFIG).model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verified_task_ids,
         )

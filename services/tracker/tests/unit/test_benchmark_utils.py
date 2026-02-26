@@ -12,7 +12,8 @@ from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import TrackerServiceError
 from benchmark_service.schemas import FinalScoreResponse
-from tracker.types import StartBenchmarkRequest
+from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tests.unit.conftest import TEST_HARNESS_CONFIG
 from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
 
 
@@ -234,11 +235,12 @@ class TestBenchmarkUtils:
             concurrency=5,
             task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
             slice_str=":10",
+            harness_config=TEST_HARNESS_CONFIG,
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request)
 
-        recreated_start_benchmark_request = benchmark_row.start_benchmark_request
+        recreated_start_benchmark_request = benchmark_row.start_benchmark_request(TEST_HARNESS_CONFIG)
         assert recreated_start_benchmark_request == original_start_benchmark_request
 
         # Assert we have 5 tasks in the database

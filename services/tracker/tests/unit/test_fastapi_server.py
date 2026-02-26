@@ -24,8 +24,10 @@ from benchmark_service.schemas import VerifyTaskIdsResponse
 from tracker.types import (
     FetchBenchmarksRequest,
     FinalViewResponse,
+    HarnessConfig,
     StartBenchmarkRequest,
 )
+from tests.unit.conftest import TEST_HARNESS_CONFIG
 
 client = TestClient(app)
 
@@ -70,6 +72,7 @@ class TestFastapiServer:
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
+            harness_config=TEST_HARNESS_CONFIG,
         )
 
         async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -352,6 +355,7 @@ class TestFastapiServer:
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
+            harness_config=TEST_HARNESS_CONFIG,
         )
 
         # Send request to start the benchmark and ensure that the start response is returned

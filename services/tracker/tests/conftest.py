@@ -19,7 +19,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_create_benchmark_group(benchmark_id: str) -> str:
         return f"mock-group-{benchmark_id}"
 
-    def _mock_cloudwatch_stream(_stream_key: str, _message: str) -> None:
+    def _mock_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
         pass
 
     monkeypatch.setattr("tracker.cloudwatch.create_benchmark_group", _mock_create_benchmark_group)

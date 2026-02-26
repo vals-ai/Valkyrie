@@ -6,6 +6,8 @@ from sqlmodel import Session
 
 from benchmark_service.client import BenchmarkServiceClient
 from tracker.database.session import get_session
+from tracker.types import AWSCredentials, HarnessConfig
+from tracker.utils import fetch_harness_config
 from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, VerifyTaskIdsResponse
 
 # Sets default aws credentials in the environment for moto to work
@@ -15,6 +17,22 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 # Needs to be after the environment variable setup
 from main import app
+
+TEST_HARNESS_CONFIG = HarnessConfig(
+    aws=AWSCredentials(
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+        aws_default_region="us-east-1",
+    ),
+    s3_bucket="test-bucket",
+    log_group="test-log-group",
+    log_retention_policy=7,
+)
+
+
+@pytest.fixture
+def harness_config() -> HarnessConfig:
+    return TEST_HARNESS_CONFIG
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +54,7 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_get_contract_s3_key(contract_name: str) -> str:
         return f"contracts/{contract_name}.zip"
 
-    def _mock_upload_to_s3(_file_content: bytes, _s3_key: str) -> None:
+    def _mock_upload_to_s3(*_args: Any, **_kwargs: Any) -> None:
         pass
 
     monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
@@ -52,6 +70,16 @@ def override_database_session(database_session: Session) -> None:
         yield database_session
 
     app.dependency_overrides[get_session] = get_test_session
+
+
+@pytest.fixture(autouse=True)
+def override_harness_config() -> None:
+    """Overrides the harness config dependency so endpoints don't require X-Harness-* headers"""
+
+    def get_test_harness_config():
+        return TEST_HARNESS_CONFIG
+
+    app.dependency_overrides[fetch_harness_config] = get_test_harness_config
 
 
 @pytest.fixture(autouse=True)
