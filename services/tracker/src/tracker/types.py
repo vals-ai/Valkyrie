@@ -28,13 +28,17 @@ class BenchmarkDetails(BaseModel):
     task_breakdown: dict[TaskStatus, int]
 
 
-class HarnessConfig(BaseModel):
-    aws_s3_bucket: str
-    root_log_group: str
-    log_retention_policy: int
+class AWSCredentials(BaseModel):
     aws_access_key_id: str
     aws_secret_access_key: str
     aws_default_region: str
+
+
+class HarnessConfig(BaseModel):
+    aws: AWSCredentials
+    s3_bucket: str
+    log_group: str
+    log_retention_policy: int
 
 
 class StartBenchmarkRequest(BaseModel):

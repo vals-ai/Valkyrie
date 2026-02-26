@@ -28,7 +28,7 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key, upload_to_s3
-from tracker.types import HarnessConfig
+from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
 
@@ -148,7 +148,9 @@ async def create_sandbox(
         await delete_sandbox(sandbox, daytona)
 
 
-async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractRequest, harness_config: HarnessConfig) -> None:
+async def upload_agent_artifacts(
+    sandbox: AsyncSandbox, contract: AgentContractRequest, aws: AWSCredentials, s3_bucket: str
+) -> None:
     """
     Upload contract from S3 to the sandbox.
 
@@ -163,7 +165,7 @@ async def upload_agent_artifacts(sandbox: AsyncSandbox, contract: AgentContractR
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = get_contract_s3_key(contract.name)
-    contract_content = download_from_s3(contract_s3_key, harness_config)
+    contract_content = download_from_s3(contract_s3_key, aws, s3_bucket)
 
     # Unzip contract and collect files and directories
     with zipfile.ZipFile(io.BytesIO(contract_content), "r") as zip_ref:
@@ -248,7 +250,9 @@ async def stream_command_output(
             pass
 
 
-async def archive_and_upload_output(sandbox: AsyncSandbox, output_path: str, agent_output_s3_key: str, harness_config: HarnessConfig) -> None:
+async def archive_and_upload_output(
+    sandbox: AsyncSandbox, output_path: str, agent_output_s3_key: str, aws: AWSCredentials, s3_bucket: str
+) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
 
@@ -261,7 +265,7 @@ async def archive_and_upload_output(sandbox: AsyncSandbox, output_path: str, age
         if b64_result.exit_code != 0:
             raise SandboxError(f"Failed to read archive from {output_path}")
 
-        upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, harness_config)
+        upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
     finally:
         # Check if file exists and remove it if it does
         result = await sandbox.process.exec(f"test -e {shlex.quote(archive_path)}")
@@ -278,7 +282,8 @@ async def run_agent(
     task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
-    harness_config: HarnessConfig,
+    aws: AWSCredentials,
+    s3_bucket: str,
     agent_output_s3_key: str | None = None,
 ) -> None:
     """
@@ -318,4 +323,4 @@ async def run_agent(
         return
 
     if agent_output_s3_key:
-        await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, harness_config)
+        await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)

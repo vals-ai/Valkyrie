@@ -40,6 +40,7 @@ from tracker.s3 import (
 )
 from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
+    AWSCredentials,
     BenchmarkDetails,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
@@ -250,7 +251,7 @@ def fetch_task_row(task_id: UUID, session: Session) -> Task:
 
 
 def buffer_logs(
-    log_queue: asyncio.Queue[str], stream_key: str, harness_config: HarnessConfig, force_flush: bool = False
+    log_queue: asyncio.Queue[str], stream_key: str, aws: AWSCredentials, log_group: str, force_flush: bool = False
 ) -> None:
     """
     Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
@@ -264,7 +265,7 @@ def buffer_logs(
 
     message = "".join(messages)
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, cloudwatch_stream, stream_key, message, harness_config)
+    loop.run_in_executor(None, cloudwatch_stream, stream_key, message, aws, log_group)
 
 
 async def process_task(
@@ -295,7 +296,7 @@ async def process_task(
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     # If we are retrying the task we clear logs from previous run
-    reset_cloudwatch_stream(stream_key, harness_config)
+    reset_cloudwatch_stream(stream_key, harness_config.aws, harness_config.log_group)
 
     last_log_time: float = time.monotonic()
 
@@ -304,7 +305,7 @@ async def process_task(
         nonlocal last_log_time
         last_log_time = time.monotonic()
         log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key, harness_config)
+        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
 
     # Auto flush if process takes a while to produce next log
     # If a process pauses without producing anymore logs, the logs we have collected get stuck
@@ -312,7 +313,7 @@ async def process_task(
         while True:
             await asyncio.sleep(1)
             if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, harness_config, force_flush=True)
+                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
 
@@ -346,14 +347,16 @@ async def process_task(
                     task_session.commit()
 
                 # Upload the contract to the sandbox after creating and install the dependencies
-                await upload_agent_artifacts(sandbox, start_benchmark_request.contract, harness_config)
+                await upload_agent_artifacts(
+                    sandbox, start_benchmark_request.contract, harness_config.aws, harness_config.s3_bucket
+                )
 
                 # Setup task if requested
                 if task_data.request_setup:
                     _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output)
 
                     # Force flush the logs if anything has been buffered
-                    buffer_logs(log_queue, stream_key, harness_config, force_flush=True)
+                    buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
@@ -368,7 +371,8 @@ async def process_task(
                     task_id,
                     log_output,
                     task_data.cwd,
-                    harness_config=harness_config,
+                    aws=harness_config.aws,
+                    s3_bucket=harness_config.s3_bucket,
                     agent_output_s3_key=agent_output_s3_key,
                 )
 
@@ -385,7 +389,7 @@ async def process_task(
                 )
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, harness_config, force_flush=True)
+                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
                 evaluation_result_row = EvaluationResult(
@@ -420,7 +424,7 @@ async def process_task(
         return {task_id: None}
     finally:
         flush_task.cancel()
-        buffer_logs(log_queue, stream_key, harness_config, force_flush=True)
+        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
@@ -524,7 +528,9 @@ async def process_benchmark(
 
     try:
         # Create benchmark cloudwatch log group
-        create_benchmark_group(str(benchmark_id), harness_config)
+        create_benchmark_group(
+            str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
+        )
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
@@ -541,7 +547,9 @@ async def process_benchmark(
         # Load the tasks we are going to be tracking
         tracked_tasks: dict[str, TrackedTask] = {
             task_id: TrackedTask(
-                process_task(task_row, start_benchmark_request, benchmark_service, benchmark_id, task_id, harness_config)
+                process_task(
+                    task_row, start_benchmark_request, benchmark_service, benchmark_id, task_id, harness_config
+                )
             )
             for task_id, task_row in task_rows
         }
@@ -763,7 +771,9 @@ def commit_task_error(task_row: Task, session: Session, error_message: str) -> N
     session.commit()
 
 
-async def stream_benchmark_results(benchmark_id: UUID, session: Session, harness_config: HarnessConfig) -> AsyncGenerator[str]:
+async def stream_benchmark_results(
+    benchmark_id: UUID, session: Session, harness_config: HarnessConfig
+) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
 
@@ -795,7 +805,9 @@ async def stream_benchmark_results(benchmark_id: UUID, session: Session, harness
                     benchmark_name=fresh_benchmark.name,
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
-                    s3_bucket_url=create_benchmark_url(str(fresh_benchmark.id), harness_config),
+                    s3_bucket_url=create_benchmark_url(
+                        str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
+                    ),
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
@@ -1100,7 +1112,8 @@ def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, h
             indent=4, exclude_none=True, exclude={"benchmark_arguments": {"contract": {"env"}}}
         ).encode(),
         s3_key,
-        harness_config,
+        harness_config.aws,
+        harness_config.s3_bucket,
     )
 
     return s3_key

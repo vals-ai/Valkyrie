@@ -97,9 +97,19 @@ class TrackerService:
         """Build the X-Harness-* headers from the loaded config values."""
         return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
 
-    def _build_harness_config_payload(self) -> dict[str, str]:
+    def _build_harness_config_payload(self) -> dict[str, Any]:
         """Build the harness_config dict for inclusion in request bodies."""
-        return {key.lower(): value for key, value in self._config_values.items()}
+        flat = {key.lower(): value for key, value in self._config_values.items()}
+        return {
+            "aws": {
+                "aws_access_key_id": flat["aws_access_key_id"],
+                "aws_secret_access_key": flat["aws_secret_access_key"],
+                "aws_default_region": flat["aws_default_region"],
+            },
+            "s3_bucket": flat["aws_s3_bucket"],
+            "log_group": flat.get("log_group", flat.get("root_log_group", "")),
+            "log_retention_policy": int(flat.get("log_retention_policy", "0")),
+        }
 
     def health_check(self) -> Response:
         """

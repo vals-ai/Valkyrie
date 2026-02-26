@@ -26,6 +26,7 @@ from tracker.s3 import (
     upload_to_s3,
 )
 from tracker.types import (
+    AWSCredentials,
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
@@ -63,10 +64,19 @@ app = FastAPI()
 def fetch_harness_config(request: Request) -> HarnessConfig:
     """FastAPI dependency that reconstructs HarnessConfig from X-Harness-* request headers."""
     prefix = "x-harness-"
-    config = {
+    flat = {
         key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
     }
-    return HarnessConfig.model_validate(config)
+    return HarnessConfig(
+        aws=AWSCredentials(
+            aws_access_key_id=flat["aws_access_key_id"],
+            aws_secret_access_key=flat["aws_secret_access_key"],
+            aws_default_region=flat["aws_default_region"],
+        ),
+        s3_bucket=flat.get("aws_s3_bucket", flat.get("s3_bucket", "")),
+        log_group=flat.get("log_group", flat.get("root_log_group", "")),
+        log_retention_policy=int(flat.get("log_retention_policy", "0")),
+    )
 
 
 # Ignore verbose health check logs
@@ -142,7 +152,7 @@ async def upload_contract_to_s3(
     # Extract contract name from filename (remove .zip extension)
     contract_name = contract.filename.rsplit(".zip", 1)[0]
     contract_s3_key = get_contract_s3_key(contract_name)
-    upload_to_s3(contract_content, contract_s3_key, harness_config)
+    upload_to_s3(contract_content, contract_s3_key, harness_config.aws, harness_config.s3_bucket)
 
     return {
         "status": "success",
@@ -211,8 +221,12 @@ async def start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=get_cloudwatch_url(str(benchmark_row.id), request.harness_config),
-        s3_bucket_url=create_benchmark_url(str(benchmark_row.id), request.harness_config),
+        cloudwatch_url=get_cloudwatch_url(
+            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group
+        ),
+        s3_bucket_url=create_benchmark_url(
+            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
+        ),
     )
 
 
@@ -259,7 +273,9 @@ async def fetch_benchmark(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
-        s3_bucket_url=create_benchmark_url(str(benchmark_row.id), harness_config),
+        s3_bucket_url=create_benchmark_url(
+            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
+        ),
     )
 
 
@@ -289,9 +305,9 @@ async def retrieve_results(
     if s3:
         s3_key = upload_final_view(benchmark_row, final_view, harness_config)
 
-        https_url = f"s3://{harness_config.aws_s3_bucket}/{s3_key}"
-        presigned_url = create_presigned_url(s3_key, harness_config)
-        console_url = create_console_url(s3_key, harness_config)
+        https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"
+        presigned_url = create_presigned_url(s3_key, harness_config.aws, harness_config.s3_bucket)
+        console_url = create_console_url(s3_key, harness_config.aws.aws_default_region, harness_config.s3_bucket)
 
         return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)
 
@@ -313,7 +329,7 @@ async def check_results_exist(
         {"exists": true/false}
     """
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
-    exists = s3_object_exists(s3_key, harness_config)
+    exists = s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
     return {"exists": exists}
 
 
@@ -483,7 +499,7 @@ async def fetch_agent_outputs(
         StreamingResponse
     """
     prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
-    s3_keys = list_s3_objects(prefix, harness_config)
+    s3_keys = list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket)
 
     if not s3_keys:
         raise HTTPException(
@@ -499,7 +515,7 @@ async def fetch_agent_outputs(
                 relative_path: str = s3_key.removeprefix(prefix)
 
                 try:
-                    body, size = download_from_s3_stream(s3_key, harness_config)
+                    body, size = download_from_s3_stream(s3_key, harness_config.aws, harness_config.s3_bucket)
 
                     tarinfo = tarfile.TarInfo(name=relative_path)
                     tarinfo.size = size

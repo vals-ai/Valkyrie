@@ -66,7 +66,7 @@ def init() -> None:
         "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
         "AWS_DEFAULT_REGION": None,  # What region your secrets are in
         "AWS_S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
-        "ROOT_LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
+        "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
         "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
     }
 
