@@ -67,7 +67,7 @@ class SharedStack(Stack):
         slack.add_notification_topic(notification_topic)  # type: ignore[arg-type]
 
         # Only notify for stacks deployed by this project
-        stack_names = ["SharedStack", "TrackerStack", "SwebenchStack"]
+        stack_names = ["SharedStack", "TrackerStack"]
 
         # EventBridge rule Slack notification for successful stack deployments
         success_rule = aws_events.Rule(
@@ -77,9 +77,7 @@ class SharedStack(Stack):
                 source=["aws.cloudformation"],
                 detail_type=["CloudFormation Stack Status Change"],
                 detail={
-                    "stack-id": [
-                        {"wildcard": f"*:stack/{name}/*"} for name in stack_names
-                    ],
+                    "stack-id": [{"wildcard": f"*:stack/{name}/*"} for name in stack_names],
                     "status-details": {
                         "status": ["CREATE_COMPLETE", "UPDATE_COMPLETE"],
                     },
@@ -131,9 +129,7 @@ class SharedStack(Stack):
                 source=["aws.cloudformation"],
                 detail_type=["CloudFormation Stack Status Change"],
                 detail={
-                    "stack-id": [
-                        {"wildcard": f"*:stack/{name}/*"} for name in stack_names
-                    ],
+                    "stack-id": [{"wildcard": f"*:stack/{name}/*"} for name in stack_names],
                     "status-details": {
                         "status": [
                             "CREATE_FAILED",

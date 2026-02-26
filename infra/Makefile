@@ -1,4 +1,4 @@
-.PHONY: help install deploy deploy-shared deploy-tracker deploy-swebench hotswap diff destroy
+.PHONY: help install deploy deploy-shared deploy-tracker hotswap diff destroy
 
 help:
 	@echo "Makefile for agentic-harness infrastructure"
@@ -8,7 +8,6 @@ help:
 	@echo "  make deploy                 - Deploy all stacks"
 	@echo "  make deploy-shared          - Deploy shared infrastructure only"
 	@echo "  make deploy-tracker         - Deploy tracker service only"
-	@echo "  make deploy-swebench        - Deploy swebench service only"
 	@echo "  make diff                   - Show diff of pending changes"
 	@echo "  make destroy                - Destroy all stacks"
 
@@ -31,9 +30,6 @@ deploy-shared: venv_check
 
 deploy-tracker: venv_check
 	uv run cdk deploy TrackerStack --require-approval never
-
-deploy-swebench: venv_check
-	uv run cdk deploy SwebenchStack --require-approval never
 
 hotswap: venv_check
 	uv run cdk deploy --all --hotswap
