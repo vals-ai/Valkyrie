@@ -19,7 +19,7 @@ class DCFAgentContract(BaseAgentContract):
     @property
     def final_output(self) -> Path:
         # TODO: inherit this from problem definition
-        return Path("/workspace/financial_statement.xlsx")
+        return Path("/workspace/template.xlsx")
 
 
 contract = DCFAgentContract
