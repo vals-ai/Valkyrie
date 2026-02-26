@@ -73,9 +73,9 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
             aws_secret_access_key=flat["aws_secret_access_key"],
             aws_default_region=flat["aws_default_region"],
         ),
-        s3_bucket=flat.get("aws_s3_bucket", flat.get("s3_bucket", "")),
-        log_group=flat.get("log_group", flat.get("root_log_group", "")),
-        log_retention_policy=int(flat.get("log_retention_policy", "0")),
+        s3_bucket=flat["s3_bucket"],
+        log_group=flat["log_group"],
+        log_retention_policy=int(flat["log_retention_policy"]),
     )
 
 
