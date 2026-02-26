@@ -19,7 +19,6 @@ make build                   # PyInstaller binary → dist/
 
 # Local services
 make tracker-service         # Start tracker Docker container
-make swebench-dev            # SWE-bench service on port 8001
 ```
 
 Tests use pytest with async support:
@@ -30,7 +29,7 @@ uv run pytest tests/test_foo.py::test_bar   # single test
 
 ## Architecture
 
-**Agentic Harness** is a benchmark orchestration platform for testing AI agents against standardized benchmarks (primarily SWE-bench).
+**Agentic Harness** is a benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
 ### Key layers
 
@@ -40,7 +39,7 @@ uv run pytest tests/test_foo.py::test_bar   # single test
 
 3. **Agent Contracts** (`agents/`) — Each agent subdirectory contains a `contract.py` implementing `BaseAgentContract` (defined in `src/agentic_harness/contract.py`). The CLI bundles the contract and uploads it to the tracker to run in sandboxes.
 
-4. **Infrastructure** (`infra/`) — AWS CDK stacks for ECS-deployed tracker and SWE-bench services.
+4. **Infrastructure** (`infra/`) — AWS CDK stacks for ECS-deployed tracker service.
 
 ### Agent contract pattern
 

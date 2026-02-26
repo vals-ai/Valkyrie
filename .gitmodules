@@ -1,7 +1,3 @@
-[submodule "services/benchmarks/swebench"]
-	path = services/benchmarks/swebench
-	url = git@github.com:vals-ai/SWEBenchBenchmarkService.git
-	branch = main
 [submodule "agents/sweagent/sweagent"]
 	path = agents/sweagent/sweagent
 	url = git@github.com:vals-ai/SWE-bench.git

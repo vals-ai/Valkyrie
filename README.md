@@ -218,4 +218,4 @@ Flags
 
 ### Supported Benchmarks
 
-- SWE-bench
+Benchmarks are configured via the tracker service.
