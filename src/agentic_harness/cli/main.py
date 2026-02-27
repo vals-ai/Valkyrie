@@ -71,12 +71,21 @@ def init() -> None:
         "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
     }
 
-    collected_keys: dict[str, str] = {}
+    current_config: dict[str, str] = {}
+    if CONFIG_LOCATION.exists():
+        with open(CONFIG_LOCATION) as f:
+            try:
+                current_config = yaml.safe_load(f)
+            except Exception:
+                pass
 
+    collected_keys: dict[str, str] = {}
     for key, default in environment_variables.items():
-        sourced = os.environ.get(key)
+        sourced = current_config.get(key) or os.environ.get(key)
         if sourced:
-            click.echo(f"  {key}: sourced from environment")
+            click.echo(
+                f"  {key}: sourced from {'environment' if not current_config.get(key) else 'already created config'}"
+            )
             collected_keys[key] = sourced
             continue
 
