@@ -122,10 +122,14 @@ def mock_agent_utilities(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> None:
         pass
 
+    def _mock_resolve_secrets(secrets: dict[str, str]) -> dict[str, str]:
+        return secrets
+
     monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _mock_upload_contract)
     monkeypatch.setattr("tracker.utils.run_agent", _mock_run_agent)
     monkeypatch.setattr("tracker.utils.reset_cloudwatch_stream", _mock_reset_cloudwatch_stream)
     monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
+    monkeypatch.setattr("tracker.utils.resolve_secrets", _mock_resolve_secrets)
 
 
 @pytest.fixture(autouse=True)

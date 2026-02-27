@@ -55,7 +55,6 @@ def contract() -> AgentContractRequest:
         artifacts=[],
         install_cmd="echo installing dependencies...",
         run_cmd="echo running agent...",
-        env={},
     )
 
 

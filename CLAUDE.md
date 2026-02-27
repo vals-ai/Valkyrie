@@ -67,19 +67,19 @@ class MyAgentContract(BaseAgentContract):
     def artifacts(self) -> list[str]: ...    # files to bundle (relative to agent dir)
 
     @property
-    def env(self) -> dict[str, str]: ...     # env vars injected into sandbox
+    def secrets(self) -> dict[str, str]: ...  # {ENV_VAR: aws_secret_name} resolved at runtime
 
 contract = MyAgentContract()
 ```
 
 The `artifacts` are bundled by `cli/bundler.py` into a zip and uploaded. The placeholder strings `{problem_statement_path}` and `{task_id}` in `run_cmd` are substituted at execution time — do not transform them.
 
+The `secrets` property maps environment variable names to AWS Secrets Manager secret names. The tracker resolves these references at sandbox creation time — raw secret values are never sent from the CLI or stored in the database.
+
 ### Configuration
 
 Key environment variables:
 - `TRACKER_SERVICE_URL` — tracker backend (default: `https://benchmark-tracker.vals.ai`)
-- `DAYTONA_API_KEY` / `DAYTONA_API_URL` — sandbox provisioning
-- `ANTHROPIC_API_KEY` — for Claude Code agent
 
 ### Code style
 

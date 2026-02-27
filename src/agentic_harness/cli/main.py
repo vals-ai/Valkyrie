@@ -258,7 +258,7 @@ def start(
         config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
 
-        contract = get_contract(contract_path, agent_config)
+        contract, secrets = get_contract(contract_path, agent_config)
 
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
@@ -279,6 +279,7 @@ def start(
                 formatted_task_ids,
                 slice_str,
                 lambda_function,
+                secrets=secrets,
             )
 
             click.echo("\r\033[K", nl=False)

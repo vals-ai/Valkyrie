@@ -39,7 +39,7 @@ from tracker.s3 import (
     upload_to_s3,
 )
 from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
-from tracker.secrets import fetch_aws_secret
+from tracker.secrets import fetch_aws_secret, resolve_secrets
 from tracker.types import (
     AWSCredentials,
     BenchmarkDetails,
@@ -341,7 +341,7 @@ async def process_task(
             sandbox_name=task_row.alias,
             image=task_data.docker_image,
             labels=labels,
-            env_vars=start_benchmark_request.contract.env,
+            env_vars=resolve_secrets(start_benchmark_request.secrets),
             resources=task_data.resources,
         ) as sandbox:
             try:
@@ -1112,9 +1112,7 @@ def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, h
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
     upload_to_s3(
-        final_view.model_dump_json(
-            indent=4, exclude_none=True, exclude={"benchmark_arguments": {"contract": {"env"}}}
-        ).encode(),
+        final_view.model_dump_json(indent=4, exclude_none=True).encode(),
         s3_key,
         harness_config.aws,
         harness_config.s3_bucket,

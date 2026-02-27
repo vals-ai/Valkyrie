@@ -13,7 +13,7 @@ class BaseAgentContract(ABC):
 
     Agent contracts define how to install and run an agent in a sandbox environment.
     Subclasses must implement the required abstract properties (name, run_cmd, install_cmd)
-    and can optionally override env and artifacts.
+    and can optionally override secrets and artifacts.
     """
 
     def __init__(self, agent_config: AgentConfig):
@@ -66,15 +66,15 @@ class BaseAgentContract(ABC):
         ...
 
     @property
-    def env(self) -> dict[str, str]:
+    def secrets(self) -> dict[str, str]:
         """
-        Environment variables required by the agent.
+        Secrets required by the agent, resolved from AWS Secrets Manager at runtime.
 
-        Override this property to provide environment variables like API keys.
-        Load secrets from your local environment using os.getenv().
+        Override this property to declare which env vars the agent needs and which
+        AWS Secrets Manager secret to pull each from.
 
         Returns:
-            Dictionary of environment variable names and values (default: empty dict)
+            Mapping of {ENV_VAR_NAME: aws_secret_name} (default: empty dict)
         """
         return {}
 
@@ -118,7 +118,6 @@ class BaseAgentContract(ABC):
                 kwargs=self._agent_config.kwargs,
             ),
             install_cmd=self.install_cmd,
-            env=self.env,
             artifacts=self.artifacts,
             final_output=str(self.final_output) if self.final_output else None,
         )

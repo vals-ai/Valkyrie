@@ -1,13 +1,9 @@
-import os
 from pathlib import Path
 from typing import Any, override
 
-from dotenv import load_dotenv
 from model_library.registry_utils import get_model_names_by_provider
 
 from agentic_harness.contract import BaseAgentContract
-
-load_dotenv()
 
 
 class ClaudeCodeContract(BaseAgentContract):
@@ -48,8 +44,8 @@ class ClaudeCodeContract(BaseAgentContract):
         return "bash setup.sh"
 
     @property
-    def env(self) -> dict[str, str]:
-        return {"ANTHROPIC_API_KEY": os.environ["ANTHROPIC_API_KEY"]}
+    def secrets(self) -> dict[str, str]:
+        return {"ANTHROPIC_API_KEY": "prodAnthropicApiKey"}
 
     @property
     def final_output(self) -> Path | None:

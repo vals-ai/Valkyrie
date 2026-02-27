@@ -429,7 +429,6 @@ class TestFastapiServer:
             artifacts=[],
             install_cmd="echo installing dependencies...",
             run_cmd="echo running agent...",
-            env={},
         )
         unique_benchmark = Benchmark(
             name="terminal_bench",

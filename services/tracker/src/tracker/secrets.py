@@ -41,3 +41,37 @@ def fetch_aws_secret(secret_name: str) -> dict[str, Any] | str:
         return json.loads(secret_string)  # pyright: ignore[reportUnknownVariableType]
     except json.JSONDecodeError:
         return secret_string
+
+
+def resolve_secrets(secrets: dict[str, str]) -> dict[str, str]:
+    """Resolve AWS secret references to actual values for sandbox injection.
+
+    Each entry maps an environment variable name to an AWS Secrets Manager secret name.
+    - If the secret is a plain string, the entire string becomes the env var value.
+    - If the secret is a JSON object, the env var name is used as a key to extract the value.
+
+    Args:
+        secrets: Mapping of {ENV_VAR_NAME: aws_secret_name}.
+
+    Returns:
+        Mapping of {ENV_VAR_NAME: actual_secret_value}.
+
+    Raises:
+        SecretsError: If a secret cannot be fetched or a key is missing from a JSON secret.
+    """
+    if not secrets:
+        return {}
+
+    resolved: dict[str, str] = {}
+
+    for env_name, secret_name in secrets.items():
+        secret_value = fetch_aws_secret(secret_name)
+
+        if isinstance(secret_value, dict):
+            if env_name not in secret_value:
+                raise SecretsError(f"Key '{env_name}' not found in JSON secret '{secret_name}'")
+            resolved[env_name] = str(secret_value[env_name])
+        else:
+            resolved[env_name] = secret_value
+
+    return resolved

@@ -1,8 +1,6 @@
 from pathlib import Path
 from typing import Any, override
 
-from dotenv import dotenv_values
-
 from agentic_harness.contract import BaseAgentContract
 
 
@@ -22,8 +20,8 @@ class SWEAgentContract(BaseAgentContract):
         return "bash setup.sh"
 
     @property
-    def env(self) -> dict[str, str]:
-        return {k: v for k, v in dotenv_values().items() if v is not None}
+    def secrets(self) -> dict[str, str]:
+        return {"VALS_API_KEY": "prodSWEAgentSecrets"}
 
     @property
     def final_output(self) -> Path | None:
