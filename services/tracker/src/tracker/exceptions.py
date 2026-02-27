@@ -33,3 +33,10 @@ class LambdaError(TrackerServiceError):
 
     def __str__(self) -> str:
         return "Lambda error: " + super().__str__()
+
+
+class SecretsError(TrackerServiceError):
+    """Exception raised for Secret operation errors."""
+
+    def __str__(self) -> str:
+        return "Secret error: " + super().__str__()
