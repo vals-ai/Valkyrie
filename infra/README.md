@@ -12,7 +12,6 @@ AWS CDK infrastructure for the Agentic Harness benchmark platform.
 - AWS CLI configured with appropriate credentials
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) package manager
-- Daytona API key stored in AWS Secrets Manager as `prodAgenticHarnessDaytonaKey`
 
 ## Setup
 

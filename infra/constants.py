@@ -56,13 +56,6 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 # S3
 S3_BUCKET_NAME = "agentic-harness"
 
-# Secrets Manager
-DAYTONA_SECRET_NAME = "prodAgenticHarnessDaytonaKey"
-
-# Daytona
-DAYTONA_API_URL = "https://app.daytona.io/api"
-DAYTONA_TARGET = "us"
-
 # Slack notifications
 SLACK_WORKSPACE_ID = "T05929786PK"
 SLACK_CHANNEL_ID = "C0AF4987EF6"

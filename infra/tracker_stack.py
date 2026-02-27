@@ -15,7 +15,6 @@ from aws_cdk import (
     aws_rds,
     aws_route53,
     aws_s3,
-    aws_secretsmanager,
     aws_servicediscovery,
 )
 from aws_cdk.aws_ecr_assets import Platform
@@ -27,7 +26,6 @@ from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
-    DAYTONA_SECRET_NAME,
     NAMESPACE,
     POSTGRES_DB,
     POSTGRES_PORT,
@@ -37,7 +35,6 @@ from constants import (
     REDIS_HEALTH_INTERVAL_SECONDS,
     REDIS_HEALTH_START_PERIOD_SECONDS,
     REDIS_PORT,
-    SWEBENCH_PORT,
     TRACKER_CPU,
     TRACKER_DOMAIN,
     TRACKER_MAX_TASKS,
@@ -66,13 +63,6 @@ class TrackerStack(Stack):
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
-
-        # Reference existing Daytona secret (must be created manually with DAYTONA_API_KEY)
-        daytona_secret = aws_secretsmanager.Secret.from_secret_name_v2(
-            self,
-            "DaytonaSecret",
-            secret_name=DAYTONA_SECRET_NAME,
-        )
 
         # RDS PostgreSQL instance
         db_security_group = aws_ec2.SecurityGroup(
@@ -165,7 +155,7 @@ class TrackerStack(Stack):
             environment={
                 "REDIS_URL": f"redis://localhost:{REDIS_PORT}",
                 "BROKER_ENVIRONMENT": "production",
-                "BENCHMARK_SERVICE_URL": f"http://swebench.{NAMESPACE}:{SWEBENCH_PORT}",
+                "BENCHMARK_SERVICE_URL": f"http://swebench.{NAMESPACE}:{8000}",
                 "AWS_S3_BUCKET": bucket.bucket_name,
                 "DB_HOST": self.database.db_instance_endpoint_address,
                 "DB_PORT": self.database.db_instance_endpoint_port,
@@ -282,8 +272,13 @@ class TrackerStack(Stack):
             )
         )
 
-        # Allow task to read Daytona secret from Secrets Manager
-        daytona_secret.grant_read(task_def.task_role)
+        # Secrets Manager read permissions (secret name is provided by the client at runtime)
+        task_def.add_to_task_role_policy(
+            aws_iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:*"],
+            )
+        )
 
         # Allow Fargate service to connect to RDS
         self.database.connections.allow_from(
