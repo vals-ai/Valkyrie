@@ -21,7 +21,7 @@ class SWEAgentContract(BaseAgentContract):
 
     @property
     def secrets(self) -> dict[str, str]:
-        return {"VALS_API_KEY": "prodSWEAgentSecrets"}
+        return {"KIMI_API_KEY": "devEvalInfraKimiKey"}
 
     @property
     def final_output(self) -> Path | None:

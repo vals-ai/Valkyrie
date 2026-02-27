@@ -45,7 +45,7 @@ class ClaudeCodeContract(BaseAgentContract):
 
     @property
     def secrets(self) -> dict[str, str]:
-        return {"ANTHROPIC_API_KEY": "prodAnthropicApiKey"}
+        return {"ANTHROPIC_API_KEY": "devEvalInfraAnthropicKey"}
 
     @property
     def final_output(self) -> Path | None:
