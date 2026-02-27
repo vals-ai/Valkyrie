@@ -49,7 +49,7 @@ def config():
     pass
 
 
-CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml")
+_CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml").expanduser()
 
 
 @config.command()
@@ -72,8 +72,8 @@ def init() -> None:
     }
 
     current_config: dict[str, str] = {}
-    if CONFIG_LOCATION.exists():
-        with open(CONFIG_LOCATION) as f:
+    if _CONFIG_LOCATION.exists():
+        with open(_CONFIG_LOCATION) as f:
             try:
                 current_config = yaml.safe_load(f)
             except Exception:
@@ -104,13 +104,12 @@ def init() -> None:
 
         collected_keys[key] = value
 
-    config_location = CONFIG_LOCATION.expanduser()
-    config_location.parent.mkdir(parents=True, exist_ok=True)
+    _CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(config_location, "w") as f:
+    with open(_CONFIG_LOCATION, "w") as f:
         yaml.dump(collected_keys, f, default_flow_style=False)
 
-    click.echo(click.style(f"\nConfig written to {config_location}", fg="green", bold=True))
+    click.echo(click.style(f"\nConfig written to {_CONFIG_LOCATION}", fg="green", bold=True))
 
 
 @config.command()
@@ -122,12 +121,11 @@ def modify(key: str, value: str) -> None:
 
     Example: harness config modify AWS_DEFAULT_REGION us-west-2
     """
-    config_location = CONFIG_LOCATION.expanduser()
 
-    if not config_location.exists():
+    if not _CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `harness config init` first.")
 
-    with open(config_location) as f:
+    with open(_CONFIG_LOCATION) as f:
         current: dict[str, str] = yaml.safe_load(f) or {}
 
     if key not in current:
@@ -135,7 +133,7 @@ def modify(key: str, value: str) -> None:
 
     current[key] = value
 
-    with open(config_location, "w") as f:
+    with open(_CONFIG_LOCATION, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"  {key} updated.", fg="green"))
