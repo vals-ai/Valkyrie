@@ -5,7 +5,6 @@ from typing import Any
 
 import boto3
 
-from tracker.exceptions import SecretsError
 from tracker.logger import get_logger
 
 logger = get_logger(__name__)
@@ -28,7 +27,4 @@ def fetch_aws_secret(secret_name: str) -> dict[str, Any] | str:
     try:
         return json.loads(secret_string)  # pyright: ignore[reportUnknownVariableType]
     except json.JSONDecodeError:
-        if isinstance(secret_string, str):
-            return secret_string
-
-        raise SecretsError(f"Invalid key, value was not detected: {secret_string}")
+        return secret_string
