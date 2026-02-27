@@ -47,7 +47,7 @@ def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
             "DAYTONA_TARGET": "test_target",
         }
 
-    monkeypatch.setattr("tracker.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
+    monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)
 
 
 @pytest.fixture(autouse=True)
