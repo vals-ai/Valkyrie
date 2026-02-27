@@ -36,7 +36,7 @@ _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_DEFAULT_REGION",
-    "AWS_S3_BUCKET",
+    "S3_BUCKET",
     "DAYTONA_SECRET_NAME",
 }
 
@@ -85,8 +85,8 @@ class TrackerService:
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
         if missing:
             raise TrackerServiceError(
-                f"Missing required config keys: {', '.join(sorted(missing))}."
-                + "Run `harness config init` to initialize the harness config or run harness config modify to change a value to a already created config"
+                f"Missing required config keys: {', '.join(sorted(missing))}. "
+                "Run `harness config init` to initialize the harness config or `harness config modify` to update an existing config"
             )
 
         for key, value in harness_config.items():
@@ -107,7 +107,7 @@ class TrackerService:
                 "aws_secret_access_key": flat["aws_secret_access_key"],
                 "aws_default_region": flat["aws_default_region"],
             },
-            "s3_bucket": flat["aws_s3_bucket"],
+            "s3_bucket": flat["s3_bucket"],
             "log_group": flat["log_group"],
             "log_retention_policy": int(flat["log_retention_policy"]),
             "daytona_secret_name": flat["daytona_secret_name"],
