@@ -120,4 +120,5 @@ class BaseAgentContract(ABC):
             install_cmd=self.install_cmd,
             artifacts=self.artifacts,
             final_output=str(self.final_output) if self.final_output else None,
+            secrets=self.secrets,
         )

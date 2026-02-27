@@ -44,11 +44,7 @@ def fetch_aws_secret(secret_name: str) -> dict[str, Any] | str:
 
 
 def resolve_secrets(secrets: dict[str, str]) -> dict[str, str]:
-    """Resolve AWS secret references to actual values for sandbox injection.
-
-    Each entry maps an environment variable name to an AWS Secrets Manager secret name.
-    - If the secret is a plain string, the entire string becomes the env var value.
-    - If the secret is a JSON object, the env var name is used as a key to extract the value.
+    """Resolve AWS secret references to actual values
 
     Args:
         secrets: Mapping of {ENV_VAR_NAME: aws_secret_name}.
@@ -57,7 +53,7 @@ def resolve_secrets(secrets: dict[str, str]) -> dict[str, str]:
         Mapping of {ENV_VAR_NAME: actual_secret_value}.
 
     Raises:
-        SecretsError: If a secret cannot be fetched or a key is missing from a JSON secret.
+        SecretsError: If a secret cannot be fetched or a key is missing.
     """
     if not secrets:
         return {}

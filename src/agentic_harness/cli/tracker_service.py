@@ -160,7 +160,6 @@ class TrackerService:
         task_ids: list[str] | None,
         slice_str: str | None,
         lambda_function: str | None = None,
-        secrets: dict[str, str] | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -172,7 +171,6 @@ class TrackerService:
             task_ids: Optional list of specific task IDs to run
             slice_str: Optional slice string for task selection
             lambda_function: Optional lambda function to invoke after benchmark
-            secrets: Mapping of env var names to AWS secret names for sandbox injection
 
         Returns:
             Run response with status, message, and results
@@ -183,7 +181,6 @@ class TrackerService:
         try:
             payload = StartBenchmarkRequest(
                 contract=contract,
-                secrets=secrets or {},
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
                 task_ids=task_ids,

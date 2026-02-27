@@ -341,7 +341,7 @@ async def process_task(
             sandbox_name=task_row.alias,
             image=task_data.docker_image,
             labels=labels,
-            env_vars=resolve_secrets(start_benchmark_request.secrets),
+            env_vars=resolve_secrets(start_benchmark_request.contract.secrets),
             resources=task_data.resources,
         ) as sandbox:
             try:

@@ -100,12 +100,7 @@ def get_agent_zip_stream(contract: AgentContractRequest) -> Generator[BinaryIO, 
             yield f
 
 
-def get_contract(contract_path: Path, agent_config: AgentConfig) -> tuple[AgentContractRequest, dict[str, str]]:
-    """Load an agent contract and return the request object and secrets mapping.
-
-    Returns:
-        Tuple of (AgentContractRequest, secrets) where secrets maps env var names to AWS secret names.
-    """
+def get_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
     try:
         spec = importlib.util.spec_from_file_location("contract", contract_path)
 
@@ -120,6 +115,6 @@ def get_contract(contract_path: Path, agent_config: AgentConfig) -> tuple[AgentC
 
         contract = Contract(agent_config)
 
-        return contract.to_request(), contract.secrets
+        return contract.to_request()
     except Exception as e:
         raise BundlerError(f"Failed to get contract from {contract_path}: {e}") from e
