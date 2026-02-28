@@ -15,10 +15,6 @@ class DCFAgentContract(BaseAgentContract):
         return ["run.py", "requirements.txt"]
 
     @property
-    def shared_artifacts(self) -> list[str]:
-        return ["model_library_agent", "tools"]
-
-    @property
     def install_cmd(self) -> str:
         return "pip install -r requirements.txt"
 
