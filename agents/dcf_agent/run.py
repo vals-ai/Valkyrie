@@ -61,7 +61,7 @@ def run_agent(problem_statement: str, model: str, max_turns: int = 100) -> None:
         log.info("Turn %d", turn + 1)
         response = client.messages.create(
             model=sdk_model,
-            max_tokens=8096,
+            max_tokens=32000,
             tools=TOOLS,
             messages=messages,
         )
@@ -73,20 +73,33 @@ def run_agent(problem_statement: str, model: str, max_turns: int = 100) -> None:
             log.info("Agent finished (end_turn)")
             break
 
+        # If truncated, tell the model and let it recover
+        if response.stop_reason == "max_tokens":
+            log.warning("Response truncated (max_tokens); asking model to continue")
+            messages.append({"role": "user", "content": "Your last response was truncated. Please continue."})
+            continue
+
         tool_results = []
         done = False
         for block in response.content:
             if block.type != "tool_use":
                 continue
 
-            log.info("Tool call: %s %s", block.name, getattr(block, "input", {}))
+            inputs = getattr(block, "input", {}) or {}
+            log.info("Tool call: %s %s", block.name, inputs)
 
             if block.name == "stop":
                 done = True
                 tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": ""})
 
             elif block.name == "bash":
-                output = run_bash(block.input["command"])
+                command = inputs.get("command")
+                if not command:
+                    log.warning("bash tool called with no command, skipping")
+                    tool_results.append({"type": "tool_result", "tool_use_id": block.id,
+                                         "content": json.dumps({"exit_code": 1, "stdout": "", "stderr": "no command provided"})})
+                    continue
+                output = run_bash(command)
                 parsed = json.loads(output)
                 log.info("exit_code=%d stdout=%s", parsed["exit_code"], parsed["stdout"][:500])
                 if parsed["stderr"]:
