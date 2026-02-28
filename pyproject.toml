@@ -12,7 +12,7 @@ dependencies = [
   "python-dotenv",
   "tracker",
   "valsai>=0.1.2",
-  "model_library",
+  "model_library>=0.1.13",
 ]
 
 [project.scripts]

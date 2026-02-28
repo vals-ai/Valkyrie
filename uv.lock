@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.12"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -33,7 +33,7 @@ dev = [
 requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "model-library" },
+    { name = "model-library", specifier = ">=0.1.13" },
     { name = "pypandoc" },
     { name = "python-dotenv" },
     { name = "tracker", editable = "services/tracker" },
@@ -748,6 +748,15 @@ wheels = [
 ]
 
 [[package]]
+name = "execnet"
+version = "2.1.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bf/89/780e11f9588d9e7128a3f87788354c7946a9cbb1401ad38a48c4db9a4f07/execnet-2.1.2.tar.gz", hash = "sha256:63d83bfdd9a23e35b9c6a3261412324f964c2ec8dcd8d3c6916ee9373e0befcd", size = 166622, upload-time = "2025-11-12T09:56:37.75Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ab/84/02fc1827e8cdded4aa65baef11296a9bbe595c474f0d6d758af082d849fd/execnet-2.1.2-py3-none-any.whl", hash = "sha256:67fba928dd5a544b783f6056f449e5e3931a5c378b128bc18501f7ea79e296ec", size = 40708, upload-time = "2025-11-12T09:56:36.333Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.128.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1059,7 +1068,7 @@ wheels = [
 
 [[package]]
 name = "google-genai"
-version = "1.59.0"
+version = "1.65.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1073,9 +1082,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "websockets" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/40/34/c03bcbc759d67ac3d96077838cdc1eac85417de6ea3b65b313fe53043eee/google_genai-1.59.0.tar.gz", hash = "sha256:0b7a2dc24582850ae57294209d8dfc2c4f5fcfde0a3f11d81dc5aca75fb619e2", size = 487374, upload-time = "2026-01-15T20:29:46.619Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/79/f9/cc1191c2540d6a4e24609a586c4ed45d2db57cfef47931c139ee70e5874a/google_genai-1.65.0.tar.gz", hash = "sha256:d470eb600af802d58a79c7f13342d9ea0d05d965007cae8f76c7adff3d7a4750", size = 497206, upload-time = "2026-02-26T00:20:33.824Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/aa/53/6d00692fe50d73409b3406ae90c71bc4499c8ae7fac377ba16e283da917c/google_genai-1.59.0-py3-none-any.whl", hash = "sha256:59fc01a225d074fe9d1e626c3433da292f33249dadce4deb34edea698305a6df", size = 719099, upload-time = "2026-01-15T20:29:44.604Z" },
+    { url = "https://files.pythonhosted.org/packages/68/3c/3fea4e7c91357c71782d7dcaad7a2577d636c90317e003386893c25bc62c/google_genai-1.65.0-py3-none-any.whl", hash = "sha256:68c025205856919bc03edb0155c11b4b833810b7ce17ad4b7a9eeba5158f6c44", size = 724429, upload-time = "2026-02-26T00:20:32.186Z" },
 ]
 
 [package.optional-dependencies]
@@ -1568,7 +1577,7 @@ wheels = [
 
 [[package]]
 name = "model-library"
-version = "0.1.7"
+version = "0.1.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ai21" },
@@ -1581,6 +1590,7 @@ dependencies = [
     { name = "openai" },
     { name = "pillow" },
     { name = "pydantic" },
+    { name = "pytest-xdist" },
     { name = "pyyaml" },
     { name = "redis" },
     { name = "rich" },
@@ -1588,9 +1598,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "xai-sdk" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6d/cc/9805d7f7eea50a30898509c2bbe2035f359b1564a830650bd5f13236a94a/model_library-0.1.7.tar.gz", hash = "sha256:509d8070d1c4e569eec50ed892b676f88018570612aa429258a21c231c98dce4", size = 265250, upload-time = "2026-01-12T19:12:52.237Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ad/46/2e1aabe84e856b0fdc5bf96e4912b35755830252ef1b0e3bbb9283dd14e5/model_library-0.1.13.tar.gz", hash = "sha256:27b8d79c42a858918606f9cd7f646db5fd09785e5a9119eee75e398273c9d0fb", size = 318168, upload-time = "2026-02-23T07:58:50.94Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/ca/57bc826d79dbc3a24ee743de7b44d7ca4451da14a08f1744b29880642e2b/model_library-0.1.7-py3-none-any.whl", hash = "sha256:f6a43c09720ca7af9a1390ea277a8d9bc5caeabd2b5131c9829ae888e55919db", size = 128447, upload-time = "2026-01-12T19:12:50.485Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/53/5795940cb1d77b6679f912e171d8a8d125cdbd550c55849f89e57fa71af8/model_library-0.1.13-py3-none-any.whl", hash = "sha256:f851a7b4b71fadf69bbed055fb3072630e7a7c9a63036a584a46beccd9510c44", size = 155836, upload-time = "2026-02-23T07:58:48.982Z" },
 ]
 
 [[package]]
@@ -2564,6 +2574,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/90/2c/8af215c0f776415f3590cac4f9086ccefd6fd463befeae41cd4d3f193e5a/pytest_asyncio-1.3.0.tar.gz", hash = "sha256:d7f52f36d231b80ee124cd216ffb19369aa168fc10095013c6b014a34d3ee9e5", size = 50087, upload-time = "2025-11-10T16:07:47.256Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e5/35/f8b19922b6a25bc0880171a2f1a003eaeb93657475193ab516fd87cac9da/pytest_asyncio-1.3.0-py3-none-any.whl", hash = "sha256:611e26147c7f77640e6d0a92a38ed17c3e9848063698d5c93d5aa7aa11cebff5", size = 15075, upload-time = "2025-11-10T16:07:45.537Z" },
+]
+
+[[package]]
+name = "pytest-xdist"
+version = "3.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "execnet" },
+    { name = "pytest" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/78/b4/439b179d1ff526791eb921115fca8e44e596a13efeda518b9d845a619450/pytest_xdist-3.8.0.tar.gz", hash = "sha256:7e578125ec9bc6050861aa93f2d59f1d8d085595d6551c2c90b6f4fad8d3a9f1", size = 88069, upload-time = "2025-07-01T13:30:59.346Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ca/31/d4e37e9e550c2b92a9cbc2e4d0b7420a27224968580b5a447f420847c975/pytest_xdist-3.8.0-py3-none-any.whl", hash = "sha256:202ca578cfeb7370784a8c33d6d05bc6e13b4f25b5053c30a152269fd10f0b88", size = 46396, upload-time = "2025-07-01T13:30:56.632Z" },
 ]
 
 [[package]]
