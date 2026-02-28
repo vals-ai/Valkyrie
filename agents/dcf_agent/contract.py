@@ -10,8 +10,12 @@ class DCFAgentContract(BaseAgentContract):
         return "dcf_agent"
 
     @property
+    def artifacts(self) -> list[str]:
+        return ["requirements.txt"]
+
+    @property
     def install_cmd(self) -> str:
-        return ""  # falsy string to skip
+        return "pip install -r requirements.txt"  # falsy string to skip
 
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
         return f"echo '=== Problem Statement ===' && cat {problem_statement_path} && echo '=== Workspace Files ===' && find /workspace -type f | sort"
