@@ -92,6 +92,19 @@ class BaseAgentContract(ABC):
         return []
 
     @property
+    def shared_artifacts(self) -> list[str]:
+        """
+        Shared files and directories to bundle alongside agent artifacts.
+
+        Paths are relative to the agents/ directory (not agents/<name>/).
+        Use this to include shared modules like model_library_agent or tools.
+
+        Returns:
+            List of paths relative to agents/ (default: empty list)
+        """
+        return []
+
+    @property
     @abstractmethod
     def final_output(self) -> Path | None:
         """
@@ -120,5 +133,6 @@ class BaseAgentContract(ABC):
             install_cmd=self.install_cmd,
             env=self.env,
             artifacts=self.artifacts,
+            shared_artifacts=self.shared_artifacts,
             final_output=str(self.final_output) if self.final_output else None,
         )

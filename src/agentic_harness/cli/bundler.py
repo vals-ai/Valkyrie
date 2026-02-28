@@ -80,6 +80,12 @@ def get_agent_zip_stream(contract: AgentContractRequest) -> Generator[BinaryIO, 
     if missing_artifacts:
         raise BundlerError(f"Missing artifacts: {missing_artifacts}")
 
+    agents_root = Path("agents")
+    shared = [agents_root / sa for sa in contract.shared_artifacts]
+    missing_shared = [s for s in shared if not s.exists()]
+    if missing_shared:
+        raise BundlerError(f"Missing shared artifacts: {missing_shared}")
+
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         bundle_dir = temp_path / contract.name
@@ -92,6 +98,15 @@ def get_agent_zip_stream(contract: AgentContractRequest) -> Generator[BinaryIO, 
             else:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(artifact, dest)
+
+        for shared_artifact in shared:
+            rel = shared_artifact.relative_to(agents_root)
+            dest = bundle_dir / rel
+            if shared_artifact.is_dir():
+                shutil.copytree(shared_artifact, dest)
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(shared_artifact, dest)
 
         zip_path = temp_path / f"{contract.name}.zip"
         _zip_directory_to_file(bundle_dir, zip_path)

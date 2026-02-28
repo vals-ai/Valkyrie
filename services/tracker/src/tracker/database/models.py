@@ -51,6 +51,7 @@ class BenchmarkStatus(str, Enum):
 class AgentContractRequest(BaseModel):
     name: str
     artifacts: list[str] = []
+    shared_artifacts: list[str] = []
     install_cmd: str
     run_cmd: str
     final_output: str | None = None
