@@ -2,8 +2,11 @@
 
 import argparse
 import asyncio
+import logging
 import sys
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, force=True)
 
 sys.path.insert(0, "/bundle/dcf_agent")
 
