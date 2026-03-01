@@ -15,6 +15,8 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
+    PreviewBenchmarkRequest,
+    PreviewBenchmarkResponse,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -132,6 +134,32 @@ class TrackerService:
             return response
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to start benchmark: {e}") from e
+
+    def preview_benchmark(
+        self, benchmark_name: str, task_ids: list[str] | None, slice_str: str | None
+    ) -> PreviewBenchmarkResponse:
+        """
+        Preview benchmark run details before creating benchmark row.
+
+        Args:
+            benchmark_name: Name of benchmark dataset
+            task_ids: Optional list of task IDs to run
+            slice_str: Optional task slice string
+
+        Returns:
+            PreviewBenchmarkResponse with resolved task count and sample
+        """
+        try:
+            payload = PreviewBenchmarkRequest(benchmark_name=benchmark_name, task_ids=task_ids, slice_str=slice_str)
+            response = self._client.post(f"{self._base_url}/preview-benchmark", json=payload.model_dump())
+
+            if response.status_code != 200:
+                details = response.json().get("detail", response.text)
+                raise TrackerServiceError(f"Failed to preview benchmark: {details}")
+
+            return PreviewBenchmarkResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to preview benchmark: {e}") from e
 
     def fetch_benchmark(self, benchmark_id: UUID) -> FetchBenchmarkResponse:
         """

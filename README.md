@@ -111,7 +111,8 @@ harness benchmark start \
   --concurrency 1 \
   --lambda <aws_lambda_function_name> \
   --task-ids "task_1_id,task_2_id" \
-  --slice "start:stop:step"
+  --slice "start:stop:step" \
+  --auto-approve
 ```
 
 Flags
@@ -126,7 +127,12 @@ Flags
 --kwarg (-k): Single kwarg that is passed into the agent run command
 --task-ids: comma separated list of task ids to run
 --task-ids-file: Path to a .txt file with tasks newline separated
+--auto-approve: Skip pre-run plan confirmation (recommended for scripts/automation)
 ```
+
+By default, `harness benchmark start` shows a high-level run plan before kickoff and asks for confirmation.
+The plan includes benchmark/model details, resolved instance count, a task preview sample, and any `-k/--kwarg`
+parameters (for example `temperature`, `top_p`, or `reasoning_effort`).
 
 Starts the benchmark and exits once successfully created.
 

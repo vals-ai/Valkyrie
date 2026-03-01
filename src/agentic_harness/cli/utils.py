@@ -16,6 +16,7 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FinalViewResponse,
     Order,
+    PreviewBenchmarkResponse,
     StartBenchmarkResponse,
 )
 
@@ -198,6 +199,54 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
             fg="cyan",
         )
     )
+    click.echo()
+
+
+def format_benchmark_start_plan(
+    benchmark: str,
+    agent_path: Path,
+    agent_name: str,
+    model: str | None,
+    concurrency: int,
+    task_ids: list[str] | None,
+    slice_str: str | None,
+    kwargs: dict[str, str],
+    lambda_function: str | None,
+    preview: PreviewBenchmarkResponse,
+) -> None:
+    task_source = "all tasks"
+    if task_ids:
+        task_source = f"explicit task IDs ({len(task_ids)})"
+    elif slice_str:
+        task_source = f"slice: {slice_str}"
+
+    click.echo()
+    click.echo("┌─ Run Plan " + "─" * 67)
+    click.echo(f"│ Benchmark:         {benchmark}")
+    click.echo(f"│ Agent:             {agent_name} ({agent_path})")
+    click.echo(f"│ Model:             {model or 'contract default'}")
+    click.echo(f"│ Concurrency:       {concurrency}")
+    click.echo(f"│ Task source:       {task_source}")
+    click.echo(f"│ Instances to run:  {preview.task_count}")
+    click.echo(f"│ Lambda:            {lambda_function or 'none'}")
+    click.echo("└" + "─" * 78)
+
+    if kwargs:
+        click.echo(click.style("Model/run parameters:", bold=True))
+        for key, value in sorted(kwargs.items()):
+            click.echo(f"  - {key}: {value}")
+    else:
+        click.echo(click.style("Model/run parameters:", bold=True))
+        click.echo("  - none")
+
+    if preview.task_ids_preview:
+        click.echo(click.style("Task preview:", bold=True))
+        for task_id in preview.task_ids_preview:
+            click.echo(f"  - {task_id}")
+        if preview.has_more_tasks:
+            remaining_count = preview.task_count - len(preview.task_ids_preview)
+            click.echo(f"  ... and {remaining_count} more")
+
     click.echo()
 
 

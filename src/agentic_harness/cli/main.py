@@ -15,6 +15,7 @@ from agentic_harness.cli.utils import (
     check_tracker_service_health,
     download_agent_outputs,
     download_final_view,
+    format_benchmark_start_plan,
     format_benchmark_status,
     format_start_benchmark_response,
     paginate_benchmarks,
@@ -108,6 +109,12 @@ def agent():
     type=(str, str),
     help="Kwargs as key value (e.g., -k temperature 7 -k max_tokens 1000)",
 )
+@click.option(
+    "--auto-approve",
+    is_flag=True,
+    default=False,
+    help="Skip pre-run plan approval (recommended for programmatic use).",
+)
 def start(
     agent: Path,
     model: str | None,
@@ -118,6 +125,7 @@ def start(
     task_ids_file: Path | None,
     slice_str: str | None,
     kwargs: tuple[tuple[str, str]],
+    auto_approve: bool,
 ):
     """
     Run an agent on a benchmark.
@@ -132,22 +140,11 @@ def start(
         lines = task_ids_file.read_text().splitlines()
         task_ids = ",".join(line.strip() for line in lines if line.strip())
 
-    click.echo("Arguments:")
-    click.echo(f"  - Benchmark: {benchmark}")
-    click.echo(f"  - Agent: {agent}")
-    if model:
-        click.echo(f"  - Model: {model}")
-    click.echo(f"  - Concurrency: {concurrency}")
-    click.echo(f"  - Slice: {slice_str}")
-    if task_ids:
-        click.echo(f"  - Task IDs: {task_ids[:100]}{'...' if len(task_ids) > 100 else ''}")
-    else:
-        click.echo("  - Task IDs: all tasks")
-
     formatted_task_ids: list[str] | None = None
     if task_ids:
-        formatted_task_ids = task_ids.split(",")
-        click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
+        formatted_task_ids = [task_id.strip() for task_id in task_ids.split(",") if task_id.strip()]
+        if not formatted_task_ids:
+            raise click.UsageError("No valid task IDs were provided")
 
     try:
         contract_path = agent / "contract.py"
@@ -157,7 +154,8 @@ def start(
         if model:
             config_kwargs["model"] = model
 
-        config_kwargs["kwargs"] = {key: value for key, value in kwargs}
+        run_kwargs = {key: value for key, value in kwargs}
+        config_kwargs["kwargs"] = run_kwargs
         agent_config = AgentConfig(**config_kwargs)
 
         contract = get_contract(contract_path, agent_config)
@@ -165,6 +163,27 @@ def start(
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
+
+            if not auto_approve:
+                preview = tracker.preview_benchmark(benchmark, formatted_task_ids, slice_str)
+                format_benchmark_start_plan(
+                    benchmark=benchmark,
+                    agent_path=agent,
+                    agent_name=contract.name,
+                    model=model,
+                    concurrency=concurrency,
+                    task_ids=formatted_task_ids,
+                    slice_str=slice_str,
+                    kwargs=run_kwargs,
+                    lambda_function=lambda_function,
+                    preview=preview,
+                )
+
+                if not click.confirm("Proceed with benchmark start?", default=True):
+                    click.echo(click.style("Benchmark start cancelled.", fg="yellow"))
+                    return
+            else:
+                click.echo(click.style("Auto-approve enabled. Skipping pre-run confirmation.", fg="yellow"))
 
             click.echo("\r\033[KZipping agent artifacts...", nl=False)
 
