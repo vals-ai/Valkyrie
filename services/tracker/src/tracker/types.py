@@ -43,6 +43,25 @@ class StartBenchmarkRequest(BaseModel):
         return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL)
 
 
+class PreviewBenchmarkRequest(BaseModel):
+    benchmark_name: str
+    task_ids: list[str] | None = None
+    slice_str: str | None = None
+
+    @property
+    def benchmark_service(self) -> BenchmarkServiceClient:
+        from tracker.utils import create_benchmark_service_client
+
+        return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL)
+
+
+class PreviewBenchmarkResponse(BaseModel):
+    benchmark_name: str
+    task_count: int
+    task_ids_preview: list[str]
+    has_more_tasks: bool
+
+
 class StartBenchmarkErrorResponse(BaseModel):
     benchmark_id: UUID
     error_message: str

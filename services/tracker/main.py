@@ -32,6 +32,8 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    PreviewBenchmarkRequest,
+    PreviewBenchmarkResponse,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -58,6 +60,7 @@ from tracker.utils import (
 logger = get_logger(__name__)
 
 app = FastAPI()
+PREVIEW_TASK_IDS_LIMIT = 10
 
 
 # Ignore verbose health check logs
@@ -138,6 +141,41 @@ async def upload_contract_to_s3(
         "status": "success",
         "message": "Contract uploaded successfully",
     }
+
+
+@app.post("/preview-benchmark")
+async def preview_benchmark(request: PreviewBenchmarkRequest) -> PreviewBenchmarkResponse:
+    """
+    Preview benchmark details before creating a benchmark run.
+
+    Usage:
+    curl -X POST http://<endpoint>/preview-benchmark \
+      -H "Content-Type: application/json" \
+      -d '{"benchmark_name": "swebench", "task_ids": ["astropy__astropy-12907"]}'
+
+    Returns:
+        PreviewBenchmarkResponse
+    """
+    benchmark_service = request.benchmark_service
+
+    _ = await benchmark_service.health_check()
+
+    try:
+        verify_response = await benchmark_service.verify_task_ids(
+            task_ids=request.task_ids, slice_str=request.slice_str
+        )
+    except Exception as e:
+        raise TrackerServiceError(f"Failed to preview benchmark: {e}") from e
+
+    task_ids_preview = verify_response.task_ids[:PREVIEW_TASK_IDS_LIMIT]
+    task_count = len(verify_response.task_ids)
+
+    return PreviewBenchmarkResponse(
+        benchmark_name=request.benchmark_name,
+        task_count=task_count,
+        task_ids_preview=task_ids_preview,
+        has_more_tasks=task_count > len(task_ids_preview),
+    )
 
 
 @app.post("/start-benchmark")

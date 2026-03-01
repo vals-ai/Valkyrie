@@ -114,6 +114,75 @@ class TestFastapiServer:
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
+    async def test_preview_benchmark(self, monkeypatch: MonkeyPatch):
+        """
+        Test preview benchmark endpoint.
+
+        Test Cases:
+            - Returns 200 OK
+            - Returns preview task sample and truncation metadata
+        """
+
+        expected_task_ids = [f"task_{i}" for i in range(15)]
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=expected_task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post(
+            "/preview-benchmark",
+            json={"benchmark_name": "swebench", "task_ids": ["task_1"], "slice_str": "1-20"},
+        )
+
+        assert response.status_code == 200
+        preview = response.json()
+
+        assert preview["benchmark_name"] == "swebench"
+        assert preview["task_count"] == len(expected_task_ids)
+        assert preview["task_ids_preview"] == expected_task_ids[:10]
+        assert preview["has_more_tasks"] is True
+
+    async def test_preview_benchmark_forwards_verify_params(self, monkeypatch: MonkeyPatch):
+        """
+        Test that preview forwards task filter arguments to benchmark service.
+        """
+
+        captured: dict[str, Any] = {}
+
+        async def _mock_verify_task_ids(*_args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
+            captured["task_ids"] = kwargs.get("task_ids")
+            captured["slice_str"] = kwargs.get("slice_str")
+            return VerifyTaskIdsResponse(task_ids=["task_1", "task_2"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        task_ids = ["task_a", "task_b"]
+        slice_str = ":20"
+        response = client.post(
+            "/preview-benchmark",
+            json={"benchmark_name": "swebench", "task_ids": task_ids, "slice_str": slice_str},
+        )
+
+        assert response.status_code == 200
+        assert captured["task_ids"] == task_ids
+        assert captured["slice_str"] == slice_str
+
+    async def test_preview_benchmark_error_handling(self, monkeypatch: MonkeyPatch):
+        """
+        Test preview benchmark error handling when verify fails.
+        """
+
+        async def _mock_verify_task_ids_error(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise Exception("Preview verification failed")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids_error)
+
+        response = client.post("/preview-benchmark", json={"benchmark_name": "swebench"})
+
+        assert response.status_code == 500
+        assert "Preview verification failed" in response.json().get("detail", "")
+
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test fetch benchmark of the fastapi server.
