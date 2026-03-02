@@ -90,7 +90,7 @@ Binary versions are released when commits are tagged:
 | Topic | Link |
 | --- | --- |
 | Lambda integration | [LAMBDA_USAGE.md](LAMBDA_USAGE.md) |
-| Agent contracts | [agents/CONTRACTS.md](agents/CONTRACTS.md) |
-| Tracker service | [services/tracker/README.md](services/tracker/README.md) |
-| Database & migrations | [services/tracker/src/tracker/database/README.md](services/tracker/src/tracker/database/README.md) |
-| Infrastructure (AWS CDK) | [infra/README.md](infra/README.md) |
+| Agent contracts | [CONTRACTS.md](CONTRACTS.md) |
+| Tracker service | [TRACKER.md](TRACKER.md) |
+| Database & migrations | [DATABASE.md](DATABASE.md) |
+| Infrastructure (AWS CDK) | [INFRASTRUCTURE.md](INFRASTRUCTURE.md) |

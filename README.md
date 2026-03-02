@@ -109,9 +109,9 @@ harness agent outputs --benchmark-id <id> --output-dir ./outputs
 
 | Topic | Link |
 | --- | --- |
-| Local development | [DEVELOPMENT.md](DEVELOPMENT.md) |
-| Lambda integration | [LAMBDA_USAGE.md](LAMBDA_USAGE.md) |
-| Agent contracts | [agents/CONTRACTS.md](agents/CONTRACTS.md) |
-| Tracker service | [services/tracker/README.md](services/tracker/README.md) |
-| Database & migrations | [services/tracker/src/tracker/database/README.md](services/tracker/src/tracker/database/README.md) |
-| Infrastructure (AWS CDK) | [infra/README.md](infra/README.md) |
+| Local development | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
+| Lambda integration | [docs/LAMBDA_USAGE.md](docs/LAMBDA_USAGE.md) |
+| Agent contracts | [docs/CONTRACTS.md](docs/CONTRACTS.md) |
+| Tracker service | [docs/TRACKER.md](docs/TRACKER.md) |
+| Database & migrations | [docs/DATABASE.md](docs/DATABASE.md) |
+| Infrastructure (AWS CDK) | [docs/INFRASTRUCTURE.md](docs/INFRASTRUCTURE.md) |
