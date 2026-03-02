@@ -1,12 +1,15 @@
 #!/bin/bash
 set -e
 
-echo "Running database migrations..."
-uv run --no-sync alembic upgrade head
+# Only run migrations when starting the API server, not the worker
+if echo "$@" | grep -q "uvicorn"; then
+    echo "Running database migrations..."
+    uv run --no-sync alembic upgrade head
 
-echo "Checking for uncommitted model changes..."
-if ! uv run --no-sync alembic check; then
-    echo "WARNING: Model changes detected that may need a new migration."
+    echo "Checking for uncommitted model changes..."
+    if ! uv run --no-sync alembic check; then
+        echo "WARNING: Model changes detected that may need a new migration."
+    fi
 fi
 
 echo "Starting application..."

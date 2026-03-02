@@ -1,4 +1,4 @@
-"""Tracker service stack - public-facing API gateway to all other services."""
+"""Tracker service stack - API and worker deployed as independent Fargate services."""
 
 from typing import Any
 
@@ -10,7 +10,6 @@ from aws_cdk import (
     aws_ecs,
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
-    aws_iam,
     aws_logs,
     aws_rds,
     aws_route53,
@@ -42,14 +41,27 @@ from constants import (
     TRACKER_MIN_TASKS,
     TRACKER_PORT,
     TRACKER_SCALING_CPU_PERCENT,
+    WORKER_CPU,
+    WORKER_MAX_TASKS,
+    WORKER_MEMORY,
+    WORKER_MIN_TASKS,
+    WORKER_SCALING_CPU_PERCENT,
 )
 from constructs import Construct
 
+_ARM64_PLATFORM = aws_ecs.RuntimePlatform(
+    cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
+    operating_system_family=aws_ecs.OperatingSystemFamily.LINUX,
+)
+
 
 class TrackerStack(Stack):
-    """Tracker service: public API that orchestrates benchmark runs."""
+    """Tracker stack: API and worker+Redis as independent Fargate services.
 
-    _SERVICE_NAME: str = "Tracker"
+    The worker task contains a Redis sidecar and is registered via Cloud Map
+    as ``worker.local``. The tracker API connects to Redis at ``worker.local:6379``
+    to enqueue tasks, while the worker consumes from ``localhost:6379``.
+    """
 
     def __init__(
         self,
@@ -64,25 +76,39 @@ class TrackerStack(Stack):
     ):
         super().__init__(scope, id, **kwargs)
 
-        # RDS PostgreSQL instance
+        # Docker image shared by tracker API and worker (different CMD overrides)
+        tracker_image = aws_ecs.ContainerImage.from_asset(
+            "../services/tracker",
+            file="Dockerfile",
+            platform=Platform.LINUX_ARM64,
+        )
+
+        # Shared environment variables for both services
+        shared_env = {
+            "BROKER_ENVIRONMENT": "production",
+            "BENCHMARK_SERVICE_URL": f"http://swebench.{NAMESPACE}:{8000}",
+            "AWS_S3_BUCKET": bucket.bucket_name,
+        }
+
+        # ── RDS ──────────────────────────────────────────────────────────
+
         db_security_group = aws_ec2.SecurityGroup(
             self,
-            f"{self._SERVICE_NAME}DbSecurityGroup",
+            "TrackerDbSecurityGroup",
             vpc=vpc,
             description="Security group for Tracker RDS instance",
             allow_all_outbound=False,
         )
 
-        # RDS credentials stored in Secrets Manager
         db_credentials = aws_rds.DatabaseSecret(
             self,
-            f"{self._SERVICE_NAME}DbCredentials",
+            "TrackerDbCredentials",
             username=POSTGRES_USER,
         )
 
         self.database = aws_rds.DatabaseInstance(
             self,
-            f"{self._SERVICE_NAME}Database",
+            "TrackerDatabase",
             engine=aws_rds.DatabaseInstanceEngine.postgres(
                 version=aws_rds.PostgresEngineVersion.VER_16,
             ),
@@ -93,34 +119,45 @@ class TrackerStack(Stack):
             credentials=aws_rds.Credentials.from_secret(db_credentials),
             database_name=POSTGRES_DB,
             allocated_storage=RDS_ALLOCATED_STORAGE_GB,
-            publicly_accessible=True,  # Required for public subnet, access controlled by security group
+            publicly_accessible=True,
             deletion_protection=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             backup_retention=Duration.days(7),
         )
 
-        # fargate task
-        task_def = aws_ecs.FargateTaskDefinition(
+        db_env = {
+            "DB_HOST": self.database.db_instance_endpoint_address,
+            "DB_PORT": self.database.db_instance_endpoint_port,
+            "DB_NAME": POSTGRES_DB,
+        }
+
+        db_secrets = {
+            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials, field="username"),
+            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
+        }
+
+        # ── Worker + Redis service ───────────────────────────────────────
+        # Redis runs as a sidecar in the worker task. The worker service is
+        # registered in Cloud Map as ``worker.local`` so the tracker API can
+        # reach Redis at ``worker.local:6379``.
+
+        worker_task_def = aws_ecs.FargateTaskDefinition(
             self,
-            f"{self._SERVICE_NAME}TaskDef",
-            cpu=TRACKER_CPU,
-            memory_limit_mib=TRACKER_MEMORY,
-            runtime_platform=aws_ecs.RuntimePlatform(
-                cpu_architecture=aws_ecs.CpuArchitecture.X86_64,
-                operating_system_family=aws_ecs.OperatingSystemFamily.LINUX,
-            ),
+            "WorkerTaskDef",
+            cpu=WORKER_CPU,
+            memory_limit_mib=WORKER_MEMORY,
+            runtime_platform=_ARM64_PLATFORM,
         )
 
-        # redis sidecar container
-        redis_container = task_def.add_container(
-            f"{self._SERVICE_NAME}RedisContainer",
+        redis_container = worker_task_def.add_container(
+            "WorkerRedisContainer",
             container_name="redis",
             image=aws_ecs.ContainerImage.from_registry("redis:7-alpine"),
             logging=aws_ecs.LogDriver.aws_logs(
-                stream_prefix=f"{self._SERVICE_NAME}Redis",
+                stream_prefix="WorkerRedis",
                 log_group=aws_logs.LogGroup(
                     self,
-                    f"{self._SERVICE_NAME}RedisLogGroup",
+                    "WorkerRedisLogGroup",
                     retention=aws_logs.RetentionDays.ONE_WEEK,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
@@ -132,39 +169,96 @@ class TrackerStack(Stack):
                 start_period=Duration.seconds(REDIS_HEALTH_START_PERIOD_SECONDS),
                 timeout=Duration.seconds(CONTAINER_HEALTH_TIMEOUT_SECONDS),
             ),
+            port_mappings=[aws_ecs.PortMapping(container_port=REDIS_PORT)],
         )
-        redis_container.add_port_mappings(aws_ecs.PortMapping(container_port=REDIS_PORT))
 
-        tracker_container = task_def.add_container(
-            f"{self._SERVICE_NAME}Container",
-            image=aws_ecs.ContainerImage.from_asset(
-                "../services/tracker",
-                file="Dockerfile",
-                platform=Platform.LINUX_AMD64,
-            ),
+        worker_container = worker_task_def.add_container(
+            "WorkerContainer",
+            image=tracker_image,
             logging=aws_ecs.LogDriver.aws_logs(
-                stream_prefix=self._SERVICE_NAME,
+                stream_prefix="Worker",
                 log_group=aws_logs.LogGroup(
                     self,
-                    f"{self._SERVICE_NAME}LogGroup",
+                    "WorkerLogGroup",
+                    retention=aws_logs.RetentionDays.ONE_WEEK,
+                    removal_policy=cdk.RemovalPolicy.DESTROY,
+                ),
+            ),
+            environment={
+                **shared_env,
+                **db_env,
+                "REDIS_URL": f"redis://localhost:{REDIS_PORT}",
+            },
+            secrets=db_secrets,
+            command=["uv", "run", "--no-sync", "taskiq", "worker", "tracker.config:broker", "tracker.utils"],
+        )
+
+        worker_container.add_container_dependencies(
+            aws_ecs.ContainerDependency(
+                container=redis_container,
+                condition=aws_ecs.ContainerDependencyCondition.HEALTHY,
+            ),
+        )
+
+        worker_task_def.default_container = worker_container
+
+        worker_service = aws_ecs.FargateService(
+            self,
+            "WorkerService",
+            cluster=cluster,
+            task_definition=worker_task_def,
+            desired_count=WORKER_MIN_TASKS,
+            service_name="Worker",
+            circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
+            assign_public_ip=True,
+            cloud_map_options=aws_ecs.CloudMapOptions(
+                name="worker",
+                cloud_map_namespace=namespace,
+                container=redis_container,
+                container_port=REDIS_PORT,
+            ),
+        )
+
+        # Worker auto-scaling
+        worker_scaling = worker_service.auto_scale_task_count(
+            min_capacity=WORKER_MIN_TASKS,
+            max_capacity=WORKER_MAX_TASKS,
+        )
+        worker_scaling.scale_on_cpu_utilization(
+            "WorkerCpuScaling",
+            target_utilization_percent=WORKER_SCALING_CPU_PERCENT,
+        )
+
+        # ── Tracker API service ──────────────────────────────────────────
+
+        tracker_task_def = aws_ecs.FargateTaskDefinition(
+            self,
+            "TrackerTaskDef",
+            cpu=TRACKER_CPU,
+            memory_limit_mib=TRACKER_MEMORY,
+            runtime_platform=_ARM64_PLATFORM,
+        )
+
+        tracker_task_def.add_container(
+            "TrackerContainer",
+            image=tracker_image,
+            logging=aws_ecs.LogDriver.aws_logs(
+                stream_prefix="Tracker",
+                log_group=aws_logs.LogGroup(
+                    self,
+                    "TrackerLogGroup",
                     retention=aws_logs.RetentionDays.ONE_WEEK,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
             ),
             port_mappings=[aws_ecs.PortMapping(container_port=TRACKER_PORT)],
             environment={
-                "REDIS_URL": f"redis://localhost:{REDIS_PORT}",
-                "BROKER_ENVIRONMENT": "production",
-                "BENCHMARK_SERVICE_URL": f"http://swebench.{NAMESPACE}:{8000}",
-                "AWS_S3_BUCKET": bucket.bucket_name,
-                "DB_HOST": self.database.db_instance_endpoint_address,
-                "DB_PORT": self.database.db_instance_endpoint_port,
-                "DB_NAME": POSTGRES_DB,
+                **shared_env,
+                **db_env,
+                "REDIS_URL": f"redis://worker.{NAMESPACE}:{REDIS_PORT}",
             },
-            secrets={
-                "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials, field="username"),
-                "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
-            },
+            secrets=db_secrets,
+            command=["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
             health_check=aws_ecs.HealthCheck(
                 command=["CMD-SHELL", f"curl -f http://localhost:{TRACKER_PORT}/health || exit 1"],
                 interval=Duration.seconds(CONTAINER_HEALTH_INTERVAL_SECONDS),
@@ -174,58 +268,47 @@ class TrackerStack(Stack):
             ),
         )
 
-        # sidecar dependencies
-        tracker_container.add_container_dependencies(
-            aws_ecs.ContainerDependency(
-                container=redis_container,
-                condition=aws_ecs.ContainerDependencyCondition.HEALTHY,
-            ),
-        )
-
-        task_def.default_container = tracker_container
-
-        # fargate service with public domain
         self.service = aws_ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
-            f"{self._SERVICE_NAME}Service",
+            "TrackerService",
             cluster=cluster,
             desired_count=TRACKER_MIN_TASKS,
-            task_definition=task_def,
-            service_name=self._SERVICE_NAME,
+            task_definition=tracker_task_def,
+            service_name="Tracker",
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
             domain_name=TRACKER_DOMAIN,
             domain_zone=hosted_zone,
             protocol=aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS,
             redirect_http=True,
-            open_listener=False,  # security group not configured, manually add whitelisted IPs (no public access by default)
+            open_listener=False,
             assign_public_ip=True,
             public_load_balancer=True,
         )
 
-        # register with service discovery for internal access
+        # Cloud Map registration for internal access
         self.service.service.enable_cloud_map(
             name="tracker",
             cloud_map_namespace=namespace,
         )
 
-        # load balancer health check
+        # ALB health check
         self.service.target_group.configure_health_check(
             path="/health",
             port=str(TRACKER_PORT),
             interval=Duration.seconds(ALB_HEALTH_INTERVAL_SECONDS),
         )
 
-        # request timeout
+        # Request timeout
         self.service.load_balancer.set_attribute("idle_timeout.timeout_seconds", str(ALB_IDLE_TIMEOUT_SECONDS))
 
-        # allow HTTP to HTTPS redirect
+        # Allow HTTP → HTTPS redirect
         self.service.load_balancer.connections.allow_from(
             aws_ec2.Peer.any_ipv4(),
             aws_ec2.Port.tcp(80),
             description="Allow HTTP from anywhere (redirects to HTTPS)",
         )
 
-        # allow HTTPS from whitelisted IPs only
+        # Allow HTTPS from whitelisted IPs only
         for ip, desc in ALLOWED_IPS:
             self.service.load_balancer.connections.allow_from(
                 aws_ec2.Peer.ipv4(ip),
@@ -233,56 +316,33 @@ class TrackerStack(Stack):
                 description=f"Allow HTTPS from {desc}",
             )
 
-        # auto-scaling
-        scaling = self.service.service.auto_scale_task_count(
+        # Tracker auto-scaling
+        tracker_scaling = self.service.service.auto_scale_task_count(
             min_capacity=TRACKER_MIN_TASKS,
             max_capacity=TRACKER_MAX_TASKS,
         )
-        scaling.scale_on_cpu_utilization(
-            "CpuScaling",
+        tracker_scaling.scale_on_cpu_utilization(
+            "TrackerCpuScaling",
             target_utilization_percent=TRACKER_SCALING_CPU_PERCENT,
         )
 
-        # Grant S3 read/write permissions to the task
-        bucket.grant_read_write(task_def.task_role)
+        # ── Network access ───────────────────────────────────────────────
 
-        # CloudWatch Logs permissions for log groups
-        task_def.add_to_task_role_policy(
-            aws_iam.PolicyStatement(
-                actions=[
-                    "logs:CreateLogGroup",
-                    "logs:CreateLogStream",
-                    "logs:PutLogEvents",
-                    "logs:PutRetentionPolicy",
-                    "logs:DeleteLogStream",
-                    "logs:DescribeLogGroups",
-                    "logs:DescribeLogStreams",
-                ],
-                resources=[
-                    f"arn:aws:logs:{self.region}:{self.account}:log-group:benchmarks/*",
-                ],
-            )
+        # Allow tracker to reach Redis on the worker service
+        worker_service.connections.allow_from(
+            self.service.service,
+            aws_ec2.Port.tcp(REDIS_PORT),
+            description="Allow Tracker to connect to Worker Redis",
         )
 
-        # Lambda invoke permissions
-        task_def.add_to_task_role_policy(
-            aws_iam.PolicyStatement(
-                actions=["lambda:InvokeFunction"],
-                resources=[f"arn:aws:lambda:{self.region}:{self.account}:function:*"],
-            )
-        )
-
-        # Secrets Manager read permissions (secret name is provided by the client at runtime)
-        task_def.add_to_task_role_policy(
-            aws_iam.PolicyStatement(
-                actions=["secretsmanager:GetSecretValue"],
-                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:*"],
-            )
-        )
-
-        # Allow Fargate service to connect to RDS
+        # Allow tracker and worker to reach RDS
         self.database.connections.allow_from(
             self.service.service,
             aws_ec2.Port.tcp(POSTGRES_PORT),
-            description="Allow Tracker Fargate service to connect to RDS",
+            description="Allow Tracker to connect to RDS",
+        )
+        self.database.connections.allow_from(
+            worker_service,
+            aws_ec2.Port.tcp(POSTGRES_PORT),
+            description="Allow Worker to connect to RDS",
         )
