@@ -54,11 +54,11 @@ from tracker.types import (
 logger = get_logger(__name__)
 
 
-def fetch_daytona_headers(daytona_secret_name: str) -> dict[str, str]:
+def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
     """Fetch Daytona credentials from AWS Secrets Manager and return as headers for BenchmarkServiceClient."""
     daytona_keys: list[str] = ["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"]
 
-    secret = fetch_aws_secret(daytona_secret_name)
+    secret = fetch_aws_secret(daytona_secret_name, aws)
 
     if not isinstance(secret, dict):
         raise TrackerServiceError(f"Expected a dict with all daytona keys inside, received a string {secret}")
@@ -78,9 +78,9 @@ def fetch_daytona_headers(daytona_secret_name: str) -> dict[str, str]:
     }
 
 
-def create_benchmark_service_client(url: str, daytona_secret_name: str) -> BenchmarkServiceClient:
+def create_benchmark_service_client(url: str, daytona_secret_name: str, aws: AWSCredentials) -> BenchmarkServiceClient:
     """Create a BenchmarkServiceClient using Daytona credentials from AWS Secrets Manager."""
-    return BenchmarkServiceClient(url=url, headers=fetch_daytona_headers(daytona_secret_name))
+    return BenchmarkServiceClient(url=url, headers=fetch_daytona_headers(daytona_secret_name, aws))
 
 
 def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benchmark:
@@ -341,7 +341,7 @@ async def process_task(
             sandbox_name=task_row.alias,
             image=task_data.docker_image,
             labels=labels,
-            env_vars=resolve_secrets(start_benchmark_request.contract.secrets),
+            env_vars=resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
             resources=task_data.resources,
         ) as sandbox:
             try:
@@ -901,7 +901,9 @@ async def sandbox_generator(
         paginated_sandboxes = await fetch_sandboxes(benchmark_row, daytona_client, int(paginated_sandboxes.page))
 
 
-async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session, daytona_secret_name: str) -> None:
+async def force_stop_sandboxes(
+    benchmark_row: Benchmark, session: Session, daytona_secret_name: str, aws: AWSCredentials
+) -> None:
     """
     Stops and deletes all sandboxes which are in progress or evaluating.
     NOTE: If task is not in progress but sandbox exists, we kill it and leave the task status as is.
@@ -909,7 +911,7 @@ async def force_stop_sandboxes(benchmark_row: Benchmark, session: Session, dayto
     Raises:
         TrackerServiceError: If there are any errors stopping the sandboxes
     """
-    daytona_client: AsyncDaytona = benchmark_row.benchmark_service(daytona_secret_name).daytona_client
+    daytona_client: AsyncDaytona = benchmark_row.benchmark_service(daytona_secret_name, aws).daytona_client
 
     # Update all tasks being processed to stopped
     session.exec(

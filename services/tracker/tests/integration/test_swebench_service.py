@@ -8,6 +8,7 @@ from pytest import MonkeyPatch
 from requests.exceptions import ConnectTimeout
 
 from tests.utils import build_task_environment, validate_docker_image
+from tracker.types import AWSCredentials
 from tracker.utils import create_benchmark_service_client, fetch_daytona_headers
 
 
@@ -17,14 +18,16 @@ def docker_image_format() -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-async def require_health_check():
+async def require_health_check(test_aws: AWSCredentials, test_daytona_secret: str):
     """Checks that the server is running before running the test. If its not connected it will fail"""
 
     service_ip = os.getenv("BENCHMARK_SERVICE_URL")
     if not service_ip:
         pytest.fail("BENCHMARK_SERVICE_URL is not set", pytrace=False)
 
-    benchmark_service = create_benchmark_service_client(url=service_ip)
+    benchmark_service = create_benchmark_service_client(
+        url=service_ip, daytona_secret_name=test_daytona_secret, aws=test_aws
+    )
 
     try:
         _ = await benchmark_service.health_check()
@@ -33,7 +36,9 @@ async def require_health_check():
 
 
 class TestSWEBenchmarkService:
-    def test_setup_benchmark_service(self, monkeypatch: MonkeyPatch):
+    def test_setup_benchmark_service(
+        self, monkeypatch: MonkeyPatch, test_aws: AWSCredentials, test_daytona_secret: str
+    ):
         """
         Test setup of benchmark service with valid and invalid environment variables.
 
@@ -48,12 +53,14 @@ class TestSWEBenchmarkService:
         monkeypatch.setenv("DAYTONA_API_URL", "")
 
         with pytest.raises(ValueError):
-            _ = create_benchmark_service_client(url="http://test_ip:8000")
+            _ = create_benchmark_service_client(
+                url="http://test_ip:8000", daytona_secret_name=test_daytona_secret, aws=test_aws
+            )
 
         # User sets the api url environment variable after finding out that they are missing it
         monkeypatch.setenv("DAYTONA_API_URL", "https://app.daytona.io/api")
         try:
-            assert fetch_daytona_headers() == {
+            assert fetch_daytona_headers(test_daytona_secret, test_aws) == {
                 "x-api-key": "xyz",
                 "x-api-url": "https://app.daytona.io/api",
                 "x-target": "us",

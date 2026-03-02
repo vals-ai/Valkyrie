@@ -10,6 +10,7 @@ from sqlmodel import Session, select
 from main import app, get_session
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.logger import get_logger
+from tracker.types import AWSCredentials
 from tracker.utils import fetch_sandboxes, force_stop_sandboxes, process_benchmark
 
 logger = get_logger(__name__)
@@ -44,7 +45,13 @@ class TestForceStop:
             except Exception:
                 pass
 
-    async def test_force_stop_sandbox(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+    async def test_force_stop_sandbox(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        test_aws: AWSCredentials,
+        test_daytona_secret: str,
+    ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
@@ -53,12 +60,12 @@ class TestForceStop:
         database_session.add(task)
         database_session.commit()
 
-        daytona_client = example_benchmark_object.benchmark_service.daytona_client
+        daytona_client = example_benchmark_object.benchmark_service(test_daytona_secret, test_aws).daytona_client
 
         async def force_stop_sandbox() -> None:
             await asyncio.sleep(0.5)
 
-            await force_stop_sandboxes(example_benchmark_object, database_session)
+            await force_stop_sandboxes(example_benchmark_object, database_session, test_daytona_secret, test_aws)
 
         async def _generator_to_courtine():
             async with (
@@ -87,11 +94,17 @@ class TestForceStop:
         task = database_session.exec(select(Task).where(Task.id == task.id)).one()
         assert task.status == TaskStatus.STOPPED
 
-    async def test_force_stop_sandboxes(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+    async def test_force_stop_sandboxes(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        test_aws: AWSCredentials,
+        test_daytona_secret: str,
+    ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        daytona_client = example_benchmark_object.benchmark_service.daytona_client
+        daytona_client = example_benchmark_object.benchmark_service(test_daytona_secret, test_aws).daytona_client
 
         labels = {"Benchmark": example_benchmark_object.name, "Id": str(example_benchmark_object.id)}
 
@@ -123,7 +136,7 @@ class TestForceStop:
         await asyncio.sleep(10)
 
         # Force stop the benchmark run with all sandboxes
-        await force_stop_sandboxes(example_benchmark_object, database_session)
+        await force_stop_sandboxes(example_benchmark_object, database_session, test_daytona_secret, test_aws)
 
         await created_sandboxes
 
@@ -134,7 +147,12 @@ class TestForceStop:
         await daytona_client.close()
 
     async def test_force_stop_end_to_end(
-        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        test_aws: AWSCredentials,
+        test_daytona_secret: str,
     ) -> None:
         example_benchmark_object.arguments.slice_str = ":5"
         example_benchmark_object.arguments.concurrency = 2
@@ -149,7 +167,7 @@ class TestForceStop:
 
         client = TestClient(app)
 
-        benchmark_service = example_benchmark_object.benchmark_service
+        benchmark_service = example_benchmark_object.benchmark_service(test_daytona_secret, test_aws)
 
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=example_benchmark_object.arguments.task_ids, slice_str=example_benchmark_object.arguments.slice_str
@@ -205,7 +223,7 @@ class TestForceStop:
         database_session.refresh(example_benchmark_object)
         assert example_benchmark_object.status == BenchmarkStatus.STOPPED
 
-        daytona_client = example_benchmark_object.benchmark_service.daytona_client
+        daytona_client = example_benchmark_object.benchmark_service(test_daytona_secret, test_aws).daytona_client
 
         # Try to fetch the sandboxes and see if any of them are still running
         sandboxes = await fetch_sandboxes(example_benchmark_object, daytona_client, 1)

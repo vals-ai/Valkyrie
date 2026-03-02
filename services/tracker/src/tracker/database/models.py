@@ -27,7 +27,13 @@ from tracker.database.utils import has_field_changed
 if TYPE_CHECKING:
     from benchmark_service.client import BenchmarkServiceClient
 
-    from tracker.types import BenchmarkTableRow, FetchBenchmarkMetadataResponse, HarnessConfig, StartBenchmarkRequest
+    from tracker.types import (
+        AWSCredentials,
+        BenchmarkTableRow,
+        FetchBenchmarkMetadataResponse,
+        HarnessConfig,
+        StartBenchmarkRequest,
+    )
 
 
 class TaskStatus(str, Enum):
@@ -165,11 +171,13 @@ class Benchmark(SQLModel, table=True):
             harness_config=harness_config,
         )
 
-    def benchmark_service(self, daytona_secret_name: str) -> "BenchmarkServiceClient":
+    def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":
         from tracker.config import BENCHMARK_SERVICE_URL
         from tracker.utils import create_benchmark_service_client
 
-        return create_benchmark_service_client(url=BENCHMARK_SERVICE_URL, daytona_secret_name=daytona_secret_name)
+        return create_benchmark_service_client(
+            url=BENCHMARK_SERVICE_URL, daytona_secret_name=daytona_secret_name, aws=aws
+        )
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":

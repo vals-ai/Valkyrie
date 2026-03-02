@@ -347,7 +347,7 @@ async def stop_benchmark(
     await initiate_stop_benchmark(benchmark_row, session, force)
 
     if force:
-        await force_stop_sandboxes(benchmark_row, session, harness_config.daytona_secret_name)
+        await force_stop_sandboxes(benchmark_row, session, harness_config.daytona_secret_name, harness_config.aws)
 
     return StopBenchmarkResponse(
         status="success",
@@ -401,7 +401,7 @@ async def retry_or_resume_benchmark(
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name),
+        benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
         retry=retry,
         rerun_task_ids=task_ids,
     )

@@ -40,7 +40,7 @@ def harness_config() -> HarnessConfig:
 def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
     """Mocks AWS Secrets Manager to return test Daytona credentials"""
 
-    def _mock_fetch_aws_secret(secret_name: str) -> dict[str, str]:
+    def _mock_fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, str]:
         return {
             "DAYTONA_API_KEY": "test_key",
             "DAYTONA_API_URL": "http://test.url",
@@ -122,7 +122,7 @@ def mock_agent_utilities(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    def _mock_resolve_secrets(secrets: dict[str, str]) -> dict[str, str]:
+    def _mock_resolve_secrets(secrets: dict[str, str], aws: AWSCredentials) -> dict[str, str]:
         return secrets
 
     monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _mock_upload_contract)
