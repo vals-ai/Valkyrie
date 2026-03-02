@@ -68,10 +68,10 @@ class BaseAgentContract(ABC):
     @property
     def secrets(self) -> dict[str, str]:
         """
-        Secrets required by the agent, resolved from AWS Secrets Manager at runtime.
+        Default secrets for the agent, resolved from AWS Secrets Manager at runtime.
 
-        Override this property to declare which env vars the agent needs and which
-        AWS Secrets Manager secret to pull each from.
+        Override this to declare baseline secrets. These can be supplemented or
+        overridden at runtime via the CLI ``-s`` / ``--secret`` flag.
 
         Returns:
             Mapping of {ENV_VAR_NAME: aws_secret_name} (default: empty dict)

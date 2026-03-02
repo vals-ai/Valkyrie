@@ -20,10 +20,6 @@ class SWEAgentContract(BaseAgentContract):
         return "bash setup.sh"
 
     @property
-    def secrets(self) -> dict[str, str]:
-        return {"KIMI_API_KEY": "devEvalInfraKimiKey"}
-
-    @property
     def final_output(self) -> Path | None:
         return Path("/logs/sweagent")
 
