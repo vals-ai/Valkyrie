@@ -50,8 +50,6 @@ services:
       - DB_PORT=5432
     env_file:
       - .env
-    volumes:
-      - ${HOME}/.aws:/root/.aws:ro
     depends_on:
       postgres:
         condition: service_healthy
