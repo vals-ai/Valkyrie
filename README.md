@@ -1,221 +1,117 @@
-## Binary package
+# Agentic Harness
 
-Instructions may vary depending on architecture
+Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
-### Download Binary
-
-1. Select latest release from branch [prod](https://github.com/vals-ai/agentic-harness/tree/prod)
-2. Find the [latest release version](https://github.com/vals-ai/agentic-harness/releases)
-3. Download binary, currently only `harness-darwin-amd64` is offered.
-
-### Add to path
-
-You may be able to skip steps 1 and 5 if you already have the directory `~/.local/bin` created. If you are using a shell other than zsh you will need to change the paths.
-
-1. Create local bin if it does not exist, `mkdir -p ~/.local/bin`
-2. Move installed binary to bin `mv harness-darwin-amd64 ~/.local/bin/harness`
-3. Make it an executable `chmod +x ~/.local/bin/harness-darwin-amd64`
-4. Add to path `echo 'export PATH="$HOME/.local/bin/:$PATH"' >> ~/.zshrc`
-5. Source shell `source ~/.zshrc`
-
-If on Macbook you should run `xattr -d com.apple.quarantine ~/.local/bin/harness-darwin-amd64`
-
-Navigate to [usage](#usage) for a list of commands
-
-## Development
-
-### Tagging
-
-On prod deploy tagging will be automated by including the following in the commit message
-
-- `` (Omitted): Patch bump - ex. v0.4.0 → v0.4.1
-- `#minor`: Minor bump - ex. v0.4.1 → v0.5.0
-- `#major`: Major bump - ex. v0.5.0 → v1.0.0
-
-### Binary Release
-
-Binary verisons of the harness are released when commits are tagged
-
-- Dev: Must manually tag a commit to release the binary
-- Prod: Will automatically be tagged and released
-
-### Deploy
-
-On prod push all changes will be deployed, slack notifications are setup
-
-### Prerequisites
-
-- Python 3.12
-- UV package manager (brew install uv)
-
-### Environment Setup
-
-Create `services/tracker/.env` with the following configuration:
-
-```env
-# Sandbox credentials
-DAYTONA_API_KEY=dtn_5ebxx_xxxx
-DAYTONA_API_URL=https://app.daytona.io/api
-DAYTONA_TARGET=us
-
-# AWS credentials
-AWS_ACCESS_KEY_ID=...
-AWS_SECRET_ACCESS_KEY=...
-AWS_REGION=...
-
-# Where the benchmark service is hosted
-BENCHMARK_SERVICE_URL=http://98.xx.xx:8000
-```
-
-### Installation
-
-**Harness (CLI)**
+## Configuration
 
 ```bash
-make install
+harness config init
 ```
 
-Creates `.venv` and installs dependencies for CLI and harness from `pyproject.toml`.
+This will prompt for required credentials (AWS, S3 bucket, Daytona secret name) and write them to `~/.config/harness/harness.yaml`. Values can be sourced from the environment or an existing config. These are required to run the harness and be in any environment that you use the harness in.
+
+To update a single key:
 
 ```bash
-make update-submodules
+harness config modify <KEY> <VALUE>
 ```
 
-Install submodules for agents and services
+## Usage
 
-**Harness (Tool)**
-
-```bash
-make tool-install
-```
-
-Installs an executable into the bin which allows the cli to be ran without the prefix `uv run ...`. Installed using -e, for developing changes will update the executable. `make install` is still required for development. If not added to the path, run `uv tool update-shell` and it will be.
-
-**Services**
-
-Each service maintains its own isolated virtual environment:
-
-- **Tracker service**: `make tracker-service` — Cleans, builds, and runs Docker container
-
-### Usage
-
-#### Start a benchmark
+### Start a benchmark
 
 ```bash
-# With specific task IDs:
 harness benchmark start \
-  --agent <agent_path> \
-  --model <model_key> \
-  -k temperature 7 -k max_tokens 1000 \
-  --benchmark <benchmark_name> \
-  --concurrency 1 \
-  --lambda <aws_lambda_function_name> \
-  --task-ids "task_1_id,task_2_id" \
-  --slice "start:stop:step"
+  --agent agents/sweagent \
+  --benchmark swebench \
+  --model kimi/kimi-k2.5-thinking \
+  --concurrency 5 \
+  -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey \
+  -k temperature 7 \
+  --task-ids "task_1,task_2" \
+  --slice "0:10"
 ```
 
-Flags
+| Flag | Description |
+| --- | --- |
+| `--agent` | Path to the agent directory (e.g. `agents/claude_code`) |
+| `--benchmark` | Benchmark name (e.g. `swebench`) |
+| `--model` | Model key (e.g. `openai/gpt-4o`) |
+| `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
+| `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged with contract defaults (CLI wins on conflict) |
+| `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
+| `--lambda` | AWS Lambda function to invoke after the run completes |
+| `--task-ids` | Comma-separated task IDs to run |
+| `--task-ids-file` | Path to a text file with one task ID per line |
+| `--slice` | Slice the benchmark dataset (`start:stop:step`) |
 
-```
---agent: Path to the directory with the agent
---model: Model key
---benchmark: Name of the benchmark
---concurrency: The amount of concurrent tasks that are processed concurrently
---lambda: The name of the lambda function you would like to be ran after the benchmark is done running
---slice: Takes a slice from the dataset between the given values "start:stop:step"
---kwarg (-k): Single kwarg that is passed into the agent run command
---task-ids: comma separated list of task ids to run
---task-ids-file: Path to a .txt file with tasks newline separated
-```
-
-Starts the benchmark and exits once successfully created.
-
-#### Monitor benchmark status
+### Monitor a benchmark
 
 ```bash
-# Live updates every 60 seconds
-harness benchmark fetch --benchmark-id <benchmark_id> --connect
+# Stream live updates
+harness benchmark fetch --benchmark-id <id> --connect
 
 # One-time status check
-harness benchmark fetch --benchmark-id <benchmark_id>
+harness benchmark fetch --benchmark-id <id>
 ```
 
-#### Download results
+### Download results
 
 ```bash
-harness benchmark results --benchmark-id <benchmark_id>
+# Download to disk (default: ./<benchmark>.json)
+harness benchmark results --benchmark-id <id> --path ./results.json
+
+# Upload to S3
+harness benchmark results --benchmark-id <id> --s3
 ```
 
-Flags
-
-```
---path: Downloads the final view to disk (default: ./results.json)
---s3: Download the final view to s3, found in bucket://benchmarks/benchmark_id/results.json
-```
-
-#### Stop a benchmark
+### Stop a benchmark
 
 ```bash
-harness benchmark stop --benchmark-id <benchmark_id>
+harness benchmark stop --benchmark-id <id>
+
+# Force stop all in-flight tasks immediately
+harness benchmark stop --benchmark-id <id> --force
 ```
 
-Flags
-
-```
---force: Force stops all tasks in progress or evaluating (default: false)
-```
-
-#### Resume a benchmark
+### Resume / Retry a benchmark
 
 ```bash
-harness benchmark resume --benchmark-id <benchmark_id>
+# Resume pending tasks
+harness benchmark resume --benchmark-id <id>
+
+# Retry errored tasks
+harness benchmark retry --benchmark-id <id>
+
+# Override concurrency on resume (works on retry)
+harness benchmark resume --benchmark-id <id> --concurrency 20
 ```
 
-#### Retry a benchmark
+### List benchmarks
 
 ```bash
-harness benchmark retry --benchmark-id <benchmark_id>
+harness benchmark list \
+  --agent-name claude_code \
+  --benchmark-name swebench \
+  --status IN_PROGRESS \
+  --order-by DESC
 ```
 
-Flags
+Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`
 
-```
---retry: Retry tasks with the status `error`
---force task_1 task_2: force retry tasks with the specified space separated ids (the retry flag is separate and not required to use this flag)
---concurrency: change the previous concurrency when starting the benchmark, will be modified for all future runs
-```
-
-#### List and filter benchmarks
+### Download agent outputs
 
 ```bash
-harness benchmark list --agent-name <agent_name> --benchmark-name <benchmark_name> --status <benchmark_status> --order-by <preferred_order>
+harness agent outputs --benchmark-id <id> --output-dir ./outputs
 ```
 
-```
-# Status Options (Case insensitive)
-> IN_PROGRESS
-> STOPPING
-> STOPPED
-> FINISHED
-> ERROR
+## Documentation
 
-# Order by options based off when the benchmark was started (Case insensitive)
-> DESC - default
-> ASC
-```
-
-#### Download all agent outputs from benchmark
-
-```bash
-harness agent outputs --benchmark-id <benchmark_id> --output-dir <download_directory>
-```
-
-Flags
-
-```
---output-dir: where you would like the agent outputs to be downloaded (default: ./agent_outputs/<benchmark-id>)
-```
-
-### Supported Benchmarks
-
-Benchmarks are configured via the tracker service.
+| Topic | Link |
+| --- | --- |
+| Local development | [DEVELOPMENT.md](DEVELOPMENT.md) |
+| Lambda integration | [LAMBDA_USAGE.md](LAMBDA_USAGE.md) |
+| Agent contracts | [agents/CONTRACTS.md](agents/CONTRACTS.md) |
+| Tracker service | [services/tracker/README.md](services/tracker/README.md) |
+| Database & migrations | [services/tracker/src/tracker/database/README.md](services/tracker/src/tracker/database/README.md) |
+| Infrastructure (AWS CDK) | [infra/README.md](infra/README.md) |

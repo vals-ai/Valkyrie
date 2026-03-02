@@ -5,17 +5,25 @@ import boto3
 from botocore.exceptions import ClientError
 
 from tracker.exceptions import LambdaError
+from tracker.types import AWSCredentials
 
 
-def invoke_lambda(function_name: str, payload: dict[str, Any]):
+def invoke_lambda(function_name: str, payload: dict[str, Any], aws: AWSCredentials):
     """
     Invokes lambda method provided the function name and the payload.
+
+    Uses the user's AWS credentials so the lambda runs in their account/region.
 
     Raises LambdaError if the invocation fails or the Lambda returns an error.
     """
 
     try:
-        lambda_client = boto3.client("lambda")
+        lambda_client = boto3.client(  # pyright: ignore[reportUnknownMemberType]
+            "lambda",
+            aws_access_key_id=aws.aws_access_key_id,
+            aws_secret_access_key=aws.aws_secret_access_key,
+            region_name=aws.aws_default_region,
+        )
 
         response = lambda_client.invoke(
             FunctionName=function_name,

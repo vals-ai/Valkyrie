@@ -11,15 +11,10 @@ An agent contract defines how to install and run an agent in a sandbox environme
 Create a `contract.py` file in your agent directory that defines a contract class inheriting from `BaseAgentContract`:
 
 ```python
-import os
-from dotenv import load_dotenv
 from pathlib import Path
-from typing import Any
+from typing import Any, override
 
 from agentic_harness.contract import BaseAgentContract
-from agentic_harness.schemas import AgentConfig
-
-load_dotenv()
 
 
 class MyAgentContract(BaseAgentContract):
@@ -38,19 +33,19 @@ class MyAgentContract(BaseAgentContract):
         return "bash setup.sh"
 
     @property
-    def final_output(self) -> Path | str:
-        return Path("path/to/output")
+    def secrets(self) -> dict[str, str]:
+        return {"API_KEY": "myAwsSecretName"}
 
     @property
-    def env(self) -> dict[str, str]:
-        return {"API_KEY": os.getenv("API_KEY")}
+    def final_output(self) -> Path | None:
+        return Path("/logs/my_agent")
 
     @override
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
         return f"my_agent --task {problem_statement_path}"
 
 
-# Export the contract class
+# Export the contract class (not an instance)
 contract = MyAgentContract
 ```
 
@@ -80,21 +75,19 @@ def install_cmd(self) -> str:
 
 ### `final_output: Path | None`
 
-Path to the file with the final output you want to parse. The artifact found here will be copied into the corresponding s3 bucket that can be found at benchmark/benchmark_id/task_id/
-
-Supported path could be to a directory or a file. Will be copied as a tar file
+Absolute path to the final output to collect. The artifact found here will be copied into the corresponding S3 bucket at `benchmark/benchmark_id/task_id/`. Can be a directory or a file (copied as a tar).
 
 ```python
 @property
 def final_output(self) -> Path | None:
-    return Path("/absolute/path/to/output")
+    return Path("/logs/my_agent")
 ```
 
-### `run_cmd(problem_statement_path, task_id, extra_args) -> str`
+### `run_cmd(problem_statement_path, task_id, kwargs) -> str`
 
-Method to build the shell command that runs the agent on a task. The harness calls this method at serialization time with literal placeholder strings — `problem_statement_path` will be `"{problem_statement_path}"` and `task_id` will be `"{task_id}"`. The tracker substitutes the real values at runtime just before executing the command in the sandbox.
+Method that builds the shell command to run the agent on a task. The harness calls this at serialization time with placeholder strings (`"{problem_statement_path}"` and `"{task_id}"`). The tracker substitutes the real values at runtime before executing in the sandbox.
 
-> **Do not splice, slice, or transform `problem_statement_path` or `task_id`.** Use them only as-is inside an f-string or string concatenation. If you manipulate the strings (e.g. `problem_statement_path.split("/")[-1]`) the placeholder will be destroyed and the tracker will not be able to substitute the real value.
+> **Do not transform `problem_statement_path` or `task_id`.** Use them as-is in an f-string or concatenation. If you manipulate the strings (e.g. `problem_statement_path.split("/")[-1]`) the placeholder will be destroyed.
 
 ```python
 @override
@@ -114,40 +107,49 @@ def artifacts(self) -> list[str]:
     return ["setup.sh", "submodule/my_agent", "config/settings.yaml"]
 ```
 
-### `env: dict[str, str]`
+### `secrets: dict[str, str]`
 
-Environment variables required by the agent (default: empty dict). Load secrets from your local environment.
+Default secrets required by the agent (default: empty dict). Maps environment variable names to AWS Secrets Manager secret names. These are resolved at sandbox creation time - raw values are never stored.
 
 ```python
 @property
-def env(self) -> dict[str, str]:
-    return {
-        "ANTHROPIC_API_KEY": os.getenv("ANTHROPIC_API_KEY"),
-        "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-    }
+def secrets(self) -> dict[str, str]:
+    return {"ANTHROPIC_API_KEY": "devEvalInfraAnthropicKey"}
 ```
 
-## Using AgentConfig for Dynamic Configuration
+Secrets can also be passed (or overridden) at runtime via the CLI:
+
+```bash
+harness benchmark start --agent agents/my_agent -s API_KEY myAwsSecretName
+```
+
+CLI secrets are merged with contract defaults. If both define the same key, the CLI value wins.
+
+## Using AgentConfig
 
 The `AgentConfig` parameter allows you to pass runtime configuration (like model selection) from the CLI to your agent:
 
 ```python
 class MyAgentContract(BaseAgentContract):
-    @abstractmethod
+    @override
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
-        # Make agent_config required by removing the default None
-        if not agent_config:
-            raise ValueError("AgentConfig is required")
-
-        # Use the model from agent_config
         model = self._agent_config.model
-        return f"my_agent --model {model} --task {{problem_statement}}"
+        if not model:
+            raise ValueError("Model is required. Use --model to specify one.")
+
+        return f"my_agent --model {model} --task {problem_statement_path}"
 ```
 
 Then run from the CLI with:
 
 ```bash
-harness start-benchmark --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
+harness benchmark start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
+```
+
+Extra key-value pairs can be passed with `-k` and accessed via `kwargs`:
+
+```bash
+harness benchmark start --agent agents/my_agent --benchmark swebench -k temperature 0.7
 ```
 
 ## Directory Structure
@@ -157,7 +159,7 @@ agents/
   my_agent/
     contract.py           # Contract definition (required)
     setup.sh              # Installation script (optional)
-    submodule/           # Agent code and dependencies (optional)
+    submodule/            # Agent code and dependencies (optional)
       my_agent/
         pyproject.toml
         main.py
@@ -198,30 +200,6 @@ chmod +x /usr/local/bin/my_agent
 ```
 
 Your agent artifacts are bundled to `/bundle/<agent_name>/` in the sandbox.
-
-## Placeholder Syntax
-
-Use **single braces** `{problem_statement}` in your `run_cmd`. The placeholder will be replaced with the actual task prompt at runtime:
-
-```python
-@property
-def run_cmd(self) -> str:
-    # ✅ Correct - single braces
-    return "my_agent --task {problem_statement}"
-
-    # ❌ Wrong - double braces (use only in f-strings)
-    return f"my_agent --task {{problem_statement}}"
-```
-
-If you're using an f-string to include dynamic values, use double braces for the placeholder:
-
-```python
-@property
-def run_cmd(self) -> str:
-    model = self._agent_config.model
-    # Double braces in f-string become single braces in output
-    return f"my_agent --model {model} --task {{problem_statement}}"
-```
 
 ## Complete Examples
 

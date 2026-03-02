@@ -1,5 +1,5 @@
 .PHONY: help install test test-unit test-integration test-all style style-check typecheck \
-	tracker-install tracker-dev tracker-service tracker-test tracker-test-unit tracker-test-integration \
+	tracker-dev tracker-service tracker-test tracker-test-unit tracker-test-integration \
 	validate-workspace format lint update-submodules venv_check tool-install build
 
 PYTHON_VERSION := 3.12
@@ -10,7 +10,6 @@ help:
 	@echo ""
 	@echo "Setup:"
 	@echo "  make install             			Install cli dependencies
-	@echo "  make tracker-install     			Install tracker service (separate venv)"
 	@echo ""
 	@echo "Development:"
 	@echo "  make style               			Lint & Format"
@@ -73,8 +72,6 @@ typecheck: venv_check
 	@uv run basedpyright
 
 # --- Tracker Service ---
-tracker-install:
-	@cd services/tracker && make install
 tracker-service:
 	cd services/tracker && make tracker-service
 

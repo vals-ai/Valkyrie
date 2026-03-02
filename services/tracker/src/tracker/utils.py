@@ -624,7 +624,7 @@ async def process_benchmark(
                 lambda_payload: dict[str, Any] = arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
 
-                invoke_lambda(arguments.lambda_function, lambda_payload)
+                invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
 
     except Exception as e:
         with Session(bind=engine) as session:
