@@ -22,3 +22,6 @@ tracker.db*
 dump.rdb*
 dist
 build
+
+*claude*
+*CLAUDE*
