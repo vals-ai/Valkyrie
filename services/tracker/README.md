@@ -1,26 +1,47 @@
-### Required Environment variables
+# Tracker Service
 
-Create a `.env` file in the project root with the following variables:
+FastAPI backend that orchestrates benchmark runs, manages task lifecycle, stores artifacts in S3, and interfaces with Daytona for sandbox provisioning.
+
+## Environment
+
+Create a `.env` file in `services/tracker/`:
 
 ```env
-BENCHMARK_SERVICE_URL=https://benchmark-service.vals.ai
-DAYTONA_API_KEY=...
-DAYTONA_API_URL=https://app.daytona.io/api
-DAYTONA_TARGET=us
+BENCHMARK_SERVICE_URL=http://host.docker.internal:8001
 ```
 
-### Docker Compose Environment
+Database (PostgreSQL), Redis, and AWS credentials are configured automatically by docker-compose. AWS credentials are mounted from `~/.aws`.
 
-`make setup`: Install dependencies and create database (host machine database used in container)
+## Running
 
-`make tracker-service`: Build and run the tracker service in a Docker container
+```bash
+make tracker-service
+```
 
-The service will be available at `http://localhost:8000`
+Builds, starts, and tails logs for the tracker service (with Postgres and Redis sidecars). Available at `http://localhost:8000`.
 
-### Running unit tests
+Individual commands:
 
-`uv run pytest tests/unit -vv`
+```bash
+make build    # Build Docker images
+make run      # Start all services
+make stop     # Stop all services
+make clean    # Stop and remove images
+make logs     # Tail container logs
+```
 
-### Database creation / Migration guide
+## Tests
 
-View all documentation inside of the dedicated [README.md](src/tracker/database/README.md)
+```bash
+make test-unit          # Unit tests + Alembic migration tests
+make test-alembic       # Alembic migration tests only
+make test-integration   # Integration tests (requires .env)
+```
+
+## Migrations
+
+```bash
+make migrate-gen        # Generate a new migration from model changes
+```
+
+See the dedicated [database README](src/tracker/database/README.md) for the full migration guide.

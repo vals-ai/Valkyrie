@@ -1,61 +1,63 @@
-## Database
+# Database
 
-### Creating session
+PostgreSQL database managed via SQLModel and Alembic.
 
-Only need to generate the session if it is your first time / tracker.db does not exist
+## Adding a table
 
-`make migrate` (Also handled by `make setup`)
-
-You should see the `tracker.db` located at `src/tracker/database/tracker.db`
-
-### Adding table to database
-
-Add the table with the option `table=True`
+Add the table with `table=True`:
 
 ```python
 # src/tracker/database/models.py
 
 class Benchmark(SQLModel, table=True):
-    id: UUID | None = Field(default_factory=uuid4, primary_key=True)
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str
     started_at: datetime = Field(default_factory=datetime.now)
     finished_at: datetime | None = None
     ...
 ```
 
-Import the table to expose it to SQLModel when you regenerate the tables
+Import the table in `session.py` to expose it to SQLModel:
 
 ```python
 # src/tracker/database/session.py
 
-from src.tracker.database.models import Benchmark, EvaluationResult, Task
+from tracker.database.models import Benchmark, FinalEvaluation, Task
 
-_exposed_models: list[type[SQLModel]] = [Benchmark, EvaluationResult, Task]
+_exposed_models: list[type[SQLModel]] = [Benchmark, FinalEvaluation, Task]
 ```
 
-### Migration Usage
+## Migrations
 
-#### Create new migration
+### Generate a new migration
 
-File is generated inside of `src/tracker/database/migrations/versions`
+From `services/tracker/`:
 
-`uv run -m alembic revision --autogenerate -m "Initial Migration"`
+```bash
+make migrate-gen
+```
 
-Change the database to use the latest changes
+This runs `alembic revision --autogenerate` and generates a file in `src/tracker/database/migrations/versions/`.
 
-`uv run -m alembic upgrade head`
+### Apply migrations
 
-### Run Alembic Tests
+```bash
+uv run alembic upgrade head
+```
 
-These tests are installed via `pytest-alembic`, these will also be ran on push and pull.
+## Alembic Tests
 
-`uv run pytest --test-alembic -m alembic`
+Installed via `pytest-alembic`, also run on push and pull:
 
-### Known Defects
+```bash
+make test-alembic
+```
 
-#### Custom TypeDecorator not being sourced on migration
+## Known Defects
 
-Defect In Alembic
+### Custom TypeDecorator not being sourced on migration
+
+Alembic may generate a migration referencing the type by module path:
 
 ```text
 sa.Column('arguments', tracker.database.models.BenchmarkArgumentsType(), nullable=True),
@@ -63,14 +65,16 @@ sa.Column('arguments', tracker.database.models.BenchmarkArgumentsType(), nullabl
 NameError: name 'tracker' is not defined
 ```
 
-#### Fix
+**Fix:** Import the type at the top of the generated migration file:
 
-Import the type at the top
+```python
+from tracker.database.models import BenchmarkArgumentsType
+```
 
-`from tracker.database.models import BenchmarkArgumentsType`
+Then update the reference in the migration to use the short name:
 
-Update reference
+```python
+sa.Column('arguments', BenchmarkArgumentsType(), nullable=True),
+```
 
-`sa.Column('arguments', BenchmarkArgumentsType(), nullable=True),`
-
-Run the upgrade command `uv run -m alembic upgrade head`
+Run the upgrade: `uv run alembic upgrade head`
