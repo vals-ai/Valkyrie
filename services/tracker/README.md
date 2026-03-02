@@ -7,7 +7,7 @@ FastAPI backend that orchestrates benchmark runs, manages task lifecycle, stores
 Create a `.env` file in `services/tracker/`:
 
 ```env
-BENCHMARK_SERVICE_URL=http://host.docker.internal:8001
+BENCHMARK_SERVICE_NAMESPACE=local
 ```
 
 Database (PostgreSQL), Redis, and AWS credentials are configured automatically by docker-compose. AWS credentials are mounted from `~/.aws`.

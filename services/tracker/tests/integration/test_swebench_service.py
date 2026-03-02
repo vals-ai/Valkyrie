@@ -21,12 +21,14 @@ def docker_image_format() -> str:
 async def require_health_check(test_aws: AWSCredentials, test_daytona_secret: str):
     """Checks that the server is running before running the test. If its not connected it will fail"""
 
-    service_ip = os.getenv("BENCHMARK_SERVICE_URL")
-    if not service_ip:
-        pytest.fail("BENCHMARK_SERVICE_URL is not set", pytrace=False)
+    service_url = os.getenv("BENCHMARK_SERVICE_URL")
+    if not service_url:
+        from tracker.config import benchmark_service_url
+
+        service_url = benchmark_service_url("swebench")
 
     benchmark_service = create_benchmark_service_client(
-        url=service_ip, daytona_secret_name=test_daytona_secret, aws=test_aws
+        url=service_url, daytona_secret_name=test_daytona_secret, aws=test_aws
     )
 
     try:

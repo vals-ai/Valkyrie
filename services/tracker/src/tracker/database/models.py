@@ -172,11 +172,11 @@ class Benchmark(SQLModel, table=True):
         )
 
     def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":
-        from tracker.config import BENCHMARK_SERVICE_URL
+        from tracker.config import benchmark_service_url
         from tracker.utils import create_benchmark_service_client
 
         return create_benchmark_service_client(
-            url=BENCHMARK_SERVICE_URL, daytona_secret_name=daytona_secret_name, aws=aws
+            url=benchmark_service_url(self.name), daytona_secret_name=daytona_secret_name, aws=aws
         )
 
     @property

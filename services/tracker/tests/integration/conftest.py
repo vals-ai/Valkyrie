@@ -58,11 +58,13 @@ def postgres_session(postgres_engine) -> Generator[Session, Any, None]:
 async def benchmark_service(
     test_aws: AWSCredentials, test_daytona_secret: str
 ) -> AsyncGenerator[BenchmarkServiceClient, None]:
-    service_ip = os.getenv("BENCHMARK_SERVICE_URL")
-    if not service_ip:
-        raise ValueError("BENCHMARK_SERVICE_URL is not set")
+    service_url = os.getenv("BENCHMARK_SERVICE_URL")
+    if not service_url:
+        from tracker.config import benchmark_service_url
 
-    service = create_benchmark_service_client(url=service_ip, daytona_secret_name=test_daytona_secret, aws=test_aws)
+        service_url = benchmark_service_url("swebench")
+
+    service = create_benchmark_service_client(url=service_url, daytona_secret_name=test_daytona_secret, aws=test_aws)
 
     yield service
 

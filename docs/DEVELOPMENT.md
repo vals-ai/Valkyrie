@@ -56,7 +56,7 @@ harness config init
 Create `services/tracker/.env` and add:
 
 ```env
-BENCHMARK_SERVICE_URL=http://host.docker.internal:8001
+BENCHMARK_SERVICE_NAMESPACE=local
 ```
 
 AWS credentials are mounted from `~/.aws` into the container automatically.
