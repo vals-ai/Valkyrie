@@ -8,6 +8,8 @@ from taskiq import InMemoryBroker
 from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
+from tracker.task_protection import TaskProtectionMiddleware
+
 load_dotenv()
 
 BENCHMARK_SERVICE_URL = os.environ.get("BENCHMARK_SERVICE_URL", "http://localhost:8001")
@@ -41,5 +43,7 @@ broker = (
     else RedisStreamBroker(
         url=REDIS_URL,
         idle_timeout=86400000,  # 24 hours
-    ).with_result_backend(result_backend)
+    )
+    .with_result_backend(result_backend)
+    .with_middlewares(TaskProtectionMiddleware())
 )

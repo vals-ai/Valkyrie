@@ -6,6 +6,7 @@ import aws_cdk as cdk
 from shared import SharedStack
 
 from tracker_stack import TrackerStack
+from worker_stack import WorkerStack
 
 app = cdk.App()
 
@@ -17,7 +18,7 @@ env = cdk.Environment(
 # Shared infrastructure (VPC, cluster, service discovery, Route53)
 shared = SharedStack(app, "SharedStack", env=env)
 
-# Tracker service (public-facing with ALB)
+# Tracker service (public-facing with ALB) + RDS database
 tracker = TrackerStack(
     app,
     "TrackerStack",
@@ -29,7 +30,22 @@ tracker = TrackerStack(
     env=env,
 )
 
+# Worker service (Taskiq worker + Redis sidecar) - deployed independently
+worker = WorkerStack(
+    app,
+    "WorkerStack",
+    vpc=shared.vpc,
+    cluster=shared.cluster,
+    namespace=shared.namespace,
+    bucket=shared.bucket,
+    database=tracker.database,
+    db_credentials=tracker.db_credentials,
+    tracker_service=tracker.tracker_fargate_service,
+    env=env,
+)
+
 # Deployment order
 tracker.add_dependency(shared)
+worker.add_dependency(tracker)
 
 app.synth()
