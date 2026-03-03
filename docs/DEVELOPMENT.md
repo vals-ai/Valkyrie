@@ -7,6 +7,14 @@ Local development guide for the Agentic Harness.
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) package manager (`brew install uv`)
 
+### Environment
+
+Add inside of `.env`
+
+```env
+TRACKER_SERVICE_URL=http://localhost:8000
+```
+
 ## Installation
 
 ### CLI
@@ -50,16 +58,6 @@ The CLI reads credentials from `~/.config/harness/harness.yaml`. Run `harness co
 ```bash
 harness config init
 ```
-
-### Tracker service
-
-Create `services/tracker/.env` and add:
-
-```env
-BENCHMARK_SERVICE_NAMESPACE=local
-```
-
-AWS credentials are mounted from `~/.aws` into the container automatically.
 
 ## Code Quality
 
