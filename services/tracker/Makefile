@@ -38,7 +38,7 @@ install:
 build:
 	@echo "Building Docker images..."
 	@$(COMPOSE) build
-run: env-check
+run:
 	@echo "Starting services with docker-compose..."
 	@$(COMPOSE) up -d
 	@echo "Tracker service is running on http://localhost:8000"

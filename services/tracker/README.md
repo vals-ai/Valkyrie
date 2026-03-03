@@ -2,15 +2,14 @@
 
 FastAPI backend that orchestrates benchmark runs, manages task lifecycle, stores artifacts in S3, and interfaces with Daytona for sandbox provisioning.
 
-## Environment
+## Architecture
 
-Create a `.env` file in `services/tracker/`:
+The service runs as two separate containers:
 
-```env
-BENCHMARK_SERVICE_NAMESPACE=local
-```
+- **tracker** — FastAPI API server (uvicorn)
+- **worker** — Task queue worker (taskiq) that processes benchmark runs
 
-Database (PostgreSQL), Redis, and AWS credentials are configured automatically by docker-compose. AWS credentials are mounted from `~/.aws`.
+Redis and PostgreSQL run as shared infrastructure. The worker can continue processing benchmarks independently of the tracker API, allowing the tracker to be restarted without interrupting running benchmarks.
 
 ## Running
 
@@ -18,7 +17,7 @@ Database (PostgreSQL), Redis, and AWS credentials are configured automatically b
 make tracker-service
 ```
 
-Builds, starts, and tails logs for the tracker service (with Postgres and Redis sidecars). Available at `http://localhost:8000`.
+Builds, starts, and tails logs for all services. The tracker API is available at `http://localhost:8000`.
 
 Individual commands:
 
@@ -30,12 +29,14 @@ make clean    # Stop and remove images
 make logs     # Tail container logs
 ```
 
+No `.env` file is required for local development
+
 ## Tests
 
 ```bash
 make test-unit          # Unit tests + Alembic migration tests
 make test-alembic       # Alembic migration tests only
-make test-integration   # Integration tests (requires .env)
+make test-integration   # Integration tests
 ```
 
 ## Migrations

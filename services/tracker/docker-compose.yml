@@ -35,12 +35,33 @@ services:
     networks:
       - tracker-network
 
+  worker:
+    image: tracker-service
+    container_name: tracker-worker-container
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "--no-sync", "taskiq", "worker", "tracker.config:broker", "tracker.utils"]
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
+      - DB_HOST=postgres
+      - DB_PORT=5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tracker-network
+
   tracker:
     image: tracker-service
     container_name: tracker-service-container
     build:
       context: .
       dockerfile: Dockerfile
+    command: ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "8000:8000"
     environment:
@@ -48,13 +69,13 @@ services:
       - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
       - DB_HOST=postgres
       - DB_PORT=5432
-    env_file:
-      - .env
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      worker:
+        condition: service_started
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 10s
