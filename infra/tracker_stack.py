@@ -39,6 +39,7 @@ from constants import (
     TRACKER_MIN_TASKS,
     TRACKER_PORT,
     TRACKER_SCALING_CPU_PERCENT,
+    VPC_CIDR,
 )
 from constructs import Construct
 
@@ -226,15 +227,17 @@ class TrackerStack(Stack):
             max_capacity=TRACKER_MAX_TASKS,
         )
         tracker_scaling.scale_on_cpu_utilization(
-            "TrackerCpuScaling",
+            "CpuScaling",
             target_utilization_percent=TRACKER_SCALING_CPU_PERCENT,
         )
 
         # ── Network access ───────────────────────────────────────────────
 
-        # Allow tracker to reach RDS
-        self.database.connections.allow_from(
-            self.service.service,
-            aws_ec2.Port.tcp(POSTGRES_PORT),
-            description="Allow Tracker to connect to RDS",
+        # Allow VPC services (tracker + worker) to reach RDS.
+        # Uses VPC CIDR instead of individual security groups to avoid
+        # cyclic cross-stack dependencies with WorkerStack.
+        db_security_group.add_ingress_rule(
+            peer=aws_ec2.Peer.ipv4(VPC_CIDR),
+            connection=aws_ec2.Port.tcp(POSTGRES_PORT),
+            description="Allow VPC services to connect to RDS",
         )

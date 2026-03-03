@@ -1,6 +1,7 @@
 """Constants for infrastructure configuration."""
 
 # VPC
+VPC_CIDR = "10.0.0.0/16"
 VPC_MAX_AZS = 2
 VPC_NAT_GATEWAYS = 0
 

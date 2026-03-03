@@ -198,16 +198,17 @@ class WorkerStack(Stack):
 
         # ── Network access ───────────────────────────────────────────────
 
-        # Allow tracker API to reach Redis on the worker service
-        self.worker_service.connections.allow_from(
-            tracker_service,
-            aws_ec2.Port.tcp(REDIS_PORT),
+        # Allow tracker API to reach Redis on the worker service.
+        # Use remote_rule=False so CDK only adds the ingress rule on the
+        # worker SG — not an egress rule on the tracker SG in TrackerStack,
+        # which would create a cyclic cross-stack dependency.
+        # The tracker's SG already allows all outbound traffic by default.
+        self.worker_service.connections.security_groups[0].add_ingress_rule(
+            peer=tracker_service.connections.security_groups[0],
+            connection=aws_ec2.Port.tcp(REDIS_PORT),
             description="Allow Tracker to connect to Worker Redis",
+            remote_rule=False,
         )
 
-        # Allow worker to reach RDS
-        database.connections.allow_from(
-            self.worker_service,
-            aws_ec2.Port.tcp(POSTGRES_PORT),
-            description="Allow Worker to connect to RDS",
-        )
+        # Worker → RDS access is handled via a VPC-wide ingress rule on the
+        # database security group in TrackerStack (avoids cross-stack cycle).
