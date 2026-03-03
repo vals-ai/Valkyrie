@@ -80,6 +80,7 @@ class TrackerStack(Stack):
         # Shared environment variables
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
+            "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
             "AWS_S3_BUCKET": bucket.bucket_name,
         }
 

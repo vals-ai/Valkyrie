@@ -22,6 +22,7 @@ from aws_cdk.aws_ecr_assets import Platform
 from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
+    NAMESPACE,
     POSTGRES_DB,
     POSTGRES_PORT,
     REDIS_HEALTH_INTERVAL_SECONDS,
@@ -79,6 +80,7 @@ class WorkerStack(Stack):
 
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
+            "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
             "AWS_S3_BUCKET": bucket.bucket_name,
         }
 
