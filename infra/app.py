@@ -4,7 +4,6 @@ import os
 
 import aws_cdk as cdk
 from shared import SharedStack
-
 from tracker_stack import TrackerStack
 from worker_stack import WorkerStack
 
@@ -26,7 +25,6 @@ tracker = TrackerStack(
     cluster=shared.cluster,
     namespace=shared.namespace,
     hosted_zone=shared.hosted_zone,
-    bucket=shared.bucket,
     redis_url=shared.redis_url,
     env=env,
 )
@@ -38,7 +36,6 @@ worker = WorkerStack(
     vpc=shared.vpc,
     cluster=shared.cluster,
     redis_url=shared.redis_url,
-    bucket=shared.bucket,
     database=tracker.database,
     db_credentials=tracker.db_credentials,
     env=env,

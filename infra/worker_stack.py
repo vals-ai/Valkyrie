@@ -15,14 +15,11 @@ from aws_cdk import (
     aws_iam,
     aws_logs,
     aws_rds,
-    aws_s3,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
-    CONTAINER_HEALTH_RETRIES,
-    CONTAINER_HEALTH_TIMEOUT_SECONDS,
+    NAMESPACE,
     POSTGRES_DB,
-    POSTGRES_PORT,
     WORKER_CPU,
     WORKER_MAX_TASKS,
     WORKER_MEMORY,
@@ -58,7 +55,6 @@ class WorkerStack(Stack):
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
         redis_url: str,
-        bucket: aws_s3.IBucket,
         database: aws_rds.DatabaseInstance,
         db_credentials: aws_rds.DatabaseSecret,
         **kwargs: Any,
@@ -73,7 +69,7 @@ class WorkerStack(Stack):
 
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
-            "AWS_S3_BUCKET": bucket.bucket_name,
+            "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
         }
 
         db_env = {
