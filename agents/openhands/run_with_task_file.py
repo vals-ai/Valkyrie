@@ -32,7 +32,14 @@ def main() -> int:
 
     config = toml.loads(base_config_path.read_text(encoding="utf-8"))
     config.setdefault("llm", {})["model"] = args.model
-    config.setdefault("core", {})["save_trajectory_path"] = f"/logs/openhands/{args.task_id}_trajectory.json"
+    core_cfg = config.setdefault("core", {})
+    core_cfg["save_trajectory_path"] = f"/logs/openhands/{args.task_id}_trajectory.json"
+
+    # OpenHands versions in benchmark sandboxes may treat max_iterations=0 as an immediate stop.
+    # Keep user intent of "unlimited" by mapping non-positive values to a very large cap.
+    max_iterations = core_cfg.get("max_iterations")
+    if isinstance(max_iterations, int) and max_iterations <= 0:
+        core_cfg["max_iterations"] = 2_147_483_647
 
     run_config = Path(f"/tmp/openhands_config_{args.task_id}.toml")
     run_config.write_text(toml.dumps(config), encoding="utf-8")
