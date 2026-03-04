@@ -4,8 +4,6 @@ Prevents ECS from stopping a Fargate task during deployments while
 benchmarks are actively running.  Uses reference counting so protection
 is only disabled once *all* concurrent tasks on the container have
 finished — not when the first one completes.
-
-When running outside ECS (local dev / tests) the API calls are no-ops.
 """
 
 import asyncio
