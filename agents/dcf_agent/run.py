@@ -59,12 +59,18 @@ def run_agent(problem_statement: str, model: str, max_turns: int = 100) -> None:
 
     for turn in range(max_turns):
         log.info("Turn %d", turn + 1)
-        response = client.messages.create(
+
+        with client.messages.stream(
             model=sdk_model,
             max_tokens=32000,
             tools=TOOLS,
             messages=messages,
-        )
+        ) as stream:
+            for text in stream.text_stream:
+                print(text, end="", flush=True)
+            response = stream.get_final_message()
+
+        print()  # newline after streamed text
         log.info("stop_reason=%s", response.stop_reason)
 
         messages.append({"role": "assistant", "content": response.content})
