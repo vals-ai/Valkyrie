@@ -36,9 +36,8 @@ TRACKER_PORT = 8000
 REDIS_PORT = 6379
 POSTGRES_PORT = 5432
 
-# Redis (sidecar in worker task)
-REDIS_HEALTH_INTERVAL_SECONDS = 60
-REDIS_HEALTH_START_PERIOD_SECONDS = 5
+# ElastiCache Redis (shared by tracker + worker)
+ELASTICACHE_NODE_TYPE = "cache.t4g.micro"
 
 # Worker Service
 WORKER_CPU = 1024
@@ -61,9 +60,6 @@ RDS_SECRET_NAME = "tracker-db-credentials"
 
 # Load Balancer
 ALB_IDLE_TIMEOUT_SECONDS = 60
-
-# S3
-S3_BUCKET_NAME = "agentic-harness"
 
 # Slack notifications
 SLACK_WORKSPACE_ID = "T05929786PK"

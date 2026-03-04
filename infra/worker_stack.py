@@ -1,4 +1,4 @@
-"""Worker service stack - Taskiq worker with Redis sidecar.
+"""Worker service stack - Taskiq worker.
 
 Deployed independently from the tracker so that long-running benchmark
 tasks can finish while a new worker version is rolled out.
@@ -16,18 +16,13 @@ from aws_cdk import (
     aws_logs,
     aws_rds,
     aws_s3,
-    aws_servicediscovery,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
-    NAMESPACE,
     POSTGRES_DB,
     POSTGRES_PORT,
-    REDIS_HEALTH_INTERVAL_SECONDS,
-    REDIS_HEALTH_START_PERIOD_SECONDS,
-    REDIS_PORT,
     WORKER_CPU,
     WORKER_MAX_TASKS,
     WORKER_MEMORY,
@@ -44,11 +39,10 @@ _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
 
 
 class WorkerStack(Stack):
-    """Worker stack: Taskiq worker + Redis sidecar as a Fargate service.
+    """Worker stack: Taskiq worker as a Fargate service.
 
-    Redis runs as a sidecar in the worker task and is registered via Cloud Map
-    as ``worker.local`` so the tracker API can reach Redis at
-    ``worker.local:6379``.
+    Connects to the shared ElastiCache Redis in SharedStack (used as the
+    Taskiq message broker) and to the RDS database in TrackerStack.
 
     Deployment is configured with ``min_healthy_percent=100`` and
     ``max_healthy_percent=200`` so ECS starts new tasks before stopping old
@@ -63,11 +57,10 @@ class WorkerStack(Stack):
         id: str,
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
-        namespace: aws_servicediscovery.IPrivateDnsNamespace,
+        redis_url: str,
         bucket: aws_s3.IBucket,
         database: aws_rds.DatabaseInstance,
         db_credentials: aws_rds.DatabaseSecret,
-        tracker_service: aws_ecs.FargateService,
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
@@ -80,7 +73,6 @@ class WorkerStack(Stack):
 
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
-            "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
             "AWS_S3_BUCKET": bucket.bucket_name,
         }
 
@@ -95,7 +87,7 @@ class WorkerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
         }
 
-        # ── Worker + Redis service ───────────────────────────────────────
+        # ── Worker service ────────────────────────────────────────────────
 
         worker_task_def = aws_ecs.FargateTaskDefinition(
             self,
@@ -105,30 +97,7 @@ class WorkerStack(Stack):
             runtime_platform=_ARM64_PLATFORM,
         )
 
-        redis_container = worker_task_def.add_container(
-            "WorkerRedisContainer",
-            container_name="redis",
-            image=aws_ecs.ContainerImage.from_registry("redis:7-alpine"),
-            logging=aws_ecs.LogDriver.aws_logs(
-                stream_prefix="WorkerRedis",
-                log_group=aws_logs.LogGroup(
-                    self,
-                    "WorkerRedisLogGroup",
-                    retention=aws_logs.RetentionDays.ONE_WEEK,
-                    removal_policy=cdk.RemovalPolicy.DESTROY,
-                ),
-            ),
-            health_check=aws_ecs.HealthCheck(
-                command=["CMD", "redis-cli", "ping"],
-                interval=Duration.seconds(REDIS_HEALTH_INTERVAL_SECONDS),
-                retries=CONTAINER_HEALTH_RETRIES,
-                start_period=Duration.seconds(REDIS_HEALTH_START_PERIOD_SECONDS),
-                timeout=Duration.seconds(CONTAINER_HEALTH_TIMEOUT_SECONDS),
-            ),
-            port_mappings=[aws_ecs.PortMapping(container_port=REDIS_PORT)],
-        )
-
-        worker_container = worker_task_def.add_container(
+        worker_task_def.add_container(
             "WorkerContainer",
             image=worker_image,
             logging=aws_ecs.LogDriver.aws_logs(
@@ -143,21 +112,12 @@ class WorkerStack(Stack):
             environment={
                 **shared_env,
                 **db_env,
-                "REDIS_URL": f"redis://localhost:{REDIS_PORT}",
+                "REDIS_URL": redis_url,
             },
             secrets=db_secrets,
             command=["uv", "run", "--no-sync", "taskiq", "worker", "tracker.config:broker", "tracker.utils"],
             stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),
         )
-
-        worker_container.add_container_dependencies(
-            aws_ecs.ContainerDependency(
-                container=redis_container,
-                condition=aws_ecs.ContainerDependencyCondition.HEALTHY,
-            ),
-        )
-
-        worker_task_def.default_container = worker_container
 
         # Allow the worker to toggle ECS Task Protection while benchmarks run
         worker_task_def.task_role.add_to_policy(
@@ -178,12 +138,6 @@ class WorkerStack(Stack):
             min_healthy_percent=100,
             max_healthy_percent=200,
             assign_public_ip=True,
-            cloud_map_options=aws_ecs.CloudMapOptions(
-                name="worker",
-                cloud_map_namespace=namespace,
-                container=redis_container,
-                container_port=REDIS_PORT,
-            ),
         )
 
         # Worker auto-scaling
@@ -195,20 +149,3 @@ class WorkerStack(Stack):
             "WorkerCpuScaling",
             target_utilization_percent=WORKER_SCALING_CPU_PERCENT,
         )
-
-        # ── Network access ───────────────────────────────────────────────
-
-        # Allow tracker API to reach Redis on the worker service.
-        # Use remote_rule=False so CDK only adds the ingress rule on the
-        # worker SG — not an egress rule on the tracker SG in TrackerStack,
-        # which would create a cyclic cross-stack dependency.
-        # The tracker's SG already allows all outbound traffic by default.
-        self.worker_service.connections.security_groups[0].add_ingress_rule(
-            peer=tracker_service.connections.security_groups[0],
-            connection=aws_ec2.Port.tcp(REDIS_PORT),
-            description="Allow Tracker to connect to Worker Redis",
-            remote_rule=False,
-        )
-
-        # Worker → RDS access is handled via a VPC-wide ingress rule on the
-        # database security group in TrackerStack (avoids cross-stack cycle).

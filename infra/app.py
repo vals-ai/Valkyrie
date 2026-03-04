@@ -27,20 +27,20 @@ tracker = TrackerStack(
     namespace=shared.namespace,
     hosted_zone=shared.hosted_zone,
     bucket=shared.bucket,
+    redis_url=shared.redis_url,
     env=env,
 )
 
-# Worker service (Taskiq worker + Redis sidecar) - deployed independently
+# Worker service (Taskiq worker) - deployed independently
 worker = WorkerStack(
     app,
     "WorkerStack",
     vpc=shared.vpc,
     cluster=shared.cluster,
-    namespace=shared.namespace,
+    redis_url=shared.redis_url,
     bucket=shared.bucket,
     database=tracker.database,
     db_credentials=tracker.db_credentials,
-    tracker_service=tracker.tracker_fargate_service,
     env=env,
 )
 

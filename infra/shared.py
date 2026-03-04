@@ -1,4 +1,4 @@
-"""Shared infrastructure: VPC, ECS Cluster, Service Discovery namespace, S3."""
+"""Shared infrastructure: VPC, ECS Cluster, Service Discovery namespace, S3, ElastiCache."""
 
 from typing import Any
 
@@ -8,19 +8,21 @@ from aws_cdk import (
     aws_chatbot,
     aws_ec2,
     aws_ecs,
+    aws_elasticache,
     aws_events,
     aws_events_targets,
     aws_route53,
-    aws_s3,
     aws_servicediscovery,
     aws_sns,
 )
 from constants import (
     CLUSTER_NAME,
+    ELASTICACHE_NODE_TYPE,
     NAMESPACE,
-    S3_BUCKET_NAME,
+    REDIS_PORT,
     SLACK_CHANNEL_ID,
     SLACK_WORKSPACE_ID,
+    VPC_CIDR,
     VPC_MAX_AZS,
     VPC_NAT_GATEWAYS,
 )
@@ -195,11 +197,48 @@ class SharedStack(Stack):
             domain_name="vals.ai",
         )
 
-        # S3 bucket
-        self.bucket = aws_s3.Bucket(
+        # ── ElastiCache Redis ─────────────────────────────────────────────
+        # Single-node Redis used as the Taskiq message broker, shared by
+        # the tracker (producer) and worker (consumer).
+
+        redis_sg = aws_ec2.SecurityGroup(
             self,
-            "AgenticHarnessBucket",
-            bucket_name=S3_BUCKET_NAME,
-            removal_policy=cdk.RemovalPolicy.RETAIN,
-            block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
+            "RedisSG",
+            vpc=self.vpc,
+            description="Security group for ElastiCache Redis",
+            allow_all_outbound=False,
+        )
+
+        redis_sg.add_ingress_rule(
+            peer=aws_ec2.Peer.ipv4(VPC_CIDR),
+            connection=aws_ec2.Port.tcp(REDIS_PORT),
+            description="Allow VPC services to connect to Redis",
+        )
+
+        redis_subnet_group = aws_elasticache.CfnSubnetGroup(
+            self,
+            "RedisSubnetGroup",
+            description="Subnet group for ElastiCache Redis",
+            subnet_ids=[s.subnet_id for s in self.vpc.public_subnets],
+        )
+
+        redis_cluster = aws_elasticache.CfnCacheCluster(
+            self,
+            "RedisCluster",
+            cache_node_type=ELASTICACHE_NODE_TYPE,
+            engine="redis",
+            engine_version="7.1",
+            num_cache_nodes=1,
+            vpc_security_group_ids=[redis_sg.security_group_id],
+            cache_subnet_group_name=redis_subnet_group.ref,
+        )
+
+        self.redis_url = cdk.Fn.join(
+            "",
+            [
+                "redis://",
+                redis_cluster.attr_redis_endpoint_address,
+                ":",
+                redis_cluster.attr_redis_endpoint_port,
+            ],
         )

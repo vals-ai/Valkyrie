@@ -31,7 +31,6 @@ from constants import (
     POSTGRES_USER,
     RDS_ALLOCATED_STORAGE_GB,
     RDS_INSTANCE_CLASS,
-    REDIS_PORT,
     TRACKER_CPU,
     TRACKER_DOMAIN,
     TRACKER_MAX_TASKS,
@@ -67,6 +66,7 @@ class TrackerStack(Stack):
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         hosted_zone: aws_route53.IHostedZone,
         bucket: aws_s3.IBucket,
+        redis_url: str,
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
@@ -157,7 +157,7 @@ class TrackerStack(Stack):
             environment={
                 **shared_env,
                 **db_env,
-                "REDIS_URL": f"redis://worker.{NAMESPACE}:{REDIS_PORT}",
+                "REDIS_URL": redis_url,
             },
             secrets=db_secrets,
             command=["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
