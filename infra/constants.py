@@ -61,6 +61,9 @@ RDS_SECRET_NAME = "tracker-db-credentials"
 # Load Balancer
 ALB_IDLE_TIMEOUT_SECONDS = 60
 
+# S3
+S3_BUCKET_NAME = "agentic-harness"
+
 # Slack notifications
 SLACK_WORKSPACE_ID = "T05929786PK"
 SLACK_CHANNEL_ID = "C0AF4987EF6"

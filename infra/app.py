@@ -25,6 +25,7 @@ tracker = TrackerStack(
     cluster=shared.cluster,
     namespace=shared.namespace,
     hosted_zone=shared.hosted_zone,
+    bucket=shared.bucket,
     redis_url=shared.redis_url,
     env=env,
 )
@@ -36,8 +37,10 @@ worker = WorkerStack(
     vpc=shared.vpc,
     cluster=shared.cluster,
     redis_url=shared.redis_url,
+    bucket=shared.bucket,
     database=tracker.database,
     db_credentials=tracker.db_credentials,
+    tracker_service=tracker.tracker_fargate_service,
     env=env,
 )
 

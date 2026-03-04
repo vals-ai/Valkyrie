@@ -12,6 +12,7 @@ from aws_cdk import (
     aws_events,
     aws_events_targets,
     aws_route53,
+    aws_s3,
     aws_servicediscovery,
     aws_sns,
 )
@@ -20,6 +21,7 @@ from constants import (
     ELASTICACHE_NODE_TYPE,
     NAMESPACE,
     REDIS_PORT,
+    S3_BUCKET_NAME,
     SLACK_CHANNEL_ID,
     SLACK_WORKSPACE_ID,
     VPC_CIDR,
@@ -195,6 +197,15 @@ class SharedStack(Stack):
             self,
             "HostedZone",
             domain_name="vals.ai",
+        )
+
+        # S3 bucket
+        self.bucket = aws_s3.Bucket(
+            self,
+            "AgenticHarnessBucket",
+            bucket_name=S3_BUCKET_NAME,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
         )
 
         # ── ElastiCache Redis ─────────────────────────────────────────────

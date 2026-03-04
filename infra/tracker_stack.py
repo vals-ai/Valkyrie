@@ -13,6 +13,7 @@ from aws_cdk import (
     aws_logs,
     aws_rds,
     aws_route53,
+    aws_s3,
     aws_servicediscovery,
 )
 from aws_cdk.aws_ecr_assets import Platform
@@ -64,6 +65,7 @@ class TrackerStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         hosted_zone: aws_route53.IHostedZone,
+        bucket: aws_s3.IBucket,
         redis_url: str,
         **kwargs: Any,
     ):
@@ -80,6 +82,7 @@ class TrackerStack(Stack):
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
             "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
+            "AWS_S3_BUCKET": bucket.bucket_name,
         }
 
         # ── RDS ──────────────────────────────────────────────────────────
@@ -231,8 +234,6 @@ class TrackerStack(Stack):
         # ── Network access ───────────────────────────────────────────────
 
         # Allow VPC services (tracker + worker) to reach RDS.
-        # Uses VPC CIDR instead of individual security groups to avoid
-        # cyclic cross-stack dependencies with WorkerStack.
         db_security_group.add_ingress_rule(
             peer=aws_ec2.Peer.ipv4(VPC_CIDR),
             connection=aws_ec2.Port.tcp(POSTGRES_PORT),

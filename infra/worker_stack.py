@@ -15,6 +15,7 @@ from aws_cdk import (
     aws_iam,
     aws_logs,
     aws_rds,
+    aws_s3,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
@@ -55,11 +56,17 @@ class WorkerStack(Stack):
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
         redis_url: str,
+        bucket: aws_s3.IBucket,
         database: aws_rds.DatabaseInstance,
         db_credentials: aws_rds.DatabaseSecret,
+        tracker_service: aws_ecs.FargateService,
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
+
+        # Reuse the tracker's security group so both services share the same
+        # SG — benchmark services only need to whitelist one group.
+        tracker_sg = tracker_service.connections.security_groups[0]
 
         worker_image = aws_ecs.ContainerImage.from_asset(
             "../services/tracker",
@@ -70,6 +77,7 @@ class WorkerStack(Stack):
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
             "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
+            "AWS_S3_BUCKET": bucket.bucket_name,
         }
 
         db_env = {
@@ -130,6 +138,7 @@ class WorkerStack(Stack):
             task_definition=worker_task_def,
             desired_count=WORKER_MIN_TASKS,
             service_name="Worker",
+            security_groups=[tracker_sg],
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
             min_healthy_percent=100,
             max_healthy_percent=200,
