@@ -1,0 +1,28 @@
+[llm]
+temperature = 1
+top_p = 1
+disable_vision = false
+native_tool_calling = true
+num_retries = 20
+retry_min_wait = 15
+retry_max_wait = 120
+
+[agent]
+enable_browsing = false
+enable_jupyter = false
+
+[core]
+runtime = "local"
+run_as_openhands = false
+max_iterations = 0
+debug = false
+save_trajectory_path = "./trajectories"
+enable_browser = false
+
+[sandbox]
+user_id = 0
+timeout = 120
+
+[mcp]
+sse_servers = []
+shttp_servers = []
