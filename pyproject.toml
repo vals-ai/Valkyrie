@@ -13,6 +13,7 @@ dependencies = [
   "tracker",
   "valsai>=0.1.2",
   "model_library",
+  "aioboto3>=7.0.0",
 ]
 
 [project.scripts]
@@ -44,6 +45,10 @@ typeCheckingMode = "strict"
 reportExplicitAny = false
 reportAny = false
 reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownVariableType = false
+reportGeneralTypeIssues = false
+reportTypedDictNotRequiredAccess = false
 enableTypeIgnoreComments = true
 
 include = ["src", "agents"]

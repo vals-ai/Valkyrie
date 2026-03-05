@@ -1,5 +1,6 @@
 """CLI views/commands for the agentic harness."""
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -10,8 +11,9 @@ import yaml
 from tracker.database.models import BenchmarkStatus
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
-from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract
+from agentic_harness.cli.bundler import get_contract
 from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
+from agentic_harness.cli.s3_client import install_agent, list_agents, push_agent, remove_agent
 from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     check_tracker_service_health,
@@ -50,6 +52,15 @@ def config():
 
 
 _CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml").expanduser()
+
+
+def _load_config() -> dict[str, str]:
+    """Load the harness configuration from YAML file."""
+    if not _CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+    with open(_CONFIG_LOCATION) as f:
+        config = yaml.safe_load(f) or {}
+    return config
 
 
 @config.command()
@@ -277,12 +288,6 @@ def start(
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
-
-            click.echo("\r\033[KZipping agent artifacts...", nl=False)
-
-            with get_agent_zip_stream(contract) as file_stream:
-                click.echo("\r\033[KUploading agent to tracker service...", nl=False)
-                tracker.upload_contract(contract.name, file_stream)
 
             click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
 
@@ -649,6 +654,127 @@ def outputs(benchmark_id: UUID, output_dir: Path | None):
     except TrackerServiceError as e:
         click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)
         raise click.Abort()
+
+
+@agent.command(name="install", description="Installs agent from a github project to the users aws environment")
+@click.argument("github_url", type=str)
+@click.option(
+    "--name",
+    "-n",
+    type=str,
+    required=False,
+    help="Agent name (defaults to repository name)",
+)
+def install(github_url: str, name: str | None):
+    """Install an agent from a GitHub repository.
+
+    Example:
+        harness agent install https://github.com/user/my-agent
+        harness agent install https://github.com/user/my-agent --name my-custom-name
+    """
+    try:
+        config = _load_config()
+        bucket_name = config.get("S3_BUCKET")
+        if not bucket_name:
+            raise click.ClickException("S3_BUCKET not configured. Run 'harness config init' first.")
+
+        click.echo(f"Installing agent from {github_url}...")
+        asyncio.run(install_agent(name, github_url, bucket_name))
+        click.echo(
+            click.style(f"✓ Agent {'(' + name + ') ' if name else ''}installed successfully!", fg="green", bold=True)
+        )
+    except (RuntimeError, ValueError) as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+@agent.command(name="push", description="Pushes agent to the users aws environment from the local filesystem")
+@click.argument("path", "agent_path", type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True))
+@click.option(
+    "--name",
+    "-n",
+    type=str,
+    required=False,
+    help="Agent name (defaults to directory name)",
+)
+def push(agent_path: Path, name: str | None):
+    """Push a local agent to S3.
+
+    Example:
+        harness agent push ./agents/my-agent
+        harness agent push ./agents/my-agent --name my-custom-name
+    """
+    try:
+        config = _load_config()
+        bucket_name = config.get("S3_BUCKET")
+        if not bucket_name:
+            raise click.ClickException("S3_BUCKET not configured. Run 'harness config init' first.")
+
+        agent_name = name or agent_path.name
+        click.echo(f"Pushing agent '{agent_name}' to S3...")
+        asyncio.run(push_agent(name, agent_path, bucket_name))
+        click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
+    except (RuntimeError, ValueError) as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+@agent.command(name="remove", description="Remove an installed agent")
+@click.argument("agent_name", type=str)
+def remove(agent_name: str):
+    """Remove an agent from S3.
+
+    Example:
+        harness agent remove my-agent
+    """
+    try:
+        config = _load_config()
+        bucket_name = config.get("S3_BUCKET")
+        if not bucket_name:
+            raise click.ClickException("S3_BUCKET not configured. Run 'harness config init' first.")
+
+        if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
+            click.echo("Cancelled.")
+            return
+
+        click.echo(f"Removing agent '{agent_name}'...")
+        asyncio.run(remove_agent(agent_name, bucket_name))
+        click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
+    except (RuntimeError, ValueError) as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+@agent.command(name="list", description="List installed agents")
+def list_installed_agents():
+    """List all installed agents in S3.
+
+    Example:
+        harness agent list
+    """
+    try:
+        config = _load_config()
+        bucket_name = config.get("S3_BUCKET")
+        if not bucket_name:
+            raise click.ClickException("S3_BUCKET not configured. Run 'harness config init' first.")
+
+        click.echo(f"Listing agents from bucket '{bucket_name}'...")
+        agents = asyncio.run(list_agents(bucket_name))
+
+        if not agents:
+            click.echo("No agents found.")
+            return
+
+        click.echo(click.style("\nInstalled Agents:", fg="cyan", bold=True))
+        for agent_name, last_modified in agents:
+            click.echo(f"  {agent_name:<30} {last_modified}")
+    except (RuntimeError, ValueError) as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
 if __name__ == "__main__":

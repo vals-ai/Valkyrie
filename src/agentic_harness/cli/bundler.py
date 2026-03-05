@@ -60,12 +60,13 @@ def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
 
 
 @contextmanager
-def get_agent_zip_stream(contract: AgentContractRequest) -> Generator[BinaryIO, None, None]:
+def get_agent_zip_stream(agent_name: str | None, agent_path: Path) -> Generator[BinaryIO, None, None]:
     """
     Create a zip stream containing the agent artifacts.
 
     Args:
-        contract: AgentContractRequest instance
+        agent_name: Name of the agent
+        agent_path: Path to the agent directory
 
     Returns:
         Generator[BinaryIO, None, None]: A generator that yields a zip stream
@@ -73,27 +74,19 @@ def get_agent_zip_stream(contract: AgentContractRequest) -> Generator[BinaryIO, 
     Raises:
         BundlerError: If any artifacts are missing or zipping fails
     """
-    agent_path = Path("agents") / contract.name
-    artifacts = [agent_path / artifact for artifact in contract.artifacts]
-
-    missing_artifacts = [artifact for artifact in artifacts if not artifact.exists()]
-    if missing_artifacts:
-        raise BundlerError(f"Missing artifacts: {missing_artifacts}")
+    agent_name = agent_name or agent_path.name
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        bundle_dir = temp_path / contract.name
+        bundle_dir = temp_path / agent_name
         bundle_dir.mkdir(parents=True, exist_ok=True)
 
-        for artifact in artifacts:
-            dest = bundle_dir / artifact.relative_to(agent_path)
-            if artifact.is_dir():
-                shutil.copytree(artifact, dest)
-            else:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(artifact, dest)
+        if agent_path.is_dir():
+            shutil.copytree(agent_path, bundle_dir)
+        else:
+            shutil.copy2(agent_path, bundle_dir)
 
-        zip_path = temp_path / f"{contract.name}.zip"
+        zip_path = temp_path / f"{agent_name}.zip"
         _zip_directory_to_file(bundle_dir, zip_path)
 
         with open(zip_path, "rb") as f:

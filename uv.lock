@@ -11,6 +11,7 @@ name = "agentic-harness"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aioboto3" },
     { name = "click" },
     { name = "httpx" },
     { name = "model-library" },
@@ -31,6 +32,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aioboto3", specifier = ">=7.0.0" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "model-library" },
@@ -62,6 +64,36 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/4e/4b/74d3a5843a3eaf0be323dc4bac8df652a59f61598b6fd20ccd95f2df3ec8/ai21-4.3.0.tar.gz", hash = "sha256:86af8698f773098e8bd88ad7f2a9b80e2d5e65ddf7916edbe0ed67132d945bda", size = 46001, upload-time = "2025-11-06T13:56:58.818Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/0d/4aa5c45af20025de2049d38cb8f9d78ecd05aeb89af8cf1dbed456b62a0f/ai21-4.3.0-py3-none-any.whl", hash = "sha256:8cfaee894df85a7a8d28de63e76591a5874752cb0cc72bd20120f6f5e992b83e", size = 74880, upload-time = "2025-11-06T13:56:57.261Z" },
+]
+
+[[package]]
+name = "aioboto3"
+version = "7.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiobotocore" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3b/5f/cf6de345760520907ab91573be61853552e6402d94fa781b09fa84ce3f42/aioboto3-7.0.0.tar.gz", hash = "sha256:84fc1ed0d456f2f0ff5626e5045bb9871461155aa9d91f44be0e3b1554e30552", size = 47935, upload-time = "2020-03-17T12:34:43.898Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/02/d2b8ec2172577329daec50b0e547ac68955e04983ae42367fe3ae8388229/aioboto3-7.0.0-py2.py3-none-any.whl", hash = "sha256:db3db4058115fe610e631d98fe90a6d98de55cc93da7d9f6ddab4a5f74b2ff0c", size = 28941, upload-time = "2020-03-17T12:34:42.138Z" },
+]
+
+[[package]]
+name = "aiobotocore"
+version = "3.2.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "aioitertools" },
+    { name = "botocore" },
+    { name = "jmespath" },
+    { name = "multidict" },
+    { name = "python-dateutil" },
+    { name = "wrapt" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1d/ce/7d593e50d481b649c99a407c8249f9cf6437840a3adc4ecc9127f9a843d2/aiobotocore-3.2.1.tar.gz", hash = "sha256:59b1c1f59860cb10b2e5096edcc87a88842bee301969bd76a3ca0b1c4c30e6d3", size = 122788, upload-time = "2026-03-04T22:30:43.342Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/02/78/79aa8169408996f5a71150abdea2e5e0f364df250c9e54ac385f115c7436/aiobotocore-3.2.1-py3-none-any.whl", hash = "sha256:68b7474af3e7124666b8e191805db5a7255d14e6187e0472481c845b6062e42e", size = 87737, upload-time = "2026-03-04T22:30:41.594Z" },
 ]
 
 [[package]]
@@ -177,6 +209,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9d/61/ebda4d8e3d8cfa1fd3db0fb428db2dd7461d5742cea35178277ad180b033/aiohttp_retry-2.9.1.tar.gz", hash = "sha256:8eb75e904ed4ee5c2ec242fefe85bf04240f685391c4879d8f541d6028ff01f1", size = 13608, upload-time = "2024-11-06T10:44:54.574Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/1a/99/84ba7273339d0f3dfa57901b846489d2e5c2cd731470167757f1935fffbd/aiohttp_retry-2.9.1-py3-none-any.whl", hash = "sha256:66d2759d1921838256a05a3f80ad7e724936f083e35be5abb5e16eed6be6dc54", size = 9981, upload-time = "2024-11-06T10:44:52.917Z" },
+]
+
+[[package]]
+name = "aioitertools"
+version = "0.13.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/3c/53c4a17a05fb9ea2313ee1777ff53f5e001aefd5cc85aa2f4c2d982e1e38/aioitertools-0.13.0.tar.gz", hash = "sha256:620bd241acc0bbb9ec819f1ab215866871b4bbd1f73836a55f799200ee86950c", size = 19322, upload-time = "2025-11-06T22:17:07.609Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/a1/510b0a7fadc6f43a6ce50152e69dbd86415240835868bb0bd9b5b88b1e06/aioitertools-0.13.0-py3-none-any.whl", hash = "sha256:0be0292b856f08dfac90e31f4739432f4cb6d7520ab9eb73e143f4f2fa5259be", size = 24182, upload-time = "2025-11-06T22:17:06.502Z" },
 ]
 
 [[package]]
@@ -329,16 +370,16 @@ s3 = [
 
 [[package]]
 name = "botocore"
-version = "1.42.30"
+version = "1.42.61"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jmespath" },
     { name = "python-dateutil" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/44/38/23862628a0eb044c8b8b3d7a9ad1920b3bfd6bce6d746d5a871e8382c7e4/botocore-1.42.30.tar.gz", hash = "sha256:9bf1662b8273d5cc3828a49f71ca85abf4e021011c1f0a71f41a2ea5769a5116", size = 14891439, upload-time = "2026-01-16T20:37:13.77Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d1/6a/27836dde004717c496f69f4fe28fa2f3f3762d04859a9292681944a45a36/botocore-1.42.61.tar.gz", hash = "sha256:702d6011ace2b5b652a0dbb45053d4d9f79da2c5b184463042434e1754bdd601", size = 14954743, upload-time = "2026-03-04T20:30:41.956Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3d/8d/6d7b016383b1f74dd93611b1c5078bbaddaca901553ab886dcda87cae365/botocore-1.42.30-py3-none-any.whl", hash = "sha256:97070a438cac92430bb7b65f8ebd7075224f4a289719da4ee293d22d1e98db02", size = 14566340, upload-time = "2026-01-16T20:37:10.94Z" },
+    { url = "https://files.pythonhosted.org/packages/88/46/98a01139f318b7a2f0ad1d1e3be2a028d13aeb7e05aaa340a27cdc47fdf0/botocore-1.42.61-py3-none-any.whl", hash = "sha256:476059beb3f462042742950cf195d26bc313461a77189c16e37e205b0a924b26", size = 14627717, upload-time = "2026-03-04T20:30:37.503Z" },
 ]
 
 [[package]]
