@@ -139,6 +139,7 @@ class BenchmarkTableRow(BaseModel):
     name: str
     agent_name: str
     started_at: datetime
+    finished_at: datetime | None
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int

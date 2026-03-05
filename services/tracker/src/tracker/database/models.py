@@ -217,6 +217,7 @@ class Benchmark(SQLModel, table=True):
             name=self.name,
             agent_name=self.arguments.contract.name,
             started_at=self.started_at,
+            finished_at=self.finished_at,
             status=self.status,
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,
