@@ -2,6 +2,12 @@
 
 Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
+## Pre requisites
+
+- AWS account
+- S3 bucket created for the purpose of storing all artifacts produced by benchmarks ran
+- API key for sandbox provider supported (daytona). [Documentation for setting that up](docs/PROVIDER.md)
+
 ## Configuration
 
 ```bash
@@ -115,3 +121,5 @@ harness agent outputs --benchmark-id <id> --output-dir ./outputs
 | Tracker service | [TRACKER.md](services/tracker/README.md) |
 | Database & migrations | [DATABASE.md](services/tracker/src/tracker/database/README.md) |
 | Infrastructure (AWS CDK) | [INFRASTRUCTURE.md](infra/README.md) |
+| Sandbox secrets | [PROVIDER.md](docs/PROVIDER.md) |
+| Contribute benchmark services | [Create benchmark service](https://github.com/vals-ai/create-benchmark-service)
