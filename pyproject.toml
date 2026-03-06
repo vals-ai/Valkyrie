@@ -50,6 +50,8 @@ include = ["src", "agents"]
 
 exclude = [
   "**/contracts/**",
+  "**/model_proxy/**",
+  "agents/model_library_agent/tools/**",
 ]
 
 [build-system]
