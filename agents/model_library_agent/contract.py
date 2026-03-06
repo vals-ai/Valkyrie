@@ -39,11 +39,12 @@ class ModelLibraryAgentContract(BaseAgentContract):
         tools = "bash,stop,recalculate_excel"
 
         args = [
+            "PYTHONPATH=/bundle/model_library_agent",
             "python -m model_library.agent.cli",
             f"--model {model}",
             f"--problem-statement {problem_statement_path}",
             f"--tools {tools}",
-            "--tool-module /bundle/model_library_agent/tools/__init__.py",
+            "--tool-module tools",
             "--log-file /logs/agent.log",
             "--console",
             "--output /logs/result.json",
