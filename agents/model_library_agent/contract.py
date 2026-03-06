@@ -11,7 +11,7 @@ class ModelLibraryAgentContract(BaseAgentContract):
 
     @property
     def artifacts(self) -> list[str]:
-        return ["setup.sh", "model_proxy"]
+        return ["setup.sh", "model_proxy", "tools"]
 
     @property
     def install_cmd(self) -> str:
@@ -36,13 +36,14 @@ class ModelLibraryAgentContract(BaseAgentContract):
             raise ValueError("Model is required. Use --model to specify one.")
 
         # hardcode tools for now
-        tools = "bash,stop"
+        tools = "bash,stop,recalculate_excel"
 
         args = [
             "python -m model_library.agent.cli",
             f"--model {model}",
             f"--problem-statement {problem_statement_path}",
             f"--tools {tools}",
+            "--tool-module /bundle/model_library_agent/tools/__init__.py",
             "--log-file /logs/agent.log",
             "--console",
             "--output /logs/result.json",

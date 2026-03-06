@@ -5,6 +5,7 @@ export DEBIAN_FRONTEND=noninteractive
 
 apt-get update
 apt-get install -y curl git build-essential
+apt-get install -y --no-install-recommends libreoffice-calc
 
 # Remove stale build artifacts that may have been bundled
 rm -rf model_proxy/build model_proxy/dist model_proxy/*.egg-info
