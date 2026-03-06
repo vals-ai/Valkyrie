@@ -27,7 +27,7 @@ class ModelLibraryAgentContract(BaseAgentContract):
 
     @property
     def final_output(self) -> Path:
-        return Path("/workspace/template.xlsx")
+        return Path("/workspace")
 
     @override
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:
@@ -47,7 +47,7 @@ class ModelLibraryAgentContract(BaseAgentContract):
             "--tool-module tools",
             "--log-file /logs/agent.log",
             "--console",
-            "--output /logs/result.json",
+            "--output /workspace/result.json",
         ]
 
         return " ".join(args)
