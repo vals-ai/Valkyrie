@@ -14,6 +14,7 @@ rm -rf model_proxy/build model_proxy/dist model_proxy/*.egg-info
 export SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MODEL_LIBRARY=0.0.0
 pip install --no-cache-dir setuptools setuptools-scm
 pip install --no-cache-dir -e model_proxy/
+pip install --no-cache-dir openpyxl
 
 # Create logs directory
 mkdir -p /logs
