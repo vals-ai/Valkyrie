@@ -155,13 +155,13 @@ def service() -> None:
     pass
 
 
-@service.command("add")
+@service.command("set")
 @click.argument("name")
 @click.argument("url")
-def service_add(name: str, url: str) -> None:
-    """Add a custom URL for a benchmark service.
+def service_set(name: str, url: str) -> None:
+    """Set a custom URL for a benchmark service (creates or updates).
 
-    Example: harness config service add swebench https://my-tunnel.ngrok.io
+    Example: harness config service set swebench https://my-tunnel.ngrok.io
     """
     if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `harness config init` first.")
@@ -177,7 +177,7 @@ def service_add(name: str, url: str) -> None:
     with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(harness_config, f, default_flow_style=False)
 
-    click.echo(click.style(f"  Service URL for '{name}' added.", fg="green"))
+    click.echo(click.style(f"  Service URL for '{name}' set.", fg="green"))
 
 
 @service.command("remove")

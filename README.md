@@ -83,6 +83,42 @@ Downloads an agent from S3 to your local machine and unzips it.
 | --- | --- |
 | `--output-dir, -o` | Output directory for downloaded agent (default: current directory) |
 
+## Custom Benchmark Service URLs
+
+When testing with local or custom benchmark services (e.g., via ngrok tunnels), you can register custom URLs to override the default service endpoint derivation.
+
+### Set a custom service URL
+
+```bash
+harness config service set swebench https://my-tunnel.ngrok.io
+harness config service set miniforge http://localhost:8000
+```
+
+Creates or updates a custom URL for a benchmark service. This maps the benchmark name to your custom service URL.
+
+### List custom service URLs
+
+```bash
+harness config service list
+```
+
+Displays all registered custom benchmark service URLs in a paginated table. Supports navigation ([h] previous, [l] next, [q] quit).
+
+### Remove a custom service URL
+
+```bash
+harness config service remove swebench
+```
+
+Removes a custom URL override for a benchmark service, reverting to the default auto-derived URL.
+
+### How it works
+
+- When you start a benchmark, the harness checks if a custom URL is configured for that benchmark
+- If found, it uses your custom URL; otherwise, it derives the URL from the benchmark name + namespace
+- Custom URLs are persisted in `~/.config/harness/harness.yaml` under the `custom_benchmark_services` key
+- Custom URLs are remembered through retry and resume operations
+
 ## Usage
 
 ### Start a benchmark
