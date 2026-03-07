@@ -658,7 +658,7 @@ def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:
         click.clear()
 
         if total_count == 0:
-            click.echo(click.style("No custom service URLs configured.", fg="yellow"))
+            click.echo(click.style("No custom services have been added.", fg="yellow"))
             break
 
         page_services = services[offset : offset + limit]
