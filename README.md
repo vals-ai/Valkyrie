@@ -101,7 +101,7 @@ harness benchmark start \
 
 | Flag | Description |
 | --- | --- |
-| `--agent` | Agent name from S3 (must be installed via `harness agent install` or `harness agent push`). Local paths (e.g., `./agents/sweagent`) also work for iterative testing of the contract, but agents must be uploaded to S3 for use in actual benchmarks. |
+| `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
 | `--benchmark` | Benchmark name (e.g. `swebench`) |
 | `--model` | Model key (e.g. `openai/gpt-4o`) |
 | `--concurrency` | Number of concurrent sandbox tasks (default: 5) |

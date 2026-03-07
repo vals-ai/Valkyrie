@@ -276,7 +276,10 @@ def start(
         agent_config = AgentConfig(**config_kwargs)
 
         agent_path = Path(agent)
+
+        # If the user specified an agent on their machine we upload it first
         if agent_path.is_dir():
+            asyncio.run(push_agent(agent_path.stem, agent_path))
             contract = get_contract(agent_path / "contract.py", agent_config)
         else:
             contract = asyncio.run(get_contract_from_s3(agent, agent_config))
