@@ -16,7 +16,7 @@ BENCHMARK_SERVICE_NAMESPACE = os.environ.get("BENCHMARK_SERVICE_NAMESPACE")
 BENCHMARK_SERVICE_PORT = 8000
 
 
-def benchmark_service_url(benchmark_name: str) -> str:
+def create_benchmark_service_url(benchmark_name: str) -> str:
     """
     Derive the benchmark service URL from the benchmark name and namespace
 

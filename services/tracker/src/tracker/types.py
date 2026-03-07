@@ -10,7 +10,7 @@ from uuid import UUID
 from benchmark_service.client import BenchmarkServiceClient
 from pydantic import BaseModel
 
-from tracker.config import benchmark_service_url
+from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
@@ -50,13 +50,16 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     harness_config: HarnessConfig
+    custom_benchmark_service: str | None = None
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
 
+        # Prioritize user defined benchmark service over hosted one
+        benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
         return create_benchmark_service_client(
-            url=benchmark_service_url(self.benchmark_name),
+            url=benchmark_service_url,
             daytona_secret_name=self.harness_config.daytona_secret_name,
             aws=self.harness_config.aws,
         )

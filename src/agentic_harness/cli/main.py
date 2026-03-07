@@ -148,6 +148,85 @@ def modify(key: str, value: str) -> None:
     click.echo(click.style(f"  {key} updated.", fg="green"))
 
 
+@config.group()
+def service() -> None:
+    """Manage custom benchmark service URL overrides."""
+    pass
+
+
+@service.command("add")
+@click.argument("name")
+@click.argument("url")
+def service_add(name: str, url: str) -> None:
+    """Add a custom URL for a benchmark service.
+
+    Example: harness config service add swebench https://my-tunnel.ngrok.io
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    if "custom_benchmark_services" not in harness_config:
+        harness_config["custom_benchmark_services"] = {}
+
+    harness_config["custom_benchmark_services"][name] = url
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(harness_config, f, default_flow_style=False)
+
+    click.echo(click.style(f"  Service URL for '{name}' added.", fg="green"))
+
+
+@service.command("remove")
+@click.argument("name")
+def service_remove(name: str) -> None:
+    """Remove a custom URL override for a benchmark service.
+
+    Example: harness config service remove swebench
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        current: dict[str, Any] = yaml.safe_load(f) or {}
+
+    services = current.get("custom_benchmark_services") or {}
+    if name not in services:
+        raise click.ClickException(f"Service '{name}' not configured.")
+
+    del services[name]
+    current["custom_benchmark_services"] = services
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(current, f, default_flow_style=False)
+
+    click.echo(click.style(f"  Service URL for '{name}' removed.", fg="green"))
+
+
+@service.command("list")
+def service_list() -> None:
+    """List all custom benchmark service URL overrides."""
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        current: dict[str, Any] = yaml.safe_load(f) or {}
+
+    services = current.get("custom_benchmark_services") or {}
+    if not services:
+        click.echo(click.style("No custom service URLs configured.", fg="yellow"))
+        return
+
+    click.echo()
+    click.echo(click.style("Custom Service URLs:", bold=True))
+    click.echo()
+    for benchmark_name, service_url in services.items():
+        click.echo(f"  {click.style(benchmark_name, fg='cyan')}: {service_url}")
+    click.echo()
+
+
 @benchmark.command(
     help="Start a benchmark run. \n\nExample:\nharness benchmark start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
