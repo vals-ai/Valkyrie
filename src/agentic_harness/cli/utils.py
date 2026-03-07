@@ -281,17 +281,14 @@ def format_fetch_benchmarks_response(
     fetch_benchmarks_response: FetchBenchmarksResponse,
     current_page: int = 1,
     total_pages: int = 1,
-    show_nav: bool = False,
 ) -> None:
     """
     Format and display benchmarks in a table format.
-    NOTE: I'm not an artist (This was created using opus)
 
     Args:
         fetch_benchmarks_response: FetchBenchmarksResponse containing list of benchmarks
         current_page: Current page number (1-indexed)
         total_pages: Total number of pages
-        show_nav: Whether to show navigation hints
     """
     benchmarks = fetch_benchmarks_response.benchmarks
 
@@ -299,55 +296,32 @@ def format_fetch_benchmarks_response(
         click.echo(click.style("No benchmarks found.", fg="yellow"))
         return
 
-    id_width = 36
-    name_width = max(len("Benchmark"), max(len(benchmark.name) for benchmark in benchmarks))
-    agent_width = max(len("Agent"), max(len(benchmark.agent_name) for benchmark in benchmarks))
-    status_width = max(len("Status"), max(len(benchmark.status.value) for benchmark in benchmarks))
-    time_width = 19
-    progress_width = 8
-
-    header_line = (
-        f"{'ID':<{id_width}}  "
-        f"{'Benchmark':<{name_width}}  "
-        f"{'Agent':<{agent_width}}  "
-        f"{'Status':<{status_width}}  "
-        f"{'Started / Finished':<{time_width}}  "
-        f"{'Progress':>{progress_width}}"
-    )
-    separator = "─" * len(header_line)
-
-    click.echo()
-    click.echo(click.style(header_line, bold=True))
-    click.echo(separator)
-
+    rows: list[dict[str, str]] = []
     for benchmark in benchmarks:
         _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
-        status_color = BenchmarkFormatter.STATUS_COLORS[benchmark.status.value]
-        status_display = benchmark.status.value.replace("_", " ").title()
-        started_short = short_local_time(benchmark.started_at)
-        finished_short = short_local_time(benchmark.finished_at, include_date=False) if benchmark.finished_at else "-"
-        time_display = f"{started_short} / {finished_short}"
 
-        click.echo(
-            f"{str(benchmark.id):<{id_width}}  "
-            f"{benchmark.name:<{name_width}}  "
-            f"{benchmark.agent_name:<{agent_width}}  "
-            f"{click.style(status_display, fg=status_color):<{status_width + 9}}  "
-            f"{time_display}  "
-            f"{progress_percentage:>{progress_width}.1f}%"
+        rows.append(
+            {
+                "ID": str(benchmark.id),
+                "Benchmark": benchmark.name,
+                "Agent": benchmark.agent_name,
+                "Status": click.style(
+                    benchmark.status.value.replace("_", " ").title(),
+                    fg=BenchmarkFormatter.STATUS_COLORS[benchmark.status.value],
+                ),
+                "Started / Finished": f"{short_local_time(benchmark.started_at)} / {short_local_time(benchmark.finished_at, include_date=False) if benchmark.finished_at else '-'}",
+                "Progress": f"{progress_percentage:.1f}%",
+            }
         )
 
-    click.echo(separator)
-
-    total_text = f"Total: {fetch_benchmarks_response.total_count} benchmark(s)"
-    if show_nav and total_pages > 1:
-        nav_text = click.style(f"[h] ← prev  {current_page}/{total_pages}  next → [l]  [q] quit", fg="bright_black")
-        padding = (
-            len(separator) - len(total_text) - len(f"[h] ← prev  {current_page}/{total_pages}  next → [l]  [q] quit")
-        )
-        click.echo(f"{total_text}{' ' * padding}{nav_text}")
-    else:
-        click.echo(total_text)
+    format_table(
+        rows,
+        ["ID", "Benchmark", "Agent", "Status", "Started / Finished", "Progress"],
+        current_page,
+        total_pages,
+        fetch_benchmarks_response.total_count,
+        "benchmark",
+    )
 
 
 def format_no_benchmarks_found(agent_name: str | None, benchmark_name: str | None, status: str | None) -> None:
@@ -414,7 +388,7 @@ def paginate_benchmarks(
             format_no_benchmarks_found(agent_name, benchmark_name, status)
             break
 
-        format_fetch_benchmarks_response(response, current_page, total_pages, show_nav=True)
+        format_fetch_benchmarks_response(response, current_page, total_pages)
 
         if total_pages <= 1:
             break
@@ -493,3 +467,130 @@ def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
         )
 
     click.echo(click.style(f"View the  '{path}'", fg="green", bold=True))
+
+
+def format_table(
+    rows: list[dict[str, str]],
+    headers: list[str],
+    current_page: int = 1,
+    total_pages: int = 1,
+    total_count: int | None = None,
+    item_name: str = "item",
+) -> None:
+    """
+    Generic table formatter for CLI output.
+
+    Args:
+        rows: List of dictionaries with keys matching headers (values can be strings or Click styled text)
+        headers: List of column headers
+        current_page: Current page number (1-indexed)
+        total_pages: Total number of pages
+        total_count: Total item count (defaults to len(rows))
+        item_name: Name of items for display (e.g., "benchmark", "agent")
+    """
+    if not rows:
+        click.echo(click.style(f"No {item_name}s found.", fg="yellow"))
+        return
+
+    if total_count is None:
+        total_count = len(rows)
+
+    # Calculate column widths, accounting for styled text (strip ANSI codes for length)
+    col_widths = {}
+    for header in headers:
+        max_width = len(header)
+        for row in rows:
+            val = str(row.get(header, ""))
+            # Remove ANSI color codes for width calculation
+            clean_val = click.unstyle(val) if hasattr(click, "unstyle") else val
+            max_width = max(max_width, len(clean_val))
+        col_widths[header] = max_width
+
+    header_line = "  ".join(f"{h:<{col_widths[h]}}" for h in headers)
+    separator = "─" * len(header_line)
+
+    click.echo()
+    click.echo(click.style(header_line, bold=True))
+    click.echo(separator)
+
+    for row in rows:
+        cells: list[str] = []
+        for h in headers:
+            val = str(row.get(h, ""))
+            clean_val = click.unstyle(val) if hasattr(click, "unstyle") else val
+            # Pad to column width using clean string length
+            padding = col_widths[h] - len(clean_val)
+            cells.append(f"{val}{' ' * padding}")
+        click.echo("  ".join(cells))
+
+    click.echo(separator)
+
+    total_text = f"Total: {total_count} {item_name}(s)"
+    if total_pages > 1:
+        nav_text = click.style(f"[h] ← prev  {current_page}/{total_pages}  next → [l]  [q] quit", fg="bright_black")
+        padding = (
+            len(separator) - len(total_text) - len(f"[h] ← prev  {current_page}/{total_pages}  next → [l]  [q] quit")
+        )
+        click.echo(f"{total_text}{' ' * padding}{nav_text}")
+    else:
+        click.echo(total_text)
+
+
+def format_agents_response(
+    agents: list[tuple[str, datetime]],
+    current_page: int = 1,
+    total_pages: int = 1,
+) -> None:
+    """
+    Format and display agents in a table format.
+
+    Args:
+        agents: List of tuples (agent_name, last_modified)
+        current_page: Current page number (1-indexed)
+        total_pages: Total number of pages
+    """
+    if not agents:
+        click.echo(click.style("No agents found.", fg="yellow"))
+        return
+
+    rows = [{"Agent": name, "Last Modified": local_time(last_modified)} for name, last_modified in agents]
+
+    format_table(rows, ["Agent", "Last Modified"], current_page, total_pages, len(agents), "agent")
+
+
+def paginate_agents(agents: list[tuple[str, datetime]], limit: int = 10) -> None:
+    """
+    Interactive paginated display of agents with vim-style navigation.
+
+    Args:
+        agents: List of tuples (agent_name, last_modified)
+        limit: Number of items per page
+    """
+    current_page = 1
+    offset = 0
+    total_count = len(agents)
+    total_pages = max(1, (total_count + limit - 1) // limit)
+
+    while True:
+        click.clear()
+
+        if total_count == 0:
+            click.echo(click.style("No agents found.", fg="yellow"))
+            break
+
+        page_agents = agents[offset : offset + limit]
+        format_agents_response(page_agents, current_page, total_pages)
+
+        if total_pages <= 1:
+            break
+
+        char = click.getchar()
+
+        if char == "l" and current_page < total_pages:
+            current_page += 1
+            offset += limit
+        elif char == "h" and current_page > 1:
+            current_page -= 1
+            offset -= limit
+        elif char == "q" or char == "\x03":
+            break

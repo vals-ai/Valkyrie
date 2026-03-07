@@ -22,6 +22,7 @@ from agentic_harness.cli.utils import (
     download_final_view,
     format_benchmark_status,
     format_start_benchmark_response,
+    paginate_agents,
     paginate_benchmarks,
     stream_benchmark_status,
 )
@@ -726,6 +727,8 @@ async def remove(agent_name: str):
 async def list_installed_agents():
     """List all installed agents in S3.
 
+    Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
+
     Example:
         harness agent list
     """
@@ -733,13 +736,10 @@ async def list_installed_agents():
         agents = await list_agents()
 
         if not agents:
-            click.echo("No agents found.")
+            click.echo(click.style("No agents found.", fg="yellow"))
             return
 
-        click.echo(click.style("\nInstalled Agents:", fg="cyan", bold=True))
-        # NOTE: Replace with table
-        for agent_name, last_modified in agents:
-            click.echo(f"  {agent_name:<30} {last_modified}")
+        paginate_agents(agents)
     except S3Error as e:
         raise click.ClickException(str(e))
     except Exception as e:
