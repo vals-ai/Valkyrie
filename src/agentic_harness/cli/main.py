@@ -645,7 +645,7 @@ def outputs(benchmark_id: UUID, output_dir: Path | None):
         raise click.Abort()
 
 
-@agent.command(name="install", description="Installs agent from a github project to the users aws environment")
+@agent.command(name="install", help="Installs agent from a github project to the users aws environment")
 @click.argument("github_url", type=str)
 @click.option(
     "--name",
@@ -673,8 +673,8 @@ async def install(github_url: str, name: str | None):
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@agent.command(name="push", description="Pushes agent to the users aws environment from the local filesystem")
-@click.argument("path", "agent_path", type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True))
+@agent.command(name="push", help="Pushes agent to the users aws environment from the local filesystem")
+@click.argument("agent_path", type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True))
 @click.option(
     "--name",
     "-n",
@@ -700,7 +700,7 @@ async def push(agent_path: Path, name: str | None):
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@agent.command(name="remove", description="Remove an installed agent")
+@agent.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
 async def remove(agent_name: str):
     """Remove an agent from S3.
@@ -722,7 +722,7 @@ async def remove(agent_name: str):
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@agent.command(name="list", description="List installed agents")
+@agent.command(name="list", help="List installed agents")
 async def list_installed_agents():
     """List all installed agents in S3.
 
