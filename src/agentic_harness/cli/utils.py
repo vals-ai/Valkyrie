@@ -639,3 +639,42 @@ def paginate_agents(agents: list[tuple[str, datetime]], limit: int = 10) -> None
             offset -= limit
         elif char == "q" or char == "\x03":
             break
+
+
+def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:
+    """
+    Interactive paginated display of services with vim-style navigation.
+
+    Args:
+        services: List of tuples (benchmark_name, service_url)
+        limit: Number of items per page
+    """
+    current_page = 1
+    offset = 0
+    total_count = len(services)
+    total_pages = max(1, (total_count + limit - 1) // limit)
+
+    while True:
+        click.clear()
+
+        if total_count == 0:
+            click.echo(click.style("No custom service URLs configured.", fg="yellow"))
+            break
+
+        page_services = services[offset : offset + limit]
+        rows = [{"Benchmark": name, "Service URL": url} for name, url in page_services]
+        format_table(rows, ["Benchmark", "Service URL"], current_page, total_pages, total_count, "service")
+
+        if total_pages <= 1:
+            break
+
+        char = click.getchar()
+
+        if char == "l" and current_page < total_pages:
+            current_page += 1
+            offset += limit
+        elif char == "h" and current_page > 1:
+            current_page -= 1
+            offset -= limit
+        elif char == "q" or char == "\x03":
+            break

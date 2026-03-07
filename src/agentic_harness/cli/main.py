@@ -32,6 +32,7 @@ from agentic_harness.cli.utils import (
     format_start_benchmark_response,
     paginate_agents,
     paginate_benchmarks,
+    paginate_services,
     stream_benchmark_status,
 )
 from agentic_harness.schemas import AgentConfig
@@ -214,17 +215,14 @@ def service_list() -> None:
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
 
-    services = current.get("custom_benchmark_services") or {}
+    services: dict[str, str] = current.get("custom_benchmark_services") or {}
     if not services:
         click.echo(click.style("No custom service URLs configured.", fg="yellow"))
         return
 
-    click.echo()
-    click.echo(click.style("Custom Service URLs:", bold=True))
-    click.echo()
-    for benchmark_name, service_url in services.items():
-        click.echo(f"  {click.style(benchmark_name, fg='cyan')}: {service_url}")
-    click.echo()
+    # Create a table of all the services that the user has inside of their config
+    services_list = list(services.items())
+    paginate_services(services_list)
 
 
 @benchmark.command(
