@@ -6,7 +6,7 @@ import tarfile
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable, TypeVar
+from typing import Any, Coroutine, TypeVar
 from uuid import UUID
 
 import click
@@ -29,7 +29,7 @@ CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml").expanduser()
 T = TypeVar("T")
 
 
-async def run_with_spinner(coro: Awaitable[T], message: str) -> T:
+async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
     """Run an async coroutine with an animated spinner.
 
     Args:
