@@ -177,7 +177,7 @@ def service_set(name: str, url: str) -> None:
     with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(harness_config, f, default_flow_style=False)
 
-    click.echo(click.style(f"  Service URL for '{name}' set.", fg="green"))
+    click.echo(click.style(f"Service '{name}' has been set set", fg="green"))
 
 
 @service.command("remove")
@@ -203,7 +203,7 @@ def service_remove(name: str) -> None:
     with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
-    click.echo(click.style(f"  Service URL for '{name}' removed.", fg="green"))
+    click.echo(click.style(f"Service '{name}' has been removed.", fg="green"))
 
 
 @service.command("list")
