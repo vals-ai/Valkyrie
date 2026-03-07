@@ -76,7 +76,7 @@ Removes an agent from the S3 bucket. Cannot be reversed, will be requested to co
 
 ```bash
 harness benchmark start \
-  --agent agents/sweagent \
+  --agent sweagent \
   --benchmark swebench \
   --model kimi/kimi-k2.5-thinking \
   --concurrency 5 \
@@ -88,7 +88,7 @@ harness benchmark start \
 
 | Flag | Description |
 | --- | --- |
-| `--agent` | Path to the agent directory (e.g. `agents/claude_code`) |
+| `--agent` | Agent name from S3 (must be installed via `harness agent install` or `harness agent push`). Local paths (e.g., `./agents/sweagent`) also work for iterative testing of the contract, but agents must be uploaded to S3 for use in actual benchmarks. |
 | `--benchmark` | Benchmark name (e.g. `swebench`) |
 | `--model` | Model key (e.g. `openai/gpt-4o`) |
 | `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
