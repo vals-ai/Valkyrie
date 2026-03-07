@@ -4,7 +4,7 @@ import os
 import re
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -129,28 +129,6 @@ class TrackerService:
             return response
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Health check failed: {e}") from e
-
-    def upload_contract(self, contract_name: str, file_stream: BinaryIO) -> dict[str, str]:
-        """
-        Upload contract bundle to tracker service.
-
-        Args:
-            contract_name: Name of the contract
-            file_stream: File-like object containing zipped contract bundle
-
-        Returns:
-            Upload response with status and message
-
-        Raises:
-            TrackerServiceError: If upload fails
-        """
-        try:
-            files = {"contract": (f"{contract_name}.zip", file_stream, "application/zip")}
-            response = self._client.post(f"{self._base_url}/upload", files=files, timeout=600)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Upload failed: {e}") from e
 
     def start_benchmark(
         self,

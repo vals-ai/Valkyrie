@@ -4,7 +4,7 @@ import traceback
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceError
-from fastapi import Body, Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, select
@@ -20,10 +20,8 @@ from tracker.s3 import (
     create_console_url,
     create_presigned_url,
     download_from_s3_stream,
-    get_contract_s3_key,
     list_s3_objects,
     s3_object_exists,
-    upload_to_s3,
 )
 from tracker.types import (
     BenchmarkTableRow,
@@ -102,44 +100,6 @@ def health_check() -> dict[str, str]:
     if not check_database_connection():
         raise HTTPException(status_code=503, detail="Database is not accessible")
     return {"status": "ok"}
-
-
-@app.post("/upload")
-async def upload_contract_to_s3(
-    contract: UploadFile = File(..., description="Contract directory zip file"),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
-) -> dict[str, str]:
-    """
-    Upload contract to S3.
-
-    Usage:
-    curl -X POST http://<endpoint>/upload \
-      -F "contract=@claude_code.zip"
-
-    Returns:
-    {
-        "status": "success",
-        "message": "Contract uploaded successfully"
-    }
-
-    Returns:
-    - 200 OK if upload succeeds
-    - 400 Bad Request if files are invalid
-    - 500 Internal Server Error if upload fails
-    """
-    if not contract.filename or not contract.filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Contract must be a zip file")
-
-    contract_content = await contract.read()
-    # Extract contract name from filename (remove .zip extension)
-    contract_name = contract.filename.rsplit(".zip", 1)[0]
-    contract_s3_key = get_contract_s3_key(contract_name)
-    upload_to_s3(contract_content, contract_s3_key, harness_config.aws, harness_config.s3_bucket)
-
-    return {
-        "status": "success",
-        "message": "Contract uploaded successfully",
-    }
 
 
 @app.post("/start-benchmark")
