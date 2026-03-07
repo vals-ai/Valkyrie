@@ -26,7 +26,7 @@ harness config modify <KEY> <VALUE>
 
 Before running benchmarks, you need to install and upload agents to the harness. These commands manage agent lifecycle. All agents are installed inside of the S3 bucket provided by `harness config init` at `agents/`.
 
-All agents will need to already be configured to work with the agentic harness. Please reference the [contract documentation](agents/CONTRACTS.md) to learn more.
+All agents will need to already be configured to work with the agentic harness. Please reference the [contract documentation](docs/CONTRACTS.md) to learn more.
 
 ### Install an agent from GitHub
 
@@ -178,7 +178,7 @@ harness agent outputs --benchmark-id <id> --output-dir ./outputs
 | --- | --- |
 | Local development | [DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | Lambda integration | [LAMBDA_USAGE.md](docs/LAMBDA_USAGE.md) |
-| Agent contracts | [CONTRACTS.md](agents/CONTRACTS.md) |
+| Agent contracts | [CONTRACTS.md](docs/CONTRACTS.md) |
 | Tracker service | [TRACKER.md](services/tracker/README.md) |
 | Database & migrations | [DATABASE.md](services/tracker/src/tracker/database/README.md) |
 | Infrastructure (AWS CDK) | [INFRASTRUCTURE.md](infra/README.md) |
