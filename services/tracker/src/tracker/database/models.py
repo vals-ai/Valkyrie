@@ -133,6 +133,7 @@ class Benchmark(SQLModel, table=True):
     )  # TODO: Automatically set to finished when all tasks are in a finished state or error state
 
     error_message: str | None = Field(default=None)
+    custom_benchmark_service: str | None = Field(default=None)
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
     )
@@ -169,6 +170,7 @@ class Benchmark(SQLModel, table=True):
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
             harness_config=harness_config,
+            custom_benchmark_service=self.custom_benchmark_service,
         )
 
     def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":
