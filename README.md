@@ -170,5 +170,4 @@ harness agent outputs --benchmark-id <id> --output-dir ./outputs
 | Database & migrations | [DATABASE.md](services/tracker/src/tracker/database/README.md) |
 | Infrastructure (AWS CDK) | [INFRASTRUCTURE.md](infra/README.md) |
 | Sandbox secrets | [PROVIDER.md](docs/PROVIDER.md) |
-
 | Contribute benchmark services | [Create benchmark service](https://github.com/vals-ai/create-benchmark-service)

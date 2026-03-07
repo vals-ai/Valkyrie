@@ -7,7 +7,9 @@ from typing import cast
 
 import aioboto3
 import click
+from botocore.exceptions import ClientError
 from tracker import handle_s3_error
+from tracker.exceptions import S3Error
 
 from agentic_harness.cli.bundler import get_agent_zip_stream
 
@@ -149,11 +151,16 @@ async def remove_agent(agent_name: str):
     async with aioboto3.Session().client("s3") as s3_client:
         key = f"agents/{agent_name}.zip"
 
-        # Check if agent exists and raise if we cannot find it
-        await s3_client.head_object(Bucket=bucket_name, Key=key)
+        try:
+            # Check if agent exists and raise if we cannot find it
+            await s3_client.head_object(Bucket=bucket_name, Key=key)
 
-        # Remove the agent if it exists
-        await s3_client.delete_object(Bucket=bucket_name, Key=key)
+            # Remove the agent if it exists
+            await s3_client.delete_object(Bucket=bucket_name, Key=key)
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "404":
+                raise S3Error(f"Agent '{agent_name}' could not be found.")
+            raise
 
 
 async def list_agents():

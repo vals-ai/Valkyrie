@@ -713,7 +713,6 @@ def remove(agent_name: str):
             click.echo("Cancelled.")
             return
 
-        click.echo(f"Removing agent '{agent_name}'...")
         asyncio.run(remove_agent(agent_name))
         click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
     except S3Error as e:
