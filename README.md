@@ -22,6 +22,54 @@ To update a single key:
 harness config modify <KEY> <VALUE>
 ```
 
+## Agent Management
+
+Before running benchmarks, you need to install and upload agents to the harness. These commands manage agent lifecycle. All agents are installed inside of the S3 bucket provided by `harness config init` at `agents/`.
+
+All agents will need to already be configured to work with the agentic harness. Please reference the [contract documentation](agents/CONTRACTS.md) to learn more.
+
+### Install an agent from GitHub
+
+```bash
+harness agent install https://github.com/user/my-agent
+harness agent install https://github.com/user/my-agent --name my-custom-name
+```
+
+Clones an agent repository from GitHub, bundles it, and pushes it to your S3 bucket.
+
+| Option | Description |
+| --- | --- |
+| `--name, -n` | Agent name (defaults to repository name) |
+
+### Push a local agent to S3
+
+```bash
+harness agent push ./agents/sweagent
+harness agent push ./agents/sweagent --name my-agent
+```
+
+Uploads an agent on your local machine to S3.
+
+| Option | Description |
+| --- | --- |
+| `--name, -n` | Agent name (defaults to directory name) |
+
+### List installed agents
+
+```bash
+harness agent list
+```
+
+View all installed agents with date and time last modified. Supports paginated navigation ([h] previous, [l] next, [q] quit).
+
+### Remove an agent
+
+```bash
+harness agent remove sweagent
+```
+
+Removes an agent from the S3 bucket. Cannot be reversed, will be requested to confirm before deleting.
+
 ## Usage
 
 ### Start a benchmark
@@ -103,7 +151,7 @@ harness benchmark list \
   --order-by DESC
 ```
 
-Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`
+Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`. Supports paginated navigation ([h] previous, [l] next, [q] quit).
 
 ### Download agent outputs
 

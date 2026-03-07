@@ -1,5 +1,6 @@
 """CLI views/commands for the agentic harness."""
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -655,7 +656,7 @@ def outputs(benchmark_id: UUID, output_dir: Path | None):
     required=False,
     help="Agent name (defaults to repository name)",
 )
-async def install(github_url: str, name: str | None):
+def install(github_url: str, name: str | None):
     """Install an agent from a GitHub repository.
 
     Example:
@@ -664,7 +665,7 @@ async def install(github_url: str, name: str | None):
     """
     try:
         click.echo(f"Installing agent from {github_url}...")
-        await install_agent(name, github_url)
+        asyncio.run(install_agent(name, github_url))
         click.echo(
             click.style(f"✓ Agent {'(' + name + ') ' if name else ''}installed successfully!", fg="green", bold=True)
         )
@@ -683,7 +684,7 @@ async def install(github_url: str, name: str | None):
     required=False,
     help="Agent name (defaults to path stem)",
 )
-async def push(agent_path: Path, name: str | None):
+def push(agent_path: Path, name: str | None):
     """Push a local agent to S3.
 
     Example:
@@ -692,8 +693,7 @@ async def push(agent_path: Path, name: str | None):
     """
     try:
         agent_name = name or agent_path.stem
-        click.echo(f"Pushing '{agent_name}' to S3...")
-        await push_agent(name, agent_path)
+        asyncio.run(push_agent(name, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
     except S3Error as e:
         raise click.ClickException(str(e))
@@ -703,7 +703,7 @@ async def push(agent_path: Path, name: str | None):
 
 @agent.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
-async def remove(agent_name: str):
+def remove(agent_name: str):
     """Remove an agent from S3.
 
     Example:
@@ -715,7 +715,7 @@ async def remove(agent_name: str):
             return
 
         click.echo(f"Removing agent '{agent_name}'...")
-        await remove_agent(agent_name)
+        asyncio.run(remove_agent(agent_name))
         click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
     except S3Error as e:
         raise click.ClickException(str(e))
@@ -724,7 +724,7 @@ async def remove(agent_name: str):
 
 
 @agent.command(name="list", help="List installed agents")
-async def list_installed_agents():
+def list_installed_agents():
     """List all installed agents in S3.
 
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
@@ -733,10 +733,10 @@ async def list_installed_agents():
         harness agent list
     """
     try:
-        agents = await list_agents()
+        agents = asyncio.run(list_agents())
 
         if not agents:
-            click.echo(click.style("No agents found.", fg="yellow"))
+            click.echo(click.style("\r\033[KNo agents found.", fg="yellow"))
             return
 
         paginate_agents(agents)
@@ -747,4 +747,4 @@ async def list_installed_agents():
 
 
 if __name__ == "__main__":
-    cli()
+    asyncio.run(cli())

@@ -79,11 +79,11 @@ def get_agent_zip_stream(agent_name: str | None, agent_path: Path) -> Generator[
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         bundle_dir = temp_path / agent_name
-        bundle_dir.mkdir(parents=True, exist_ok=True)
 
         if agent_path.is_dir():
-            shutil.copytree(agent_path, bundle_dir)
+            shutil.copytree(agent_path, bundle_dir, dirs_exist_ok=True)
         else:
+            bundle_dir.mkdir(parents=True, exist_ok=True)
             shutil.copy2(agent_path, bundle_dir)
 
         zip_path = temp_path / f"{agent_name}.zip"

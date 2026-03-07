@@ -64,15 +64,71 @@ async def push_agent(agent_name: str | None, agent_path: Path):
         agent_name = agent_path.name
 
     with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
+        # Get file size for progress bar
+        file_stream.seek(0, 2)  # Seek to end
+        file_size = file_stream.tell()
+        file_stream.seek(0)  # Seek back to start
+
         async with aioboto3.Session().client("s3") as s3_client:
-            # Set timestamp in metadata to track when the agent was uploaded
+            # Initiate multipart upload
+            key = f"agents/{agent_name}.zip"
             now = datetime.now(timezone.utc).isoformat()
-            await s3_client.put_object(
+
+            multipart = await s3_client.create_multipart_upload(
                 Bucket=bucket_name,
-                Key=f"agents/{agent_name}.zip",
-                Body=file_stream.read(),
+                Key=key,
                 Metadata={"uploaded_at": now},
             )
+            upload_id = multipart["UploadId"]
+
+            try:
+                # Upload parts with progress tracking
+                chunk_size = 5 * 1024 * 1024  # 5MB chunks (S3 minimum for multipart)
+                parts: list[dict[str, int | str]] = []
+                part_number = 1
+                bytes_uploaded = 0
+
+                while True:
+                    chunk = file_stream.read(chunk_size)
+                    if not chunk:
+                        break
+
+                    response = await s3_client.upload_part(
+                        Bucket=bucket_name,
+                        Key=key,
+                        PartNumber=part_number,
+                        UploadId=upload_id,
+                        Body=chunk,
+                    )
+
+                    parts.append({"ETag": response["ETag"], "PartNumber": part_number})
+                    bytes_uploaded += len(chunk)
+                    part_number += 1
+
+                    # Show progress bar
+                    progress_pct = (bytes_uploaded / file_size * 100) if file_size > 0 else 0
+                    bar_width = 30
+                    filled_width = int(bar_width * progress_pct / 100)
+                    bar = "█" * filled_width + "░" * (bar_width - filled_width)
+                    click.echo(f"\rUploading agent  [{bar}]  {progress_pct:.1f}%", nl=False)
+
+                click.echo()  # New line after progress bar completes
+
+                # Complete the multipart upload
+                await s3_client.complete_multipart_upload(
+                    Bucket=bucket_name,
+                    Key=key,
+                    UploadId=upload_id,
+                    MultipartUpload={"Parts": parts},
+                )
+            except Exception:
+                # Abort the upload on error
+                await s3_client.abort_multipart_upload(
+                    Bucket=bucket_name,
+                    Key=key,
+                    UploadId=upload_id,
+                )
+                raise
 
 
 @handle_s3_error(message="Failed to remove agent from S3")
@@ -98,7 +154,7 @@ async def list_agents():
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
 
-    click.echo(f"Listing agents from bucket '{bucket_name}'...")
+    click.echo(f"\r\033[KListing agents from bucket '{bucket_name}'...", nl=False)
 
     async with aioboto3.Session().client("s3") as s3_client:
         response = await s3_client.list_objects_v2(
