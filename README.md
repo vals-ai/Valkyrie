@@ -70,13 +70,26 @@ harness agent remove sweagent
 
 Removes an agent from the S3 bucket. Cannot be reversed, will be requested to confirm before deleting.
 
+### Download an agent
+
+```bash
+harness agent download sweagent
+harness agent download sweagent -o ./agents
+```
+
+Downloads an agent from S3 to your local machine and unzips it.
+
+| Option | Description |
+| --- | --- |
+| `--output-dir, -o` | Output directory for downloaded agent (default: current directory) |
+
 ## Usage
 
 ### Start a benchmark
 
 ```bash
 harness benchmark start \
-  --agent agents/sweagent \
+  --agent sweagent \
   --benchmark swebench \
   --model kimi/kimi-k2.5-thinking \
   --concurrency 5 \
@@ -88,7 +101,7 @@ harness benchmark start \
 
 | Flag | Description |
 | --- | --- |
-| `--agent` | Path to the agent directory (e.g. `agents/claude_code`) |
+| `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
 | `--benchmark` | Benchmark name (e.g. `swebench`) |
 | `--model` | Model key (e.g. `openai/gpt-4o`) |
 | `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
