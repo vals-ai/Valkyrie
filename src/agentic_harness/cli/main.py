@@ -25,7 +25,6 @@ from agentic_harness.cli.utils import (
     format_start_benchmark_response,
     paginate_agents,
     paginate_benchmarks,
-    run_with_spinner,
     stream_benchmark_status,
 )
 from agentic_harness.schemas import AgentConfig
