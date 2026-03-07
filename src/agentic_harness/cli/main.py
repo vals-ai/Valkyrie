@@ -1,6 +1,5 @@
 """CLI views/commands for the agentic harness."""
 
-import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -9,6 +8,7 @@ from uuid import UUID
 import click
 import yaml
 from tracker.database.models import BenchmarkStatus
+from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
 from agentic_harness.cli.bundler import get_contract
@@ -16,6 +16,7 @@ from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
 from agentic_harness.cli.s3_client import install_agent, list_agents, push_agent, remove_agent
 from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
+    CONFIG_LOCATION,
     check_tracker_service_health,
     download_agent_outputs,
     download_final_view,
@@ -51,18 +52,6 @@ def config():
     pass
 
 
-_CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml").expanduser()
-
-
-def _load_config() -> dict[str, str]:
-    """Load the harness configuration from YAML file."""
-    if not _CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
-    with open(_CONFIG_LOCATION) as f:
-        config = yaml.safe_load(f) or {}
-    return config
-
-
 @config.command()
 def init() -> None:
     """
@@ -83,8 +72,8 @@ def init() -> None:
     }
 
     current_config: dict[str, str] = {}
-    if _CONFIG_LOCATION.exists():
-        with open(_CONFIG_LOCATION) as f:
+    if CONFIG_LOCATION.exists():
+        with open(CONFIG_LOCATION) as f:
             try:
                 current_config = yaml.safe_load(f)
             except Exception:
@@ -115,12 +104,12 @@ def init() -> None:
 
         collected_keys[key] = value
 
-    _CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(_CONFIG_LOCATION, "w") as f:
+    with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(collected_keys, f, default_flow_style=False)
 
-    click.echo(click.style(f"\nConfig written to {_CONFIG_LOCATION}", fg="green", bold=True))
+    click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
 
 
 @config.command()
@@ -133,10 +122,10 @@ def modify(key: str, value: str) -> None:
     Example: harness config modify AWS_DEFAULT_REGION us-west-2
     """
 
-    if not _CONFIG_LOCATION.exists():
+    if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `harness config init` first.")
 
-    with open(_CONFIG_LOCATION) as f:
+    with open(CONFIG_LOCATION) as f:
         current: dict[str, str] = yaml.safe_load(f) or {}
 
     if key not in current:
@@ -144,7 +133,7 @@ def modify(key: str, value: str) -> None:
 
     current[key] = value
 
-    with open(_CONFIG_LOCATION, "w") as f:
+    with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"  {key} updated.", fg="green"))
@@ -665,7 +654,7 @@ def outputs(benchmark_id: UUID, output_dir: Path | None):
     required=False,
     help="Agent name (defaults to repository name)",
 )
-def install(github_url: str, name: str | None):
+async def install(github_url: str, name: str | None):
     """Install an agent from a GitHub repository.
 
     Example:
@@ -673,17 +662,12 @@ def install(github_url: str, name: str | None):
         harness agent install https://github.com/user/my-agent --name my-custom-name
     """
     try:
-        config = _load_config()
-        bucket_name = config.get("S3_BUCKET")
-        if not bucket_name:
-            raise click.ClickException("S3_BUCKET not configured. Run 'harness config init' first.")
-
         click.echo(f"Installing agent from {github_url}...")
-        asyncio.run(install_agent(name, github_url, bucket_name))
+        await install_agent(name, github_url)
         click.echo(
             click.style(f"✓ Agent {'(' + name + ') ' if name else ''}installed successfully!", fg="green", bold=True)
         )
-    except (RuntimeError, ValueError) as e:
+    except (RuntimeError, S3Error) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
@@ -696,26 +680,21 @@ def install(github_url: str, name: str | None):
     "-n",
     type=str,
     required=False,
-    help="Agent name (defaults to directory name)",
+    help="Agent name (defaults to path stem)",
 )
-def push(agent_path: Path, name: str | None):
+async def push(agent_path: Path, name: str | None):
     """Push a local agent to S3.
 
     Example:
         harness agent push ./agents/my-agent
-        harness agent push ./agents/my-agent --name my-custom-name
+        harness agent push ./agents/my-agent --name my-agent
     """
     try:
-        config = _load_config()
-        bucket_name = config.get("S3_BUCKET")
-        if not bucket_name:
-            raise click.ClickException("S3_BUCKET not configured. Run 'harness config init' first.")
-
-        agent_name = name or agent_path.name
-        click.echo(f"Pushing agent '{agent_name}' to S3...")
-        asyncio.run(push_agent(name, agent_path, bucket_name))
+        agent_name = name or agent_path.stem
+        click.echo(f"Pushing '{agent_name}' to S3...")
+        await push_agent(name, agent_path)
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
-    except (RuntimeError, ValueError) as e:
+    except S3Error as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
@@ -723,55 +702,45 @@ def push(agent_path: Path, name: str | None):
 
 @agent.command(name="remove", description="Remove an installed agent")
 @click.argument("agent_name", type=str)
-def remove(agent_name: str):
+async def remove(agent_name: str):
     """Remove an agent from S3.
 
     Example:
         harness agent remove my-agent
     """
     try:
-        config = _load_config()
-        bucket_name = config.get("S3_BUCKET")
-        if not bucket_name:
-            raise click.ClickException("S3_BUCKET not configured. Run 'harness config init' first.")
-
         if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
             click.echo("Cancelled.")
             return
 
         click.echo(f"Removing agent '{agent_name}'...")
-        asyncio.run(remove_agent(agent_name, bucket_name))
+        await remove_agent(agent_name)
         click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
-    except (RuntimeError, ValueError) as e:
+    except S3Error as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
 @agent.command(name="list", description="List installed agents")
-def list_installed_agents():
+async def list_installed_agents():
     """List all installed agents in S3.
 
     Example:
         harness agent list
     """
     try:
-        config = _load_config()
-        bucket_name = config.get("S3_BUCKET")
-        if not bucket_name:
-            raise click.ClickException("S3_BUCKET not configured. Run 'harness config init' first.")
-
-        click.echo(f"Listing agents from bucket '{bucket_name}'...")
-        agents = asyncio.run(list_agents(bucket_name))
+        agents = await list_agents()
 
         if not agents:
             click.echo("No agents found.")
             return
 
         click.echo(click.style("\nInstalled Agents:", fg="cyan", bold=True))
+        # NOTE: Replace with table
         for agent_name, last_modified in agents:
             click.echo(f"  {agent_name:<30} {last_modified}")
-    except (RuntimeError, ValueError) as e:
+    except S3Error as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")

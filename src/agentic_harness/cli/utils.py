@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import UUID
 
 import click
+import yaml
 from httpx import Response
 from tracker.database.models import BenchmarkStatus, TaskStatus
 from tracker.types import (
@@ -21,6 +22,8 @@ from tracker.types import (
 
 from agentic_harness.cli.tracker_service import TrackerService
 
+CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml").expanduser()
+
 
 def local_time(dt: datetime) -> str:
     """Convert UTC time to users local time"""
@@ -31,6 +34,17 @@ def short_local_time(dt: datetime, include_date: bool = True) -> str:
     """Convert UTC time to a short local time string."""
     fmt = "%m/%d %H:%M" if include_date else "%H:%M"
     return dt.astimezone().strftime(fmt)
+
+
+def load_config() -> dict[str, str]:
+    """Load the harness configuration from YAML file."""
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        config = yaml.safe_load(f)
+
+    return config
 
 
 class BenchmarkFormatter:
