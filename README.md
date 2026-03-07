@@ -70,6 +70,19 @@ harness agent remove sweagent
 
 Removes an agent from the S3 bucket. Cannot be reversed, will be requested to confirm before deleting.
 
+### Download an agent
+
+```bash
+harness agent download sweagent
+harness agent download sweagent -o ./agents
+```
+
+Downloads an agent from S3 to your local machine and unzips it.
+
+| Option | Description |
+| --- | --- |
+| `--output-dir, -o` | Output directory for downloaded agent (default: current directory) |
+
 ## Usage
 
 ### Start a benchmark

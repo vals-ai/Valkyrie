@@ -14,7 +14,14 @@ from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, Sta
 
 from agentic_harness.cli.bundler import get_contract
 from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
-from agentic_harness.cli.s3_client import get_contract_from_s3, install_agent, list_agents, push_agent, remove_agent
+from agentic_harness.cli.s3_client import (
+    download_agent,
+    get_contract_from_s3,
+    install_agent,
+    list_agents,
+    push_agent,
+    remove_agent,
+)
 from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     CONFIG_LOCATION,
@@ -717,6 +724,35 @@ def remove(agent_name: str):
 
         asyncio.run(remove_agent(agent_name))
         click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
+    except S3Error as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+@agent.command(name="download", help="Download an installed agent")
+@click.argument("agent_name", type=str)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(path_type=Path, file_okay=False, dir_okay=True),
+    default=None,
+    required=False,
+    help="Output directory for downloaded agent (default: current directory)",
+)
+def download(agent_name: str, output_dir: Path | None):
+    """Download an agent from S3.
+
+    Example:
+        harness agent download my-agent
+    """
+    try:
+        if not click.confirm(f"Are you sure you want to download agent '{agent_name}'?"):
+            click.echo("Cancelled.")
+            return
+
+        asyncio.run(download_agent(agent_name, output_dir))
+        click.echo(click.style(f"✓ Agent '{agent_name}' downloaded successfully!", fg="green", bold=True))
     except S3Error as e:
         raise click.ClickException(str(e))
     except Exception as e:
