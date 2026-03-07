@@ -23,9 +23,9 @@ async def require_health_check(test_aws: AWSCredentials, test_daytona_secret: st
 
     service_url = os.getenv("BENCHMARK_SERVICE_URL")
     if not service_url:
-        from tracker.config import benchmark_service_url
+        from tracker.config import create_benchmark_service_url
 
-        service_url = benchmark_service_url("swebench")
+        service_url = create_benchmark_service_url("swebench")
 
     benchmark_service = create_benchmark_service_client(
         url=service_url, daytona_secret_name=test_daytona_secret, aws=test_aws
