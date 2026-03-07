@@ -1,6 +1,7 @@
 """Contract bundler for creating uploadable bundles."""
 
 import importlib.util
+import io
 import os
 import shutil
 import tempfile
@@ -91,6 +92,22 @@ def get_agent_zip_stream(agent_name: str | None, agent_path: Path) -> Generator[
 
         with open(zip_path, "rb") as f:
             yield f
+
+
+def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config: AgentConfig) -> AgentContractRequest:
+    """Extract contract.py from zip bytes into a temp dir and load it."""
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            contract_member = f"{agent_name}/contract.py"
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+                zf.extract(contract_member, tmp_path)
+
+            return get_contract(tmp_path / contract_member, agent_config)
+    except BundlerError:
+        raise
+    except Exception as e:
+        raise BundlerError(f"Failed to load contract from zip for agent '{agent_name}': {e}") from e
 
 
 def get_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:

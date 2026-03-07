@@ -14,7 +14,7 @@ from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, Sta
 
 from agentic_harness.cli.bundler import get_contract
 from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
-from agentic_harness.cli.s3_client import install_agent, list_agents, push_agent, remove_agent
+from agentic_harness.cli.s3_client import get_contract_from_s3, install_agent, list_agents, push_agent, remove_agent
 from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
     CONFIG_LOCATION,
@@ -146,9 +146,9 @@ def modify(key: str, value: str) -> None:
 )
 @click.option(
     "--agent",
-    type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
+    type=str,
     required=True,
-    help="Path to agent directory (e.g., agents/claude_code)",
+    help="Path to local agent directory or S3 agent name (e.g., agents/claude_code or claude_code)",
 )
 @click.option(
     "--model",
@@ -218,7 +218,7 @@ def modify(key: str, value: str) -> None:
     help="Secret as ENV_VAR aws_secret_name (e.g., -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey)",
 )
 def start(
-    agent: Path,
+    agent: str,
     model: str | None,
     benchmark: str,
     concurrency: int,
@@ -260,8 +260,6 @@ def start(
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
     try:
-        contract_path = agent / "contract.py"
-
         # Build agent config
         config_kwargs: dict[str, Any] = {}
         if model:
@@ -270,7 +268,11 @@ def start(
         config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
 
-        contract = get_contract(contract_path, agent_config)
+        agent_path = Path(agent)
+        if agent_path.is_dir():
+            contract = get_contract(agent_path / "contract.py", agent_config)
+        else:
+            contract = asyncio.run(get_contract_from_s3(agent, agent_config))
 
         # Merge CLI secrets into contract defaults (override with cli secret)
         if secrets:

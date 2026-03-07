@@ -9,9 +9,11 @@ import aioboto3
 import click
 from botocore.exceptions import ClientError
 from tracker import handle_s3_error
+from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
-from agentic_harness.cli.bundler import get_agent_zip_stream
+from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
+from agentic_harness.schemas import AgentConfig
 
 
 def _fetch_bucket_name() -> str:
@@ -191,3 +193,19 @@ async def list_agents():
                 agents.append((agent_name, last_modified))
 
         return agents
+
+
+async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:
+    """Download agent zip from S3 and extract contract.py into a temp dir, returning the contract request"""
+    bucket_name = _fetch_bucket_name()
+
+    async with aioboto3.Session().client("s3") as s3_client:
+        try:
+            response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
+            zip_bytes: bytes = await response["Body"].read()
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                raise S3Error(f"Agent '{agent_name}' not found in S3.")
+            raise
+
+    return get_contract_from_zip_bytes(agent_name, zip_bytes, agent_config)
