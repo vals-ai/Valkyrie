@@ -25,6 +25,8 @@ def _fetch_bucket_name() -> str:
 
 async def install_agent(agent_name: str | None, github_url: str):
     """Clone a GitHub repository and install it as an agent to S3"""
+    from agentic_harness.cli.utils import run_with_spinner
+
     # If agent_name is not provided, extract from github_url
     if agent_name is None:
         agent_name = github_url.rstrip("/").split("/")[-1].replace(".git", "")
@@ -33,22 +35,28 @@ async def install_agent(agent_name: str | None, github_url: str):
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / "temp_repo"
 
-        process = await asyncio.create_subprocess_exec(
-            "git",
-            "clone",
-            github_url,
-            str(temp_path),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        async def clone_repo() -> None:
+            """Clone the repository."""
+            process = await asyncio.create_subprocess_exec(
+                "git",
+                "clone",
+                github_url,
+                str(temp_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
 
-        _, stderr = await process.communicate()
+            _, stderr = await process.communicate()
 
-        if process.returncode != 0:
-            error_message = stderr.decode() if stderr else "No stderr returned"
-            raise RuntimeError(f"Failed to clone repository from {github_url}: {error_message}")
+            if process.returncode != 0:
+                error_message = stderr.decode() if stderr else "No stderr returned"
+                raise RuntimeError(f"Failed to clone repository from {github_url}: {error_message}")
+
+        # Clone with spinner
+        await run_with_spinner(clone_repo(), f"Installing agent from {github_url}")
 
         # Push the agent to S3
+        click.echo("Preparing upload...", nl=False)
         await push_agent(agent_name, temp_path)
 
 

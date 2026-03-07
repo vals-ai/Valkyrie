@@ -25,6 +25,7 @@ from agentic_harness.cli.utils import (
     format_start_benchmark_response,
     paginate_agents,
     paginate_benchmarks,
+    run_with_spinner,
     stream_benchmark_status,
 )
 from agentic_harness.schemas import AgentConfig
@@ -664,7 +665,6 @@ def install(github_url: str, name: str | None):
         harness agent install https://github.com/user/my-agent --name my-custom-name
     """
     try:
-        click.echo(f"Installing agent from {github_url}...")
         asyncio.run(install_agent(name, github_url))
         click.echo(
             click.style(f"✓ Agent {'(' + name + ') ' if name else ''}installed successfully!", fg="green", bold=True)
@@ -747,4 +747,4 @@ def list_installed_agents():
 
 
 if __name__ == "__main__":
-    asyncio.run(cli())
+    cli()

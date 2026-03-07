@@ -1,10 +1,12 @@
 """Utility functions for the CLI."""
 
+import asyncio
 import json
 import tarfile
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Awaitable, Callable, TypeVar
 from uuid import UUID
 
 import click
@@ -23,6 +25,49 @@ from tracker.types import (
 from agentic_harness.cli.tracker_service import TrackerService
 
 CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml").expanduser()
+
+T = TypeVar("T")
+
+
+async def run_with_spinner(coro: Awaitable[T], message: str) -> T:
+    """Run an async coroutine with an animated spinner.
+
+    Args:
+        coro: The coroutine to run
+        message: The message to display with the spinner
+
+    Returns:
+        The result of the coroutine
+    """
+    spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    frame_index = 0
+
+    async def show_spinner() -> None:
+        """Show animated spinner until task completes."""
+        nonlocal frame_index
+        while not task.done():
+            frame = spinner_frames[frame_index % len(spinner_frames)]
+            click.echo(f"\r{frame} {message}", nl=False)
+            frame_index += 1
+            await asyncio.sleep(0.1)
+        # Clear the line when done
+        click.echo(f"\r{' ' * (len(message) + 2)}", nl=False)
+
+    task = asyncio.create_task(coro)
+    spinner_task = asyncio.create_task(show_spinner())
+
+    try:
+        result = await task
+    finally:
+        # Immediately cancel spinner and clear the line
+        spinner_task.cancel()
+        try:
+            await spinner_task
+        except asyncio.CancelledError:
+            # Clear the line when spinner is cancelled
+            click.echo(f"\r{' ' * (len(message) + 3)}\r", nl=False)
+
+    return result
 
 
 def local_time(dt: datetime) -> str:
