@@ -208,4 +208,4 @@ async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> Ag
                 raise S3Error(f"Agent '{agent_name}' not found in S3.")
             raise
 
-    return get_contract_from_zip_bytes(agent_name, zip_bytes, agent_config)
+    return get_contract_from_zip_bytes(agent_name, zip_bytes, agent_config)  # type: ignore
