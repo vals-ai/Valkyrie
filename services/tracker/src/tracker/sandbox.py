@@ -23,6 +23,7 @@ from daytona import (
     SessionExecuteRequest,
 )
 from tenacity import before_sleep_log, retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
@@ -166,7 +167,7 @@ async def upload_agent_artifacts(
     contract_s3_key = get_contract_s3_key(contract.name)
     contract_content = download_from_s3(contract_s3_key, aws, s3_bucket)
 
-    # Unzip contract and collect files and directories
+    # Unzip contract and collect files and directories, excluding contract.py
     with zipfile.ZipFile(io.BytesIO(contract_content), "r") as zip_ref:
         files_to_upload = [
             FileUpload(
@@ -174,7 +175,7 @@ async def upload_agent_artifacts(
                 destination=str(bundle_path / file_info.filename),
             )
             for file_info in zip_ref.infolist()
-            if not file_info.is_dir()
+            if not file_info.is_dir() and not file_info.filename.endswith("contract.py")
         ]
 
     if files_to_upload:
