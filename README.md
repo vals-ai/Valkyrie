@@ -83,41 +83,36 @@ Downloads an agent from S3 to your local machine and unzips it.
 | --- | --- |
 | `--output-dir, -o` | Output directory for downloaded agent (default: current directory) |
 
-## Custom Benchmark Service URLs
+## Custom Benchmark Services
 
-When testing with local or custom benchmark services (e.g., via ngrok tunnels), you can register custom URLs to override the default service endpoint derivation.
+Vals provides a set of hosted benchmark services by default. If you are developing your own benchmark service you will need to add support for that. We provide a set of utilities that allow you to interact with benchmark services outside of the ones that are provided.
 
-### Set a custom service URL
+If hosting locally please use the [documentation](https://github.com/vals-ai/create-benchmark-service?tab=readme-ov-file#reverse-tunnel-setup) on the reverse tunnel that is needed.
+
+### Set a custom benchmark service
 
 ```bash
 harness config service set swebench https://my-tunnel.ngrok.io
-harness config service set miniforge http://localhost:8000
+harness config service set not-provided-by-vals https://enpdoint
 ```
 
-Creates or updates a custom URL for a benchmark service. This maps the benchmark name to your custom service URL.
+Creates or updates a benchmark service. This maps the benchmark name to the endpoint we can reach it at. This will override any service that we already provide.
 
-### List custom service URLs
+### List custom benchmark services
 
 ```bash
 harness config service list
 ```
 
-Displays all registered custom benchmark service URLs in a paginated table. Supports navigation ([h] previous, [l] next, [q] quit).
+Displays all custom benchmark services in a paginated table. Supports navigation ([h] previous, [l] next, [q] quit).
 
-### Remove a custom service URL
+### Remove a custom benchmark service
 
 ```bash
 harness config service remove swebench
 ```
 
-Removes a custom URL override for a benchmark service, reverting to the default auto-derived URL.
-
-### How it works
-
-- When you start a benchmark, the harness checks if a custom URL is configured for that benchmark
-- If found, it uses your custom URL; otherwise, it derives the URL from the benchmark name + namespace
-- Custom URLs are persisted in `~/.config/harness/harness.yaml` under the `custom_benchmark_services` key
-- Custom URLs are remembered through retry and resume operations
+Removes a custom benchmark service.
 
 ## Usage
 
