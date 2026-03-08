@@ -13,7 +13,7 @@ from tracker.task_protection import TaskProtectionMiddleware
 load_dotenv()
 
 BENCHMARK_SERVICE_NAMESPACE = os.environ.get("BENCHMARK_SERVICE_NAMESPACE")
-BENCHMARK_SERVICE_PORT = 8000
+BENCHMARK_SERVICE_PORT = 8001
 
 
 def create_benchmark_service_url(benchmark_name: str) -> str:
