@@ -93,7 +93,7 @@ If hosting locally please use the [documentation](https://github.com/vals-ai/cre
 
 ```bash
 harness config service set swebench https://my-tunnel.ngrok.io
-harness config service set not-provided-by-vals https://enpdoint
+harness config service set external-service https://endpoint
 ```
 
 Creates or updates a benchmark service. This maps the benchmark name to the endpoint we can reach it at. This will override any service that we already provide.
