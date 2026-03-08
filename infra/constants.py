@@ -10,7 +10,7 @@ CLUSTER_NAME = "AgenticHarnessCluster"
 
 ALLOWED_IPS: list[tuple[str, str]] = [
     # (CIDR, description)
-    ("108.192.23.51/32", "Vals Office"),
+    ("0.0.0.0/0", "Allow all"),
 ]
 
 # Service Discovery

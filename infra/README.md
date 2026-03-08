@@ -44,37 +44,6 @@ make diff
 make hotswap
 ```
 
-## Utilities
-
-```bash
-# Show service endpoints
-./scripts/service-ips.sh
-
-# View and whitelist IPs
-./scripts/whitelist-ip.sh
-```
-
-## Connecting to Private Services
-
-Private services can be accessed directly via their task's public IP for debugging:
-
-1. Whitelist your IP:
-
-   ```bash
-   ./scripts/whitelist-ip.sh --add
-   ```
-
-2. Get the service IP:
-
-   ```bash
-   ./scripts/service-ips.sh
-   ```
-
-3. Connect directly:
-   ```bash
-   curl http://<task-ip>:8000/health
-   ```
-
 ## Teardown
 
 - Don't do this
