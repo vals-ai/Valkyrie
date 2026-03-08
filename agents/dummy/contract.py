@@ -10,10 +10,6 @@ class DummyAgentContract(BaseAgentContract):
         return "dummy"
 
     @property
-    def artifacts(self) -> list[str]:
-        return []
-
-    @property
     def install_cmd(self) -> str:
         return "echo 'installing dummy agent'"
 

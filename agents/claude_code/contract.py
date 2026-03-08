@@ -36,10 +36,6 @@ class ClaudeCodeContract(BaseAgentContract):
         return "claude_code"
 
     @property
-    def artifacts(self) -> list[str]:
-        return ["setup.sh"]
-
-    @property
     def install_cmd(self) -> str:
         return "bash setup.sh"
 

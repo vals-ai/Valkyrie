@@ -25,10 +25,6 @@ class MyAgentContract(BaseAgentContract):
         return "my_agent"
 
     @property
-    def artifacts(self) -> list[str]:
-        return ["setup.sh", "submodule/my_agent"]
-
-    @property
     def install_cmd(self) -> str:
         return "bash setup.sh"
 
@@ -96,16 +92,6 @@ def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, A
 ```
 
 ## Optional Properties
-
-### `artifacts: list[str]`
-
-Files and directories to bundle with the agent (default: empty list). Paths are relative to your agent directory.
-
-```python
-@property
-def artifacts(self) -> list[str]:
-    return ["setup.sh", "submodule/my_agent", "config/settings.yaml"]
-```
 
 ### `secrets: dict[str, str]`
 
@@ -199,7 +185,7 @@ WRAPPER
 chmod +x /usr/local/bin/my_agent
 ```
 
-Your agent artifacts are bundled to `/bundle/<agent_name>/` in the sandbox.
+The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox (`contract.py` will be excluded).
 
 ## Complete Examples
 

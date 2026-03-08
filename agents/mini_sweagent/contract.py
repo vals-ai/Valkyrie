@@ -12,10 +12,6 @@ class MiniSWEAgentContract(BaseAgentContract):
         return "mini_sweagent"
 
     @property
-    def artifacts(self) -> list[str]:
-        return ["setup.sh", "mini_sweagent", "run_with_task_file.py"]
-
-    @property
     def install_cmd(self) -> str:
         return "bash setup.sh"
 

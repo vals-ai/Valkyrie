@@ -10,10 +10,6 @@ class ModelLibraryAgentContract(BaseAgentContract):
         return "model_library_agent"
 
     @property
-    def artifacts(self) -> list[str]:
-        return ["setup.sh", "model_proxy"]
-
-    @property
     def install_cmd(self) -> str:
         return "bash setup.sh"
 

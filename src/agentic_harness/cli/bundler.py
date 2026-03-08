@@ -43,6 +43,7 @@ def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
         ".env",
         ".DS_Store",
     }
+    exclude_files = {"contract.py"}
 
     try:
         with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zipf:
@@ -50,7 +51,7 @@ def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
                 dirs[:] = [d for d in dirs if d not in exclude_patterns]
 
                 for file in files:
-                    if any(pattern in file for pattern in exclude_patterns):
+                    if any(pattern in file for pattern in exclude_patterns) or file in exclude_files:
                         continue
 
                     file_path = Path(root) / file
