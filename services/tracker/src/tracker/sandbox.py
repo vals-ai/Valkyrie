@@ -16,6 +16,7 @@ from daytona import (
     AsyncDaytona,
     AsyncSandbox,
     CreateSandboxFromImageParams,
+    CreateSandboxFromSnapshotParams,
     DaytonaNotFoundError,
     FileUpload,
     Resources,
@@ -34,6 +35,7 @@ logger = get_logger(__name__)
 
 
 bundle_path = PurePosixPath("/bundle")
+SNAPSHOT_IMAGE_PREFIX = "snapshot:"
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -90,7 +92,25 @@ async def _create_sandbox(
     except DaytonaNotFoundError:
         pass
 
-    # Create a new sandbox from scratch, if it stops we delete it within a minute
+    # Create a new sandbox from scratch, if it stops we delete it within a minute.
+    if image.startswith(SNAPSHOT_IMAGE_PREFIX):
+        snapshot_name = image[len(SNAPSHOT_IMAGE_PREFIX) :].strip()
+        if not snapshot_name:
+            raise SandboxError("Snapshot-based sandbox requested without a snapshot name")
+
+        return await daytona.create(
+            CreateSandboxFromSnapshotParams(
+                auto_delete_interval=60,
+                name=sandbox_name,
+                labels=labels,
+                snapshot=snapshot_name,
+                language="python",
+                network_block_all=False,
+                env_vars=env_vars,
+            ),
+            timeout=360,
+        )
+
     return await daytona.create(
         CreateSandboxFromImageParams(
             auto_delete_interval=60,
@@ -315,7 +335,7 @@ async def run_agent(
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_statement_path).replace("{task_id}", task_id)
 
     # Run the agent without including task directory dependencies
-    await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
+    await stream_command_output(sandbox, f"cd {cwd} && PYTHONUNBUFFERED=1 PYTHONSAFEPATH=1 {run_cmd}", log_output)
 
     if not contract.final_output:
         return

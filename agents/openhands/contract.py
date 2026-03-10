@@ -25,7 +25,7 @@ class OpenHandsContract(BaseAgentContract):
 
     @property
     def final_output(self) -> Path | None:
-        return Path("/logs/openhands")
+        return Path("/tmp/openhands_output")
 
     @override
     def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, Any]) -> str:

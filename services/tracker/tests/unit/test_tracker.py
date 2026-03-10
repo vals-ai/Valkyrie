@@ -7,7 +7,7 @@ import pytest
 from sqlmodel import Session
 
 from tracker.database.models import Benchmark, Task, TaskStatus
-from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
+from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus, create_sandbox_name
 
 
 class TestTracker:
@@ -42,10 +42,10 @@ class TestTracker:
         had to use type: ignore to satisfy the type checker.
 
         Test Cases:
-            - _check_is_waiting returns true if the task is not running
+            - _should_keep_tracking returns true while the task is waiting or running
             - _validate_task fetches from updates database
             - _validate_task returns false if the task status has been set to stopped
-            - track_tasks cancels the task if the task status has been set to stopped
+            - track_tasks cancels a running task if the task status has been set to stopped
         """
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
@@ -64,15 +64,16 @@ class TestTracker:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
         monitor = TaskMonitor(benchmark_row.id, task_tracking.copy())
 
-        # Test case 1. returns true if task is not running
-        assert monitor._check_is_waiting(task_tracking["task_id_1"])  # type: ignore
+        mock_task_row = MagicMock(spec=Task)
+        mock_task_row.task_id = "task_id_1"
+        run_task = asyncio.create_task(task_tracking["task_id_1"].run(Semaphore(1), mock_task_row))
 
-        # Change task status to running and add a task to the object
-        task_tracking["task_id_1"]._status = TrackedTaskStatus.RUNNING  # type: ignore
-        task_tracking["task_id_1"]._task = asyncio.create_task(task_tracking["task_id_1"]._coro)  # type: ignore
+        await asyncio.sleep(1)
 
-        # Returns false if the task is not in a waiting state
-        assert not monitor._check_is_waiting(task_tracking["task_id_1"])  # type: ignore
+        # Test case 1. waiting and running tasks should both remain tracked
+        assert monitor._should_keep_tracking(task_tracking["task_id_1"])  # type: ignore
+        assert task_tracking["task_id_1"].status == TrackedTaskStatus.RUNNING
+        assert monitor._should_keep_tracking(task_tracking["task_id_1"])  # type: ignore
 
         # Test case 2. Validate task returns true if the task is not stopped
         assert monitor._validate_task("task_id_1")  # type: ignore
@@ -92,12 +93,31 @@ class TestTracker:
         # Test case 4. track_tasks cancels the task if the task status has been set to stopped
         # Run the track_tasks method and ensure that the task is cancelled
         await monitor.track_tasks()
-        assert task_tracking["task_id_1"].task
-        assert task_tracking["task_id_1"].task.cancelled()
+        assert task_tracking["task_id_1"].task is not None
 
-        # Need to await the result to avoid getting a warning at the end of the test
-        with pytest.raises(asyncio.CancelledError):
-            await task_tracking["task_id_1"].task
+        result = await run_task
+
+        assert result == {"task_id_1": None}
+        assert task_tracking["task_id_1"].status == TrackedTaskStatus.DONE
+        assert not monitor._should_keep_tracking(task_tracking["task_id_1"])  # type: ignore
+
+    def test_create_sandbox_name(
+        self, database_session: Session, example_benchmark_object: Benchmark, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        task_row = Task(task_id="task_id_1", benchmark=benchmark_row.id)
+        database_session.add(task_row)
+        database_session.commit()
+        database_session.refresh(task_row)
+
+        sandbox_names = {create_sandbox_name(task_row), create_sandbox_name(task_row)}
+
+        assert len(sandbox_names) == 2
+        for sandbox_name in sandbox_names:
+            assert sandbox_name.startswith(f"{task_row.alias}_")
 
     async def test_tracked_task(self) -> None:
         """
