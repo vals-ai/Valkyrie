@@ -1,14 +1,18 @@
+import os
 from asyncio import gather
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from functools import partial
 from sqlite3 import OperationalError
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from benchmark_service.client import BenchmarkServiceClient
-from tracker.utils import start_benchmark_request_to_benchmark
+from benchmark_service.schemas import RetrieveTaskResponse, Resources, SetupTaskResponse, FinalScoreResponse
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -18,11 +22,11 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from benchmark_service.schemas import SetupTaskResponse
-from tracker.types import StartBenchmarkRequest
-from tracker.utils import process_benchmark, process_task
+from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.utils import start_benchmark_request_to_benchmark, process_benchmark, process_task
 
 
+@pytest.mark.slow
 class TestProcessBenchmark:
     @staticmethod
     async def _mock_install_dependencies(*args: Any, **kwargs: Any) -> None:
@@ -33,8 +37,17 @@ class TestProcessBenchmark:
         pass
 
     @staticmethod
-    async def _mock_upload_contract(*args: Any, **kwargs: Any) -> None:
+    async def _mock_upload_agent_artifacts(*args: Any, **kwargs: Any) -> None:
         pass
+
+    @staticmethod
+    @asynccontextmanager
+    async def _mock_create_sandbox(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+        """Mock sandbox context manager."""
+        sandbox = MagicMock()
+        sandbox.id = "mock-sandbox-id"
+        sandbox.name = "mock-sandbox"
+        yield sandbox
 
     async def _test_evaluate_instance(
         self,
@@ -85,6 +98,7 @@ class TestProcessBenchmark:
         contract: AgentContractRequest,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
+        harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
     ):
         task_id = "astropy__astropy-12907"
@@ -92,7 +106,12 @@ class TestProcessBenchmark:
 
         # Dependencies required to process the task that the user sends
         start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=[task_id]
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=5,
+            task_ids=[task_id],
+            harness_config=harness_config,
+            custom_benchmark_service=os.getenv("BENCHMARK_SERVICE_URL"),
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
@@ -108,18 +127,18 @@ class TestProcessBenchmark:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         monkeypatch.setattr(
-            "tracker.utils.upload_agent_artifacts",
-            self._mock_upload_contract,
+            "tracker.sandbox.upload_agent_artifacts",
+            self._mock_upload_agent_artifacts,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.install_agent_dependencies",
+            "tracker.sandbox.install_agent_dependencies",
             self._mock_install_dependencies,
         )
 
         original_run_agent = self._mock_run_agent
         monkeypatch.setattr(
-            "tracker.utils.run_agent",
+            "tracker.sandbox.run_agent",
             partial(self._test_run_agent, original_run_agent),
         )
 
@@ -131,7 +150,9 @@ class TestProcessBenchmark:
         )
 
         # Starts and evaluates a single task inside using the benchmark service
-        _ = await process_task(task_row, start_benchmark_request, benchmark_service, benchmark_row.id, task_id)
+        _ = await process_task(
+            task_row, start_benchmark_request, benchmark_service, benchmark_row.id, task_id, harness_config
+        )
 
         # Ensure that the evaluation result is viewable from the database after the task has been processed
         evaluation_result = database_session.exec(
@@ -145,14 +166,19 @@ class TestProcessBenchmark:
         assert task_row_mapping[task_id].status == TaskStatus.FINISHED
 
     async def test_process_benchmark(
-        self, contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
+        self, contract: AgentContractRequest, database_session: Session, harness_config: HarnessConfig, monkeypatch: MonkeyPatch
     ):
         # Task ids sent by user to be processed
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         # Start run request sent by user to start the benchmark
         start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=5,
+            task_ids=task_ids,
+            harness_config=harness_config,
+            custom_benchmark_service=os.getenv("BENCHMARK_SERVICE_URL"),
         )
 
         # Create benchmark row inside of start run request
@@ -164,17 +190,17 @@ class TestProcessBenchmark:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         monkeypatch.setattr(
-            "tracker.utils.upload_agent_artifacts",
-            TestProcessBenchmark._mock_upload_contract,
+            "tracker.sandbox.upload_agent_artifacts",
+            TestProcessBenchmark._mock_upload_agent_artifacts,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.install_agent_dependencies",
+            "tracker.sandbox.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.run_agent",
+            "tracker.sandbox.run_agent",
             TestProcessBenchmark._mock_run_agent,
         )
 
@@ -207,6 +233,7 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
+        harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
     ):
         """
@@ -220,7 +247,12 @@ class TestProcessBenchmark:
         # Example tasks from swebench
         task_ids: list[str] = ["astropy__astropy-12907"]
         start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=5,
+            task_ids=task_ids,
+            harness_config=harness_config,
+            custom_benchmark_service=os.getenv("BENCHMARK_SERVICE_URL"),
         )
 
         # Create benchmark row inside of start run request
@@ -244,12 +276,12 @@ class TestProcessBenchmark:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         monkeypatch.setattr(
-            "tracker.utils.install_agent_dependencies",
+            "tracker.sandbox.install_agent_dependencies",
             self._mock_install_dependencies,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.run_agent",
+            "tracker.sandbox.run_agent",
             self._mock_run_agent,
         )
 
@@ -265,6 +297,7 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
+        harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
     ):
         """
@@ -278,7 +311,12 @@ class TestProcessBenchmark:
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=5,
+            task_ids=task_ids,
+            harness_config=harness_config,
+            custom_benchmark_service=os.getenv("BENCHMARK_SERVICE_URL"),
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
@@ -306,17 +344,17 @@ class TestProcessBenchmark:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         monkeypatch.setattr(
-            "tracker.utils.upload_agent_artifacts",
-            TestProcessBenchmark._mock_upload_contract,
+            "tracker.sandbox.upload_agent_artifacts",
+            TestProcessBenchmark._mock_upload_agent_artifacts,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.install_agent_dependencies",
+            "tracker.sandbox.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.run_agent",
+            "tracker.sandbox.run_agent",
             TestProcessBenchmark._mock_run_agent,
         )
 
@@ -348,6 +386,7 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
+        harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
     ):
         """
@@ -381,24 +420,24 @@ class TestProcessBenchmark:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         monkeypatch.setattr(
-            "tracker.utils.upload_agent_artifacts",
-            TestProcessBenchmark._mock_upload_contract,
+            "tracker.sandbox.upload_agent_artifacts",
+            TestProcessBenchmark._mock_upload_agent_artifacts,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.install_agent_dependencies",
+            "tracker.sandbox.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
         monkeypatch.setattr(
-            "tracker.utils.run_agent",
+            "tracker.sandbox.run_agent",
             TestProcessBenchmark._mock_run_agent,
         )
 
         await gather(
             *[
                 process_benchmark(
-                    benchmark_row.start_benchmark_request.model_dump(),
+                    benchmark_row.start_benchmark_request(harness_config).model_dump(),
                     str(benchmark_row.id),
                     benchmark_row.arguments.task_ids or [],
                 )

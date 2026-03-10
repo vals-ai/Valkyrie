@@ -2,6 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import pytest
 from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Resources
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -45,6 +46,7 @@ class TestForceStop:
             except Exception:
                 pass
 
+    @pytest.mark.slow
     async def test_force_stop_sandbox(
         self,
         example_benchmark_object: Benchmark,
@@ -94,6 +96,7 @@ class TestForceStop:
         task = database_session.exec(select(Task).where(Task.id == task.id)).one()
         assert task.status == TaskStatus.STOPPED
 
+    @pytest.mark.slow
     async def test_force_stop_sandboxes(
         self,
         example_benchmark_object: Benchmark,
@@ -146,6 +149,7 @@ class TestForceStop:
 
         await daytona_client.close()
 
+    @pytest.mark.slow
     async def test_force_stop_end_to_end(
         self,
         example_benchmark_object: Benchmark,

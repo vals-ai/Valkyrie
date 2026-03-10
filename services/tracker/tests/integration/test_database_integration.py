@@ -232,6 +232,7 @@ class TestDatabaseIntegration:
 
             return response
 
+    @pytest.mark.slow
     async def test_end_to_end(
         self,
         database_session: Session,

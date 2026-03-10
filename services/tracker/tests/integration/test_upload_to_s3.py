@@ -1,14 +1,17 @@
 import uuid
 
+import pytest
 from benchmark_service.schemas import Resources
 
 from tracker.database.models import Benchmark
 from tracker.s3 import delete_from_s3, download_from_s3, get_agent_result_s3_key
 from tracker.sandbox import archive_and_upload_output, create_sandbox
 from tracker.types import AWSCredentials
+from tracker.config import AWS_S3_BUCKET
 
 
 class TestUploadToS3:
+    @pytest.mark.slow
     async def test_archive_and_upload_file(
         self, example_benchmark_object: Benchmark, test_aws: AWSCredentials, test_daytona_secret: str
     ) -> None:
@@ -29,15 +32,16 @@ class TestUploadToS3:
             ) as sandbox:
                 await sandbox.process.exec(f"echo '{file_content}' > {file_path}")
 
-                await archive_and_upload_output(sandbox, file_path, s3_key)
+                await archive_and_upload_output(sandbox, file_path, s3_key, test_aws, AWS_S3_BUCKET)
 
-                downloaded_content = download_from_s3(s3_key)
+                downloaded_content = download_from_s3(s3_key, test_aws, AWS_S3_BUCKET)
 
                 assert len(downloaded_content) > 0
                 assert downloaded_content.startswith(b"\x1f\x8b")
         finally:
-            delete_from_s3(s3_key)
+            delete_from_s3(s3_key, test_aws, AWS_S3_BUCKET)
 
+    @pytest.mark.slow
     async def test_archive_and_upload_directory(
         self, example_benchmark_object: Benchmark, test_aws: AWSCredentials, test_daytona_secret: str
     ) -> None:
@@ -61,10 +65,10 @@ class TestUploadToS3:
                 await sandbox.process.exec(f"mkdir -p {dir_path}/nested")
                 await sandbox.process.exec(f"echo 'nested content' > {dir_path}/nested/file3.txt")
 
-                await archive_and_upload_output(sandbox, dir_path, s3_key)
+                await archive_and_upload_output(sandbox, dir_path, s3_key, test_aws, AWS_S3_BUCKET)
 
-                downloaded_content = download_from_s3(s3_key)
+                downloaded_content = download_from_s3(s3_key, test_aws, AWS_S3_BUCKET)
                 assert len(downloaded_content) > 0
                 assert downloaded_content.startswith(b"\x1f\x8b")
         finally:
-            delete_from_s3(s3_key)
+            delete_from_s3(s3_key, test_aws, AWS_S3_BUCKET)

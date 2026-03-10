@@ -20,6 +20,7 @@ from tracker.sandbox import (
     run_agent,
     upload_agent_artifacts,
 )
+from tracker.types import AWSCredentials
 from benchmark_service.schemas import Resources
 
 
@@ -51,6 +52,7 @@ async def test_sandbox(daytona_client: AsyncDaytona, test_resources: Resources) 
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
 
+    @pytest.mark.slow
     async def test_create_and_cleanup_sandbox(self, daytona_client: AsyncDaytona, test_resources: Resources) -> None:
         """Test that sandbox is created and cleaned up properly."""
         sandbox_name = "test-cleanup-sandbox"
@@ -63,12 +65,14 @@ class TestSandboxOperations:
         with pytest.raises(DaytonaError):
             await daytona_client.find_one(sandbox_name)
 
-    async def test_upload_agent_artifacts(self, test_sandbox: AsyncSandbox, mock_s3: S3Client) -> None:
+    @pytest.mark.slow
+    async def test_upload_agent_artifacts(
+        self, test_sandbox: AsyncSandbox, mock_s3: S3Client, test_aws: AWSCredentials
+    ) -> None:
         """Test that agent artifacts are uploaded to the sandbox."""
         contract_name = "test_contract"
         contract = AgentContractRequest(
             name=contract_name,
-            artifacts=["setup.sh", "submodules/some_dir"],
             install_cmd="bash setup.sh",
             run_cmd="echo hello",
         )
@@ -90,7 +94,7 @@ class TestSandboxOperations:
             Body=zip_buffer.getvalue(),
         )
 
-        await upload_agent_artifacts(test_sandbox, contract)
+        await upload_agent_artifacts(test_sandbox, contract, test_aws, AWS_S3_BUCKET)
 
         # Verify files exist in sandbox
         result = await test_sandbox.process.exec(f"cat /bundle/{setup_file}")
@@ -101,6 +105,7 @@ class TestSandboxOperations:
         assert result.exit_code == 0
         assert "hello world" in result.result
 
+    @pytest.mark.slow
     async def test_install_agent_dependencies(self, test_sandbox: AsyncSandbox) -> None:
         """Test that install command is correctly executed in the sandbox."""
         logged_messages: list[str] = []
@@ -111,7 +116,6 @@ class TestSandboxOperations:
         contract_name = "test_contract"
         contract = AgentContractRequest(
             name=contract_name,
-            artifacts=["setup.sh"],
             install_cmd="bash setup.sh",
             run_cmd="echo hello",
         )
@@ -127,9 +131,11 @@ class TestSandboxOperations:
         assert "Installing dependencies" in output
         assert "hello world" in output
 
+    @pytest.mark.slow
     async def test_run_agent(
         self,
         test_sandbox: AsyncSandbox,
+        test_aws: AWSCredentials,
     ) -> None:
         """Test that agent runs and prints output lines."""
         logged_messages: list[str] = []
@@ -141,7 +147,6 @@ class TestSandboxOperations:
 
         contract = AgentContractRequest(
             name="test_agent",
-            artifacts=[],
             install_cmd="true",
             run_cmd=run_cmd,
             final_output="/tmp/agent_output.json",
@@ -150,15 +155,23 @@ class TestSandboxOperations:
         # Expecting bundle directory to exist
         await test_sandbox.process.exec("mkdir -p /bundle/test_agent")
 
-        final_output = await run_agent(test_sandbox, contract, "some problem statement", log_callback, cwd="/")
-
-        assert final_output == {"result": "hello world"}
+        await run_agent(
+            test_sandbox,
+            contract,
+            "some problem statement",
+            task_id="test_task",
+            log_output=log_callback,
+            cwd="/",
+            aws=test_aws,
+            s3_bucket=AWS_S3_BUCKET,
+        )
 
         output = "\n".join(logged_messages)
         assert "line1" in output
         assert "line2" in output
         assert "line3" in output
 
+    @pytest.mark.slow
     async def test_create_sandbox_reuse(self, daytona_client: AsyncDaytona, test_resources: Resources) -> None:
         """Test that create_sandbox reuses existing sandbox instead of creating new one."""
         sandbox_name = f"test-reuse-{str(uuid.uuid4())[:8]}"

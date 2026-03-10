@@ -58,7 +58,7 @@ async def build_task_environment(
             image=docker_image,
             name=task_id,
             network_block_all=False,
-            resources=Resources(cpu=4, memory=8, disk=10),
+            resources=Resources(vcpu=4, memory=8, disk=10),
         ),
         timeout=360,
     )

@@ -38,6 +38,7 @@ async def require_health_check(test_aws: AWSCredentials, test_daytona_secret: st
 
 
 class TestSWEBenchmarkService:
+    @pytest.mark.slow
     def test_setup_benchmark_service(
         self, monkeypatch: MonkeyPatch, test_aws: AWSCredentials, test_daytona_secret: str
     ):
@@ -70,6 +71,7 @@ class TestSWEBenchmarkService:
         except Exception as e:
             pytest.fail(f"Missing environment variables: {e}", pytrace=False)
 
+    @pytest.mark.slow
     async def test_health_check(self, benchmark_service: BenchmarkServiceClient):
         """
         Test health check of the benchmark service. Ensures that the service is running before we proceed with the tests.
@@ -84,6 +86,7 @@ class TestSWEBenchmarkService:
         except Exception as e:
             pytest.fail(f"Health check failed: {e}", pytrace=False)
 
+    @pytest.mark.slow
     async def test_verify_task_ids(self, benchmark_service: BenchmarkServiceClient):
         """
         Test the verify task ids endpoint of the benchmark service.
@@ -120,6 +123,7 @@ class TestSWEBenchmarkService:
         except Exception as e:
             pytest.fail(f"Verify task ids failed: {e}", pytrace=False)
 
+    @pytest.mark.slow
     async def test_retrieve_task(self, benchmark_service: BenchmarkServiceClient, docker_image_format: str):
         """
         Test the retrieve task endpoint of the benchmark service.
@@ -168,6 +172,7 @@ class TestSWEBenchmarkService:
 
         return current_commit
 
+    @pytest.mark.slow
     async def test_setup_task(
         self, benchmark_service: BenchmarkServiceClient, docker_image_format: str, daytona_client: AsyncDaytona
     ):
@@ -213,6 +218,7 @@ class TestSWEBenchmarkService:
         except Exception as e:
             pytest.fail(f"Setup task failed: {e}", pytrace=False)
 
+    @pytest.mark.slow
     async def test_evaluate_instance(
         self, benchmark_service: BenchmarkServiceClient, docker_image_format: str, daytona_client: AsyncDaytona
     ):
@@ -236,6 +242,7 @@ class TestSWEBenchmarkService:
         except Exception as e:
             pytest.fail(f"Evaluate instance failed: {e}", pytrace=False)
 
+    @pytest.mark.slow
     async def test_final_score(self, benchmark_service: BenchmarkServiceClient):
         """
         Test the final score endpoint of the benchmark service.
