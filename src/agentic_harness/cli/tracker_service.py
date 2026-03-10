@@ -4,7 +4,7 @@ import os
 import re
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 from uuid import UUID
 
 import httpx
@@ -72,6 +72,27 @@ class TrackerService:
         self._client.close()
 
     @staticmethod
+    def get_benchmark_service_url(benchmark_name: str) -> str | None:
+        """
+        Get custom benchmark service URL from config if it exists.
+
+        Args:
+            benchmark_name: Name of the benchmark
+
+        Returns:
+            Custom URL if configured, None otherwise
+        """
+        config_path = _CONFIG_LOCATION.expanduser()
+        if not config_path.exists():
+            return None
+
+        with open(config_path) as f:
+            harness_config = yaml.safe_load(f) or {}
+
+        services = harness_config.get("custom_benchmark_services") or {}
+        return services.get(benchmark_name)
+
+    @staticmethod
     def parse_config_keys() -> dict[str, str]:
         """Parses expected config keys and handles edge cases"""
         config_path: Path = _CONFIG_LOCATION.expanduser()
@@ -89,7 +110,11 @@ class TrackerService:
                 "Run `harness config init` to initialize the harness config or `harness config modify` to update an existing config"
             )
 
+        # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():
+            if isinstance(value, dict):
+                continue
+
             config_keys[key] = str(value)
 
         return config_keys
@@ -130,28 +155,6 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Health check failed: {e}") from e
 
-    def upload_contract(self, contract_name: str, file_stream: BinaryIO) -> dict[str, str]:
-        """
-        Upload contract bundle to tracker service.
-
-        Args:
-            contract_name: Name of the contract
-            file_stream: File-like object containing zipped contract bundle
-
-        Returns:
-            Upload response with status and message
-
-        Raises:
-            TrackerServiceError: If upload fails
-        """
-        try:
-            files = {"contract": (f"{contract_name}.zip", file_stream, "application/zip")}
-            response = self._client.post(f"{self._base_url}/upload", files=files, timeout=600)
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Upload failed: {e}") from e
-
     def start_benchmark(
         self,
         contract: AgentContractRequest,
@@ -187,6 +190,7 @@ class TrackerService:
                 slice_str=slice_str,
                 lambda_function=lambda_function,
                 harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
+                custom_benchmark_service=self.get_benchmark_service_url(benchmark_name),
             )
 
             body = payload.model_dump()

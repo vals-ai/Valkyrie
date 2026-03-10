@@ -56,7 +56,6 @@ class BenchmarkStatus(str, Enum):
 
 class AgentContractRequest(BaseModel):
     name: str
-    artifacts: list[str] = []
     install_cmd: str
     run_cmd: str
     final_output: str | None = None
@@ -133,6 +132,7 @@ class Benchmark(SQLModel, table=True):
     )  # TODO: Automatically set to finished when all tasks are in a finished state or error state
 
     error_message: str | None = Field(default=None)
+    custom_benchmark_service: str | None = Field(default=None)
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
     )
@@ -169,14 +169,15 @@ class Benchmark(SQLModel, table=True):
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
             harness_config=harness_config,
+            custom_benchmark_service=self.custom_benchmark_service,
         )
 
     def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":
-        from tracker.config import benchmark_service_url
+        from tracker.config import create_benchmark_service_url
         from tracker.utils import create_benchmark_service_client
 
         return create_benchmark_service_client(
-            url=benchmark_service_url(self.name), daytona_secret_name=daytona_secret_name, aws=aws
+            url=create_benchmark_service_url(self.name), daytona_secret_name=daytona_secret_name, aws=aws
         )
 
     @property
@@ -217,6 +218,7 @@ class Benchmark(SQLModel, table=True):
             name=self.name,
             agent_name=self.arguments.contract.name,
             started_at=self.started_at,
+            finished_at=self.finished_at,
             status=self.status,
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,

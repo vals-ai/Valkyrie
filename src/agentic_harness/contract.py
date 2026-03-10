@@ -79,19 +79,6 @@ class BaseAgentContract(ABC):
         return {}
 
     @property
-    def artifacts(self) -> list[str]:
-        """
-        List of files and directories to bundle with the agent.
-
-        Paths are relative to the agent directory (e.g., agents/my_agent/).
-        Common artifacts include setup scripts, agent code, and configuration files.
-
-        Returns:
-            List of artifact paths (default: empty list)
-        """
-        return []
-
-    @property
     @abstractmethod
     def final_output(self) -> Path | None:
         """
@@ -118,7 +105,6 @@ class BaseAgentContract(ABC):
                 kwargs=self._agent_config.kwargs,
             ),
             install_cmd=self.install_cmd,
-            artifacts=self.artifacts,
             final_output=str(self.final_output) if self.final_output else None,
             secrets=self.secrets,
         )

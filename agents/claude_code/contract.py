@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any, override
 
-from model_library.registry_utils import get_model_names_by_provider
+from model_library.registry_utils import get_model_names
 
 from agentic_harness.contract import BaseAgentContract
 
@@ -9,7 +9,7 @@ from agentic_harness.contract import BaseAgentContract
 class ClaudeCodeContract(BaseAgentContract):
     """Claude Code Contract"""
 
-    _ALLOWED_MODELS = get_model_names_by_provider("anthropic")
+    _ALLOWED_MODELS = get_model_names(provider="anthropic")
 
     _ALLOWED_TOOLS = [
         "Bash",
@@ -34,10 +34,6 @@ class ClaudeCodeContract(BaseAgentContract):
     @property
     def name(self) -> str:
         return "claude_code"
-
-    @property
-    def artifacts(self) -> list[str]:
-        return ["setup.sh"]
 
     @property
     def install_cmd(self) -> str:

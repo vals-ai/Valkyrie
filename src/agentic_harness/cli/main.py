@@ -1,5 +1,6 @@
 """CLI views/commands for the agentic harness."""
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -8,18 +9,30 @@ from uuid import UUID
 import click
 import yaml
 from tracker.database.models import BenchmarkStatus
+from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
-from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract
+from agentic_harness.cli.bundler import get_contract
 from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
+from agentic_harness.cli.s3_client import (
+    download_agent,
+    get_contract_from_s3,
+    install_agent,
+    list_agents,
+    push_agent,
+    remove_agent,
+)
 from agentic_harness.cli.tracker_service import TrackerService
 from agentic_harness.cli.utils import (
+    CONFIG_LOCATION,
     check_tracker_service_health,
     download_agent_outputs,
     download_final_view,
     format_benchmark_status,
     format_start_benchmark_response,
+    paginate_agents,
     paginate_benchmarks,
+    paginate_services,
     stream_benchmark_status,
 )
 from agentic_harness.schemas import AgentConfig
@@ -49,9 +62,6 @@ def config():
     pass
 
 
-_CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml").expanduser()
-
-
 @config.command()
 def init() -> None:
     """
@@ -72,8 +82,8 @@ def init() -> None:
     }
 
     current_config: dict[str, str] = {}
-    if _CONFIG_LOCATION.exists():
-        with open(_CONFIG_LOCATION) as f:
+    if CONFIG_LOCATION.exists():
+        with open(CONFIG_LOCATION) as f:
             try:
                 current_config = yaml.safe_load(f)
             except Exception:
@@ -104,12 +114,12 @@ def init() -> None:
 
         collected_keys[key] = value
 
-    _CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(_CONFIG_LOCATION, "w") as f:
+    with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(collected_keys, f, default_flow_style=False)
 
-    click.echo(click.style(f"\nConfig written to {_CONFIG_LOCATION}", fg="green", bold=True))
+    click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
 
 
 @config.command()
@@ -122,10 +132,10 @@ def modify(key: str, value: str) -> None:
     Example: harness config modify AWS_DEFAULT_REGION us-west-2
     """
 
-    if not _CONFIG_LOCATION.exists():
+    if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `harness config init` first.")
 
-    with open(_CONFIG_LOCATION) as f:
+    with open(CONFIG_LOCATION) as f:
         current: dict[str, str] = yaml.safe_load(f) or {}
 
     if key not in current:
@@ -133,10 +143,86 @@ def modify(key: str, value: str) -> None:
 
     current[key] = value
 
-    with open(_CONFIG_LOCATION, "w") as f:
+    with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"  {key} updated.", fg="green"))
+
+
+@config.group()
+def service() -> None:
+    """Manage custom benchmark service URL overrides."""
+    pass
+
+
+@service.command("set")
+@click.argument("name")
+@click.argument("url")
+def service_set(name: str, url: str) -> None:
+    """Set a custom URL for a benchmark service (creates or updates).
+
+    Example: harness config service set swebench https://my-tunnel.ngrok.io
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    if "custom_benchmark_services" not in harness_config:
+        harness_config["custom_benchmark_services"] = {}
+
+    harness_config["custom_benchmark_services"][name] = url
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(harness_config, f, default_flow_style=False)
+
+    click.echo(click.style(f"Service '{name}' has been set set", fg="green"))
+
+
+@service.command("remove")
+@click.argument("name")
+def service_remove(name: str) -> None:
+    """Remove a custom URL override for a benchmark service.
+
+    Example: harness config service remove swebench
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        current: dict[str, Any] = yaml.safe_load(f) or {}
+
+    services = current.get("custom_benchmark_services") or {}
+    if name not in services:
+        raise click.ClickException(f"Service '{name}' not configured.")
+
+    del services[name]
+    current["custom_benchmark_services"] = services
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(current, f, default_flow_style=False)
+
+    click.echo(click.style(f"Service '{name}' has been removed.", fg="green"))
+
+
+@service.command("list")
+def service_list() -> None:
+    """List all custom benchmark service URL overrides."""
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `harness config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        current: dict[str, Any] = yaml.safe_load(f) or {}
+
+    services: dict[str, str] = current.get("custom_benchmark_services") or {}
+    if not services:
+        click.echo(click.style("No custom service URLs configured.", fg="yellow"))
+        return
+
+    # Create a table of all the services that the user has inside of their config
+    services_list = list(services.items())
+    paginate_services(services_list)
 
 
 @benchmark.command(
@@ -144,9 +230,9 @@ def modify(key: str, value: str) -> None:
 )
 @click.option(
     "--agent",
-    type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
+    type=str,
     required=True,
-    help="Path to agent directory (e.g., agents/claude_code)",
+    help="Path to local agent directory or S3 agent name (e.g., agents/claude_code or claude_code)",
 )
 @click.option(
     "--model",
@@ -216,7 +302,7 @@ def modify(key: str, value: str) -> None:
     help="Secret as ENV_VAR aws_secret_name (e.g., -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey)",
 )
 def start(
-    agent: Path,
+    agent: str,
     model: str | None,
     benchmark: str,
     concurrency: int,
@@ -258,8 +344,6 @@ def start(
         click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
 
     try:
-        contract_path = agent / "contract.py"
-
         # Build agent config
         config_kwargs: dict[str, Any] = {}
         if model:
@@ -268,7 +352,14 @@ def start(
         config_kwargs["kwargs"] = {key: value for key, value in kwargs}
         agent_config = AgentConfig(**config_kwargs)
 
-        contract = get_contract(contract_path, agent_config)
+        agent_path = Path(agent)
+
+        # If the user specified an agent on their machine we upload it first
+        if agent_path.is_dir():
+            asyncio.run(push_agent(agent_path.stem, agent_path))
+            contract = get_contract(agent_path / "contract.py", agent_config)
+        else:
+            contract = asyncio.run(get_contract_from_s3(agent, agent_config))
 
         # Merge CLI secrets into contract defaults (override with cli secret)
         if secrets:
@@ -277,12 +368,6 @@ def start(
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
-
-            click.echo("\r\033[KZipping agent artifacts...", nl=False)
-
-            with get_agent_zip_stream(contract) as file_stream:
-                click.echo("\r\033[KUploading agent to tracker service...", nl=False)
-                tracker.upload_contract(contract.name, file_stream)
 
             click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
 
@@ -649,6 +734,132 @@ def outputs(benchmark_id: UUID, output_dir: Path | None):
     except TrackerServiceError as e:
         click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)
         raise click.Abort()
+
+
+@agent.command(name="install", help="Installs agent from a github project to the users aws environment")
+@click.argument("github_url", type=str)
+@click.option(
+    "--name",
+    "-n",
+    type=str,
+    required=False,
+    help="Agent name (defaults to repository name)",
+)
+def install(github_url: str, name: str | None):
+    """Install an agent from a GitHub repository.
+
+    Example:
+        harness agent install https://github.com/user/my-agent
+        harness agent install https://github.com/user/my-agent --name my-custom-name
+    """
+    try:
+        asyncio.run(install_agent(name, github_url))
+        click.echo(
+            click.style(f"✓ Agent {'(' + name + ') ' if name else ''}installed successfully!", fg="green", bold=True)
+        )
+    except (RuntimeError, S3Error) as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+@agent.command(name="push", help="Pushes agent to the users aws environment from the local filesystem")
+@click.argument("agent_path", type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True))
+@click.option(
+    "--name",
+    "-n",
+    type=str,
+    required=False,
+    help="Agent name (defaults to path stem)",
+)
+def push(agent_path: Path, name: str | None):
+    """Push a local agent to S3.
+
+    Example:
+        harness agent push ./agents/my-agent
+        harness agent push ./agents/my-agent --name my-agent
+    """
+    try:
+        agent_name = name or agent_path.stem
+        asyncio.run(push_agent(name, agent_path))
+        click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
+    except S3Error as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+@agent.command(name="remove", help="Remove an installed agent")
+@click.argument("agent_name", type=str)
+def remove(agent_name: str):
+    """Remove an agent from S3.
+
+    Example:
+        harness agent remove my-agent
+    """
+    try:
+        if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
+            click.echo("Cancelled.")
+            return
+
+        asyncio.run(remove_agent(agent_name))
+        click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
+    except S3Error as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+@agent.command(name="download", help="Download an installed agent")
+@click.argument("agent_name", type=str)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(path_type=Path, file_okay=False, dir_okay=True),
+    default=None,
+    required=False,
+    help="Output directory for downloaded agent (default: current directory)",
+)
+def download(agent_name: str, output_dir: Path | None):
+    """Download an agent from S3.
+
+    Example:
+        harness agent download my-agent
+    """
+    try:
+        if not click.confirm(f"Are you sure you want to download agent '{agent_name}'?"):
+            click.echo("Cancelled.")
+            return
+
+        asyncio.run(download_agent(agent_name, output_dir))
+        click.echo(click.style(f"✓ Agent '{agent_name}' downloaded successfully!", fg="green", bold=True))
+    except S3Error as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+@agent.command(name="list", help="List installed agents")
+def list_installed_agents():
+    """List all installed agents in S3.
+
+    Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
+
+    Example:
+        harness agent list
+    """
+    try:
+        agents = asyncio.run(list_agents())
+
+        if not agents:
+            click.echo(click.style("\r\033[KNo agents found.", fg="yellow"))
+            return
+
+        paginate_agents(agents)
+    except S3Error as e:
+        raise click.ClickException(str(e))
+    except Exception as e:
+        raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
 if __name__ == "__main__":

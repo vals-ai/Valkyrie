@@ -12,7 +12,7 @@ from tracker.exceptions import S3Error
 if TYPE_CHECKING:
     from tracker.types import AWSCredentials
 
-S3_CONTRACTS_PREFIX = "contracts"
+S3_AGENTS_PREFIX = "agents"
 S3_BENCHMARKS_PREFIX = "benchmarks"
 
 
@@ -27,8 +27,8 @@ def _s3_client(aws: "AWSCredentials") -> Any:
 
 
 def get_contract_s3_key(contract_name: str) -> str:
-    """Get the S3 key for a contract zip file."""
-    return f"{S3_CONTRACTS_PREFIX}/{contract_name}.zip"
+    """Get the S3 key for an agent zip file."""
+    return f"{S3_AGENTS_PREFIX}/{contract_name}.zip"
 
 
 def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -> str:

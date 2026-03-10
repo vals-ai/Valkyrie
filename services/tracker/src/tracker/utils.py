@@ -87,6 +87,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benc
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     return Benchmark(
         name=request.benchmark_name,
+        custom_benchmark_service=request.custom_benchmark_service,
         arguments=BenchmarkArguments(
             contract=request.contract,
             concurrency=request.concurrency,

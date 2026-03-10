@@ -3,15 +3,15 @@ from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 import pytest
+from benchmark_service.client import BenchmarkServiceClient
 from daytona import AsyncDaytona
 from dotenv import load_dotenv
 from sqlmodel import Session, SQLModel, create_engine
 from testcontainers.postgres import PostgresContainer
 
-from benchmark_service.client import BenchmarkServiceClient
+from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
 from tracker.types import AWSCredentials
 from tracker.utils import create_benchmark_service_client
-from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
 
 _ = load_dotenv()
 
@@ -60,9 +60,9 @@ async def benchmark_service(
 ) -> AsyncGenerator[BenchmarkServiceClient, None]:
     service_url = os.getenv("BENCHMARK_SERVICE_URL")
     if not service_url:
-        from tracker.config import benchmark_service_url
+        from tracker.config import create_benchmark_service_url
 
-        service_url = benchmark_service_url("swebench")
+        service_url = create_benchmark_service_url("swebench")
 
     service = create_benchmark_service_client(url=service_url, daytona_secret_name=test_daytona_secret, aws=test_aws)
 

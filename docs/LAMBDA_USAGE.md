@@ -19,7 +19,6 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the `ben
 {
   "contract": {
     "name": "claude_code",
-    "artifacts": ["setup.sh"],
     "install_cmd": "bash setup.sh",
     "run_cmd": "cat /tmp/problem_statement | claude -p ...",
     "final_output": "/logs",

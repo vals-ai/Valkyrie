@@ -12,10 +12,6 @@ class SWEAgentContract(BaseAgentContract):
         return "sweagent"
 
     @property
-    def artifacts(self) -> list[str]:
-        return ["setup.sh", "sweagent"]
-
-    @property
     def install_cmd(self) -> str:
         return "bash setup.sh"
 
