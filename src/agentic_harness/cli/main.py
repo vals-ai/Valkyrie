@@ -284,6 +284,13 @@ def service_list() -> None:
     help="Slice string to use for slicing the benchmark (e.g., 1-10)",
 )
 @click.option(
+    "--dataset",
+    type=str,
+    required=False,
+    default=None,
+    help="Dataset name to use from the benchmark service (defaults to 'default')",
+)
+@click.option(
     "--kwarg",
     "-k",
     "kwargs",
@@ -310,6 +317,7 @@ def start(
     task_ids: str | None,
     task_ids_file: Path | None,
     slice_str: str | None,
+    dataset: str | None,
     kwargs: tuple[tuple[str, str]],
     secrets: tuple[tuple[str, str]],
 ):
@@ -333,6 +341,8 @@ def start(
         click.echo(f"  - Model: {model}")
     click.echo(f"  - Concurrency: {concurrency}")
     click.echo(f"  - Slice: {slice_str}")
+    if dataset:
+        click.echo(f"  - Dataset: {dataset}")
     if task_ids:
         click.echo(f"  - Task IDs: {task_ids[:100]}{'...' if len(task_ids) > 100 else ''}")
     else:
@@ -378,6 +388,7 @@ def start(
                 formatted_task_ids,
                 slice_str,
                 lambda_function,
+                dataset,
             )
 
             click.echo("\r\033[K", nl=False)

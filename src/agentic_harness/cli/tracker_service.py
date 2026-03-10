@@ -163,6 +163,7 @@ class TrackerService:
         task_ids: list[str] | None,
         slice_str: str | None,
         lambda_function: str | None = None,
+        dataset: str | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -189,6 +190,7 @@ class TrackerService:
                 task_ids=task_ids,
                 slice_str=slice_str,
                 lambda_function=lambda_function,
+                dataset=dataset,
                 harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name),
             )
