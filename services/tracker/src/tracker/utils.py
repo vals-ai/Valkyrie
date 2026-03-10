@@ -94,6 +94,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benc
             task_ids=request.task_ids,
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,
+            dataset=request.dataset,
         ),
     )
 
@@ -323,7 +324,7 @@ async def process_task(
     flush_task = asyncio.create_task(auto_flush_logs())
 
     try:
-        task_data = await benchmark_service.retrieve_task(task_id=task_id)
+        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
 
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
@@ -358,7 +359,7 @@ async def process_task(
 
                 # Setup task if requested
                 if task_data.request_setup:
-                    _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output)
+                    _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset)
 
                     # Force flush the logs if anything has been buffered
                     buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
@@ -390,7 +391,7 @@ async def process_task(
                 # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                 evaluation_result = await benchmark_service.evaluate_instance(
-                    task_row.task_id, sandbox.id, on_message=log_output
+                    task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
@@ -591,7 +592,7 @@ async def process_benchmark(
             raise TrackerServiceError("No tasks were completed successfully")
 
         # Calculate the final score based off the tasks that were ran
-        final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results)
+        final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset)
 
         # Create the final evaluation row and add it to the database
         final_evaluation_row = FinalEvaluation(
@@ -989,7 +990,7 @@ async def reset_to_in_progress_status(
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
-        verify_response = await benchmark_service.verify_task_ids(task_ids=list(task_mapping.values()), slice_str=None)
+        verify_response = await benchmark_service.verify_task_ids(task_ids=list(task_mapping.values()), slice_str=None, dataset=benchmark_row.arguments.dataset)
 
         # Set the benchmark status to in progress to flag resuming the benchmark
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
