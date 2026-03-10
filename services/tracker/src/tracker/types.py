@@ -49,6 +49,7 @@ class StartBenchmarkRequest(BaseModel):
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
+    dataset: str | None = None
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
 
