@@ -335,7 +335,7 @@ async def run_agent(
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_statement_path).replace("{task_id}", task_id)
 
     # Run the agent without including task directory dependencies
-    await stream_command_output(sandbox, f"cd {cwd} && PYTHONUNBUFFERED=1 PYTHONSAFEPATH=1 {run_cmd}", log_output)
+    await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
 
     if not contract.final_output:
         return

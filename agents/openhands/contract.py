@@ -20,10 +20,6 @@ class OpenHandsContract(BaseAgentContract):
         return "bash setup.sh"
 
     @property
-    def secrets(self) -> dict[str, str]:
-        return {"ANTHROPIC_API_KEY": "devEvalInfraAnthropicKey"}
-
-    @property
     def final_output(self) -> Path | None:
         return Path("/tmp/openhands_output")
 

@@ -1,7 +1,6 @@
 import asyncio
 import io
 import json
-import re
 import time
 import traceback
 from asyncio import Semaphore, gather
@@ -53,49 +52,6 @@ from tracker.types import (
 )
 
 logger = get_logger(__name__)
-_ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
-_STREAM_LOG_SPAM_PATTERNS = (
-    "Pydantic serializer warnings:",
-    "PydanticSerializationUnexpectedValue(",
-    "__pydantic_serializer__.to_python(",
-    "RequestsDependencyWarning:",
-    "Loaded plugins for runtime",
-    "Inserting summary at offset 1",
-    "Initial user action (id=1) has been condensed.",
-)
-
-
-def normalize_stream_log(data: str) -> str:
-    """Strip ANSI escapes and normalize streamed sandbox output for logging."""
-    cleaned = _ANSI_ESCAPE_RE.sub("", data).replace("\r\n", "\n").replace("\r", "\n")
-    return cleaned
-
-
-def should_skip_stream_log_line(line: str) -> bool:
-    """Drop repeated OpenHands serializer warning noise from streamed logs."""
-    return any(pattern in line for pattern in _STREAM_LOG_SPAM_PATTERNS)
-
-
-def extract_stream_log_lines(data: str, pending_fragment: str = "") -> tuple[str, list[str]]:
-    """Normalize streamed sandbox output into complete log lines, preserving partial trailing fragments."""
-    normalized = normalize_stream_log(data)
-    if not normalized:
-        return pending_fragment, []
-
-    combined = pending_fragment + normalized
-    split_lines = combined.split("\n")
-
-    if combined.endswith("\n"):
-        complete_lines = split_lines[:-1]
-        next_fragment = ""
-    else:
-        complete_lines = split_lines[:-1]
-        next_fragment = split_lines[-1]
-
-    filtered_lines = [
-        line for line in complete_lines if line.strip() and not should_skip_stream_log_line(line)
-    ]
-    return next_fragment, filtered_lines
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -340,24 +296,12 @@ async def process_task(
     reset_cloudwatch_stream(stream_key, harness_config.aws, harness_config.log_group)
 
     last_log_time: float = time.monotonic()
-    pending_log_fragment = ""
 
     # Collects the logs and dumps them when the queue is full
     def log_output(data: str) -> None:
-        nonlocal last_log_time, pending_log_fragment
+        nonlocal last_log_time
         last_log_time = time.monotonic()
-        pending_log_fragment, filtered_lines = extract_stream_log_lines(data, pending_log_fragment)
-        if not filtered_lines:
-            return
-
-        normalized = "\n".join(filtered_lines) + "\n"
-
-        for line in filtered_lines:
-            stripped = line.strip()
-            if stripped:
-                logger.info("[%s] %s", task_id, stripped)
-
-        log_queue.put_nowait(normalized)
+        log_queue.put_nowait(data)
         buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
 
     # Auto flush if process takes a while to produce next log
