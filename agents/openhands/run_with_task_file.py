@@ -8,7 +8,6 @@ import runpy
 import shutil
 import sys
 from pathlib import Path
-from typing import Any
 
 import toml
 
@@ -16,68 +15,37 @@ OUTPUT_ROOT = Path("/tmp/openhands_output")
 WORKSPACE_ROOT = Path("/workspace")
 WORKSPACE_ENV_PATH = WORKSPACE_ROOT / "generated-app" / ".env"
 OPENHANDS_LOG_ROOT = Path("/logs/openhands")
+MAX_ITERATIONS_SENTINEL = 2_147_483_647
 
 
-def parse_extra_args(raw_args: list[str]) -> dict[str, str]:
-    extras: dict[str, str] = {}
-    index = 0
-    while index < len(raw_args):
-        token = raw_args[index]
-        if not token.startswith("--"):
-            raise SystemExit(f"Unexpected argument: {token}")
-
-        key = token[2:].replace("-", "_")
-        if not key:
-            raise SystemExit(f"Invalid argument: {token}")
-
-        value = "true"
-        if index + 1 < len(raw_args) and not raw_args[index + 1].startswith("--"):
-            value = raw_args[index + 1]
-            index += 1
-
-        extras[key] = value
-        index += 1
-
-    return extras
-
-
-def parse_args(argv: list[str] | None = None) -> tuple[argparse.Namespace, dict[str, str]]:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("problem_statement_path")
     parser.add_argument("--model", required=True)
     parser.add_argument("--task-id", required=True)
-    args, unknown = parser.parse_known_args(argv)
-    return args, parse_extra_args(unknown)
+    parser.add_argument("--max-iterations", "--max_iterations", dest="max_iterations", type=int)
+    parser.add_argument("--temperature", type=float)
+    parser.add_argument("--top-p", "--top_p", dest="top_p", type=float)
+    parser.add_argument("--max-tokens", "--max_tokens", dest="max_tokens", type=int)
+    return parser.parse_args(argv)
 
 
-def _coerce_value(value: str) -> Any:
-    lowered = value.strip().lower()
-    if lowered in {"true", "false"}:
-        return lowered == "true"
-
-    try:
-        return int(value)
-    except ValueError:
-        pass
-
-    try:
-        return float(value)
-    except ValueError:
-        return value
-
-
-def load_env_file(path: Path) -> dict[str, str]:
+def load_mcp_server_urls(path: Path) -> tuple[list[str], list[str]]:
     env: dict[str, str] = {}
     if not path.exists():
-        return env
+        return [], []
 
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
         key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in {"MCP_SSE_URLS", "MCP_SHTTP_URLS"}:
+            continue
         env[key] = value.strip().strip('"').strip("'")
-    return env
+
+    return split_urls(env.get("MCP_SSE_URLS", "")), split_urls(env.get("MCP_SHTTP_URLS", ""))
 
 
 def split_urls(value: str) -> list[str]:
@@ -107,7 +75,7 @@ def collect_outputs(task_id: str) -> None:
 
 
 def main() -> int:
-    args, extra_args = parse_args()
+    args = parse_args()
 
     task_file = Path(args.problem_statement_path)
     if not task_file.exists():
@@ -118,7 +86,7 @@ def main() -> int:
         raise FileNotFoundError(f"Missing base config: {base_config_path}")
 
     prompt_text = task_file.read_text(encoding="utf-8")
-    workspace_env = load_env_file(WORKSPACE_ENV_PATH)
+    sse_servers, shttp_servers = load_mcp_server_urls(WORKSPACE_ENV_PATH)
 
     config = toml.loads(base_config_path.read_text(encoding="utf-8"))
     config.setdefault("llm", {})["model"] = args.model
@@ -131,21 +99,22 @@ def main() -> int:
     core_cfg["workspace_base"] = str(WORKSPACE_ROOT)
     core_cfg["enable_browser"] = True
 
-    if "max_iterations" in extra_args:
-        core_cfg["max_iterations"] = _coerce_value(extra_args["max_iterations"])
+    if args.max_iterations is not None:
+        core_cfg["max_iterations"] = args.max_iterations
 
     max_iterations = core_cfg.get("max_iterations")
     if isinstance(max_iterations, int) and max_iterations <= 0:
-        core_cfg["max_iterations"] = 2_147_483_647
+        core_cfg["max_iterations"] = MAX_ITERATIONS_SENTINEL
 
     llm_cfg = config.setdefault("llm", {})
     for key in ("temperature", "top_p", "max_tokens"):
-        if key in extra_args:
-            llm_cfg[key] = _coerce_value(extra_args[key])
+        value = getattr(args, key)
+        if value is not None:
+            llm_cfg[key] = value
 
     mcp_cfg = config.setdefault("mcp", {})
-    mcp_cfg["sse_servers"] = split_urls(workspace_env.get("MCP_SSE_URLS", ""))
-    mcp_cfg["shttp_servers"] = split_urls(workspace_env.get("MCP_SHTTP_URLS", ""))
+    mcp_cfg["sse_servers"] = sse_servers
+    mcp_cfg["shttp_servers"] = shttp_servers
 
     run_config = Path(f"/tmp/openhands_config_{args.task_id}.toml")
     run_config.write_text(toml.dumps(config), encoding="utf-8")
