@@ -24,7 +24,6 @@ from benchmark_service.schemas import VerifyTaskIdsResponse
 from tracker.types import (
     FetchBenchmarksRequest,
     FinalViewResponse,
-    HarnessConfig,
     StartBenchmarkRequest,
 )
 from tests.unit.conftest import TEST_HARNESS_CONFIG

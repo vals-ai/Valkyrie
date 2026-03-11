@@ -223,10 +223,8 @@ class TestDatabaseIntegration:
         database_session.flush()
 
         async with build_task_environment(daytona_client, task_row.task_id, docker_image) as sandbox:
-            request_setup = task_data.request_setup
-            if request_setup:
-                response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
-                assert response.status == "ok"
+            response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
+            assert response.status == "ok"
 
             response = await benchmark_service.evaluate_instance(task_id=task_row.task_id, instance_id=sandbox.id)
 

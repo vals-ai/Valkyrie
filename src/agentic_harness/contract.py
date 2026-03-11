@@ -42,7 +42,7 @@ class BaseAgentContract(ABC):
         Command to run the agent on a task.
 
         Args:
-            problem_statement_path: str - Where the problem statement is copied in the sandbox (default: tmp/problem_statement)
+            problem_statement_path: str - Path in the sandbox where the problem statement file was written during setup
             task_id: str - The readable task id (e.x astropy__astropy-12907)
             kwargs: dict[str, Any] - Extra args the user specified at run time
 

@@ -300,7 +300,7 @@ async def archive_and_upload_output(
 async def run_agent(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
-    problem_statement: str,
+    problem_path: str,
     task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
@@ -314,7 +314,7 @@ async def run_agent(
     Args:
         sandbox: The sandbox to run the agent in
         contract: The agent contract configuration
-        problem_statement: Problem statement to pass to the agent
+        problem_path: Path inside the sandbox where the problem statement file was written during setup
         log_output: Callback to log output
         cwd: Working directory to run the agent in
         agent_output_s3_key: S3 key to where we will upload the final output archive to
@@ -329,10 +329,7 @@ async def run_agent(
 
     await install_agent_dependencies(sandbox, contract, log_output)
 
-    problem_statement_path = "/tmp/problem_statement.txt"
-    await sandbox.fs.upload_file(problem_statement.encode(), problem_statement_path)
-
-    run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_statement_path).replace("{task_id}", task_id)
+    run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
     # Run the agent without including task directory dependencies
     await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)

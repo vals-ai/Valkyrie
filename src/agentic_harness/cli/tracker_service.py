@@ -93,6 +93,27 @@ class TrackerService:
         return services.get(benchmark_name)
 
     @staticmethod
+    def get_benchmark_auth(benchmark_name: str) -> str | None:
+        """
+        Get benchmark auth credential from config if it exists.
+
+        Args:
+            benchmark_name: Name of the benchmark
+
+        Returns:
+            Auth credential if configured, None otherwise
+        """
+        config_path = _CONFIG_LOCATION.expanduser()
+        if not config_path.exists():
+            return None
+
+        with open(config_path) as f:
+            harness_config = yaml.safe_load(f) or {}
+
+        auth = harness_config.get("benchmark_auth") or {}
+        return auth.get(benchmark_name)
+
+    @staticmethod
     def parse_config_keys() -> dict[str, str]:
         """Parses expected config keys and handles edge cases"""
         config_path: Path = _CONFIG_LOCATION.expanduser()
@@ -163,6 +184,8 @@ class TrackerService:
         task_ids: list[str] | None,
         slice_str: str | None,
         lambda_function: str | None = None,
+        dataset: str | None = None,
+        service_headers: dict[str, str] | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -189,8 +212,10 @@ class TrackerService:
                 task_ids=task_ids,
                 slice_str=slice_str,
                 lambda_function=lambda_function,
+                dataset=dataset,
                 harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name),
+                service_headers=service_headers or {},
             )
 
             body = payload.model_dump()
