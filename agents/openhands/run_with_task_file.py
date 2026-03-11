@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import runpy
 import shutil
 import sys
+from typing import Any
 from pathlib import Path
 
 import toml
@@ -74,6 +76,15 @@ def collect_outputs(task_id: str) -> None:
     (OUTPUT_ROOT / "task_id.txt").write_text(task_id + "\n", encoding="utf-8")
 
 
+def configure_openhands_runtime() -> None:
+    codeact_module = importlib.import_module("openhands.agenthub.codeact_agent.codeact_agent")
+    runtime_plugins_module = importlib.import_module("openhands.runtime.plugins")
+
+    codeact_agent: Any = codeact_module.CodeActAgent
+    agent_skills_requirement: Any = runtime_plugins_module.AgentSkillsRequirement
+    codeact_agent.sandbox_plugins = [agent_skills_requirement()]
+
+
 def main() -> int:
     args = parse_args()
 
@@ -119,10 +130,7 @@ def main() -> int:
     run_config = Path(f"/tmp/openhands_config_{args.task_id}.toml")
     run_config.write_text(toml.dumps(config), encoding="utf-8")
 
-    from openhands.agenthub.codeact_agent.codeact_agent import CodeActAgent
-    from openhands.runtime.plugins import AgentSkillsRequirement
-
-    CodeActAgent.sandbox_plugins = [AgentSkillsRequirement()]
+    configure_openhands_runtime()
 
     original_argv = sys.argv[:]
     try:
