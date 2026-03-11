@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import os
 import runpy
 import shutil
 import sys
@@ -18,6 +19,7 @@ WORKSPACE_ROOT = Path("/workspace")
 WORKSPACE_ENV_PATH = WORKSPACE_ROOT / "generated-app" / ".env"
 OPENHANDS_LOG_ROOT = Path("/logs/openhands")
 MAX_ITERATIONS_SENTINEL = 2_147_483_647
+DEFAULT_PLAYWRIGHT_BROWSERS_PATH = "/opt/ms-playwright"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -85,6 +87,10 @@ def configure_openhands_runtime() -> None:
     codeact_agent.sandbox_plugins = [agent_skills_requirement()]
 
 
+def configure_runtime_environment() -> None:
+    os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", DEFAULT_PLAYWRIGHT_BROWSERS_PATH)
+
+
 def main() -> int:
     args = parse_args()
 
@@ -130,6 +136,7 @@ def main() -> int:
     run_config = Path(f"/tmp/openhands_config_{args.task_id}.toml")
     run_config.write_text(toml.dumps(config), encoding="utf-8")
 
+    configure_runtime_environment()
     configure_openhands_runtime()
 
     original_argv = sys.argv[:]

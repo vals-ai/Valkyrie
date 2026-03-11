@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -74,3 +75,11 @@ def test_load_mcp_server_urls_only_reads_supported_keys(tmp_path: Path) -> None:
 
     assert sse_servers == ["http://sse-a", "http://sse-b"]
     assert shttp_servers == ["http://shttp-a"]
+
+
+def test_configure_runtime_environment_sets_default_playwright_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+
+    MODULE.configure_runtime_environment()
+
+    assert os.environ["PLAYWRIGHT_BROWSERS_PATH"] == MODULE.DEFAULT_PLAYWRIGHT_BROWSERS_PATH
