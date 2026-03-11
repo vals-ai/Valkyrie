@@ -12,10 +12,6 @@ class OpenHandsContract(BaseAgentContract):
         return "openhands"
 
     @property
-    def artifacts(self) -> list[str]:
-        return ["setup.sh", "run_with_task_file.py", "base_openhands_config.toml"]
-
-    @property
     def install_cmd(self) -> str:
         return "bash setup.sh"
 
