@@ -30,11 +30,9 @@ class SWEAgentContract(BaseAgentContract):
 
         args = [
             "--env.deployment.type=local",
-            "--env.repo.type=preexisting",
-            "--env.repo.repo_name=testbed",
             "--agent.model.provider=vals",
             f"--problem_statement.path={problem_statement_path}",
-            "--config=/bundle/sweagent/sweagent/config/default.yaml",
+            "--config=/bundle/sweagent/sweagent/config/terminal_bench.yaml",
             "--output_dir=/logs/sweagent",
             f"--agent.model.name={model_name}",
         ]
