@@ -28,7 +28,7 @@ class MiniSWEAgentContract(BaseAgentContract):
                 "Model key not detected, model is required to run mini_sweagent. Use --model to assign a model to run"
             )
         args = [
-            f"python3 /bundle/mini_sweagent/run_with_task_file.py {problem_statement_path}",
+            f"/bundle/mini_sweagent/mini_sweagent/.venv/bin/python3 /bundle/mini_sweagent/run_with_task_file.py {problem_statement_path}",
             "--config=swebench.yaml",
             "--environment-class=local",
             f"--config=model.model_name={model_name}",

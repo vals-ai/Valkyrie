@@ -317,6 +317,9 @@ async def run_agent(
     if agent_timeout is not None:
         run_cmd = f"timeout {agent_timeout} {run_cmd}"
 
+    # Create cwd if it does not already exist
+    await sandbox.process.exec(f"mkdir -p {shlex.quote(cwd)}")
+
     # Run the agent without including task directory dependencies
     await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
 
