@@ -89,6 +89,11 @@ def configure_openhands_runtime() -> None:
 
 def configure_runtime_environment() -> None:
     os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", DEFAULT_PLAYWRIGHT_BROWSERS_PATH)
+    local_bin = str(Path.home() / ".local" / "bin")
+    current_path = os.environ.get("PATH", "")
+    path_entries = current_path.split(os.pathsep) if current_path else []
+    if local_bin not in path_entries:
+        os.environ["PATH"] = os.pathsep.join([local_bin, *path_entries]) if path_entries else local_bin
 
 
 def main() -> int:
