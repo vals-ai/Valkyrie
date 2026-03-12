@@ -235,7 +235,8 @@ async def stream_command_output(
         try:
             cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
-            if cmd.exit_code != 0:
+            # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
+            if cmd.exit_code not in (0, 124):
                 raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
 
         except SandboxError:
