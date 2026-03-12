@@ -287,6 +287,7 @@ async def run_agent(
     aws: AWSCredentials,
     s3_bucket: str,
     agent_output_s3_key: str | None = None,
+    agent_timeout: float | None = None,
 ) -> None:
     """
     Run the agent inside the sandbox for a given task.
@@ -298,6 +299,7 @@ async def run_agent(
         log_output: Callback to log output
         cwd: Working directory to run the agent in
         agent_output_s3_key: S3 key to where we will upload the final output archive to
+        agent_timeout: Optional timeout in seconds to enforce on the agent command
 
     Returns:
         Agent output as a dictionary
@@ -310,6 +312,10 @@ async def run_agent(
     await install_agent_dependencies(sandbox, contract, log_output)
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
+
+    # Apply timeout if specified
+    if agent_timeout is not None:
+        run_cmd = f"timeout {agent_timeout} {run_cmd}"
 
     # Run the agent without including task directory dependencies
     await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
