@@ -32,12 +32,12 @@ class SWEAgentContract(BaseAgentContract):
             "--env.deployment.type=local",
             "--agent.model.provider=vals",
             f"--problem_statement.path={problem_statement_path}",
-            "--config=/bundle/sweagent/sweagent/config/terminal_bench.yaml",
+            "--config=/bundle/sweagent/config/terminal_bench.yaml",
             "--output_dir=/logs/sweagent",
             f"--agent.model.name={model_name}",
         ]
 
-        run_cmd = "sweagent run " + " ".join(args)
+        run_cmd = "SWE_AGENT_CONFIG_DIR=/bundle/sweagent/config sweagent run " + " ".join(args)
 
         return run_cmd
 
