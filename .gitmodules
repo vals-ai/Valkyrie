@@ -1,7 +1,7 @@
 [submodule "agents/sweagent/sweagent"]
 	path = agents/sweagent/sweagent
 	url = git@github.com:vals-ai/SWE-bench.git
-	branch = jf/agent-harness
+	branch = jf/terminal-bench
 [submodule "agents/mini_sweagent/mini_sweagent"]
 	path = agents/mini_sweagent/mini_sweagent
 	url = git@github.com:vals-ai/mini-swe-agent.git
