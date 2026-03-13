@@ -514,7 +514,7 @@ def fetch(run_id: UUID, connect: bool):
     Fetch a benchmark by its run id.
 
     Example:
-        harness benchmark fetch 123e4567-e89b-12d3-a456-426614174000 --connect
+        valkyrie benchmark fetch 123e4567-e89b-12d3-a456-426614174000 --connect
     """
 
     try:
@@ -556,7 +556,7 @@ def results(run_id: UUID, path: Path | None, s3: bool):
     Retrieve the results of a benchmark by its run id.
 
     Example:
-        harness benchmark results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
+        valkyrie benchmark results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
     click.echo(f"Retrieving results for benchmark: {run_id}")
 
@@ -603,7 +603,7 @@ def stop(run_id: UUID, force: bool):
     Stop a benchmark by its run id.
 
     Example:
-        harness benchmark stop 123e4567-e89b-12d3-a456-426614174000
+        valkyrie benchmark stop 123e4567-e89b-12d3-a456-426614174000
     """
     click.echo(f"Stopping benchmark for benchmark: {run_id}")
 
@@ -679,7 +679,7 @@ def resume(
     Resume a benchmark run by its run id.
 
     Example:
-        harness benchmark resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
+        valkyrie benchmark resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
     if task_ids and task_ids_file:
         raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
@@ -763,7 +763,7 @@ def list_benchmarks(
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
 
     Example:
-        harness benchmark list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
+        valkyrie benchmark list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
     """
     try:
         with TrackerService() as tracker:
@@ -791,7 +791,7 @@ def outputs(run_id: UUID, output_dir: Path | None):
     Fetch agent outputs for a benchmark by its run id.
 
     Example:
-        harness agent outputs 123e4567-e89b-12d3-a456-426614174000
+        valkyrie agent outputs 123e4567-e89b-12d3-a456-426614174000
     """
 
     try:

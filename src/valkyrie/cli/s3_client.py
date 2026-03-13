@@ -23,7 +23,7 @@ def _fetch_bucket_name() -> str:
     config = load_config()
     bucket_name = config.get("S3_BUCKET")
     if not bucket_name:
-        raise click.ClickException("S3_BUCKET key not found. Add it using 'harness config modify' first.")
+        raise click.ClickException("S3_BUCKET key not found. Add it using 'valkyrie config modify' first.")
 
     return bucket_name
 
