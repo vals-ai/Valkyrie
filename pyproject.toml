@@ -1,5 +1,5 @@
 [project]
-name = "agentic-harness"
+name = "valkyrie"
 version = "0.1.0"
 description = "Valkyrie - An agentic harness that interfaces with benchmarks hosted by Vals AI"
 readme = "README.md"
