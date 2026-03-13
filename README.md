@@ -1,4 +1,4 @@
-# Agentic Harness
+# Valkyrie
 
 Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
