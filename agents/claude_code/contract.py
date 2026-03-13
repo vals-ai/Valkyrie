@@ -3,7 +3,7 @@ from typing import Any, override
 
 from model_library.registry_utils import get_model_names
 
-from agentic_harness.contract import BaseAgentContract
+from valkyrie.contract import BaseAgentContract
 
 
 class ClaudeCodeContract(BaseAgentContract):

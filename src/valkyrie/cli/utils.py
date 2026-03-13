@@ -22,7 +22,7 @@ from tracker.types import (
     StartBenchmarkResponse,
 )
 
-from agentic_harness.cli.tracker_service import TrackerService
+from valkyrie.cli.tracker_service import TrackerService
 
 CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
 

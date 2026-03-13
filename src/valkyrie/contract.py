@@ -4,7 +4,7 @@ from typing import Any
 
 from tracker.database.models import AgentContractRequest
 
-from agentic_harness.schemas import AgentConfig
+from valkyrie.schemas import AgentConfig
 
 
 class BaseAgentContract(ABC):

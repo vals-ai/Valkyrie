@@ -12,9 +12,9 @@ from typing import BinaryIO, Generator
 
 from tracker.database.models import AgentContractRequest
 
-from agentic_harness.cli.exceptions import BundlerError
-from agentic_harness.contract import BaseAgentContract
-from agentic_harness.schemas import AgentConfig
+from valkyrie.cli.exceptions import BundlerError
+from valkyrie.contract import BaseAgentContract
+from valkyrie.schemas import AgentConfig
 
 
 def _zip_directory_to_file(directory: Path, output_path: Path) -> None:

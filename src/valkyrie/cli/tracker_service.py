@@ -26,7 +26,7 @@ from tracker.types import (
     StopBenchmarkResponse,
 )
 
-from agentic_harness.cli.exceptions import TrackerServiceError
+from valkyrie.cli.exceptions import TrackerServiceError
 
 load_dotenv()
 

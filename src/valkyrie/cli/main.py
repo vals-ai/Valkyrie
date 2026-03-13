@@ -12,9 +12,9 @@ from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
-from agentic_harness.cli.bundler import get_contract
-from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
-from agentic_harness.cli.s3_client import (
+from valkyrie.cli.bundler import get_contract
+from valkyrie.cli.exceptions import BundlerError, TrackerServiceError
+from valkyrie.cli.s3_client import (
     download_agent,
     get_contract_from_s3,
     install_agent,
@@ -22,8 +22,8 @@ from agentic_harness.cli.s3_client import (
     push_agent,
     remove_agent,
 )
-from agentic_harness.cli.tracker_service import TrackerService
-from agentic_harness.cli.utils import (
+from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.utils import (
     CONFIG_LOCATION,
     check_tracker_service_health,
     download_agent_outputs,
@@ -35,7 +35,7 @@ from agentic_harness.cli.utils import (
     paginate_services,
     stream_benchmark_status,
 )
-from agentic_harness.schemas import AgentConfig
+from valkyrie.schemas import AgentConfig
 
 
 @click.group()

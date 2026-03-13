@@ -14,7 +14,7 @@ Create a `contract.py` file in your agent directory that defines a contract clas
 from pathlib import Path
 from typing import Any, override
 
-from agentic_harness.contract import BaseAgentContract
+from valkyrie.contract import BaseAgentContract
 
 
 class MyAgentContract(BaseAgentContract):
