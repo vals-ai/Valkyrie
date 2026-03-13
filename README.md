@@ -2,7 +2,7 @@
 
 Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
-> **Note:** The CLI is named **Valkyrie**. You can invoke it using either `valkyrie` or the shorter alias `valk`. For example: `valkyrie benchmark start` or `valk benchmark start`.
+> **Note:** The CLI is named **Valkyrie**. You can invoke it using either `valkyrie` or the shorter alias `valk`. For example: `valkyrie run start` or `valk run start`.
 
 ## Pre requisites
 
@@ -152,17 +152,17 @@ benchmark_auth:
 Pass additional headers to the benchmark service with `-H` / `--header`. Each flag takes a name and value. Repeatable. These are merged with any stored auth credential — if you pass `-H Authorization <value>` it overrides the stored one for that run.
 
 ```bash
-valkyrie benchmark start --benchmark my-benchmark --agent sweagent \
+valkyrie run start --benchmark my-benchmark --agent sweagent \
   -H X-Custom-Header my-value \
   -H X-Another-Header another-value
 ```
 
 ## Usage
 
-### Start a benchmark
+### Start a run
 
 ```bash
-valkyrie benchmark start \
+valkyrie run start \
   --agent sweagent \
   --benchmark swebench \
   --model anthropic/claude-sonnet-4-6 \
@@ -190,52 +190,52 @@ valkyrie benchmark start \
 | `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
 
-### Monitor a benchmark
+### Monitor a run
 
 ```bash
 # Stream live updates
-valkyrie benchmark fetch <id> --connect
+valkyrie run fetch <id> --connect
 
 # One-time status check
-valkyrie benchmark fetch <id>
+valkyrie run fetch <id>
 ```
 
 ### Download results
 
 ```bash
 # Download to disk (default: ./<benchmark>.json)
-valkyrie benchmark results <id> --path ./results.json
+valkyrie run results <id> --path ./results.json
 
 # Upload to S3
-valkyrie benchmark results <id> --s3
+valkyrie run results <id> --s3
 ```
 
-### Stop a benchmark
+### Stop a run
 
 ```bash
-valkyrie benchmark stop <id>
+valkyrie run stop <id>
 
 # Force stop all in-flight tasks immediately
-valkyrie benchmark stop <id> --force
+valkyrie run stop <id> --force
 ```
 
-### Resume / Retry a benchmark
+### Resume / Retry a run
 
 ```bash
 # Resume pending tasks
-valkyrie benchmark resume <id>
+valkyrie run resume <id>
 
 # Retry errored tasks
-valkyrie benchmark retry <id>
+valkyrie run retry <id>
 
 # Override concurrency on resume (works on retry)
-valkyrie benchmark resume <id> --concurrency 20
+valkyrie run resume <id> --concurrency 20
 ```
 
-### List benchmarks
+### List runs
 
 ```bash
-valkyrie benchmark list \
+valkyrie run list \
   --agent-name claude_code \
   --benchmark-name swebench \
   --status IN_PROGRESS \

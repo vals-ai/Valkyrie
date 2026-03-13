@@ -106,7 +106,7 @@ def secrets(self) -> dict[str, str]:
 Secrets can also be passed (or overridden) at runtime via the CLI:
 
 ```bash
-valkyrie benchmark start --agent agents/my_agent -s API_KEY myAwsSecretName
+valkyrie run start --agent agents/my_agent -s API_KEY myAwsSecretName
 ```
 
 CLI secrets are merged with contract defaults. If both define the same key, the CLI value wins.
@@ -129,13 +129,13 @@ class MyAgentContract(BaseAgentContract):
 Then run from the CLI with:
 
 ```bash
-valkyrie benchmark start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
+valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
 ```
 
 Extra key-value pairs can be passed with `-k` and accessed via `kwargs`:
 
 ```bash
-valkyrie benchmark start --agent agents/my_agent --benchmark swebench -k temperature 0.7
+valkyrie run start --agent agents/my_agent --benchmark swebench -k temperature 0.7
 ```
 
 ## Directory Structure

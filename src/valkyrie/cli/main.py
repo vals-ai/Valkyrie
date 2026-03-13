@@ -45,8 +45,8 @@ def cli():
 
 
 @cli.group()
-def benchmark():
-    """Benchmark command group"""
+def run():
+    """Run command group"""
     pass
 
 
@@ -301,8 +301,8 @@ def auth_list() -> None:
         click.echo(f"  {name}: {masked}")
 
 
-@benchmark.command(
-    help="Start a benchmark run. \n\nExample:\nvalkyrie benchmark start --agent agents/claude_code --benchmark swebench --concurrency 5"
+@run.command(
+    help="Start a run. \n\nExample:\nvalkyrie run start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
 @click.option(
     "--agent",
@@ -411,7 +411,7 @@ def start(
     Run an agent on a benchmark.
 
     Example:
-        valkyrie run --agent agents/claude_code --benchmark swebench
+        valkyrie run start --agent agents/claude_code --benchmark swebench
     """
     if task_ids and task_ids_file:
         raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
@@ -475,7 +475,7 @@ def start(
             if not check_tracker_service_health(tracker):
                 return
 
-            click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
+            click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False)
 
             response = tracker.start_benchmark(
                 contract,
@@ -490,7 +490,7 @@ def start(
 
             click.echo("\r\033[K", nl=False)
             if response.status_code != 200:
-                click.echo(click.style("Benchmark failed to start!", fg="red", bold=True))
+                click.echo(click.style("Run failed to start!", fg="red", bold=True))
                 click.echo(response.text)
                 return
 
@@ -499,22 +499,22 @@ def start(
         raise click.ClickException(str(e))
 
 
-@benchmark.command(
-    help="Fetch a benchmark by its run id. \n\nExample:\nvalkyrie benchmark fetch 123e4567-e89b-12d3-a456-426614174000 --connect"
+@run.command(
+    help="Fetch a run by its run id. \n\nExample:\nvalkyrie run fetch 123e4567-e89b-12d3-a456-426614174000 --connect"
 )
 @click.argument("run_id", type=UUID)
 @click.option(
     "--connect",
     is_flag=True,
     required=False,
-    help="Connect to the tracker service to stream benchmark updates",
+    help="Connect to the tracker service to stream run updates",
 )
 def fetch(run_id: UUID, connect: bool):
     """
-    Fetch a benchmark by its run id.
+    Fetch a run by its run id.
 
     Example:
-        valkyrie benchmark fetch 123e4567-e89b-12d3-a456-426614174000 --connect
+        valkyrie run fetch 123e4567-e89b-12d3-a456-426614174000 --connect
     """
 
     try:
@@ -525,16 +525,16 @@ def fetch(run_id: UUID, connect: bool):
             if connect:
                 stream_benchmark_status(tracker, run_id)
             else:
-                click.echo(f"Fetching benchmark: {run_id}")
+                click.echo(f"Fetching run: {run_id}")
                 response = tracker.fetch_benchmark(run_id)
                 format_benchmark_status(response)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
 
-@benchmark.command(
+@run.command(
     name="results",
-    help="Retrieve benchmark results by its run id. \n\nExample:\nvalkyrie benchmark results 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
+    help="Retrieve run results by its run id. \n\nExample:\nvalkyrie run results 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -553,12 +553,12 @@ def fetch(run_id: UUID, connect: bool):
 )
 def results(run_id: UUID, path: Path | None, s3: bool):
     """
-    Retrieve the results of a benchmark by its run id.
+    Retrieve the results of a run by its run id.
 
     Example:
-        valkyrie benchmark results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
+        valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
-    click.echo(f"Retrieving results for benchmark: {run_id}")
+    click.echo(f"Retrieving results for run: {run_id}")
 
     try:
         with TrackerService() as tracker:
@@ -587,8 +587,8 @@ def results(run_id: UUID, path: Path | None, s3: bool):
         raise click.ClickException(str(e))
 
 
-@benchmark.command(
-    help="Stop a benchmark run by its run id. \n\nExample:\nvalkyrie benchmark stop 123e4567-e89b-12d3-a456-426614174000 --force"
+@run.command(
+    help="Stop a run by its run id. \n\nExample:\nvalkyrie run stop 123e4567-e89b-12d3-a456-426614174000 --force"
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -600,15 +600,15 @@ def results(run_id: UUID, path: Path | None, s3: bool):
 )
 def stop(run_id: UUID, force: bool):
     """
-    Stop a benchmark by its run id.
+    Stop a run by its run id.
 
     Example:
-        valkyrie benchmark stop 123e4567-e89b-12d3-a456-426614174000
+        valkyrie run stop 123e4567-e89b-12d3-a456-426614174000
     """
-    click.echo(f"Stopping benchmark for benchmark: {run_id}")
+    click.echo(f"Stopping run: {run_id}")
 
     if force:
-        click.echo(click.style("Force stopping the benchmark", fg="yellow", bold=True))
+        click.echo(click.style("Force stopping the run", fg="yellow", bold=True))
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
@@ -626,7 +626,7 @@ def stop(run_id: UUID, force: bool):
                 )
             click.echo(
                 click.style(
-                    f"Retrieve results: valkyrie benchmark results {run_id} --path ./results.json",
+                    f"Retrieve results: valkyrie run results {run_id} --path ./results.json",
                     fg="cyan",
                 )
             )
@@ -634,8 +634,8 @@ def stop(run_id: UUID, force: bool):
         raise click.ClickException(str(e))
 
 
-@benchmark.command(
-    help="Resume a benchmark run by its run id. \n\nExample:\nvalkyrie benchmark resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
+@run.command(
+    help="Resume a run by its run id. \n\nExample:\nvalkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -676,10 +676,10 @@ def resume(
     task_ids_file: Path | None,
 ):
     """
-    Resume a benchmark run by its run id.
+    Resume a run by its run id.
 
     Example:
-        valkyrie benchmark resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
+        valkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
     if task_ids and task_ids_file:
         raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
@@ -702,7 +702,7 @@ def resume(
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
                 click.style(
-                    f"Track progress: valkyrie benchmark fetch {run_id} --connect",
+                    f"Track progress: valkyrie run fetch {run_id} --connect",
                     fg="cyan",
                 )
             )
@@ -710,20 +710,20 @@ def resume(
         raise click.ClickException(str(e))
 
 
-# Alias for benchmark resume, the logic is the same under the hood
+# Alias for run resume, the logic is the same under the hood
 retry_command = click.Command(
     name="retry",
     callback=resume.callback,
     params=resume.params,
-    help="Retry a benchmark run by its run id. \n\nExample:\nvalkyrie benchmark retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
-    short_help="Retry a benchmark run by its run id.",
+    help="Retry a run by its run id. \n\nExample:\nvalkyrie run retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
+    short_help="Retry a run by its run id.",
 )
-benchmark.add_command(retry_command)
+run.add_command(retry_command)
 
 
-@benchmark.command(
+@run.command(
     name="list",
-    help="List benchmarks by providing filter values. \n\nExample:\nvalkyrie benchmark list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC",
+    help="List runs by providing filter values. \n\nExample:\nvalkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC",
 )
 @click.option(
     "--agent-name",
@@ -758,12 +758,12 @@ def list_benchmarks(
     order_by: str = "desc",
 ):
     """
-    List benchmarks based on the request parameters.
+    List runs based on the request parameters.
 
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
 
     Example:
-        valkyrie benchmark list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
+        valkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
     """
     try:
         with TrackerService() as tracker:
@@ -806,7 +806,7 @@ def outputs(run_id: UUID, output_dir: Path | None):
                     f"{metadata.benchmark_name}_{metadata.benchmark_arguments.contract.name}_{metadata.benchmark_id}"
                 )
 
-            click.echo(f"\r\033[KFetching agent outputs for benchmark {run_id}...", nl=False)
+            click.echo(f"\r\033[KFetching agent outputs for run {run_id}...", nl=False)
 
             response = tracker.fetch_agent_outputs(run_id)
 

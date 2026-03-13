@@ -173,7 +173,7 @@ def check_tracker_service_health(tracker: TrackerService) -> bool:
 
 def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     """
-    Format and display benchmark status with a progress bar.
+    Format and display run status with a progress bar.
 
     Args:
         benchmark_response: FetchBenchmarkResponse
@@ -190,9 +190,9 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     bar, progress_pct = BenchmarkFormatter.create_progress_bar(finished_tasks, total_tasks)
     status_color = BenchmarkFormatter.STATUS_COLORS[status.value]
 
-    click.echo(f"{click.style('Benchmark:', bold=True)} {benchmark_name}")
+    click.echo(f"{click.style('Run:', bold=True)} {benchmark_name}")
     click.echo(f"{click.style('Started at:', bold=True)} {local_time(started_at)}")
-    click.echo(f"{click.style('Benchmark ID:', bold=True)} {benchmark_id}")
+    click.echo(f"{click.style('Run ID:', bold=True)} {benchmark_id}")
     click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
     click.echo(f"{benchmark_response.s3_bucket_url}")
     click.echo()
@@ -213,10 +213,10 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     """
 
     click.echo()
-    click.echo("┌─ Benchmark Details " + "─" * 58)
+    click.echo("┌─ Run Details " + "─" * 65)
     click.echo(f"│ Benchmark:     {start_benchmark_response.benchmark_name}")
     click.echo(f"│ Agent:      {start_benchmark_response.agent_name}")
-    click.echo(f"│ Benchmark ID:  {start_benchmark_response.benchmark_id}")
+    click.echo(f"│ Run ID:  {start_benchmark_response.benchmark_id}")
     click.echo(f"│ Started at:    {local_time(start_benchmark_response.started_at)}")
     click.echo(f"│ Max concurrency:   {start_benchmark_response.concurrency}")
     click.echo(f"│ Total tasks:   {start_benchmark_response.task_count}")
@@ -229,31 +229,31 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo()
     click.echo(
         click.style(
-            f"Track progress: valkyrie benchmark fetch {start_benchmark_response.benchmark_id} --connect",
+            f"Track progress: valkyrie run fetch {start_benchmark_response.benchmark_id} --connect",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Retrieve results: valkyrie benchmark results {start_benchmark_response.benchmark_id} --path ./results.json",
+            f"Retrieve results: valkyrie run results {start_benchmark_response.benchmark_id} --path ./results.json",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Stop benchmark: valkyrie benchmark stop {start_benchmark_response.benchmark_id}",
+            f"Stop run: valkyrie run stop {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Resume benchmark: valkyrie benchmark resume {start_benchmark_response.benchmark_id}",
+            f"Resume run: valkyrie run resume {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Retry benchmark: valkyrie benchmark retry {start_benchmark_response.benchmark_id}",
+            f"Retry run: valkyrie run retry {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
@@ -268,17 +268,17 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
 
 def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None:
     """
-    Stream and display live benchmark status updates.
+    Stream and display live run status updates.
 
     Args:
         tracker: TrackerService instance
-        benchmark_id: Benchmark UUID to stream
+        benchmark_id: Run UUID to stream
     """
     initial = tracker.fetch_benchmark(benchmark_id)
     click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
     click.echo(f"{initial.s3_bucket_url}")
     click.echo()
-    click.echo(click.style("Streaming benchmark updates (Ctrl+C to stop)...", fg="cyan"))
+    click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
     click.echo()
 
     try:
@@ -304,7 +304,7 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
 
             elif event.startswith("event: complete"):
                 click.echo("\n")
-                click.echo(click.style("✓ Benchmark completed!", fg="green", bold=True))
+                click.echo(click.style("✓ Run completed!", fg="green", bold=True))
                 break
 
             elif event.startswith("event: error"):
@@ -328,17 +328,17 @@ def format_fetch_benchmarks_response(
     total_pages: int = 1,
 ) -> None:
     """
-    Format and display benchmarks in a table format.
+    Format and display runs in a table format.
 
     Args:
-        fetch_benchmarks_response: FetchBenchmarksResponse containing list of benchmarks
+        fetch_benchmarks_response: FetchBenchmarksResponse containing list of runs
         current_page: Current page number (1-indexed)
         total_pages: Total number of pages
     """
     benchmarks = fetch_benchmarks_response.benchmarks
 
     if not benchmarks:
-        click.echo(click.style("No benchmarks found.", fg="yellow"))
+        click.echo(click.style("No runs found.", fg="yellow"))
         return
 
     rows: list[dict[str, str]] = []
@@ -365,13 +365,13 @@ def format_fetch_benchmarks_response(
         current_page,
         total_pages,
         fetch_benchmarks_response.total_count,
-        "benchmark",
+        "run",
     )
 
 
 def format_no_benchmarks_found(agent_name: str | None, benchmark_name: str | None, status: str | None) -> None:
     """
-    Handle the case where no benchmarks are found matching the specified filters.
+    Handle the case where no runs are found matching the specified filters.
 
     Args:
         agent_name: Agent name filter
@@ -379,7 +379,7 @@ def format_no_benchmarks_found(agent_name: str | None, benchmark_name: str | Non
         status: Status filter
     """
     click.echo()
-    click.echo(click.style("No benchmarks found matching the specified filters.", fg="yellow"))
+    click.echo(click.style("No runs found matching the specified filters.", fg="yellow"))
     click.echo()
     if any([agent_name, benchmark_name, status]):
         click.echo("Filters applied:")
@@ -400,7 +400,7 @@ def paginate_benchmarks(
     limit: int = 5,
 ) -> None:
     """
-    Interactive paginated display of benchmarks with vim-style navigation.
+    Interactive paginated display of runs with vim-style navigation.
 
     Args:
         tracker: TrackerService instance
