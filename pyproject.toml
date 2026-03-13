@@ -18,6 +18,7 @@ dependencies = [
 
 [project.scripts]
 valkyrie = "agentic_harness.cli.main:cli"
+valk = "agentic_harness.cli.main:cli"
 
 [dependency-groups]
 dev = [

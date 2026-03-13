@@ -2,6 +2,8 @@
 
 Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
+> **Note:** The CLI is named **Valkyrie**. You can invoke it using either `valkyrie` or the shorter alias `valk`. For example: `valkyrie benchmark start` or `valk benchmark start`.
+
 ## Pre requisites
 
 - AWS account
