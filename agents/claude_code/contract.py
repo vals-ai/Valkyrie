@@ -56,7 +56,9 @@ class ClaudeCodeContract(BaseAgentContract):
             f"--allowedTools {' '.join(self._ALLOWED_TOOLS)}",
         ]
 
-        run_cmd = f"cat {problem_statement_path} | claude " + " ".join(args) + " 2>&1 | tee /logs/claude_code.log"
+        run_cmd = (
+            f"cat {problem_statement_path} | stdbuf -oL claude " + " ".join(args) + " 2>&1 | tee /logs/claude_code.log"
+        )
 
         return run_cmd
 
