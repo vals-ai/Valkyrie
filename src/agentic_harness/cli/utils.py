@@ -229,37 +229,37 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo()
     click.echo(
         click.style(
-            f"Track progress: harness benchmark fetch --benchmark-id {start_benchmark_response.benchmark_id} --connect",
+            f"Track progress: harness benchmark fetch {start_benchmark_response.benchmark_id} --connect",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Retrieve results: harness benchmark results --benchmark-id {start_benchmark_response.benchmark_id} --path ./results.json",
+            f"Retrieve results: harness benchmark results {start_benchmark_response.benchmark_id} --path ./results.json",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Stop benchmark: harness benchmark stop --benchmark-id {start_benchmark_response.benchmark_id}",
+            f"Stop benchmark: harness benchmark stop {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Resume benchmark: harness benchmark resume --benchmark-id {start_benchmark_response.benchmark_id}",
+            f"Resume benchmark: harness benchmark resume {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Retry benchmark: harness benchmark retry --benchmark-id {start_benchmark_response.benchmark_id}",
+            f"Retry benchmark: harness benchmark retry {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Fetch agent outputs: harness agent outputs --benchmark-id {start_benchmark_response.benchmark_id} --output-dir .",
+            f"Fetch agent outputs: harness agent outputs {start_benchmark_response.benchmark_id} --output-dir .",
             fg="cyan",
         )
     )

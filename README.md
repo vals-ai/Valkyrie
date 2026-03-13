@@ -186,42 +186,42 @@ harness benchmark start \
 
 ```bash
 # Stream live updates
-harness benchmark fetch --benchmark-id <id> --connect
+harness benchmark fetch <id> --connect
 
 # One-time status check
-harness benchmark fetch --benchmark-id <id>
+harness benchmark fetch <id>
 ```
 
 ### Download results
 
 ```bash
 # Download to disk (default: ./<benchmark>.json)
-harness benchmark results --benchmark-id <id> --path ./results.json
+harness benchmark results <id> --path ./results.json
 
 # Upload to S3
-harness benchmark results --benchmark-id <id> --s3
+harness benchmark results <id> --s3
 ```
 
 ### Stop a benchmark
 
 ```bash
-harness benchmark stop --benchmark-id <id>
+harness benchmark stop <id>
 
 # Force stop all in-flight tasks immediately
-harness benchmark stop --benchmark-id <id> --force
+harness benchmark stop <id> --force
 ```
 
 ### Resume / Retry a benchmark
 
 ```bash
 # Resume pending tasks
-harness benchmark resume --benchmark-id <id>
+harness benchmark resume <id>
 
 # Retry errored tasks
-harness benchmark retry --benchmark-id <id>
+harness benchmark retry <id>
 
 # Override concurrency on resume (works on retry)
-harness benchmark resume --benchmark-id <id> --concurrency 20
+harness benchmark resume <id> --concurrency 20
 ```
 
 ### List benchmarks
@@ -239,7 +239,7 @@ Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`. Suppo
 ### Download agent outputs
 
 ```bash
-harness agent outputs --benchmark-id <id> --output-dir ./outputs
+harness agent outputs <id> --output-dir ./outputs
 ```
 
 ## Documentation

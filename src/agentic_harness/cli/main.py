@@ -500,26 +500,21 @@ def start(
 
 
 @benchmark.command(
-    help="Fetch a benchmark by its benchmark id. \n\nExample:\nharness benchmark fetch --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --connect"
+    help="Fetch a benchmark by its run id. \n\nExample:\nharness benchmark fetch 123e4567-e89b-12d3-a456-426614174000 --connect"
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--connect",
     is_flag=True,
     required=False,
     help="Connect to the tracker service to stream benchmark updates",
 )
-def fetch(benchmark_id: UUID, connect: bool):
+def fetch(run_id: UUID, connect: bool):
     """
-    Fetch a benchmark by its benchmark id.
+    Fetch a benchmark by its run id.
 
     Example:
-        harness benchmark fetch --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --connect
+        harness benchmark fetch 123e4567-e89b-12d3-a456-426614174000 --connect
     """
 
     try:
@@ -528,10 +523,10 @@ def fetch(benchmark_id: UUID, connect: bool):
                 return
 
             if connect:
-                stream_benchmark_status(tracker, benchmark_id)
+                stream_benchmark_status(tracker, run_id)
             else:
-                click.echo(f"Fetching benchmark: {benchmark_id}")
-                response = tracker.fetch_benchmark(benchmark_id)
+                click.echo(f"Fetching benchmark: {run_id}")
+                response = tracker.fetch_benchmark(run_id)
                 format_benchmark_status(response)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
@@ -539,14 +534,9 @@ def fetch(benchmark_id: UUID, connect: bool):
 
 @benchmark.command(
     name="results",
-    help="Retrieve benchmark results by its benchmark id. \n\nExample:\nharness benchmark results --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
+    help="Retrieve benchmark results by its run id. \n\nExample:\nharness benchmark results 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--path",
     type=click.Path(path_type=Path, file_okay=True, dir_okay=False),
@@ -559,16 +549,16 @@ def fetch(benchmark_id: UUID, connect: bool):
     is_flag=True,
     default=False,
     required=False,
-    help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/benchmark_id/<benchmark>.json",
+    help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/run_id/<benchmark>.json",
 )
-def results(benchmark_id: UUID, path: Path | None, s3: bool):
+def results(run_id: UUID, path: Path | None, s3: bool):
     """
-    Retrieve the results of a benchmark by its benchmark id.
+    Retrieve the results of a benchmark by its run id.
 
     Example:
-        harness benchmark results --benchmark-id e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
+        harness benchmark results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
-    click.echo(f"Retrieving results for benchmark: {benchmark_id}")
+    click.echo(f"Retrieving results for benchmark: {run_id}")
 
     try:
         with TrackerService() as tracker:
@@ -576,11 +566,11 @@ def results(benchmark_id: UUID, path: Path | None, s3: bool):
                 return
 
             if s3:
-                if tracker.check_results_exist_in_s3(benchmark_id):
+                if tracker.check_results_exist_in_s3(run_id):
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(benchmark_id, s3)
+            results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3)
 
             if isinstance(results_response, FinalViewResponse):
                 default_path: Path = Path(f"./{results_response.benchmark_name}.json")
@@ -598,14 +588,9 @@ def results(benchmark_id: UUID, path: Path | None, s3: bool):
 
 
 @benchmark.command(
-    help="Stop a benchmark run by its benchmark id. \n\nExample:\nharness benchmark stop --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --force"
+    help="Stop a benchmark run by its run id. \n\nExample:\nharness benchmark stop 123e4567-e89b-12d3-a456-426614174000 --force"
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--force",
     is_flag=True,
@@ -613,14 +598,14 @@ def results(benchmark_id: UUID, path: Path | None, s3: bool):
     default=False,
     help="Force stop the benchmark run",
 )
-def stop(benchmark_id: UUID, force: bool):
+def stop(run_id: UUID, force: bool):
     """
-    Stop a benchmark by its benchmark id.
+    Stop a benchmark by its run id.
 
     Example:
-        harness benchmark stop --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+        harness benchmark stop 123e4567-e89b-12d3-a456-426614174000
     """
-    click.echo(f"Stopping benchmark for benchmark: {benchmark_id}")
+    click.echo(f"Stopping benchmark for benchmark: {run_id}")
 
     if force:
         click.echo(click.style("Force stopping the benchmark", fg="yellow", bold=True))
@@ -629,7 +614,7 @@ def stop(benchmark_id: UUID, force: bool):
             if not check_tracker_service_health(tracker):
                 return
 
-            _ = tracker.stop_benchmark(benchmark_id, force)
+            _ = tracker.stop_benchmark(run_id, force)
 
             if not force:
                 click.echo(
@@ -641,7 +626,7 @@ def stop(benchmark_id: UUID, force: bool):
                 )
             click.echo(
                 click.style(
-                    f"Retrieve results: harness benchmark results --benchmark-id {benchmark_id} --path ./results.json",
+                    f"Retrieve results: harness benchmark results {run_id} --path ./results.json",
                     fg="cyan",
                 )
             )
@@ -650,14 +635,9 @@ def stop(benchmark_id: UUID, force: bool):
 
 
 @benchmark.command(
-    help="Resume a benchmark run by its benchmark id. \n\nExample:\nharness benchmark resume --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
+    help="Resume a benchmark run by its run id. \n\nExample:\nharness benchmark resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--retry",
     is_flag=True,
@@ -689,17 +669,17 @@ def stop(benchmark_id: UUID, force: bool):
 @click.pass_context
 def resume(
     ctx: click.Context,
-    benchmark_id: UUID,
+    run_id: UUID,
     retry: bool,
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: Path | None,
 ):
     """
-    Resume a benchmark run by its benchmark id.
+    Resume a benchmark run by its run id.
 
     Example:
-        harness benchmark resume --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
+        harness benchmark resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
     if task_ids and task_ids_file:
         raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
@@ -718,11 +698,11 @@ def resume(
                 return
 
             retry_task_ids = task_ids.split(",") if task_ids else []
-            _ = tracker.retry_or_resume_benchmark(benchmark_id, retry, concurrency, retry_task_ids)
+            _ = tracker.retry_or_resume_benchmark(run_id, retry, concurrency, retry_task_ids)
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
                 click.style(
-                    f"Track progress: harness benchmark fetch --benchmark-id {benchmark_id} --connect",
+                    f"Track progress: harness benchmark fetch {run_id} --connect",
                     fg="cyan",
                 )
             )
@@ -735,8 +715,8 @@ retry_command = click.Command(
     name="retry",
     callback=resume.callback,
     params=resume.params,
-    help="Retry a benchmark run by its benchmark id. \n\nExample:\nharness benchmark retry --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
-    short_help="Retry a benchmark run by its benchmark id.",
+    help="Retry a benchmark run by its run id. \n\nExample:\nharness benchmark retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
+    short_help="Retry a benchmark run by its run id.",
 )
 benchmark.add_command(retry_command)
 
@@ -797,26 +777,21 @@ def list_benchmarks(
 
 @agent.command(
     name="outputs",
-    help="Fetch agent outputs by benchmark id. \n\nExample:\nharness agent outputs --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --output-dir ./agent_outputs",
+    help="Fetch agent outputs by run id. \n\nExample:\nharness agent outputs 123e4567-e89b-12d3-a456-426614174000 --output-dir ./agent_outputs",
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
-    help="Directory to save agent outputs (defaults to ./agent_outputs/<benchmark-id>)",
+    help="Directory to save agent outputs (defaults to ./agent_outputs/<run-id>)",
 )
-def outputs(benchmark_id: UUID, output_dir: Path | None):
+def outputs(run_id: UUID, output_dir: Path | None):
     """
-    Fetch agent outputs for a benchmark by its benchmark id.
+    Fetch agent outputs for a benchmark by its run id.
 
     Example:
-        harness agent outputs --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+        harness agent outputs 123e4567-e89b-12d3-a456-426614174000
     """
 
     try:
@@ -824,16 +799,16 @@ def outputs(benchmark_id: UUID, output_dir: Path | None):
             if not check_tracker_service_health(tracker):
                 return
 
-            metadata = tracker.fetch_benchmark_metadata(benchmark_id)
+            metadata = tracker.fetch_benchmark_metadata(run_id)
 
             if output_dir is None:
                 output_dir = Path(
                     f"{metadata.benchmark_name}_{metadata.benchmark_arguments.contract.name}_{metadata.benchmark_id}"
                 )
 
-            click.echo(f"\r\033[KFetching agent outputs for benchmark {benchmark_id}...", nl=False)
+            click.echo(f"\r\033[KFetching agent outputs for benchmark {run_id}...", nl=False)
 
-            response = tracker.fetch_agent_outputs(benchmark_id)
+            response = tracker.fetch_agent_outputs(run_id)
 
             download_agent_outputs(response, output_dir)
 
