@@ -108,11 +108,7 @@ class TestTracker:
         database_session.commit()
         database_session.refresh(task_row)
 
-        sandbox_names = {create_sandbox_name(task_row), create_sandbox_name(task_row)}
-
-        assert len(sandbox_names) == 2
-        for sandbox_name in sandbox_names:
-            assert sandbox_name.startswith(f"{task_row.alias}_")
+        assert create_sandbox_name(task_row) == task_row.alias
 
     async def test_tracked_task(self) -> None:
         """

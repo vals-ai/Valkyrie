@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from functools import cached_property
 from typing import Any, NamedTuple, Sequence, cast
-from uuid import UUID, uuid4
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
@@ -235,8 +235,8 @@ def handle_early_exit(task_row: Task, task_session: Session) -> None:
 
 
 def create_sandbox_name(task_row: Task) -> str:
-    """Use a per-attempt suffix so retries/resumes do not collide with stale sandbox names."""
-    return f"{task_row.alias}_{uuid4().hex[:5]}"
+    """Use the task alias, which is already unique for each retry/resume attempt."""
+    return task_row.alias
 
 
 def fetch_task_row(task_id: UUID, session: Session) -> Task:
