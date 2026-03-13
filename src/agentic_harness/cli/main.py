@@ -1,4 +1,4 @@
-"""CLI views/commands for the agentic harness."""
+"""CLI views/commands for Valkyrie."""
 
 import asyncio
 import os
@@ -40,7 +40,7 @@ from agentic_harness.schemas import AgentConfig
 
 @click.group()
 def cli():
-    """Agentic Harness CLI."""
+    """Valkyrie CLI."""
     pass
 
 
@@ -65,8 +65,8 @@ def config():
 @config.command()
 def init() -> None:
     """
-    Initializes a config we can trust to have references to dependencies to run the harness,
-    this becomes our source of truth for secrets required to run the harness
+    Initializes a config we can trust to have references to dependencies to run Valkyrie,
+    this becomes our source of truth for secrets required to run Valkyrie
     """
 
     # Mapping between the expected key and default value
@@ -127,13 +127,13 @@ def init() -> None:
 @click.argument("value")
 def modify(key: str, value: str) -> None:
     """
-    Modify a single key in the harness config.
+    Modify a single key in the Valkyrie config.
 
-    Example: harness config modify AWS_DEFAULT_REGION us-west-2
+    Example: valkyrie config modify AWS_DEFAULT_REGION us-west-2
     """
 
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, str] = yaml.safe_load(f) or {}
@@ -161,10 +161,10 @@ def service() -> None:
 def service_set(name: str, url: str) -> None:
     """Set a custom URL for a benchmark service (creates or updates).
 
-    Example: harness config service set swebench https://my-tunnel.ngrok.io
+    Example: valkyrie config service set swebench https://my-tunnel.ngrok.io
     """
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         harness_config: dict[str, Any] = yaml.safe_load(f) or {}
@@ -185,10 +185,10 @@ def service_set(name: str, url: str) -> None:
 def service_remove(name: str) -> None:
     """Remove a custom URL override for a benchmark service.
 
-    Example: harness config service remove swebench
+    Example: valkyrie config service remove swebench
     """
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
@@ -210,7 +210,7 @@ def service_remove(name: str) -> None:
 def service_list() -> None:
     """List all custom benchmark service URL overrides."""
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
@@ -237,10 +237,10 @@ def auth() -> None:
 def auth_set(name: str, credential: str) -> None:
     """Set an auth credential for a benchmark service.
 
-    Example: harness config auth set swebench my-secret-credential
+    Example: valkyrie config auth set swebench my-secret-credential
     """
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         harness_config: dict[str, Any] = yaml.safe_load(f) or {}
@@ -261,10 +261,10 @@ def auth_set(name: str, credential: str) -> None:
 def auth_remove(name: str) -> None:
     """Remove an auth credential for a benchmark service.
 
-    Example: harness config auth remove swebench
+    Example: valkyrie config auth remove swebench
     """
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
@@ -286,7 +286,7 @@ def auth_remove(name: str) -> None:
 def auth_list() -> None:
     """List all configured benchmark auth credentials."""
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
@@ -302,7 +302,7 @@ def auth_list() -> None:
 
 
 @benchmark.command(
-    help="Start a benchmark run. \n\nExample:\nharness benchmark start --agent agents/claude_code --benchmark swebench --concurrency 5"
+    help="Start a benchmark run. \n\nExample:\nvalkyrie benchmark start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
 @click.option(
     "--agent",
@@ -411,7 +411,7 @@ def start(
     Run an agent on a benchmark.
 
     Example:
-        harness run --agent agents/claude_code --benchmark swebench
+        valkyrie run --agent agents/claude_code --benchmark swebench
     """
     if task_ids and task_ids_file:
         raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
@@ -500,7 +500,7 @@ def start(
 
 
 @benchmark.command(
-    help="Fetch a benchmark by its run id. \n\nExample:\nharness benchmark fetch 123e4567-e89b-12d3-a456-426614174000 --connect"
+    help="Fetch a benchmark by its run id. \n\nExample:\nvalkyrie benchmark fetch 123e4567-e89b-12d3-a456-426614174000 --connect"
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -534,7 +534,7 @@ def fetch(run_id: UUID, connect: bool):
 
 @benchmark.command(
     name="results",
-    help="Retrieve benchmark results by its run id. \n\nExample:\nharness benchmark results 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
+    help="Retrieve benchmark results by its run id. \n\nExample:\nvalkyrie benchmark results 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -588,7 +588,7 @@ def results(run_id: UUID, path: Path | None, s3: bool):
 
 
 @benchmark.command(
-    help="Stop a benchmark run by its run id. \n\nExample:\nharness benchmark stop 123e4567-e89b-12d3-a456-426614174000 --force"
+    help="Stop a benchmark run by its run id. \n\nExample:\nvalkyrie benchmark stop 123e4567-e89b-12d3-a456-426614174000 --force"
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -626,7 +626,7 @@ def stop(run_id: UUID, force: bool):
                 )
             click.echo(
                 click.style(
-                    f"Retrieve results: harness benchmark results {run_id} --path ./results.json",
+                    f"Retrieve results: valkyrie benchmark results {run_id} --path ./results.json",
                     fg="cyan",
                 )
             )
@@ -635,7 +635,7 @@ def stop(run_id: UUID, force: bool):
 
 
 @benchmark.command(
-    help="Resume a benchmark run by its run id. \n\nExample:\nharness benchmark resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
+    help="Resume a benchmark run by its run id. \n\nExample:\nvalkyrie benchmark resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -702,7 +702,7 @@ def resume(
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
                 click.style(
-                    f"Track progress: harness benchmark fetch {run_id} --connect",
+                    f"Track progress: valkyrie benchmark fetch {run_id} --connect",
                     fg="cyan",
                 )
             )
@@ -715,7 +715,7 @@ retry_command = click.Command(
     name="retry",
     callback=resume.callback,
     params=resume.params,
-    help="Retry a benchmark run by its run id. \n\nExample:\nharness benchmark retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
+    help="Retry a benchmark run by its run id. \n\nExample:\nvalkyrie benchmark retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
     short_help="Retry a benchmark run by its run id.",
 )
 benchmark.add_command(retry_command)
@@ -723,7 +723,7 @@ benchmark.add_command(retry_command)
 
 @benchmark.command(
     name="list",
-    help="List benchmarks by providing filter values. \n\nExample:\nharness benchmark list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC",
+    help="List benchmarks by providing filter values. \n\nExample:\nvalkyrie benchmark list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC",
 )
 @click.option(
     "--agent-name",
@@ -777,7 +777,7 @@ def list_benchmarks(
 
 @agent.command(
     name="outputs",
-    help="Fetch agent outputs by run id. \n\nExample:\nharness agent outputs 123e4567-e89b-12d3-a456-426614174000 --output-dir ./agent_outputs",
+    help="Fetch agent outputs by run id. \n\nExample:\nvalkyrie agent outputs 123e4567-e89b-12d3-a456-426614174000 --output-dir ./agent_outputs",
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -832,8 +832,8 @@ def install(github_url: str, name: str | None):
     """Install an agent from a GitHub repository.
 
     Example:
-        harness agent install https://github.com/user/my-agent
-        harness agent install https://github.com/user/my-agent --name my-custom-name
+        valkyrie agent install https://github.com/user/my-agent
+        valkyrie agent install https://github.com/user/my-agent --name my-custom-name
     """
     try:
         asyncio.run(install_agent(name, github_url))
@@ -859,8 +859,8 @@ def push(agent_path: Path, name: str | None):
     """Push a local agent to S3.
 
     Example:
-        harness agent push ./agents/my-agent
-        harness agent push ./agents/my-agent --name my-agent
+        valkyrie agent push ./agents/my-agent
+        valkyrie agent push ./agents/my-agent --name my-agent
     """
     try:
         agent_name = name or agent_path.stem
@@ -878,7 +878,7 @@ def remove(agent_name: str):
     """Remove an agent from S3.
 
     Example:
-        harness agent remove my-agent
+        valkyrie agent remove my-agent
     """
     try:
         if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
@@ -907,7 +907,7 @@ def download(agent_name: str, output_dir: Path | None):
     """Download an agent from S3.
 
     Example:
-        harness agent download my-agent
+        valkyrie agent download my-agent
     """
     try:
         if not click.confirm(f"Are you sure you want to download agent '{agent_name}'?"):
@@ -929,7 +929,7 @@ def list_installed_agents():
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
 
     Example:
-        harness agent list
+        valkyrie agent list
     """
     try:
         agents = asyncio.run(list_agents())

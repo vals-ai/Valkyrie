@@ -11,28 +11,28 @@ Benchmark orchestration platform for testing AI agents against standardized benc
 ## Configuration
 
 ```bash
-harness config init
+valkyrie config init
 ```
 
-This will prompt for required credentials (AWS, S3 bucket, Daytona secret name) and write them to `~/.config/harness/harness.yaml`. Values can be sourced from the environment or an existing config. These are required to run the harness and be in any environment that you use the harness in.
+This will prompt for required credentials (AWS, S3 bucket, Daytona secret name) and write them to `~/.config/valkyrie/valkyrie.yaml`. Values can be sourced from the environment or an existing config. These are required to run Valkyrie and be in any environment that you use Valkyrie in.
 
 To update a single key:
 
 ```bash
-harness config modify <KEY> <VALUE>
+valkyrie config modify <KEY> <VALUE>
 ```
 
 ## Agent Management
 
-Before running benchmarks, you need to install and upload agents to the harness. These commands manage agent lifecycle. All agents are installed inside of the S3 bucket provided by `harness config init` at `agents/`.
+Before running benchmarks, you need to install and upload agents to Valkyrie. These commands manage agent lifecycle. All agents are installed inside of the S3 bucket provided by `valkyrie config init` at `agents/`.
 
-All agents will need to already be configured to work with the agentic harness. Please reference the [contract documentation](docs/CONTRACTS.md) to learn more.
+All agents will need to already be configured to work with Valkyrie. Please reference the [contract documentation](docs/CONTRACTS.md) to learn more.
 
 ### Install an agent from GitHub
 
 ```bash
-harness agent install https://github.com/user/my-agent
-harness agent install https://github.com/user/my-agent --name my-custom-name
+valkyrie agent install https://github.com/user/my-agent
+valkyrie agent install https://github.com/user/my-agent --name my-custom-name
 ```
 
 Clones an agent repository from GitHub, bundles it, and pushes it to your S3 bucket.
@@ -44,8 +44,8 @@ Clones an agent repository from GitHub, bundles it, and pushes it to your S3 buc
 ### Push a local agent to S3
 
 ```bash
-harness agent push ./agents/sweagent
-harness agent push ./agents/sweagent --name my-agent
+valkyrie agent push ./agents/sweagent
+valkyrie agent push ./agents/sweagent --name my-agent
 ```
 
 Uploads an agent on your local machine to S3.
@@ -57,7 +57,7 @@ Uploads an agent on your local machine to S3.
 ### List installed agents
 
 ```bash
-harness agent list
+valkyrie agent list
 ```
 
 View all installed agents with date and time last modified. Supports paginated navigation ([h] previous, [l] next, [q] quit).
@@ -65,7 +65,7 @@ View all installed agents with date and time last modified. Supports paginated n
 ### Remove an agent
 
 ```bash
-harness agent remove sweagent
+valkyrie agent remove sweagent
 ```
 
 Removes an agent from the S3 bucket. Cannot be reversed, will be requested to confirm before deleting.
@@ -73,8 +73,8 @@ Removes an agent from the S3 bucket. Cannot be reversed, will be requested to co
 ### Download an agent
 
 ```bash
-harness agent download sweagent
-harness agent download sweagent -o ./agents
+valkyrie agent download sweagent
+valkyrie agent download sweagent -o ./agents
 ```
 
 Downloads an agent from S3 to your local machine and unzips it.
@@ -92,8 +92,8 @@ If hosting locally please use the [documentation](https://github.com/vals-ai/cre
 ### Set a custom benchmark service
 
 ```bash
-harness config service set swebench https://my-tunnel.ngrok.io
-harness config service set external-service https://endpoint
+valkyrie config service set swebench https://my-tunnel.ngrok.io
+valkyrie config service set external-service https://endpoint
 ```
 
 Creates or updates a benchmark service. This maps the benchmark name to the endpoint we can reach it at. This will override any service that we already provide.
@@ -101,7 +101,7 @@ Creates or updates a benchmark service. This maps the benchmark name to the endp
 ### List custom benchmark services
 
 ```bash
-harness config service list
+valkyrie config service list
 ```
 
 Displays all custom benchmark services in a paginated table. Supports navigation ([h] previous, [l] next, [q] quit).
@@ -109,29 +109,29 @@ Displays all custom benchmark services in a paginated table. Supports navigation
 ### Remove a custom benchmark service
 
 ```bash
-harness config service remove swebench
+valkyrie config service remove swebench
 ```
 
 Removes a custom benchmark service.
 
 ## Authentication & Custom Headers
 
-Benchmark services may require authentication. The harness stores per-benchmark credentials and sends them as the `Authorization` header automatically. You can also pass arbitrary headers at runtime with `-H`.
+Benchmark services may require authentication. Valkyrie stores per-benchmark credentials and sends them as the `Authorization` header automatically. You can also pass arbitrary headers at runtime with `-H`.
 
 ### Managing auth credentials
 
 ```bash
 # Store a credential — sent as the Authorization header on every request to that benchmark
-harness config auth set <benchmark-name> <credential>
+valkyrie config auth set <benchmark-name> <credential>
 
 # List stored credentials (values are masked)
-harness config auth list
+valkyrie config auth list
 
 # Remove a stored credential
-harness config auth remove <benchmark-name>
+valkyrie config auth remove <benchmark-name>
 ```
 
-Credentials are saved in `~/.config/harness/harness.yaml` under `benchmark_auth`:
+Credentials are saved in `~/.config/valkyrie/valkyrie.yaml` under `benchmark_auth`:
 
 ```yaml
 benchmark_auth:
@@ -144,7 +144,7 @@ benchmark_auth:
 Pass additional headers to the benchmark service with `-H` / `--header`. Each flag takes a name and value. Repeatable. These are merged with any stored auth credential — if you pass `-H Authorization <value>` it overrides the stored one for that run.
 
 ```bash
-harness benchmark start --benchmark my-benchmark --agent sweagent \
+valkyrie benchmark start --benchmark my-benchmark --agent sweagent \
   -H X-Custom-Header my-value \
   -H X-Another-Header another-value
 ```
@@ -154,7 +154,7 @@ harness benchmark start --benchmark my-benchmark --agent sweagent \
 ### Start a benchmark
 
 ```bash
-harness benchmark start \
+valkyrie benchmark start \
   --agent sweagent \
   --benchmark swebench \
   --model kimi/kimi-k2.5-thinking \
@@ -186,48 +186,48 @@ harness benchmark start \
 
 ```bash
 # Stream live updates
-harness benchmark fetch <id> --connect
+valkyrie benchmark fetch <id> --connect
 
 # One-time status check
-harness benchmark fetch <id>
+valkyrie benchmark fetch <id>
 ```
 
 ### Download results
 
 ```bash
 # Download to disk (default: ./<benchmark>.json)
-harness benchmark results <id> --path ./results.json
+valkyrie benchmark results <id> --path ./results.json
 
 # Upload to S3
-harness benchmark results <id> --s3
+valkyrie benchmark results <id> --s3
 ```
 
 ### Stop a benchmark
 
 ```bash
-harness benchmark stop <id>
+valkyrie benchmark stop <id>
 
 # Force stop all in-flight tasks immediately
-harness benchmark stop <id> --force
+valkyrie benchmark stop <id> --force
 ```
 
 ### Resume / Retry a benchmark
 
 ```bash
 # Resume pending tasks
-harness benchmark resume <id>
+valkyrie benchmark resume <id>
 
 # Retry errored tasks
-harness benchmark retry <id>
+valkyrie benchmark retry <id>
 
 # Override concurrency on resume (works on retry)
-harness benchmark resume <id> --concurrency 20
+valkyrie benchmark resume <id> --concurrency 20
 ```
 
 ### List benchmarks
 
 ```bash
-harness benchmark list \
+valkyrie benchmark list \
   --agent-name claude_code \
   --benchmark-name swebench \
   --status IN_PROGRESS \
@@ -239,7 +239,7 @@ Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`. Suppo
 ### Download agent outputs
 
 ```bash
-harness agent outputs <id> --output-dir ./outputs
+valkyrie agent outputs <id> --output-dir ./outputs
 ```
 
 ## Documentation

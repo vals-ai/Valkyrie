@@ -1,7 +1,7 @@
 [project]
 name = "agentic-harness"
 version = "0.1.0"
-description = "An agentic harness that interfaces with benchmarks hosted by Vals AI"
+description = "Valkyrie - An agentic harness that interfaces with benchmarks hosted by Vals AI"
 readme = "README.md"
 requires-python = ">=3.12"
 
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-harness = "agentic_harness.cli.main:cli"
+valkyrie = "agentic_harness.cli.main:cli"
 
 [dependency-groups]
 dev = [

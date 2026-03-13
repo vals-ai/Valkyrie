@@ -24,7 +24,7 @@ from tracker.types import (
 
 from agentic_harness.cli.tracker_service import TrackerService
 
-CONFIG_LOCATION: Path = Path("~/.config/harness/harness.yaml").expanduser()
+CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
 
 T = TypeVar("T")
 
@@ -82,9 +82,9 @@ def short_local_time(dt: datetime, include_date: bool = True) -> str:
 
 
 def load_config() -> dict[str, str]:
-    """Load the harness configuration from YAML file."""
+    """Load the Valkyrie configuration from YAML file."""
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         config = yaml.safe_load(f)
@@ -229,37 +229,37 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo()
     click.echo(
         click.style(
-            f"Track progress: harness benchmark fetch {start_benchmark_response.benchmark_id} --connect",
+            f"Track progress: valkyrie benchmark fetch {start_benchmark_response.benchmark_id} --connect",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Retrieve results: harness benchmark results {start_benchmark_response.benchmark_id} --path ./results.json",
+            f"Retrieve results: valkyrie benchmark results {start_benchmark_response.benchmark_id} --path ./results.json",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Stop benchmark: harness benchmark stop {start_benchmark_response.benchmark_id}",
+            f"Stop benchmark: valkyrie benchmark stop {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Resume benchmark: harness benchmark resume {start_benchmark_response.benchmark_id}",
+            f"Resume benchmark: valkyrie benchmark resume {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Retry benchmark: harness benchmark retry {start_benchmark_response.benchmark_id}",
+            f"Retry benchmark: valkyrie benchmark retry {start_benchmark_response.benchmark_id}",
             fg="cyan",
         )
     )
     click.echo(
         click.style(
-            f"Fetch agent outputs: harness agent outputs {start_benchmark_response.benchmark_id} --output-dir .",
+            f"Fetch agent outputs: valkyrie agent outputs {start_benchmark_response.benchmark_id} --output-dir .",
             fg="cyan",
         )
     )
