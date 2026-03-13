@@ -159,11 +159,11 @@ valkyrie benchmark start --benchmark my-benchmark --agent sweagent \
 valkyrie benchmark start \
   --agent sweagent \
   --benchmark swebench \
-  --model kimi/kimi-k2.5-thinking \
+  --model anthropic/claude-sonnet-4-6 \
   --concurrency 5 \
   --dataset default \
   -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey \
-  -k temperature 7 \
+  -k temperature 1 \
   -H X-Custom-Header my-value \
   --task-ids "task_1,task_2" \
   --slice "0:10"
