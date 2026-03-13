@@ -464,8 +464,10 @@ def start(
         if agent_path.is_dir():
             asyncio.run(push_agent(agent_path.stem, agent_path))
             contract = get_contract(agent_path / "contract.py", agent_config)
+            contract.name = agent_path.stem
         else:
             contract = asyncio.run(get_contract_from_s3(agent, agent_config))
+            contract.name = agent
 
         # Merge CLI secrets into contract defaults (override with cli secret)
         if secrets:

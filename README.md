@@ -114,6 +114,41 @@ harness config service remove swebench
 
 Removes a custom benchmark service.
 
+## Authentication & Custom Headers
+
+Benchmark services may require authentication. The harness stores per-benchmark credentials and sends them as the `Authorization` header automatically. You can also pass arbitrary headers at runtime with `-H`.
+
+### Managing auth credentials
+
+```bash
+# Store a credential — sent as the Authorization header on every request to that benchmark
+harness config auth set <benchmark-name> <credential>
+
+# List stored credentials (values are masked)
+harness config auth list
+
+# Remove a stored credential
+harness config auth remove <benchmark-name>
+```
+
+Credentials are saved in `~/.config/harness/harness.yaml` under `benchmark_auth`:
+
+```yaml
+benchmark_auth:
+  swebench: "Bearer sk-my-secret-token"
+  finance: "my-api-key"
+```
+
+### Runtime headers
+
+Pass additional headers to the benchmark service with `-H` / `--header`. Each flag takes a name and value. Repeatable. These are merged with any stored auth credential — if you pass `-H Authorization <value>` it overrides the stored one for that run.
+
+```bash
+harness benchmark start --benchmark my-benchmark --agent sweagent \
+  -H X-Custom-Header my-value \
+  -H X-Another-Header another-value
+```
+
 ## Usage
 
 ### Start a benchmark
@@ -124,8 +159,10 @@ harness benchmark start \
   --benchmark swebench \
   --model kimi/kimi-k2.5-thinking \
   --concurrency 5 \
+  --dataset default \
   -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey \
   -k temperature 7 \
+  -H X-Custom-Header my-value \
   --task-ids "task_1,task_2" \
   --slice "0:10"
 ```
@@ -142,6 +179,8 @@ harness benchmark start \
 | `--task-ids` | Comma-separated task IDs to run |
 | `--task-ids-file` | Path to a text file with one task ID per line |
 | `--slice` | Slice the benchmark dataset (`start:stop:step`) |
+| `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
+| `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
 
 ### Monitor a benchmark
 
