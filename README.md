@@ -10,6 +10,12 @@ Benchmark orchestration platform for testing AI agents against standardized benc
 - S3 bucket created for the purpose of storing all artifacts produced by benchmarks ran
 - API key for sandbox provider supported (daytona). [Documentation for setting that up](docs/PROVIDER.md)
 
+## Installation
+
+```bash
+uv tool install git+https://github.com/vals-ai/Valkyrie@prod
+```
+
 ## Configuration
 
 ```bash
