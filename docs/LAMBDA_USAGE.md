@@ -3,7 +3,7 @@
 The `--lambda` flag on `benchmark start` lets you invoke an AWS Lambda function after a benchmark run completes.
 
 ```bash
-harness benchmark start \
+valkyrie benchmark start \
   --agent agents/claude_code \
   --benchmark swebench \
   --lambda my-post-benchmark-handler
@@ -62,4 +62,4 @@ def lambda_handler(event, context):
 
 ## Deployment
 
-The lambda is invoked using the user's AWS credentials (from `harness config init`). It must be deployed in the user's AWS account and region defined by the user.
+The lambda is invoked using the user's AWS credentials (from `valkyrie config init`). It must be deployed in the user's AWS account and region defined by the user.
