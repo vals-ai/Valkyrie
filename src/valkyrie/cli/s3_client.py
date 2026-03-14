@@ -1,5 +1,6 @@
 import asyncio
 import re
+import shutil
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -29,33 +30,142 @@ def _fetch_bucket_name() -> str:
 
 
 async def install_agent(agent_name: str | None, github_url: str):
-    """Clone a GitHub repository and install it as an agent to S3"""
+    """Clone a GitHub repository (optionally with sparse-checkout for subfolders) and install it as an agent to S3"""
     from valkyrie.cli.utils import run_with_spinner
 
-    # If agent_name is not provided, extract from github_url
+    # Parse the GitHub URL to detect subfolder specification
+    # Matches: https://github.com/user/repo or https://github.com/user/repo/tree/branch/path/to/folder
+    github_pattern = r'(https://github\.com/[^/]+/[^/]+?)(?:/tree/([^/]+)/(.+?))?(?:\.git)?/?$'
+    match = re.match(github_pattern, github_url.rstrip('/'))
+
+    if not match:
+        raise RuntimeError(f"Invalid GitHub URL format: {github_url}")
+
+    base_url = match.group(1)
+    branch = match.group(2)
+    subfolder = match.group(3)
+
+    # If agent_name is not provided, extract from URL
     if agent_name is None:
-        agent_name = github_url.rstrip("/").split("/")[-1].replace(".git", "")
+        if subfolder:
+            # Use the last part of the subfolder path as the agent name
+            agent_name = subfolder.split('/')[-1]
+        else:
+            # Use the repo name as the agent name
+            agent_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
 
     # Clone the repo to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / "temp_repo"
 
         async def clone_repo() -> None:
-            """Clone the repository."""
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "clone",
-                github_url,
-                str(temp_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            """Clone the repository with optional sparse-checkout for subfolders."""
+            if subfolder:
+                # Use sparse-checkout for subfolders
+                process = await asyncio.create_subprocess_exec(
+                    "git",
+                    "clone",
+                    "--no-checkout",
+                    "--filter=blob:none",
+                    base_url,
+                    str(temp_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
 
-            _, stderr = await process.communicate()
+                _, stderr = await process.communicate()
 
-            if process.returncode != 0:
-                error_message = stderr.decode() if stderr else "No stderr returned"
-                raise RuntimeError(f"Failed to clone repository from {github_url}: {error_message}")
+                if process.returncode != 0:
+                    error_message = stderr.decode() if stderr else "No stderr returned"
+                    raise RuntimeError(f"Failed to clone repository from {base_url}: {error_message}")
+
+                # Initialize sparse-checkout
+                process = await asyncio.create_subprocess_exec(
+                    "git",
+                    "-C",
+                    str(temp_path),
+                    "sparse-checkout",
+                    "init",
+                    "--cone",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                _, stderr = await process.communicate()
+
+                if process.returncode != 0:
+                    error_message = stderr.decode() if stderr else "No stderr returned"
+                    raise RuntimeError(f"Failed to initialize sparse-checkout: {error_message}")
+
+                # Set the sparse-checkout path
+                process = await asyncio.create_subprocess_exec(
+                    "git",
+                    "-C",
+                    str(temp_path),
+                    "sparse-checkout",
+                    "set",
+                    subfolder,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                _, stderr = await process.communicate()
+
+                if process.returncode != 0:
+                    error_message = stderr.decode() if stderr else "No stderr returned"
+                    raise RuntimeError(f"Failed to set sparse-checkout path: {error_message}")
+
+                # Checkout the branch
+                checkout_branch = branch or "HEAD"
+                process = await asyncio.create_subprocess_exec(
+                    "git",
+                    "-C",
+                    str(temp_path),
+                    "checkout",
+                    checkout_branch,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                _, stderr = await process.communicate()
+
+                if process.returncode != 0:
+                    error_message = stderr.decode() if stderr else "No stderr returned"
+                    raise RuntimeError(f"Failed to checkout {checkout_branch}: {error_message}")
+
+                # Move subfolder contents to repo root
+                subfolder_path = temp_path / subfolder
+                if not subfolder_path.exists():
+                    raise RuntimeError(f"Subfolder '{subfolder}' not found in repository")
+
+                # Move each item from subfolder to temp_path root
+                for item in subfolder_path.iterdir():
+                    destination = temp_path / item.name
+                    if destination.exists():
+                        if destination.is_dir():
+                            shutil.rmtree(destination)
+                        else:
+                            destination.unlink()
+                    shutil.move(str(item), str(destination))
+
+                # Remove the now-empty subfolder
+                subfolder_path.rmdir()
+            else:
+                # Standard clone for full repository
+                process = await asyncio.create_subprocess_exec(
+                    "git",
+                    "clone",
+                    base_url,
+                    str(temp_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                _, stderr = await process.communicate()
+
+                if process.returncode != 0:
+                    error_message = stderr.decode() if stderr else "No stderr returned"
+                    raise RuntimeError(f"Failed to clone repository from {base_url}: {error_message}")
 
         # Clone with spinner
         await run_with_spinner(clone_repo(), f"Installing agent from {github_url}")
