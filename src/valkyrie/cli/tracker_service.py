@@ -26,12 +26,12 @@ from tracker.types import (
     StopBenchmarkResponse,
 )
 
-from agentic_harness.cli.exceptions import TrackerServiceError
+from valkyrie.cli.exceptions import TrackerServiceError
 
 load_dotenv()
 
 TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
-_CONFIG_LOCATION = Path("~/.config/harness/harness.yaml")
+_CONFIG_LOCATION = Path("~/.config/valkyrie/valkyrie.yaml")
 _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -119,7 +119,7 @@ class TrackerService:
         config_path: Path = _CONFIG_LOCATION.expanduser()
         config_keys: dict[str, str] = {}
         if not config_path.exists():
-            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `harness config init`")
+            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `valkyrie config init`")
 
         with open(config_path) as f:
             harness_config: dict[str, str] = yaml.safe_load(f) or {}
@@ -128,7 +128,7 @@ class TrackerService:
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
-                "Run `harness config init` to initialize the harness config or `harness config modify` to update an existing config"
+                "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config modify` to update an existing config"
             )
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
@@ -145,7 +145,7 @@ class TrackerService:
         return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
 
     def _build_harness_config_payload(self) -> dict[str, Any]:
-        """Build the harness config in a way that can be packed into a object"""
+        """Build the Valkyrie config in a way that can be packed into a object"""
         flat = {key.lower(): value for key, value in self._config_values.items()}
         return {
             "aws": {

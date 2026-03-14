@@ -1,7 +1,7 @@
 [project]
-name = "agentic-harness"
+name = "valkyrie"
 version = "0.1.0"
-description = "An agentic harness that interfaces with benchmarks hosted by Vals AI"
+description = "Valkyrie - An agentic harness that interfaces with benchmarks hosted by Vals AI"
 readme = "README.md"
 requires-python = ">=3.12"
 
@@ -17,7 +17,8 @@ dependencies = [
 ]
 
 [project.scripts]
-harness = "agentic_harness.cli.main:cli"
+valkyrie = "valkyrie.cli.main:cli"
+valk = "valkyrie.cli.main:cli"
 
 [dependency-groups]
 dev = [
@@ -65,7 +66,7 @@ build-backend = "hatchling.build"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/agentic_harness"]
+packages = ["src/valkyrie"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

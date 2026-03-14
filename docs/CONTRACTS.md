@@ -1,10 +1,10 @@
 # Agent Contracts
 
-This guide explains how to create agent contracts for the agentic harness.
+This guide explains how to create agent contracts for Valkyrie.
 
 ## Overview
 
-An agent contract defines how to install and run an agent in a sandbox environment. The harness handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed.
+An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed.
 
 ## Contract Definition
 
@@ -14,7 +14,7 @@ Create a `contract.py` file in your agent directory that defines a contract clas
 from pathlib import Path
 from typing import Any, override
 
-from agentic_harness.contract import BaseAgentContract
+from valkyrie.contract import BaseAgentContract
 
 
 class MyAgentContract(BaseAgentContract):
@@ -81,7 +81,7 @@ def final_output(self) -> Path | None:
 
 ### `run_cmd(problem_statement_path, task_id, kwargs) -> str`
 
-Method that builds the shell command to run the agent on a task. The harness calls this at serialization time with placeholder strings (`"{problem_statement_path}"` and `"{task_id}"`). The tracker substitutes the real values at runtime before executing in the sandbox.
+Method that builds the shell command to run the agent on a task. Valkyrie calls this at serialization time with placeholder strings (`"{problem_statement_path}"` and `"{task_id}"`). The tracker substitutes the real values at runtime before executing in the sandbox.
 
 > **Do not transform `problem_statement_path` or `task_id`.** Use them as-is in an f-string or concatenation. If you manipulate the strings (e.g. `problem_statement_path.split("/")[-1]`) the placeholder will be destroyed.
 
@@ -106,7 +106,7 @@ def secrets(self) -> dict[str, str]:
 Secrets can also be passed (or overridden) at runtime via the CLI:
 
 ```bash
-harness benchmark start --agent agents/my_agent -s API_KEY myAwsSecretName
+valkyrie run start --agent agents/my_agent -s API_KEY myAwsSecretName
 ```
 
 CLI secrets are merged with contract defaults. If both define the same key, the CLI value wins.
@@ -129,13 +129,13 @@ class MyAgentContract(BaseAgentContract):
 Then run from the CLI with:
 
 ```bash
-harness benchmark start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
+valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
 ```
 
 Extra key-value pairs can be passed with `-k` and accessed via `kwargs`:
 
 ```bash
-harness benchmark start --agent agents/my_agent --benchmark swebench -k temperature 0.7
+valkyrie run start --agent agents/my_agent --benchmark swebench -k temperature 0.7
 ```
 
 ## Directory Structure

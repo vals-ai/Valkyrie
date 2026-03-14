@@ -1,6 +1,6 @@
 # Provider integration
 
-Multiple sandbox providers will be available for usage, in order to setup the keys and use them with the agentic harness you need to ensure a few things are setup. You will need an AWS account that you can store the secrets in.
+Multiple sandbox providers will be available for usage, in order to setup the keys and use them with Valkyrie you need to ensure a few things are setup. You will need an AWS account that you can store the secrets in.
 
 ## Daytona
 
@@ -20,4 +20,4 @@ Upload that key to AWS secrets manager using the following format in plain text
 }
 ```
 
-When using `harness config init` or `harness config modify` add to the key `DAYTONA_SECRET_NAME` with the name of the secret (e.x, DaytonaSecrets)
+When using `valkyrie config init` or `valkyrie config modify` add to the key `DAYTONA_SECRET_NAME` with the name of the secret (e.x, DaytonaSecrets)

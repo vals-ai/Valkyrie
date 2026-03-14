@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Any, override
 
-from agentic_harness.contract import BaseAgentContract
+from valkyrie.contract import BaseAgentContract
 
 
 class DummyAgentContract(BaseAgentContract):

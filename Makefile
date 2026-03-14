@@ -5,11 +5,11 @@ PYTHON_VERSION := 3.12
 
 TRACKER_PORT ?= 8000
 help:
-	@echo "Makefile for agentic-harness"
+	@echo "Makefile for Valkyrie"
 	@echo ""
 	@echo "Setup:"
 	@echo "  make install             Install cli dependencies"
-	@echo "  make tool-install        Install harness as a global executable"
+	@echo "  make tool-install        Install valkyrie as a global executable"
 	@echo "  make update-submodules   Init and update git submodules"
 	@echo ""
 	@echo "Development:"
@@ -17,7 +17,7 @@ help:
 	@echo "  make typecheck           Typecheck"
 	@echo ""
 	@echo "Build:"
-	@echo "  make build               Build harness CLI binary to dist/"
+	@echo "  make build               Build valkyrie CLI binary to dist/"
 	@echo ""
 	@echo "Services:"
 	@echo "  make tracker-service     Start tracker service docker container"
@@ -39,16 +39,16 @@ tool-install:
 	uv tool install -e .
 
 build: venv_check
-	@echo "Building harness CLI binary..."
+	@echo "Building valkyrie CLI binary..."
 	@uv run pyinstaller \
 		--onefile \
-		--name harness \
+		--name valkyrie \
 		--distpath dist \
 		--workpath build \
 		--specpath build \
 		--clean \
-		src/agentic_harness/cli/main.py
-	@echo "✓ Binary built at dist/harness"
+		src/valkyrie/cli/main.py
+	@echo "✓ Binary built at dist/valkyrie"
 
 update-submodules:
 	git submodule update --init --recursive

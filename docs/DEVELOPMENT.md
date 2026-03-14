@@ -39,7 +39,7 @@ Initializes git submodules for agents and services.
 make tool-install
 ```
 
-Installs `harness` as a standalone executable so you can run it without the `uv run` prefix. Uses editable install so code changes take effect immediately. If not added to your PATH, run `uv tool update-shell`.
+Installs `valkyrie` as a standalone executable so you can run it without the `uv run` prefix. Uses editable install so code changes take effect immediately. If not added to your PATH, run `uv tool update-shell`.
 
 ### Tracker service
 
@@ -51,12 +51,12 @@ The service will be available at `http://localhost:8000`.
 
 ## Environment Setup
 
-### CLI (harness config)
+### CLI (valkyrie config)
 
-The CLI reads credentials from `~/.config/harness/harness.yaml`. Run `harness config init` to create it.
+The CLI reads credentials from `~/.config/valkyrie/valkyrie.yaml`. Run `valkyrie config init` to create it.
 
 ```bash
-harness config init
+valkyrie config init
 ```
 
 ## Code Quality

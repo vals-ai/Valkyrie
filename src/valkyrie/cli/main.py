@@ -1,4 +1,4 @@
-"""CLI views/commands for the agentic harness."""
+"""CLI views/commands for Valkyrie."""
 
 import asyncio
 import os
@@ -12,9 +12,9 @@ from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
-from agentic_harness.cli.bundler import get_contract
-from agentic_harness.cli.exceptions import BundlerError, TrackerServiceError
-from agentic_harness.cli.s3_client import (
+from valkyrie.cli.bundler import get_contract
+from valkyrie.cli.exceptions import BundlerError, TrackerServiceError
+from valkyrie.cli.s3_client import (
     download_agent,
     get_contract_from_s3,
     install_agent,
@@ -22,8 +22,8 @@ from agentic_harness.cli.s3_client import (
     push_agent,
     remove_agent,
 )
-from agentic_harness.cli.tracker_service import TrackerService
-from agentic_harness.cli.utils import (
+from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.utils import (
     CONFIG_LOCATION,
     check_tracker_service_health,
     download_agent_outputs,
@@ -35,18 +35,18 @@ from agentic_harness.cli.utils import (
     paginate_services,
     stream_benchmark_status,
 )
-from agentic_harness.schemas import AgentConfig
+from valkyrie.schemas import AgentConfig
 
 
 @click.group()
 def cli():
-    """Agentic Harness CLI."""
+    """Valkyrie CLI."""
     pass
 
 
 @cli.group()
-def benchmark():
-    """Benchmark command group"""
+def run():
+    """Run command group"""
     pass
 
 
@@ -65,8 +65,8 @@ def config():
 @config.command()
 def init() -> None:
     """
-    Initializes a config we can trust to have references to dependencies to run the harness,
-    this becomes our source of truth for secrets required to run the harness
+    Initializes a config we can trust to have references to dependencies to run Valkyrie,
+    this becomes our source of truth for secrets required to run Valkyrie
     """
 
     # Mapping between the expected key and default value
@@ -127,13 +127,13 @@ def init() -> None:
 @click.argument("value")
 def modify(key: str, value: str) -> None:
     """
-    Modify a single key in the harness config.
+    Modify a single key in the Valkyrie config.
 
-    Example: harness config modify AWS_DEFAULT_REGION us-west-2
+    Example: valkyrie config modify AWS_DEFAULT_REGION us-west-2
     """
 
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, str] = yaml.safe_load(f) or {}
@@ -161,10 +161,10 @@ def service() -> None:
 def service_set(name: str, url: str) -> None:
     """Set a custom URL for a benchmark service (creates or updates).
 
-    Example: harness config service set swebench https://my-tunnel.ngrok.io
+    Example: valkyrie config service set swebench https://my-tunnel.ngrok.io
     """
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         harness_config: dict[str, Any] = yaml.safe_load(f) or {}
@@ -185,10 +185,10 @@ def service_set(name: str, url: str) -> None:
 def service_remove(name: str) -> None:
     """Remove a custom URL override for a benchmark service.
 
-    Example: harness config service remove swebench
+    Example: valkyrie config service remove swebench
     """
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
@@ -210,7 +210,7 @@ def service_remove(name: str) -> None:
 def service_list() -> None:
     """List all custom benchmark service URL overrides."""
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
@@ -237,10 +237,10 @@ def auth() -> None:
 def auth_set(name: str, credential: str) -> None:
     """Set an auth credential for a benchmark service.
 
-    Example: harness config auth set swebench my-secret-credential
+    Example: valkyrie config auth set swebench my-secret-credential
     """
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         harness_config: dict[str, Any] = yaml.safe_load(f) or {}
@@ -261,10 +261,10 @@ def auth_set(name: str, credential: str) -> None:
 def auth_remove(name: str) -> None:
     """Remove an auth credential for a benchmark service.
 
-    Example: harness config auth remove swebench
+    Example: valkyrie config auth remove swebench
     """
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
@@ -286,7 +286,7 @@ def auth_remove(name: str) -> None:
 def auth_list() -> None:
     """List all configured benchmark auth credentials."""
     if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `harness config init` first.")
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
@@ -301,8 +301,8 @@ def auth_list() -> None:
         click.echo(f"  {name}: {masked}")
 
 
-@benchmark.command(
-    help="Start a benchmark run. \n\nExample:\nharness benchmark start --agent agents/claude_code --benchmark swebench --concurrency 5"
+@run.command(
+    help="Start a run. \n\nExample:\nvalkyrie run start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
 @click.option(
     "--agent",
@@ -411,7 +411,7 @@ def start(
     Run an agent on a benchmark.
 
     Example:
-        harness run --agent agents/claude_code --benchmark swebench
+        valkyrie run start --agent agents/claude_code --benchmark swebench
     """
     if task_ids and task_ids_file:
         raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
@@ -464,8 +464,10 @@ def start(
         if agent_path.is_dir():
             asyncio.run(push_agent(agent_path.stem, agent_path))
             contract = get_contract(agent_path / "contract.py", agent_config)
+            contract.name = agent_path.stem
         else:
             contract = asyncio.run(get_contract_from_s3(agent, agent_config))
+            contract.name = agent
 
         # Merge CLI secrets into contract defaults (override with cli secret)
         if secrets:
@@ -475,7 +477,7 @@ def start(
             if not check_tracker_service_health(tracker):
                 return
 
-            click.echo(f"\r\033[KStarting benchmark for: {contract.name}...", nl=False)
+            click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False)
 
             response = tracker.start_benchmark(
                 contract,
@@ -490,7 +492,7 @@ def start(
 
             click.echo("\r\033[K", nl=False)
             if response.status_code != 200:
-                click.echo(click.style("Benchmark failed to start!", fg="red", bold=True))
+                click.echo(click.style("Run failed to start!", fg="red", bold=True))
                 click.echo(response.text)
                 return
 
@@ -499,27 +501,22 @@ def start(
         raise click.ClickException(str(e))
 
 
-@benchmark.command(
-    help="Fetch a benchmark by its benchmark id. \n\nExample:\nharness benchmark fetch --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --connect"
+@run.command(
+    help="Fetch a run by its run id. \n\nExample:\nvalkyrie run fetch 123e4567-e89b-12d3-a456-426614174000 --connect"
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--connect",
     is_flag=True,
     required=False,
-    help="Connect to the tracker service to stream benchmark updates",
+    help="Connect to the tracker service to stream run updates",
 )
-def fetch(benchmark_id: UUID, connect: bool):
+def fetch(run_id: UUID, connect: bool):
     """
-    Fetch a benchmark by its benchmark id.
+    Fetch a run by its run id.
 
     Example:
-        harness benchmark fetch --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --connect
+        valkyrie run fetch 123e4567-e89b-12d3-a456-426614174000 --connect
     """
 
     try:
@@ -528,25 +525,20 @@ def fetch(benchmark_id: UUID, connect: bool):
                 return
 
             if connect:
-                stream_benchmark_status(tracker, benchmark_id)
+                stream_benchmark_status(tracker, run_id)
             else:
-                click.echo(f"Fetching benchmark: {benchmark_id}")
-                response = tracker.fetch_benchmark(benchmark_id)
+                click.echo(f"Fetching run: {run_id}")
+                response = tracker.fetch_benchmark(run_id)
                 format_benchmark_status(response)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
 
-@benchmark.command(
+@run.command(
     name="results",
-    help="Retrieve benchmark results by its benchmark id. \n\nExample:\nharness benchmark results --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
+    help="Retrieve run results by its run id. \n\nExample:\nvalkyrie run results 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--path",
     type=click.Path(path_type=Path, file_okay=True, dir_okay=False),
@@ -559,16 +551,16 @@ def fetch(benchmark_id: UUID, connect: bool):
     is_flag=True,
     default=False,
     required=False,
-    help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/benchmark_id/<benchmark>.json",
+    help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/run_id/<benchmark>.json",
 )
-def results(benchmark_id: UUID, path: Path | None, s3: bool):
+def results(run_id: UUID, path: Path | None, s3: bool):
     """
-    Retrieve the results of a benchmark by its benchmark id.
+    Retrieve the results of a run by its run id.
 
     Example:
-        harness benchmark results --benchmark-id e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
+        valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
-    click.echo(f"Retrieving results for benchmark: {benchmark_id}")
+    click.echo(f"Retrieving results for run: {run_id}")
 
     try:
         with TrackerService() as tracker:
@@ -576,11 +568,11 @@ def results(benchmark_id: UUID, path: Path | None, s3: bool):
                 return
 
             if s3:
-                if tracker.check_results_exist_in_s3(benchmark_id):
+                if tracker.check_results_exist_in_s3(run_id):
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(benchmark_id, s3)
+            results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3)
 
             if isinstance(results_response, FinalViewResponse):
                 default_path: Path = Path(f"./{results_response.benchmark_name}.json")
@@ -597,15 +589,10 @@ def results(benchmark_id: UUID, path: Path | None, s3: bool):
         raise click.ClickException(str(e))
 
 
-@benchmark.command(
-    help="Stop a benchmark run by its benchmark id. \n\nExample:\nharness benchmark stop --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --force"
+@run.command(
+    help="Stop a run by its run id. \n\nExample:\nvalkyrie run stop 123e4567-e89b-12d3-a456-426614174000 --force"
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--force",
     is_flag=True,
@@ -613,23 +600,23 @@ def results(benchmark_id: UUID, path: Path | None, s3: bool):
     default=False,
     help="Force stop the benchmark run",
 )
-def stop(benchmark_id: UUID, force: bool):
+def stop(run_id: UUID, force: bool):
     """
-    Stop a benchmark by its benchmark id.
+    Stop a run by its run id.
 
     Example:
-        harness benchmark stop --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+        valkyrie run stop 123e4567-e89b-12d3-a456-426614174000
     """
-    click.echo(f"Stopping benchmark for benchmark: {benchmark_id}")
+    click.echo(f"Stopping run: {run_id}")
 
     if force:
-        click.echo(click.style("Force stopping the benchmark", fg="yellow", bold=True))
+        click.echo(click.style("Force stopping the run", fg="yellow", bold=True))
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            _ = tracker.stop_benchmark(benchmark_id, force)
+            _ = tracker.stop_benchmark(run_id, force)
 
             if not force:
                 click.echo(
@@ -641,7 +628,7 @@ def stop(benchmark_id: UUID, force: bool):
                 )
             click.echo(
                 click.style(
-                    f"Retrieve results: harness benchmark results --benchmark-id {benchmark_id} --path ./results.json",
+                    f"Retrieve results: valkyrie run results {run_id} --path ./results.json",
                     fg="cyan",
                 )
             )
@@ -649,15 +636,10 @@ def stop(benchmark_id: UUID, force: bool):
         raise click.ClickException(str(e))
 
 
-@benchmark.command(
-    help="Resume a benchmark run by its benchmark id. \n\nExample:\nharness benchmark resume --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
+@run.command(
+    help="Resume a run by its run id. \n\nExample:\nvalkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--retry",
     is_flag=True,
@@ -689,17 +671,17 @@ def stop(benchmark_id: UUID, force: bool):
 @click.pass_context
 def resume(
     ctx: click.Context,
-    benchmark_id: UUID,
+    run_id: UUID,
     retry: bool,
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: Path | None,
 ):
     """
-    Resume a benchmark run by its benchmark id.
+    Resume a run by its run id.
 
     Example:
-        harness benchmark resume --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
+        valkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
     if task_ids and task_ids_file:
         raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
@@ -718,11 +700,11 @@ def resume(
                 return
 
             retry_task_ids = task_ids.split(",") if task_ids else []
-            _ = tracker.retry_or_resume_benchmark(benchmark_id, retry, concurrency, retry_task_ids)
+            _ = tracker.retry_or_resume_benchmark(run_id, retry, concurrency, retry_task_ids)
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
                 click.style(
-                    f"Track progress: harness benchmark fetch --benchmark-id {benchmark_id} --connect",
+                    f"Track progress: valkyrie run fetch {run_id} --connect",
                     fg="cyan",
                 )
             )
@@ -730,20 +712,20 @@ def resume(
         raise click.ClickException(str(e))
 
 
-# Alias for benchmark resume, the logic is the same under the hood
+# Alias for run resume, the logic is the same under the hood
 retry_command = click.Command(
     name="retry",
     callback=resume.callback,
     params=resume.params,
-    help="Retry a benchmark run by its benchmark id. \n\nExample:\nharness benchmark retry --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
-    short_help="Retry a benchmark run by its benchmark id.",
+    help="Retry a run by its run id. \n\nExample:\nvalkyrie run retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
+    short_help="Retry a run by its run id.",
 )
-benchmark.add_command(retry_command)
+run.add_command(retry_command)
 
 
-@benchmark.command(
+@run.command(
     name="list",
-    help="List benchmarks by providing filter values. \n\nExample:\nharness benchmark list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC",
+    help="List runs by providing filter values. \n\nExample:\nvalkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC",
 )
 @click.option(
     "--agent-name",
@@ -778,12 +760,12 @@ def list_benchmarks(
     order_by: str = "desc",
 ):
     """
-    List benchmarks based on the request parameters.
+    List runs based on the request parameters.
 
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
 
     Example:
-        harness benchmark list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
+        valkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
     """
     try:
         with TrackerService() as tracker:
@@ -797,26 +779,21 @@ def list_benchmarks(
 
 @agent.command(
     name="outputs",
-    help="Fetch agent outputs by benchmark id. \n\nExample:\nharness agent outputs --benchmark-id 123e4567-e89b-12d3-a456-426614174000 --output-dir ./agent_outputs",
+    help="Fetch agent outputs by run id. \n\nExample:\nvalkyrie agent outputs 123e4567-e89b-12d3-a456-426614174000 --output-dir ./agent_outputs",
 )
-@click.option(
-    "--benchmark-id",
-    type=UUID,
-    required=True,
-    help="Benchmark id (e.g., 123e4567-e89b-12d3-a456-426614174000)",
-)
+@click.argument("run_id", type=UUID)
 @click.option(
     "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
-    help="Directory to save agent outputs (defaults to ./agent_outputs/<benchmark-id>)",
+    help="Directory to save agent outputs (defaults to ./agent_outputs/<run-id>)",
 )
-def outputs(benchmark_id: UUID, output_dir: Path | None):
+def outputs(run_id: UUID, output_dir: Path | None):
     """
-    Fetch agent outputs for a benchmark by its benchmark id.
+    Fetch agent outputs for a benchmark by its run id.
 
     Example:
-        harness agent outputs --benchmark-id 123e4567-e89b-12d3-a456-426614174000
+        valkyrie agent outputs 123e4567-e89b-12d3-a456-426614174000
     """
 
     try:
@@ -824,16 +801,16 @@ def outputs(benchmark_id: UUID, output_dir: Path | None):
             if not check_tracker_service_health(tracker):
                 return
 
-            metadata = tracker.fetch_benchmark_metadata(benchmark_id)
+            metadata = tracker.fetch_benchmark_metadata(run_id)
 
             if output_dir is None:
                 output_dir = Path(
                     f"{metadata.benchmark_name}_{metadata.benchmark_arguments.contract.name}_{metadata.benchmark_id}"
                 )
 
-            click.echo(f"\r\033[KFetching agent outputs for benchmark {benchmark_id}...", nl=False)
+            click.echo(f"\r\033[KFetching agent outputs for run {run_id}...", nl=False)
 
-            response = tracker.fetch_agent_outputs(benchmark_id)
+            response = tracker.fetch_agent_outputs(run_id)
 
             download_agent_outputs(response, output_dir)
 
@@ -857,8 +834,8 @@ def install(github_url: str, name: str | None):
     """Install an agent from a GitHub repository.
 
     Example:
-        harness agent install https://github.com/user/my-agent
-        harness agent install https://github.com/user/my-agent --name my-custom-name
+        valkyrie agent install https://github.com/user/my-agent
+        valkyrie agent install https://github.com/user/my-agent --name my-custom-name
     """
     try:
         asyncio.run(install_agent(name, github_url))
@@ -884,8 +861,8 @@ def push(agent_path: Path, name: str | None):
     """Push a local agent to S3.
 
     Example:
-        harness agent push ./agents/my-agent
-        harness agent push ./agents/my-agent --name my-agent
+        valkyrie agent push ./agents/my-agent
+        valkyrie agent push ./agents/my-agent --name my-agent
     """
     try:
         agent_name = name or agent_path.stem
@@ -903,7 +880,7 @@ def remove(agent_name: str):
     """Remove an agent from S3.
 
     Example:
-        harness agent remove my-agent
+        valkyrie agent remove my-agent
     """
     try:
         if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
@@ -932,7 +909,7 @@ def download(agent_name: str, output_dir: Path | None):
     """Download an agent from S3.
 
     Example:
-        harness agent download my-agent
+        valkyrie agent download my-agent
     """
     try:
         if not click.confirm(f"Are you sure you want to download agent '{agent_name}'?"):
@@ -954,7 +931,7 @@ def list_installed_agents():
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
 
     Example:
-        harness agent list
+        valkyrie agent list
     """
     try:
         agents = asyncio.run(list_agents())
