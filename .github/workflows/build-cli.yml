@@ -15,11 +15,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: harness-linux-amd64
+            artifact: valkyrie-linux-amd64
           - os: macos-15
-            artifact: harness-darwin-amd64
+            artifact: valkyrie-darwin-amd64
           - os: macos-latest
-            artifact: harness-darwin-arm64
+            artifact: valkyrie-darwin-arm64
 
     runs-on: ${{ matrix.os }}
 
@@ -48,7 +48,7 @@ jobs:
             --name ${{ matrix.artifact }} \
             --distpath dist \
             --clean \
-            src/agentic_harness/cli/main.py
+            src/valkyrie/cli/main.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
