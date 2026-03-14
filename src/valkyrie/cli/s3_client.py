@@ -138,6 +138,9 @@ async def install_agent(agent_name: str | None, github_url: str):
                 if not subfolder_path.exists():
                     raise RuntimeError(f"Subfolder '{subfolder}' not found in repository")
 
+                # Store the items from the subfolder before moving
+                subfolder_items = {item.name for item in subfolder_path.iterdir()}
+
                 # Move each item from subfolder to temp_path root
                 for item in subfolder_path.iterdir():
                     destination = temp_path / item.name
@@ -150,6 +153,16 @@ async def install_agent(agent_name: str | None, github_url: str):
 
                 # Remove the now-empty subfolder
                 subfolder_path.rmdir()
+
+                # Delete top-level repo files that aren't from the subfolder
+                # (e.g., README, LICENSE, .github, etc.)
+                for item in temp_path.iterdir():
+                    if item.name == ".git" or item.name in subfolder_items:
+                        continue
+                    if item.is_dir():
+                        shutil.rmtree(item)
+                    else:
+                        item.unlink()
             else:
                 # Standard clone for full repository
                 process = await asyncio.create_subprocess_exec(

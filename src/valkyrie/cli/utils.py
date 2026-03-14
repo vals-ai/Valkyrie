@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import shutil
 import tarfile
 import tempfile
 from datetime import datetime
@@ -42,16 +43,27 @@ async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
     spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     frame_index = 0
 
+    # Truncate message to fit terminal width (leaving room for spinner)
+    # Spinner frame + space = 2 chars, default to 80 if we can't determine width
+    try:
+        terminal_width = shutil.get_terminal_size().columns
+    except (AttributeError, Exception):
+        terminal_width = 80
+
+    spinner_width = 2  # "⠋ "
+    max_message_width = terminal_width - spinner_width
+    display_message = message if len(message) <= max_message_width else message[:max_message_width - 1] + "…"
+
     async def show_spinner() -> None:
         """Show animated spinner until task completes."""
         nonlocal frame_index
         while not task.done():
             frame = spinner_frames[frame_index % len(spinner_frames)]
-            click.echo(f"\r{frame} {message}", nl=False)
+            click.echo(f"\r{frame} {display_message}", nl=False)
             frame_index += 1
             await asyncio.sleep(0.1)
         # Clear the line when done
-        click.echo(f"\r{' ' * (len(message) + 2)}", nl=False)
+        click.echo("\r\033[K", nl=False)
 
     task = asyncio.create_task(coro)
     spinner_task = asyncio.create_task(show_spinner())
@@ -65,7 +77,7 @@ async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
             await spinner_task
         except asyncio.CancelledError:
             # Clear the line when spinner is cancelled
-            click.echo(f"\r{' ' * (len(message) + 3)}\r", nl=False)
+            click.echo("\r\033[K", nl=False)
 
     return result
 
