@@ -103,6 +103,9 @@ async def install_agent(agent_name: str | None, github_url: str):
             checkout_branch = branch or "HEAD"
             await _run_git_command(temp_path, "checkout", checkout_branch)
 
+            # Initialize submodules for the checked-out content only
+            await _run_git_command(temp_path, "submodule", "update", "--init", "--recursive")
+
         # Clone with a loading spinner
         await run_with_spinner(clone_repo(), f"Installing agent from {github_url}")
 
