@@ -29,7 +29,6 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = ["submodules"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -49,11 +48,7 @@ reportGeneralTypeIssues = false
 reportTypedDictNotRequiredAccess = false
 enableTypeIgnoreComments = true
 
-include = ["src", "agents"]
-
-exclude = [
-  "**/contracts/**",
-]
+include = ["src"]
 
 [build-system]
 requires = ["hatchling"]
