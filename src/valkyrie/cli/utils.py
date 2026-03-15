@@ -43,16 +43,9 @@ async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
     spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
     frame_index = 0
 
-    # Truncate message to fit terminal width (leaving room for spinner)
-    # Spinner frame + space = 2 chars, default to 80 if we can't determine width
-    try:
-        terminal_width = shutil.get_terminal_size().columns
-    except (AttributeError, Exception):
-        terminal_width = 80
-
-    spinner_width = 2  # "⠋ "
-    max_message_width = terminal_width - spinner_width
-    display_message = message if len(message) <= max_message_width else message[:max_message_width - 1] + "…"
+    # Truncate message to fit terminal width (leaving room for spinner: 2 chars)
+    max_width = shutil.get_terminal_size().columns - 2
+    display_message = message if len(message) <= max_width else message[:max_width - 1] + "…"
 
     async def show_spinner() -> None:
         """Show animated spinner until task completes."""
