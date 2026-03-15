@@ -26,12 +26,12 @@ from tracker.types import (
     StopBenchmarkResponse,
 )
 
-from agentic_harness.cli.exceptions import TrackerServiceError
+from valkyrie.cli.exceptions import TrackerServiceError
 
 load_dotenv()
 
 TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
-_CONFIG_LOCATION = Path("~/.config/harness/harness.yaml")
+_CONFIG_LOCATION = Path("~/.config/valkyrie/valkyrie.yaml")
 _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -93,12 +93,33 @@ class TrackerService:
         return services.get(benchmark_name)
 
     @staticmethod
+    def get_benchmark_auth(benchmark_name: str) -> str | None:
+        """
+        Get benchmark auth credential from config if it exists.
+
+        Args:
+            benchmark_name: Name of the benchmark
+
+        Returns:
+            Auth credential if configured, None otherwise
+        """
+        config_path = _CONFIG_LOCATION.expanduser()
+        if not config_path.exists():
+            return None
+
+        with open(config_path) as f:
+            harness_config = yaml.safe_load(f) or {}
+
+        auth = harness_config.get("benchmark_auth") or {}
+        return auth.get(benchmark_name)
+
+    @staticmethod
     def parse_config_keys() -> dict[str, str]:
         """Parses expected config keys and handles edge cases"""
         config_path: Path = _CONFIG_LOCATION.expanduser()
         config_keys: dict[str, str] = {}
         if not config_path.exists():
-            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `harness config init`")
+            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `valkyrie config init`")
 
         with open(config_path) as f:
             harness_config: dict[str, str] = yaml.safe_load(f) or {}
@@ -107,7 +128,7 @@ class TrackerService:
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
-                "Run `harness config init` to initialize the harness config or `harness config modify` to update an existing config"
+                "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config modify` to update an existing config"
             )
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
@@ -124,7 +145,7 @@ class TrackerService:
         return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
 
     def _build_harness_config_payload(self) -> dict[str, Any]:
-        """Build the harness config in a way that can be packed into a object"""
+        """Build the Valkyrie config in a way that can be packed into a object"""
         flat = {key.lower(): value for key, value in self._config_values.items()}
         return {
             "aws": {
@@ -163,6 +184,8 @@ class TrackerService:
         task_ids: list[str] | None,
         slice_str: str | None,
         lambda_function: str | None = None,
+        dataset: str | None = None,
+        service_headers: dict[str, str] | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -189,8 +212,10 @@ class TrackerService:
                 task_ids=task_ids,
                 slice_str=slice_str,
                 lambda_function=lambda_function,
+                dataset=dataset,
                 harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name),
+                service_headers=service_headers or {},
             )
 
             body = payload.model_dump()

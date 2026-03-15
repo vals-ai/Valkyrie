@@ -138,7 +138,7 @@ async def start_benchmark(
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
         verify_response = await benchmark_service.verify_task_ids(
-            task_ids=request.task_ids, slice_str=request.slice_str
+            task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
         )
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"

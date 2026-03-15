@@ -12,7 +12,7 @@ from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import TrackerServiceError
 from benchmark_service.schemas import FinalScoreResponse
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import StartBenchmarkRequest
 from tests.unit.conftest import TEST_HARNESS_CONFIG
 from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
 

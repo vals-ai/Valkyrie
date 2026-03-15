@@ -1,15 +1,15 @@
 # Lambda Usage
 
-The `--lambda` flag on `benchmark start` lets you invoke an AWS Lambda function after a benchmark run completes.
+The `--lambda` flag on `run start` lets you invoke an AWS Lambda function after a run completes.
 
 ```bash
-harness benchmark start \
+valkyrie run start \
   --agent agents/claude_code \
   --benchmark swebench \
   --lambda my-post-benchmark-handler
 ```
 
-The lambda is invoked once after all tasks finish and results are uploaded. If the lambda fails (uncaught exception or `statusCode >= 400`), the benchmark will be marked as `ERROR`.
+The lambda is invoked once after all tasks finish and results are uploaded. If the lambda fails (uncaught exception or `statusCode >= 400`), the run will be marked as `ERROR`.
 
 ## Payload
 
@@ -41,7 +41,7 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the `ben
 | `task_ids` | list or null | Task IDs that were run (null = all) |
 | `slice_str` | string or null | Dataset slice if provided |
 | `lambda_function` | string | Name of this lambda function |
-| `benchmark_id` | string | UUID of the completed benchmark |
+| `benchmark_id` | string | UUID of the completed run |
 
 ## Format required by AWS
 
@@ -54,12 +54,12 @@ def lambda_handler(event, context):
     benchmark_id = event["benchmark_id"]
     agent_name = event["contract"]["name"]
 
-    # Your post-benchmark logic here
+    # Your post-run logic here
     # e.g. send a Slack notification, trigger evaluation, etc.
 
-    return {"statusCode": 200, "body": f"Processed {agent_name} benchmark {benchmark_id}"}
+    return {"statusCode": 200, "body": f"Processed {agent_name} run {benchmark_id}"}
 ```
 
 ## Deployment
 
-The lambda is invoked using the user's AWS credentials (from `harness config init`). It must be deployed in the user's AWS account and region defined by the user.
+The lambda is invoked using the user's AWS credentials (from `valkyrie config init`). It must be deployed in the user's AWS account and region defined by the user.

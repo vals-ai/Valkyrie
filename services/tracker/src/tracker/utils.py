@@ -78,9 +78,14 @@ def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict
     }
 
 
-def create_benchmark_service_client(url: str, daytona_secret_name: str, aws: AWSCredentials) -> BenchmarkServiceClient:
+def create_benchmark_service_client(
+    url: str, daytona_secret_name: str, aws: AWSCredentials, service_headers: dict[str, str] | None = None
+) -> BenchmarkServiceClient:
     """Create a BenchmarkServiceClient using Daytona credentials from AWS Secrets Manager."""
-    return BenchmarkServiceClient(url=url, headers=fetch_daytona_headers(daytona_secret_name, aws))
+    headers = fetch_daytona_headers(daytona_secret_name, aws)
+    if service_headers:
+        headers.update(service_headers)
+    return BenchmarkServiceClient(url=url, headers=headers)
 
 
 def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benchmark:
@@ -94,6 +99,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benc
             task_ids=request.task_ids,
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,
+            dataset=request.dataset,
         ),
     )
 
@@ -173,8 +179,6 @@ class TaskMonitor:
 
     def _validate_task(self, task_id: str) -> bool:
         """
-        Runs while waiting to be aquired by the semaphore.
-
         If the task status has been set to stopped we return False to exit the task early.
 
         Returns:
@@ -185,29 +189,15 @@ class TaskMonitor:
             benchmark_row = fetch_benchmark_row(self._benchmark_id, session)
             task_row = self._fetch_task_row(task_id)
 
-            # If task has been stopped or benchmark has occured an error we need to exit
+            # If task has been stopped or benchmark has errored we need to exit
             if task_row.status == TaskStatus.STOPPED or benchmark_row.status == BenchmarkStatus.ERROR:
                 return False
 
         return True
 
-    def _check_is_waiting(self, task: TrackedTask) -> bool:
-        """
-        Checks if the task is waiting to be aquired by the semaphore.
-
-        Returns:
-            True if the task is waiting to be aquired by the semaphore, False if it has been aquired
-        """
-        if task.task is None or task.status == TrackedTaskStatus.WAITING:
-            return True
-
-        return False
-
     async def track_tasks(self) -> None:
         """
-        Tracks all the tasks and removes the tasks that are no longer waiting to be aquired by the semaphore.
-
-        Removes the tasks that are no longer waiting to be aquired by the semaphore.
+        Tracks tasks and cancels them when they are no longer valid.
         """
 
         exit_condition_met: bool = False
@@ -217,14 +207,12 @@ class TaskMonitor:
             for task_id in tasks_to_check:
                 task = self._task_tracking[task_id]
 
-                if not self._check_is_waiting(task):
+                if task.status == TrackedTaskStatus.DONE:
                     del self._task_tracking[task_id]
+                    continue
 
-                if not self._validate_task(task_id) and task.task:
+                if not self._validate_task(task_id) and task.task is not None and not task.task.done():
                     task.task.cancel(f"Task {task_id} has been invalidated. Benchmark has been requested to stop")
-
-                    if task_id in self._task_tracking:
-                        del self._task_tracking[task_id]
 
             if not self._task_tracking:
                 exit_condition_met = True
@@ -323,7 +311,7 @@ async def process_task(
     flush_task = asyncio.create_task(auto_flush_logs())
 
     try:
-        task_data = await benchmark_service.retrieve_task(task_id=task_id)
+        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
 
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
@@ -356,12 +344,10 @@ async def process_task(
                     sandbox, start_benchmark_request.contract, harness_config.aws, harness_config.s3_bucket
                 )
 
-                # Setup task if requested
-                if task_data.request_setup:
-                    _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output)
+                _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset)
 
-                    # Force flush the logs if anything has been buffered
-                    buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                # Force flush the logs if anything has been buffered
+                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
@@ -372,13 +358,14 @@ async def process_task(
                 await run_agent(
                     sandbox,
                     start_benchmark_request.contract,
-                    task_data.problem_statement,
+                    task_data.problem_path,
                     task_id,
                     log_output,
                     task_data.cwd,
                     aws=harness_config.aws,
                     s3_bucket=harness_config.s3_bucket,
                     agent_output_s3_key=agent_output_s3_key,
+                    agent_timeout=task_data.agent_timeout,
                 )
 
                 with Session(bind=engine) as task_session:
@@ -390,7 +377,7 @@ async def process_task(
                 # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                 evaluation_result = await benchmark_service.evaluate_instance(
-                    task_row.task_id, sandbox.id, on_message=log_output
+                    task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
@@ -591,7 +578,7 @@ async def process_benchmark(
             raise TrackerServiceError("No tasks were completed successfully")
 
         # Calculate the final score based off the tasks that were ran
-        final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results)
+        final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset)
 
         # Create the final evaluation row and add it to the database
         final_evaluation_row = FinalEvaluation(
@@ -989,7 +976,7 @@ async def reset_to_in_progress_status(
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
-        verify_response = await benchmark_service.verify_task_ids(task_ids=list(task_mapping.values()), slice_str=None)
+        verify_response = await benchmark_service.verify_task_ids(task_ids=list(task_mapping.values()), slice_str=None, dataset=benchmark_row.arguments.dataset)
 
         # Set the benchmark status to in progress to flag resuming the benchmark
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS

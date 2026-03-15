@@ -13,24 +13,24 @@ from tracker import handle_s3_error
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
-from agentic_harness.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
-from agentic_harness.schemas import AgentConfig
+from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
+from valkyrie.schemas import AgentConfig
 
 
 def _fetch_bucket_name() -> str:
-    from agentic_harness.cli.utils import load_config
+    from valkyrie.cli.utils import load_config
 
     config = load_config()
     bucket_name = config.get("S3_BUCKET")
     if not bucket_name:
-        raise click.ClickException("S3_BUCKET key not found. Add it using 'harness config modify' first.")
+        raise click.ClickException("S3_BUCKET key not found. Add it using 'valkyrie config modify' first.")
 
     return bucket_name
 
 
 async def install_agent(agent_name: str | None, github_url: str):
     """Clone a GitHub repository and install it as an agent to S3"""
-    from agentic_harness.cli.utils import run_with_spinner
+    from valkyrie.cli.utils import run_with_spinner
 
     # If agent_name is not provided, extract from github_url
     if agent_name is None:

@@ -14,51 +14,6 @@ resolution-markers = [
 ]
 
 [[package]]
-name = "agentic-harness"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aioboto3" },
-    { name = "click" },
-    { name = "httpx" },
-    { name = "model-library" },
-    { name = "pypandoc" },
-    { name = "python-dotenv" },
-    { name = "tracker" },
-    { name = "valsai" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "basedpyright" },
-    { name = "pyinstaller" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aioboto3", specifier = ">=7.0.0" },
-    { name = "click", specifier = ">=8.1.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "model-library" },
-    { name = "pypandoc" },
-    { name = "python-dotenv" },
-    { name = "tracker", editable = "services/tracker" },
-    { name = "valsai", specifier = ">=0.1.2" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "basedpyright" },
-    { name = "pyinstaller" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
-[[package]]
 name = "ai21"
 version = "4.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -570,7 +525,7 @@ wheels = [
 [[package]]
 name = "create-benchmark-service"
 version = "0.1.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=main#3f04d7fb6cce5d111dcd7e98aced54bcb20afc1d" }
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=main#58673550390059f5c681642a2e35d125ab2b0643" }
 dependencies = [
     { name = "click" },
     { name = "daytona" },
@@ -1718,7 +1673,7 @@ name = "macholib"
 version = "1.16.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "altgraph" },
+    { name = "altgraph", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/10/2f/97589876ea967487978071c9042518d28b958d87b17dceb7cdc1d881f963/macholib-1.16.4.tar.gz", hash = "sha256:f408c93ab2e995cd2c46e34fe328b130404be143469e41bc366c807448979362", size = 59427, upload-time = "2025-11-22T08:28:38.373Z" }
 wheels = [
@@ -3994,6 +3949,51 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/37/945b4ca0ac27e3dc4952642d4c900edd030b3da6c9634875af6e13ae80e5/uvloop-0.22.1-cp314-cp314t-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b91328c72635f6f9e0282e4a57da7470c7350ab1c9f48546c0f2866205349d21", size = 4467065, upload-time = "2025-10-16T22:16:58.206Z" },
     { url = "https://files.pythonhosted.org/packages/97/cc/48d232f33d60e2e2e0b42f4e73455b146b76ebe216487e862700457fbf3c/uvloop-0.22.1-cp314-cp314t-musllinux_1_2_aarch64.whl", hash = "sha256:daf620c2995d193449393d6c62131b3fbd40a63bf7b307a1527856ace637fe88", size = 4328384, upload-time = "2025-10-16T22:16:59.36Z" },
     { url = "https://files.pythonhosted.org/packages/e4/16/c1fd27e9549f3c4baf1dc9c20c456cd2f822dbf8de9f463824b0c0357e06/uvloop-0.22.1-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:6cde23eeda1a25c75b2e07d39970f3374105d5eafbaab2a4482be82f272d5a5e", size = 4296730, upload-time = "2025-10-16T22:17:00.744Z" },
+]
+
+[[package]]
+name = "valkyrie"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aioboto3" },
+    { name = "click" },
+    { name = "httpx" },
+    { name = "model-library" },
+    { name = "pypandoc" },
+    { name = "python-dotenv" },
+    { name = "tracker" },
+    { name = "valsai" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "basedpyright" },
+    { name = "pyinstaller" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aioboto3", specifier = ">=7.0.0" },
+    { name = "click", specifier = ">=8.1.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "model-library" },
+    { name = "pypandoc" },
+    { name = "python-dotenv" },
+    { name = "tracker", editable = "services/tracker" },
+    { name = "valsai", specifier = ">=0.1.2" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "basedpyright" },
+    { name = "pyinstaller" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
 ]
 
 [[package]]

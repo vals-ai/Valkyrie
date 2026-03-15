@@ -1,6 +1,7 @@
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -9,10 +10,10 @@ from sqlmodel import Session, select
 from main import app
 from benchmark_service.client import BenchmarkServiceClient
 from tracker.utils import start_benchmark_request_to_benchmark
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, Task, TaskStatus
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
-from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
+from tracker.types import StartBenchmarkRequest
+from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus, initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
 from tests.unit.conftest import TEST_HARNESS_CONFIG
 
 client = TestClient(app)
@@ -23,8 +24,7 @@ class TestStopAndResume:
     async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
         return RetrieveTaskResponse(
             docker_image="test-image:latest",
-            problem_statement="Test problem statement",
-            request_setup=False,
+            problem_path="/tmp/problem_statement.txt",
             cwd="/testbed",
             resources=Resources(vcpu=2, memory=4, disk=5),
         )
@@ -154,3 +154,75 @@ class TestStopAndResume:
 
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
+
+    async def test_resume_changes_task_alias_per_attempt(
+        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        task_rows = [
+            Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)
+        ]
+        database_session.add_all(task_rows)
+        database_session.commit()
+
+        original_aliases = {task_row.task_id: task_row.alias for task_row in task_rows}
+
+        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task_row.task_id for task_row in task_rows])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+
+        # resets the start time of the task, so the alias will be different the next time we run the task
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(
+                TEST_HARNESS_CONFIG.daytona_secret_name, TEST_HARNESS_CONFIG.aws
+            ),
+            retry=True,
+            rerun_task_ids=[],
+        )
+
+        assert set(verified_task_ids) == set(original_aliases.keys())
+
+        updated_task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        for task_row in updated_task_rows:
+            assert task_row.alias != original_aliases[task_row.task_id]
+
+    async def test_task_monitor_cancels_waiting_stopped_task(
+        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch
+    ):
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        task_row = Task(task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+        database_session.add(task_row)
+        database_session.commit()
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+
+        tracked_task = TrackedTask(asyncio.sleep(0))
+        tracked_task._status = TrackedTaskStatus.WAITING  # type: ignore[attr-defined]
+
+        cancel_mock = Mock()
+
+        def _cancel(*_args: Any, **_kwargs: Any) -> None:
+            tracked_task._status = TrackedTaskStatus.DONE  # type: ignore[attr-defined]
+
+        cancel_mock.side_effect = _cancel
+        tracked_task._task = Mock(cancel=cancel_mock, done=lambda: False)  # type: ignore[assignment]
+
+        monitor = TaskMonitor(benchmark_row.id, {task_row.task_id: tracked_task})
+        monitor._TRACK_INTERVAL = 0
+
+        await monitor.track_tasks()
+
+        cancel_mock.assert_called_once()
+        assert monitor._task_tracking == {}
+        tracked_task._coro.close()
+
