@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 
 dependencies = [
-  "pypandoc",
   "click>=8.1.0",
   "httpx>=0.28.1",
   "python-dotenv",
