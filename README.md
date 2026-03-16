@@ -50,6 +50,12 @@ harness agent push ./agents/sweagent --name my-agent
 
 Uploads an agent on your local machine to S3.
 
+Org-managed agents do not need to live under this repo. For example, OpenHands now lives in `agent-registry` and can be pushed directly:
+
+```bash
+harness agent push ../agent-registry/openhands
+```
+
 | Option | Description |
 | --- | --- |
 | `--name, -n` | Agent name (defaults to directory name) |
