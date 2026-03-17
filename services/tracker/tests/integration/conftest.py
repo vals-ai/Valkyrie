@@ -1,36 +1,76 @@
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
+from typing import Any
 
 import pytest
-from daytona import AsyncDaytona, DaytonaConfig
+from benchmark_service.client import BenchmarkServiceClient
+from daytona import AsyncDaytona
 from dotenv import load_dotenv
+from sqlmodel import Session, SQLModel, create_engine
+from testcontainers.postgres import PostgresContainer
 
-from tracker.benchmark_service import BenchmarkService
 from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
+from tracker.types import AWSCredentials
+from tracker.utils import create_benchmark_service_client
 
 _ = load_dotenv()
 
 
-@pytest.fixture(scope="function")
-async def benchmark_service() -> AsyncGenerator[BenchmarkService, None]:
-    service_ip = os.getenv("BENCHMARK_SERVICE_URL")
-    if not service_ip:
-        raise ValueError("BENCHMARK_SERVICE_URL is not set")
+@pytest.fixture(scope="session")
+def test_aws() -> AWSCredentials:
+    """AWS credentials sourced from the environment for integration tests."""
+    return AWSCredentials(
+        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "test"),
+        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
+        aws_default_region=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
+    )
 
-    service = BenchmarkService(name="swebench", url=service_ip)
 
-    yield service
+@pytest.fixture(scope="session")
+def test_daytona_secret() -> str:
+    """Daytona secret name sourced from the environment for integration tests."""
+    return os.environ.get("DAYTONA_SECRET_NAME", "test-daytona-secret")
 
-    await service.daytona_client.close()
+
+@pytest.fixture(scope="session")
+def postgres_container() -> Generator[PostgresContainer, Any, None]:
+    """Spin up a postgres container for integration tests."""
+    with PostgresContainer("postgres:16-alpine") as postgres:
+        yield postgres
+
+
+@pytest.fixture(scope="session")
+def postgres_engine(postgres_container: PostgresContainer):
+    """Create an engine connected to the test postgres container."""
+    engine = create_engine(postgres_container.get_connection_url())
+    SQLModel.metadata.create_all(engine)
+    return engine
 
 
 @pytest.fixture
-async def daytona_client(benchmark_service: BenchmarkService) -> AsyncGenerator[AsyncDaytona, None]:
-    daytona_config = DaytonaConfig(
-        api_key=benchmark_service.environment_keys["DAYTONA_API_KEY"],
-        api_url=benchmark_service.environment_keys["DAYTONA_API_URL"],
-        target=benchmark_service.environment_keys["DAYTONA_TARGET"],
-    )
+def postgres_session(postgres_engine) -> Generator[Session, Any, None]:
+    """Create a session for the test postgres database."""
+    with Session(postgres_engine, expire_on_commit=False) as session:
+        yield session
 
-    async with AsyncDaytona(config=daytona_config) as client:
-        yield client
+
+@pytest.fixture(scope="function")
+async def benchmark_service(
+    test_aws: AWSCredentials, test_daytona_secret: str
+) -> AsyncGenerator[BenchmarkServiceClient, None]:
+    service_url = os.getenv("BENCHMARK_SERVICE_URL")
+    if not service_url:
+        from tracker.config import create_benchmark_service_url
+
+        service_url = create_benchmark_service_url("swebench")
+
+    service = create_benchmark_service_client(url=service_url, daytona_secret_name=test_daytona_secret, aws=test_aws)
+
+    yield service
+
+    await service.close()
+
+
+@pytest.fixture
+async def daytona_client(benchmark_service: BenchmarkServiceClient) -> AsyncGenerator[AsyncDaytona, None]:
+    yield benchmark_service.daytona_client

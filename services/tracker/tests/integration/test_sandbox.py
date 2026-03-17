@@ -1,9 +1,9 @@
 """Integration tests for sandbox operations."""
 
 import io
+import uuid
 import zipfile
 from typing import AsyncGenerator, Generator
-from unittest.mock import MagicMock, patch
 
 import boto3
 import pytest
@@ -20,6 +20,7 @@ from tracker.sandbox import (
     run_agent,
     upload_agent_artifacts,
 )
+from benchmark_service.schemas import Resources
 
 
 @pytest.fixture
@@ -32,20 +33,29 @@ def mock_s3() -> Generator[S3Client, None, None]:
 
 
 @pytest.fixture
-async def test_sandbox(daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
+def test_resources() -> Resources:
+    """Create a test resources object."""
+    return Resources(vcpu=2, memory=4, disk=5)
+
+
+@pytest.fixture
+async def test_sandbox(daytona_client: AsyncDaytona, test_resources: Resources) -> AsyncGenerator[AsyncSandbox, None]:
     """Create a test sandbox with Python."""
-    async with create_sandbox(daytona_client, "test-sandbox", "python:3.11-slim") as sandbox:
+
+    sandbox_name = f"test-sandbox-{str(uuid.uuid4())}"
+
+    async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox:
         yield sandbox
 
 
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
 
-    async def test_create_and_cleanup_sandbox(self, daytona_client: AsyncDaytona) -> None:
+    async def test_create_and_cleanup_sandbox(self, daytona_client: AsyncDaytona, test_resources: Resources) -> None:
         """Test that sandbox is created and cleaned up properly."""
         sandbox_name = "test-cleanup-sandbox"
 
-        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim") as sandbox:
+        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox:
             assert sandbox.name == sandbox_name
             result = await sandbox.process.exec("echo 'test'")
             assert result.exit_code == 0
@@ -63,7 +73,7 @@ class TestSandboxOperations:
             run_cmd="echo hello",
         )
 
-        agent_file = f"{contract_name}/submodules/{contract_name}/file.txt"
+        agent_file = f"{contract_name}/{contract_name}/file.txt"
         setup_file = f"{contract_name}/setup.sh"
 
         # Create a mock zip with the expected structure
@@ -91,9 +101,13 @@ class TestSandboxOperations:
         assert result.exit_code == 0
         assert "hello world" in result.result
 
-    @patch("tracker.sandbox.logger")
-    async def test_install_agent_dependencies(self, mock_logger: MagicMock, test_sandbox: AsyncSandbox) -> None:
+    async def test_install_agent_dependencies(self, test_sandbox: AsyncSandbox) -> None:
         """Test that install command is correctly executed in the sandbox."""
+        logged_messages: list[str] = []
+
+        def log_callback(message: str) -> None:
+            logged_messages.append(message)
+
         contract_name = "test_contract"
         contract = AgentContractRequest(
             name=contract_name,
@@ -106,38 +120,53 @@ class TestSandboxOperations:
         await test_sandbox.process.exec(f"mkdir -p /bundle/{contract_name}")
         await test_sandbox.process.exec(f"echo '#!/bin/bash\necho hello world' > /bundle/{contract_name}/setup.sh")
 
-        await install_agent_dependencies(test_sandbox, contract)
+        await install_agent_dependencies(test_sandbox, contract, log_callback)
 
-        # Verify logger.info was called with the result of the install command
-        mock_logger.info.assert_any_call("hello world")
+        # Verify messages were logged
+        output = "\n".join(logged_messages)
+        assert "Installing dependencies" in output
+        assert "hello world" in output
 
-    @patch("tracker.sandbox.stream_logger")
     async def test_run_agent(
         self,
-        mock_stream_logger: MagicMock,
         test_sandbox: AsyncSandbox,
     ) -> None:
-        """Test that agent runs and prints output lines via on_data function."""
-
+        """Test that agent runs and prints output lines."""
         logged_messages: list[str] = []
 
-        def mock_info(msg: str) -> None:
-            logged_messages.append(msg)
+        def log_callback(message: str) -> None:
+            logged_messages.append(message)
 
-        mock_stream_logger.info.side_effect = mock_info
-
-        run_cmd = "echo line1 && sleep 1 && echo line2 && sleep 1 && echo line3"
+        run_cmd = 'echo line1 && sleep 1 && echo line2 && sleep 1 && echo line3 && echo \'{"result": "hello world"}\' > /tmp/agent_output.json'
 
         contract = AgentContractRequest(
             name="test_agent",
             artifacts=[],
-            install_cmd="echo 'no-op'",
+            install_cmd="true",
             run_cmd=run_cmd,
+            final_output="/tmp/agent_output.json",
         )
 
-        await run_agent(test_sandbox, contract, "some problem statement", "some task id")
+        # Expecting bundle directory to exist
+        await test_sandbox.process.exec("mkdir -p /bundle/test_agent")
+
+        final_output = await run_agent(test_sandbox, contract, "some problem statement", log_callback, cwd="/")
+
+        assert final_output == {"result": "hello world"}
 
         output = "\n".join(logged_messages)
         assert "line1" in output
         assert "line2" in output
         assert "line3" in output
+
+    async def test_create_sandbox_reuse(self, daytona_client: AsyncDaytona, test_resources: Resources) -> None:
+        """Test that create_sandbox reuses existing sandbox instead of creating new one."""
+        sandbox_name = f"test-reuse-{str(uuid.uuid4())[:8]}"
+
+        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox1:
+            result = await sandbox1.process.exec("echo 'test'")
+            assert result.exit_code == 0
+            first_id = sandbox1.id
+
+            async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox2:
+                assert sandbox2.id == first_id

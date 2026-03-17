@@ -1,4 +1,5 @@
 from asyncio import gather
+from collections.abc import Callable
 from functools import partial
 from sqlite3 import OperationalError
 from typing import Any
@@ -6,7 +7,8 @@ from typing import Any
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
-from tracker.benchmark_service import BenchmarkService
+from benchmark_service.client import BenchmarkServiceClient
+from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -16,7 +18,8 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.types import SetupTaskResponse, StartRunRequest
+from benchmark_service.schemas import SetupTaskResponse
+from tracker.types import StartBenchmarkRequest
 from tracker.utils import process_benchmark, process_task
 
 
@@ -33,7 +36,7 @@ class TestProcessBenchmark:
     async def _mock_upload_contract(*args: Any, **kwargs: Any) -> None:
         pass
 
-    async def _test_request_evaluate_instance(
+    async def _test_evaluate_instance(
         self,
         original_method: Any,
         *args: Any,
@@ -64,7 +67,7 @@ class TestProcessBenchmark:
     async def _test_run_agent(self, original_method: Any, *args: Any, **kwargs: Any) -> None:
         """
         Test task status is in progress before we start running the agent
-        (confirms we move from starting to in progress status)
+        (confirms we move from pending to in progress status)
         """
         from sqlmodel import Session
 
@@ -81,18 +84,18 @@ class TestProcessBenchmark:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        benchmark_service: BenchmarkService,
+        benchmark_service: BenchmarkServiceClient,
         monkeypatch: MonkeyPatch,
     ):
         task_id = "astropy__astropy-12907"
         task_row_mapping: dict[str, Task] = {}
 
         # Dependencies required to process the task that the user sends
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=[task_id]
         )
 
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -104,7 +107,6 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
             "tracker.utils.upload_agent_artifacts",
             self._mock_upload_contract,
@@ -121,15 +123,15 @@ class TestProcessBenchmark:
             partial(self._test_run_agent, original_run_agent),
         )
 
-        original_evaluate = benchmark_service.request_evaluate_instance
+        original_evaluate = benchmark_service.evaluate_instance
         monkeypatch.setattr(
             benchmark_service,
-            "request_evaluate_instance",
-            partial(self._test_request_evaluate_instance, original_evaluate),
+            "evaluate_instance",
+            partial(self._test_evaluate_instance, original_evaluate),
         )
 
         # Starts and evaluates a single task inside using the benchmark service
-        _ = await process_task(task_row, start_run_request, benchmark_service, benchmark_row.id, task_id)
+        _ = await process_task(task_row, start_benchmark_request, benchmark_service, benchmark_row.id, task_id)
 
         # Ensure that the evaluation result is viewable from the database after the task has been processed
         evaluation_result = database_session.exec(
@@ -149,19 +151,18 @@ class TestProcessBenchmark:
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
         # Start run request sent by user to start the benchmark
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
             "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
@@ -178,7 +179,7 @@ class TestProcessBenchmark:
         )
 
         # Run the benchmark
-        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
+        await process_benchmark(start_benchmark_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is updated to finished once the benchmark is done running
         database_session.refresh(benchmark_row)
@@ -218,12 +219,12 @@ class TestProcessBenchmark:
 
         # Example tasks from swebench
         task_ids: list[str] = ["astropy__astropy-12907"]
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
         # Create benchmark row inside of start run request
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -239,7 +240,6 @@ class TestProcessBenchmark:
 
             original_commit(self)
 
-        # Monkey patch failure to push benchmark row to the database
         monkeypatch.setattr(Session, "commit", mock_commit_with_error)
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
@@ -254,12 +254,12 @@ class TestProcessBenchmark:
         )
 
         # Run the benchmark (error is not raised and instead handled)
-        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
+        await process_benchmark(start_benchmark_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is updated to error once the benchmark is done running
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.ERROR
-        assert benchmark_row.error_message == "Handled database error"
+        assert "Handled database error" in (benchmark_row.error_message or "")
 
     async def test_process_task_error(
         self,
@@ -277,51 +277,50 @@ class TestProcessBenchmark:
 
         task_ids: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 
-        start_run_request = StartRunRequest(
+        start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench", contract=contract, concurrency=5, task_ids=task_ids
         )
 
-        benchmark_row = BenchmarkService.start_run_request_to_benchmark_object(start_run_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
 
         database_session.add(benchmark_row)
         database_session.commit()
 
-        original_request_setup_task = BenchmarkService.request_setup_task
+        original_setup_task = BenchmarkServiceClient.setup_task
 
-        async def mock_request_setup_task(self: Any, task_id: str, instance_id: str) -> SetupTaskResponse:
+        async def mock_setup_task(
+            self: Any, task_id: str, instance_id: str, on_message: Callable[[str], None] | None = None
+        ) -> SetupTaskResponse:
             if task_id == "astropy__astropy-13033":
                 raise Exception("Exception raised while setting up the task")
 
-            return await original_request_setup_task(self, task_id, instance_id)
+            return await original_setup_task(self, task_id, instance_id, on_message)
 
         # Setup fails for the second task
         monkeypatch.setattr(
-            BenchmarkService,
-            "request_setup_task",
-            mock_request_setup_task,
+            BenchmarkServiceClient,
+            "setup_task",
+            mock_setup_task,
         )
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        # Mock upload contract since we don't have actual contract files
         monkeypatch.setattr(
             "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
         )
 
-        # Mock the install dependencies part in case dependencies break it does not affect this test
         monkeypatch.setattr(
             "tracker.utils.install_agent_dependencies",
             TestProcessBenchmark._mock_install_dependencies,
         )
 
-        # Mock run agent part because we don't have an agent inside of the sandbox
         monkeypatch.setattr(
             "tracker.utils.run_agent",
             TestProcessBenchmark._mock_run_agent,
         )
 
-        await process_benchmark(start_run_request.model_dump(), str(benchmark_row.id), task_ids)
+        await process_benchmark(start_benchmark_request.model_dump(), str(benchmark_row.id), task_ids)
 
         # Benchmark status is still finished even though one task has errored out
         database_session.refresh(benchmark_row)
@@ -335,7 +334,7 @@ class TestProcessBenchmark:
         assert len(tasks) == 1
 
         # Error message is set on the task row
-        assert tasks[0].error_message == "Exception raised while setting up the task"
+        assert "Exception raised while setting up the task" in (tasks[0].error_message or "")
         assert tasks[0].status == TaskStatus.ERROR
 
         final_evaluation = benchmark_row.final_evaluation
@@ -381,7 +380,6 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        # Mock installing and running agent part
         monkeypatch.setattr(
             "tracker.utils.upload_agent_artifacts",
             TestProcessBenchmark._mock_upload_contract,
@@ -400,7 +398,7 @@ class TestProcessBenchmark:
         await gather(
             *[
                 process_benchmark(
-                    benchmark_row.start_run_request.model_dump(),
+                    benchmark_row.start_benchmark_request.model_dump(),
                     str(benchmark_row.id),
                     benchmark_row.arguments.task_ids or [],
                 )

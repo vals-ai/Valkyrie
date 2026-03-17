@@ -1,4 +1,4 @@
-"""Test WebSocket disconnection handling in run_agent."""
+"""Test WebSocket disconnection handling in stream_command_output."""
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -7,8 +7,7 @@ from typing import Any
 import pytest
 from daytona.common.errors import DaytonaError
 
-from tracker.sandbox import is_websocket_disconnect, run_agent
-from tracker.database.models import AgentContractRequest
+from tracker.sandbox import is_websocket_disconnect, stream_command_output
 
 
 @dataclass
@@ -64,13 +63,6 @@ class FakeSandbox:
     process: FakeProcess = field(default_factory=FakeProcess)
 
 
-CONTRACT = AgentContractRequest(
-    name="test-agent",
-    run_cmd="echo {problem_statement}",
-    install_cmd="echo install",
-)
-
-
 @pytest.mark.parametrize(
     "message, expected",
     [
@@ -84,31 +76,35 @@ def test_is_websocket_disconnect(message: str, expected: bool) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_agent_succeeds_without_disconnect() -> None:
+async def test_stream_command_output_succeeds_without_disconnect() -> None:
+    collected: list[str] = []
     sandbox = FakeSandbox()
 
-    await run_agent(sandbox, CONTRACT, "test problem", "task-1")  # type: ignore[reportArgumentType]
+    await stream_command_output(sandbox, "echo hello", collected.append)  # type: ignore[reportArgumentType]
+
+    assert collected == ["output from attempt 1\n"]
 
 
 @pytest.mark.asyncio
-async def test_run_agent_retries_on_websocket_disconnect() -> None:
+async def test_stream_command_output_retries_on_websocket_disconnect() -> None:
+    collected: list[str] = []
     sandbox = FakeSandbox(process=FakeProcess(disconnect_count=2))
 
-    await run_agent(sandbox, CONTRACT, "test problem", "task-1")  # type: ignore[reportArgumentType]
+    await stream_command_output(sandbox, "echo hello", collected.append)  # type: ignore[reportArgumentType]
 
     assert sandbox.process.call_count == 3
 
 
 @pytest.mark.asyncio
-async def test_run_agent_raises_after_max_retries() -> None:
+async def test_stream_command_output_raises_after_max_retries() -> None:
     sandbox = FakeSandbox(process=FakeProcess(disconnect_count=20))
 
     with pytest.raises(DaytonaError, match="1011"):
-        await run_agent(sandbox, CONTRACT, "test problem", "task-1")  # type: ignore[reportArgumentType]
+        await stream_command_output(sandbox, "echo hello", lambda text: None)  # type: ignore[reportArgumentType]
 
 
 @pytest.mark.asyncio
-async def test_run_agent_raises_non_websocket_error() -> None:
+async def test_stream_command_output_raises_non_websocket_error() -> None:
     @dataclass
     class FailingProcess(FakeProcess):
         async def get_session_command_logs_async(  # type: ignore[reportIncompatibleMethodOverride]
@@ -119,4 +115,4 @@ async def test_run_agent_raises_non_websocket_error() -> None:
     sandbox = FakeSandbox(process=FailingProcess())
 
     with pytest.raises(DaytonaError, match="some other error"):
-        await run_agent(sandbox, CONTRACT, "test problem", "task-1")  # type: ignore[reportArgumentType]
+        await stream_command_output(sandbox, "echo hello", lambda text: None)  # type: ignore[reportArgumentType]

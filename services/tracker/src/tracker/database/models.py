@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, computed_field, field_serializer
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -25,32 +25,41 @@ from sqlmodel import (
 from tracker.database.utils import has_field_changed
 
 if TYPE_CHECKING:
-    from tracker.types import BenchmarkTableRow, StartRunRequest
+    from benchmark_service.client import BenchmarkServiceClient
+
+    from tracker.types import (
+        AWSCredentials,
+        BenchmarkTableRow,
+        FetchBenchmarkMetadataResponse,
+        HarnessConfig,
+        StartBenchmarkRequest,
+    )
 
 
 class TaskStatus(str, Enum):
-    STARTING = "starting"
-    IN_PROGRESS = "in_progress"
-    EVALUATING = "evaluating"
-    STOPPED = "stopped"
-    FINISHED = "finished"
-    ERROR = "error"
+    PENDING = "PENDING"
+    BUILDING = "BUILDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    EVALUATING = "EVALUATING"
+    STOPPED = "STOPPED"
+    FINISHED = "FINISHED"
+    ERROR = "ERROR"
 
 
 class BenchmarkStatus(str, Enum):
-    IN_PROGRESS = "in_progress"
-    STOPPING = "stopping"
-    STOPPED = "stopped"
-    FINISHED = "finished"
-    ERROR = "error"
+    IN_PROGRESS = "IN_PROGRESS"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    FINISHED = "FINISHED"
+    ERROR = "ERROR"
 
 
 class AgentContractRequest(BaseModel):
     name: str
-    artifacts: list[str] = []
     install_cmd: str
     run_cmd: str
-    env: dict[str, str] = {}
+    final_output: str | None = None
+    secrets: dict[str, str] = {}
 
 
 class BenchmarkArguments(BaseModel):
@@ -60,6 +69,8 @@ class BenchmarkArguments(BaseModel):
     concurrency: int
     task_ids: list[str] | None = None
     slice_str: str | None = None
+    lambda_function: str | None = None
+    dataset: str | None = None
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -122,6 +133,7 @@ class Benchmark(SQLModel, table=True):
     )  # TODO: Automatically set to finished when all tasks are in a finished state or error state
 
     error_message: str | None = Field(default=None)
+    custom_benchmark_service: str | None = Field(default=None)
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
     )
@@ -147,16 +159,36 @@ class Benchmark(SQLModel, table=True):
 
         return {task_id: (error_message or "No error message was provided") for task_id, error_message in tasks}
 
-    @property
-    def start_run_request(self) -> "StartRunRequest":
-        from tracker.types import StartRunRequest
+    def start_benchmark_request(self, harness_config: "HarnessConfig") -> "StartBenchmarkRequest":
+        from tracker.types import StartBenchmarkRequest
 
-        return StartRunRequest(
+        return StartBenchmarkRequest(
             contract=self.arguments.contract,
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
+            lambda_function=self.arguments.lambda_function,
+            dataset=self.arguments.dataset,
+            harness_config=harness_config,
+            custom_benchmark_service=self.custom_benchmark_service,
+        )
+
+    def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":
+        from tracker.config import create_benchmark_service_url
+        from tracker.utils import create_benchmark_service_client
+
+        url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
+        return create_benchmark_service_client(url=url, daytona_secret_name=daytona_secret_name, aws=aws)
+
+    @property
+    def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":
+        from tracker.types import FetchBenchmarkMetadataResponse
+
+        return FetchBenchmarkMetadataResponse(
+            benchmark_id=self.id,
+            benchmark_name=self.name,
+            benchmark_arguments=self.arguments,
         )
 
     def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
@@ -185,8 +217,9 @@ class Benchmark(SQLModel, table=True):
         return BenchmarkTableRow(
             id=self.id,
             name=self.name,
-            contract_name=self.arguments.contract.name,
+            agent_name=self.arguments.contract.name,
             started_at=self.started_at,
+            finished_at=self.finished_at,
             status=self.status,
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,
@@ -228,11 +261,22 @@ class Task(SQLModel, table=True):
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     task_id: str
-    status: TaskStatus = Field(default=TaskStatus.STARTING)
+    status: TaskStatus = Field(default=TaskStatus.PENDING)
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
     benchmark: UUID = Field(foreign_key="benchmark.id")
+
+    @computed_field
+    @property
+    def alias(self) -> str:
+        """Unique alias for the current task attempt, used when creating sandboxes.
+
+        Format: {task_id}_{suffix}
+        - suffix: hex-encoded microsecond timestamp from started_at, changes on each retry/resume
+        """
+        suffix = f"{int(self.started_at.timestamp() * 1_000_000):x}"
+        return f"{self.task_id}_{suffix}"
 
 
 @event.listens_for(Task, "before_insert")
@@ -258,4 +302,3 @@ class EvaluationResult(SQLModel, table=True):
     task: UUID = Field(foreign_key="task.id")
     instance_id: str = Field(unique=True)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
-    agent_output: str = Field(default="")

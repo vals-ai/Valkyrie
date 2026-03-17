@@ -14,15 +14,29 @@ class SandboxError(TrackerServiceError):
         return "Sandbox error: " + super().__str__()
 
 
-class BenchmarkServiceError(TrackerServiceError):
-    """Exception raised for benchmark service communication errors."""
-
-    def __str__(self) -> str:
-        return "Benchmark service error: " + super().__str__()
-
-
 class S3Error(TrackerServiceError):
     """Exception raised for S3 storage operation errors."""
 
     def __str__(self) -> str:
         return "S3 error: " + super().__str__()
+
+
+class CloudWatchError(TrackerServiceError):
+    """Exception raised for CloudWatch operation errors."""
+
+    def __str__(self) -> str:
+        return "CloudWatch error: " + super().__str__()
+
+
+class LambdaError(TrackerServiceError):
+    """Exception raised for Lambda operation errors."""
+
+    def __str__(self) -> str:
+        return "Lambda error: " + super().__str__()
+
+
+class SecretsError(TrackerServiceError):
+    """Exception raised for Secret operation errors."""
+
+    def __str__(self) -> str:
+        return "Secret error: " + super().__str__()

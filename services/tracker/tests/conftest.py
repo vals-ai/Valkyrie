@@ -9,10 +9,23 @@ from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tracker.database.models import *  # noqa: F403
-from tracker.database.models import Benchmark, BenchmarkArguments
-from tracker.types import AgentContractRequest
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments
 
 _ = load_dotenv()
+
+
+@pytest.fixture(autouse=True)
+def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _mock_create_benchmark_group(benchmark_id: str) -> str:
+        return f"mock-group-{benchmark_id}"
+
+    def _mock_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    monkeypatch.setattr("tracker.cloudwatch.create_benchmark_group", _mock_create_benchmark_group)
+    monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
+    monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
+    monkeypatch.setattr("tracker.utils.cloudwatch_stream", _mock_cloudwatch_stream)
 
 
 @pytest.fixture(scope="function")
@@ -42,7 +55,6 @@ def contract() -> AgentContractRequest:
         artifacts=[],
         install_cmd="echo installing dependencies...",
         run_cmd="echo running agent...",
-        env={},
     )
 
 
