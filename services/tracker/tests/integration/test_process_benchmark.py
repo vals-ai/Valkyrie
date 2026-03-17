@@ -1,4 +1,3 @@
-import os
 from asyncio import gather
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -111,7 +110,7 @@ class TestProcessBenchmark:
             concurrency=5,
             task_ids=[task_id],
             harness_config=harness_config,
-            custom_benchmark_service=os.getenv("BENCHMARK_SERVICE_URL"),
+            custom_benchmark_service=None,
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
@@ -178,7 +177,7 @@ class TestProcessBenchmark:
             concurrency=5,
             task_ids=task_ids,
             harness_config=harness_config,
-            custom_benchmark_service=os.getenv("BENCHMARK_SERVICE_URL"),
+            custom_benchmark_service=None,
         )
 
         # Create benchmark row inside of start run request
@@ -252,7 +251,7 @@ class TestProcessBenchmark:
             concurrency=5,
             task_ids=task_ids,
             harness_config=harness_config,
-            custom_benchmark_service=os.getenv("BENCHMARK_SERVICE_URL"),
+            custom_benchmark_service=None,
         )
 
         # Create benchmark row inside of start run request
@@ -316,7 +315,7 @@ class TestProcessBenchmark:
             concurrency=5,
             task_ids=task_ids,
             harness_config=harness_config,
-            custom_benchmark_service=os.getenv("BENCHMARK_SERVICE_URL"),
+            custom_benchmark_service=None,
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)

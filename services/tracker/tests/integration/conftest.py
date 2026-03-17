@@ -1,8 +1,10 @@
 import os
+import uuid
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 import pytest
+import tracker.config
 from benchmark_service.client import BenchmarkServiceClient
 from daytona import AsyncDaytona
 from dotenv import load_dotenv
@@ -14,6 +16,15 @@ from tracker.types import AWSCredentials
 from tracker.utils import create_benchmark_service_client
 
 _ = load_dotenv()
+
+# For integration tests, override benchmark service URL to use localhost:8001 from pyproject.toml
+# (instead of deriving from BENCHMARK_SERVICE_NAMESPACE)
+def _override_benchmark_url(benchmark_name: str) -> str:
+    """Return http://localhost:8001 for integration tests (from pyproject.toml)."""
+    return "http://localhost:8001"
+
+
+tracker.config.create_benchmark_service_url = _override_benchmark_url
 
 
 @pytest.fixture(scope="session")
@@ -28,8 +39,11 @@ def test_aws() -> AWSCredentials:
 
 @pytest.fixture(scope="session")
 def test_daytona_secret() -> str:
-    """Daytona secret name sourced from the environment for integration tests."""
-    return os.environ.get("DAYTONA_SECRET_NAME", "test-daytona-secret")
+    """Daytona secret name for integration tests.
+
+    The actual secret is mocked to load from .env via _setup_integration_test_secrets fixture.
+    """
+    return "daytona-credentials"
 
 
 @pytest.fixture(scope="session")
@@ -58,10 +72,10 @@ def postgres_session(postgres_engine) -> Generator[Session, Any, None]:
 async def benchmark_service(
     test_aws: AWSCredentials, test_daytona_secret: str
 ) -> AsyncGenerator[BenchmarkServiceClient, None]:
+
+    # Allow override for testing
     service_url = os.getenv("BENCHMARK_SERVICE_URL")
     if not service_url:
-        from tracker.config import create_benchmark_service_url
-
         service_url = create_benchmark_service_url("swebench")
 
     service = create_benchmark_service_client(url=service_url, daytona_secret_name=test_daytona_secret, aws=test_aws)
@@ -74,3 +88,13 @@ async def benchmark_service(
 @pytest.fixture
 async def daytona_client(benchmark_service: BenchmarkServiceClient) -> AsyncGenerator[AsyncDaytona, None]:
     yield benchmark_service.daytona_client
+
+
+@pytest.fixture
+def random_sandbox_name():
+    return f"test-sandbox-{uuid.uuid4().hex[:5]}"
+
+
+@pytest.fixture
+def test_image():
+    return "python:3.11-slim"

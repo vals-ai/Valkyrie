@@ -1,4 +1,3 @@
-import os
 from typing import Any
 
 import pytest
@@ -21,10 +20,12 @@ def docker_image_format() -> str:
 async def require_health_check(test_aws: AWSCredentials, test_daytona_secret: str):
     """Checks that the server is running before running the test. If its not connected it will fail"""
 
+    import os
+    from tracker.config import create_benchmark_service_url
+
+    # Allow override via BENCHMARK_SERVICE_URL for docker/custom environments
     service_url = os.getenv("BENCHMARK_SERVICE_URL")
     if not service_url:
-        from tracker.config import create_benchmark_service_url
-
         service_url = create_benchmark_service_url("swebench")
 
     benchmark_service = create_benchmark_service_client(
