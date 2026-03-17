@@ -206,12 +206,18 @@ async def install_agent_dependencies(
 
 MAX_WEBSOCKET_RETRIES = 10
 
+RETRIABLE_WEBSOCKET_ERRORS = [
+    "no close frame",
+    "1011",
+    "timed out during opening handshake",
+]
 
-def is_websocket_disconnect(error: DaytonaError) -> bool:
-    """Check if a DaytonaError is a recoverable WebSocket disconnection."""
+
+def is_retriable_websocket_error(error: DaytonaError) -> bool:
+    """Check if a DaytonaError is a recoverable WebSocket error."""
     message = str(error).lower()
 
-    return "no close frame" in message or "1011" in message
+    return any(pattern in message for pattern in RETRIABLE_WEBSOCKET_ERRORS)
 
 
 async def stream_command_output(
@@ -246,7 +252,7 @@ async def stream_command_output(
                 )
                 break
             except DaytonaError as e:
-                if not is_websocket_disconnect(e) or attempt == MAX_WEBSOCKET_RETRIES:
+                if not is_retriable_websocket_error(e) or attempt == MAX_WEBSOCKET_RETRIES:
                     raise
 
                 logger.warning(f"WebSocket disconnected (attempt {attempt}/{MAX_WEBSOCKET_RETRIES}), reconnecting: {e}")

@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from daytona.common.errors import DaytonaError
 
-from tracker.sandbox import is_websocket_disconnect, stream_command_output
+from tracker.sandbox import is_retriable_websocket_error, stream_command_output
 
 
 @dataclass
@@ -68,11 +68,12 @@ class FakeSandbox:
     [
         ("WebSocket error: no close frame received or sent", True),
         ("WebSocket error: sent 1011 (internal error) keepalive ping timeout; no close frame received", True),
+        ("Failed to get session command logs: timed out during opening handshake", True),
         ("some other error", False),
     ],
 )
-def test_is_websocket_disconnect(message: str, expected: bool) -> None:
-    assert is_websocket_disconnect(DaytonaError(message)) == expected
+def test_is_retriable_websocket_error(message: str, expected: bool) -> None:
+    assert is_retriable_websocket_error(DaytonaError(message)) == expected
 
 
 @pytest.mark.asyncio
