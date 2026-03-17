@@ -255,7 +255,9 @@ async def stream_command_output(
                 if not is_retriable_websocket_error(e) or attempt == MAX_WEBSOCKET_RETRIES:
                     raise
 
-                logger.warning(f"WebSocket disconnected (attempt {attempt}/{MAX_WEBSOCKET_RETRIES}), reconnecting: {e}")
+                message = f"WebSocket disconnected (attempt {attempt}/{MAX_WEBSOCKET_RETRIES}), reconnecting: {e}"
+                logger.warning(message)
+                on_output(f"[WARNING] {message}")
 
         try:
             cmd = await sandbox.process.get_session_command(session_id, cmd_id)
