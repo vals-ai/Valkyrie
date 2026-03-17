@@ -71,22 +71,16 @@ CONTRACT = AgentContractRequest(
 )
 
 
-def testis_websocket_disconnect_detects_no_close_frame() -> None:
-    error = DaytonaError("WebSocket error: no close frame received or sent")
-
-    assert is_websocket_disconnect(error)
-
-
-def testis_websocket_disconnect_detects_1011_ping_timeout() -> None:
-    error = DaytonaError("WebSocket error: sent 1011 (internal error) keepalive ping timeout; no close frame received")
-
-    assert is_websocket_disconnect(error)
-
-
-def testis_websocket_disconnect_rejects_other_errors() -> None:
-    error = DaytonaError("some other error")
-
-    assert not is_websocket_disconnect(error)
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("WebSocket error: no close frame received or sent", True),
+        ("WebSocket error: sent 1011 (internal error) keepalive ping timeout; no close frame received", True),
+        ("some other error", False),
+    ],
+)
+def test_is_websocket_disconnect(message: str, expected: bool) -> None:
+    assert is_websocket_disconnect(DaytonaError(message)) == expected
 
 
 @pytest.mark.asyncio
