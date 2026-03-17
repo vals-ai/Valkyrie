@@ -1,6 +1,5 @@
 """Sandbox management utilities for the tracker service."""
 
-import asyncio
 import io
 import shlex
 import zipfile
@@ -17,6 +16,7 @@ from daytona import (
     Resources,
     SessionExecuteRequest,
 )
+from daytona.common.errors import DaytonaError
 
 from tracker.exceptions import SandboxError
 from tracker.logger import get_logger
@@ -120,6 +120,16 @@ async def install_agent_dependencies(sandbox: AsyncSandbox, contract: AgentContr
     logger.info(f"Finished running installing dependencies for contract: {contract.name}")
 
 
+MAX_WEBSOCKET_RETRIES = 10
+
+
+def is_websocket_disconnect(error: DaytonaError) -> bool:
+    """Check if a DaytonaError is a recoverable WebSocket disconnection."""
+    message = str(error).lower()
+
+    return "no close frame" in message or "1011" in message
+
+
 async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, problem_statement: str, task_id: str) -> str:
     """
     Run the agent inside the sandbox for a given task.
@@ -156,16 +166,20 @@ async def run_agent(sandbox: AsyncSandbox, contract: AgentContractRequest, probl
         if not cmd_id:
             raise SandboxError(f"Failed to execute command {run_cmd} in session {session_id}")
 
-        log_task = asyncio.create_task(
-            sandbox.process.get_session_command_logs_async(
-                session_id=session_id,
-                command_id=cmd_id,
-                on_stdout=on_data,
-                on_stderr=on_data,
-            )
-        )
+        for attempt in range(1, MAX_WEBSOCKET_RETRIES + 1):
+            try:
+                await sandbox.process.get_session_command_logs_async(
+                    session_id=session_id,
+                    command_id=cmd_id,
+                    on_stdout=on_data,
+                    on_stderr=on_data,
+                )
+                break
+            except DaytonaError as e:
+                if not is_websocket_disconnect(e) or attempt == MAX_WEBSOCKET_RETRIES:
+                    raise
 
-        await log_task
+                logger.warning(f"WebSocket disconnected (attempt {attempt}/{MAX_WEBSOCKET_RETRIES}), reconnecting: {e}")
 
         cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
