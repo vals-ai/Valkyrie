@@ -14,6 +14,10 @@ class SandboxError(TrackerServiceError):
         return "Sandbox error: " + super().__str__()
 
 
+class InvalidSandboxConfigurationError(SandboxError):
+    """Exception raised for deterministic sandbox configuration errors."""
+
+
 class S3Error(TrackerServiceError):
     """Exception raised for S3 storage operation errors."""
 
