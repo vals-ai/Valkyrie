@@ -16,6 +16,7 @@ from daytona import (
     AsyncDaytona,
     AsyncSandbox,
     CreateSandboxFromImageParams,
+    CreateSandboxFromSnapshotParams,
     DaytonaNotFoundError,
     FileUpload,
     Resources,
@@ -34,6 +35,7 @@ logger = get_logger(__name__)
 
 
 bundle_path = PurePosixPath("/bundle")
+SNAPSHOT_IMAGE_PREFIX = "snapshot:"
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -89,6 +91,24 @@ async def _create_sandbox(
         return sandbox
     except DaytonaNotFoundError:
         pass
+
+    if image.startswith(SNAPSHOT_IMAGE_PREFIX):
+        snapshot_name = image[len(SNAPSHOT_IMAGE_PREFIX) :].strip()
+        if not snapshot_name:
+            raise SandboxError("Snapshot-based sandbox requested without a snapshot name")
+
+        return await daytona.create(
+            CreateSandboxFromSnapshotParams(
+                auto_delete_interval=60,
+                name=sandbox_name,
+                labels=labels,
+                snapshot=snapshot_name,
+                language="python",
+                network_block_all=False,
+                env_vars=env_vars,
+            ),
+            timeout=360,
+        )
 
     # Create a new sandbox from scratch, if it stops we delete it within a minute
     return await daytona.create(
