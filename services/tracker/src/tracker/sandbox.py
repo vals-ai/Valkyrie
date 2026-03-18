@@ -23,7 +23,6 @@ from daytona import (
     SandboxState,
     SessionExecuteRequest,
 )
-<<<<<<< HEAD
 from daytona.common.errors import DaytonaError
 from tenacity import before_sleep_log, retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt, wait_fixed
 
