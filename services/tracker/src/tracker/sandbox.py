@@ -23,6 +23,7 @@ from daytona import (
     SandboxState,
     SessionExecuteRequest,
 )
+from daytona.common.errors import DaytonaError
 from tenacity import before_sleep_log, retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from tracker.database.models import AgentContractRequest
@@ -223,6 +224,22 @@ async def install_agent_dependencies(
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 
 
+MAX_WEBSOCKET_RETRIES = 10
+
+RETRIABLE_WEBSOCKET_ERRORS = [
+    "no close frame",
+    "1011",
+    "timed out during opening handshake",
+]
+
+
+def is_retriable_websocket_error(error: DaytonaError) -> bool:
+    """Check if a DaytonaError is a recoverable WebSocket error."""
+    message = str(error).lower()
+
+    return any(pattern in message for pattern in RETRIABLE_WEBSOCKET_ERRORS)
+
+
 async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
@@ -245,12 +262,22 @@ async def stream_command_output(
         if not cmd_id:
             raise SandboxError(f"Failed to execute command {command} in session {session_id}")
 
-        await sandbox.process.get_session_command_logs_async(
-            session_id=session_id,
-            command_id=cmd_id,
-            on_stdout=on_output,
-            on_stderr=on_output,
-        )
+        for attempt in range(1, MAX_WEBSOCKET_RETRIES + 1):
+            try:
+                await sandbox.process.get_session_command_logs_async(
+                    session_id=session_id,
+                    command_id=cmd_id,
+                    on_stdout=on_output,
+                    on_stderr=on_output,
+                )
+                break
+            except DaytonaError as e:
+                if not is_retriable_websocket_error(e) or attempt == MAX_WEBSOCKET_RETRIES:
+                    raise
+
+                message = f"WebSocket disconnected (attempt {attempt}/{MAX_WEBSOCKET_RETRIES}), reconnecting: {e}"
+                logger.warning(message)
+                on_output(f"[WARNING] {message}")
 
         try:
             cmd = await sandbox.process.get_session_command(session_id, cmd_id)
