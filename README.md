@@ -1,5 +1,7 @@
 # Valkyrie
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vals-ai/Valkyrie)
+
 Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
 > **Note:** The CLI is named **Valkyrie**. You can invoke it using either `valkyrie` or the shorter alias `valk`. For example: `valkyrie run start` or `valk run start`.

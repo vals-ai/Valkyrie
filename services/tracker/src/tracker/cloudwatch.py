@@ -21,7 +21,7 @@ def _cloudwatch_client(aws: "AWSCredentials") -> Any:
         aws_access_key_id=aws.aws_access_key_id,
         aws_secret_access_key=aws.aws_secret_access_key,
         region_name=aws.aws_default_region,
-        config=Config(max_pool_connections=75),
+        config=Config(max_pool_connections=200),
     )
 
 
