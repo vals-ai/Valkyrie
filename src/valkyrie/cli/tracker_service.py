@@ -114,6 +114,24 @@ class TrackerService:
         return auth.get(benchmark_name)
 
     @staticmethod
+    def get_webhook_url() -> str | None:
+        """
+        Get Slack webhook URL from config if it exists.
+
+        Returns:
+            Webhook URL if configured, None otherwise
+        """
+        config_path = _CONFIG_LOCATION.expanduser()
+        if not config_path.exists():
+            return None
+
+        with open(config_path) as f:
+            harness_config = yaml.safe_load(f) or {}
+
+        url = harness_config.get("slack_webhook_url")
+        return url if url else None
+
+    @staticmethod
     def parse_config_keys() -> dict[str, str]:
         """Parses expected config keys and handles edge cases"""
         config_path: Path = _CONFIG_LOCATION.expanduser()
@@ -131,9 +149,12 @@ class TrackerService:
                 "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config modify` to update an existing config"
             )
 
+        # Keys that are managed separately and should not be sent as harness headers
+        _SKIP_HEADER_KEYS = {"slack_webhook_url"}
+
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():
-            if isinstance(value, dict):
+            if isinstance(value, dict) or key in _SKIP_HEADER_KEYS:
                 continue
 
             config_keys[key] = str(value)
@@ -186,6 +207,8 @@ class TrackerService:
         lambda_function: str | None = None,
         dataset: str | None = None,
         service_headers: dict[str, str] | None = None,
+        webhook_url: str | None = None,
+        webhook_intervals: list[int] | None = None,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -216,6 +239,8 @@ class TrackerService:
                 harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name),
                 service_headers=service_headers or {},
+                webhook_url=webhook_url,
+                webhook_intervals=webhook_intervals,
             )
 
             body = payload.model_dump()
@@ -356,7 +381,13 @@ class TrackerService:
             raise TrackerServiceError(f"Failed to stop benchmark: {e}") from e
 
     def retry_or_resume_benchmark(
-        self, benchmark_id: UUID, retry: bool, concurrency: int | None, task_ids: list[str]
+        self,
+        benchmark_id: UUID,
+        retry: bool,
+        concurrency: int | None,
+        task_ids: list[str],
+        webhook_url: str | None = None,
+        webhook_intervals: list[int] | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -376,6 +407,12 @@ class TrackerService:
             # NOTE: 0 is not acceptable
             if concurrency:
                 params["concurrency"] = concurrency
+
+            if webhook_url:
+                params["webhook_url"] = webhook_url
+
+            if webhook_intervals:
+                params["webhook_intervals"] = webhook_intervals
 
             response = self._client.post(
                 f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",

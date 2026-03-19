@@ -45,7 +45,7 @@ async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
 
     # Truncate message to fit terminal width (leaving room for spinner: 2 chars)
     max_width = shutil.get_terminal_size().columns - 2
-    display_message = message if len(message) <= max_width else message[:max_width - 1] + "…"
+    display_message = message if len(message) <= max_width else message[: max_width - 1] + "…"
 
     async def show_spinner() -> None:
         """Show animated spinner until task completes."""
@@ -644,6 +644,29 @@ def paginate_agents(agents: list[tuple[str, datetime]], limit: int = 10) -> None
             offset -= limit
         elif char == "q" or char == "\x03":
             break
+
+
+def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
+    """Validate notification interval values.
+
+    Args:
+        intervals: Tuple of percentage thresholds for Slack notifications.
+
+    Raises:
+        click.UsageError: If intervals are invalid.
+
+    Returns:
+        Validated list of intervals.
+    """
+    interval_list = list(intervals)
+    if len(interval_list) > 3:
+        raise click.UsageError("Maximum of 3 intervals allowed.")
+    for val in interval_list:
+        if val < 5 or val > 100:
+            raise click.UsageError(f"Interval {val} out of range. Must be between 5 and 100.")
+        if val % 5 != 0:
+            raise click.UsageError(f"Interval {val} must be divisible by 5.")
+    return interval_list
 
 
 def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:

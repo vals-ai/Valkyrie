@@ -1,0 +1,165 @@
+"""Slack webhook notifications for benchmark progress."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from typing import TYPE_CHECKING
+from uuid import UUID
+from zoneinfo import ZoneInfo
+
+import httpx
+
+from tracker.database.models import BenchmarkStatus
+from tracker.logger import get_logger
+
+if TYPE_CHECKING:
+    from tracker.database.models import Benchmark
+    from tracker.types import BenchmarkDetails
+
+logger = get_logger(__name__)
+
+WEBHOOK_TIMEOUT = 5.0
+
+
+@dataclass(frozen=True)
+class NotificationContext:
+    """Common fields for all notification messages."""
+
+    benchmark_name: str
+    agent_name: str
+    benchmark_id: UUID
+    started_at: datetime
+    total_tasks: int
+    finished_tasks: int
+
+    @classmethod
+    def from_benchmark(cls, benchmark_row: Benchmark, details: BenchmarkDetails) -> NotificationContext:
+        return cls(
+            benchmark_name=benchmark_row.name,
+            agent_name=benchmark_row.arguments.contract.name,
+            benchmark_id=benchmark_row.id,
+            started_at=benchmark_row.started_at,
+            total_tasks=details.total_tasks,
+            finished_tasks=details.finished_tasks,
+        )
+
+
+def _format_duration(started_at: datetime) -> str:
+    """Format elapsed time as human-readable string."""
+    if started_at.tzinfo is None:
+        started_at = started_at.replace(tzinfo=ZoneInfo("UTC"))
+    now = datetime.now(ZoneInfo("UTC"))
+    delta = now - started_at
+    total_seconds = int(delta.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+    return f"{minutes}m"
+
+
+def _build_progress_message(context: NotificationContext, percent: int) -> str:
+    elapsed = _format_duration(context.started_at)
+    return (
+        f"*Benchmark Update* — {context.benchmark_name}\n"
+        f"Agent: {context.agent_name} | Run: {context.benchmark_id}\n"
+        f"Status: In Progress — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)\n"
+        f"Elapsed: {elapsed}"
+    )
+
+
+def _build_terminal_message(
+    context: NotificationContext,
+    status: BenchmarkStatus,
+    final_score: float | None = None,
+    error_message: str | None = None,
+) -> str:
+    duration = _format_duration(context.started_at)
+    percent = int((context.finished_tasks / context.total_tasks) * 100) if context.total_tasks > 0 else 0
+
+    status_labels = {
+        BenchmarkStatus.FINISHED: "Benchmark Complete",
+        BenchmarkStatus.ERROR: "Benchmark Error",
+        BenchmarkStatus.STOPPED: "Benchmark Stopped",
+    }
+    header = status_labels.get(status, f"Benchmark {status.value}")
+
+    lines = [
+        f"*{header}* — {context.benchmark_name}",
+        f"Agent: {context.agent_name} | Run: {context.benchmark_id}",
+        f"Status: {status.value} — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)",
+    ]
+
+    if final_score is not None:
+        lines.append(f"Final Score: {final_score}")
+    if error_message:
+        truncated = error_message[:200] + "..." if len(error_message) > 200 else error_message
+        lines.append(f"Error: {truncated}")
+
+    lines.append(f"Duration: {duration}")
+    return "\n".join(lines)
+
+
+class SlackNotifier:
+    def __init__(self, webhook_url: str, intervals: list[int]):
+        self._webhook_url = webhook_url
+        self._intervals = set(intervals)
+        self._fired: set[int] = set()
+        self._client = httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT)
+
+    async def _send_webhook(self, text: str) -> None:
+        """Fire and forget — exceptions are caught and logged, never raised."""
+        try:
+            response = await self._client.post(
+                self._webhook_url,
+                json={"text": text},
+            )
+            if response.status_code != 200:
+                logger.warning(f"Slack webhook returned {response.status_code}: {response.text[:200]}")
+        except Exception as e:
+            logger.warning(f"Slack webhook failed: {e}")
+
+    async def check_and_notify(self, context: NotificationContext) -> None:
+        """Check if any un-fired threshold was crossed and send notifications."""
+        if context.total_tasks == 0:
+            return
+
+        percent = int((context.finished_tasks / context.total_tasks) * 100)
+
+        # Skip 100% threshold here — terminal notifications handle completion
+        crossed = sorted(t for t in self._intervals if t <= percent and t not in self._fired and t < 100)
+
+        for threshold in crossed:
+            self._fired.add(threshold)
+            message = _build_progress_message(context, percent=threshold)
+            await self._send_webhook(message)
+
+    async def send_terminal_notification(
+        self,
+        context: NotificationContext,
+        status: BenchmarkStatus,
+        final_score: float | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        """Send notification for terminal states. Always fires regardless of intervals."""
+        message = _build_terminal_message(
+            context,
+            status=status,
+            final_score=final_score,
+            error_message=error_message,
+        )
+        await self._send_webhook(message)
+
+    async def __aenter__(self) -> "SlackNotifier":
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        await self.close()
+
+    async def close(self) -> None:
+        """Close the HTTP client."""
+        await self._client.aclose()

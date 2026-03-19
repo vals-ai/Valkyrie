@@ -13,7 +13,14 @@ from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
 from tracker.types import StartBenchmarkRequest
-from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus, initiate_stop_benchmark, process_benchmark, reset_to_in_progress_status
+from tracker.utils import (
+    TaskMonitor,
+    TrackedTask,
+    TrackedTaskStatus,
+    initiate_stop_benchmark,
+    process_benchmark,
+    reset_to_in_progress_status,
+)
 from tests.unit.conftest import TEST_HARNESS_CONFIG
 
 client = TestClient(app)
@@ -163,9 +170,7 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        task_rows = [
-            Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)
-        ]
+        task_rows = [Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)]
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -225,4 +230,3 @@ class TestStopAndResume:
         cancel_mock.assert_called_once()
         assert monitor._task_tracking == {}
         tracked_task._coro.close()
-

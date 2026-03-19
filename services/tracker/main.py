@@ -319,6 +319,8 @@ async def retry_or_resume_benchmark(
     benchmark_id: UUID,
     retry: bool = Query(default=False),
     concurrency: int | None = Query(default=None),
+    webhook_url: str | None = Query(default=None),
+    webhook_intervals: list[int] | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -368,6 +370,11 @@ async def retry_or_resume_benchmark(
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(harness_config).model_dump()
+
+    # Inject webhook config from CLI (re-read from user config on each resume)
+    if webhook_url:
+        resume_request_json["webhook_url"] = webhook_url
+        resume_request_json["webhook_intervals"] = webhook_intervals or [100]
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running

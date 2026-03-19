@@ -53,6 +53,8 @@ class StartBenchmarkRequest(BaseModel):
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = {}
+    webhook_url: str | None = None
+    webhook_intervals: list[int] | None = None
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
