@@ -130,6 +130,10 @@ class SlackNotifier:
 
         percent = int((context.finished_tasks / context.total_tasks) * 100)
 
+        # Skip progress notifications when run is complete — terminal notification handles this
+        if percent >= 100:
+            return
+
         # Skip 100% threshold here — terminal notifications handle completion
         crossed = sorted(t for t in self._intervals if t <= percent and t not in self._fired and t < 100)
 
