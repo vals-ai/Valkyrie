@@ -126,11 +126,15 @@ class TestSlackNotifierFireAndForget:
             webhook_url="https://hooks.slack.com/test",
             intervals=[50],
         )
-        with patch.object(
-            notifier._client, "post", new_callable=AsyncMock, side_effect=httpx.TimeoutException("timeout")
-        ):
+        with patch("tracker.notifications.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            # Should not raise
             await notifier.check_and_notify(_make_context(finished_tasks=50))
-        await notifier.close()
 
     async def test_webhook_connection_error_does_not_raise(self) -> None:
         """Webhook connection error should be caught and logged, not raised."""
@@ -138,6 +142,12 @@ class TestSlackNotifierFireAndForget:
             webhook_url="https://hooks.slack.com/test",
             intervals=[50],
         )
-        with patch.object(notifier._client, "post", new_callable=AsyncMock, side_effect=httpx.ConnectError("refused")):
+        with patch("tracker.notifications.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client_cls.return_value = mock_client
+
+            # Should not raise
             await notifier.check_and_notify(_make_context(finished_tasks=50))
-        await notifier.close()

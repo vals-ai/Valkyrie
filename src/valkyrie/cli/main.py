@@ -33,8 +33,8 @@ from valkyrie.cli.utils import (
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
+    resolve_webhook_config,
     stream_benchmark_status,
-    validate_intervals,
 )
 from valkyrie.schemas import AgentConfig
 
@@ -505,20 +505,7 @@ def start(
         click.echo(f"  - Service headers: {', '.join(service_headers.keys())}")
 
     # Webhook notification setup
-    webhook_url = TrackerService.get_webhook_url()
-    webhook_intervals: list[int] | None = None
-
-    if intervals and not webhook_url:
-        click.echo(
-            click.style(
-                "  Warning: --interval specified but no webhook URL configured. Run `valkyrie config webhook set <url>` first. Ignoring intervals.",
-                fg="yellow",
-            )
-        )
-    elif intervals:
-        webhook_intervals = validate_intervals(intervals)
-    elif webhook_url:
-        webhook_intervals = [100]
+    webhook_url, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_url())
 
     if webhook_url and webhook_intervals:
         click.echo(f"  - Notifications: {webhook_intervals}%")

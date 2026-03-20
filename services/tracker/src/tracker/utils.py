@@ -203,14 +203,11 @@ class TaskMonitor:
     async def _check_notifications(self) -> None:
         """Check notification thresholds using DB task counts."""
         if not self._notifier:
-            logger.info("No notifier")
             return
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(self._benchmark_id, session)
-            benchmark_details = BenchmarkContext(benchmark_row, session).benchmark_details
-
-            notification_context = NotificationContext.from_benchmark(benchmark_row, benchmark_details)
+            notification_context = NotificationContext.from_benchmark(benchmark_row, session)
             await self._notifier.check_and_notify(notification_context)
 
     async def track_tasks(self) -> None:
@@ -631,16 +628,6 @@ async def process_benchmark(
 
             set_benchmark_final_status(benchmark_row, session)
 
-            # Send terminal notification
-            if notifier:
-                benchmark_details = BenchmarkContext(benchmark_row, session).benchmark_details
-                notification_context = NotificationContext.from_benchmark(benchmark_row, benchmark_details)
-                await notifier.send_terminal_notification(
-                    notification_context,
-                    status=benchmark_row.status,
-                    final_score=final_evaluation_row.final_score,
-                )
-
             # Push the final benchmark view to the bucket
             final_view: FinalViewResponse = create_final_view(benchmark_row, session)
 
@@ -657,20 +644,6 @@ async def process_benchmark(
                 invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
 
     except Exception as e:
-        if notifier:
-            try:
-                with Session(bind=engine) as session:
-                    benchmark_row = fetch_benchmark_row(benchmark_id, session)
-                    benchmark_details = BenchmarkContext(benchmark_row, session).benchmark_details
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, benchmark_details)
-                    await notifier.send_terminal_notification(
-                        notification_context,
-                        status=BenchmarkStatus.ERROR,
-                        error_message=str(e),
-                    )
-            except Exception as notification_error:
-                logger.warning(f"Failed to send error notification: {notification_error}")
-
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -680,10 +653,22 @@ async def process_benchmark(
             # Handle any misalignments between the benchmark status and tasks
             catch_errors_during_cleanup(benchmark_id, session)
 
-        await benchmark_service.close()
-
         if notifier:
-            await notifier.close()
+            try:
+                with Session(bind=engine) as session:
+                    benchmark_row = fetch_benchmark_row(benchmark_id, session)
+                    notification_context = NotificationContext.from_benchmark(benchmark_row, session)
+                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                    await notifier.send_terminal_notification(
+                        notification_context,
+                        status=benchmark_row.status,
+                        final_score=final_score,
+                        error_message=benchmark_row.error_message,
+                    )
+            except Exception as notification_error:
+                logger.warning(f"Failed to send terminal notification: {notification_error}")
+
+        await benchmark_service.close()
 
 
 class TaskCounts(NamedTuple):

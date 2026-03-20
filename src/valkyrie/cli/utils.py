@@ -669,6 +669,37 @@ def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
     return interval_list
 
 
+def resolve_webhook_config(
+    intervals: tuple[int, ...], webhook_url: str | None
+) -> tuple[str | None, list[int] | None]:
+    """Resolve webhook URL and intervals for a benchmark run.
+
+    Args:
+        intervals: User-provided interval flags from CLI.
+        webhook_url: Webhook URL from config, or None.
+
+    Returns:
+        Tuple of (webhook_url, webhook_intervals) to pass to the tracker.
+    """
+    if intervals and not webhook_url:
+        click.echo(
+            click.style(
+                "  Warning: --interval specified but no webhook URL configured. "
+                "Run `valkyrie config webhook set <url>` first. Ignoring intervals.",
+                fg="yellow",
+            )
+        )
+        return None, None
+
+    if intervals:
+        return webhook_url, validate_intervals(intervals)
+
+    if webhook_url:
+        return webhook_url, [100]
+
+    return None, None
+
+
 def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:
     """
     Interactive paginated display of services with vim-style navigation.
