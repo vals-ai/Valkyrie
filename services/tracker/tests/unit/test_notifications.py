@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from tracker.database.models import BenchmarkStatus
-from tracker.notifications import NotificationContext, SlackNotifier
+from tracker.notifications import NotificationContext, SlackNotifier, _build_progress_message, _build_terminal_message
 
 
 def _make_context(**overrides: object) -> NotificationContext:
@@ -19,6 +19,7 @@ def _make_context(**overrides: object) -> NotificationContext:
         "started_at": datetime.now(ZoneInfo("UTC")),
         "total_tasks": 100,
         "finished_tasks": 0,
+        "model": "anthropic/claude-sonnet-4-20250514",
     }
     defaults.update(overrides)
     return NotificationContext(**defaults)
@@ -117,6 +118,28 @@ class TestSlackNotifierTerminal:
             mock_send.assert_called_once()
             message = mock_send.call_args[0][0]
             assert "Benchmark Stopped" in message
+
+
+class TestModelInMessages:
+    def test_progress_message_includes_model(self) -> None:
+        context = _make_context(finished_tasks=25, model="anthropic/claude-sonnet-4-20250514")
+        message = _build_progress_message(context, percent=25)
+        assert "Model: anthropic/claude-sonnet-4-20250514" in message
+
+    def test_progress_message_omits_model_when_none(self) -> None:
+        context = _make_context(finished_tasks=25, model=None)
+        message = _build_progress_message(context, percent=25)
+        assert "Model:" not in message
+
+    def test_terminal_message_includes_model(self) -> None:
+        context = _make_context(finished_tasks=100, model="anthropic/claude-sonnet-4-20250514")
+        message = _build_terminal_message(context, status=BenchmarkStatus.FINISHED, final_score=0.42)
+        assert "Model: anthropic/claude-sonnet-4-20250514" in message
+
+    def test_terminal_message_omits_model_when_none(self) -> None:
+        context = _make_context(finished_tasks=100, model=None)
+        message = _build_terminal_message(context, status=BenchmarkStatus.FINISHED, final_score=0.42)
+        assert "Model:" not in message
 
 
 class TestSlackNotifierFireAndForget:
