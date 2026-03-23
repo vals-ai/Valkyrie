@@ -73,11 +73,10 @@ def _build_progress_message(context: NotificationContext, percent: int) -> str:
     lines = [
         f"*Benchmark Update* — {context.benchmark_name}",
         f"Agent: {context.agent_name} | Run: {context.benchmark_id}",
+        f"Model: {context.model or 'N/A'}",
+        f"Status: In Progress — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)",
+        f"Elapsed: {elapsed}",
     ]
-    if context.model:
-        lines.append(f"Model: {context.model}")
-    lines.append(f"Status: In Progress — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)")
-    lines.append(f"Elapsed: {elapsed}")
     return "\n".join(lines)
 
 
@@ -100,10 +99,9 @@ def _build_terminal_message(
     lines = [
         f"*{header}* — {context.benchmark_name}",
         f"Agent: {context.agent_name} | Run: {context.benchmark_id}",
+        f"Model: {context.model or 'N/A'}",
+        f"Status: {status.value} — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)",
     ]
-    if context.model:
-        lines.append(f"Model: {context.model}")
-    lines.append(f"Status: {status.value} — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)")
 
     if final_score is not None:
         lines.append(f"Final Score: {final_score}")

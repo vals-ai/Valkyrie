@@ -120,26 +120,37 @@ class TestSlackNotifierTerminal:
             assert "Benchmark Stopped" in message
 
 
-class TestModelInMessages:
-    def test_progress_message_includes_model(self) -> None:
+class TestMessageContent:
+    def test_progress_message_contains_all_fields(self) -> None:
         context = _make_context(finished_tasks=25, model="anthropic/claude-sonnet-4-20250514")
         message = _build_progress_message(context, percent=25)
+        assert "Benchmark Update" in message
+        assert context.benchmark_name in message
+        assert context.agent_name in message
+        assert str(context.benchmark_id) in message
         assert "Model: anthropic/claude-sonnet-4-20250514" in message
+        assert "25% (25/100 tasks)" in message
 
-    def test_progress_message_omits_model_when_none(self) -> None:
+    def test_progress_message_shows_na_when_model_is_none(self) -> None:
         context = _make_context(finished_tasks=25, model=None)
         message = _build_progress_message(context, percent=25)
-        assert "Model:" not in message
+        assert "Model: N/A" in message
 
-    def test_terminal_message_includes_model(self) -> None:
+    def test_terminal_message_contains_all_fields(self) -> None:
         context = _make_context(finished_tasks=100, model="anthropic/claude-sonnet-4-20250514")
         message = _build_terminal_message(context, status=BenchmarkStatus.FINISHED, final_score=0.42)
+        assert "Benchmark Complete" in message
+        assert context.benchmark_name in message
+        assert context.agent_name in message
+        assert str(context.benchmark_id) in message
         assert "Model: anthropic/claude-sonnet-4-20250514" in message
+        assert "100% (100/100 tasks)" in message
+        assert "Final Score: 0.42" in message
 
-    def test_terminal_message_omits_model_when_none(self) -> None:
+    def test_terminal_message_shows_na_when_model_is_none(self) -> None:
         context = _make_context(finished_tasks=100, model=None)
         message = _build_terminal_message(context, status=BenchmarkStatus.FINISHED, final_score=0.42)
-        assert "Model:" not in message
+        assert "Model: N/A" in message
 
 
 class TestSlackNotifierFireAndForget:
