@@ -6,12 +6,13 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
 from daytona import AsyncDaytona
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, inspect, select
 
 from tests.utils import build_task_environment
-from benchmark_service.client import BenchmarkServiceClient
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -20,7 +21,6 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
 
 logger = logging.getLogger(__name__)
 

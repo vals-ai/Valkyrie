@@ -1,38 +1,7 @@
-import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from daytona import AsyncDaytona, AsyncSandbox, CreateSandboxFromImageParams, Resources
-
-
-async def validate_docker_image(image_name: str) -> bool:
-    """
-    Validate the docker image is supported by the docker daemon
-
-    Args:
-        image_name: The name of the docker image to validate
-
-    Returns:
-        True if the docker image is supported, False otherwise
-
-    Raises:
-        ValueError: If the docker image is not supported
-    """
-    try:
-        result = await asyncio.create_subprocess_exec(
-            "docker",
-            "manifest",
-            "inspect",
-            image_name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        _, stderr = await result.communicate()
-
-        return result.returncode == 0 or (len(stderr) > 0 and "unsupported manifest format" in stderr.decode("utf-8"))
-    except Exception as e:
-        raise ValueError(f"Error validating docker image: {e}")
 
 
 @asynccontextmanager
@@ -58,7 +27,7 @@ async def build_task_environment(
             image=docker_image,
             name=task_id,
             network_block_all=False,
-            resources=Resources(vcpu=4, memory=8, disk=10),
+            resources=Resources(cpu=4, memory=8, disk=10),
         ),
         timeout=360,
     )
