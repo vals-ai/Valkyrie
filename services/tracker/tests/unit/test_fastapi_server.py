@@ -3,13 +3,14 @@ from datetime import timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import VerifyTaskIdsResponse
 from dateutil.parser import isoparse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session
 
 from main import app
-from benchmark_service.client import BenchmarkServiceClient
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -20,14 +21,13 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from benchmark_service.schemas import VerifyTaskIdsResponse
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarksRequest,
     FinalViewResponse,
+    HarnessConfig,
     StartBenchmarkRequest,
 )
-from tests.unit.conftest import TEST_HARNESS_CONFIG
 
 client = TestClient(app)
 
@@ -54,7 +54,11 @@ class TestFastapiServer:
         assert response.json() == {"status": "ok"}
 
     async def test_start_benchmark(
-        self, contract: AgentContractRequest, monkeypatch: MonkeyPatch, database_session: Session
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
     ):
         """
         Test start benchmark of the fastapi server.
@@ -72,7 +76,7 @@ class TestFastapiServer:
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
-            harness_config=TEST_HARNESS_CONFIG,
+            harness_config=harness_config,
         )
 
         async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -336,7 +340,11 @@ class TestFastapiServer:
         assert response_json.get("task_errors").get("task_23") == "No error message was provided"
 
     async def test_benchmark_error_handling(
-        self, contract: AgentContractRequest, database_session: Session, monkeypatch: MonkeyPatch
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
     ):
         """
         Test benchmark error handling of the fastapi server.
@@ -355,7 +363,7 @@ class TestFastapiServer:
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
-            harness_config=TEST_HARNESS_CONFIG,
+            harness_config=harness_config,
         )
 
         # Send request to start the benchmark and ensure that the start response is returned
@@ -426,7 +434,6 @@ class TestFastapiServer:
         # Create benchmark with unique data
         unique_contract = AgentContractRequest(
             name="terminus_2",
-            artifacts=[],
             install_cmd="echo installing dependencies...",
             run_cmd="echo running agent...",
         )
@@ -439,7 +446,7 @@ class TestFastapiServer:
 
         # Search for the 4 benchmarks just created + the original one we added before
         fetch_benchmarks_request.benchmark_name = "swebench"
-        fetch_benchmarks_request.agent_name = "claude_code"
+        fetch_benchmarks_request.agent_name = "dummy"
         fetch_benchmarks_request.status = BenchmarkStatus.IN_PROGRESS
 
         # When we fetch with benchmarks found, we return a 200 OK
@@ -489,4 +496,3 @@ class TestFastapiServer:
         # There is 1 finished benchmark
         assert response_json.get("total_count") == 1
         assert len(response_json.get("benchmarks")) == 1
-

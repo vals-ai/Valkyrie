@@ -76,7 +76,6 @@ def test_is_retriable_websocket_error(message: str, expected: bool) -> None:
     assert is_retriable_websocket_error(DaytonaError(message)) == expected
 
 
-@pytest.mark.asyncio
 async def test_stream_command_output_succeeds_without_disconnect() -> None:
     collected: list[str] = []
     sandbox = FakeSandbox()
@@ -86,7 +85,6 @@ async def test_stream_command_output_succeeds_without_disconnect() -> None:
     assert collected == ["output from attempt 1\n"]
 
 
-@pytest.mark.asyncio
 async def test_stream_command_output_retries_on_websocket_disconnect() -> None:
     collected: list[str] = []
     sandbox = FakeSandbox(process=FakeProcess(disconnect_count=2))
@@ -96,7 +94,6 @@ async def test_stream_command_output_retries_on_websocket_disconnect() -> None:
     assert sandbox.process.call_count == 3
 
 
-@pytest.mark.asyncio
 async def test_stream_command_output_raises_after_max_retries() -> None:
     sandbox = FakeSandbox(process=FakeProcess(disconnect_count=20))
 
@@ -104,7 +101,6 @@ async def test_stream_command_output_raises_after_max_retries() -> None:
         await stream_command_output(sandbox, "echo hello", lambda text: None)  # type: ignore[reportArgumentType]
 
 
-@pytest.mark.asyncio
 async def test_stream_command_output_raises_non_websocket_error() -> None:
     @dataclass
     class FailingProcess(FakeProcess):
