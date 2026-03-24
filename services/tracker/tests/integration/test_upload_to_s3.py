@@ -1,7 +1,6 @@
-import uuid
-
 from daytona import AsyncDaytona
 
+from tests.utils import random_task_id
 from tracker.database.models import Benchmark
 from tracker.s3 import delete_from_s3, download_from_s3, get_agent_result_s3_key
 from tracker.sandbox import TrackerResources, archive_and_upload_output, create_sandbox
@@ -19,10 +18,9 @@ class TestUploadToS3:
         harness_config: HarnessConfig,
     ) -> None:
         """Test creating a tar.gz from a file in sandbox and uploading to S3."""
-        task_id = f"test-task-{uuid.uuid4().hex[:8]}"
         file_path = "/tmp/test_output.json"
         file_content = '{"result": "success", "score": 95}'
-        s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output.json")
+        s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), random_task_id(), "test_output.json")
 
         try:
             async with create_sandbox(
@@ -52,15 +50,11 @@ class TestUploadToS3:
         test_image: str,
         random_sandbox_name: str,
         test_resources: TrackerResources,
+        daytona_client: AsyncDaytona,
     ) -> None:
         """Test creating a tar.gz from a directory in sandbox and uploading to S3."""
-        task_id = f"test-task-{uuid.uuid4().hex[:8]}"
         dir_path = "/tmp/test_output_dir"
-        s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output_dir")
-
-        daytona_client = example_benchmark_object.benchmark_service(
-            daytona_secret_name, harness_config.aws
-        ).daytona_client
+        s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), random_task_id(), "test_output_dir")
 
         try:
             async with create_sandbox(

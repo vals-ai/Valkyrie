@@ -21,8 +21,9 @@ from tracker.database.models import (
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import process_benchmark, process_task, start_benchmark_request_to_benchmark
 
-_TASK_ID = "astropy__astropy-12907"
-_TASK_IDS = ["astropy__astropy-12907", "astropy__astropy-13033"]
+_TASK_ID: str = "astropy__astropy-12907"
+_TASK_IDS: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
+_BENCHMARK: str = "swebench"
 
 
 def _create_benchmark(
@@ -34,7 +35,7 @@ def _create_benchmark(
 ) -> tuple[Benchmark, StartBenchmarkRequest]:
     """Create a benchmark row and matching StartBenchmarkRequest."""
     request = StartBenchmarkRequest(
-        benchmark_name="swebench",
+        benchmark_name=_BENCHMARK,
         contract=contract,
         concurrency=concurrency,
         task_ids=_TASK_IDS,
@@ -184,7 +185,7 @@ async def test_concurrent_benchmarks_same_task(
     benchmarks: list[Benchmark] = []
     for _ in range(2):
         benchmark = Benchmark(
-            name="swebench",
+            name=_BENCHMARK,
             arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=[_TASK_ID]),
         )
         benchmarks.append(benchmark)

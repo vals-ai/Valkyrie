@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from main import app
+from tests.utils import random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox
@@ -39,7 +40,7 @@ class TestForceStop:
         database_session.commit()
 
         # Create a single task
-        task = Task(benchmark=example_benchmark_object.id, task_id="test-task", status=TaskStatus.IN_PROGRESS)
+        task = Task(benchmark=example_benchmark_object.id, task_id=random_task_id(), status=TaskStatus.IN_PROGRESS)
         database_session.add(task)
         database_session.commit()
 
@@ -115,7 +116,7 @@ class TestForceStop:
         tasks: list[Task] = []
         for i in range(12):
             status = TaskStatus.IN_PROGRESS if i < 6 else TaskStatus.EVALUATING
-            task = Task(benchmark=example_benchmark_object.id, task_id=f"test-task-{i}", status=status)
+            task = Task(benchmark=example_benchmark_object.id, task_id=random_task_id(), status=status)
             tasks.append(task)
             database_session.add(task)
 

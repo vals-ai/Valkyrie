@@ -11,6 +11,7 @@ from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 from moto import mock_aws
 from mypy_boto3_s3.client import S3Client
 
+from tests.utils import random_task_id
 from tracker.config import AWS_S3_BUCKET
 from tracker.database.models import AgentContractRequest
 from tracker.s3 import get_contract_s3_key
@@ -30,12 +31,6 @@ def mock_s3() -> Generator[S3Client, None, None]:
         s3 = boto3.client("s3", region_name="us-east-1")  # pyright: ignore[reportUnknownMemberType]
         s3.create_bucket(Bucket=AWS_S3_BUCKET)
         yield s3
-
-
-@pytest.fixture
-def test_resources() -> Resources:
-    """Create a test resources object."""
-    return Resources(vcpu=2, memory=4, disk=5)
 
 
 @pytest.fixture
@@ -155,7 +150,7 @@ class TestSandboxOperations:
             test_sandbox,
             contract,
             "some problem statement",
-            task_id="test_task",
+            task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
             aws=aws_credentials,
