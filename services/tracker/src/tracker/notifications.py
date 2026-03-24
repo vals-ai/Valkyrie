@@ -32,6 +32,7 @@ class NotificationContext(BaseModel):
     started_at: datetime
     total_tasks: int
     finished_tasks: int
+    model: str | None = None
 
     @classmethod
     def from_benchmark(cls, benchmark_row: Benchmark, session: Session) -> NotificationContext:
@@ -45,6 +46,7 @@ class NotificationContext(BaseModel):
             started_at=benchmark_row.started_at,
             total_tasks=details.total_tasks,
             finished_tasks=details.finished_tasks,
+            model=benchmark_row.arguments.contract.model,
         )
 
 
@@ -68,12 +70,14 @@ def _format_duration(started_at: datetime) -> str:
 
 def _build_progress_message(context: NotificationContext, percent: int) -> str:
     elapsed = _format_duration(context.started_at)
-    return (
-        f"*Benchmark Update* — {context.benchmark_name}\n"
-        f"Agent: {context.agent_name} | Run: {context.benchmark_id}\n"
-        f"Status: In Progress — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)\n"
-        f"Elapsed: {elapsed}"
-    )
+    lines = [
+        f"*Benchmark Update* — {context.benchmark_name}",
+        f"Agent: {context.agent_name} | Run: {context.benchmark_id}",
+        f"Model: {context.model or 'N/A'}",
+        f"Status: In Progress — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)",
+        f"Elapsed: {elapsed}",
+    ]
+    return "\n".join(lines)
 
 
 def _build_terminal_message(
@@ -95,6 +99,7 @@ def _build_terminal_message(
     lines = [
         f"*{header}* — {context.benchmark_name}",
         f"Agent: {context.agent_name} | Run: {context.benchmark_id}",
+        f"Model: {context.model or 'N/A'}",
         f"Status: {status.value} — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)",
     ]
 
