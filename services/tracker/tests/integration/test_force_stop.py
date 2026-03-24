@@ -1,32 +1,40 @@
 import asyncio
 
 import pytest
+from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import Resources as TrackerResources
 from fastapi.testclient import TestClient
-from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
-from main import app, get_session
+from main import app
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_harness_config, fetch_sandboxes, force_stop_sandboxes, process_benchmark
+from tracker.utils import fetch_sandboxes, force_stop_sandboxes, process_benchmark
 
 logger = get_logger(__name__)
 
 
 class TestForceStop:
-    # @pytest.mark.slow
     async def test_force_stop_sandbox(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        test_aws: AWSCredentials,
-        test_daytona_secret: str,
+        benchmark_service: BenchmarkServiceClient,
+        test_resources: TrackerResources,
+        daytona_secret_name: str,
+        aws_credentials: AWSCredentials,
         random_sandbox_name: str,
         test_image: str,
     ) -> None:
+        """
+        Test force stopping a single sandbox that is building
+
+        Test Cases:
+        - Force stop can be ran while a sandbox is being built
+        - After finished running, no sandbox exists anymore
+        """
         database_session.add(example_benchmark_object)
         database_session.commit()
 
@@ -35,26 +43,20 @@ class TestForceStop:
         database_session.add(task)
         database_session.commit()
 
-        daytona_client = example_benchmark_object.benchmark_service(test_daytona_secret, test_aws).daytona_client
+        daytona_client = benchmark_service.daytona_client
 
         async def force_stop_sandbox() -> None:
             await asyncio.sleep(0.5)
 
-            await force_stop_sandboxes(example_benchmark_object, database_session, test_daytona_secret, test_aws)
+            await force_stop_sandboxes(example_benchmark_object, database_session, daytona_secret_name, aws_credentials)
 
         async def _generator_to_courtine():
-            async with (
-                create_sandbox(
-                    daytona_client,
-                    random_sandbox_name,
-                    test_image,
-                    resources=TrackerResources(
-                        vcpu=1,
-                        memory=2,
-                        disk=5,
-                    ),  # Large sandbox to take more time to load (if it loads instantly its hard to know if the test is working)
-                ) as _
-            ):
+            async with create_sandbox(
+                daytona_client,
+                random_sandbox_name,
+                test_image,
+                resources=test_resources,
+            ) as _:
                 pass
 
         # Start sandbox and immediately try to stop it, expected to wait until its started to delete
@@ -73,19 +75,27 @@ class TestForceStop:
 
         await daytona_client.close()
 
-    @pytest.mark.slow
     async def test_force_stop_sandboxes(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        test_aws: AWSCredentials,
-        test_daytona_secret: str,
+        aws_credentials: AWSCredentials,
+        daytona_secret_name: str,
+        benchmark_service: BenchmarkServiceClient,
         test_image: str,
+        test_resources: TrackerResources,
     ) -> None:
+        """
+        Test force stopping multiple sandboxes that are being built / already built
+
+        Test Cases:
+        - Create 12 sandboxes all delayed to exist for 20 seconds, force stopping after they are built
+        - 0 Sandboxes exist from the group we created after have finished stopping them
+        """
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        daytona_client = example_benchmark_object.benchmark_service(test_daytona_secret, test_aws).daytona_client
+        daytona_client = benchmark_service.daytona_client
 
         labels = {"Benchmark": example_benchmark_object.name, "Id": str(example_benchmark_object.id)}
 
@@ -96,7 +106,7 @@ class TestForceStop:
                 sandbox_name=sandbox_name,
                 image=test_image,
                 labels=labels,
-                resources=TrackerResources(vcpu=2, memory=4, disk=5),
+                resources=test_resources,
             ) as _:
                 # NOTE: Will not exit when we delete the sandbox so keep the sleep short
                 await asyncio.sleep(20)
@@ -121,7 +131,7 @@ class TestForceStop:
         await asyncio.sleep(2)
 
         # Force stop the benchmark run with all sandboxes
-        await force_stop_sandboxes(example_benchmark_object, database_session, test_daytona_secret, test_aws)
+        await force_stop_sandboxes(example_benchmark_object, database_session, daytona_secret_name, aws_credentials)
 
         await created_sandboxes
 
@@ -131,36 +141,35 @@ class TestForceStop:
 
         await daytona_client.close()
 
-    # @pytest.mark.slow
+    @pytest.mark.slow
     async def test_force_stop_end_to_end(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        monkeypatch: MonkeyPatch,
-        test_aws: AWSCredentials,
-        test_daytona_secret: str,
+        aws_credentials: AWSCredentials,
+        daytona_secret_name: str,
         harness_config: HarnessConfig,
     ) -> None:
+        """
+        Test end to end with a benchmark service -- Starting a slice of tasks and force stopping them
+
+        Test Cases:
+        - Start the run using 5 tasks
+        - Force stop the benchmark
+        - Task statuses are set to stopped
+        - No tasks have any errors after force stopping
+        - Benchmark status is STOPPED
+        - No sandboxes exist in daytona from this run
+        """
         # Max concurrency at 2 with 5 tasks
         example_benchmark_object.arguments.slice_str = ":5"
         example_benchmark_object.arguments.concurrency = 2
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        def get_test_session():
-            yield database_session
-
-        def get_test_harness_config():
-            return harness_config
-
-        # Patch dependencies for fastapi service
-        app.dependency_overrides[get_session] = get_test_session
-        app.dependency_overrides[fetch_harness_config] = get_test_harness_config
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-
         client = TestClient(app)
 
-        benchmark_service = example_benchmark_object.benchmark_service(test_daytona_secret, test_aws)
+        benchmark_service = example_benchmark_object.benchmark_service(daytona_secret_name, aws_credentials)
 
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=example_benchmark_object.arguments.task_ids, slice_str=example_benchmark_object.arguments.slice_str

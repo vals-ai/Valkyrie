@@ -69,7 +69,6 @@ asyncio_mode = "auto"
 pythonpath = ["."]
 env = [
     "BROKER_ENVIRONMENT=testing",
-    "BENCHMARK_SERVICE_URL=http://localhost:8001"
 ]
 markers = [
     "slow: marks tests as slow (require Daytona/external services)",
