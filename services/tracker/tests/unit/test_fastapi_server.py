@@ -22,6 +22,7 @@ from tracker.database.models import (
 )
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from tracker.types import (
+    BenchmarkTableRow,
     FetchBenchmarksRequest,
     FinalViewResponse,
     StartBenchmarkRequest,
@@ -450,6 +451,10 @@ class TestFastapiServer:
         assert response_json.get("total_count") == 5
         assert len(response_json.get("benchmarks")) == 5
 
+        expected_fields = set(BenchmarkTableRow.model_fields.keys())
+        for row in response_json["benchmarks"]:
+            assert set(row.keys()) == expected_fields
+
         # Clear filters and search again (checking limit and total)
         fetch_benchmarks_request.benchmark_name = None
         fetch_benchmarks_request.agent_name = None
@@ -484,3 +489,4 @@ class TestFastapiServer:
         # There is 1 finished benchmark
         assert response_json.get("total_count") == 1
         assert len(response_json.get("benchmarks")) == 1
+

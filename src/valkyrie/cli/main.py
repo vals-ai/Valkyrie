@@ -33,6 +33,7 @@ from valkyrie.cli.utils import (
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
+    resolve_webhook_config,
     stream_benchmark_status,
 )
 from valkyrie.schemas import AgentConfig
@@ -301,6 +302,56 @@ def auth_list() -> None:
         click.echo(f"  {name}: {masked}")
 
 
+@config.group()
+def webhook() -> None:
+    """Manage Slack webhook URL for run notifications."""
+    pass
+
+
+@webhook.command("set")
+@click.argument("url")
+def webhook_set(url: str) -> None:
+    """Set the Slack webhook URL for benchmark notifications.
+
+    Example: valkyrie config webhook set https://hooks.slack.com/services/T00/B00/xxx
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    harness_config["slack_webhook_url"] = url
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(harness_config, f, default_flow_style=False)
+
+    click.echo(click.style("Slack webhook URL has been set.", fg="green"))
+
+
+@webhook.command("remove")
+def webhook_remove() -> None:
+    """Remove the Slack webhook URL.
+
+    Example: valkyrie config webhook remove
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        current: dict[str, Any] = yaml.safe_load(f) or {}
+
+    if "slack_webhook_url" not in current:
+        raise click.ClickException("No Slack webhook URL configured.")
+
+    del current["slack_webhook_url"]
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(current, f, default_flow_style=False)
+
+    click.echo(click.style("Slack webhook URL has been removed.", fg="green"))
+
+
 @run.command(
     help="Start a run. \n\nExample:\nvalkyrie run start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
@@ -393,6 +444,14 @@ def auth_list() -> None:
     type=(str, str),
     help="Custom header for benchmark service requests (e.g., -H Authorization my-credential)",
 )
+@click.option(
+    "--interval",
+    "-i",
+    "intervals",
+    multiple=True,
+    type=int,
+    help="Progress percentage threshold for Slack notification (e.g., -i 25 -i 75). Max 3, must be divisible by 5, range 5-100.",
+)
 def start(
     agent: str,
     model: str | None,
@@ -406,6 +465,7 @@ def start(
     kwargs: tuple[tuple[str, str]],
     secrets: tuple[tuple[str, str]],
     headers: tuple[tuple[str, str]],
+    intervals: tuple[int, ...],
 ):
     """
     Run an agent on a benchmark.
@@ -443,6 +503,12 @@ def start(
 
     if service_headers:
         click.echo(f"  - Service headers: {', '.join(service_headers.keys())}")
+
+    # Webhook notification setup
+    webhook_url, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_url())
+
+    if webhook_url and webhook_intervals:
+        click.echo(f"  - Notifications: {webhook_intervals}%")
 
     formatted_task_ids: list[str] | None = None
     if task_ids:
@@ -488,6 +554,8 @@ def start(
                 lambda_function,
                 dataset,
                 service_headers=service_headers or None,
+                webhook_url=webhook_url if webhook_intervals else None,
+                webhook_intervals=webhook_intervals,
             )
 
             click.echo("\r\033[K", nl=False)
@@ -694,13 +762,24 @@ def resume(
     if ctx.info_name == "retry":
         retry = True
 
+    # Read webhook URL from config for notifications
+    webhook_url = TrackerService.get_webhook_url()
+    webhook_intervals: list[int] | None = [100] if webhook_url else None
+
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
             retry_task_ids = task_ids.split(",") if task_ids else []
-            _ = tracker.retry_or_resume_benchmark(run_id, retry, concurrency, retry_task_ids)
+            _ = tracker.retry_or_resume_benchmark(
+                run_id,
+                retry,
+                concurrency,
+                retry_task_ids,
+                webhook_url=webhook_url if webhook_intervals else None,
+                webhook_intervals=webhook_intervals,
+            )
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
                 click.style(
@@ -740,6 +819,12 @@ run.add_command(retry_command)
     help="Benchmark name (e.g., swebench)",
 )
 @click.option(
+    "--model",
+    type=str,
+    required=False,
+    help="Model name (e.g., anthropic/claude-sonnet-4-20250514)",
+)
+@click.option(
     "--status",
     type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
     required=False,
@@ -756,6 +841,7 @@ run.add_command(retry_command)
 def list_benchmarks(
     agent_name: str | None,
     benchmark_name: str | None,
+    model: str | None,
     status: str | None,
     order_by: str = "desc",
 ):
@@ -772,7 +858,7 @@ def list_benchmarks(
             if not check_tracker_service_health(tracker):
                 return
 
-            paginate_benchmarks(tracker, agent_name, benchmark_name, status, order_by)
+            paginate_benchmarks(tracker, agent_name, benchmark_name, model, status, order_by)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 

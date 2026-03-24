@@ -56,6 +56,7 @@ class BenchmarkStatus(str, Enum):
 
 class AgentContractRequest(BaseModel):
     name: str
+    model: str | None = None
     install_cmd: str
     run_cmd: str
     final_output: str | None = None
@@ -218,6 +219,7 @@ class Benchmark(SQLModel, table=True):
             id=self.id,
             name=self.name,
             agent_name=self.arguments.contract.name,
+            model=self.arguments.contract.model,
             started_at=self.started_at,
             finished_at=self.finished_at,
             status=self.status,

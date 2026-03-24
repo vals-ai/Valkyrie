@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from fastapi import Request
+from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
 from tracker._lambda import invoke_lambda
@@ -32,6 +33,7 @@ from tracker.database.models import (
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
+from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -160,11 +162,15 @@ class TrackedTask:
 class TaskMonitor:
     _benchmark_id: UUID
     _task_tracking: dict[str, TrackedTask]
+    _notifier: SlackNotifier | None
     _TRACK_INTERVAL: int = 2
 
-    def __init__(self, benchmark_id: UUID, task_tracking: dict[str, TrackedTask]):
+    def __init__(
+        self, benchmark_id: UUID, task_tracking: dict[str, TrackedTask], notifier: SlackNotifier | None = None
+    ):
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
+        self._notifier = notifier
 
     def _fetch_task_row(self, task_id: str) -> Task:
         with Session(bind=engine) as session:
@@ -195,6 +201,16 @@ class TaskMonitor:
 
         return True
 
+    async def _check_notifications(self) -> None:
+        """Check notification thresholds using DB task counts."""
+        if not self._notifier:
+            return
+
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, session)
+            notification_context = NotificationContext.from_benchmark(benchmark_row, session)
+            await self._notifier.check_and_notify(notification_context)
+
     async def track_tasks(self) -> None:
         """
         Tracks tasks and cancels them when they are no longer valid.
@@ -213,6 +229,8 @@ class TaskMonitor:
 
                 if not self._validate_task(task_id) and task.task is not None and not task.task.done():
                     task.task.cancel(f"Task {task_id} has been invalidated. Benchmark has been requested to stop")
+
+            await self._check_notifications()
 
             if not self._task_tracking:
                 exit_condition_met = True
@@ -344,7 +362,9 @@ async def process_task(
                     sandbox, start_benchmark_request.contract, harness_config.aws, harness_config.s3_bucket
                 )
 
-                _ = await benchmark_service.setup_task(task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset)
+                _ = await benchmark_service.setup_task(
+                    task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
+                )
 
                 # Force flush the logs if anything has been buffered
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
@@ -518,6 +538,14 @@ async def process_benchmark(
     benchmark_service = start_benchmark_request.benchmark_service
     harness_config: HarnessConfig = start_benchmark_request.harness_config
 
+    # Create notifier if webhook is configured
+    notifier: SlackNotifier | None = None
+    if start_benchmark_request.webhook_url and start_benchmark_request.webhook_intervals:
+        notifier = SlackNotifier(
+            webhook_url=start_benchmark_request.webhook_url,
+            intervals=start_benchmark_request.webhook_intervals,
+        )
+
     try:
         # Create benchmark cloudwatch log group
         create_benchmark_group(
@@ -547,7 +575,7 @@ async def process_benchmark(
         }
 
         # Start the monitor to track the state the tasks are in and cancel them when no longer valid
-        monitor = TaskMonitor(benchmark_id, tracked_tasks)
+        monitor = TaskMonitor(benchmark_id, tracked_tasks, notifier=notifier)
         monitor_task = asyncio.create_task(monitor.track_tasks())
 
         semaphore = Semaphore(start_benchmark_request.concurrency)
@@ -578,7 +606,9 @@ async def process_benchmark(
             raise TrackerServiceError("No tasks were completed successfully")
 
         # Calculate the final score based off the tasks that were ran
-        final_score_response = await benchmark_service.final_score(evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset)
+        final_score_response = await benchmark_service.final_score(
+            evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
+        )
 
         # Create the final evaluation row and add it to the database
         final_evaluation_row = FinalEvaluation(
@@ -623,6 +653,21 @@ async def process_benchmark(
         with Session(bind=engine) as session:
             # Handle any misalignments between the benchmark status and tasks
             catch_errors_during_cleanup(benchmark_id, session)
+
+        if notifier:
+            try:
+                with Session(bind=engine) as session:
+                    benchmark_row = fetch_benchmark_row(benchmark_id, session)
+                    notification_context = NotificationContext.from_benchmark(benchmark_row, session)
+                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                    await notifier.send_terminal_notification(
+                        notification_context,
+                        status=benchmark_row.status,
+                        final_score=final_score,
+                        error_message=benchmark_row.error_message,
+                    )
+            except Exception as notification_error:
+                logger.warning(f"Failed to send terminal notification: {notification_error}")
 
         await benchmark_service.close()
 
@@ -976,7 +1021,9 @@ async def reset_to_in_progress_status(
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
-        verify_response = await benchmark_service.verify_task_ids(task_ids=list(task_mapping.values()), slice_str=None, dataset=benchmark_row.arguments.dataset)
+        verify_response = await benchmark_service.verify_task_ids(
+            task_ids=list(task_mapping.values()), slice_str=None, dataset=benchmark_row.arguments.dataset
+        )
 
         # Set the benchmark status to in progress to flag resuming the benchmark
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
@@ -1021,8 +1068,13 @@ def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Sess
     """
     query = select(Benchmark)
 
+    arguments_json = type_coerce(col(Benchmark.arguments), JSON)
+
     if request.agent_name:
-        query = query.where(func.json_extract(Benchmark.arguments, "$.contract.name") == request.agent_name)
+        query = query.where(arguments_json["contract"]["name"].as_string() == request.agent_name)
+
+    if request.model:
+        query = query.where(arguments_json["contract"]["model"].as_string() == request.model)
 
     if request.benchmark_name:
         query = query.where(Benchmark.name == request.benchmark_name)

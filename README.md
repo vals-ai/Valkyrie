@@ -1,5 +1,7 @@
 # Valkyrie
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vals-ai/Valkyrie)
+
 Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
 > **Note:** The CLI is named **Valkyrie**. You can invoke it using either `valkyrie` or the shorter alias `valk`. For example: `valkyrie run start` or `valk run start`.
@@ -157,6 +159,43 @@ valkyrie run start --benchmark my-benchmark --agent sweagent \
   -H X-Another-Header another-value
 ```
 
+## Slack Notifications
+
+Valkyrie can send Slack webhook notifications as benchmark runs progress. Configure a webhook URL once and get notified automatically when runs hit defined thresholds or reach a terminal state (finished, error, stopped).
+
+### Setting up the webhook
+
+```bash
+# Store your Slack webhook URL
+valkyrie config webhook set https://hooks.slack.com/services/T00/B00/xxx
+
+# Remove the webhook URL
+valkyrie config webhook remove
+```
+
+### Starting a run with notifications
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench -i 25 -i 75
+```
+
+| Flag | Description |
+| --- | --- |
+| `-i` / `--interval` | Progress percentage threshold for a notification. Repeatable. Max 3, must be divisible by 5, range 5–100 |
+
+If a webhook URL is configured but no `-i` flags are provided, Valkyrie defaults to `-i 100` (notify on completion only). If `-i` flags are provided but no webhook URL is configured, the intervals are ignored with a warning.
+
+Notifications are also sent on resume and retry — the webhook URL is re-read from config automatically.
+
+### Notification triggers
+
+| Trigger | Description |
+| --- | --- |
+| **In Progress** | Run has crossed a defined interval threshold |
+| **Finished** | All tasks within the benchmark have completed (includes final score) |
+| **Error** | Run has errored out |
+| **Stopped** | User has stopped the run |
+
 ## Usage
 
 ### Start a run
@@ -172,7 +211,8 @@ valkyrie run start \
   -k temperature 1 \
   -H X-Custom-Header my-value \
   --task-ids "task_1,task_2" \
-  --slice "0:10"
+  --slice "0:10" \
+  -i 25 -i 75
 ```
 
 | Flag | Description |
@@ -189,6 +229,7 @@ valkyrie run start \
 | `--slice` | Slice the benchmark dataset (`start:stop:step`) |
 | `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
+| `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
 
 ### Monitor a run
 

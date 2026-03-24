@@ -53,6 +53,8 @@ class StartBenchmarkRequest(BaseModel):
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = {}
+    webhook_url: str | None = None
+    webhook_intervals: list[int] | None = None
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
@@ -132,6 +134,7 @@ class Order(str, Enum):
 class FetchBenchmarksRequest(BaseModel):
     agent_name: str | None = None
     benchmark_name: str | None = None
+    model: str | None = None
     status: BenchmarkStatus | None = None
     order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
 
@@ -144,6 +147,7 @@ class BenchmarkTableRow(BaseModel):
     id: UUID
     name: str
     agent_name: str
+    model: str | None
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus

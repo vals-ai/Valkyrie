@@ -99,6 +99,7 @@ class BaseAgentContract(ABC):
         """
         return AgentContractRequest(
             name=self.name,
+            model=self._agent_config.model,
             run_cmd=self.run_cmd(  # NOTE: We replace these fillers in the tracker
                 problem_statement_path="{problem_statement_path}",
                 task_id="{task_id}",

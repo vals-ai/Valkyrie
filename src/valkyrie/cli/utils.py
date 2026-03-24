@@ -45,7 +45,7 @@ async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
 
     # Truncate message to fit terminal width (leaving room for spinner: 2 chars)
     max_width = shutil.get_terminal_size().columns - 2
-    display_message = message if len(message) <= max_width else message[:max_width - 1] + "…"
+    display_message = message if len(message) <= max_width else message[: max_width - 1] + "…"
 
     async def show_spinner() -> None:
         """Show animated spinner until task completes."""
@@ -355,6 +355,7 @@ def format_fetch_benchmarks_response(
                 "ID": str(benchmark.id),
                 "Benchmark": benchmark.name,
                 "Agent": benchmark.agent_name,
+                "Model": benchmark.model or "-",
                 "Status": click.style(
                     benchmark.status.value.replace("_", " ").title(),
                     fg=BenchmarkFormatter.STATUS_COLORS[benchmark.status.value],
@@ -366,7 +367,7 @@ def format_fetch_benchmarks_response(
 
     format_table(
         rows,
-        ["ID", "Benchmark", "Agent", "Status", "Started / Finished", "Progress"],
+        ["ID", "Benchmark", "Agent", "Model", "Status", "Started / Finished", "Progress"],
         current_page,
         total_pages,
         fetch_benchmarks_response.total_count,
@@ -374,24 +375,27 @@ def format_fetch_benchmarks_response(
     )
 
 
-def format_no_benchmarks_found(agent_name: str | None, benchmark_name: str | None, status: str | None) -> None:
+def format_no_benchmarks_found(agent_name: str | None, benchmark_name: str | None, model: str | None, status: str | None) -> None:
     """
     Handle the case where no runs are found matching the specified filters.
 
     Args:
         agent_name: Agent name filter
         benchmark_name: Benchmark name filter
+        model: Model name filter
         status: Status filter
     """
     click.echo()
     click.echo(click.style("No runs found matching the specified filters.", fg="yellow"))
     click.echo()
-    if any([agent_name, benchmark_name, status]):
+    if any([agent_name, benchmark_name, model, status]):
         click.echo("Filters applied:")
         if agent_name:
             click.echo(f"  • Agent: {agent_name}")
         if benchmark_name:
             click.echo(f"  • Benchmark: {benchmark_name}")
+        if model:
+            click.echo(f"  • Model: {model}")
         if status:
             click.echo(f"  • Status: {status}")
 
@@ -400,6 +404,7 @@ def paginate_benchmarks(
     tracker: TrackerService,
     agent_name: str | None,
     benchmark_name: str | None,
+    model: str | None,
     status: str | None,
     order_by: str,
     limit: int = 5,
@@ -411,6 +416,7 @@ def paginate_benchmarks(
         tracker: TrackerService instance
         agent_name: Optional agent name filter
         benchmark_name: Optional benchmark name filter
+        model: Optional model name filter
         status: Optional status filter
         order_by: Order (asc/desc)
         limit: Number of items per page
@@ -422,6 +428,7 @@ def paginate_benchmarks(
         request = FetchBenchmarksRequest(
             agent_name=agent_name,
             benchmark_name=benchmark_name,
+            model=model,
             status=BenchmarkStatus(status) if status else None,
             order_by=Order(order_by),
             limit=limit,
@@ -435,7 +442,7 @@ def paginate_benchmarks(
         click.clear()
 
         if total_count == 0:
-            format_no_benchmarks_found(agent_name, benchmark_name, status)
+            format_no_benchmarks_found(agent_name, benchmark_name, model, status)
             break
 
         format_fetch_benchmarks_response(response, current_page, total_pages)
@@ -644,6 +651,60 @@ def paginate_agents(agents: list[tuple[str, datetime]], limit: int = 10) -> None
             offset -= limit
         elif char == "q" or char == "\x03":
             break
+
+
+def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
+    """Validate notification interval values.
+
+    Args:
+        intervals: Tuple of percentage thresholds for Slack notifications.
+
+    Raises:
+        click.UsageError: If intervals are invalid.
+
+    Returns:
+        Validated list of intervals.
+    """
+    interval_list = list(intervals)
+    if len(interval_list) > 3:
+        raise click.UsageError("Maximum of 3 intervals allowed.")
+    for val in interval_list:
+        if val < 5 or val > 100:
+            raise click.UsageError(f"Interval {val} out of range. Must be between 5 and 100.")
+        if val % 5 != 0:
+            raise click.UsageError(f"Interval {val} must be divisible by 5.")
+    return interval_list
+
+
+def resolve_webhook_config(
+    intervals: tuple[int, ...], webhook_url: str | None
+) -> tuple[str | None, list[int] | None]:
+    """Resolve webhook URL and intervals for a benchmark run.
+
+    Args:
+        intervals: User-provided interval flags from CLI.
+        webhook_url: Webhook URL from config, or None.
+
+    Returns:
+        Tuple of (webhook_url, webhook_intervals) to pass to the tracker.
+    """
+    if intervals and not webhook_url:
+        click.echo(
+            click.style(
+                "  Warning: --interval specified but no webhook URL configured. "
+                "Run `valkyrie config webhook set <url>` first. Ignoring intervals.",
+                fg="yellow",
+            )
+        )
+        return None, None
+
+    if intervals:
+        return webhook_url, validate_intervals(intervals)
+
+    if webhook_url:
+        return webhook_url, [100]
+
+    return None, None
 
 
 def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:

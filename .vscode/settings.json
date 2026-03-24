@@ -12,3 +12,4 @@
     "basedpyright.importStrategy": "fromEnvironment",
     "basedpyright.analysis.configFilePath": "pyproject.toml"
 }
+
