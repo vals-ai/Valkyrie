@@ -11,7 +11,6 @@ from sqlmodel import Session, SQLModel, create_engine
 from testcontainers.postgres import PostgresContainer
 
 from main import app
-from tracker.config import create_benchmark_service_url
 from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
 from tracker.database.session import get_session
 from tracker.sandbox import TrackerResources
@@ -129,11 +128,8 @@ async def benchmark_service(
     daytona_secret_name: str, aws_credentials: AWSCredentials
 ) -> AsyncGenerator[BenchmarkServiceClient, None]:
 
-    # Overridden by monkey patch
-    service_url = create_benchmark_service_url("swebench")
-
     service = create_benchmark_service_client(
-        url=service_url, daytona_secret_name=daytona_secret_name, aws=aws_credentials
+        url="http://localhost:8001", daytona_secret_name=daytona_secret_name, aws=aws_credentials
     )
 
     try:
