@@ -14,6 +14,7 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
+from valkyrie.cli.utils import run_with_spinner
 from valkyrie.schemas import AgentConfig
 
 
@@ -28,41 +29,94 @@ def _fetch_bucket_name() -> str:
     return bucket_name
 
 
+async def _run_git_command(repo_path: Path | None, *args: str) -> None:
+    """Execute a git command by building the command using the provided args"""
+    cmd = ["git"]
+
+    # Run git command without needing to be in the directory first
+    if repo_path:
+        cmd.extend(["-C", str(repo_path)])
+
+    cmd.extend(args)
+
+    # Run subprocess, collecting the error using the stderr
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    _, stderr = await process.communicate()
+
+    # If the process error'd out we show the end user and do not proceed
+    if process.returncode != 0:
+        error_message = stderr.decode() if stderr else "No stderr returned"
+        raise RuntimeError(f"Git command failed: {error_message}")
+
+
 async def install_agent(agent_name: str | None, github_url: str):
     """Clone a GitHub repository and install it as an agent to S3"""
-    from valkyrie.cli.utils import run_with_spinner
 
-    # If agent_name is not provided, extract from github_url
+    # Parse the GitHub URL to detect subfolder specification
+    # Matches: https://github.com/user/repo or https://github.com/user/repo/tree/branch/path/to/folder
+    github_pattern = r"(https://github\.com/[^/]+/[^/]+?)(?:/tree/([^/]+)/(.+?))?(?:\.git)?/?$"
+    match = re.match(github_pattern, github_url.rstrip("/"))
+
+    # If user provides option other than a github url NOTE: Only support github, not gitlab
+    if not match:
+        raise RuntimeError(f"Invalid GitHub URL format: `{github_url}`. Only github is supported")
+
+    base_url = match.group(1)
+    branch = match.group(2)
+    subfolder = match.group(3)
+
+    # Extract agent name from the url if an alias is not provided
     if agent_name is None:
-        agent_name = github_url.rstrip("/").split("/")[-1].replace(".git", "")
+        if subfolder:
+            agent_name = subfolder.split("/")[-1]
+        else:
+            agent_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
 
     # Clone the repo to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / "temp_repo"
 
         async def clone_repo() -> None:
-            """Clone the repository."""
-            process = await asyncio.create_subprocess_exec(
-                "git",
-                "clone",
-                github_url,
-                str(temp_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            """Clone the repository path specified by the user"""
+            clone_args = ["clone"]
 
-            _, stderr = await process.communicate()
+            # If subfolder we need to only bundle that directory
+            if subfolder:
+                clone_args.extend(["--no-checkout", "--filter=blob:none"])
 
-            if process.returncode != 0:
-                error_message = stderr.decode() if stderr else "No stderr returned"
-                raise RuntimeError(f"Failed to clone repository from {github_url}: {error_message}")
+            clone_args.extend([base_url, str(temp_path)])
 
-        # Clone with spinner
+            # Clone the repository using the direct path user specified
+            await _run_git_command(None, *clone_args)
+
+            # Setup sparse-checkout if installing a subfolder
+            if subfolder:
+                await _run_git_command(temp_path, "sparse-checkout", "init", "--cone")
+                await _run_git_command(temp_path, "sparse-checkout", "set", subfolder)
+
+            # Checkout specific branch is specified inside of the URL, else we just checkout the head
+            checkout_branch = branch or "HEAD"
+            await _run_git_command(temp_path, "checkout", checkout_branch)
+
+            # Initialize submodules for the checked-out content only
+            await _run_git_command(temp_path, "submodule", "update", "--init", "--recursive")
+
+        # Clone with a loading spinner
         await run_with_spinner(clone_repo(), f"Installing agent from {github_url}")
 
-        # Push the agent to S3
+        # Push the agent to S3 after its installed
         click.echo("Preparing upload...", nl=False)
-        await push_agent(agent_name, temp_path)
+        agent_path = temp_path / subfolder if subfolder else temp_path
+
+        if subfolder and not agent_path.exists():
+            raise RuntimeError(f"Subfolder '{subfolder}' not found in repository")
+
+        await push_agent(agent_name, agent_path)
 
 
 @handle_s3_error(message="Failed to push agent to S3")

@@ -6,13 +6,10 @@ readme = "README.md"
 requires-python = ">=3.12"
 
 dependencies = [
-  "pypandoc",
   "click>=8.1.0",
   "httpx>=0.28.1",
   "python-dotenv",
   "tracker",
-  "valsai>=0.1.2",
-  "model_library",
   "aioboto3>=7.0.0",
 ]
 
@@ -32,7 +29,6 @@ dev = [
 [tool.ruff]
 line-length = 120
 target-version = "py311"
-extend-exclude = ["submodules"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -52,11 +48,7 @@ reportGeneralTypeIssues = false
 reportTypedDictNotRequiredAccess = false
 enableTypeIgnoreComments = true
 
-include = ["src", "agents"]
-
-exclude = [
-  "**/contracts/**",
-]
+include = ["src"]
 
 [build-system]
 requires = ["hatchling"]

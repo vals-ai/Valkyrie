@@ -828,14 +828,18 @@ def outputs(run_id: UUID, output_dir: Path | None):
     "-n",
     type=str,
     required=False,
-    help="Agent name (defaults to repository name)",
+    help="Agent name (defaults to repository name or subfolder name)",
 )
 def install(github_url: str, name: str | None):
-    """Install an agent from a GitHub repository.
+    """Install an agent from a GitHub repository or a subfolder within a repository.
+
+    Supports both full repository URLs and subfolder paths using GitHub's tree syntax.
 
     Example:
         valkyrie agent install https://github.com/user/my-agent
         valkyrie agent install https://github.com/user/my-agent --name my-custom-name
+        valkyrie agent install https://github.com/org/registry/tree/main/agents/codex
+        valkyrie agent install https://github.com/org/registry/tree/main/agents/codex --name my-agent
     """
     try:
         asyncio.run(install_agent(name, github_url))
