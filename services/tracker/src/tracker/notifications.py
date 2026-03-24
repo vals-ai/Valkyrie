@@ -10,11 +10,14 @@ import httpx
 from pydantic import BaseModel
 
 from tracker.database.models import BenchmarkStatus
+from tracker.exceptions import SecretsError
 from tracker.logger import get_logger
+from tracker.secrets import fetch_aws_secret
 
 if TYPE_CHECKING:
     from tracker.database.models import Benchmark
     from sqlmodel import Session
+    from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
 
@@ -114,21 +117,31 @@ def _build_terminal_message(
 
 
 class SlackNotifier:
-    def __init__(self, webhook_url: str, intervals: list[int]):
-        self._webhook_url = webhook_url
+    def __init__(self, secret_name: str, aws: AWSCredentials, intervals: list[int]):
+        self._secret_name = secret_name
+        self._aws = aws
         self._intervals = set(intervals)
         self._fired: set[int] = set()
 
     async def _send_webhook(self, text: str) -> None:
         """Fire and forget — exceptions are caught and logged, never raised."""
         try:
+            secret_value = fetch_aws_secret(self._secret_name, self._aws)
+            if not isinstance(secret_value, str):
+                logger.warning(
+                    f"Webhook secret '{self._secret_name}' returned a dict, expected a plain string URL. Skipping notification."
+                )
+                return
+
             async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT) as client:
                 response = await client.post(
-                    self._webhook_url,
+                    secret_value,
                     json={"text": text},
                 )
                 if response.status_code != 200:
                     logger.warning(f"Slack webhook returned {response.status_code}: {response.text[:200]}")
+        except SecretsError as e:
+            logger.warning(f"Failed to resolve webhook secret '{self._secret_name}': {e}")
         except Exception as e:
             logger.warning(f"Slack webhook failed: {e}")
 

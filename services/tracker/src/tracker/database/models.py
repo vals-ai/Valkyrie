@@ -134,6 +134,8 @@ class Benchmark(SQLModel, table=True):
     )  # TODO: Automatically set to finished when all tasks are in a finished state or error state
 
     error_message: str | None = Field(default=None)
+    webhook_secret_name: str | None = Field(default=None)
+    webhook_intervals: list[int] | None = Field(default=None, sa_column=Column(JSON))
     custom_benchmark_service: str | None = Field(default=None)
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
@@ -173,6 +175,8 @@ class Benchmark(SQLModel, table=True):
             dataset=self.arguments.dataset,
             harness_config=harness_config,
             custom_benchmark_service=self.custom_benchmark_service,
+            webhook_secret_name=self.webhook_secret_name,
+            webhook_intervals=self.webhook_intervals,
         )
 
     def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":

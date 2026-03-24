@@ -309,11 +309,11 @@ def webhook() -> None:
 
 
 @webhook.command("set")
-@click.argument("url")
-def webhook_set(url: str) -> None:
-    """Set the Slack webhook URL for benchmark notifications.
+@click.argument("secret_name")
+def webhook_set(secret_name: str) -> None:
+    """Set the AWS secret name containing the Slack webhook URL.
 
-    Example: valkyrie config webhook set https://hooks.slack.com/services/T00/B00/xxx
+    Example: valkyrie config webhook set my/slack/webhook-url
     """
     if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
@@ -321,17 +321,17 @@ def webhook_set(url: str) -> None:
     with open(CONFIG_LOCATION) as f:
         harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
-    harness_config["slack_webhook_url"] = url
+    harness_config["slack_webhook_secret"] = secret_name
 
     with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(harness_config, f, default_flow_style=False)
 
-    click.echo(click.style("Slack webhook URL has been set.", fg="green"))
+    click.echo(click.style("Slack webhook secret has been set.", fg="green"))
 
 
 @webhook.command("remove")
 def webhook_remove() -> None:
-    """Remove the Slack webhook URL.
+    """Remove the Slack webhook secret.
 
     Example: valkyrie config webhook remove
     """
@@ -341,15 +341,15 @@ def webhook_remove() -> None:
     with open(CONFIG_LOCATION) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
 
-    if "slack_webhook_url" not in current:
-        raise click.ClickException("No Slack webhook URL configured.")
+    if "slack_webhook_secret" not in current:
+        raise click.ClickException("No Slack webhook secret configured.")
 
-    del current["slack_webhook_url"]
+    del current["slack_webhook_secret"]
 
     with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
-    click.echo(click.style("Slack webhook URL has been removed.", fg="green"))
+    click.echo(click.style("Slack webhook secret has been removed.", fg="green"))
 
 
 @run.command(
@@ -505,9 +505,9 @@ def start(
         click.echo(f"  - Service headers: {', '.join(service_headers.keys())}")
 
     # Webhook notification setup
-    webhook_url, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_url())
+    webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
-    if webhook_url and webhook_intervals:
+    if webhook_secret and webhook_intervals:
         click.echo(f"  - Notifications: {webhook_intervals}%")
 
     formatted_task_ids: list[str] | None = None
@@ -554,7 +554,7 @@ def start(
                 lambda_function,
                 dataset,
                 service_headers=service_headers or None,
-                webhook_url=webhook_url if webhook_intervals else None,
+                webhook_secret_name=webhook_secret if webhook_intervals else None,
                 webhook_intervals=webhook_intervals,
             )
 
@@ -762,10 +762,6 @@ def resume(
     if ctx.info_name == "retry":
         retry = True
 
-    # Read webhook URL from config for notifications
-    webhook_url = TrackerService.get_webhook_url()
-    webhook_intervals: list[int] | None = [100] if webhook_url else None
-
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
@@ -777,8 +773,6 @@ def resume(
                 retry,
                 concurrency,
                 retry_task_ids,
-                webhook_url=webhook_url if webhook_intervals else None,
-                webhook_intervals=webhook_intervals,
             )
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
