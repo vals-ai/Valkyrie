@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import base64
 import io
 import shlex
@@ -25,8 +26,10 @@ from daytona import (
 )
 from daytona.common.errors import DaytonaError
 from tenacity import (
+    AsyncRetrying,
     before_sleep_log,
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
@@ -232,20 +235,69 @@ async def install_agent_dependencies(
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 
 
-MAX_WEBSOCKET_RETRIES = 10
-
-RETRIABLE_WEBSOCKET_ERRORS = [
-    "no close frame",
-    "1011",
-    "timed out during opening handshake",
-]
+SESSION_COMMAND_POLL_INTERVAL_SECONDS = 5.0
+LOG_STREAM_RETRY_DELAY_SECONDS = 1.0
+WEBSOCKET_STREAM_ERRORS = ("websocket", "http 502", "opening handshake", "no close frame", "1011")
 
 
-def is_retriable_websocket_error(error: DaytonaError) -> bool:
-    """Check if a DaytonaError is a recoverable WebSocket error."""
-    message = str(error).lower()
+def is_websocket_stream_error(error: BaseException) -> bool:
+    return isinstance(error, DaytonaError) and any(pattern in str(error).lower() for pattern in WEBSOCKET_STREAM_ERRORS)
 
-    return any(pattern in message for pattern in RETRIABLE_WEBSOCKET_ERRORS)
+
+async def start_session_command(
+    sandbox: AsyncSandbox,
+    session_id: str,
+    command: str,
+) -> str:
+    session_exec_resp = await sandbox.process.execute_session_command(
+        session_id, SessionExecuteRequest(command=command, run_async=True)
+    )
+    if not session_exec_resp.cmd_id:
+        raise SandboxError(f"Failed to execute command {command} in session {session_id}")
+    return session_exec_resp.cmd_id
+
+
+async def stream_session_command_logs(
+    sandbox: AsyncSandbox,
+    *,
+    session_id: str,
+    command_id: str,
+    on_output: Callable[[str], None],
+) -> None:
+    try:
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception(is_websocket_stream_error),
+            stop=stop_after_attempt(10),
+            wait=wait_fixed(LOG_STREAM_RETRY_DELAY_SECONDS),
+            before_sleep=before_sleep_log(logger, logger.level),
+            reraise=True,
+        ):
+            with attempt:
+                await sandbox.process.get_session_command_logs_async(
+                    session_id=session_id,
+                    command_id=command_id,
+                    on_stdout=on_output,
+                    on_stderr=on_output,
+                )
+        return
+    except Exception as error:
+        warning = f"Log streaming unavailable; continuing without live logs: {error}"
+        logger.warning(warning)
+        on_output(f"[WARNING] {warning}\n")
+
+
+async def wait_for_session_command_completion(
+    sandbox: AsyncSandbox,
+    session_id: str,
+    command_id: str,
+    poll_interval_seconds: float = SESSION_COMMAND_POLL_INTERVAL_SECONDS,
+) -> Any:
+    """Poll command status until the command exits."""
+    while True:
+        cmd = await sandbox.process.get_session_command(session_id, command_id)
+        if cmd.exit_code is not None:
+            return cmd
+        await asyncio.sleep(poll_interval_seconds)
 
 
 async def stream_command_output(
@@ -255,52 +307,38 @@ async def stream_command_output(
 ) -> None:
     """
     Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
-    Falls back to polling if WebSocket streaming fails.
+    Command completion is authoritative; log streaming is best-effort only.
     """
     session_id = f"{sandbox.id}:{str(uuid.uuid4())}"
+    log_task: asyncio.Task[None] | None = None
     try:
         await sandbox.process.create_session(session_id)
-
-        session_exec_resp = await sandbox.process.execute_session_command(
-            session_id, SessionExecuteRequest(command=command, run_async=True)
+        cmd_id = await start_session_command(
+            sandbox,
+            session_id,
+            command,
         )
+        log_task = asyncio.create_task(
+            stream_session_command_logs(
+                sandbox,
+                session_id=session_id,
+                command_id=cmd_id,
+                on_output=on_output,
+            )
+        )
+        cmd = await wait_for_session_command_completion(sandbox, session_id, cmd_id)
 
-        cmd_id = session_exec_resp.cmd_id
-
-        if not cmd_id:
-            raise SandboxError(f"Failed to execute command {command} in session {session_id}")
-
-        for attempt in range(1, MAX_WEBSOCKET_RETRIES + 1):
-            try:
-                await sandbox.process.get_session_command_logs_async(
-                    session_id=session_id,
-                    command_id=cmd_id,
-                    on_stdout=on_output,
-                    on_stderr=on_output,
-                )
-                break
-            except DaytonaError as e:
-                if not is_retriable_websocket_error(e) or attempt == MAX_WEBSOCKET_RETRIES:
-                    raise
-
-                message = f"WebSocket disconnected (attempt {attempt}/{MAX_WEBSOCKET_RETRIES}), reconnecting: {e}"
-                logger.warning(message)
-                on_output(f"[WARNING] {message}")
-
-        try:
-            cmd = await sandbox.process.get_session_command(session_id, cmd_id)
-
-            # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
-            if cmd.exit_code not in (0, 124):
-                raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
-
-        except SandboxError:
-            raise
-        except Exception as e:
-            logger.warning(f"Failed to get session command for {session_id}: {e}")
-            pass
+        # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
+        if cmd.exit_code not in (0, 124):
+            raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
 
     finally:
+        if log_task is not None and not log_task.done():
+            log_task.cancel()
+            try:
+                await log_task
+            except asyncio.CancelledError:
+                pass
         try:
             await sandbox.process.delete_session(session_id)
         except Exception:
