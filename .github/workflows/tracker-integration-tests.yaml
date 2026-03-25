@@ -3,7 +3,7 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
 jobs:
-  run-models:
+  tracker-integration-tests:
     runs-on: ubuntu-latest
     steps:
       - name: Skip automatic runs on PRs
