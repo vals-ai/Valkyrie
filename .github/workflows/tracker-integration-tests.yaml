@@ -28,7 +28,20 @@ jobs:
         run: |
           cd SWEBenchBenchmarkService
           make docker-build
-          make docker-run
+          docker run -d -p 8001:8001 benchmark-service:latest
+
+      - name: Wait for Benchmark Service to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8001/health > /dev/null 2>&1; then
+              echo "Benchmark service is ready"
+              exit 0
+            fi
+            echo "Waiting for benchmark service... ($i/30)"
+            sleep 2
+          done
+          echo "Benchmark service failed to start"
+          exit 1
 
       - uses: actions/setup-python@v5
         with:
