@@ -108,6 +108,7 @@ async def _create_sandbox(
 
         return await daytona.create(
             CreateSandboxFromSnapshotParams(
+                auto_stop_interval=0,
                 auto_delete_interval=60,
                 name=sandbox_name,
                 labels=labels,
@@ -122,6 +123,7 @@ async def _create_sandbox(
     # Create a new sandbox from scratch, if it stops we delete it within a minute
     return await daytona.create(
         CreateSandboxFromImageParams(
+            auto_stop_interval=0,
             auto_delete_interval=60,
             name=sandbox_name,
             labels=labels,
