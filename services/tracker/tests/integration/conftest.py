@@ -67,9 +67,9 @@ def postgres_session(postgres_engine: Any) -> Generator[Session, Any, None]:
 
 @pytest.fixture(scope="session")
 def daytona_secret_name():
-    daytona_secret_name = os.getenv("DAYTONA_SECRET_NAME")
+    daytona_secret_name = os.getenv("TEST_DAYTONA_SECRET_NAME")
     if not daytona_secret_name:
-        raise ValueError("Required environment variable 'DAYTONA_SECRET_NAME' is not set to run tests")
+        raise ValueError("Required environment variable 'TEST_DAYTONA_SECRET_NAME' is not set to run tests")
 
     return daytona_secret_name
 
@@ -99,20 +99,17 @@ def aws_credentials():
 
 @pytest.fixture(scope="session")
 def harness_config(daytona_secret_name: str, aws_credentials: AWSCredentials) -> HarnessConfig:
-    aws_s3_bucket = os.getenv("AWS_S3_BUCKET")
+    aws_s3_bucket = os.getenv("TEST_AWS_S3_BUCKET")
 
     if not aws_s3_bucket:
-        raise ValueError("Required environment variable 'AWS_S3_BUCKET' is not set to run tests")
+        raise ValueError("Required environment variable 'TEST_AWS_S3_BUCKET' is not set to run tests")
 
-    log_group = os.getenv("LOG_GROUP")
+    log_group = os.getenv("TEST_LOG_GROUP")
 
     if not log_group:
-        raise ValueError("Required environment variable 'LOG_GROUP' is not set to run tests")
+        raise ValueError("Required environment variable 'TEST_LOG_GROUP' is not set to run tests")
 
-    log_retention_policy = int(os.getenv("LOG_RETENTION") or 1)
-
-    if not log_retention_policy:
-        raise ValueError("Required environment variable 'LOG_RETENTION' is not set to run tests")
+    log_retention_policy = int(os.getenv("TEST_LOG_RETENTION") or 1)
 
     return HarnessConfig(
         daytona_secret_name=daytona_secret_name,

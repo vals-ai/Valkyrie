@@ -1,8 +1,8 @@
-name: tracker-service-tests
+name: Tracker unit tests
 on: [pull_request, push]
 
 jobs:
-  run-tracker-unit-tests:
+  tracker-unit-tests:
     runs-on: ubuntu-latest
 
     steps:
