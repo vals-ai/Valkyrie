@@ -17,9 +17,15 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Clone and start SWEBench Benchmark Service
+      - name: Checkout SWEBench Benchmark Service
+        uses: actions/checkout@v4
+        with:
+          repository: vals-ai/SWEBenchBenchmarkService
+          token: ${{ secrets.GH_PAT }}
+          path: SWEBenchBenchmarkService
+
+      - name: Build and start SWEBench Benchmark Service
         run: |
-          git clone https://github.com/vals-ai/SWEBenchBenchmarkService.git
           cd SWEBenchBenchmarkService
           make docker-build
           make docker-run
