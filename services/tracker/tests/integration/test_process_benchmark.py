@@ -209,3 +209,5 @@ async def test_concurrent_benchmarks_same_task(
         assert benchmark.status == BenchmarkStatus.FINISHED, (
             f"Benchmark {benchmark.id} error: {benchmark.error_message}"
         )
+        task = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).first()
+        assert task and task.task_id == _TASK_ID

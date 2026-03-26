@@ -4,7 +4,7 @@ import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import Resources as TrackerResources
 from fastapi.testclient import TestClient
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from main import app
 from tests.utils import random_task_id
@@ -202,7 +202,9 @@ class TestForceStop:
             select(Task)
             .where(Task.benchmark == example_benchmark_object.id)
             .where(
-                Task.status in [TaskStatus.BUILDING, TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+                col(Task.status).in_(
+                    [TaskStatus.BUILDING, TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+                )
             )
         ).all()
         assert len(pending_tasks) == 0
