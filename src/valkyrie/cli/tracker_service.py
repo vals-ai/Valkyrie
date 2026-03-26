@@ -27,7 +27,6 @@ from tracker.types import (
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.utils import ConfigValue
 
 load_dotenv()
 
@@ -129,7 +128,7 @@ class TrackerService:
         with open(config_path) as f:
             harness_config = yaml.safe_load(f) or {}
 
-        secret_name = harness_config.get(ConfigValue.SLACK_WEBHOOK_URL.value)
+        secret_name = harness_config.get("webhook")
         return secret_name if secret_name else None
 
     @staticmethod
@@ -151,7 +150,7 @@ class TrackerService:
             )
 
         # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {ConfigValue.SLACK_WEBHOOK_URL.value}
+        _SKIP_HEADER_KEYS = {"webhook"}
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():

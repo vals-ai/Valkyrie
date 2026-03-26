@@ -167,7 +167,7 @@ Valkyrie can send Slack webhook notifications as benchmark runs progress. Store 
 
 ```bash
 # Store the AWS secret name containing your Slack webhook URL
-valkyrie config set webhook MY_SLACK_WEBHOOK_SECRET
+valkyrie config set webhook SLACK_WEBHOOK_SECRET
 
 # Remove the webhook secret
 valkyrie config remove webhook

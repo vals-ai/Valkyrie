@@ -32,7 +32,7 @@ T = TypeVar("T")
 
 
 class ConfigValue(str, Enum):
-    SLACK_WEBHOOK_URL = "webhook"
+    SLACK_WEBHOOK_SECRET = "webhook"
     AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
     AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
     AWS_DEFAULT_REGION = "AWS_DEFAULT_REGION"
@@ -702,7 +702,7 @@ def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
 def resolve_webhook_config(
     intervals: tuple[int, ...], webhook_secret: str | None
 ) -> tuple[str | None, list[int] | None]:
-    """Resolve webhook URL and intervals for a benchmark run.
+    """Resolve webhook secret and intervals for a benchmark run.
 
     Args:
         intervals: User-provided interval flags from CLI.
