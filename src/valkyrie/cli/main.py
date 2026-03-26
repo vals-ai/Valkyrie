@@ -344,56 +344,6 @@ def auth_list() -> None:
         click.echo(f"  {name}: {masked}")
 
 
-# @config.group()
-# def webhook() -> None:
-#     """Manage Slack webhook URL for run notifications."""
-#     pass
-
-
-# @webhook.command("set")
-# @click.argument("url")
-# def webhook_set(url: str) -> None:
-#     """Set the Slack webhook URL for benchmark notifications.
-
-#     Example: valkyrie config webhook set https://hooks.slack.com/services/T00/B00/xxx
-#     """
-#     if not CONFIG_LOCATION.exists():
-#         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-#     with open(CONFIG_LOCATION) as f:
-#         harness_config: dict[str, Any] = yaml.safe_load(f) or {}
-
-#     harness_config["slack_webhook_url"] = url
-
-#     with open(CONFIG_LOCATION, "w") as f:
-#         yaml.dump(harness_config, f, default_flow_style=False)
-
-#     click.echo(click.style("Slack webhook URL has been set.", fg="green"))
-
-
-# @webhook.command("remove")
-# def webhook_remove() -> None:
-#     """Remove the Slack webhook URL.
-
-#     Example: valkyrie config webhook remove
-#     """
-#     if not CONFIG_LOCATION.exists():
-#         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-#     with open(CONFIG_LOCATION) as f:
-#         current: dict[str, Any] = yaml.safe_load(f) or {}
-
-#     if "slack_webhook_url" not in current:
-#         raise click.ClickException("No Slack webhook URL configured.")
-
-#     del current["slack_webhook_url"]
-
-#     with open(CONFIG_LOCATION, "w") as f:
-#         yaml.dump(current, f, default_flow_style=False)
-
-#     click.echo(click.style("Slack webhook URL has been removed.", fg="green"))
-
-
 @run.command(
     help="Start a run. \n\nExample:\nvalkyrie run start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
