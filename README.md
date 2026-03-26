@@ -167,10 +167,10 @@ Valkyrie can send Slack webhook notifications as benchmark runs progress. Config
 
 ```bash
 # Store your Slack webhook URL
-valkyrie config webhook set https://hooks.slack.com/services/T00/B00/xxx
+valkyrie config set webhook https://hooks.slack.com/services/T00/B00/xxx
 
 # Remove the webhook URL
-valkyrie config webhook remove
+valkyrie config remove webhook
 ```
 
 ### Starting a run with notifications
