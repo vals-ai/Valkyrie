@@ -455,8 +455,7 @@ def webhook_remove() -> None:
 @click.option(
     "--ignore-custom-services",
     "--ics",
-    type=bool,
-    default=False,
+    is_flag=True,
     help="Ignore custom benchmark services that have been configured. Provides opt-out for custom services.",
 )
 def start(
