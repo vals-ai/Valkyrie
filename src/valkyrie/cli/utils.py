@@ -32,7 +32,7 @@ T = TypeVar("T")
 
 
 class ConfigValue(str, Enum):
-    SLACK_WEBHOOK_URL = "slack_webhook_url"
+    SLACK_WEBHOOK_URL = "webhook"
     AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
     AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
     AWS_DEFAULT_REGION = "AWS_DEFAULT_REGION"
@@ -44,14 +44,8 @@ class ConfigValue(str, Enum):
     @classmethod
     def from_str(cls, key: str) -> "ConfigValue":
         """Convert string value to enum value, raising if value is not an option."""
-        normalized = key.lower()
-        # Extra mapping for aliases, to be used for backwards compatibility
-        aliases = {"webhook": cls.SLACK_WEBHOOK_URL}
-        if normalized in aliases:
-            return aliases[normalized]
-
         for member in cls:
-            if member.value.lower() == normalized:
+            if member.value.lower() == key.lower():
                 return member
 
         raise ValueError(f"Invalid config key: {key!r}")

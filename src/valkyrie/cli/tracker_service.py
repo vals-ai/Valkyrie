@@ -27,6 +27,7 @@ from tracker.types import (
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.utils import ConfigValue
 
 load_dotenv()
 
@@ -128,7 +129,7 @@ class TrackerService:
         with open(config_path) as f:
             harness_config = yaml.safe_load(f) or {}
 
-        url = harness_config.get("slack_webhook_url")
+        url = harness_config.get(ConfigValue.SLACK_WEBHOOK_URL.value)
         return url if url else None
 
     @staticmethod
@@ -146,11 +147,11 @@ class TrackerService:
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
-                "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config modify` to update an existing config"
+                "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
             )
 
         # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"slack_webhook_url"}
+        _SKIP_HEADER_KEYS = {ConfigValue.SLACK_WEBHOOK_URL.value}
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():

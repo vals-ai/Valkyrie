@@ -26,10 +26,10 @@ valkyrie config init
 
 This will prompt for required credentials (AWS, S3 bucket, Daytona secret name) and write them to `~/.config/valkyrie/valkyrie.yaml`. Values can be sourced from the environment or an existing config. These are required to run Valkyrie and be in any environment that you use Valkyrie in.
 
-To update a single key:
+To upsert a single key:
 
 ```bash
-valkyrie config modify <KEY> <VALUE>
+valkyrie config set <KEY> <VALUE>
 ```
 
 ## Agent Management
