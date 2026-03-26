@@ -452,6 +452,13 @@ def webhook_remove() -> None:
     type=int,
     help="Progress percentage threshold for Slack notification (e.g., -i 25 -i 75). Max 3, must be divisible by 5, range 5-100.",
 )
+@click.option(
+    "--ignore-custom-services",
+    "--ics",
+    type=bool,
+    default=False,
+    help="Ignore custom benchmark services that have been configured. Provides opt-out for custom services.",
+)
 def start(
     agent: str,
     model: str | None,
@@ -466,6 +473,7 @@ def start(
     secrets: tuple[tuple[str, str]],
     headers: tuple[tuple[str, str]],
     intervals: tuple[int, ...],
+    ignore_custom_services: bool,
 ):
     """
     Run an agent on a benchmark.
@@ -549,6 +557,7 @@ def start(
                 contract,
                 benchmark,
                 concurrency,
+                ignore_custom_services,
                 formatted_task_ids,
                 slice_str,
                 lambda_function,
