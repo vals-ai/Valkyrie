@@ -145,7 +145,7 @@ def set(key: str, value: str) -> None:
         config_value = ConfigValue.from_str(key)
     except ValueError:
         raise click.ClickException(
-            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(ConfigValue.__members__.keys())}"
+            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(ConfigValue.__members__.values())}"
         )
 
     current[config_value.value] = value
