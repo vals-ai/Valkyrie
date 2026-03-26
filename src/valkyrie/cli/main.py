@@ -497,9 +497,9 @@ def start(
         click.echo(f"  - Service headers: {', '.join(service_headers.keys())}")
 
     # Webhook notification setup
-    webhook_url, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_url())
+    webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
-    if webhook_url and webhook_intervals:
+    if webhook_secret and webhook_intervals:
         click.echo(f"  - Notifications: {webhook_intervals}%")
 
     formatted_task_ids: list[str] | None = None
@@ -546,7 +546,7 @@ def start(
                 lambda_function,
                 dataset,
                 service_headers=service_headers or None,
-                webhook_url=webhook_url if webhook_intervals else None,
+                webhook_secret_name=webhook_secret if webhook_intervals else None,
                 webhook_intervals=webhook_intervals,
             )
 
@@ -754,10 +754,6 @@ def resume(
     if ctx.info_name == "retry":
         retry = True
 
-    # Read webhook URL from config for notifications
-    webhook_url = TrackerService.get_webhook_url()
-    webhook_intervals: list[int] | None = [100] if webhook_url else None
-
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
@@ -769,8 +765,6 @@ def resume(
                 retry,
                 concurrency,
                 retry_task_ids,
-                webhook_url=webhook_url if webhook_intervals else None,
-                webhook_intervals=webhook_intervals,
             )
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(

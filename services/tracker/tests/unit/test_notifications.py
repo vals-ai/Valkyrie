@@ -8,6 +8,14 @@ import pytest
 
 from tracker.database.models import BenchmarkStatus
 from tracker.notifications import NotificationContext, SlackNotifier, _build_progress_message, _build_terminal_message
+from tracker.types import AWSCredentials
+
+
+_TEST_AWS = AWSCredentials(
+    aws_access_key_id="test-key",
+    aws_secret_access_key="test-secret",
+    aws_default_region="us-east-1",
+)
 
 
 def _make_context(**overrides: object) -> NotificationContext:
@@ -29,7 +37,8 @@ class TestSlackNotifierThresholds:
     @pytest.fixture
     def notifier(self) -> SlackNotifier:
         return SlackNotifier(
-            webhook_url="https://hooks.slack.com/test",
+            secret_name="test/webhook",
+            aws=_TEST_AWS,
             intervals=[25, 50, 100],
         )
 
@@ -78,7 +87,8 @@ class TestSlackNotifierTerminal:
     @pytest.fixture
     def notifier(self) -> SlackNotifier:
         return SlackNotifier(
-            webhook_url="https://hooks.slack.com/test",
+            secret_name="test/webhook",
+            aws=_TEST_AWS,
             intervals=[100],
         )
 
@@ -157,31 +167,104 @@ class TestSlackNotifierFireAndForget:
     async def test_webhook_timeout_does_not_raise(self) -> None:
         """Webhook timeout should be caught and logged, not raised."""
         notifier = SlackNotifier(
-            webhook_url="https://hooks.slack.com/test",
+            secret_name="test/webhook",
+            aws=_TEST_AWS,
             intervals=[50],
         )
-        with patch("tracker.notifications.httpx.AsyncClient") as mock_client_cls:
-            mock_client = AsyncMock()
-            mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
-            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-            mock_client.__aexit__ = AsyncMock(return_value=False)
-            mock_client_cls.return_value = mock_client
+        with patch("tracker.notifications.fetch_aws_secret", return_value="https://hooks.slack.com/test"):
+            with patch("tracker.notifications.httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client_cls.return_value = mock_client
 
-            # Should not raise
-            await notifier.check_and_notify(_make_context(finished_tasks=50))
+                # Should not raise
+                await notifier.check_and_notify(_make_context(finished_tasks=50))
 
     async def test_webhook_connection_error_does_not_raise(self) -> None:
         """Webhook connection error should be caught and logged, not raised."""
         notifier = SlackNotifier(
-            webhook_url="https://hooks.slack.com/test",
+            secret_name="test/webhook",
+            aws=_TEST_AWS,
             intervals=[50],
         )
-        with patch("tracker.notifications.httpx.AsyncClient") as mock_client_cls:
+        with patch("tracker.notifications.fetch_aws_secret", return_value="https://hooks.slack.com/test"):
+            with patch("tracker.notifications.httpx.AsyncClient") as mock_client_cls:
+                mock_client = AsyncMock()
+                mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+                mock_client.__aexit__ = AsyncMock(return_value=False)
+                mock_client_cls.return_value = mock_client
+
+                # Should not raise
+                await notifier.check_and_notify(_make_context(finished_tasks=50))
+
+
+class TestSlackNotifierSecretResolution:
+    @pytest.fixture
+    def aws(self) -> AWSCredentials:
+        return AWSCredentials(
+            aws_access_key_id="test-key",
+            aws_secret_access_key="test-secret",
+            aws_default_region="us-east-1",
+        )
+
+    async def test_resolves_secret_before_sending(self, aws: AWSCredentials) -> None:
+        """SlackNotifier calls fetch_aws_secret to resolve the webhook URL."""
+        notifier = SlackNotifier(
+            secret_name="my/webhook/secret",
+            aws=aws,
+            intervals=[50],
+        )
+        with (
+            patch(
+                "tracker.notifications.fetch_aws_secret", return_value="https://hooks.slack.com/resolved"
+            ) as mock_fetch,
+            patch("tracker.notifications.httpx.AsyncClient") as mock_client_cls,
+        ):
             mock_client = AsyncMock()
-            mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+            mock_response = AsyncMock()
+            mock_response.status_code = 200
+            mock_client.post = AsyncMock(return_value=mock_response)
             mock_client.__aenter__ = AsyncMock(return_value=mock_client)
             mock_client.__aexit__ = AsyncMock(return_value=False)
             mock_client_cls.return_value = mock_client
 
+            await notifier.check_and_notify(_make_context(finished_tasks=50))
+
+            mock_fetch.assert_called_once_with("my/webhook/secret", aws)
+            mock_client.post.assert_called_once()
+            call_args = mock_client.post.call_args
+            assert call_args[0][0] == "https://hooks.slack.com/resolved"
+
+    async def test_skips_notification_when_secret_fetch_fails(self, aws: AWSCredentials) -> None:
+        """If fetch_aws_secret raises, notification is skipped (not raised)."""
+        from tracker.exceptions import SecretsError
+
+        notifier = SlackNotifier(
+            secret_name="bad/secret",
+            aws=aws,
+            intervals=[50],
+        )
+        with patch("tracker.notifications.fetch_aws_secret", side_effect=SecretsError("not found")):
             # Should not raise
             await notifier.check_and_notify(_make_context(finished_tasks=50))
+
+    async def test_skips_notification_when_secret_is_dict(self, aws: AWSCredentials) -> None:
+        """If fetch_aws_secret returns a dict instead of string, skip with warning."""
+        notifier = SlackNotifier(
+            secret_name="json/secret",
+            aws=aws,
+            intervals=[50],
+        )
+        with (
+            patch("tracker.notifications.fetch_aws_secret", return_value={"url": "https://hooks.slack.com/test"}),
+            patch("tracker.notifications.httpx.AsyncClient") as mock_client_cls,
+        ):
+            mock_client = AsyncMock()
+            mock_client_cls.return_value = mock_client
+
+            # Should not raise
+            await notifier.check_and_notify(_make_context(finished_tasks=50))
+            mock_client.post.assert_not_called()
