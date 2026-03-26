@@ -18,22 +18,20 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 # Needs to be after the environment variable setup
 from main import app
 
-TEST_HARNESS_CONFIG = HarnessConfig(
-    aws=AWSCredentials(
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
-        aws_default_region="us-east-1",
-    ),
-    s3_bucket="test-bucket",
-    log_group="test-log-group",
-    log_retention_policy=7,
-    daytona_secret_name="test-daytona-secret",
-)
-
 
 @pytest.fixture
 def harness_config() -> HarnessConfig:
-    return TEST_HARNESS_CONFIG
+    return HarnessConfig(
+        aws=AWSCredentials(
+            aws_access_key_id="test-aws-access-key-id",
+            aws_secret_access_key="test-aws-secret-access-key",
+            aws_default_region="test-aws-default-region",
+        ),
+        s3_bucket="test-bucket",
+        log_group="test-log-group",
+        log_retention_policy=30,
+        daytona_secret_name="test-daytona-secret",
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -79,11 +77,11 @@ def override_database_session(database_session: Session) -> None:
 
 
 @pytest.fixture(autouse=True)
-def override_harness_config() -> None:
+def override_harness_config(harness_config: HarnessConfig) -> None:
     """Overrides the harness config dependency so endpoints don't require X-Harness-* headers"""
 
     def get_test_harness_config():
-        return TEST_HARNESS_CONFIG
+        return harness_config
 
     app.dependency_overrides[fetch_harness_config] = get_test_harness_config
 
@@ -109,27 +107,26 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_agent_utilities(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _mock_upload_contract(*_args: Any, **_kwargs: Any) -> None:
+def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> str:
+        return "mock-group"
+
+    def _mock_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> None:
+    def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    def _mock_reset_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
-        pass
+    def _mock_fetch_aws_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        return {"DAYTONA_API_KEY": "test-key", "DAYTONA_API_URL": "http://localhost:8001", "DAYTONA_TARGET": "us"}
 
-    def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> None:
-        pass
-
-    def _mock_resolve_secrets(secrets: dict[str, str], aws: AWSCredentials) -> dict[str, str]:
-        return secrets
-
-    monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _mock_upload_contract)
-    monkeypatch.setattr("tracker.utils.run_agent", _mock_run_agent)
-    monkeypatch.setattr("tracker.utils.reset_cloudwatch_stream", _mock_reset_cloudwatch_stream)
+    monkeypatch.setattr("tracker.cloudwatch.create_benchmark_group", _mock_create_benchmark_group)
+    monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
     monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
-    monkeypatch.setattr("tracker.utils.resolve_secrets", _mock_resolve_secrets)
+    monkeypatch.setattr("tracker.utils.cloudwatch_stream", _mock_cloudwatch_stream)
+    monkeypatch.setattr("tracker.utils.upload_final_view", _mock_upload_final_view)
+    monkeypatch.setattr("tracker.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
+    monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)
 
 
 @pytest.fixture(autouse=True)

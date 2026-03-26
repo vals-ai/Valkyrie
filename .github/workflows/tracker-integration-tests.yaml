@@ -1,0 +1,72 @@
+name: Tracker integration tests
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+jobs:
+  tracker-integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip automatic runs on PRs
+        run: |
+          if [ "${{ github.run_attempt }}" = "1" ] && \
+             [ "${{ github.event_name }}" = "pull_request" ] && \
+             [ "${{ github.event.action }}" != "closed" -o "${{ github.event.pull_request.merged }}" != "true" ]; then
+            echo "Check must be run manually on PRs"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Checkout SWEBench Benchmark Service
+        uses: actions/checkout@v4
+        with:
+          repository: vals-ai/SWEBenchBenchmarkService
+          token: ${{ secrets.GH_PAT }}
+          path: SWEBenchBenchmarkService
+
+      - name: Build and start SWEBench Benchmark Service
+        run: |
+          cd SWEBenchBenchmarkService
+          make docker-build
+          docker run -d -p 8001:8001 benchmark-service:latest
+
+      - name: Wait for Benchmark Service to be ready
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8001/health > /dev/null 2>&1; then
+              echo "Benchmark service is ready"
+              exit 0
+            fi
+            echo "Waiting for benchmark service... ($i/30)"
+            sleep 2
+          done
+          echo "Benchmark service failed to start"
+          exit 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "services/tracker/uv.lock"
+
+      - name: Install tracker dependencies
+        run: |
+          cd services/tracker
+          uv venv --python 3.12
+          uv sync --group dev
+
+      - name: Run integration tests
+        run: |
+          cd services/tracker
+          uv run pytest tests/integration
+        env:
+          TEST_AWS_S3_BUCKET: ${{ secrets.TEST_AWS_S3_BUCKET }}
+          TEST_LOG_GROUP: ${{ secrets.TEST_LOG_GROUP }}
+          TEST_DAYTONA_SECRET_NAME: ${{ secrets.TEST_DAYTONA_SECRET_NAME }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}

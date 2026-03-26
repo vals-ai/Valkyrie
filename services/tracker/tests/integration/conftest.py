@@ -1,4 +1,5 @@
 import os
+import uuid
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
@@ -9,27 +10,37 @@ from dotenv import load_dotenv
 from sqlmodel import Session, SQLModel, create_engine
 from testcontainers.postgres import PostgresContainer
 
+from main import app
 from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
-from tracker.types import AWSCredentials
-from tracker.utils import create_benchmark_service_client
+from tracker.database.session import get_session
+from tracker.sandbox import TrackerResources
+from tracker.types import AWSCredentials, HarnessConfig
+from tracker.utils import create_benchmark_service_client, fetch_harness_config
 
 _ = load_dotenv()
 
 
-@pytest.fixture(scope="session")
-def test_aws() -> AWSCredentials:
-    """AWS credentials sourced from the environment for integration tests."""
-    return AWSCredentials(
-        aws_access_key_id=os.environ.get("AWS_ACCESS_KEY_ID", "test"),
-        aws_secret_access_key=os.environ.get("AWS_SECRET_ACCESS_KEY", "test"),
-        aws_default_region=os.environ.get("AWS_DEFAULT_REGION", "us-east-1"),
-    )
+@pytest.fixture(autouse=True)
+def override_benchmark_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch benchmark service URL to localhost:8001 in all modules that import it."""
+    monkeypatch.setattr("tracker.config.create_benchmark_service_url", lambda _: "http://localhost:8001")  # type: ignore
+    monkeypatch.setattr("tracker.types.create_benchmark_service_url", lambda _: "http://localhost:8001")  # type: ignore
 
 
-@pytest.fixture(scope="session")
-def test_daytona_secret() -> str:
-    """Daytona secret name sourced from the environment for integration tests."""
-    return os.environ.get("DAYTONA_SECRET_NAME", "test-daytona-secret")
+@pytest.fixture(autouse=True)
+def setup_app_dependencies(
+    database_session: Session,
+    harness_config: HarnessConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wire FastAPI dependency overrides and tracker engine for every integration test."""
+
+    def get_test_session() -> Generator[Session, None, None]:
+        yield database_session
+
+    monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+    monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
+    monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: harness_config)
 
 
 @pytest.fixture(scope="session")
@@ -48,29 +59,97 @@ def postgres_engine(postgres_container: PostgresContainer):
 
 
 @pytest.fixture
-def postgres_session(postgres_engine) -> Generator[Session, Any, None]:
+def postgres_session(postgres_engine: Any) -> Generator[Session, Any, None]:
     """Create a session for the test postgres database."""
     with Session(postgres_engine, expire_on_commit=False) as session:
         yield session
 
 
+@pytest.fixture(scope="session")
+def daytona_secret_name():
+    daytona_secret_name = os.getenv("TEST_DAYTONA_SECRET_NAME")
+    if not daytona_secret_name:
+        raise ValueError("Required environment variable 'TEST_DAYTONA_SECRET_NAME' is not set to run tests")
+
+    return daytona_secret_name
+
+
+@pytest.fixture(scope="session")
+def aws_credentials():
+    aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
+    if not aws_access_key_id:
+        raise ValueError("Required environment variable 'AWS_ACCESS_KEY_ID' is not set to run tests")
+
+    aws_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
+    if not aws_secret_access_key:
+        raise ValueError("Required environment variable 'AWS_SECRET_ACCESS_KEY' is not set to run tests")
+
+    aws_default_region = os.getenv("AWS_DEFAULT_REGION")
+    if not aws_default_region:
+        raise ValueError("Required environment variable 'AWS_DEFAULT_REGION' is not set to run tests")
+
+    aws_credentials = AWSCredentials(
+        aws_access_key_id=aws_access_key_id,
+        aws_secret_access_key=aws_secret_access_key,
+        aws_default_region=aws_default_region,
+    )
+
+    return aws_credentials
+
+
+@pytest.fixture(scope="session")
+def harness_config(daytona_secret_name: str, aws_credentials: AWSCredentials) -> HarnessConfig:
+    aws_s3_bucket = os.getenv("TEST_AWS_S3_BUCKET")
+
+    if not aws_s3_bucket:
+        raise ValueError("Required environment variable 'TEST_AWS_S3_BUCKET' is not set to run tests")
+
+    log_group = os.getenv("TEST_LOG_GROUP")
+
+    if not log_group:
+        raise ValueError("Required environment variable 'TEST_LOG_GROUP' is not set to run tests")
+
+    log_retention_policy = int(os.getenv("TEST_LOG_RETENTION") or 1)
+
+    return HarnessConfig(
+        daytona_secret_name=daytona_secret_name,
+        aws=aws_credentials,
+        log_group=log_group,
+        log_retention_policy=log_retention_policy,
+        s3_bucket=aws_s3_bucket,
+    )
+
+
 @pytest.fixture(scope="function")
 async def benchmark_service(
-    test_aws: AWSCredentials, test_daytona_secret: str
+    daytona_secret_name: str, aws_credentials: AWSCredentials
 ) -> AsyncGenerator[BenchmarkServiceClient, None]:
-    service_url = os.getenv("BENCHMARK_SERVICE_URL")
-    if not service_url:
-        from tracker.config import create_benchmark_service_url
 
-        service_url = create_benchmark_service_url("swebench")
+    service = create_benchmark_service_client(
+        url="http://localhost:8001", daytona_secret_name=daytona_secret_name, aws=aws_credentials
+    )
 
-    service = create_benchmark_service_client(url=service_url, daytona_secret_name=test_daytona_secret, aws=test_aws)
-
-    yield service
-
-    await service.close()
+    try:
+        yield service
+    finally:
+        await service.close()
 
 
 @pytest.fixture
 async def daytona_client(benchmark_service: BenchmarkServiceClient) -> AsyncGenerator[AsyncDaytona, None]:
     yield benchmark_service.daytona_client
+
+
+@pytest.fixture
+def random_sandbox_name():
+    return f"test-sandbox-{uuid.uuid4().hex[:5]}"
+
+
+@pytest.fixture
+def test_image():
+    return "python:3.11-slim"
+
+
+@pytest.fixture
+def test_resources():
+    return TrackerResources(vcpu=1, memory=2, disk=5)

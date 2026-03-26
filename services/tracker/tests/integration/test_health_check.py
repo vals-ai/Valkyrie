@@ -1,18 +1,14 @@
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
-from sqlmodel import Session
 
 from main import app
-from tracker.database.session import get_session
 
 client = TestClient(app)
 
 
 class TestHealthCheckIntegration:
-    def test_health_check_with_database(
-        self, postgres_engine: Engine, postgres_session: Session, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_health_check_with_database(self, postgres_engine: Engine, monkeypatch: pytest.MonkeyPatch):
         """
         Test health check with a real postgres database.
 
@@ -24,12 +20,6 @@ class TestHealthCheckIntegration:
 
         # Override the engine used by check_database_connection
         monkeypatch.setattr(session_module, "engine", postgres_engine)
-
-        # Override the session dependency
-        def get_test_session():
-            yield postgres_session
-
-        app.dependency_overrides[get_session] = get_test_session
 
         response = client.get("/health")
 

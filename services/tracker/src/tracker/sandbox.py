@@ -65,8 +65,8 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 
 
-_SANBDOX_CREATION_CAP: int = 10
-_sandbox_creation_semaphore = Semaphore(_SANBDOX_CREATION_CAP)
+_SANDBOX_CREATION_CAP: int = 10
+_sandbox_creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
 
 
 @retry(

@@ -26,10 +26,10 @@ valkyrie config init
 
 This will prompt for required credentials (AWS, S3 bucket, Daytona secret name) and write them to `~/.config/valkyrie/valkyrie.yaml`. Values can be sourced from the environment or an existing config. These are required to run Valkyrie and be in any environment that you use Valkyrie in.
 
-To update a single key:
+To upsert a single key:
 
 ```bash
-valkyrie config modify <KEY> <VALUE>
+valkyrie config set <KEY> <VALUE>
 ```
 
 ## Agent Management
@@ -167,10 +167,10 @@ Valkyrie can send Slack webhook notifications as benchmark runs progress. Store 
 
 ```bash
 # Store the AWS secret name containing your Slack webhook URL
-valkyrie config webhook set my/slack/webhook-url
+valkyrie config set webhook MY_SLACK_WEBHOOK_SECRET
 
 # Remove the webhook secret
-valkyrie config webhook remove
+valkyrie config remove webhook
 ```
 
 The secret in AWS Secrets Manager should contain the raw Slack webhook URL as a plain string (not JSON).

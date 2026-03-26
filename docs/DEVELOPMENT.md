@@ -25,14 +25,6 @@ make install
 
 Creates `.venv` and installs dependencies from `pyproject.toml`.
 
-### Submodules
-
-```bash
-make update-submodules
-```
-
-Initializes git submodules for agents and services.
-
 ### Install as a tool globally
 
 ```bash
