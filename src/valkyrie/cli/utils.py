@@ -6,6 +6,7 @@ import shutil
 import tarfile
 import tempfile
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Any, Coroutine, TypeVar
 from uuid import UUID
@@ -28,6 +29,32 @@ from valkyrie.cli.tracker_service import TrackerService
 CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
 
 T = TypeVar("T")
+
+
+class ConfigValue(str, Enum):
+    SLACK_WEBHOOK_URL = "slack_webhook_url"
+    AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
+    AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
+    AWS_DEFAULT_REGION = "AWS_DEFAULT_REGION"
+    S3_BUCKET = "S3_BUCKET"
+    DAYTONA_SECRET_NAME = "DAYTONA_SECRET_NAME"
+    LOG_GROUP = "LOG_GROUP"
+    LOG_RETENTION_POLICY = "LOG_RETENTION_POLICY"
+
+    @classmethod
+    def from_str(cls, key: str) -> "ConfigValue":
+        """Convert string value to enum value, raising if value is not an option."""
+        normalized = key.lower()
+        # Extra mapping for aliases, to be used for backwards compatibility
+        aliases = {"webhook": cls.SLACK_WEBHOOK_URL}
+        if normalized in aliases:
+            return aliases[normalized]
+
+        for member in cls:
+            if member.value.lower() == normalized:
+                return member
+
+        raise ValueError(f"Invalid config key: {key!r}")
 
 
 async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
@@ -375,7 +402,9 @@ def format_fetch_benchmarks_response(
     )
 
 
-def format_no_benchmarks_found(agent_name: str | None, benchmark_name: str | None, model: str | None, status: str | None) -> None:
+def format_no_benchmarks_found(
+    agent_name: str | None, benchmark_name: str | None, model: str | None, status: str | None
+) -> None:
     """
     Handle the case where no runs are found matching the specified filters.
 
@@ -676,9 +705,7 @@ def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
     return interval_list
 
 
-def resolve_webhook_config(
-    intervals: tuple[int, ...], webhook_url: str | None
-) -> tuple[str | None, list[int] | None]:
+def resolve_webhook_config(intervals: tuple[int, ...], webhook_url: str | None) -> tuple[str | None, list[int] | None]:
     """Resolve webhook URL and intervals for a benchmark run.
 
     Args:
