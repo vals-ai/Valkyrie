@@ -19,6 +19,7 @@ from tracker.sandbox import (
     create_sandbox,
     install_agent_dependencies,
     run_agent,
+    stream_command_output,
     upload_agent_artifacts,
 )
 from tracker.types import AWSCredentials
@@ -174,3 +175,28 @@ class TestSandboxOperations:
 
             async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox2:
                 assert sandbox2.id == first_id
+
+    async def test_deterministic_timeout_behavior(
+        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
+    ):
+        """
+        Timeouts are correct caught and returned from the stream outputs method
+
+        Test Cases:
+        - Sandbox times out when we sleep past the timeout
+        - Sandbox does not timeout when the sleep is less than the timeout
+        """
+
+        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
+            command = "timeout 15 sleep 70"
+
+            command_timeout = await stream_command_output(sandbox, command, on_output=print)
+
+            assert command_timeout
+
+        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
+            command = "timeout 15 sleep 10"
+
+            command_timeout = await stream_command_output(sandbox, command, on_output=print)
+
+            assert not command_timeout
