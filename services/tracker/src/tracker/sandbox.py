@@ -12,19 +12,16 @@ from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 from benchmark_service.schemas import Resources as TrackerResources
-from daytona import (
-    AsyncDaytona,
-    AsyncSandbox,
-    CreateSandboxFromImageParams,
-    CreateSandboxFromSnapshotParams,
-    DaytonaNotFoundError,
-    FileUpload,
-    Resources,
-    SandboxState,
-    SessionExecuteRequest,
+from benchmark_service.sandbox import (
+    Sandbox,
+    SandboxCreateRequest,
+    SandboxFile,
+    SandboxProvider,
+    SandboxResources,
+    SandboxSourceType,
 )
-from daytona.common.errors import DaytonaError
-from tenacity import before_sleep_log, retry, retry_if_exception_type, retry_if_not_exception_type, stop_after_attempt, wait_fixed
+
+from tenacity import retry, retry_if_exception_type, stop_after_attempt
 
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import InvalidSandboxConfigurationError, SandboxError
@@ -44,122 +41,60 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
-async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
-    """Delete sandbox if it is not already destroyed or being destroyed"""
-    try:
-        await sandbox.refresh_data()
-        if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
-            await daytona.delete(sandbox)
-    except DaytonaNotFoundError:
-        # If we error here that means the sandbox has just been deleted before we could refresh the state
-        logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
-        pass
-    except Exception as e:
-        logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
-
-
 _SANBDOX_CREATION_CAP: int = 10
 _sandbox_creation_semaphore = Semaphore(_SANBDOX_CREATION_CAP)
 
 
-@retry(
-    retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
-    stop=stop_after_attempt(3),
-    wait=wait_fixed(120),
-    before_sleep=before_sleep_log(logger, logger.level),
-    reraise=True,
-)
-async def _create_sandbox(
-    daytona: AsyncDaytona,
+def _build_create_request(
     sandbox_name: str,
     image: str,
     resources: TrackerResources,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
-) -> AsyncSandbox:
-    """
-    Creates a sandbox and takes into account timeouts and retries.
-
-    This retry only works in the following case:
-    - Client times out while sandbox is being created
-    """
-
-    # If the container already exists we reuse it
-    try:
-        sandbox = await daytona.get(sandbox_name)
-
-        await sandbox.wait_for_sandbox_start(timeout=0)
-
-        return sandbox
-    except DaytonaNotFoundError:
-        pass
-
+) -> SandboxCreateRequest:
+    source_id = image
+    source_type = SandboxSourceType.IMAGE
     if image.startswith(SNAPSHOT_IMAGE_PREFIX):
-        snapshot_name = image[len(SNAPSHOT_IMAGE_PREFIX) :].strip()
-        if not snapshot_name:
+        source_id = image[len(SNAPSHOT_IMAGE_PREFIX):].strip()
+        if not source_id:
             raise InvalidSandboxConfigurationError("Snapshot-based sandbox requested without a snapshot name")
+        source_type = SandboxSourceType.SNAPSHOT
 
-        return await daytona.create(
-            CreateSandboxFromSnapshotParams(
-                auto_delete_interval=60,
-                name=sandbox_name,
-                labels=labels,
-                snapshot=snapshot_name,
-                language="python",
-                network_block_all=False,
-                env_vars=env_vars,
-            ),
-            timeout=360,
-        )
 
-    # Create a new sandbox from scratch, if it stops we delete it within a minute
-    return await daytona.create(
-        CreateSandboxFromImageParams(
-            auto_delete_interval=60,
-            name=sandbox_name,
-            labels=labels,
-            image=image,
-            network_block_all=False,
-            resources=Resources(
-                cpu=resources.vcpu,
-                memory=resources.memory,
-                disk=resources.disk,
-            ),
-            env_vars=env_vars,
+    return SandboxCreateRequest(
+        source_id=source_id,
+        source_type=source_type,
+        name=sandbox_name,
+        labels=labels or {},
+        env_vars=env_vars or {},
+        network_blocked=False,
+        auto_delete_interval=60,
+        resources=SandboxResources(
+            cpu=resources.vcpu,
+            memory=resources.memory,
+            disk=resources.disk,
         ),
-        timeout=360,
     )
 
 
 @asynccontextmanager
 async def create_sandbox(
-    daytona: AsyncDaytona,
+    provider: SandboxProvider,
     sandbox_name: str,
     image: str,
     resources: TrackerResources,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
-) -> AsyncGenerator[AsyncSandbox, Any]:
-    """
-    Yeild a sandbox to be used within a context manager.
-
-    Args:
-        daytona: The daytona client
-        sandbox_name: The name of the sandbox
-        image: The image to use for the sandbox
-        resources: The resources to use for the sandbox
-        labels: The labels to use for the sandbox
-        env_vars: The environment variables to use for the sandbox
-
-    Returns:
-        A context manager that yields the sandbox
-    """
+) -> AsyncGenerator[Sandbox, Any]:
+    """Yield a sandbox to be used within a context manager."""
     logger.info(f"Creating sandbox {sandbox_name} with image {image}")
 
-    # If we run too many at once it can cause hanging issues
-    # NOTE does not block how many context managers we can have open, just how many sandboxes we can create at once
+    request = _build_create_request(sandbox_name, image, resources, labels, env_vars)
+
+    # Limit concurrent sandbox creation to avoid hanging issues
+    # TODO: this value should be provider specific
     async with _sandbox_creation_semaphore:
-        sandbox = await _create_sandbox(daytona, sandbox_name, image, resources, labels, env_vars)
+        sandbox = await provider.create_sandbox(request)
 
     try:
         yield sandbox
@@ -167,19 +102,20 @@ async def create_sandbox(
         logger.error(f"Error creating sandbox {sandbox.name}: {e}")
         raise e from e
     finally:
-        await delete_sandbox(sandbox, daytona)
+        await provider.delete_sandbox(sandbox)
 
 
 async def upload_agent_artifacts(
-    sandbox: AsyncSandbox, contract: AgentContractRequest, aws: AWSCredentials, s3_bucket: str
+    sandbox: Sandbox, contract: AgentContractRequest, aws: AWSCredentials, s3_bucket: str
 ) -> None:
     """
     Upload contract from S3 to the sandbox.
 
     Args:
         sandbox: The sandbox to upload files to
-        contract_name: Name of the contract (without extension)
-        harness_config: Harness config for S3 access
+        contract: The agent contract configuration
+        aws: AWS credentials for S3 access
+        s3_bucket: S3 bucket name
 
     Raises:
         SandboxError: If directory creation or file upload fails
@@ -189,26 +125,26 @@ async def upload_agent_artifacts(
     contract_s3_key = get_contract_s3_key(contract.name)
     contract_content = download_from_s3(contract_s3_key, aws, s3_bucket)
 
-    # Unzip contract and collect files and directories, excluding contract.py
+    # Unzip contract and collect files, excluding contract.py
     with zipfile.ZipFile(io.BytesIO(contract_content), "r") as zip_ref:
         files_to_upload = [
-            FileUpload(
-                source=zip_ref.read(file_info),
-                destination=str(bundle_path / file_info.filename),
+            SandboxFile(
+                content=zip_ref.read(file_info),
+                remote_path=str(bundle_path / file_info.filename),
             )
             for file_info in zip_ref.infolist()
             if not file_info.is_dir() and not file_info.filename.endswith("contract.py")
         ]
 
     if files_to_upload:
-        await sandbox.fs.upload_files(files_to_upload)
+        await sandbox.upload_files(files_to_upload)
     else:
-        await sandbox.fs.create_folder(str(bundle_path / contract.name), "755")
+        await sandbox.create_folder(str(bundle_path / contract.name))
 
 
 @retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
 async def install_agent_dependencies(
-    sandbox: AsyncSandbox,
+    sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
 ) -> None:
@@ -220,114 +156,62 @@ async def install_agent_dependencies(
 
     contract_path = get_contract_path(contract.name)
 
-    await stream_command_output(sandbox, f"cd {str(contract_path)} && {contract.install_cmd}", log_output)
+    result = await sandbox.exec(
+        contract.install_cmd,
+        cwd=str(contract_path),
+        on_stdout=log_output,
+        on_stderr=log_output,
+    )
+    if result.exit_code is None:
+        logger.warning(f"Streamed install command for {contract.name} finished without an exit code")
+    elif result.exit_code not in (0, 124):
+        raise SandboxError(f"Failed to install dependencies, exit code: {result.exit_code}")
 
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 
 
-MAX_WEBSOCKET_RETRIES = 10
-
-RETRIABLE_WEBSOCKET_ERRORS = [
-    "no close frame",
-    "1011",
-    "timed out during opening handshake",
-]
-
-
-def is_retriable_websocket_error(error: DaytonaError) -> bool:
-    """Check if a DaytonaError is a recoverable WebSocket error."""
-    message = str(error).lower()
-
-    return any(pattern in message for pattern in RETRIABLE_WEBSOCKET_ERRORS)
-
-
 async def stream_command_output(
-    sandbox: AsyncSandbox,
+    sandbox: Sandbox,
     command: str,
     on_output: Callable[[str], None],
 ) -> None:
-    """
-    Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
-    Falls back to polling if WebSocket streaming fails.
-    """
-    session_id = f"{sandbox.id}:{str(uuid.uuid4())}"
-    try:
-        await sandbox.process.create_session(session_id)
+    """Execute a command inside of a sandbox and stream the output."""
+    result = await sandbox.exec(command, on_stdout=on_output, on_stderr=on_output)
 
-        session_exec_resp = await sandbox.process.execute_session_command(
-            session_id, SessionExecuteRequest(command=command, run_async=True)
-        )
-
-        cmd_id = session_exec_resp.cmd_id
-
-        if not cmd_id:
-            raise SandboxError(f"Failed to execute command {command} in session {session_id}")
-
-        for attempt in range(1, MAX_WEBSOCKET_RETRIES + 1):
-            try:
-                await sandbox.process.get_session_command_logs_async(
-                    session_id=session_id,
-                    command_id=cmd_id,
-                    on_stdout=on_output,
-                    on_stderr=on_output,
-                )
-                break
-            except DaytonaError as e:
-                if not is_retriable_websocket_error(e) or attempt == MAX_WEBSOCKET_RETRIES:
-                    raise
-
-                message = f"WebSocket disconnected (attempt {attempt}/{MAX_WEBSOCKET_RETRIES}), reconnecting: {e}"
-                logger.warning(message)
-                on_output(f"[WARNING] {message}")
-
-        try:
-            cmd = await sandbox.process.get_session_command(session_id, cmd_id)
-
-            # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
-            if cmd.exit_code not in (0, 124):
-                raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
-
-        except SandboxError:
-            raise
-        except Exception as e:
-            logger.warning(f"Failed to get session command for {session_id}: {e}")
-            pass
-
-    finally:
-        try:
-            await sandbox.process.delete_session(session_id)
-        except Exception:
-            logger.warning(f"Caught failure to delete session `{session_id}`")
-            pass
+    # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
+    if result.exit_code is None:
+        logger.warning(f"Streamed command `{command}` finished without an exit code")
+    elif result.exit_code not in (0, 124):
+        raise SandboxError(f"Failed to run command {command}, exit code: {result.exit_code}")
 
 
 async def archive_and_upload_output(
-    sandbox: AsyncSandbox, output_path: str, agent_output_s3_key: str, aws: AWSCredentials, s3_bucket: str
+    sandbox: Sandbox, output_path: str, agent_output_s3_key: str, aws: AWSCredentials, s3_bucket: str
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
 
-    tar_result = await sandbox.process.exec(f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
+    tar_result = await sandbox.exec(f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
     if tar_result.exit_code != 0:
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
-        b64_result = await sandbox.process.exec(f"base64 {shlex.quote(archive_path)}")
+        b64_result = await sandbox.exec(f"base64 {shlex.quote(archive_path)}")
         if b64_result.exit_code != 0:
             raise SandboxError(f"Failed to read archive from {output_path}")
 
-        upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
+        upload_to_s3(base64.b64decode(b64_result.stdout), agent_output_s3_key, aws, s3_bucket)
     finally:
         # Check if file exists and remove it if it does
-        result = await sandbox.process.exec(f"test -e {shlex.quote(archive_path)}")
+        result = await sandbox.exec(f"test -e {shlex.quote(archive_path)}")
         if result.exit_code == 0:
-            await sandbox.process.exec(f"rm -f {shlex.quote(archive_path)}")
+            await sandbox.exec(f"rm -f {shlex.quote(archive_path)}")
         else:
             logger.warning(f"File {archive_path} does not exist, skipping removal")
 
 
 async def run_agent(
-    sandbox: AsyncSandbox,
+    sandbox: Sandbox,
     contract: AgentContractRequest,
     problem_path: str,
     task_id: str,
@@ -345,13 +229,13 @@ async def run_agent(
         sandbox: The sandbox to run the agent in
         contract: The agent contract configuration
         problem_path: Path inside the sandbox where the problem statement file was written during setup
+        task_id: The task ID
         log_output: Callback to log output
         cwd: Working directory to run the agent in
+        aws: AWS credentials
+        s3_bucket: S3 bucket name
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
-
-    Returns:
-        Agent output as a dictionary
 
     Raises:
         SandboxError: If the agent fails to run or times out
@@ -367,7 +251,7 @@ async def run_agent(
         run_cmd = f"timeout {agent_timeout} {run_cmd}"
 
     # Create cwd if it does not already exist
-    await sandbox.process.exec(f"mkdir -p {shlex.quote(cwd)}")
+    await sandbox.exec(f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
     await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
@@ -375,7 +259,7 @@ async def run_agent(
     if not contract.final_output:
         return
 
-    result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
+    result = await sandbox.exec(f"test -e {shlex.quote(contract.final_output)}")
     if result.exit_code != 0:
         return
 

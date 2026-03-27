@@ -1,119 +1,98 @@
-"""Test WebSocket disconnection handling in stream_command_output."""
-
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from typing import Any
+from collections.abc import Mapping
 
 import pytest
-from daytona.common.errors import DaytonaError
+from benchmark_service.sandbox import ExecResult, Sandbox, SandboxFile
 
-from tracker.sandbox import is_retriable_websocket_error, stream_command_output
-
-
-@dataclass
-class FakeCommand:
-    exit_code: int | None = 0
+from tracker.database.models import AgentContractRequest
+from tracker.exceptions import SandboxError
+from tracker.sandbox import install_agent_dependencies, stream_command_output
 
 
-@dataclass
-class FakeSessionExecResponse:
-    cmd_id: str = "cmd-123"
+class FakeSandbox(Sandbox):
+    def __init__(self, result: ExecResult) -> None:
+        super().__init__(provider=object(), id="sandbox-123", name="sandbox-123")  # type: ignore[arg-type]
+        self._result = result
+        self.last_command: str | None = None
+        self.last_cwd: str | None = None
 
-
-@dataclass
-class FakeProcess:
-    """Fake sandbox process that can simulate WebSocket disconnections."""
-
-    disconnect_count: int = 0
-    exit_code: int = 0
-    call_count: int = field(default=0, init=False)
-
-    async def create_session(self, session_id: str) -> None:
-        pass
-
-    async def execute_session_command(self, session_id: str, request: Any) -> FakeSessionExecResponse:
-        return FakeSessionExecResponse()
-
-    async def get_session_command_logs_async(
+    async def exec(
         self,
-        session_id: str,
-        command_id: str,
-        on_stdout: Callable[[str], None],
-        on_stderr: Callable[[str], None],
-    ) -> None:
-        self.call_count += 1
-        on_stdout(f"output from attempt {self.call_count}\n")
+        command: str,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        on_stdout=None,
+        on_stderr=None,
+    ) -> ExecResult:
+        self.last_command = command
+        self.last_cwd = cwd
+        if on_stdout:
+            on_stdout("stdout\n")
+        if on_stderr:
+            on_stderr("stderr\n")
+        return self._result
 
-        if self.call_count <= self.disconnect_count:
-            raise DaytonaError(
-                "Failed to get session command logs: WebSocket error: "
-                "sent 1011 (internal error) keepalive ping timeout; no close frame received"
-            )
+    async def upload_file(self, file: SandboxFile) -> None:
+        raise NotImplementedError
 
-    async def get_session_command(self, session_id: str, command_id: str) -> FakeCommand:
-        return FakeCommand(exit_code=self.exit_code)
+    async def upload_files(self, files: list[SandboxFile]) -> None:
+        raise NotImplementedError
 
-    async def delete_session(self, session_id: str) -> None:
-        pass
+    async def download_file(self, remote_path: str) -> bytes:
+        raise NotImplementedError
 
+    async def create_folder(self, remote_path: str) -> None:
+        raise NotImplementedError
 
-@dataclass
-class FakeSandbox:
-    id: str = "sandbox-123"
-    process: FakeProcess = field(default_factory=FakeProcess)
-
-
-@pytest.mark.parametrize(
-    "message, expected",
-    [
-        ("WebSocket error: no close frame received or sent", True),
-        ("WebSocket error: sent 1011 (internal error) keepalive ping timeout; no close frame received", True),
-        ("Failed to get session command logs: timed out during opening handshake", True),
-        ("some other error", False),
-    ],
-)
-def test_is_retriable_websocket_error(message: str, expected: bool) -> None:
-    assert is_retriable_websocket_error(DaytonaError(message)) == expected
+    async def wait_until_ready(self) -> None:
+        raise NotImplementedError
 
 
 @pytest.mark.asyncio
-async def test_stream_command_output_succeeds_without_disconnect() -> None:
+async def test_stream_command_output_allows_unknown_exit_code() -> None:
     collected: list[str] = []
-    sandbox = FakeSandbox()
+    sandbox = FakeSandbox(ExecResult(exit_code=None))
 
-    await stream_command_output(sandbox, "echo hello", collected.append)  # type: ignore[reportArgumentType]
+    await stream_command_output(sandbox, "echo hello", collected.append)
 
-    assert collected == ["output from attempt 1\n"]
+    assert sandbox.last_command == "echo hello"
+    assert collected == ["stdout\n", "stderr\n"]
 
 
 @pytest.mark.asyncio
-async def test_stream_command_output_retries_on_websocket_disconnect() -> None:
+async def test_stream_command_output_raises_on_explicit_nonzero_exit_code() -> None:
+    sandbox = FakeSandbox(ExecResult(exit_code=2))
+
+    with pytest.raises(SandboxError, match="exit code: 2"):
+        await stream_command_output(sandbox, "echo hello", lambda text: None)
+
+
+@pytest.mark.asyncio
+async def test_install_agent_dependencies_allows_unknown_exit_code() -> None:
+    contract = AgentContractRequest(
+        name="agent",
+        install_cmd="uv sync",
+        run_cmd="python agent.py",
+    )
+    sandbox = FakeSandbox(ExecResult(exit_code=None))
     collected: list[str] = []
-    sandbox = FakeSandbox(process=FakeProcess(disconnect_count=2))
 
-    await stream_command_output(sandbox, "echo hello", collected.append)  # type: ignore[reportArgumentType]
+    await install_agent_dependencies(sandbox, contract, collected.append)
 
-    assert sandbox.process.call_count == 3
-
-
-@pytest.mark.asyncio
-async def test_stream_command_output_raises_after_max_retries() -> None:
-    sandbox = FakeSandbox(process=FakeProcess(disconnect_count=20))
-
-    with pytest.raises(DaytonaError, match="1011"):
-        await stream_command_output(sandbox, "echo hello", lambda text: None)  # type: ignore[reportArgumentType]
+    assert sandbox.last_command == "uv sync"
+    assert sandbox.last_cwd == "/bundle/agent"
+    assert collected[0] == "Installing dependencies for contract: agent"
+    assert collected[-1] == "Finished installing dependencies for contract: agent"
 
 
 @pytest.mark.asyncio
-async def test_stream_command_output_raises_non_websocket_error() -> None:
-    @dataclass
-    class FailingProcess(FakeProcess):
-        async def get_session_command_logs_async(  # type: ignore[reportIncompatibleMethodOverride]
-            self, **kwargs: Any
-        ) -> None:
-            raise DaytonaError("some other error")
+async def test_install_agent_dependencies_raises_on_explicit_nonzero_exit_code() -> None:
+    contract = AgentContractRequest(
+        name="agent",
+        install_cmd="uv sync",
+        run_cmd="python agent.py",
+    )
+    sandbox = FakeSandbox(ExecResult(exit_code=1))
 
-    sandbox = FakeSandbox(process=FailingProcess())
-
-    with pytest.raises(DaytonaError, match="some other error"):
-        await stream_command_output(sandbox, "echo hello", lambda text: None)  # type: ignore[reportArgumentType]
+    with pytest.raises(SandboxError, match="exit code: 1"):
+        await install_agent_dependencies(sandbox, contract, lambda text: None)

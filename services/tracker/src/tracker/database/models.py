@@ -134,6 +134,7 @@ class Benchmark(SQLModel, table=True):
 
     error_message: str | None = Field(default=None)
     custom_benchmark_service: str | None = Field(default=None)
+    sandbox_provider: str = Field(default="daytona")
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
     )
@@ -172,6 +173,7 @@ class Benchmark(SQLModel, table=True):
             dataset=self.arguments.dataset,
             harness_config=harness_config,
             custom_benchmark_service=self.custom_benchmark_service,
+            sandbox_provider=self.sandbox_provider,
         )
 
     def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":
@@ -179,7 +181,9 @@ class Benchmark(SQLModel, table=True):
         from tracker.utils import create_benchmark_service_client
 
         url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
-        return create_benchmark_service_client(url=url, daytona_secret_name=daytona_secret_name, aws=aws)
+        return create_benchmark_service_client(
+            url=url, sandbox_provider=self.sandbox_provider, daytona_secret_name=daytona_secret_name, aws=aws
+        )
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":

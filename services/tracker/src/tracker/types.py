@@ -55,15 +55,16 @@ class StartBenchmarkRequest(BaseModel):
     service_headers: dict[str, str] = {}
     webhook_url: str | None = None
     webhook_intervals: list[int] | None = None
+    sandbox_provider: str = "daytona"
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
-
         # Prioritize user defined benchmark service over hosted one
         benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
         return create_benchmark_service_client(
             url=benchmark_service_url,
+            sandbox_provider=self.sandbox_provider,
             daytona_secret_name=self.harness_config.daytona_secret_name,
             aws=self.harness_config.aws,
             service_headers=self.service_headers,
