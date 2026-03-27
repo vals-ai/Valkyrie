@@ -138,19 +138,6 @@ Extra key-value pairs can be passed with `-k` and accessed via `kwargs`:
 valkyrie run start --agent agents/my_agent --benchmark swebench -k temperature 0.7
 ```
 
-## Directory Structure
-
-```
-agents/
-  my_agent/
-    contract.py           # Contract definition (required)
-    setup.sh              # Installation script (optional)
-    submodule/            # Agent code and dependencies (optional)
-      my_agent/
-        pyproject.toml
-        main.py
-```
-
 ## Installation Scripts
 
 The `install_cmd` runs inside the sandbox with the working directory set to `/bundle/<agent_name>/`. Use it to install dependencies and set up your agent.

@@ -25,6 +25,7 @@ from valkyrie.cli.s3_client import (
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import (
     CONFIG_LOCATION,
+    ConfigValue,
     check_tracker_service_health,
     download_agent_outputs,
     download_final_view,
@@ -63,24 +64,25 @@ def config():
     pass
 
 
+# Mapping between the expected key and default value
+# None means its user provided if not found
+_REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
+    "AWS_ACCESS_KEY_ID": None,  # AWS ACCESS KEY
+    "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
+    "AWS_DEFAULT_REGION": None,  # What region your secrets are in
+    "S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
+    "DAYTONA_SECRET_NAME": None,  # AWS Secrets Manager name for Daytona credentials
+    "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
+    "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
+}
+
+
 @config.command()
 def init() -> None:
     """
     Initializes a config we can trust to have references to dependencies to run Valkyrie,
     this becomes our source of truth for secrets required to run Valkyrie
     """
-
-    # Mapping between the expected key and default value
-    # None means its user provided if not found
-    environment_variables: dict[str, str | None | int] = {
-        "AWS_ACCESS_KEY_ID": None,  # AWS ACCESS KEY
-        "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
-        "AWS_DEFAULT_REGION": None,  # What region your secrets are in
-        "S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
-        "DAYTONA_SECRET_NAME": None,  # AWS Secrets Manager name for Daytona credentials
-        "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
-        "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
-    }
 
     current_config: dict[str, str] = {}
     if CONFIG_LOCATION.exists():
@@ -91,7 +93,7 @@ def init() -> None:
                 pass
 
     collected_keys: dict[str, str] = {}
-    for key, default in environment_variables.items():
+    for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
         sourced = current_config.get(key) or os.environ.get(key)
         if sourced:
             click.echo(
@@ -126,11 +128,11 @@ def init() -> None:
 @config.command()
 @click.argument("key")
 @click.argument("value")
-def modify(key: str, value: str) -> None:
+def set(key: str, value: str) -> None:
     """
-    Modify a single key in the Valkyrie config.
+    Set a single key in the Valkyrie config.
 
-    Example: valkyrie config modify AWS_DEFAULT_REGION us-west-2
+    Example: valkyrie config set AWS_DEFAULT_REGION us-west-2
     """
 
     if not CONFIG_LOCATION.exists():
@@ -139,15 +141,55 @@ def modify(key: str, value: str) -> None:
     with open(CONFIG_LOCATION) as f:
         current: dict[str, str] = yaml.safe_load(f) or {}
 
-    if key not in current:
-        raise click.ClickException(f"Key '{key}' not found in config. Valid keys: {', '.join(current)}")
+    try:
+        config_value = ConfigValue.from_str(key)
+    except ValueError:
+        raise click.ClickException(
+            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(ConfigValue.__members__.values())}"
+        )
 
-    current[key] = value
+    current[config_value.value] = value
 
     with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"  {key} updated.", fg="green"))
+
+
+@config.command(name="remove")
+@click.argument("key")
+def config_remove(key: str) -> None:
+    """
+    Remove a single key from the Valkyrie config.
+
+    Example: valkyrie config remove AWS_DEFAULT_REGION
+    """
+
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        current: dict[str, str] = yaml.safe_load(f) or {}
+
+    try:
+        config_value = ConfigValue.from_str(key)
+    except ValueError:
+        raise click.ClickException(
+            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(ConfigValue.__members__.keys())}"
+        )
+
+    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
+        raise click.ClickException(
+            f"Key '{key}' is required and cannot be removed. Consider using `valkyrie config set` to update it."
+        )
+
+    if config_value.value in current:
+        del current[config_value.value]
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(current, f, default_flow_style=False)
+
+    click.echo(click.style(f"  {key} removed.", fg="green"))
 
 
 @config.group()
@@ -300,56 +342,6 @@ def auth_list() -> None:
     for name, credential in auth_credentials.items():
         masked = credential[:4] + "***" if len(credential) > 4 else "***"
         click.echo(f"  {name}: {masked}")
-
-
-@config.group()
-def webhook() -> None:
-    """Manage Slack webhook URL for run notifications."""
-    pass
-
-
-@webhook.command("set")
-@click.argument("url")
-def webhook_set(url: str) -> None:
-    """Set the Slack webhook URL for benchmark notifications.
-
-    Example: valkyrie config webhook set https://hooks.slack.com/services/T00/B00/xxx
-    """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
-
-    harness_config["slack_webhook_url"] = url
-
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(harness_config, f, default_flow_style=False)
-
-    click.echo(click.style("Slack webhook URL has been set.", fg="green"))
-
-
-@webhook.command("remove")
-def webhook_remove() -> None:
-    """Remove the Slack webhook URL.
-
-    Example: valkyrie config webhook remove
-    """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        current: dict[str, Any] = yaml.safe_load(f) or {}
-
-    if "slack_webhook_url" not in current:
-        raise click.ClickException("No Slack webhook URL configured.")
-
-    del current["slack_webhook_url"]
-
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(current, f, default_flow_style=False)
-
-    click.echo(click.style("Slack webhook URL has been removed.", fg="green"))
 
 
 @run.command(
@@ -505,9 +497,9 @@ def start(
         click.echo(f"  - Service headers: {', '.join(service_headers.keys())}")
 
     # Webhook notification setup
-    webhook_url, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_url())
+    webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
-    if webhook_url and webhook_intervals:
+    if webhook_secret and webhook_intervals:
         click.echo(f"  - Notifications: {webhook_intervals}%")
 
     formatted_task_ids: list[str] | None = None
@@ -554,7 +546,7 @@ def start(
                 lambda_function,
                 dataset,
                 service_headers=service_headers or None,
-                webhook_url=webhook_url if webhook_intervals else None,
+                webhook_secret_name=webhook_secret if webhook_intervals else None,
                 webhook_intervals=webhook_intervals,
             )
 
@@ -762,10 +754,6 @@ def resume(
     if ctx.info_name == "retry":
         retry = True
 
-    # Read webhook URL from config for notifications
-    webhook_url = TrackerService.get_webhook_url()
-    webhook_intervals: list[int] | None = [100] if webhook_url else None
-
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
@@ -777,8 +765,6 @@ def resume(
                 retry,
                 concurrency,
                 retry_task_ids,
-                webhook_url=webhook_url if webhook_intervals else None,
-                webhook_intervals=webhook_intervals,
             )
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
@@ -966,7 +952,7 @@ def push(agent_path: Path, name: str | None):
 
 @agent.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
-def remove(agent_name: str):
+def agent_remove(agent_name: str):
     """Remove an agent from S3.
 
     Example:

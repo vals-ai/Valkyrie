@@ -1,5 +1,5 @@
 .PHONY: help install style format lint typecheck \
-	tracker-service update-submodules venv_check tool-install build
+	tracker-service venv_check tool-install build
 
 PYTHON_VERSION := 3.12
 
@@ -10,7 +10,6 @@ help:
 	@echo "Setup:"
 	@echo "  make install             Install cli dependencies"
 	@echo "  make tool-install        Install valkyrie as a global executable"
-	@echo "  make update-submodules   Init and update git submodules"
 	@echo ""
 	@echo "Development:"
 	@echo "  make style               Lint & Format"
@@ -49,11 +48,6 @@ build: venv_check
 		--clean \
 		src/valkyrie/cli/main.py
 	@echo "✓ Binary built at dist/valkyrie"
-
-update-submodules:
-	git submodule update --init --recursive
-	git submodule update --remote --merge
-	uv sync
 
 format: venv_check
 	@uv run ruff format .

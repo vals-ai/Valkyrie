@@ -1,16 +1,17 @@
 """Integration tests for sandbox operations."""
 
 import io
-import uuid
 import zipfile
 from typing import AsyncGenerator, Generator
 
 import boto3
 import pytest
+from benchmark_service.schemas import Resources
 from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 from moto import mock_aws
 from mypy_boto3_s3.client import S3Client
 
+from tests.utils import random_task_id
 from tracker.config import AWS_S3_BUCKET
 from tracker.database.models import AgentContractRequest
 from tracker.s3 import get_contract_s3_key
@@ -20,7 +21,7 @@ from tracker.sandbox import (
     run_agent,
     upload_agent_artifacts,
 )
-from benchmark_service.schemas import Resources
+from tracker.types import AWSCredentials
 
 
 @pytest.fixture
@@ -33,42 +34,38 @@ def mock_s3() -> Generator[S3Client, None, None]:
 
 
 @pytest.fixture
-def test_resources() -> Resources:
-    """Create a test resources object."""
-    return Resources(vcpu=2, memory=4, disk=5)
-
-
-@pytest.fixture
-async def test_sandbox(daytona_client: AsyncDaytona, test_resources: Resources) -> AsyncGenerator[AsyncSandbox, None]:
+async def test_sandbox(
+    daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
+) -> AsyncGenerator[AsyncSandbox, None]:
     """Create a test sandbox with Python."""
 
-    sandbox_name = f"test-sandbox-{str(uuid.uuid4())}"
-
-    async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox:
+    async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
         yield sandbox
 
 
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
 
-    async def test_create_and_cleanup_sandbox(self, daytona_client: AsyncDaytona, test_resources: Resources) -> None:
+    async def test_create_and_cleanup_sandbox(
+        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
+    ) -> None:
         """Test that sandbox is created and cleaned up properly."""
-        sandbox_name = "test-cleanup-sandbox"
 
-        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox:
-            assert sandbox.name == sandbox_name
+        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
+            assert sandbox.name == random_sandbox_name
             result = await sandbox.process.exec("echo 'test'")
             assert result.exit_code == 0
 
         with pytest.raises(DaytonaError):
-            await daytona_client.find_one(sandbox_name)
+            await daytona_client.find_one(random_sandbox_name)
 
-    async def test_upload_agent_artifacts(self, test_sandbox: AsyncSandbox, mock_s3: S3Client) -> None:
+    async def test_upload_agent_artifacts(
+        self, test_sandbox: AsyncSandbox, mock_s3: S3Client, aws_credentials: AWSCredentials
+    ) -> None:
         """Test that agent artifacts are uploaded to the sandbox."""
         contract_name = "test_contract"
         contract = AgentContractRequest(
             name=contract_name,
-            artifacts=["setup.sh", "submodules/some_dir"],
             install_cmd="bash setup.sh",
             run_cmd="echo hello",
         )
@@ -90,7 +87,7 @@ class TestSandboxOperations:
             Body=zip_buffer.getvalue(),
         )
 
-        await upload_agent_artifacts(test_sandbox, contract)
+        await upload_agent_artifacts(test_sandbox, contract, aws_credentials, AWS_S3_BUCKET)
 
         # Verify files exist in sandbox
         result = await test_sandbox.process.exec(f"cat /bundle/{setup_file}")
@@ -111,7 +108,6 @@ class TestSandboxOperations:
         contract_name = "test_contract"
         contract = AgentContractRequest(
             name=contract_name,
-            artifacts=["setup.sh"],
             install_cmd="bash setup.sh",
             run_cmd="echo hello",
         )
@@ -130,6 +126,7 @@ class TestSandboxOperations:
     async def test_run_agent(
         self,
         test_sandbox: AsyncSandbox,
+        aws_credentials: AWSCredentials,
     ) -> None:
         """Test that agent runs and prints output lines."""
         logged_messages: list[str] = []
@@ -141,7 +138,6 @@ class TestSandboxOperations:
 
         contract = AgentContractRequest(
             name="test_agent",
-            artifacts=[],
             install_cmd="true",
             run_cmd=run_cmd,
             final_output="/tmp/agent_output.json",
@@ -150,23 +146,31 @@ class TestSandboxOperations:
         # Expecting bundle directory to exist
         await test_sandbox.process.exec("mkdir -p /bundle/test_agent")
 
-        final_output = await run_agent(test_sandbox, contract, "some problem statement", log_callback, cwd="/")
-
-        assert final_output == {"result": "hello world"}
+        await run_agent(
+            test_sandbox,
+            contract,
+            "some problem statement",
+            task_id=random_task_id(),
+            log_output=log_callback,
+            cwd="/",
+            aws=aws_credentials,
+            s3_bucket=AWS_S3_BUCKET,
+        )
 
         output = "\n".join(logged_messages)
         assert "line1" in output
         assert "line2" in output
         assert "line3" in output
 
-    async def test_create_sandbox_reuse(self, daytona_client: AsyncDaytona, test_resources: Resources) -> None:
+    async def test_create_sandbox_reuse(
+        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
+    ) -> None:
         """Test that create_sandbox reuses existing sandbox instead of creating new one."""
-        sandbox_name = f"test-reuse-{str(uuid.uuid4())[:8]}"
 
-        async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox1:
+        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox1:
             result = await sandbox1.process.exec("echo 'test'")
             assert result.exit_code == 0
             first_id = sandbox1.id
 
-            async with create_sandbox(daytona_client, sandbox_name, "python:3.11-slim", test_resources) as sandbox2:
+            async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox2:
                 assert sandbox2.id == first_id

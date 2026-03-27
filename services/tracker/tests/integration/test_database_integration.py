@@ -6,12 +6,13 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
 from daytona import AsyncDaytona
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, inspect, select
 
-from tests.utils import build_task_environment
-from benchmark_service.client import BenchmarkServiceClient
+from tests.utils import random_task_id
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -20,7 +21,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
+from tracker.sandbox import TrackerResources, create_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class TestDatabaseIntegration:
         assert benchmark_row.finished_at, "Should be auto generated when the status is updated to finished"
 
         # Test the task table
-        task_row = Task(task_id="task_id_1", benchmark=benchmark_row.id)
+        task_row = Task(task_id=random_task_id(), benchmark=benchmark_row.id)
         database_session.add(task_row)
 
         # When created its in pending status
@@ -115,7 +116,7 @@ class TestDatabaseIntegration:
         assert task_row.finished_at, "Should be auto generated when the status is updated to finished"
 
         # When task status is marked as error, the finished_at timestamp should be set
-        task_row = Task(task_id="task_id_2", benchmark=benchmark_row.id)
+        task_row = Task(task_id=random_task_id(), benchmark=benchmark_row.id)
         task_row.status = TaskStatus.ERROR
         database_session.add(task_row)
         database_session.flush()
@@ -157,7 +158,7 @@ class TestDatabaseIntegration:
         assert fetched_benchmark_row.finished_at is None
         assert fetched_benchmark_row.status == BenchmarkStatus.IN_PROGRESS
 
-        task_ids = ["task_id_1", "task_id_2", "task_id_3"]
+        task_ids = [random_task_id() for _ in range(3)]
         for task_id in task_ids:
             _ = await self._create_task(database_session, task_id, benchmark_row.id)
 
@@ -214,6 +215,7 @@ class TestDatabaseIntegration:
         daytona_client: AsyncDaytona,
         task_row: Task,
         task_data: RetrieveTaskResponse,
+        test_resources: TrackerResources,
     ) -> dict[str, str]:
         docker_image: str = task_data.docker_image
 
@@ -222,7 +224,7 @@ class TestDatabaseIntegration:
         database_session.add(task_row)
         database_session.flush()
 
-        async with build_task_environment(daytona_client, task_row.task_id, docker_image) as sandbox:
+        async with create_sandbox(daytona_client, task_row.task_id, docker_image, test_resources) as sandbox:
             response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
             assert response.status == "ok"
 
@@ -230,12 +232,14 @@ class TestDatabaseIntegration:
 
             return response
 
+    @pytest.mark.slow
     async def test_end_to_end(
         self,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
         daytona_client: AsyncDaytona,
         example_benchmark_object: Benchmark,
+        test_resources: TrackerResources,
     ):
         """
         Test the end to end flow when using database with a benchmark service
@@ -287,7 +291,7 @@ class TestDatabaseIntegration:
                         task_data = await benchmark_service.retrieve_task(task_id=task_id)
                         task_row = task_row_mapping[task_id]
                         evaluation_result = await self._evaluate_instance(
-                            database_session, benchmark_service, daytona_client, task_row, task_data
+                            database_session, benchmark_service, daytona_client, task_row, task_data, test_resources
                         )
                         evaluation_result_row = await self._create_evaluation_result(
                             database_session, task_row, evaluation_result

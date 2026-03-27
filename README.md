@@ -26,10 +26,10 @@ valkyrie config init
 
 This will prompt for required credentials (AWS, S3 bucket, Daytona secret name) and write them to `~/.config/valkyrie/valkyrie.yaml`. Values can be sourced from the environment or an existing config. These are required to run Valkyrie and be in any environment that you use Valkyrie in.
 
-To update a single key:
+To upsert a single key:
 
 ```bash
-valkyrie config modify <KEY> <VALUE>
+valkyrie config set <KEY> <VALUE>
 ```
 
 ## Agent Management
@@ -161,17 +161,19 @@ valkyrie run start --benchmark my-benchmark --agent sweagent \
 
 ## Slack Notifications
 
-Valkyrie can send Slack webhook notifications as benchmark runs progress. Configure a webhook URL once and get notified automatically when runs hit defined thresholds or reach a terminal state (finished, error, stopped).
+Valkyrie can send Slack webhook notifications as benchmark runs progress. Store an AWS Secrets Manager secret name (pointing to your Slack webhook URL) and get notified automatically when runs hit defined thresholds or reach a terminal state (finished, error, stopped).
 
 ### Setting up the webhook
 
 ```bash
-# Store your Slack webhook URL
-valkyrie config webhook set https://hooks.slack.com/services/T00/B00/xxx
+# Store the AWS secret name containing your Slack webhook URL
+valkyrie config set webhook SLACK_WEBHOOK_SECRET
 
-# Remove the webhook URL
-valkyrie config webhook remove
+# Remove the webhook secret
+valkyrie config remove webhook
 ```
+
+The secret in AWS Secrets Manager should contain the raw Slack webhook URL as a plain string (not JSON).
 
 ### Starting a run with notifications
 
@@ -183,9 +185,9 @@ valkyrie run start --agent sweagent --benchmark swebench -i 25 -i 75
 | --- | --- |
 | `-i` / `--interval` | Progress percentage threshold for a notification. Repeatable. Max 3, must be divisible by 5, range 5–100 |
 
-If a webhook URL is configured but no `-i` flags are provided, Valkyrie defaults to `-i 100` (notify on completion only). If `-i` flags are provided but no webhook URL is configured, the intervals are ignored with a warning.
+If a webhook secret is configured but no `-i` flags are provided, Valkyrie defaults to `-i 100` (notify on completion only). If `-i` flags are provided but no webhook secret is configured, the intervals are ignored with a warning.
 
-Notifications are also sent on resume and retry — the webhook URL is re-read from config automatically.
+Webhook configuration is persisted per-benchmark in the database. On resume or retry, the webhook secret and intervals are read from the original benchmark — no local config needed.
 
 ### Notification triggers
 

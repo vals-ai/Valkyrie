@@ -95,6 +95,8 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benc
     return Benchmark(
         name=request.benchmark_name,
         custom_benchmark_service=request.custom_benchmark_service,
+        webhook_secret_name=request.webhook_secret_name,
+        webhook_intervals=request.webhook_intervals,
         arguments=BenchmarkArguments(
             contract=request.contract,
             concurrency=request.concurrency,
@@ -540,9 +542,10 @@ async def process_benchmark(
 
     # Create notifier if webhook is configured
     notifier: SlackNotifier | None = None
-    if start_benchmark_request.webhook_url and start_benchmark_request.webhook_intervals:
+    if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
         notifier = SlackNotifier(
-            webhook_url=start_benchmark_request.webhook_url,
+            secret_name=start_benchmark_request.webhook_secret_name,
+            aws=harness_config.aws,
             intervals=start_benchmark_request.webhook_intervals,
         )
 

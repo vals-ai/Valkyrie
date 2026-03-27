@@ -70,3 +70,6 @@ pythonpath = ["."]
 env = [
     "BROKER_ENVIRONMENT=testing",
 ]
+markers = [
+    "slow: marks tests as slow (require Daytona/external services)",
+]

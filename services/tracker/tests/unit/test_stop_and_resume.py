@@ -3,16 +3,15 @@ from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app
-from benchmark_service.client import BenchmarkServiceClient
-from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
-from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
-from tracker.types import StartBenchmarkRequest
+from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     TaskMonitor,
     TrackedTask,
@@ -20,8 +19,8 @@ from tracker.utils import (
     initiate_stop_benchmark,
     process_benchmark,
     reset_to_in_progress_status,
+    start_benchmark_request_to_benchmark,
 )
-from tests.unit.conftest import TEST_HARNESS_CONFIG
 
 client = TestClient(app)
 
@@ -56,6 +55,7 @@ class TestStopAndResume:
         contract: AgentContractRequest,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
     ):
         """
         Tests stop and resume when some tasks have already completed.
@@ -87,7 +87,7 @@ class TestStopAndResume:
             contract=contract,
             concurrency=2,
             task_ids=task_ids,
-            harness_config=TEST_HARNESS_CONFIG,
+            harness_config=harness_config,
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
@@ -154,7 +154,7 @@ class TestStopAndResume:
 
         # Run process_benchmark to complete the remaining tasks (the 3 tasks that are pending)
         await process_benchmark(
-            start_benchmark_request_json=benchmark_row.start_benchmark_request(TEST_HARNESS_CONFIG).model_dump(),
+            start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verified_task_ids,
         )
@@ -163,7 +163,11 @@ class TestStopAndResume:
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
 
     async def test_resume_changes_task_alias_per_attempt(
-        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
     ):
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -185,9 +189,7 @@ class TestStopAndResume:
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=benchmark_row.benchmark_service(
-                TEST_HARNESS_CONFIG.daytona_secret_name, TEST_HARNESS_CONFIG.aws
-            ),
+            benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
             retry=True,
             rerun_task_ids=[],
         )

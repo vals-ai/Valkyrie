@@ -3,18 +3,20 @@ from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 import pytest
+from benchmark_service.schemas import FinalScoreResponse
 from httpx._models import Response
-from pytest import MonkeyPatch
 from sqlmodel import Session, col, func, select, update
 
 from tests.unit.test_fastapi_server import client
-from tracker.utils import start_benchmark_request_to_benchmark
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
 from tracker.exceptions import TrackerServiceError
-from benchmark_service.schemas import FinalScoreResponse
-from tracker.types import StartBenchmarkRequest
-from tests.unit.conftest import TEST_HARNESS_CONFIG
-from tracker.utils import create_task_rows, fetch_benchmark_row, set_benchmark_final_status
+from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.utils import (
+    create_task_rows,
+    fetch_benchmark_row,
+    set_benchmark_final_status,
+    start_benchmark_request_to_benchmark,
+)
 
 
 class TestBenchmarkUtils:
@@ -105,9 +107,7 @@ class TestBenchmarkUtils:
         response: Response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=false")
         assert response.status_code == 400
 
-    def test_resume_benchmark(
-        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch
-    ):
+    def test_resume_benchmark(self, example_benchmark_object: Benchmark, database_session: Session):
         """
         Tests the flow of updating the benchmark related objects to the proper states when resuming a benchmark
 
@@ -190,7 +190,7 @@ class TestBenchmarkUtils:
         contract: AgentContractRequest,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
     ):
         """
         Tests edge cases for resuming a benchmark
@@ -235,12 +235,12 @@ class TestBenchmarkUtils:
             concurrency=5,
             task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
             slice_str=":10",
-            harness_config=TEST_HARNESS_CONFIG,
+            harness_config=harness_config,
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request)
 
-        recreated_start_benchmark_request = benchmark_row.start_benchmark_request(TEST_HARNESS_CONFIG)
+        recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
         assert recreated_start_benchmark_request == original_start_benchmark_request
 
         # Assert we have 5 tasks in the database
