@@ -121,7 +121,7 @@ class TestSandboxOperations:
         # Verify messages were logged
         output = "\n".join(logged_messages)
         assert "Installing dependencies" in output
-        assert "hello world" in output
+        assert "Finished installing dependencies" in output
 
     async def test_run_agent(
         self,

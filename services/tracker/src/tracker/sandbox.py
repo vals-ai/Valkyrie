@@ -9,6 +9,7 @@ import zipfile
 from asyncio import Semaphore
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from contextlib import suppress
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
@@ -327,6 +328,9 @@ async def stream_command_output(
             )
         )
         cmd = await wait_for_session_command_completion(sandbox, session_id, cmd_id)
+        if log_task is not None and not log_task.done():
+            with suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(log_task), timeout=1)
 
         # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
         if cmd.exit_code not in (0, 124):
