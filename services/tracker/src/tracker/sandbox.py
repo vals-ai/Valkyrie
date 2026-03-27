@@ -8,8 +8,7 @@ import uuid
 import zipfile
 from asyncio import Semaphore
 from collections.abc import Callable
-from contextlib import asynccontextmanager
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
@@ -26,6 +25,7 @@ from daytona import (
     SessionExecuteRequest,
 )
 from daytona.common.errors import DaytonaError
+from daytona_toolbox_api_client_async.models.command import Command
 from tenacity import (
     AsyncRetrying,
     before_sleep_log,
@@ -292,23 +292,32 @@ async def wait_for_session_command_completion(
     session_id: str,
     command_id: str,
     poll_interval_seconds: float = SESSION_COMMAND_POLL_INTERVAL_SECONDS,
-) -> Any:
+) -> Command:
     """Poll command status until the command exits."""
     while True:
-        cmd = await sandbox.process.get_session_command(session_id, command_id)
+        cmd: Command = await sandbox.process.get_session_command(session_id, command_id)
         if cmd.exit_code is not None:
             return cmd
         await asyncio.sleep(poll_interval_seconds)
+
+
+# NOTE: If this gets too big move it into a mapping
+# these are decoupled since its just 2 exit codes we need to track
+_TIMEOUT_EXIT_CODE: int = 124
+_SUCCESS_EXIT_CODE: int = 0
 
 
 async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
-) -> None:
+) -> bool:
     """
     Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
     Command completion is authoritative; log streaming is best-effort only.
+
+    Return:
+        bool - True if the command timed out, False otherwise
     """
     session_id = f"{sandbox.id}:{str(uuid.uuid4())}"
     log_task: asyncio.Task[None] | None = None
@@ -333,8 +342,13 @@ async def stream_command_output(
                 await asyncio.wait_for(asyncio.shield(log_task), timeout=1)
 
         # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
-        if cmd.exit_code not in (0, 124):
+        if cmd.exit_code == _TIMEOUT_EXIT_CODE:
+            return True
+
+        if cmd.exit_code != _SUCCESS_EXIT_CODE:
             raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
+
+        return False
 
     finally:
         if log_task is not None and not log_task.done():
@@ -386,7 +400,7 @@ async def run_agent(
     s3_bucket: str,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
-) -> None:
+) -> bool:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -400,7 +414,7 @@ async def run_agent(
         agent_timeout: Optional timeout in seconds to enforce on the agent command
 
     Returns:
-        Agent output as a dictionary
+        bool - True if the command timed out, False otherwise
 
     Raises:
         SandboxError: If the agent fails to run or times out
@@ -419,14 +433,13 @@ async def run_agent(
     await sandbox.process.exec(f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
+    timed_out = await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
 
-    if not contract.final_output:
-        return
+    # Upload any output from the agent to S3
+    if contract.final_output:
+        result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
+        if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
+            await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
 
-    result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
-    if result.exit_code != 0:
-        return
-
-    if agent_output_s3_key:
-        await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
+    # Return if the agent timed out from the agent timeout provided by the benchmark service
+    return timed_out

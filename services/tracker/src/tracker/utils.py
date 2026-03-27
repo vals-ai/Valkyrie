@@ -377,7 +377,7 @@ async def process_task(
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
                 # Run the agent inside of the sandbox
-                await run_agent(
+                agent_timed_out = await run_agent(
                     sandbox,
                     start_benchmark_request.contract,
                     task_data.problem_path,
@@ -389,6 +389,9 @@ async def process_task(
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
                 )
+
+                # Flag the agent timed out when trying to complete the task (expected)
+                task.agent_timed_out = agent_timed_out
 
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session)

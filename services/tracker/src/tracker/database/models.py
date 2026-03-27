@@ -272,6 +272,7 @@ class Task(SQLModel, table=True):
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
     benchmark: UUID = Field(foreign_key="benchmark.id")
+    agent_timed_out: bool = Field(default=False)
 
     @computed_field
     @property
