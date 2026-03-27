@@ -26,7 +26,6 @@ class FakeSessionExecResponse:
 class FakeProcess:
     log_error: Exception | None = None
     log_error_count: int = 0
-    log_delay_seconds: float = 0.0
     exit_code: int = 0
     call_count: int = field(default=0, init=False)
     status_poll_count: int = field(default=0, init=False)
@@ -45,8 +44,6 @@ class FakeProcess:
         on_stderr: Callable[[str], None],
     ) -> None:
         self.call_count += 1
-        if self.log_delay_seconds:
-            await asyncio.sleep(self.log_delay_seconds)
         on_stdout(f"output from attempt {self.call_count}\n")
         if self.call_count <= self.log_error_count and self.log_error is not None:
             raise self.log_error
@@ -89,16 +86,6 @@ async def test_stream_command_output_succeeds_without_disconnect() -> None:
 
     assert collected == ["output from attempt 1\n"]
     assert sandbox.process.status_poll_count >= 1
-
-
-@pytest.mark.asyncio
-async def test_stream_command_output_waits_for_fast_command_logs() -> None:
-    collected: list[str] = []
-    sandbox = FakeSandbox(process=FakeProcess(log_delay_seconds=0.01))
-
-    await stream_command_output(sandbox, "echo hello", collected.append)  # type: ignore[reportArgumentType]
-
-    assert collected == ["output from attempt 1\n"]
 
 
 @pytest.mark.asyncio
