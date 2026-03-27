@@ -77,7 +77,6 @@ def test_is_websocket_stream_error(message: str, expected: bool) -> None:
     assert is_websocket_stream_error(DaytonaError(message)) == expected
 
 
-@pytest.mark.asyncio
 async def test_stream_command_output_succeeds_without_disconnect() -> None:
     collected: list[str] = []
     sandbox = FakeSandbox()
@@ -88,7 +87,6 @@ async def test_stream_command_output_succeeds_without_disconnect() -> None:
     assert sandbox.process.status_poll_count >= 1
 
 
-@pytest.mark.asyncio
 async def test_stream_session_command_logs_retries_websocket_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sandbox_module, "LOG_STREAM_RETRY_DELAY_SECONDS", 0.0)
     collected: list[str] = []
@@ -112,7 +110,6 @@ async def test_stream_session_command_logs_retries_websocket_errors(monkeypatch:
     assert "output from attempt 3\n" in collected
 
 
-@pytest.mark.asyncio
 async def test_stream_session_command_logs_warns_after_retries(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sandbox_module, "LOG_STREAM_RETRY_DELAY_SECONDS", 0.0)
     collected: list[str] = []
@@ -136,7 +133,6 @@ async def test_stream_session_command_logs_warns_after_retries(monkeypatch: pyte
     assert any("continuing without live logs" in line.lower() for line in collected)
 
 
-@pytest.mark.asyncio
 async def test_stream_session_command_logs_warns_on_non_websocket_error() -> None:
     collected: list[str] = []
     sandbox = FakeSandbox(process=FakeProcess(log_error=DaytonaError("some other error"), log_error_count=1))
@@ -152,7 +148,6 @@ async def test_stream_session_command_logs_warns_on_non_websocket_error() -> Non
     assert any("continuing without live logs" in line.lower() for line in collected)
 
 
-@pytest.mark.asyncio
 async def test_stream_command_output_raises_on_nonzero_exit_code() -> None:
     sandbox = FakeSandbox(process=FakeProcess(exit_code=2))
 
