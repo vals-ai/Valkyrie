@@ -390,9 +390,6 @@ async def process_task(
                     agent_timeout=task_data.agent_timeout,
                 )
 
-                # Flag the agent timed out when trying to complete the task (expected)
-                task.agent_timed_out = agent_timed_out
-
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session)
                     task.status = TaskStatus.EVALUATING
@@ -409,8 +406,9 @@ async def process_task(
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
+                # Flag the agent timed out when trying to complete the task (expected)
                 evaluation_result_row = EvaluationResult(
-                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result
+                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_timed_out=agent_timed_out
                 )
 
                 with Session(bind=engine) as task_session:
@@ -763,6 +761,8 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session) -> dict[str, 
     evaluation_results: dict[str, dict[str, Any]] = {}
     for evaluation_result, task_id in results:
         result_data = evaluation_result.result
+        # NOTE: We append this because its important for the user to know
+        result_data["agent_timed_out"] = evaluation_result.agent_timed_out
         evaluation_results[task_id] = result_data
 
     return evaluation_results

@@ -435,6 +435,11 @@ async def run_agent(
     # Run the agent without including task directory dependencies
     timed_out = await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
 
+    if timed_out:
+        log_output(
+            f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
+        )
+
     # Upload any output from the agent to S3
     if contract.final_output:
         result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
