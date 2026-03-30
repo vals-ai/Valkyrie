@@ -2506,6 +2506,7 @@ dependencies = [
     { name = "click" },
     { name = "httpx" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
     { name = "tracker" },
 ]
 
@@ -2524,6 +2525,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.0" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "python-dotenv" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "tracker", editable = "services/tracker" },
 ]
 
