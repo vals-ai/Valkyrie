@@ -1,6 +1,4 @@
 """Sandbox management utilities for the tracker service."""
-
-import asyncio
 import base64
 import io
 import shlex
@@ -9,7 +7,6 @@ import zipfile
 from asyncio import Semaphore
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from contextlib import suppress
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
@@ -298,7 +295,6 @@ async def stream_command_output(
     Log streaming is best-effort. Command status is checked once before cleanup.
     """
     session_id = f"{sandbox.id}:{str(uuid.uuid4())}"
-    log_task: asyncio.Task[None] | None = None
     try:
         await sandbox.process.create_session(session_id)
         cmd_id = await start_session_command(
@@ -306,17 +302,12 @@ async def stream_command_output(
             session_id,
             command,
         )
-        log_task = asyncio.create_task(
-            stream_session_command_logs(
-                sandbox,
-                session_id=session_id,
-                command_id=cmd_id,
-                on_output=on_output,
-            )
+        await stream_session_command_logs(
+            sandbox,
+            session_id=session_id,
+            command_id=cmd_id,
+            on_output=on_output,
         )
-        if log_task is not None and not log_task.done():
-            with suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(asyncio.shield(log_task), timeout=1)
 
         try:
             cmd = await sandbox.process.get_session_command(session_id, cmd_id)
@@ -330,12 +321,6 @@ async def stream_command_output(
             logger.warning(f"Failed to get session command for {session_id}: {error}")
 
     finally:
-        if log_task is not None and not log_task.done():
-            log_task.cancel()
-            try:
-                await log_task
-            except asyncio.CancelledError:
-                pass
         try:
             await sandbox.process.delete_session(session_id)
         except Exception:
