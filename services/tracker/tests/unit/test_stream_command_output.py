@@ -9,7 +9,12 @@ import pytest
 from daytona.common.errors import DaytonaError
 
 from tracker import sandbox as sandbox_module
-from tracker.sandbox import is_websocket_stream_error, stream_command_output, stream_session_command_logs
+from tracker.sandbox import (
+    exec_with_retries,
+    is_websocket_stream_error,
+    stream_command_output,
+    stream_session_command_logs,
+)
 
 
 @dataclass
@@ -153,3 +158,74 @@ async def test_stream_command_output_raises_on_nonzero_exit_code() -> None:
 
     with pytest.raises(Exception, match="exit code: 2"):
         await stream_command_output(sandbox, "echo hello", lambda text: None)  # type: ignore[reportArgumentType]
+
+
+@dataclass
+class FakeExecResult:
+    exit_code: int = 0
+
+
+@dataclass
+class FakeExecProcess:
+    exec_error: Exception | None = None
+    exec_error_count: int = 0
+    exec_call_count: int = field(default=0, init=False)
+
+    async def exec(self, command: str) -> FakeExecResult:
+        self.exec_call_count += 1
+
+        if self.exec_call_count <= self.exec_error_count and self.exec_error is not None:
+            raise self.exec_error
+
+        return FakeExecResult()
+
+
+@dataclass
+class FakeExecSandbox:
+    id: str = "sandbox-123"
+    process: FakeExecProcess = field(default_factory=FakeExecProcess)
+
+
+async def test_exec_with_retries_succeeds_first_attempt() -> None:
+    sandbox = FakeExecSandbox()
+
+    result = await exec_with_retries(sandbox, "mkdir -p /workspace", max_attempts=3)  # type: ignore[reportArgumentType]
+
+    assert result.exit_code == 0
+    assert sandbox.process.exec_call_count == 1
+
+
+async def test_exec_with_retries_succeeds_after_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def noop_sleep(_: float) -> None:
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", noop_sleep)
+    sandbox = FakeExecSandbox(
+        process=FakeExecProcess(
+            exec_error=DaytonaError("Failed to execute command: "),
+            exec_error_count=2,
+        )
+    )
+
+    result = await exec_with_retries(sandbox, "mkdir -p /workspace", max_attempts=3)  # type: ignore[reportArgumentType]
+
+    assert result.exit_code == 0
+    assert sandbox.process.exec_call_count == 3
+
+
+async def test_exec_with_retries_raises_after_all_attempts(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def noop_sleep(_: float) -> None:
+        pass
+
+    monkeypatch.setattr(asyncio, "sleep", noop_sleep)
+    sandbox = FakeExecSandbox(
+        process=FakeExecProcess(
+            exec_error=DaytonaError("Failed to execute command: "),
+            exec_error_count=5,
+        )
+    )
+
+    with pytest.raises(DaytonaError):
+        await exec_with_retries(sandbox, "mkdir -p /workspace", max_attempts=3)  # type: ignore[reportArgumentType]
+
+    assert sandbox.process.exec_call_count == 3

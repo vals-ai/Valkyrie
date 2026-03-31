@@ -1,4 +1,6 @@
 """Sandbox management utilities for the tracker service."""
+
+import asyncio
 import base64
 import io
 import shlex
@@ -353,6 +355,21 @@ async def archive_and_upload_output(
             logger.warning(f"File {archive_path} does not exist, skipping removal")
 
 
+async def exec_with_retries(sandbox: AsyncSandbox, command: str, max_attempts: int = 3) -> Any:
+    """Execute a command in the sandbox, retrying on DaytonaError."""
+    for attempt in range(max_attempts):
+        try:
+            return await sandbox.process.exec(command)
+        except DaytonaError:
+            if attempt == max_attempts - 1:
+                raise
+
+            logger.warning(f"exec failed (attempt {attempt + 1}/{max_attempts}), retrying: {command}")
+            await asyncio.sleep(1)
+
+    raise RuntimeError(f"Failed to execute command after {max_attempts} attempts: {command}")
+
+
 async def run_agent(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
@@ -394,7 +411,7 @@ async def run_agent(
         run_cmd = f"timeout {agent_timeout} {run_cmd}"
 
     # Create cwd if it does not already exist
-    await sandbox.process.exec(f"mkdir -p {shlex.quote(cwd)}")
+    await exec_with_retries(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
     await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
@@ -402,7 +419,7 @@ async def run_agent(
     if not contract.final_output:
         return
 
-    result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
+    result = await exec_with_retries(sandbox, f"test -e {shlex.quote(contract.final_output)}")
     if result.exit_code != 0:
         return
 
