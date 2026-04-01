@@ -7,10 +7,12 @@ from benchmark_service.client import BenchmarkServiceError
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from tracker.cloudwatch import get_cloudwatch_url
-from tracker.database.models import Benchmark, BenchmarkStatus
+from tracker.auth import get_current_org
+from tracker.database.models import Benchmark, BenchmarkStatus, Org
+from tracker.database.scoping import assert_org
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
@@ -106,6 +108,7 @@ def health_check() -> dict[str, str]:
 async def start_benchmark(
     request: StartBenchmarkRequest,
     session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
 ) -> StartBenchmarkResponse:
     """
     Start a benchmark run with the uploaded contract.
@@ -131,7 +134,7 @@ async def start_benchmark(
     _ = await benchmark_service.health_check()
 
     # Create benchmark row inside of database to mark start of the benchmark
-    benchmark_row = start_benchmark_request_to_benchmark(request)
+    benchmark_row = start_benchmark_request_to_benchmark(request, org)
     session.add(benchmark_row)
     session.commit()
 
@@ -178,6 +181,7 @@ async def fetch_benchmark(
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
 ) -> FetchBenchmarkResponse | StreamingResponse:
     """
     Fetch a benchmark by its id.
@@ -193,14 +197,13 @@ async def fetch_benchmark(
     - 404 Not Found if benchmark is not found
     """
     benchmark_row = session.get(Benchmark, benchmark_id)
-    if not benchmark_row:
-        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    assert_org(benchmark_row, org)
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
     if connect:
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, session, harness_config),
+            stream_benchmark_results(benchmark_id, session, harness_config, org),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -209,7 +212,7 @@ async def fetch_benchmark(
             },
         )
 
-    benchmark_context = BenchmarkContext(benchmark_row, session)
+    benchmark_context = BenchmarkContext(benchmark_row, session, org)
 
     return FetchBenchmarkResponse(
         benchmark_name=benchmark_row.name,
@@ -227,6 +230,7 @@ async def retrieve_results(
     s3: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
     """
     Retrieve the results of a benchmark by its id.
@@ -237,12 +241,10 @@ async def retrieve_results(
     Returns:
         RetrieveResultsResponse
     """
-    statement = select(Benchmark).where(Benchmark.id == benchmark_id).options(joinedload(Benchmark.final_evaluation))
-    benchmark_row = session.exec(statement).first()
-    if not benchmark_row:
-        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
+    assert_org(benchmark_row, org)
 
-    final_view = create_final_view(benchmark_row, session)
+    final_view = create_final_view(benchmark_row, session, org)
 
     if s3:
         s3_key = upload_final_view(benchmark_row, final_view, harness_config)
@@ -259,7 +261,9 @@ async def retrieve_results(
 @app.get("/check-results-exist")
 async def check_results_exist(
     benchmark_id: UUID,
+    session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
 ) -> dict[str, bool]:
     """
     Check if results.json already exists in S3 for the given benchmark.
@@ -270,6 +274,9 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    assert_org(benchmark_row, org)
+
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
     exists = s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
     return {"exists": exists}
@@ -281,6 +288,7 @@ async def stop_benchmark(
     force: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
 ) -> StopBenchmarkResponse:
     """
     Stop a benchmark by its id.
@@ -293,8 +301,7 @@ async def stop_benchmark(
         StopBenchmarkResponse
     """
     benchmark_row = session.get(Benchmark, benchmark_id)
-    if not benchmark_row:
-        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    assert_org(benchmark_row, org)
 
     valid_stop_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING]
 
@@ -304,10 +311,10 @@ async def stop_benchmark(
             detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error benchmark.",
         )
 
-    await initiate_stop_benchmark(benchmark_row, session, force)
+    await initiate_stop_benchmark(benchmark_row, session, force, org)
 
     if force:
-        await force_stop_sandboxes(benchmark_row, session, harness_config.daytona_secret_name, harness_config.aws)
+        await force_stop_sandboxes(benchmark_row, session, harness_config.daytona_secret_name, harness_config.aws, org)
 
     return StopBenchmarkResponse(
         status="success",
@@ -322,6 +329,7 @@ async def retry_or_resume_benchmark(
     task_ids: list[str] = Body(default=[]),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
 ) -> RetryOrResumeBenchmarkResponse:
     """
     Retry or resume a benchmark run by its id, we only can retry or resume a benchmark if its not currently running.
@@ -340,8 +348,7 @@ async def retry_or_resume_benchmark(
         RetryOrResumeBenchmarkResponse
     """
     benchmark_row = session.get(Benchmark, benchmark_id)
-    if not benchmark_row:
-        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    assert_org(benchmark_row, org)
 
     invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
 
@@ -364,6 +371,7 @@ async def retry_or_resume_benchmark(
         benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
         retry=retry,
         rerun_task_ids=task_ids,
+        org=org,
     )
 
     # Ensure that credentials are included with the model dump
@@ -384,7 +392,9 @@ async def retry_or_resume_benchmark(
 
 @app.get("/fetch-benchmarks")
 async def fetch_benchmarks(
-    request: FetchBenchmarksRequest = Depends(), session: Session = Depends(get_session)
+    request: FetchBenchmarksRequest = Depends(),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
 ) -> FetchBenchmarksResponse:
     """
     Fetch benchmarks based on the request parameters.
@@ -396,7 +406,7 @@ async def fetch_benchmarks(
         list[FetchBenchmarksResponse]
     """
 
-    benchmark_rows, total_count = fetch_filtered_benchmark_rows(request, session)
+    benchmark_rows, total_count = fetch_filtered_benchmark_rows(request, session, org)
 
     benchmark_table_rows: list[BenchmarkTableRow] = [
         benchmark_row.create_benchmark_table_row(session) for benchmark_row in benchmark_rows
@@ -410,7 +420,9 @@ async def fetch_benchmarks(
 
 @app.get("/fetch-benchmark-metadata/{benchmark_id}")
 async def fetch_benchmark_metadata(
-    benchmark_id: UUID, session: Session = Depends(get_session)
+    benchmark_id: UUID,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
 ) -> FetchBenchmarkMetadataResponse:
     """
     Fetch benchmark metadata by its id.
@@ -421,10 +433,8 @@ async def fetch_benchmark_metadata(
     Returns:
         FetchBenchmarkMetadataResponse
     """
-    benchmark_row: Benchmark | None = session.get(Benchmark, benchmark_id)
-
-    if not benchmark_row:
-        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    assert_org(benchmark_row, org)
 
     return benchmark_row.benchmark_metadata
 
@@ -432,7 +442,9 @@ async def fetch_benchmark_metadata(
 @app.get("/fetch-agent-outputs/{benchmark_id}")
 async def fetch_agent_outputs(
     benchmark_id: UUID,
+    session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
 ) -> StreamingResponse:
     """
     Stream a tar file with agent outputs to the client.
@@ -443,6 +455,9 @@ async def fetch_agent_outputs(
     Returns:
         StreamingResponse
     """
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    assert_org(benchmark_row, org)
+
     prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
     s3_keys = list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket)
 

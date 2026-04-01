@@ -9,7 +9,7 @@ from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tracker.database.models import *  # noqa: F403
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Org, VALS_ORG_ID
 
 _ = load_dotenv()
 
@@ -29,6 +29,9 @@ def database_session() -> Generator[Session, Any, None]:
     SQLModel.metadata.create_all(test_engine)
 
     with Session(test_engine, expire_on_commit=False) as session:
+        # Seed the default org so foreign keys resolve
+        session.add(Org(id=VALS_ORG_ID, name="Vals"))
+        session.commit()
         yield session
 
     SQLModel.metadata.drop_all(test_engine)
@@ -46,6 +49,7 @@ def contract() -> AgentContractRequest:
 @pytest.fixture
 def example_benchmark_object(contract: AgentContractRequest) -> Benchmark:
     return Benchmark(
+        org_id=VALS_ORG_ID,
         name="swebench",
         arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=None, slice_str=None),
     )

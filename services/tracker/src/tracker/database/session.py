@@ -4,9 +4,9 @@ from typing import Any
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from tracker.config import DATABASE_URL
-from tracker.database.models import Benchmark, EvaluationResult, Task
+from tracker.database.models import Benchmark, EvaluationResult, Org, Task
 
-_exposed_models: list[type[SQLModel]] = [Benchmark, EvaluationResult, Task]
+_exposed_models: list[type[SQLModel]] = [Benchmark, EvaluationResult, Org, Task]
 
 engine = create_engine(
     DATABASE_URL,

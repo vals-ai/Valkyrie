@@ -6,6 +6,8 @@ from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, VerifyTaskIdsResponse
 from sqlmodel import Session
 
+from tracker.auth import get_current_org
+from tracker.database.models import Org, VALS_ORG_ID
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import fetch_harness_config
@@ -74,6 +76,13 @@ def override_database_session(database_session: Session) -> None:
         yield database_session
 
     app.dependency_overrides[get_session] = get_test_session
+
+
+@pytest.fixture(autouse=True)
+def override_org() -> None:
+    """Override get_current_org to return a test org."""
+    test_org = Org(id=VALS_ORG_ID, name="Vals")
+    app.dependency_overrides[get_current_org] = lambda: test_org
 
 
 @pytest.fixture(autouse=True)
