@@ -8,7 +8,7 @@ from sqlmodel import Session, col, select
 
 from main import app
 from tests.utils import random_task_id
-from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus, VALS_ORG_ID
 from tracker.logger import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
@@ -40,7 +40,7 @@ class TestForceStop:
         database_session.commit()
 
         # Create a single task
-        task = Task(benchmark=example_benchmark_object.id, task_id=random_task_id(), status=TaskStatus.IN_PROGRESS)
+        task = Task(org_id=VALS_ORG_ID, benchmark=example_benchmark_object.id, task_id=random_task_id(), status=TaskStatus.IN_PROGRESS)
         database_session.add(task)
         database_session.commit()
 
@@ -49,7 +49,7 @@ class TestForceStop:
         async def force_stop_sandbox() -> None:
             await asyncio.sleep(0.5)
 
-            await force_stop_sandboxes(example_benchmark_object, database_session, daytona_secret_name, aws_credentials)
+            await force_stop_sandboxes(example_benchmark_object, database_session, daytona_secret_name, aws_credentials, Org(id=VALS_ORG_ID, name="Vals"))
 
         async def _generator_to_courtine():
             async with create_sandbox(
@@ -116,7 +116,7 @@ class TestForceStop:
         tasks: list[Task] = []
         for i in range(12):
             status = TaskStatus.IN_PROGRESS if i < 6 else TaskStatus.EVALUATING
-            task = Task(benchmark=example_benchmark_object.id, task_id=random_task_id(), status=status)
+            task = Task(org_id=VALS_ORG_ID, benchmark=example_benchmark_object.id, task_id=random_task_id(), status=status)
             tasks.append(task)
             database_session.add(task)
 
@@ -132,7 +132,7 @@ class TestForceStop:
         await asyncio.sleep(2)
 
         # Force stop the benchmark run with all sandboxes
-        await force_stop_sandboxes(example_benchmark_object, database_session, daytona_secret_name, aws_credentials)
+        await force_stop_sandboxes(example_benchmark_object, database_session, daytona_secret_name, aws_credentials, Org(id=VALS_ORG_ID, name="Vals"))
 
         await created_sandboxes
 
