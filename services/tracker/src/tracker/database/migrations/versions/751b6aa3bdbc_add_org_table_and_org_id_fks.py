@@ -33,8 +33,7 @@ def upgrade() -> None:
 
     # 2. Insert default Vals org
     op.execute(
-        sa.text("INSERT INTO org (id, name) VALUES (:id, :name)"),
-        {"id": VALS_ORG_ID, "name": "Vals"},
+        sa.text("INSERT INTO org (id, name) VALUES (:id, :name)").bindparams(id=VALS_ORG_ID, name="Vals")
     )
 
     # 3. Add org_id as nullable to all tables
@@ -44,8 +43,7 @@ def upgrade() -> None:
     # 4. Backfill all existing rows
     for table in ("benchmark", "task", "finalevaluation", "evaluationresult"):
         op.execute(
-            sa.text(f"UPDATE {table} SET org_id = :org_id"),
-            {"org_id": VALS_ORG_ID},
+            sa.text(f"UPDATE {table} SET org_id = :org_id").bindparams(org_id=VALS_ORG_ID)
         )
 
     # 5. Set NOT NULL + FK constraints

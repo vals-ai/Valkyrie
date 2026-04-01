@@ -812,6 +812,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
     session.exec(
         update(Task)
         .where(col(Task.benchmark) == benchmark_id)
+        .where(col(Task.org_id) == org.id)
         .where(col(Task.status).notin_(task_terminal_statuses))
         .values(status=TaskStatus.ERROR, error_message="Undetected exit of task")
     )
