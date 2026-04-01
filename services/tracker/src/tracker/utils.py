@@ -31,7 +31,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.database.scoping import assert_org, scoped_select
+from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
@@ -252,8 +252,13 @@ class TaskMonitor:
 
 
 def fetch_benchmark_row(benchmark_id: UUID, session: Session, org: Org) -> Benchmark:
-    """Util to clean up pattern to fetch benchmark row"""
-    return assert_org(session.get(Benchmark, benchmark_id), org)
+    """Fetch benchmark row with org validation. Raises domain errors (not HTTPException) for use in background tasks."""
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise ValueError(f"Benchmark with id {benchmark_id} not found")
+    if benchmark_row.org_id != org.id:
+        raise ValueError(f"Benchmark {benchmark_id} does not belong to org {org.id}")
+    return benchmark_row
 
 
 def handle_early_exit(task_row: Task, task_session: Session) -> None:
@@ -263,7 +268,13 @@ def handle_early_exit(task_row: Task, task_session: Session) -> None:
 
 
 def fetch_task_row(task_id: UUID, session: Session, org: Org) -> Task:
-    return assert_org(session.get(Task, task_id), org)
+    """Fetch task row with org validation. Raises domain errors (not HTTPException) for use in background tasks."""
+    task_row = session.get(Task, task_id)
+    if not task_row:
+        raise TrackerServiceError(f"Task with id {task_id} not found")
+    if task_row.org_id != org.id:
+        raise TrackerServiceError(f"Task {task_id} does not belong to org {org.id}")
+    return task_row
 
 
 def buffer_logs(
@@ -860,7 +871,10 @@ async def stream_benchmark_results(
                     yield f"{EVENT_ERROR} {json.dumps({'error': 'Benchmark not found'})}\n\n"
                     break
 
-                assert_org(fresh_benchmark, org)
+                if fresh_benchmark.org_id != org.id:
+                    yield f"{EVENT_ERROR} {json.dumps({'error': 'Not found'})}\n\n"
+                    break
+
                 fresh_session.refresh(fresh_benchmark)
                 benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org)
 
