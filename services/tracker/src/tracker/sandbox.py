@@ -19,6 +19,7 @@ from daytona import (
     CreateSandboxFromImageParams,
     CreateSandboxFromSnapshotParams,
     DaytonaNotFoundError,
+    ExecuteResponse,
     FileUpload,
     Resources,
     SandboxState,
@@ -355,7 +356,9 @@ async def archive_and_upload_output(
             logger.warning(f"File {archive_path} does not exist, skipping removal")
 
 
-async def exec_with_retries(sandbox: AsyncSandbox, command: str, max_attempts: int = 3) -> Any:
+async def exec_with_retries(
+    sandbox: AsyncSandbox, command: str, log_output: Callable[[str], None], max_attempts: int = 3
+) -> ExecuteResponse:
     """Execute a command in the sandbox, retrying on DaytonaError."""
     for attempt in range(max_attempts):
         try:
@@ -363,13 +366,15 @@ async def exec_with_retries(sandbox: AsyncSandbox, command: str, max_attempts: i
         except DaytonaError as error:
             try:
                 await sandbox.refresh_data()
-                sandbox_state = sandbox.state
-            except Exception:
-                sandbox_state = "unknown (refresh failed)"
+                sandbox_info = (
+                    f"state={sandbox.state}, error_reason={sandbox.error_reason}, updated_at={sandbox.updated_at}"
+                )
+            except Exception as refresh_error:
+                sandbox_info = f"refresh failed: {refresh_error}"
 
-            logger.warning(
-                f"exec failed (attempt {attempt + 1}/{max_attempts}): command={command}, "
-                f"sandbox={sandbox.name}, state={sandbox_state}, error={error}"
+            log_output(
+                f"\n[WARNING] exec failed (attempt {attempt + 1}/{max_attempts}): command={command}, "
+                f"sandbox={sandbox.name}, {sandbox_info}, error={error}\n"
             )
 
             if attempt == max_attempts - 1:
@@ -377,6 +382,7 @@ async def exec_with_retries(sandbox: AsyncSandbox, command: str, max_attempts: i
 
             await asyncio.sleep(1)
 
+    # This line will never be reached, but it's here to satisfy the type checker
     raise RuntimeError(f"Failed to execute command after {max_attempts} attempts: {command}")
 
 
@@ -421,7 +427,7 @@ async def run_agent(
         run_cmd = f"timeout {agent_timeout} {run_cmd}"
 
     # Create cwd if it does not already exist
-    await exec_with_retries(sandbox, f"mkdir -p {shlex.quote(cwd)}")
+    await exec_with_retries(sandbox, f"mkdir -p {shlex.quote(cwd)}", log_output)
 
     # Run the agent without including task directory dependencies
     await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
@@ -429,7 +435,7 @@ async def run_agent(
     if not contract.final_output:
         return
 
-    result = await exec_with_retries(sandbox, f"test -e {shlex.quote(contract.final_output)}")
+    result = await exec_with_retries(sandbox, f"test -e {shlex.quote(contract.final_output)}", log_output)
     if result.exit_code != 0:
         return
 

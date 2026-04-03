@@ -194,7 +194,7 @@ class FakeExecSandbox:
 async def test_exec_with_retries_succeeds_first_attempt() -> None:
     sandbox = FakeExecSandbox()
 
-    result = await exec_with_retries(sandbox, "mkdir -p /workspace", max_attempts=3)  # type: ignore[reportArgumentType]
+    result = await exec_with_retries(sandbox, "mkdir -p /workspace", lambda _: None, max_attempts=3)  # type: ignore[reportArgumentType]
 
     assert result.exit_code == 0
     assert sandbox.process.exec_call_count == 1
@@ -212,7 +212,7 @@ async def test_exec_with_retries_succeeds_after_failures(monkeypatch: pytest.Mon
         )
     )
 
-    result = await exec_with_retries(sandbox, "mkdir -p /workspace", max_attempts=3)  # type: ignore[reportArgumentType]
+    result = await exec_with_retries(sandbox, "mkdir -p /workspace", lambda _: None, max_attempts=3)  # type: ignore[reportArgumentType]
 
     assert result.exit_code == 0
     assert sandbox.process.exec_call_count == 3
@@ -231,6 +231,6 @@ async def test_exec_with_retries_raises_after_all_attempts(monkeypatch: pytest.M
     )
 
     with pytest.raises(DaytonaError):
-        await exec_with_retries(sandbox, "mkdir -p /workspace", max_attempts=3)  # type: ignore[reportArgumentType]
+        await exec_with_retries(sandbox, "mkdir -p /workspace", lambda _: None, max_attempts=3)  # type: ignore[reportArgumentType]
 
     assert sandbox.process.exec_call_count == 3
