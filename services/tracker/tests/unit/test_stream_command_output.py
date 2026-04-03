@@ -183,7 +183,12 @@ class FakeExecProcess:
 @dataclass
 class FakeExecSandbox:
     id: str = "sandbox-123"
+    name: str = "sandbox-123"
+    state: str = "STARTED"
     process: FakeExecProcess = field(default_factory=FakeExecProcess)
+
+    async def refresh_data(self) -> None:
+        pass
 
 
 async def test_exec_with_retries_succeeds_first_attempt() -> None:

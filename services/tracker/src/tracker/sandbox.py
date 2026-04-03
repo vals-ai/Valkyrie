@@ -360,11 +360,21 @@ async def exec_with_retries(sandbox: AsyncSandbox, command: str, max_attempts: i
     for attempt in range(max_attempts):
         try:
             return await sandbox.process.exec(command)
-        except DaytonaError:
+        except DaytonaError as error:
+            try:
+                await sandbox.refresh_data()
+                sandbox_state = sandbox.state
+            except Exception:
+                sandbox_state = "unknown (refresh failed)"
+
+            logger.warning(
+                f"exec failed (attempt {attempt + 1}/{max_attempts}): command={command}, "
+                f"sandbox={sandbox.name}, state={sandbox_state}, error={error}"
+            )
+
             if attempt == max_attempts - 1:
                 raise
 
-            logger.warning(f"exec failed (attempt {attempt + 1}/{max_attempts}), retrying: {command}")
             await asyncio.sleep(1)
 
     raise RuntimeError(f"Failed to execute command after {max_attempts} attempts: {command}")
