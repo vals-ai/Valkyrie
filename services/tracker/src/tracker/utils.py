@@ -1144,6 +1144,8 @@ def create_final_view(benchmark_row: Benchmark, session: Session) -> FinalViewRe
         error_message=benchmark_row.error_message,
         benchmark_id=benchmark_row.id,
         benchmark_arguments=benchmark_row.arguments,
+        started_at=benchmark_row.started_at,
+        finished_at=benchmark_row.finished_at,
         tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),

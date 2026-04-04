@@ -94,10 +94,12 @@ class FetchBenchmarkResponse(BaseModel):
 
 
 class FinalViewResponse(BaseModel):
+    benchmark_id: UUID
     benchmark_name: str
+    started_at: datetime
+    finished_at: datetime | None
     status: BenchmarkStatus
     error_message: str | None
-    benchmark_id: UUID
     benchmark_arguments: BenchmarkArguments
     tasks_stopped: int | None
     final_evaluation: FinalEvaluation | None
