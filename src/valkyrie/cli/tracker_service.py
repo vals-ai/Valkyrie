@@ -202,6 +202,7 @@ class TrackerService:
         contract: AgentContractRequest,
         benchmark_name: str,
         concurrency: int,
+        ignore_custom_services: bool,
         task_ids: list[str] | None,
         slice_str: str | None,
         lambda_function: str | None = None,
@@ -237,7 +238,9 @@ class TrackerService:
                 lambda_function=lambda_function,
                 dataset=dataset,
                 harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
-                custom_benchmark_service=self.get_benchmark_service_url(benchmark_name),
+                custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
+                if not ignore_custom_services
+                else None,
                 service_headers=service_headers or {},
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,

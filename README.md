@@ -214,7 +214,8 @@ valkyrie run start \
   -H X-Custom-Header my-value \
   --task-ids "task_1,task_2" \
   --slice "0:10" \
-  -i 25 -i 75
+  -i 25 -i 75 \
+  --ignore-custom-services
 ```
 
 | Flag | Description |
@@ -232,6 +233,7 @@ valkyrie run start \
 | `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
 | `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
+| `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
 
 ### Monitor a run
 
