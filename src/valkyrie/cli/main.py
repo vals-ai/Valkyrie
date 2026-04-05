@@ -46,6 +46,88 @@ def cli():
     pass
 
 
+@cli.command()
+def help():
+    """Show a quick-reference of every Valkyrie command."""
+
+    sections: list[tuple[str, list[tuple[str, str]]]] = [
+        (
+            "Configuration",
+            [
+                ("config init", "Interactive first-time setup (AWS, S3, Daytona)"),
+                ("config set <KEY> <VALUE>", "Upsert a single config value"),
+                ("config remove <KEY>", "Remove a non-required config value"),
+                ("config service set <name> <url>", "Map a benchmark to a custom URL"),
+                ("config service list", "List custom benchmark service URLs"),
+                ("config service remove <name>", "Remove a custom service URL"),
+                ("config auth set <name> <credential>", "Store a benchmark auth credential"),
+                ("config auth list", "List stored auth credentials (masked)"),
+                ("config auth remove <name>", "Remove a stored auth credential"),
+            ],
+        ),
+        (
+            "Agent Management",
+            [
+                ("agent install <github_url> [-n NAME]", "Install agent from GitHub to S3"),
+                ("agent push <path> [-n NAME]", "Upload a local agent directory to S3"),
+                ("agent list", "List installed agents"),
+                ("agent remove <name>", "Delete an agent from S3"),
+                ("agent download <name> [-o DIR]", "Download an agent from S3"),
+                ("agent outputs <run_id> [--output-dir DIR]", "Download agent outputs for a run"),
+            ],
+        ),
+        (
+            "Benchmark Runs",
+            [
+                ("run start --agent <a> --benchmark <b> [opts]", "Start a benchmark run"),
+                ("run fetch <run_id> [--connect]", "One-shot status or live stream"),
+                ("run results <run_id> [--path FILE | --s3]", "Download or upload results"),
+                ("run stop <run_id> [--force]", "Stop a running benchmark"),
+                ("run resume <run_id> [--concurrency N]", "Resume pending tasks"),
+                ("run retry <run_id> [--concurrency N]", "Retry errored tasks"),
+                ("run list [--agent-name X] [--status S] ...", "List runs with filters"),
+            ],
+        ),
+        (
+            "Useful Flags (run start)",
+            [
+                ("-s ENV_VAR SECRET_NAME", "Inject an AWS secret into the sandbox"),
+                ("-k KEY VALUE", "Pass a kwarg to the agent"),
+                ("-H NAME VALUE", "Send a custom header to the benchmark service"),
+                ("-i PERCENT", "Slack notification at progress threshold (max 3)"),
+                ("--model <key>", "Model key (e.g. openai/gpt-4o)"),
+                ("--concurrency N", "Concurrent sandbox tasks (default 5)"),
+                ("--dataset NAME", "Dataset variant (default 'default')"),
+                ("--task-ids ID,ID,...", "Run only specific task IDs"),
+                ("--slice START:STOP:STEP", "Slice the benchmark dataset"),
+                ("--ignore-custom-services", "Bypass custom service URL overrides"),
+            ],
+        ),
+    ]
+
+    click.echo()
+    click.echo(click.style("Valkyrie", fg="cyan", bold=True) + " — benchmark orchestration for AI agents")
+    click.echo(click.style("Alias: ", fg="white") + click.style("valk", bold=True))
+    click.echo()
+
+    for title, commands in sections:
+        click.echo(click.style(f"  {title}", fg="yellow", bold=True))
+        for cmd, desc in commands:
+            click.echo(f"    {click.style('valk ' + cmd, fg='green')}")
+            click.echo(f"      {desc}")
+        click.echo()
+
+    click.echo(click.style("  Documentation", fg="yellow", bold=True))
+    click.echo(f"    {'Contracts:':<22} docs/CONTRACTS.md")
+    click.echo(f"    {'Local development:':<22} docs/DEVELOPMENT.md")
+    click.echo(f"    {'Sandbox secrets:':<22} docs/PROVIDER.md")
+    click.echo(f"    {'Lambda integration:':<22} docs/LAMBDA_USAGE.md")
+    click.echo(f"    {'Infrastructure:':<22} infra/README.md")
+    click.echo()
+    click.echo("  Run " + click.style("valk <command> --help", bold=True) + " for detailed usage of any command.")
+    click.echo()
+
+
 @cli.group()
 def run():
     """Run command group"""
