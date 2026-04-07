@@ -58,7 +58,7 @@ class TestSandboxOperations:
             assert result.exit_code == 0
 
         with pytest.raises(DaytonaError):
-            await daytona_client.find_one(random_sandbox_name)
+            await daytona_client.get(random_sandbox_name)
 
     async def test_upload_agent_artifacts(
         self, test_sandbox: AsyncSandbox, mock_s3: S3Client, aws_credentials: AWSCredentials
