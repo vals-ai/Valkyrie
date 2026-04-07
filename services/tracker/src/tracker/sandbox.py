@@ -237,10 +237,26 @@ async def install_agent_dependencies(
 
 LOG_STREAM_RETRY_DELAY_SECONDS = 1.0
 WEBSOCKET_STREAM_ERRORS = ("websocket", "http 502", "opening handshake", "no close frame", "1011")
+PROCESS_EXEC_RETRY_ERRORS = ("failed to resolve container ip",)
 
 
 def is_websocket_stream_error(error: BaseException) -> bool:
     return isinstance(error, DaytonaError) and any(pattern in str(error).lower() for pattern in WEBSOCKET_STREAM_ERRORS)
+
+
+def is_retryable_process_exec_error(error: BaseException) -> bool:
+    return isinstance(error, DaytonaError) and any(pattern in str(error).lower() for pattern in PROCESS_EXEC_RETRY_ERRORS)
+
+
+@retry(
+    retry=retry_if_exception(is_retryable_process_exec_error),
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    before_sleep=before_sleep_log(logger, logger.level),
+    reraise=True,
+)
+async def exec_with_retry(sandbox: AsyncSandbox, command: str):
+    return await sandbox.process.exec(command)
 
 
 async def start_session_command(
@@ -334,21 +350,21 @@ async def archive_and_upload_output(
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
 
-    tar_result = await sandbox.process.exec(f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
+    tar_result = await exec_with_retry(sandbox, f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
     if tar_result.exit_code != 0:
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
-        b64_result = await sandbox.process.exec(f"base64 {shlex.quote(archive_path)}")
+        b64_result = await exec_with_retry(sandbox, f"base64 {shlex.quote(archive_path)}")
         if b64_result.exit_code != 0:
             raise SandboxError(f"Failed to read archive from {output_path}")
 
         upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
     finally:
         # Check if file exists and remove it if it does
-        result = await sandbox.process.exec(f"test -e {shlex.quote(archive_path)}")
+        result = await exec_with_retry(sandbox, f"test -e {shlex.quote(archive_path)}")
         if result.exit_code == 0:
-            await sandbox.process.exec(f"rm -f {shlex.quote(archive_path)}")
+            await exec_with_retry(sandbox, f"rm -f {shlex.quote(archive_path)}")
         else:
             logger.warning(f"File {archive_path} does not exist, skipping removal")
 
@@ -394,7 +410,7 @@ async def run_agent(
         run_cmd = f"timeout {agent_timeout} {run_cmd}"
 
     # Create cwd if it does not already exist
-    await sandbox.process.exec(f"mkdir -p {shlex.quote(cwd)}")
+    await exec_with_retry(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
     await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
@@ -402,7 +418,7 @@ async def run_agent(
     if not contract.final_output:
         return
 
-    result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
+    result = await exec_with_retry(sandbox, f"test -e {shlex.quote(contract.final_output)}")
     if result.exit_code != 0:
         return
 
