@@ -203,16 +203,21 @@ async def upload_agent_artifacts(
     bundle_dir = shlex.quote(str(bundle_path))
     quoted_url = shlex.quote(presigned_url)
 
+    # Install required dependencies inside of the instance
+    # Tracks if curl or unzip are missing and installs them if needed
     install_deps = (
-        "command -v curl >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1 || ("
-        "  if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq curl unzip;"
-        "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache curl unzip;"
-        "  elif command -v yum >/dev/null 2>&1; then yum install -y curl unzip;"
-        "  elif command -v dnf >/dev/null 2>&1; then dnf install -y curl unzip;"
-        "  elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm curl unzip;"
-        "  elif command -v zypper >/dev/null 2>&1; then zypper install -y curl unzip;"
-        "  fi"
-        ")"
+        "NEED='';"
+        " command -v curl >/dev/null 2>&1 || NEED='curl';"
+        ' command -v unzip >/dev/null 2>&1 || NEED="$NEED unzip";'
+        ' if [ -n "$NEED" ]; then'
+        "  if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq $NEED;"
+        "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache $NEED;"
+        "  elif command -v yum >/dev/null 2>&1; then yum install -y $NEED;"
+        "  elif command -v dnf >/dev/null 2>&1; then dnf install -y $NEED;"
+        "  elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm $NEED;"
+        "  elif command -v zypper >/dev/null 2>&1; then zypper install -y $NEED;"
+        "  fi;"
+        " fi"
     )
 
     steps = [
