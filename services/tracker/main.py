@@ -1,7 +1,7 @@
 import logging
 import tarfile
 import traceback
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID, uuid4
 
 if TYPE_CHECKING:
@@ -115,6 +115,15 @@ class HealthCheckFilter(logging.Filter):
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 
+def bind_benchmark_id(benchmark_id: UUID) -> UUID:
+    """Dependency that binds benchmark_id to the logging context."""
+    benchmark_id_var.set(str(benchmark_id))
+    return benchmark_id
+
+
+TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
+
+
 @app.exception_handler(TrackerServiceError)
 async def tracker_service_error_handler(_request: Request, exc: TrackerServiceError):
     logger.error(exc, exc_info=True)
@@ -224,7 +233,7 @@ async def start_benchmark(
 
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -245,7 +254,6 @@ async def fetch_benchmark(
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
-    benchmark_id_var.set(str(benchmark_id))
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
@@ -274,7 +282,7 @@ async def fetch_benchmark(
 
 @app.get("/retrieve-results")
 async def retrieve_results(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     s3: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -309,7 +317,7 @@ async def retrieve_results(
 
 @app.get("/check-results-exist")
 async def check_results_exist(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     harness_config: HarnessConfig = Depends(fetch_harness_config),
 ) -> dict[str, bool]:
     """
@@ -328,7 +336,7 @@ async def check_results_exist(
 
 @app.post("/stop-benchmark/{benchmark_id}")
 async def stop_benchmark(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     force: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -346,7 +354,6 @@ async def stop_benchmark(
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
-    benchmark_id_var.set(str(benchmark_id))
 
     valid_stop_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING]
 
@@ -368,7 +375,7 @@ async def stop_benchmark(
 
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
 async def retry_or_resume_benchmark(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     retry: bool = Query(default=False),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
@@ -394,7 +401,6 @@ async def retry_or_resume_benchmark(
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
-    benchmark_id_var.set(str(benchmark_id))
 
     invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
 
@@ -465,7 +471,7 @@ async def fetch_benchmarks(
 
 @app.get("/fetch-benchmark-metadata/{benchmark_id}")
 async def fetch_benchmark_metadata(
-    benchmark_id: UUID, session: Session = Depends(get_session)
+    benchmark_id: TrackedBenchmarkId, session: Session = Depends(get_session)
 ) -> FetchBenchmarkMetadataResponse:
     """
     Fetch benchmark metadata by its id.
@@ -480,14 +486,13 @@ async def fetch_benchmark_metadata(
 
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
-    benchmark_id_var.set(str(benchmark_id))
 
     return benchmark_row.benchmark_metadata
 
 
 @app.get("/fetch-agent-outputs/{benchmark_id}")
 async def fetch_agent_outputs(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     harness_config: HarnessConfig = Depends(fetch_harness_config),
 ) -> StreamingResponse:
     """
@@ -499,7 +504,6 @@ async def fetch_agent_outputs(
     Returns:
         StreamingResponse
     """
-    benchmark_id_var.set(str(benchmark_id))
     prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
     s3_keys = list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket)
 
