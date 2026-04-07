@@ -4,13 +4,51 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
-from taskiq import InMemoryBroker
+from taskiq import InMemoryBroker, TaskiqMessage, TaskiqMiddleware, TaskiqResult
 from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
+from tracker.logging_config import configure_logging
+from tracker.logging_context import benchmark_id_var, request_id_var, task_id_var
 from tracker.task_protection import TaskProtectionMiddleware
 
 load_dotenv()
+configure_logging()
+
+
+class LoggingContextMiddleware(TaskiqMiddleware):
+    """Sets logging context vars for Taskiq worker jobs."""
+
+    async def pre_execute(self, message: TaskiqMessage) -> TaskiqMessage:
+        request_id_var.set("")
+        benchmark_id_var.set("")
+        task_id_var.set("")
+
+        benchmark_id_str = message.kwargs.get("benchmark_id_str", "")
+        if benchmark_id_str:
+            benchmark_id_var.set(benchmark_id_str)
+
+        request_id = message.labels.get("request_id", "")
+        if request_id:
+            request_id_var.set(request_id)
+
+        return message
+
+    async def post_execute(self, message: TaskiqMessage, result: TaskiqResult[Any]) -> None:
+        self._clear()
+
+    async def on_error(
+        self,
+        message: TaskiqMessage,
+        result: TaskiqResult[Any],
+        exception: BaseException,
+    ) -> None:
+        self._clear()
+
+    def _clear(self) -> None:
+        request_id_var.set("")
+        benchmark_id_var.set("")
+        task_id_var.set("")
 
 _BENCHMARK_SERVICE_NAMESPACE: str = "local"
 _BENCHMARK_SERVICE_PORT = 8001
@@ -58,5 +96,5 @@ broker = (
         idle_timeout=86400000,  # 24 hours
     )
     .with_result_backend(result_backend)
-    .with_middlewares(TaskProtectionMiddleware())
+    .with_middlewares(TaskProtectionMiddleware(), LoggingContextMiddleware())
 )

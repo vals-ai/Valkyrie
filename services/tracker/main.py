@@ -1,7 +1,11 @@
 import logging
 import tarfile
 import traceback
-from uuid import UUID
+from typing import TYPE_CHECKING
+from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from benchmark_service.client import BenchmarkServiceError
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
@@ -13,6 +17,12 @@ from tracker.cloudwatch import get_cloudwatch_url
 from tracker.database.models import Benchmark, BenchmarkStatus
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
+from tracker.logging_config import configure_logging
+from tracker.logging_context import (
+    benchmark_id_var,
+    request_id_var,
+    task_id_var,
+)
 from tracker.logger import get_logger
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
@@ -54,12 +64,49 @@ from tracker.utils import (
     upload_final_view,
 )
 
+configure_logging()
+
 logger = get_logger(__name__)
 
 app = FastAPI()
 
 
-# Ignore verbose health check logs
+class RequestContextMiddleware:
+    """Pure ASGI middleware for request correlation IDs."""
+
+    def __init__(self, app: "ASGIApp"):
+        self.app = app
+
+    async def __call__(self, scope: "Scope", receive: "Receive", send: "Send") -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = uuid4().hex[:12]
+        tokens = [
+            request_id_var.set(request_id),
+            benchmark_id_var.set(""),
+            task_id_var.set(""),
+        ]
+
+        async def send_with_request_id(message: "Message") -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((b"x-request-id", request_id.encode()))  # type: ignore[arg-type]
+                message = {**message, "headers": headers}
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_request_id)
+        finally:
+            for token in tokens:
+                token.var.reset(token)
+
+
+app.add_middleware(RequestContextMiddleware)
+
+
+# Preserve health check log suppression after configure_logging() replaced handlers
 class HealthCheckFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return record.getMessage().find("/health") == -1
@@ -134,6 +181,7 @@ async def start_benchmark(
     benchmark_row = start_benchmark_request_to_benchmark(request)
     session.add(benchmark_row)
     session.commit()
+    benchmark_id_var.set(str(benchmark_row.id))
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
@@ -150,7 +198,9 @@ async def start_benchmark(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
-    await process_benchmark.kiq(
+    await process_benchmark.kicker().with_labels(
+        request_id=request_id_var.get(),
+    ).kiq(
         start_benchmark_request_json=request.model_dump(),
         benchmark_id_str=str(benchmark_row.id),
         verified_task_ids=verify_response.task_ids,
@@ -195,6 +245,7 @@ async def fetch_benchmark(
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    benchmark_id_var.set(str(benchmark_id))
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
@@ -295,6 +346,7 @@ async def stop_benchmark(
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    benchmark_id_var.set(str(benchmark_id))
 
     valid_stop_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING]
 
@@ -342,6 +394,7 @@ async def retry_or_resume_benchmark(
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    benchmark_id_var.set(str(benchmark_id))
 
     invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
 
@@ -371,7 +424,9 @@ async def retry_or_resume_benchmark(
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
-    await process_benchmark.kiq(
+    await process_benchmark.kicker().with_labels(
+        request_id=request_id_var.get(),
+    ).kiq(
         start_benchmark_request_json=resume_request_json,
         benchmark_id_str=str(benchmark_row.id),
         verified_task_ids=verified_task_ids,
@@ -425,6 +480,7 @@ async def fetch_benchmark_metadata(
 
     if not benchmark_row:
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+    benchmark_id_var.set(str(benchmark_id))
 
     return benchmark_row.benchmark_metadata
 
@@ -443,6 +499,7 @@ async def fetch_agent_outputs(
     Returns:
         StreamingResponse
     """
+    benchmark_id_var.set(str(benchmark_id))
     prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
     s3_keys = list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket)
 

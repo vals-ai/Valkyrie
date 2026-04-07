@@ -81,6 +81,7 @@ class TrackerStack(Stack):
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
             "AWS_S3_BUCKET": bucket.bucket_name,
+            "ENVIRONMENT": "production",
         }
 
         # ── RDS ──────────────────────────────────────────────────────────

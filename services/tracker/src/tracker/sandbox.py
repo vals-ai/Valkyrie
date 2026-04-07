@@ -2,6 +2,7 @@
 
 import base64
 import io
+import logging
 import shlex
 import uuid
 import zipfile
@@ -75,7 +76,7 @@ _sandbox_creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
     retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
     stop=stop_after_attempt(3),
     wait=wait_fixed(120),
-    before_sleep=before_sleep_log(logger, logger.level),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
 async def _create_sandbox(
@@ -269,7 +270,7 @@ async def stream_session_command_logs(
             retry=retry_if_exception(is_websocket_stream_error),
             stop=stop_after_attempt(10),
             wait=wait_fixed(LOG_STREAM_RETRY_DELAY_SECONDS),
-            before_sleep=before_sleep_log(logger, logger.level),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
             reraise=True,
         ):
             with attempt:
