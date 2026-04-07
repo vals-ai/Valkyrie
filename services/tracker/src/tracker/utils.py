@@ -973,6 +973,19 @@ async def force_stop_sandboxes(
         f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
     )
 
+    # If all tasks are already in a stopped state, we need to update the final status here since the worker has exited
+    finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
+    tasks_still_running: int = session.exec(
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status).notin_(finished_statuses))
+    ).one()
+
+    if not tasks_still_running:
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        session.add(benchmark_row)
+        session.commit()
+
     if error_message:
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
 
