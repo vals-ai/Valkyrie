@@ -182,11 +182,7 @@ async def upload_agent_artifacts(
     sandbox: AsyncSandbox, contract: AgentContractRequest, aws: AWSCredentials, s3_bucket: str
 ) -> None:
     """
-    Download and extract the agent contract zip directly inside the sandbox.
-
-    Instead of downloading the zip to the worker and pushing files through the Daytona API,
-    we generate a presigned S3 URL and have the sandbox curl + unzip it directly.
-    This moves the IO to the sandbox and eliminates per-task download/upload from the worker.
+    Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
 
     Args:
         sandbox: The sandbox to download and extract files in
@@ -202,11 +198,12 @@ async def upload_agent_artifacts(
     contract_s3_key = get_contract_s3_key(contract.name)
     presigned_url = create_presigned_url(contract_s3_key, aws, s3_bucket)
 
-    zip_path = f"/tmp/{contract.name}.zip"
-    contract_dir = str(bundle_path / contract.name)
+    zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
+    contract_dir = shlex.quote(str(bundle_path / contract.name))
+    bundle_dir = shlex.quote(str(bundle_path))
+    quoted_url = shlex.quote(presigned_url)
 
-    # Ensure curl and unzip are installed — detect distro and use the appropriate package manager
-    await sandbox.process.exec(
+    install_deps = (
         "command -v curl >/dev/null 2>&1 && command -v unzip >/dev/null 2>&1 || ("
         "  if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq curl unzip;"
         "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache curl unzip;"
@@ -218,26 +215,20 @@ async def upload_agent_artifacts(
         ")"
     )
 
-    # Download the zip directly inside the sandbox using the presigned URL
-    curl_result = await sandbox.process.exec(
-        f"curl -sfL -o {shlex.quote(zip_path)} {shlex.quote(presigned_url)}"
-    )
-    if curl_result.exit_code != 0:
-        raise SandboxError(f"Failed to download contract {contract.name} in sandbox: {curl_result.result}")
+    steps = [
+        install_deps,
+        f"curl -sfL -o {zip_path} {quoted_url}",
+        f"mkdir -p {bundle_dir}",
+        f"unzip -o -d {bundle_dir} {zip_path} -x contract.py",
+        f"rm -f {zip_path}",
+        f"mkdir -p {contract_dir}",
+    ]
 
-    # Create the target directory and unzip, excluding contract.py
-    unzip_result = await sandbox.process.exec(
-        f"mkdir -p {shlex.quote(str(bundle_path))} && "
-        f"unzip -o -d {shlex.quote(str(bundle_path))} {shlex.quote(zip_path)} -x contract.py && "
-        f"rm -f {shlex.quote(zip_path)}"
-    )
-    if unzip_result.exit_code != 0:
-        raise SandboxError(f"Failed to extract contract {contract.name} in sandbox: {unzip_result.result}")
+    script = " && ".join(steps)
 
-    # Ensure the contract directory exists even if the zip was empty
-    dir_check = await sandbox.process.exec(f"test -d {shlex.quote(contract_dir)}")
-    if dir_check.exit_code != 0:
-        await sandbox.fs.create_folder(contract_dir, "755")
+    result = await sandbox.process.exec(script)
+    if result.exit_code != 0:
+        raise SandboxError(f"Failed to upload contract {contract.name} to sandbox {sandbox.name}: {result.result}")
 
 
 @retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
