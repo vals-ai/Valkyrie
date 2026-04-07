@@ -25,7 +25,6 @@ from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
-    NAMESPACE,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
@@ -81,7 +80,6 @@ class TrackerStack(Stack):
         # Shared environment variables
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
-            "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
             "AWS_S3_BUCKET": bucket.bucket_name,
         }
 

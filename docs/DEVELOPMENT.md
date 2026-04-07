@@ -60,11 +60,11 @@ make typecheck   # basedpyright (strict mode)
 
 ## Versioning
 
-Commit message tags control automatic release bumps on the `dev` branch:
+Semantic versioning is used for the prod branch. Below demonstrates what is acceptable to include in the pr title for a deploy. Valkyrie uses [github-tag-action](https://github.com/anothrNick/github-tag-action) to automatically handle release versions as long as the pr title contains a required tag.  
 
 | Tag | Effect | Example |
 | --- | --- | --- |
-| _(none)_ | Patch bump | v0.4.0 -> v0.4.1 |
+| `#patch` | Patch bump | v0.4.0 -> v0.4.1 |
 | `#minor` | Minor bump | v0.4.1 -> v0.5.0 |
 | `#major` | Major bump | v0.5.0 -> v1.0.0 |
 

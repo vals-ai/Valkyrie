@@ -12,8 +12,8 @@ from tracker.task_protection import TaskProtectionMiddleware
 
 load_dotenv()
 
-BENCHMARK_SERVICE_NAMESPACE = os.environ.get("BENCHMARK_SERVICE_NAMESPACE")
-BENCHMARK_SERVICE_PORT = 8001
+_BENCHMARK_SERVICE_NAMESPACE: str = "local"
+_BENCHMARK_SERVICE_PORT = 8001
 
 
 def create_benchmark_service_url(benchmark_name: str) -> str:
@@ -22,8 +22,8 @@ def create_benchmark_service_url(benchmark_name: str) -> str:
 
     NOTE: If we are running this locally the namespace is blank
     """
-    host = f"{benchmark_name}.{BENCHMARK_SERVICE_NAMESPACE}" if BENCHMARK_SERVICE_NAMESPACE else benchmark_name
-    return f"http://{host}:{BENCHMARK_SERVICE_PORT}"
+    host = f"{benchmark_name}.{_BENCHMARK_SERVICE_NAMESPACE}"
+    return f"http://{host}:{_BENCHMARK_SERVICE_PORT}"
 
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")

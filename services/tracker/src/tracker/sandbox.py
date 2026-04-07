@@ -1,4 +1,5 @@
 """Sandbox management utilities for the tracker service."""
+
 import base64
 import io
 import shlex
@@ -285,14 +286,23 @@ async def stream_session_command_logs(
         on_output(f"[WARNING] {warning}\n")
 
 
+# NOTE: If this gets too big move it into a mapping
+# these are decoupled since its just 2 exit codes we need to track
+_TIMEOUT_EXIT_CODE: int = 124
+_SUCCESS_EXIT_CODE: int = 0
+
+
 async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
-) -> None:
+) -> bool:
     """
     Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
-    Log streaming is best-effort. Command status is checked once before cleanup.
+    Command completion is authoritative; log streaming is best-effort only.
+
+    Return:
+        bool - True if the command timed out, False otherwise
     """
     session_id = f"{sandbox.id}:{str(uuid.uuid4())}"
     try:
@@ -313,12 +323,17 @@ async def stream_command_output(
             cmd = await sandbox.process.get_session_command(session_id, cmd_id)
 
             # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
-            if cmd.exit_code not in (0, 124):
+            if cmd.exit_code == _TIMEOUT_EXIT_CODE:
+                return True
+
+            if cmd.exit_code != _SUCCESS_EXIT_CODE:
                 raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
         except SandboxError:
             raise
         except Exception as error:
             logger.warning(f"Failed to get session command for {session_id}: {error}")
+
+        return False
 
     finally:
         try:
@@ -364,7 +379,7 @@ async def run_agent(
     s3_bucket: str,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
-) -> None:
+) -> bool:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -378,7 +393,7 @@ async def run_agent(
         agent_timeout: Optional timeout in seconds to enforce on the agent command
 
     Returns:
-        Agent output as a dictionary
+        bool - True if the command timed out, False otherwise
 
     Raises:
         SandboxError: If the agent fails to run or times out
@@ -397,14 +412,18 @@ async def run_agent(
     await sandbox.process.exec(f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
+    timed_out = await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
 
-    if not contract.final_output:
-        return
+    if timed_out:
+        log_output(
+            f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
+        )
 
-    result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
-    if result.exit_code != 0:
-        return
+    # Upload any output from the agent to S3
+    if contract.final_output:
+        result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
+        if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
+            await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
 
-    if agent_output_s3_key:
-        await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
+    # Return if the agent timed out from the agent timeout provided by the benchmark service
+    return timed_out
