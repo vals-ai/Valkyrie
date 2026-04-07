@@ -118,7 +118,7 @@ class WorkerStack(Stack):
                 "REDIS_URL": redis_url,
             },
             secrets=db_secrets,
-            command=["uv", "run", "--no-sync", "taskiq", "worker", "tracker.config:broker", "tracker.utils"],
+            command=["uv", "run", "--no-sync", "taskiq", "worker", "--no-configure-logging", "tracker.config:broker", "tracker.utils"],
             stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),
         )
 

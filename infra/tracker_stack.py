@@ -159,7 +159,7 @@ class TrackerStack(Stack):
                 "REDIS_URL": redis_url,
             },
             secrets=db_secrets,
-            command=["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+            command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(
                 command=["CMD-SHELL", f"curl -f http://localhost:{TRACKER_PORT}/health || exit 1"],
                 interval=Duration.seconds(CONTAINER_HEALTH_INTERVAL_SECONDS),
