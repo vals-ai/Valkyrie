@@ -108,9 +108,9 @@ class TestForceStop:
                 image=test_image,
                 labels=labels,
                 resources=test_resources,
-            ) as _:
-                # NOTE: Will not exit when we delete the sandbox so keep the sleep short
-                await asyncio.sleep(20)
+            ) as sandbox:
+                # NOTE: Must wait until sandboxes have been started
+                await sandbox.wait_for_sandbox_start(timeout=0)
 
         # Create 12 tasks that are in progress and evaluating
         tasks: list[Task] = []
