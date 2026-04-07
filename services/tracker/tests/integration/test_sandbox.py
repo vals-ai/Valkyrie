@@ -2,17 +2,14 @@
 
 import io
 import zipfile
-from typing import AsyncGenerator, Generator
+from typing import AsyncGenerator
 
 import boto3
 import pytest
 from benchmark_service.schemas import Resources
 from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
-from moto import mock_aws
-from mypy_boto3_s3.client import S3Client
 
 from tests.utils import random_task_id
-from tracker.config import AWS_S3_BUCKET
 from tracker.database.models import AgentContractRequest
 from tracker.s3 import get_contract_s3_key
 from tracker.sandbox import (
@@ -22,16 +19,7 @@ from tracker.sandbox import (
     stream_command_output,
     upload_agent_artifacts,
 )
-from tracker.types import AWSCredentials
-
-
-@pytest.fixture
-def mock_s3() -> Generator[S3Client, None, None]:
-    """Mock S3 for testing."""
-    with mock_aws():
-        s3 = boto3.client("s3", region_name="us-east-1")  # pyright: ignore[reportUnknownMemberType]
-        s3.create_bucket(Bucket=AWS_S3_BUCKET)
-        yield s3
+from tracker.types import AWSCredentials, HarnessConfig
 
 
 @pytest.fixture
@@ -61,7 +49,7 @@ class TestSandboxOperations:
             await daytona_client.get(random_sandbox_name)
 
     async def test_upload_agent_artifacts(
-        self, test_sandbox: AsyncSandbox, mock_s3: S3Client, aws_credentials: AWSCredentials
+        self, test_sandbox: AsyncSandbox, aws_credentials: AWSCredentials, harness_config: HarnessConfig
     ) -> None:
         """Test that agent artifacts are uploaded to the sandbox."""
         contract_name = "test_contract"
@@ -74,30 +62,40 @@ class TestSandboxOperations:
         agent_file = f"{contract_name}/{contract_name}/file.txt"
         setup_file = f"{contract_name}/setup.sh"
 
-        # Create a mock zip with the expected structure
+        # Create a test zip with the expected structure
         zip_buffer = io.BytesIO()
         with zipfile.ZipFile(zip_buffer, "w") as zf:
             zf.writestr(setup_file, "#!/bin/bash\necho 'setup'")
             zf.writestr(agent_file, "hello world")
         zip_buffer.seek(0)
 
-        # Upload zip to mocked S3
-        mock_s3.put_object(
-            Bucket=AWS_S3_BUCKET,
-            Key=get_contract_s3_key(contract_name),
+        # Upload zip to real S3
+        s3 = boto3.client(
+            "s3",
+            region_name=aws_credentials.aws_default_region,
+            aws_access_key_id=aws_credentials.aws_access_key_id,
+            aws_secret_access_key=aws_credentials.aws_secret_access_key,
+        )
+        s3_key = get_contract_s3_key(contract_name)
+        s3.put_object(
+            Bucket=harness_config.s3_bucket,
+            Key=s3_key,
             Body=zip_buffer.getvalue(),
         )
 
-        await upload_agent_artifacts(test_sandbox, contract, aws_credentials, AWS_S3_BUCKET)
+        try:
+            await upload_agent_artifacts(test_sandbox, contract, aws_credentials, harness_config.s3_bucket)
 
-        # Verify files exist in sandbox
-        result = await test_sandbox.process.exec(f"cat /bundle/{setup_file}")
-        assert result.exit_code == 0
-        assert "echo 'setup'" in result.result
+            # Verify files exist in sandbox
+            result = await test_sandbox.process.exec(f"cat /bundle/{setup_file}")
+            assert result.exit_code == 0
+            assert "echo 'setup'" in result.result
 
-        result = await test_sandbox.process.exec(f"cat /bundle/{agent_file}")
-        assert result.exit_code == 0
-        assert "hello world" in result.result
+            result = await test_sandbox.process.exec(f"cat /bundle/{agent_file}")
+            assert result.exit_code == 0
+            assert "hello world" in result.result
+        finally:
+            s3.delete_object(Bucket=harness_config.s3_bucket, Key=s3_key)
 
     async def test_install_agent_dependencies(self, test_sandbox: AsyncSandbox) -> None:
         """Test that install command is correctly executed in the sandbox."""
@@ -128,6 +126,7 @@ class TestSandboxOperations:
         self,
         test_sandbox: AsyncSandbox,
         aws_credentials: AWSCredentials,
+        harness_config: HarnessConfig,
     ) -> None:
         """Test that agent runs and prints output lines."""
         logged_messages: list[str] = []
@@ -155,7 +154,7 @@ class TestSandboxOperations:
             log_output=log_callback,
             cwd="/",
             aws=aws_credentials,
-            s3_bucket=AWS_S3_BUCKET,
+            s3_bucket=harness_config.s3_bucket,
         )
 
         output = "\n".join(logged_messages)
