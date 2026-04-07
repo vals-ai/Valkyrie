@@ -210,7 +210,7 @@ async def upload_agent_artifacts(
         " command -v curl >/dev/null 2>&1 || NEED='curl';"
         ' command -v unzip >/dev/null 2>&1 || NEED="$NEED unzip";'
         ' if [ -n "$NEED" ]; then'
-        "  if command -v apt-get >/dev/null 2>&1; then apt-get update -qq && apt-get install -y -qq $NEED;"
+        "  if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $NEED;"
         "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache $NEED;"
         "  elif command -v yum >/dev/null 2>&1; then yum install -y $NEED;"
         "  elif command -v dnf >/dev/null 2>&1; then dnf install -y $NEED;"
