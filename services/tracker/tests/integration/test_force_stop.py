@@ -218,13 +218,15 @@ class TestForceStop:
             f"Tasks have error status: {', '.join([task.error_message or 'No error message' for task in error_tasks])}"
         )
 
-        # Fetch all the tasks and ensure that they are in the stopped state
-        stopped_tasks = database_session.exec(
-            select(Task).where(Task.benchmark == example_benchmark_object.id).where(Task.status == TaskStatus.STOPPED)
+        # All tasks should be in a finished state (STOPPED or FINISHED)
+        # Some tasks will finish quickly since the agent is a dummy model
+        terminal_tasks = database_session.exec(
+            select(Task)
+            .where(Task.benchmark == example_benchmark_object.id)
+            .where(col(Task.status).in_([TaskStatus.STOPPED, TaskStatus.FINISHED]))
         ).all()
 
-        assert len(stopped_tasks) == 5
-        assert all(task.status == TaskStatus.STOPPED for task in stopped_tasks)
+        assert len(terminal_tasks) == 5
 
         # Fetch the benchmark and ensure that it is in the stopped state
         database_session.refresh(example_benchmark_object)
