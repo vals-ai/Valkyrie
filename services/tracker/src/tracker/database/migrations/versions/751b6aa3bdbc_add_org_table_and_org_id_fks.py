@@ -7,6 +7,7 @@ Create Date: 2026-03-27 00:00:00.000000
 """
 
 from typing import Sequence, Union
+from uuid import uuid4
 
 from alembic import op
 import sqlalchemy as sa
@@ -18,10 +19,12 @@ down_revision: Union[str, Sequence[str], None] = "c1f2af2104e1"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-VALS_ORG_ID = "00000000-0000-0000-0000-000000000001"
+DEFAULT_ORG_NAME = "default"
 
 
 def upgrade() -> None:
+    default_org_id = str(uuid4())
+
     # 1. Create org table
     op.create_table(
         "org",
@@ -31,9 +34,9 @@ def upgrade() -> None:
     )
     op.create_index(op.f("ix_org_name"), "org", ["name"], unique=True)
 
-    # 2. Insert default Vals org
+    # 2. Insert default org
     op.execute(
-        sa.text("INSERT INTO org (id, name) VALUES (:id, :name)").bindparams(id=VALS_ORG_ID, name="Vals")
+        sa.text("INSERT INTO org (id, name) VALUES (:id, :name)").bindparams(id=default_org_id, name=DEFAULT_ORG_NAME)
     )
 
     # 3. Add org_id as nullable to all tables
@@ -43,7 +46,7 @@ def upgrade() -> None:
     # 4. Backfill all existing rows
     for table in ("benchmark", "task", "finalevaluation", "evaluationresult"):
         op.execute(
-            sa.text(f"UPDATE {table} SET org_id = :org_id").bindparams(org_id=VALS_ORG_ID)
+            sa.text(f"UPDATE {table} SET org_id = :org_id").bindparams(org_id=default_org_id)
         )
 
     # 5. Set NOT NULL + FK constraints

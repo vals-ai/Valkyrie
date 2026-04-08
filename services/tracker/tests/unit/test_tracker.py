@@ -6,12 +6,13 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from sqlmodel import Session
 
-from tracker.database.models import VALS_ORG_ID, Benchmark, Org, Task, TaskStatus
+from tests.conftest import TEST_ORG_ID
+from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
 
 
 class TestTracker:
-    _test_org = Org(id=VALS_ORG_ID, name="Vals")
+    _test_org = Org(id=TEST_ORG_ID, name="default")
     async def _mock_coro(self, task_id: str) -> dict[str, dict[str, Any] | None]:
         """Blank coro that returns the same format as process_task method"""
         await asyncio.sleep(5)
@@ -53,7 +54,7 @@ class TestTracker:
 
         tasks_to_track: list[str] = ["task_id_1"]
         for task_id in tasks_to_track:
-            task_row = Task(org_id=VALS_ORG_ID, task_id=task_id, benchmark=benchmark_row.id)
+            task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id)
             database_session.add(task_row)
             database_session.commit()
 

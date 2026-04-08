@@ -12,8 +12,9 @@ from testcontainers.postgres import PostgresContainer
 
 from main import app
 from tracker.auth import get_current_org
+from tests.conftest import TEST_ORG_ID
 from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
-from tracker.database.models import Org, VALS_ORG_ID
+from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 from tracker.sandbox import TrackerResources
 from tracker.types import AWSCredentials, HarnessConfig
@@ -45,11 +46,11 @@ def setup_app_dependencies(
     monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: harness_config)
 
     # Ensure the default org exists in the test database and override the dependency
-    existing = database_session.get(Org, VALS_ORG_ID)
+    existing = database_session.get(Org, TEST_ORG_ID)
     if not existing:
-        database_session.add(Org(id=VALS_ORG_ID, name="Vals"))
+        database_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
         database_session.commit()
-    vals_org = Org(id=VALS_ORG_ID, name="Vals")
+    vals_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
     monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: vals_org)
 
 

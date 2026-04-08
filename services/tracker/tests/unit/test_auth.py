@@ -1,7 +1,8 @@
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
 
-from tracker.database.models import Org, VALS_ORG_ID
+from tests.conftest import TEST_ORG_ID
+from tracker.database.models import DEFAULT_ORG_NAME, Org
 
 
 @pytest.fixture
@@ -15,13 +16,13 @@ def session():
 def test_get_default_org_returns_vals_org(session: Session):
     from tracker.auth import get_default_org
 
-    vals_org = Org(id=VALS_ORG_ID, name="Vals")
+    vals_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
     session.add(vals_org)
     session.commit()
 
     result = get_default_org(session)
-    assert result.id == VALS_ORG_ID
-    assert result.name == "Vals"
+    assert result.id == TEST_ORG_ID
+    assert result.name == DEFAULT_ORG_NAME
 
 
 def test_get_default_org_raises_if_missing(session: Session):

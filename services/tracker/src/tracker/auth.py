@@ -3,18 +3,18 @@
 from fastapi import Depends
 from sqlmodel import Session, select
 
-from tracker.database.models import Org, VALS_ORG_ID
+from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 
 _cached_default_org: Org | None = None
 
 
 def get_default_org(session: Session) -> Org:
-    """Fetch the default Vals org, cached after first load. Used in self-hosted mode."""
+    """Fetch the default org, cached after first load. Used in self-hosted mode."""
     global _cached_default_org
     if _cached_default_org is not None:
         return _cached_default_org
-    org = session.exec(select(Org).where(Org.id == VALS_ORG_ID)).first()
+    org = session.exec(select(Org).where(Org.name == DEFAULT_ORG_NAME)).first()
     if not org:
         raise RuntimeError("Default org not found — run the migration")
     _cached_default_org = org

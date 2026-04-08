@@ -8,7 +8,8 @@ from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 
 from tests.unit.test_fastapi_server import client
-from tracker.database.models import VALS_ORG_ID, AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tests.conftest import TEST_ORG_ID
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
@@ -20,7 +21,7 @@ from tracker.utils import (
 
 
 class TestBenchmarkUtils:
-    _test_org = Org(id=VALS_ORG_ID, name="Vals")
+    _test_org = Org(id=TEST_ORG_ID, name="default")
 
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
@@ -46,10 +47,10 @@ class TestBenchmarkUtils:
         # create tasks, some which are pending and some which are in progress
         initial_task_rows: list[Task] = []
         for i in range(5):
-            initial_task_rows.append(Task(org_id=VALS_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING))
+            initial_task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING))
         for i in range(5, 10):
             initial_task_rows.append(
-                Task(org_id=VALS_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
+                Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
             )
         database_session.add_all(initial_task_rows)
         database_session.commit()
@@ -129,9 +130,9 @@ class TestBenchmarkUtils:
         # Add some tasks, non-pending (stopped and finished tasks only)
         task_rows: list[Task] = []
         for i in range(5):
-            task_rows.append(Task(org_id=VALS_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED))
+            task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED))
         for i in range(5, 10):
-            task_rows.append(Task(org_id=VALS_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED))
+            task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED))
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -221,7 +222,7 @@ class TestBenchmarkUtils:
 
         # All of them finished
         task_rows = [
-            Task(org_id=VALS_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(5)
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(5)
         ]
         database_session.add_all(task_rows)
         database_session.commit()

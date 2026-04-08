@@ -10,7 +10,8 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app
-from tracker.database.models import VALS_ORG_ID, AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tests.conftest import TEST_ORG_ID
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     TaskMonitor,
@@ -27,7 +28,7 @@ client = TestClient(app)
 
 
 class TestStopAndResume:
-    _test_org = Org(id=VALS_ORG_ID, name="Vals")
+    _test_org = Org(id=TEST_ORG_ID, name="default")
     @staticmethod
     async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
         return RetrieveTaskResponse(
@@ -107,11 +108,11 @@ class TestStopAndResume:
         pending_task_ids = task_ids[2:]
 
         for task_id in finished_task_ids:
-            task_row = Task(org_id=VALS_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+            task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
             database_session.add(task_row)
 
         for task_id in pending_task_ids:
-            task_row = Task(org_id=VALS_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
+            task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
             database_session.add(task_row)
 
         database_session.commit()
@@ -177,7 +178,7 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        task_rows = [Task(org_id=VALS_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)]
+        task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)]
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -211,7 +212,7 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        task_row = Task(org_id=VALS_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
         database_session.add(task_row)
         database_session.commit()
 
@@ -261,10 +262,10 @@ class TestStopAndResume:
 
         # All tasks are already in a finished state
         tasks = [
-            Task(org_id=VALS_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
-            Task(org_id=VALS_ORG_ID, task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
-            Task(org_id=VALS_ORG_ID, task_id="task_2", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
-            Task(org_id=VALS_ORG_ID, task_id="task_3", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=TEST_ORG_ID, task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=TEST_ORG_ID, task_id="task_2", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+            Task(org_id=TEST_ORG_ID, task_id="task_3", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
         ]
         database_session.add_all(tasks)
         database_session.commit()

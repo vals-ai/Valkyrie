@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     )
 
 
-VALS_ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
+DEFAULT_ORG_NAME = "default"
 
 
 class Org(SQLModel, table=True):
