@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from sqlite3 import Connection, Cursor
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 from dotenv import load_dotenv
@@ -9,7 +10,7 @@ from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tracker.database.models import *  # noqa: F403
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, PlatformContext
 
 _ = load_dotenv()
 
@@ -48,4 +49,15 @@ def example_benchmark_object(contract: AgentContractRequest) -> Benchmark:
     return Benchmark(
         name="swebench",
         arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=None, slice_str=None),
+    )
+
+
+@pytest.fixture
+def platform_context() -> PlatformContext:
+    return PlatformContext(
+        project_id=uuid4(),
+        launch_source="valkyrie_hosted",
+        project_slug="benchmarking",
+        org="vals",
+        run_by="hung@vals.ai",
     )

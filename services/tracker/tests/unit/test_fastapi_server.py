@@ -18,6 +18,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     FinalEvaluation,
+    PlatformContext,
     Task,
     TaskStatus,
 )
@@ -56,6 +57,7 @@ class TestFastapiServer:
     async def test_start_benchmark(
         self,
         contract: AgentContractRequest,
+        platform_context: PlatformContext,
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
@@ -76,6 +78,7 @@ class TestFastapiServer:
             benchmark_name="swebench",
             concurrency=10,
             task_ids=None,
+            platform_context=platform_context,
             harness_config=harness_config,
         )
 
@@ -108,6 +111,7 @@ class TestFastapiServer:
             concurrency=request.concurrency,
             task_ids=None,
             slice_str=None,
+            platform_context=request.platform_context,
         )
 
         # Test case 3. Start timestamp is in UTC timezone and matches the benchmark row
@@ -121,7 +125,86 @@ class TestFastapiServer:
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
-    async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
+    async def test_fetch_benchmark_metadata(
+        self,
+        database_session: Session,
+        contract: AgentContractRequest,
+        platform_context: PlatformContext,
+    ):
+        benchmark_row = Benchmark(
+            name="vcb",
+            arguments=BenchmarkArguments(
+                contract=contract,
+                concurrency=5,
+                task_ids=None,
+                slice_str=None,
+                platform_context=platform_context,
+            ),
+        )
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        response = client.get(f"/fetch-benchmark-metadata/{benchmark_row.id}")
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["benchmark_id"] == str(benchmark_row.id)
+        assert response_json["benchmark_name"] == benchmark_row.name
+        assert response_json["benchmark_arguments"]["platform_context"] == platform_context.model_dump(mode="json")
+
+    async def test_fetch_benchmark_tasks(self, database_session: Session, example_benchmark_object: Benchmark):
+        response = client.get("/fetch-benchmark-tasks", params={"benchmark_id": str(uuid4())})
+        assert response.status_code == 404
+
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        first_task = Task(task_id="task_b", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+        second_task = Task(task_id="task_a", benchmark=benchmark_row.id, status=TaskStatus.ERROR, error_message="boom")
+        database_session.add_all([first_task, second_task])
+        database_session.commit()
+
+        database_session.add(
+            EvaluationResult(
+                task=first_task.id,
+                instance_id=str(uuid4()),
+                result={"score": 0.75, "details": {"resolved": True}},
+            )
+        )
+        database_session.commit()
+
+        response = client.get("/fetch-benchmark-tasks", params={"benchmark_id": str(benchmark_row.id)})
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["benchmark_id"] == str(benchmark_row.id)
+        assert [task["task_id"] for task in response_json["tasks"]] == ["task_a", "task_b"]
+
+        first_row, second_row = response_json["tasks"]
+        assert first_row == {
+            "task_id": "task_a",
+            "status": "ERROR",
+            "started_at": first_row["started_at"],
+            "finished_at": first_row["finished_at"],
+            "error_message": "boom",
+            "evaluation_result": None,
+        }
+        assert second_row == {
+            "task_id": "task_b",
+            "status": "FINISHED",
+            "started_at": second_row["started_at"],
+            "finished_at": second_row["finished_at"],
+            "error_message": None,
+            "evaluation_result": {"score": 0.75, "details": {"resolved": True}},
+        }
+
+    async def test_fetch_benchmark(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        platform_context: PlatformContext,
+    ):
         """
         Test fetch benchmark of the fastapi server.
 
@@ -139,6 +222,7 @@ class TestFastapiServer:
 
         # Add benchmark row to the database to fetch
         benchmark_row = example_benchmark_object
+        benchmark_row.arguments.platform_context = platform_context
 
         database_session.add(benchmark_row)
         database_session.commit()
@@ -154,8 +238,15 @@ class TestFastapiServer:
 
         # Test case 2. Returns 200 OK
         assert response.status_code == 200
-        details = response.json().get("details")
+        response_json = response.json()
+        details = response_json.get("details")
         assert details
+        assert response_json["benchmark_name"] == benchmark_row.name
+        assert response_json["agent_name"] == benchmark_row.arguments.contract.name
+        assert response_json["model"] == benchmark_row.arguments.contract.model
+        assert response_json["concurrency"] == benchmark_row.arguments.concurrency
+        assert response_json["platform_context"] == platform_context.model_dump(mode="json")
+        assert response_json["cloudwatch_url"]
 
         # Test case 3. Benchmark details are returned in the response
         # NOTE: Let's just check the fields that are being tracked and are due to change
@@ -385,7 +476,12 @@ class TestFastapiServer:
         assert benchmark_row.status == BenchmarkStatus.ERROR
         assert benchmark_row.error_message == detail.get("error_message")
 
-    async def test_fetch_benchmarks(self, database_session: Session, example_benchmark_object: Benchmark):
+    async def test_fetch_benchmarks(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        platform_context: PlatformContext,
+    ):
         """
         Test fetch benchmarks of the fastapi server.
 
@@ -408,6 +504,7 @@ class TestFastapiServer:
         assert response_json.get("total_count") == 0
 
         # Add benchmark row to the database to fetch
+        example_benchmark_object.arguments.platform_context = platform_context
         database_session.add(example_benchmark_object)
         database_session.commit()
 
@@ -444,6 +541,22 @@ class TestFastapiServer:
         database_session.add(unique_benchmark)
         database_session.commit()
 
+        other_project_benchmark = Benchmark(
+            name="vcb",
+            arguments=BenchmarkArguments(
+                contract=example_benchmark_object.arguments.contract,
+                concurrency=5,
+                task_ids=None,
+                slice_str=None,
+                platform_context=PlatformContext(
+                    project_id=uuid4(),
+                    launch_source="valkyrie_hosted",
+                ),
+            ),
+        )
+        database_session.add(other_project_benchmark)
+        database_session.commit()
+
         # Search for the 4 benchmarks just created + the original one we added before
         fetch_benchmarks_request.benchmark_name = "swebench"
         fetch_benchmarks_request.agent_name = "dummy"
@@ -473,11 +586,25 @@ class TestFastapiServer:
         assert response.status_code == 200
         response_json = response.json()
 
-        # There are 6 total benchmarks
-        assert response_json.get("total_count") == 6
+        # There are 7 total benchmarks
+        assert response_json.get("total_count") == 7
 
         # Limit will always be 5
         assert len(response_json.get("benchmarks")) == 5
+
+        fetch_benchmarks_request.project_id = platform_context.project_id
+        response = client.get(
+            "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
+        )
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json.get("total_count") == 5
+        assert len(response_json.get("benchmarks")) == 5
+        for row in response_json["benchmarks"]:
+            assert row["name"] == "swebench"
+            assert row["agent_name"] == "dummy"
+
+        fetch_benchmarks_request.project_id = None
 
         # Change benchmark status to finished and search again
         unique_benchmark.status = BenchmarkStatus.FINISHED
