@@ -261,10 +261,10 @@ class TestStopAndResume:
 
         # All tasks are already in a finished state
         tasks = [
-            Task(task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
-            Task(task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
-            Task(task_id="task_2", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
-            Task(task_id="task_3", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=VALS_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=VALS_ORG_ID, task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=VALS_ORG_ID, task_id="task_2", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+            Task(org_id=VALS_ORG_ID, task_id="task_3", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
         ]
         database_session.add_all(tasks)
         database_session.commit()
@@ -272,7 +272,7 @@ class TestStopAndResume:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         # Set benchmark status to STOPPING
-        await initiate_stop_benchmark(benchmark_row, database_session, force=True)
+        await initiate_stop_benchmark(benchmark_row, database_session, force=True, org=self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
         # Mock daytona client since its not required
@@ -286,7 +286,7 @@ class TestStopAndResume:
 
         # Force stopping the sandboxes results in the benchmark row being stopped
         await force_stop_sandboxes(
-            benchmark_row, database_session, harness_config.daytona_secret_name, harness_config.aws
+            benchmark_row, database_session, harness_config.daytona_secret_name, harness_config.aws, self._test_org
         )
 
         database_session.refresh(benchmark_row)
