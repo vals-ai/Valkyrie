@@ -46,7 +46,11 @@ class TrackerService:
 
     _config_values: dict[str, str] = {}
 
-    def __init__(self, base_url: str = TRACKER_URL, timeout: int = 120):
+    def __init__(
+        self,
+        base_url: str = TRACKER_URL,
+        timeout: int = 120,
+    ):
         """
         Initialize tracker service client.
 
@@ -54,10 +58,12 @@ class TrackerService:
             base_url: Base URL of tracker service
             timeout: Request timeout in seconds
         """
-        self._config_values = self.parse_config_keys()
+        self._config = self._load_config()
+        self._api_key = self._config.get("api_key")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._client = httpx.Client(timeout=timeout, headers=self._build_harness_headers())
+        self._config_values = self.parse_config_keys()
+        self._client = httpx.Client(timeout=timeout, headers=self._build_auth_headers())
 
     def __enter__(self) -> "TrackerService":
         """Context manager entry."""
@@ -70,6 +76,38 @@ class TrackerService:
     def close(self) -> None:
         """Close the HTTP client."""
         self._client.close()
+
+    @staticmethod
+    def _load_config() -> dict[str, Any]:
+        """Load the valkyrie config file if it exists."""
+        config_path = _CONFIG_LOCATION.expanduser()
+        if not config_path.exists():
+            return {}
+
+        with open(config_path) as f:
+            return yaml.safe_load(f) or {}
+
+    def _build_auth_headers(self) -> dict[str, str]:
+        """Build request headers. Hosted mode adds X-Api-Key alongside X-Harness-* headers."""
+        headers = self._build_harness_headers()
+        if self._api_key:
+            headers["X-Api-Key"] = self._api_key
+        return headers
+
+    @classmethod
+    def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
+        """Validate a Descope API key and create/confirm the org. Does not require a full config."""
+        try:
+            with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
+                response = client.post(f"{base_url.rstrip('/')}/init")
+
+                if response.status_code != 200:
+                    details = response.json().get("detail", response.text)
+                    raise TrackerServiceError(f"Failed to initialize org: {details}")
+
+                return response.json()
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to initialize org: {e}") from e
 
     @staticmethod
     def get_benchmark_service_url(benchmark_name: str) -> str | None:
@@ -150,7 +188,7 @@ class TrackerService:
             )
 
         # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"webhook"}
+        _SKIP_HEADER_KEYS = {"webhook", "api_key"}
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():

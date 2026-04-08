@@ -76,6 +76,10 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
     "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
 }
 
+_HOSTED_ENVIRONMENT_VARIABLES: dict[str, str | None] = {
+    "VALKYRIE_API_KEY": None,
+}
+
 
 @config.command()
 def init() -> None:
@@ -84,14 +88,32 @@ def init() -> None:
     this becomes our source of truth for secrets required to run Valkyrie
     """
 
-    current_config: dict[str, str] = {}
+    current_config: dict[str, Any] = {}
     if CONFIG_LOCATION.exists():
         with open(CONFIG_LOCATION) as f:
             try:
-                current_config = yaml.safe_load(f)
+                current_config = yaml.safe_load(f) or {}
             except Exception:
                 pass
 
+    mode = click.prompt(
+        "Setup mode",
+        type=click.Choice(["hosted", "self-hosted"]),
+        default="self-hosted",
+    )
+
+    if mode == "hosted":
+        api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")
+        current_config["api_key"] = api_key
+
+        # Validate the key and create/confirm org (uses default tracker URL)
+        try:
+            result = TrackerService.init_org(api_key)
+        except TrackerServiceError as e:
+            raise click.ClickException(str(e))
+        click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
+
+    # Both modes require AWS credentials
     collected_keys: dict[str, str] = {}
     for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
         sourced = current_config.get(key) or os.environ.get(key)
@@ -117,10 +139,15 @@ def init() -> None:
 
         collected_keys[key] = value
 
+    current_config.update(collected_keys)
+
+    if mode != "hosted":
+        current_config.pop("api_key", None)
+
     CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
 
     with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(collected_keys, f, default_flow_style=False)
+        yaml.dump(current_config, f, default_flow_style=False)
 
     click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
 

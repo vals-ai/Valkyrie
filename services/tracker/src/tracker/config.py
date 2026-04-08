@@ -63,3 +63,7 @@ broker = (
     .with_result_backend(result_backend)
     .with_middlewares(TaskProtectionMiddleware(), LoggingContextMiddleware())
 )
+
+# Auth settings
+AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
+DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")

@@ -1,12 +1,32 @@
 """Authentication and org resolution for the tracker service."""
 
-from fastapi import Depends
+from __future__ import annotations
+
+from descope import AuthException, DescopeClient
+from fastapi import Depends, HTTPException, Request
 from sqlmodel import Session, select
 
+from tracker.config import AUTH_REQUIRED, DESCOPE_PROJECT_ID
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
+from tracker.logging import get_logger
+
+logger = get_logger(__name__)
 
 _cached_default_org: Org | None = None
+_descope_client: DescopeClient | None = None
+
+
+def _get_descope_client() -> DescopeClient:
+    """Lazy-initialize the Descope client on first use."""
+    global _descope_client
+    if _descope_client is not None:
+        return _descope_client
+    if not DESCOPE_PROJECT_ID:
+        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID")
+    _descope_client = DescopeClient(project_id=DESCOPE_PROJECT_ID)
+    logger.info("Descope client initialized")
+    return _descope_client
 
 
 def get_default_org(session: Session) -> Org:
@@ -21,10 +41,51 @@ def get_default_org(session: Session) -> Org:
     return org
 
 
-def get_current_org(session: Session = Depends(get_session)) -> Org:
+def extract_api_key(request: Request) -> str:
+    """Extract API key from request headers. Raises 401 if missing."""
+    api_key = request.headers.get("x-api-key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API key")
+    return api_key
+
+
+def resolve_descope_tenant(api_key: str) -> str:
+    """Validate an API key against Descope and return the tenant name (no DB lookup)."""
+    client = _get_descope_client()
+    try:
+        jwt_response = client.exchange_access_key(api_key)
+    except AuthException as e:
+        raise HTTPException(status_code=401, detail=f"Invalid API key: {e.error_message}") from e
+
+    tenants = list(jwt_response.get("tenants", {}).keys())
+    if len(tenants) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Access key must be scoped to exactly one tenant, got {len(tenants)}",
+        )
+    return tenants[0]
+
+
+def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
+    """Look up an org by Descope tenant name. Returns None if not found."""
+    return session.exec(select(Org).where(Org.name == tenant_name)).first()
+
+
+def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
     """FastAPI dependency that resolves the current org.
 
-    Phase 1: always returns the default org (self-hosted mode).
-    Phase 2: will add Descope auth dispatch based on AUTH_REQUIRED.
+    Self-hosted (AUTH_REQUIRED=false): returns default Vals org.
+    Hosted (AUTH_REQUIRED=true): validates Descope API key and resolves org.
     """
-    return get_default_org(session)
+    if not AUTH_REQUIRED:
+        return get_default_org(session)
+
+    api_key = extract_api_key(request)
+    tenant_name = resolve_descope_tenant(api_key)
+    org = find_org_by_tenant(tenant_name, session)
+    if not org:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Organization '{tenant_name}' not configured — run valk config init",
+        )
+    return org
