@@ -19,7 +19,6 @@ from aws_cdk import (
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
-    NAMESPACE,
     POSTGRES_DB,
     WORKER_CPU,
     WORKER_MAX_TASKS,
@@ -76,7 +75,6 @@ class WorkerStack(Stack):
 
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
-            "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
             "AWS_S3_BUCKET": bucket.bucket_name,
         }
 
@@ -109,7 +107,7 @@ class WorkerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "WorkerLogGroup",
-                    retention=aws_logs.RetentionDays.ONE_WEEK,
+                    retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
             ),

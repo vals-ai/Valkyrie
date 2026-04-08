@@ -323,4 +323,5 @@ class EvaluationResult(SQLModel, table=True):
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
     instance_id: str = Field(unique=True)
+    agent_timed_out: bool = Field(default=False)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
