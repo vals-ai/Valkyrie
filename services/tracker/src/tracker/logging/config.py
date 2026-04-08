@@ -45,7 +45,7 @@ _FORMATTERS = {
         },
     },
     "development": {
-        "()": "tracker.logging_config.DevFormatter",
+        "()": "tracker.logging.config.DevFormatter",
         "fmt": "%(message)s",
     },
 }
@@ -67,7 +67,7 @@ def configure_logging() -> None:
             "disable_existing_loggers": False,
             "filters": {
                 "context": {
-                    "()": "tracker.logging_context.ContextFilter",
+                    "()": "tracker.logging.context.ContextFilter",
                 },
             },
             "formatters": {

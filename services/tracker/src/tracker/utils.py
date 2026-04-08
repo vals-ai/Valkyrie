@@ -32,7 +32,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
-from tracker.logger import get_logger
+from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
@@ -295,7 +295,6 @@ async def process_task(
     NOTE: When we close the sandbox the agent process will be killed and we will instantly go to evaluating,
     the evaluation will fail since the instance no longer exists. We handle this inside of the exception caught.
     """
-    from tracker.logging_context import task_id_var
     task_id_var.set(task_id)
 
     with Session(bind=engine) as task_session:

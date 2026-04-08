@@ -6,10 +6,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from tracker.logging_config import DevFormatter, configure_logging
-from tracker.logging_context import (
+from tracker.logging import (
     ContextFilter,
+    DevFormatter,
     benchmark_id_var,
+    configure_logging,
     request_id_var,
     task_id_var,
 )
@@ -149,7 +150,7 @@ def test_dev_formatter_no_context():
 @pytest.mark.anyio
 async def test_logging_context_middleware_pre_execute():
     """Taskiq middleware binds benchmark_id and request_id from message."""
-    from tracker.config import LoggingContextMiddleware
+    from tracker.middleware import LoggingContextMiddleware
 
     mw = LoggingContextMiddleware()
 
@@ -167,7 +168,7 @@ async def test_logging_context_middleware_pre_execute():
 @pytest.mark.anyio
 async def test_logging_context_middleware_post_execute_clears():
     """post_execute clears all context vars."""
-    from tracker.config import LoggingContextMiddleware
+    from tracker.middleware import LoggingContextMiddleware
 
     mw = LoggingContextMiddleware()
     benchmark_id_var.set("leftover")
@@ -184,7 +185,7 @@ async def test_logging_context_middleware_post_execute_clears():
 @pytest.mark.anyio
 async def test_logging_context_middleware_on_error_clears():
     """on_error clears context vars so failed jobs don't leak."""
-    from tracker.config import LoggingContextMiddleware
+    from tracker.middleware import LoggingContextMiddleware
 
     mw = LoggingContextMiddleware()
     benchmark_id_var.set("leaked")

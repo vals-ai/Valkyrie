@@ -1,11 +1,8 @@
 import logging
 import tarfile
 import traceback
-from typing import TYPE_CHECKING, Annotated
-from uuid import UUID, uuid4
-
-if TYPE_CHECKING:
-    from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from typing import Annotated
+from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceError
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
@@ -17,13 +14,8 @@ from tracker.cloudwatch import get_cloudwatch_url
 from tracker.database.models import Benchmark, BenchmarkStatus
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
-from tracker.logging_config import configure_logging
-from tracker.logging_context import (
-    benchmark_id_var,
-    request_id_var,
-    task_id_var,
-)
-from tracker.logger import get_logger
+from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
+from tracker.middleware import RequestContextMiddleware
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -69,38 +61,6 @@ configure_logging()
 logger = get_logger(__name__)
 
 app = FastAPI()
-
-
-class RequestContextMiddleware:
-    """Pure ASGI middleware for request correlation IDs."""
-
-    def __init__(self, app: "ASGIApp"):
-        self.app = app
-
-    async def __call__(self, scope: "Scope", receive: "Receive", send: "Send") -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        request_id = uuid4().hex[:12]
-        tokens = [
-            request_id_var.set(request_id),
-            benchmark_id_var.set(""),
-            task_id_var.set(""),
-        ]
-
-        async def send_with_request_id(message: "Message") -> None:
-            if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
-                headers.append((b"x-request-id", request_id.encode()))  # type: ignore[arg-type]
-                message = {**message, "headers": headers}
-            await send(message)
-
-        try:
-            await self.app(scope, receive, send_with_request_id)
-        finally:
-            for token in tokens:
-                token.var.reset(token)
 
 
 app.add_middleware(RequestContextMiddleware)
