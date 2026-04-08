@@ -7,7 +7,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 from tracker.exceptions import SecretsError
-from tracker.logger import get_logger
+from tracker.logging import get_logger
 from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)

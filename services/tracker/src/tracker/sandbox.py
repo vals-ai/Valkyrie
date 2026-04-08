@@ -2,6 +2,7 @@
 
 import base64
 import io
+import logging
 import shlex
 import uuid
 import zipfile
@@ -37,7 +38,7 @@ from tenacity import (
 
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import InvalidSandboxConfigurationError, SandboxError
-from tracker.logger import get_logger
+from tracker.logging import get_logger
 from tracker.s3 import download_from_s3, get_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
@@ -75,7 +76,7 @@ _sandbox_creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
     retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
     stop=stop_after_attempt(3),
     wait=wait_fixed(120),
-    before_sleep=before_sleep_log(logger, logger.level),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
 async def _create_sandbox(
@@ -269,7 +270,7 @@ async def stream_session_command_logs(
             retry=retry_if_exception(is_websocket_stream_error),
             stop=stop_after_attempt(10),
             wait=wait_fixed(LOG_STREAM_RETRY_DELAY_SECONDS),
-            before_sleep=before_sleep_log(logger, logger.level),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
             reraise=True,
         ):
             with attempt:

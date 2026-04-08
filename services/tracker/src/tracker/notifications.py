@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import SecretsError
-from tracker.logger import get_logger
+from tracker.logging import get_logger
 from tracker.secrets import fetch_aws_secret
 
 if TYPE_CHECKING:

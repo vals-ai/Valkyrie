@@ -8,9 +8,12 @@ from taskiq import InMemoryBroker
 from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
-from tracker.task_protection import TaskProtectionMiddleware
+from tracker.logging import configure_logging
+from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware
 
 load_dotenv()
+configure_logging()
+
 
 _BENCHMARK_SERVICE_NAMESPACE: str = "local"
 _BENCHMARK_SERVICE_PORT = 8001
@@ -58,5 +61,5 @@ broker = (
         idle_timeout=86400000,  # 24 hours
     )
     .with_result_backend(result_backend)
-    .with_middlewares(TaskProtectionMiddleware())
+    .with_middlewares(TaskProtectionMiddleware(), LoggingContextMiddleware())
 )

@@ -1,6 +1,7 @@
 import logging
 import tarfile
 import traceback
+from typing import Annotated
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceError
@@ -15,7 +16,8 @@ from tracker.database.models import Benchmark, BenchmarkStatus, Org
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
-from tracker.logger import get_logger
+from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
+from tracker.middleware import RequestContextMiddleware
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -56,18 +58,32 @@ from tracker.utils import (
     upload_final_view,
 )
 
+configure_logging()
+
 logger = get_logger(__name__)
 
 app = FastAPI()
 
 
-# Ignore verbose health check logs
+app.add_middleware(RequestContextMiddleware)
+
+
+# Preserve health check log suppression after configure_logging() replaced handlers
 class HealthCheckFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         return record.getMessage().find("/health") == -1
 
 
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+
+def bind_benchmark_id(benchmark_id: UUID) -> UUID:
+    """Dependency that binds benchmark_id to the logging context."""
+    benchmark_id_var.set(str(benchmark_id))
+    return benchmark_id
+
+
+TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
 
 
 @app.exception_handler(TrackerServiceError)
@@ -137,6 +153,7 @@ async def start_benchmark(
     benchmark_row = start_benchmark_request_to_benchmark(request, org)
     session.add(benchmark_row)
     session.commit()
+    benchmark_id_var.set(str(benchmark_row.id))
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
@@ -153,7 +170,9 @@ async def start_benchmark(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
-    await process_benchmark.kiq(
+    await process_benchmark.kicker().with_labels(
+        request_id=request_id_var.get(),
+    ).kiq(
         start_benchmark_request_json=request.model_dump(),
         benchmark_id_str=str(benchmark_row.id),
         verified_task_ids=verify_response.task_ids,
@@ -177,7 +196,7 @@ async def start_benchmark(
 
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -225,7 +244,7 @@ async def fetch_benchmark(
 
 @app.get("/retrieve-results")
 async def retrieve_results(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     s3: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -259,7 +278,7 @@ async def retrieve_results(
 
 @app.get("/check-results-exist")
 async def check_results_exist(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -282,7 +301,7 @@ async def check_results_exist(
 
 @app.post("/stop-benchmark/{benchmark_id}")
 async def stop_benchmark(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     force: bool = Query(default=False),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -320,7 +339,7 @@ async def stop_benchmark(
 
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
 async def retry_or_resume_benchmark(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     retry: bool = Query(default=False),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
@@ -375,7 +394,9 @@ async def retry_or_resume_benchmark(
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
-    await process_benchmark.kiq(
+    await process_benchmark.kicker().with_labels(
+        request_id=request_id_var.get(),
+    ).kiq(
         start_benchmark_request_json=resume_request_json,
         benchmark_id_str=str(benchmark_row.id),
         verified_task_ids=verified_task_ids,
@@ -416,7 +437,7 @@ async def fetch_benchmarks(
 
 @app.get("/fetch-benchmark-metadata/{benchmark_id}")
 async def fetch_benchmark_metadata(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> FetchBenchmarkMetadataResponse:
@@ -436,7 +457,7 @@ async def fetch_benchmark_metadata(
 
 @app.get("/fetch-agent-outputs/{benchmark_id}")
 async def fetch_agent_outputs(
-    benchmark_id: UUID,
+    benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
