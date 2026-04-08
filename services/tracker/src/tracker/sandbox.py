@@ -178,6 +178,7 @@ async def create_sandbox(
         await delete_sandbox(sandbox, daytona)
 
 
+@retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
 async def upload_agent_artifacts(
     sandbox: AsyncSandbox, contract: AgentContractRequest, aws: AWSCredentials, s3_bucket: str
 ) -> None:
@@ -231,9 +232,14 @@ async def upload_agent_artifacts(
 
     script = " && ".join(steps)
 
-    result = await sandbox.process.exec(script)
-    if result.exit_code != 0:
-        raise SandboxError(f"Failed to upload contract {contract.name} to sandbox {sandbox.name}: {result.result}")
+    try:
+        result = await sandbox.process.exec(script)
+
+        if result.exit_code != 0:
+            raise RuntimeError(f"Command failed with exit code {result.exit_code}: {result.result}")
+
+    except Exception as e:
+        raise SandboxError(f"Failed to upload contract {contract.name} to sandbox {sandbox.name}: {e}") from e
 
 
 @retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
