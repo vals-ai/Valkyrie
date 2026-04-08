@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -63,6 +63,20 @@ class AgentContractRequest(BaseModel):
     secrets: dict[str, str] = {}
 
 
+class PlatformContext(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    project_id: UUID
+    launch_source: Literal["valkyrie_hosted"]
+    project_slug: str | None = None
+    org: str | None = None
+    run_by: str | None = None
+
+    @field_serializer("project_id")
+    def serialize_project_id(self, value: UUID) -> str:
+        return str(value)
+
+
 class BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -72,6 +86,7 @@ class BenchmarkArguments(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    platform_context: PlatformContext | None = None
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -173,6 +188,7 @@ class Benchmark(SQLModel, table=True):
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
+            platform_context=self.arguments.platform_context,
             harness_config=harness_config,
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,

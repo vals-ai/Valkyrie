@@ -11,7 +11,7 @@ from sqlalchemy.orm import joinedload
 from sqlmodel import Session, select
 
 from tracker.cloudwatch import get_cloudwatch_url
-from tracker.database.models import Benchmark, BenchmarkStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, EvaluationResult, Task
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
@@ -27,8 +27,10 @@ from tracker.s3 import (
 )
 from tracker.types import (
     BenchmarkTableRow,
+    BenchmarkTaskRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
+    FetchBenchmarkTasksResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     HarnessConfig,
@@ -233,10 +235,17 @@ async def fetch_benchmark(
     return FetchBenchmarkResponse(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
+        agent_name=benchmark_row.arguments.contract.name,
+        model=benchmark_row.arguments.contract.model,
+        concurrency=benchmark_row.arguments.concurrency,
+        cloudwatch_url=get_cloudwatch_url(
+            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.log_group
+        ),
         details=benchmark_context.benchmark_details,
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
+        platform_context=benchmark_row.arguments.platform_context,
     )
 
 
@@ -448,6 +457,38 @@ async def fetch_benchmark_metadata(
         raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
 
     return benchmark_row.benchmark_metadata
+
+
+@app.get("/fetch-benchmark-tasks")
+async def fetch_benchmark_tasks(
+    benchmark_id: TrackedBenchmarkId,
+    session: Session = Depends(get_session),
+) -> FetchBenchmarkTasksResponse:
+    benchmark_row = session.get(Benchmark, benchmark_id)
+    if not benchmark_row:
+        raise HTTPException(status_code=404, detail=f"Benchmark with id {benchmark_id} not found")
+
+    statement = (
+        select(Task, EvaluationResult.result)
+        .where(Task.benchmark == benchmark_id)
+        .join(EvaluationResult, Task.id == EvaluationResult.task, isouter=True)
+        .order_by(Task.task_id)
+    )
+    rows = session.exec(statement).all()
+
+    tasks = [
+        BenchmarkTaskRow(
+            task_id=task.task_id,
+            status=task.status,
+            started_at=task.started_at,
+            finished_at=task.finished_at,
+            error_message=task.error_message,
+            evaluation_result=evaluation_result,
+        )
+        for task, evaluation_result in rows
+    ]
+
+    return FetchBenchmarkTasksResponse(benchmark_id=benchmark_id, tasks=tasks)
 
 
 @app.get("/fetch-agent-outputs/{benchmark_id}")

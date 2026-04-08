@@ -16,6 +16,7 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     FinalEvaluation,
+    PlatformContext,
     TaskStatus,
 )
 
@@ -50,6 +51,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    platform_context: PlatformContext | None = None
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = {}
@@ -89,8 +91,13 @@ class StartBenchmarkResponse(BaseModel):
 class FetchBenchmarkResponse(BaseModel):
     benchmark_name: str
     benchmark_id: UUID
+    agent_name: str
+    model: str | None
+    concurrency: int
+    cloudwatch_url: str
     details: BenchmarkDetails
     s3_bucket_url: str
+    platform_context: PlatformContext | None
 
 
 class FinalViewResponse(BaseModel):
@@ -137,6 +144,7 @@ class FetchBenchmarksRequest(BaseModel):
     agent_name: str | None = None
     benchmark_name: str | None = None
     model: str | None = None
+    project_id: UUID | None = None
     status: BenchmarkStatus | None = None
     order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
 
@@ -166,3 +174,17 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
+
+
+class BenchmarkTaskRow(BaseModel):
+    task_id: str
+    status: TaskStatus
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None
+    evaluation_result: dict[str, Any] | None
+
+
+class FetchBenchmarkTasksResponse(BaseModel):
+    benchmark_id: UUID
+    tasks: list[BenchmarkTaskRow]

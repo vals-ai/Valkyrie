@@ -104,6 +104,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benc
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,
             dataset=request.dataset,
+            platform_context=request.platform_context,
         ),
     )
 
@@ -849,10 +850,17 @@ async def stream_benchmark_results(
                 response_data = FetchBenchmarkResponse(
                     benchmark_name=fresh_benchmark.name,
                     benchmark_id=fresh_benchmark.id,
+                    agent_name=fresh_benchmark.arguments.contract.name,
+                    model=fresh_benchmark.arguments.contract.model,
+                    concurrency=fresh_benchmark.arguments.concurrency,
+                    cloudwatch_url=get_cloudwatch_url(
+                        str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.log_group
+                    ),
                     details=benchmark_context.benchmark_details,
                     s3_bucket_url=create_benchmark_url(
                         str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
                     ),
+                    platform_context=fresh_benchmark.arguments.platform_context,
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
@@ -1096,6 +1104,9 @@ def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Sess
 
     if request.model:
         query = query.where(arguments_json["contract"]["model"].as_string() == request.model)
+
+    if request.project_id:
+        query = query.where(arguments_json["platform_context"]["project_id"].as_string() == str(request.project_id))
 
     if request.benchmark_name:
         query = query.where(Benchmark.name == request.benchmark_name)
