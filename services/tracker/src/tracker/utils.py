@@ -1013,6 +1013,7 @@ async def force_stop_sandboxes(
     tasks_still_running: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.org_id) == org.id)
         .where(col(Task.status).notin_(finished_statuses))
     ).one()
 
