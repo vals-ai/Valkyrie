@@ -12,7 +12,7 @@ from sqlmodel import Session
 from tracker.cloudwatch import get_cloudwatch_url
 from tracker.auth import get_current_org
 from tracker.database.models import Benchmark, BenchmarkStatus, Org
-from tracker.database.scoping import assert_org
+from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logger import get_logger
@@ -196,8 +196,7 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
-    benchmark_row = session.get(Benchmark, benchmark_id)
-    assert_org(benchmark_row, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
@@ -274,8 +273,7 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    benchmark_row = session.get(Benchmark, benchmark_id)
-    assert_org(benchmark_row, org)
+    get_scoped(Benchmark, benchmark_id, session, org)
 
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
     exists = s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
@@ -300,8 +298,7 @@ async def stop_benchmark(
     Returns:
         StopBenchmarkResponse
     """
-    benchmark_row = session.get(Benchmark, benchmark_id)
-    assert_org(benchmark_row, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
     valid_stop_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING]
 
@@ -347,8 +344,7 @@ async def retry_or_resume_benchmark(
     Returns:
         RetryOrResumeBenchmarkResponse
     """
-    benchmark_row = session.get(Benchmark, benchmark_id)
-    assert_org(benchmark_row, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
     invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
 
@@ -433,8 +429,7 @@ async def fetch_benchmark_metadata(
     Returns:
         FetchBenchmarkMetadataResponse
     """
-    benchmark_row = session.get(Benchmark, benchmark_id)
-    assert_org(benchmark_row, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
     return benchmark_row.benchmark_metadata
 
@@ -455,8 +450,7 @@ async def fetch_agent_outputs(
     Returns:
         StreamingResponse
     """
-    benchmark_row = session.get(Benchmark, benchmark_id)
-    assert_org(benchmark_row, org)
+    get_scoped(Benchmark, benchmark_id, session, org)
 
     prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
     s3_keys = list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket)

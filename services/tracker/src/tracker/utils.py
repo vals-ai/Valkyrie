@@ -867,12 +867,8 @@ async def stream_benchmark_results(
         while True:
             with Session(bind=session.bind) as fresh_session:
                 fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
-                if not fresh_benchmark:
+                if not fresh_benchmark or fresh_benchmark.org_id != org.id:
                     yield f"{EVENT_ERROR} {json.dumps({'error': 'Benchmark not found'})}\n\n"
-                    break
-
-                if fresh_benchmark.org_id != org.id:
-                    yield f"{EVENT_ERROR} {json.dumps({'error': 'Not found'})}\n\n"
                     break
 
                 fresh_session.refresh(fresh_benchmark)
