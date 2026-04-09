@@ -7,7 +7,7 @@ from uuid import UUID
 from benchmark_service.client import BenchmarkServiceError
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
@@ -134,21 +134,15 @@ def init_org(
     api_key = extract_api_key(request)
     tenant_name = resolve_descope_tenant(api_key)
 
-    org = find_org_by_tenant(tenant_name, session)
-    if org:
-        return {"org_name": org.name, "created": False}
+    stmt = pg_insert(Org).values(name=tenant_name).on_conflict_do_nothing(index_elements=["name"])
+    result = session.execute(stmt)
+    created = result.rowcount > 0
+    session.commit()
 
-    try:
-        org = Org(name=tenant_name)
-        session.add(org)
-        session.commit()
-        return {"org_name": org.name, "created": True}
-    except IntegrityError:
-        session.rollback()
-        org = find_org_by_tenant(tenant_name, session)
-        if not org:
-            raise HTTPException(status_code=500, detail="Internal error during org creation")
-        return {"org_name": org.name, "created": False}
+    org = find_org_by_tenant(tenant_name, session)
+    if not org:
+        raise HTTPException(status_code=500, detail="Internal error during org creation")
+    return {"org_name": org.name, "created": created}
 
 
 @app.post("/start-benchmark")

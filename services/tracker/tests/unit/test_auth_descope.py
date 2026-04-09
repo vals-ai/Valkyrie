@@ -27,7 +27,7 @@ def test_org(session: Session) -> Org:
 @pytest.fixture
 def mock_descope():
     mock_client = MagicMock()
-    with patch("tracker.auth._get_descope_client", return_value=mock_client):
+    with patch("tracker.auth._descope_client", mock_client):
         yield mock_client
 
 

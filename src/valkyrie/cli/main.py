@@ -76,9 +76,6 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
     "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
 }
 
-_HOSTED_ENVIRONMENT_VARIABLES: dict[str, str | None] = {
-    "VALKYRIE_API_KEY": None,
-}
 
 
 @config.command()

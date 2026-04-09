@@ -94,21 +94,6 @@ class TrackerService:
             headers["X-Api-Key"] = self._api_key
         return headers
 
-    @classmethod
-    def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
-        """Validate a Descope API key and create/confirm the org. Does not require a full config."""
-        try:
-            with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
-                response = client.post(f"{base_url.rstrip('/')}/init")
-
-                if response.status_code != 200:
-                    details = response.json().get("detail", response.text)
-                    raise TrackerServiceError(f"Failed to initialize org: {details}")
-
-                return response.json()
-        except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to initialize org: {e}") from e
-
     @staticmethod
     def get_benchmark_service_url(benchmark_name: str) -> str | None:
         """
@@ -234,6 +219,21 @@ class TrackerService:
             return response
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Health check failed: {e}") from e
+
+    @classmethod
+    def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
+        """Validate a Descope API key and create/confirm the org. Does not require a full config."""
+        try:
+            with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
+                response = client.post(f"{base_url.rstrip('/')}/init")
+
+                if response.status_code != 200:
+                    details = response.json().get("detail", response.text)
+                    raise TrackerServiceError(f"Failed to initialize org: {details}")
+
+                return response.json()
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to initialize org: {e}") from e
 
     def start_benchmark(
         self,

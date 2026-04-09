@@ -14,19 +14,9 @@ from tracker.logging import get_logger
 logger = get_logger(__name__)
 
 _cached_default_org: Org | None = None
-_descope_client: DescopeClient | None = None
-
-
-def _get_descope_client() -> DescopeClient:
-    """Lazy-initialize the Descope client on first use."""
-    global _descope_client
-    if _descope_client is not None:
-        return _descope_client
-    if not DESCOPE_PROJECT_ID:
-        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID")
-    _descope_client = DescopeClient(project_id=DESCOPE_PROJECT_ID)
-    logger.info("Descope client initialized")
-    return _descope_client
+_descope_client: DescopeClient | None = (
+    DescopeClient(project_id=DESCOPE_PROJECT_ID) if AUTH_REQUIRED and DESCOPE_PROJECT_ID else None
+)
 
 
 def get_default_org(session: Session) -> Org:
@@ -51,9 +41,10 @@ def extract_api_key(request: Request) -> str:
 
 def resolve_descope_tenant(api_key: str) -> str:
     """Validate an API key against Descope and return the tenant name (no DB lookup)."""
-    client = _get_descope_client()
+    if not _descope_client:
+        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
     try:
-        jwt_response = client.exchange_access_key(api_key)
+        jwt_response = _descope_client.exchange_access_key(api_key)
     except AuthException as e:
         raise HTTPException(status_code=401, detail=f"Invalid API key: {e.error_message}") from e
 
@@ -74,7 +65,7 @@ def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
 def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
     """FastAPI dependency that resolves the current org.
 
-    Self-hosted (AUTH_REQUIRED=false): returns default Vals org.
+    Self-hosted (AUTH_REQUIRED=false): returns default org.
     Hosted (AUTH_REQUIRED=true): validates Descope API key and resolves org.
     """
     if not AUTH_REQUIRED:
