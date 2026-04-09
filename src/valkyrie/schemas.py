@@ -174,7 +174,7 @@ class AgentContract(BaseModel):
         return reference
 
     def validate_kwargs(self, schema: dict[str, Parameter], values: dict[str, Any]) -> dict[str, Any]:
-        if not values:
+        if not schema:
             return {}
 
         type_map = {"float": float, "int": int, "bool": bool, "str": str, "dict": dict}
@@ -188,4 +188,4 @@ class AgentContract(BaseModel):
         DynamicModel = create_model("KwargsModel", **fields)
         validated = DynamicModel(**values)
 
-        return validated.model_dump()
+        return validated.model_dump(exclude_none=True)

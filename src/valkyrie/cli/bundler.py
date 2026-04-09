@@ -135,7 +135,7 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
 
         agent_contract = AgentContract(**contract_dict)
 
-        validated_kwargs = agent_contract.validate_kwargs(agent_contract.kwargs, {})
+        validated_kwargs = agent_contract.validate_kwargs(agent_contract.kwargs, agent_config.kwargs)
 
         return AgentContractRequest(
             name=agent_contract.name,
