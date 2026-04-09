@@ -133,9 +133,17 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
         with open(contract_path, "r") as f:
             contract_dict = yaml.safe_load(f)
 
+        contract_dict.pop("provided", None)
+
         agent_contract = AgentContract(**contract_dict)
 
-        validated_kwargs = agent_contract.validate_kwargs(agent_contract.kwargs, agent_config.kwargs)
+        all_schema = {**agent_contract.defaults, **agent_contract.kwargs}
+
+        user_values = {**agent_config.kwargs}
+        if agent_config.model and "model" not in user_values:
+            user_values["model"] = agent_config.model
+
+        validated_kwargs = agent_contract.validate_kwargs(all_schema, user_values)
 
         return AgentContractRequest(
             name=agent_contract.name,

@@ -132,6 +132,19 @@ class AgentContract(BaseModel):
     ```
     """
 
+    defaults: dict[str, Parameter] = {}
+    """
+    Pre-defined parameters with configurable required/default behavior.
+    Merged into kwargs at validation time.
+
+    ```yaml
+    defaults:
+      model:
+        type: str
+        required: true
+    ```
+    """
+
     kwargs: dict[str, Parameter] = {}
     """
     Additional parameters for the agent

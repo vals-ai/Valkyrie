@@ -366,3 +366,107 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert result.run_cmd == "agent --task {problem_statement_path}"
+
+    def test_defaults_model_from_cli(self, tmp_path: Path) -> None:
+        """
+        Validates that --model is injected into defaults and substituted into run_cmd.
+
+        Test Cases:
+        - Model is defined in defaults as required, user passes --model on the CLI
+        """
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path} --model {model}"
+            defaults:
+              model:
+                type: str
+                required: true
+        """,
+        )
+
+        result = _parse_yaml_contract(path, AgentConfig(model="gpt-4o"))
+
+        assert "--model gpt-4o" in result.run_cmd
+
+    def test_defaults_model_required_missing_raises(self, tmp_path: Path) -> None:
+        """
+        Validates that a required default raises when --model is not provided.
+
+        Test Cases:
+        - Model is required in defaults but no --model flag is passed
+        """
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path} --model {model}"
+            defaults:
+              model:
+                type: str
+                required: true
+        """,
+        )
+
+        with pytest.raises(ValueError, match="Failed to parse YAML contract"):
+            _parse_yaml_contract(path, AgentConfig())
+
+    def test_defaults_merged_with_kwargs(self, tmp_path: Path) -> None:
+        """
+        Validates that defaults and kwargs are merged and both substituted into run_cmd.
+
+        Test Cases:
+        - Model comes from defaults via --model, temperature comes from kwargs default
+        """
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path} --model {model} --temp {temperature}"
+            defaults:
+              model:
+                type: str
+                required: true
+            kwargs:
+              temperature:
+                type: float
+                required: false
+                default: 0.7
+        """,
+        )
+
+        result = _parse_yaml_contract(path, AgentConfig(model="gpt-4o"))
+
+        assert "--model gpt-4o" in result.run_cmd
+        assert "--temp 0.7" in result.run_cmd
+
+    def test_provided_section_ignored(self, tmp_path: Path) -> None:
+        """
+        Validates that the provided section is stripped and does not cause a parse error.
+
+        Test Cases:
+        - YAML includes a provided section for documentation, it is silently ignored
+        """
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path}"
+            provided:
+              task_id:
+                type: str
+                required: false
+              problem_statement_path:
+                type: str
+                required: true
+        """,
+        )
+
+        result = _parse_yaml_contract(path, AgentConfig())
+
+        assert result.name == "my_agent"
