@@ -1,5 +1,6 @@
 import os
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
@@ -146,4 +147,7 @@ def mock_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_kiq(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    monkeypatch.setattr("main.process_benchmark.kiq", _mock_kiq)
+    mock_kicker = MagicMock()
+    mock_kicker.return_value.with_labels.return_value.kiq = _mock_kiq
+
+    monkeypatch.setattr("main.process_benchmark.kicker", mock_kicker)

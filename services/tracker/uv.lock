@@ -1273,6 +1273,15 @@ wheels = [
 ]
 
 [[package]]
+name = "python-json-logger"
+version = "4.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/ff/3cc9165fd44106973cd7ac9facb674a65ed853494592541d339bdc9a30eb/python_json_logger-4.1.0.tar.gz", hash = "sha256:b396b9e3ed782b09ff9d6e4f1683d46c83ad0d35d2e407c09a9ebbf038f88195", size = 17573, upload-time = "2026-03-29T04:39:56.805Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/27/be/0631a861af4d1c875f096c07d34e9a63639560a717130e7a87cbc82b7e3f/python_json_logger-4.1.0-py3-none-any.whl", hash = "sha256:132994765cf75bf44554be9aa49b06ef2345d23661a96720262716438141b6b2", size = 15021, upload-time = "2026-03-29T04:39:55.266Z" },
+]
+
+[[package]]
 name = "python-multipart"
 version = "0.0.24"
 source = { registry = "https://pypi.org/simple" }
@@ -1600,6 +1609,7 @@ dependencies = [
     { name = "httpx" },
     { name = "moto", extra = ["s3"] },
     { name = "psycopg2-binary" },
+    { name = "python-json-logger" },
     { name = "sqlmodel" },
     { name = "taskiq" },
     { name = "taskiq-redis" },
@@ -1628,6 +1638,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "moto", extras = ["s3"] },
     { name = "psycopg2-binary", specifier = ">=2.9.11" },
+    { name = "python-json-logger", specifier = ">=3.2.1" },
     { name = "sqlmodel", specifier = ">=0.0.38" },
     { name = "taskiq", specifier = ">=0.12.1" },
     { name = "taskiq-redis", specifier = ">=1.2.2" },

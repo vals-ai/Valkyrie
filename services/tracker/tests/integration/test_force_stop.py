@@ -9,7 +9,7 @@ from sqlmodel import Session, col, select
 from main import app
 from tests.utils import random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
-from tracker.logger import get_logger
+from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import fetch_sandboxes, force_stop_sandboxes, process_benchmark

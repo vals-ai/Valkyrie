@@ -2,7 +2,7 @@
 set -e
 
 # Only run migrations when starting the API server, not the worker
-if echo "$@" | grep -q "uvicorn"; then
+if echo "$@" | grep -q "tracker.serve"; then
     echo "Running database migrations..."
     uv run --no-sync alembic upgrade head
 
