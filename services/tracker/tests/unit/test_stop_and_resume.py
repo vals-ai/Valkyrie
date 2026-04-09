@@ -16,6 +16,7 @@ from tracker.utils import (
     TaskMonitor,
     TrackedTask,
     TrackedTaskStatus,
+    force_stop_sandboxes,
     initiate_stop_benchmark,
     process_benchmark,
     reset_to_in_progress_status,
@@ -232,3 +233,58 @@ class TestStopAndResume:
         cancel_mock.assert_called_once()
         assert monitor._task_tracking == {}
         tracked_task._coro.close()
+
+    async def test_force_stop_edge_case(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        """
+        Reproduces the bug where force stop is called after the worker has already
+        finished processing all tasks. The benchmark gets set to STOPPING but nothing
+        transitions it to STOPPED because the worker's process_benchmark has already exited.
+
+        Test Case:
+        - All tasks are in a finished state
+        - Benchmark status is set to stopping
+        - Force stopping results in the benchmark status being STOPPED
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # All tasks are already in a finished state
+        tasks = [
+            Task(task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(task_id="task_2", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+            Task(task_id="task_3", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+        ]
+        database_session.add_all(tasks)
+        database_session.commit()
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+
+        # Set benchmark status to STOPPING
+        await initiate_stop_benchmark(benchmark_row, database_session, force=True)
+        assert benchmark_row.status == BenchmarkStatus.STOPPING
+
+        # Mock daytona client since its not required
+        mock_daytona = AsyncMock()
+        mock_daytona.list = AsyncMock(return_value=AsyncMock(items=[], total_pages=0, page=1))
+        monkeypatch.setattr(
+            Benchmark,
+            "benchmark_service",
+            lambda *_args, **_kwargs: Mock(daytona_client=mock_daytona),  # type: ignore
+        )
+
+        # Force stopping the sandboxes results in the benchmark row being stopped
+        await force_stop_sandboxes(
+            benchmark_row, database_session, harness_config.daytona_secret_name, harness_config.aws
+        )
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.STOPPED

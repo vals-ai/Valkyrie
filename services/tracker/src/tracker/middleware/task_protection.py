@@ -10,6 +10,8 @@ import asyncio
 import logging
 import os
 
+from typing import Any
+
 import httpx
 from taskiq import TaskiqMessage, TaskiqMiddleware, TaskiqResult
 
@@ -59,13 +61,13 @@ class TaskProtectionMiddleware(TaskiqMiddleware):
                 await _set_task_protection(enabled=True)
         return message
 
-    async def post_execute(self, message: TaskiqMessage, result: TaskiqResult) -> None:
+    async def post_execute(self, message: TaskiqMessage, result: TaskiqResult[Any]) -> None:
         await self._release()
 
     async def on_error(
         self,
         message: TaskiqMessage,
-        result: TaskiqResult,
+        result: TaskiqResult[Any],
         exception: BaseException,
     ) -> None:
         await self._release()

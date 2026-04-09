@@ -1,5 +1,6 @@
 import os
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
@@ -124,9 +125,21 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
     monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
     monkeypatch.setattr("tracker.utils.cloudwatch_stream", _mock_cloudwatch_stream)
+    monkeypatch.setattr("tracker.utils.reset_cloudwatch_stream", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("tracker.utils.upload_final_view", _mock_upload_final_view)
     monkeypatch.setattr("tracker.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
     monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)
+
+
+@pytest.fixture(autouse=True)
+def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mocks sandbox operations so unit tests never run real sandbox commands"""
+
+    async def _noop(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
+    monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _noop)
+    monkeypatch.setattr("tracker.utils.run_agent", _noop)
 
 
 @pytest.fixture(autouse=True)
@@ -134,4 +147,7 @@ def mock_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_kiq(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    monkeypatch.setattr("main.process_benchmark.kiq", _mock_kiq)
+    mock_kicker = MagicMock()
+    mock_kicker.return_value.with_labels.return_value.kiq = _mock_kiq
+
+    monkeypatch.setattr("main.process_benchmark.kicker", mock_kicker)

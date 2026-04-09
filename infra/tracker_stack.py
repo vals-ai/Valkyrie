@@ -25,7 +25,6 @@ from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
-    NAMESPACE,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
@@ -81,8 +80,8 @@ class TrackerStack(Stack):
         # Shared environment variables
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
-            "BENCHMARK_SERVICE_NAMESPACE": NAMESPACE,
             "AWS_S3_BUCKET": bucket.bucket_name,
+            "ENVIRONMENT": "production",
         }
 
         # ── RDS ──────────────────────────────────────────────────────────
@@ -149,7 +148,7 @@ class TrackerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "TrackerLogGroup",
-                    retention=aws_logs.RetentionDays.ONE_WEEK,
+                    retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
             ),
@@ -160,7 +159,7 @@ class TrackerStack(Stack):
                 "REDIS_URL": redis_url,
             },
             secrets=db_secrets,
-            command=["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"],
+            command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(
                 command=["CMD-SHELL", f"curl -f http://localhost:{TRACKER_PORT}/health || exit 1"],
                 interval=Duration.seconds(CONTAINER_HEALTH_INTERVAL_SECONDS),

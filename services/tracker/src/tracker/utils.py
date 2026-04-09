@@ -32,7 +32,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
-from tracker.logger import get_logger
+from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
@@ -295,6 +295,8 @@ async def process_task(
     NOTE: When we close the sandbox the agent process will be killed and we will instantly go to evaluating,
     the evaluation will fail since the instance no longer exists. We handle this inside of the exception caught.
     """
+    task_id_var.set(task_id)
+
     with Session(bind=engine) as task_session:
         benchmark_row = fetch_benchmark_row(benchmark_id, task_session)
         task_row = task_session.merge(task_row)
@@ -377,7 +379,7 @@ async def process_task(
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
                 # Run the agent inside of the sandbox
-                await run_agent(
+                agent_timed_out = await run_agent(
                     sandbox,
                     start_benchmark_request.contract,
                     task_data.problem_path,
@@ -406,8 +408,9 @@ async def process_task(
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
+                # Flag the agent timed out when trying to complete the task (expected)
                 evaluation_result_row = EvaluationResult(
-                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result
+                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_timed_out=agent_timed_out
                 )
 
                 with Session(bind=engine) as task_session:
@@ -760,6 +763,8 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session) -> dict[str, 
     evaluation_results: dict[str, dict[str, Any]] = {}
     for evaluation_result, task_id in results:
         result_data = evaluation_result.result
+        # NOTE: We append this because its important for the user to know
+        result_data["agent_timed_out"] = evaluation_result.agent_timed_out
         evaluation_results[task_id] = result_data
 
     return evaluation_results
@@ -970,6 +975,19 @@ async def force_stop_sandboxes(
         f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
     )
 
+    # If all tasks are already in a stopped state, we need to update the final status here since the worker has exited
+    finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
+    tasks_still_running: int = session.exec(
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.status).notin_(finished_statuses))
+    ).one()
+
+    if not tasks_still_running:
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        session.add(benchmark_row)
+        session.commit()
+
     if error_message:
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
 
@@ -1144,6 +1162,8 @@ def create_final_view(benchmark_row: Benchmark, session: Session) -> FinalViewRe
         error_message=benchmark_row.error_message,
         benchmark_id=benchmark_row.id,
         benchmark_arguments=benchmark_row.arguments,
+        started_at=benchmark_row.started_at,
+        finished_at=benchmark_row.finished_at,
         tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
