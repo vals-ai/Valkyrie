@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, create_model, field_validator
 
 
-class Defaults(Enum, str):
+class Defaults(str, Enum):
     """Values auto injected into users run cmd if specified"""
 
     PROBLEM_STATEMENT_PATH = "problem_statement_path"
