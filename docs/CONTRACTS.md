@@ -31,17 +31,23 @@ provided:
   task_id:
     type: str
     required: false
+    description: "Normally human readable id associated with a task inside of a benchmark, e.g., fib_buzz_123"
   problem_statement_path:
     type: str
     required: true
+    description: "Path to the problem statement file"
 
 # Pre-defined parameters. The --model CLI flag is automatically
 # mapped here. Use `required: true` to enforce that users pass --model.
+# If choices is removed the model can be any string passed in
 defaults:
   model:
     type: str
     required: false
     description: "Model key (e.g. openai/gpt-4o)"
+    choices:
+      - openai/gpt-4o
+      - anthropic/claude-sonnet-4-20250514
 
 # Custom parameters passed via -k on the CLI.
 # Defaults are applied when the user doesn't provide a value.
@@ -159,7 +165,7 @@ Each kwarg supports these fields:
 | `required` | yes | Whether the user must provide this value |
 | `default` | no | Default value when the user doesn't provide one |
 | `description` | no | Human-readable description |
-| `choices` | no | List of valid values (metadata only) |
+| `choices` | no | List of valid values (enforced at validation time) |
 
 Kwargs are resolved at parse time:
 - **Defaults** are applied for any kwarg the user doesn't provide

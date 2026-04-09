@@ -67,7 +67,7 @@ class TestValidateKwargs:
             }
         )
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             contract.validate_kwargs(contract.kwargs, {})
 
     def test_required_kwarg_provided(self) -> None:
@@ -100,7 +100,7 @@ class TestValidateKwargs:
             }
         )
 
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValueError):
             contract.validate_kwargs(contract.kwargs, {"temperature": "not_a_float"})
 
     def test_empty_schema_returns_empty(self) -> None:
@@ -135,12 +135,12 @@ class TestValidateKwargs:
 
         assert result == {"temperature": 0.7, "model": "gpt-4o", "verbose": True}
 
-    def test_choices_not_enforced_at_this_layer(self) -> None:
+    def test_choices_enforced(self) -> None:
         """
-        Validates that choices are not enforced during kwargs validation.
+        Validates that an invalid choice raises a ValueError.
 
         Test Cases:
-        - Mode has choices ["fast", "accurate"] but "invalid" is accepted
+        - Mode has choices ["fast", "accurate"] and "invalid" is rejected
         """
         contract = _make_contract(
             kwargs={
@@ -148,9 +148,25 @@ class TestValidateKwargs:
             }
         )
 
-        result = contract.validate_kwargs(contract.kwargs, {"mode": "invalid"})
+        with pytest.raises(ValueError):
+            contract.validate_kwargs(contract.kwargs, {"mode": "invalid"})
 
-        assert result == {"mode": "invalid"}
+    def test_choices_valid(self) -> None:
+        """
+        Validates that a valid choice is accepted.
+
+        Test Cases:
+        - Mode has choices ["fast", "accurate"] and "fast" is accepted
+        """
+        contract = _make_contract(
+            kwargs={
+                "mode": Parameter(type="str", required=False, default="fast", choices=["fast", "accurate"]),
+            }
+        )
+
+        result = contract.validate_kwargs(contract.kwargs, {"mode": "fast"})
+
+        assert result == {"mode": "fast"}
 
 
 class TestFormatRunCmd:
@@ -300,7 +316,7 @@ class TestParseYamlContract:
         """,
         )
 
-        with pytest.raises(ValueError, match="Failed to parse YAML contract"):
+        with pytest.raises(ValueError, match="is required but was not provided"):
             _parse_yaml_contract(path, AgentConfig())
 
     def test_secrets_and_final_output_passed_through(self, tmp_path: Path) -> None:
@@ -411,7 +427,7 @@ class TestParseYamlContract:
         """,
         )
 
-        with pytest.raises(ValueError, match="Failed to parse YAML contract"):
+        with pytest.raises(ValueError, match="is required but was not provided"):
             _parse_yaml_contract(path, AgentConfig())
 
     def test_defaults_merged_with_kwargs(self, tmp_path: Path) -> None:

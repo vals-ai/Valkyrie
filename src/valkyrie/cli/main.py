@@ -13,7 +13,7 @@ from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
 from valkyrie.cli.bundler import get_contract
-from valkyrie.cli.exceptions import BundlerError, TrackerServiceError
+from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.s3_client import (
     download_agent,
     get_contract_from_s3,
@@ -573,7 +573,7 @@ def start(
                 return
 
             format_start_benchmark_response(StartBenchmarkResponse.model_validate(response.json()))
-    except (BundlerError, TrackerServiceError) as e:
+    except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))
 
 

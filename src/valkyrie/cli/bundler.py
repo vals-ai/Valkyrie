@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import BinaryIO, Generator
 
 import yaml
+from pydantic import ValidationError as PydanticValidationError
 from tracker.database.models import AgentContractRequest
 
-from valkyrie.cli.exceptions import BundlerError
+from valkyrie.cli.exceptions import BundlerError, ContractValidationError
 from valkyrie.contract import BaseAgentContract
 from valkyrie.schemas import AgentConfig, AgentContract
 
@@ -112,7 +113,7 @@ def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config:
     except BundlerError:
         raise
     except Exception as e:
-        raise BundlerError(f"Failed to load contract from zip for agent '{agent_name}': {e}") from e
+        raise BundlerError(f"Failed to load contract from zip for agent '{agent_name}':\n{e}") from e
 
 
 def _parse_python_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
@@ -139,7 +140,11 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
 
         contract_dict.pop("provided", None)
 
-        agent_contract = AgentContract(**contract_dict)
+        try:
+            agent_contract = AgentContract(**contract_dict)
+        except PydanticValidationError as e:
+            contract_name = "/".join(contract_path.parts[-2:])
+            raise ContractValidationError(e, context=f"Invalid contract `{contract_name}`") from e
 
         all_schema = {**agent_contract.defaults, **agent_contract.kwargs}
 
@@ -157,8 +162,10 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
             final_output=str(agent_contract.final_output) if agent_contract.final_output is not None else None,
             secrets=agent_contract.secrets,
         )
+    except ContractValidationError:
+        raise
     except Exception as e:
-        raise ValueError(f"Failed to parse YAML contract from `{contract_path}`: {e}") from e
+        raise ValueError(f"Failed to parse YAML contract from `{'/'.join(contract_path.parts[-2:])}`:\n{e}") from e
 
 
 def get_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
@@ -172,6 +179,7 @@ def get_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContrac
                 raise ValueError(
                     f"Unsupported contract format: `{contract_path.suffix}`. Expected '.py', '.yaml', or '.yml'"
                 )
-
+    except ValueError:
+        raise
     except Exception as e:
         raise BundlerError(f"Failed to get contract from `{contract_path}`: {e}") from e

@@ -2,7 +2,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, create_model, field_validator
+from pydantic import BaseModel, ValidationError, create_model, field_validator
+
+from valkyrie.cli.exceptions import ContractValidationError
 
 
 class Defaults(str, Enum):
@@ -67,14 +69,13 @@ class Parameter(BaseModel):
 
     choices: list[str] | None = None
     """
-    A list of valid choices for the parameter
+    A list of valid choices for the parameter. When provided, the value is
+    validated as a Literal type — any value not in the list will be rejected.
     ```yaml
     mode:
       type: str
       choices: [fast, accurate]
-      ....
     ```
-
     """
 
     description: str | None = None
@@ -194,11 +195,18 @@ class AgentContract(BaseModel):
 
         fields: dict[Any, Any] = {}
         for name, param in schema.items():
-            python_type = type_map[param.type]
+            if param.choices:
+                python_type = Literal[tuple(param.choices)]  # type: ignore[valid-type]
+            else:
+                python_type = type_map[param.type]
             default = param.default if not param.required else ...
             fields[name] = (python_type, default)
 
         DynamicModel = create_model("KwargsModel", **fields)
-        validated = DynamicModel(**values)
+
+        try:
+            validated = DynamicModel(**values)
+        except ValidationError as e:
+            raise ContractValidationError(e) from e
 
         return validated.model_dump(exclude_none=True)
