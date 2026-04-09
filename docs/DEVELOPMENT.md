@@ -51,6 +51,29 @@ The CLI reads credentials from `~/.config/valkyrie/valkyrie.yaml`. Run `valkyrie
 valkyrie config init
 ```
 
+### Testing with hosted mode (Descope auth)
+
+To test hosted mode locally with Docker, pass the auth env vars:
+
+```bash
+AUTH_REQUIRED=true DESCOPE_PROJECT_ID=<your-project-id> make tracker-service
+```
+
+Then test with curl:
+
+```bash
+# /init — create org with your Descope access key
+curl -X POST http://localhost:8000/init -H "X-Api-Key: <your-key>"
+
+# Authenticated request
+curl http://localhost:8000/fetch-benchmarks -H "X-Api-Key: <your-key>"
+
+# Without a key — should return 401
+curl http://localhost:8000/fetch-benchmarks
+```
+
+Without the env vars, the service runs in self-hosted mode (no auth, default org).
+
 ## Code Quality
 
 ```bash

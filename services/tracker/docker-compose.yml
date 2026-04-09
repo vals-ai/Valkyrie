@@ -69,6 +69,8 @@ services:
       - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
       - DB_HOST=postgres
       - DB_PORT=5432
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
     depends_on:
       postgres:
         condition: service_healthy
