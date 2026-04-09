@@ -6,11 +6,13 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from sqlmodel import Session
 
-from tracker.database.models import Benchmark, Task, TaskStatus
+from tests.conftest import TEST_ORG_ID
+from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
 
 
 class TestTracker:
+    _test_org = Org(id=TEST_ORG_ID, name="default")
     async def _mock_coro(self, task_id: str) -> dict[str, dict[str, Any] | None]:
         """Blank coro that returns the same format as process_task method"""
         await asyncio.sleep(5)
@@ -52,16 +54,16 @@ class TestTracker:
 
         tasks_to_track: list[str] = ["task_id_1"]
         for task_id in tasks_to_track:
-            task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
+            task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id)
             database_session.add(task_row)
             database_session.commit()
 
         task_tracking: dict[str, TrackedTask] = {
-            task_id: TrackedTask(coro=self._mock_coro(task_id=task_id)) for task_id in tasks_to_track
+            task_id: TrackedTask(coro=self._mock_coro(task_id=task_id), org=self._test_org) for task_id in tasks_to_track
         }
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monitor = TaskMonitor(benchmark_row.id, task_tracking.copy())
+        monitor = TaskMonitor(benchmark_row.id, task_tracking.copy(), org=self._test_org)
 
         # Change task status to running and add a task to the object
         task_tracking["task_id_1"]._status = TrackedTaskStatus.RUNNING  # type: ignore
@@ -119,7 +121,7 @@ class TestTracker:
         mock_task_row_2 = MagicMock(spec=Task)
         mock_task_row_2.task_id = "task_id_2"
 
-        tracked_task = TrackedTask(coro=mock_coro)
+        tracked_task = TrackedTask(coro=mock_coro, org=self._test_org)
 
         # Test case 1. When first created, it is in the waiting state
         assert tracked_task.status == TrackedTaskStatus.WAITING
@@ -127,7 +129,7 @@ class TestTracker:
 
         # Create another task that tracks the status of the first task
         # Allows us to test that the task status changes to running once the semaphore is aquired.
-        tracked_task_2 = TrackedTask(coro=self._validate_task_state_before_run(tracked_task, "task_id_2"))
+        tracked_task_2 = TrackedTask(coro=self._validate_task_state_before_run(tracked_task, "task_id_2"), org=self._test_org)
 
         mock_task_row_2 = MagicMock(spec=Task)
         mock_task_row_2.task_id = "task_id_2"
@@ -153,7 +155,7 @@ class TestTracker:
         mock_task_row_3 = MagicMock(spec=Task)
         mock_task_row_3.task_id = "task_id_3"
 
-        tracked_task = TrackedTask(coro=self._mock_coro(task_id="task_id_3"))
+        tracked_task = TrackedTask(coro=self._mock_coro(task_id="task_id_3"), org=self._test_org)
         semaphore = Semaphore(value=1)
         run_task = asyncio.create_task(tracked_task.run(semaphore, mock_task_row_3))
 
@@ -183,8 +185,8 @@ class TestTracker:
         mock_task_row_5 = MagicMock(spec=Task)
         mock_task_row_5.task_id = "task_id_5"
 
-        running_task = TrackedTask(coro=self._mock_coro(task_id="task_id_4"))
-        waiting_task = TrackedTask(coro=self._mock_coro(task_id="task_id_5"))
+        running_task = TrackedTask(coro=self._mock_coro(task_id="task_id_4"), org=self._test_org)
+        waiting_task = TrackedTask(coro=self._mock_coro(task_id="task_id_5"), org=self._test_org)
 
         semaphore = Semaphore(value=1)
 

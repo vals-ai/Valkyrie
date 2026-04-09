@@ -11,6 +11,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session
 
 from main import app
+from tests.conftest import TEST_ORG_ID
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -144,7 +145,7 @@ class TestFastapiServer:
         database_session.commit()
 
         # Push some task rows that we can use to check the progress of the benchmark
-        task_rows = [Task(task_id=f"task_{i}", benchmark=benchmark_row.id) for i in range(10)]
+        task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id) for i in range(10)]
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -174,6 +175,7 @@ class TestFastapiServer:
 
                 # Create evaluation result rows for finished tasks
                 evaluation_result_row = EvaluationResult(
+                    org_id=TEST_ORG_ID,
                     task=task_row.id,
                     instance_id=str(uuid4()),
                     result={"finished": True},
@@ -239,10 +241,10 @@ class TestFastapiServer:
 
         # Test case 4. Evaluation results are returned as the tasks are being completed
         task_rows = [
-            Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(10)
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(10)
         ]
         evaluation_result_rows = [
-            EvaluationResult(task=task_row.id, instance_id=str(uuid4()), result={"finished": True})
+            EvaluationResult(org_id=TEST_ORG_ID, task=task_row.id, instance_id=str(uuid4()), result={"finished": True})
             for task_row in task_rows
         ]
         database_session.add_all(task_rows)
@@ -271,7 +273,7 @@ class TestFastapiServer:
         database_session.commit()
 
         final_evaluation_row = FinalEvaluation(
-            benchmark=benchmark_row.id, final_score=100, properties={"resolved_tasks": [], "unresolved_tasks": []}
+            org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=100, properties={"resolved_tasks": [], "unresolved_tasks": []}
         )
         database_session.add(final_evaluation_row)
         database_session.commit()
@@ -292,7 +294,7 @@ class TestFastapiServer:
 
         # Add some new tasks with the status stopped
         task_rows = [
-            Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(11, 21)
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(11, 21)
         ]
         database_session.add_all(task_rows)
         database_session.commit()
@@ -310,6 +312,7 @@ class TestFastapiServer:
         error_message = "Error occured during task execution or evaluation"
         task_rows = [
             Task(
+                org_id=TEST_ORG_ID,
                 task_id=f"task_{i}",
                 benchmark=benchmark_row.id,
                 status=TaskStatus.ERROR,
@@ -425,7 +428,7 @@ class TestFastapiServer:
 
         # Create 4 more benchmark rows that have the same data
         benchmark_rows = [
-            Benchmark(id=uuid4(), name="swebench", arguments=example_benchmark_object.arguments) for _ in range(4)
+            Benchmark(org_id=TEST_ORG_ID, id=uuid4(), name="swebench", arguments=example_benchmark_object.arguments) for _ in range(4)
         ]
         for benchmark_row in benchmark_rows:
             database_session.add(benchmark_row)
@@ -438,6 +441,7 @@ class TestFastapiServer:
             run_cmd="echo running agent...",
         )
         unique_benchmark = Benchmark(
+            org_id=TEST_ORG_ID,
             name="terminal_bench",
             arguments=BenchmarkArguments(contract=unique_contract, concurrency=5, task_ids=None, slice_str=None),
         )

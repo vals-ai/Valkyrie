@@ -27,9 +27,11 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     FinalEvaluation,
+    Org,
     Task,
     TaskStatus,
 )
+from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger, task_id_var
@@ -90,9 +92,10 @@ def create_benchmark_service_client(
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
-def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest) -> Benchmark:
+def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, org: Org) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     return Benchmark(
+        org_id=org.id,
         name=request.benchmark_name,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
@@ -118,9 +121,11 @@ class TrackedTask:
     _coro: Coroutine[Any, Any, Any]
     _status: str
     _task: asyncio.Task[Any] | None
+    _org: Org
 
-    def __init__(self, coro: Coroutine[Any, Any, Any]):
+    def __init__(self, coro: Coroutine[Any, Any, Any], org: Org):
         self._coro = coro
+        self._org = org
         self._status = TrackedTaskStatus.WAITING
         self._task = None
 
@@ -153,7 +158,7 @@ class TrackedTask:
             error_message = f"Task error was not handled: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_message)
             with Session(bind=engine) as session:
-                task = fetch_task_row(task_row.id, session)
+                task = fetch_task_row(task_row.id, session, self._org)
                 commit_task_error(task, session, error_message)
 
             return {task_row.task_id: None}
@@ -165,19 +170,25 @@ class TaskMonitor:
     _benchmark_id: UUID
     _task_tracking: dict[str, TrackedTask]
     _notifier: SlackNotifier | None
+    _org: Org
     _TRACK_INTERVAL: int = 2
 
     def __init__(
-        self, benchmark_id: UUID, task_tracking: dict[str, TrackedTask], notifier: SlackNotifier | None = None
+        self, benchmark_id: UUID, task_tracking: dict[str, TrackedTask], org: Org, notifier: SlackNotifier | None = None
     ):
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
+        self._org = org
         self._notifier = notifier
 
     def _fetch_task_row(self, task_id: str) -> Task:
         with Session(bind=engine) as session:
             task_row = session.exec(
-                select(Task).where(Task.task_id == task_id).where(Task.benchmark == self._benchmark_id).limit(1)
+                select(Task)
+                .where(Task.task_id == task_id)
+                .where(Task.benchmark == self._benchmark_id)
+                .where(Task.org_id == self._org.id)
+                .limit(1)
             ).first()
 
             if not task_row:
@@ -194,7 +205,7 @@ class TaskMonitor:
 
         """
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session)
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
             task_row = self._fetch_task_row(task_id)
 
             # If task has been stopped or benchmark has errored we need to exit
@@ -209,8 +220,8 @@ class TaskMonitor:
             return
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session)
-            notification_context = NotificationContext.from_benchmark(benchmark_row, session)
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+            notification_context = NotificationContext.from_benchmark(benchmark_row, session, self._org)
             await self._notifier.check_and_notify(notification_context)
 
     async def track_tasks(self) -> None:
@@ -240,12 +251,13 @@ class TaskMonitor:
             await asyncio.sleep(self._TRACK_INTERVAL)
 
 
-def fetch_benchmark_row(benchmark_id: UUID, session: Session) -> Benchmark:
-    """Util to clean up pattern to fetch benchmark row"""
+def fetch_benchmark_row(benchmark_id: UUID, session: Session, org: Org) -> Benchmark:
+    """Fetch benchmark row with org validation. Raises domain errors (not HTTPException) for use in background tasks."""
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
         raise ValueError(f"Benchmark with id {benchmark_id} not found")
-
+    if benchmark_row.org_id != org.id:
+        raise ValueError(f"Benchmark {benchmark_id} does not belong to org {org.id}")
     return benchmark_row
 
 
@@ -255,11 +267,13 @@ def handle_early_exit(task_row: Task, task_session: Session) -> None:
     task_session.commit()
 
 
-def fetch_task_row(task_id: UUID, session: Session) -> Task:
+def fetch_task_row(task_id: UUID, session: Session, org: Org) -> Task:
+    """Fetch task row with org validation. Raises domain errors (not HTTPException) for use in background tasks."""
     task_row = session.get(Task, task_id)
     if not task_row:
         raise TrackerServiceError(f"Task with id {task_id} not found")
-
+    if task_row.org_id != org.id:
+        raise TrackerServiceError(f"Task {task_id} does not belong to org {org.id}")
     return task_row
 
 
@@ -288,6 +302,7 @@ async def process_task(
     benchmark_id: UUID,
     task_id: str,
     harness_config: HarnessConfig,
+    org: Org,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -298,7 +313,7 @@ async def process_task(
     task_id_var.set(task_id)
 
     with Session(bind=engine) as task_session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, task_session)
+        benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
         task_row = task_session.merge(task_row)
 
         # If user has requested to stop the benchmark we exit before we process the task
@@ -343,7 +358,7 @@ async def process_task(
         }
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session)
+            task = fetch_task_row(task_row.id, task_session, org)
             task.status = TaskStatus.BUILDING
             task_session.commit()
 
@@ -357,7 +372,7 @@ async def process_task(
         ) as sandbox:
             try:
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session)
+                    task = fetch_task_row(task_row.id, task_session, org)
                     task.status = TaskStatus.IN_PROGRESS
                     task_session.commit()
 
@@ -393,7 +408,7 @@ async def process_task(
                 )
 
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session)
+                    task = fetch_task_row(task_row.id, task_session, org)
                     task.status = TaskStatus.EVALUATING
                     task_session.commit()
 
@@ -410,11 +425,11 @@ async def process_task(
                 # Save the evaluation result to the database with the task row
                 # Flag the agent timed out when trying to complete the task (expected)
                 evaluation_result_row = EvaluationResult(
-                    task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_timed_out=agent_timed_out
+                    org_id=org.id, task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_timed_out=agent_timed_out
                 )
 
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session)
+                    task = fetch_task_row(task_row.id, task_session, org)
                     task_session.add(evaluation_result_row)
                     task.status = TaskStatus.FINISHED
                     task_session.commit()
@@ -422,7 +437,7 @@ async def process_task(
                     return {task_id: evaluation_result_row.result}
             except Exception as e:
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session)
+                    task = fetch_task_row(task_row.id, task_session, org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
@@ -435,7 +450,7 @@ async def process_task(
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session)
+            task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(task, task_session, error_message)
 
         return {task_id: None}
@@ -444,7 +459,7 @@ async def process_task(
         buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
 
-def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> None:
+def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
     """
     Delegates status depending on if any tasks have been stopped.
     """
@@ -453,6 +468,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> No
     tasks_not_finished: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.org_id) == org.id)
         .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS]))
     ).one()
 
@@ -465,6 +481,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> No
     tasks_stopped: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.org_id) == org.id)
         .where(col(Task.status) == TaskStatus.STOPPED)
     ).one()
 
@@ -481,7 +498,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session) -> No
 
 
 def create_task_rows(
-    verified_task_ids: list[str], benchmark_row: Benchmark, session: Session
+    verified_task_ids: list[str], benchmark_row: Benchmark, session: Session, org: Org
 ) -> Sequence[tuple[str, Task]]:
     """
     Create task_rows that do not already exist in the database for the benchmark row.
@@ -498,7 +515,7 @@ def create_task_rows(
     task_ids_to_create = [task_id for task_id in verified_task_ids if task_id not in existing_task_ids]
 
     for task_id in task_ids_to_create:
-        task_row = Task(task_id=task_id, benchmark=benchmark_row.id)
+        task_row = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id)
         session.add(task_row)
 
     session.commit()
@@ -513,7 +530,7 @@ def create_task_rows(
 
 
 async def fetch_missing_tasks(
-    session: Session, benchmark_row: Benchmark, evaluation_results: dict[str, dict[str, Any] | None]
+    session: Session, benchmark_row: Benchmark, evaluation_results: dict[str, dict[str, Any] | None], org: Org
 ):
     remaining_task_results_query = cast(
         Sequence[tuple[str, dict[str, Any]]],
@@ -521,6 +538,7 @@ async def fetch_missing_tasks(
             select(Task.task_id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
             .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task))
             .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.org_id) == org.id)
             .where(col(Task.task_id).notin_(list(evaluation_results.keys())))
         ).all(),
     )
@@ -552,6 +570,13 @@ async def process_benchmark(
             intervals=start_benchmark_request.webhook_intervals,
         )
 
+    # Resolve the org from the benchmark row (no org check on first fetch since the benchmark was just created by our system)
+    with Session(bind=engine) as session:
+        benchmark_row = session.get(Benchmark, benchmark_id)
+        if not benchmark_row:
+            raise TrackerServiceError(f"Benchmark with id {benchmark_id} not found")
+        org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
+
     try:
         # Create benchmark cloudwatch log group
         create_benchmark_group(
@@ -560,8 +585,8 @@ async def process_benchmark(
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session)
-            task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session)
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session, org)
 
         task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
@@ -574,14 +599,15 @@ async def process_benchmark(
         tracked_tasks: dict[str, TrackedTask] = {
             task_id: TrackedTask(
                 process_task(
-                    task_row, start_benchmark_request, benchmark_service, benchmark_id, task_id, harness_config
-                )
+                    task_row, start_benchmark_request, benchmark_service, benchmark_id, task_id, harness_config, org
+                ),
+                org,
             )
             for task_id, task_row in task_rows
         }
 
         # Start the monitor to track the state the tasks are in and cancel them when no longer valid
-        monitor = TaskMonitor(benchmark_id, tracked_tasks, notifier=notifier)
+        monitor = TaskMonitor(benchmark_id, tracked_tasks, org, notifier=notifier)
         monitor_task = asyncio.create_task(monitor.track_tasks())
 
         semaphore = Semaphore(start_benchmark_request.concurrency)
@@ -602,9 +628,9 @@ async def process_benchmark(
             }
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session)
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             # Fetch remaining tasks (in case this benchmark was resumed)
-            remaining_task_results = await fetch_missing_tasks(session, benchmark_row, evaluation_results)
+            remaining_task_results = await fetch_missing_tasks(session, benchmark_row, evaluation_results, org)
 
         evaluation_results.update(remaining_task_results)
 
@@ -618,13 +644,14 @@ async def process_benchmark(
 
         # Create the final evaluation row and add it to the database
         final_evaluation_row = FinalEvaluation(
+            org_id=org.id,
             benchmark=benchmark_id,
             final_score=final_score_response.final_score,
             properties=final_score_response.metadata,
         )
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session)
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             # Delete existing final evaluation if re-running
             if benchmark_row.final_evaluation:
                 session.delete(benchmark_row.final_evaluation)
@@ -633,10 +660,10 @@ async def process_benchmark(
             session.add(final_evaluation_row)
             session.commit()
 
-            set_benchmark_final_status(benchmark_row, session)
+            set_benchmark_final_status(benchmark_row, session, org)
 
             # Push the final benchmark view to the bucket
-            final_view: FinalViewResponse = create_final_view(benchmark_row, session)
+            final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
 
             upload_final_view(benchmark_row, final_view, harness_config)
 
@@ -652,19 +679,19 @@ async def process_benchmark(
 
     except Exception as e:
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session)
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(benchmark_row, session, error_message)
     finally:
         with Session(bind=engine) as session:
             # Handle any misalignments between the benchmark status and tasks
-            catch_errors_during_cleanup(benchmark_id, session)
+            catch_errors_during_cleanup(benchmark_id, session, org)
 
         if notifier:
             try:
                 with Session(bind=engine) as session:
-                    benchmark_row = fetch_benchmark_row(benchmark_id, session)
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, session)
+                    benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                    notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
                     final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
                     await notifier.send_terminal_notification(
                         notification_context,
@@ -687,10 +714,12 @@ class TaskCounts(NamedTuple):
 class BenchmarkContext:
     _benchmark_row: Benchmark
     _session: Session
+    _org: Org
 
-    def __init__(self, benchmark_row: Benchmark, session: Session):
+    def __init__(self, benchmark_row: Benchmark, session: Session, org: Org):
         self._benchmark_row = benchmark_row
         self._session = session
+        self._org = org
 
     @property
     def _status(self) -> BenchmarkStatus:
@@ -708,6 +737,7 @@ class BenchmarkContext:
             )
             .select_from(Task)
             .where(Task.benchmark == self._benchmark_row.id)
+            .where(Task.org_id == self._org.id)
         )
 
         result = self._session.exec(statement).one()
@@ -727,6 +757,7 @@ class BenchmarkContext:
             select(Task.status, func.count(col(Task.id)))
             .select_from(Task)
             .where(Task.benchmark == self._benchmark_row.id)
+            .where(Task.org_id == self._org.id)
             .group_by(Task.status)
             .having(func.count(col(Task.id)) > 0)  # Exclude all with count of 0
         )
@@ -751,12 +782,13 @@ class BenchmarkContext:
         )
 
 
-def fetch_evaluation_results(benchmark_id: UUID, session: Session) -> dict[str, dict[str, Any]]:
+def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID) -> dict[str, dict[str, Any]]:
     """Select all evaluation results for a given benchmark"""
     statement = (
         select(EvaluationResult, Task.task_id)
         .join(Task, col(EvaluationResult.task) == col(Task.id))
         .where(Task.benchmark == benchmark_id)
+        .where(Task.org_id == org_id)
     )
     results = session.exec(statement).all()
 
@@ -777,7 +809,7 @@ def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_mes
     session.commit()
 
 
-def catch_errors_during_cleanup(benchmark_id: UUID, session: Session) -> None:
+def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) -> None:
     """
     On task exit we must clean up any edge cases so that it does not affect the users experience.
     There are sometimes fishy things that may occur with the sandboxes that if not dealt with could become an issue.
@@ -787,7 +819,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session) -> None:
     """
     terminal_statuses = [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]
 
-    benchmark_row = fetch_benchmark_row(benchmark_id, session)
+    benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
     if benchmark_row.status in terminal_statuses:
         return
 
@@ -796,6 +828,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session) -> None:
     session.exec(
         update(Task)
         .where(col(Task.benchmark) == benchmark_id)
+        .where(col(Task.org_id) == org.id)
         .where(col(Task.status).notin_(task_terminal_statuses))
         .values(status=TaskStatus.ERROR, error_message="Undetected exit of task")
     )
@@ -817,7 +850,7 @@ def commit_task_error(task_row: Task, session: Session, error_message: str) -> N
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, harness_config: HarnessConfig
+    benchmark_id: UUID, session: Session, harness_config: HarnessConfig, org: Org
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -839,12 +872,12 @@ async def stream_benchmark_results(
         while True:
             with Session(bind=session.bind) as fresh_session:
                 fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
-                if not fresh_benchmark:
+                if not fresh_benchmark or fresh_benchmark.org_id != org.id:
                     yield f"{EVENT_ERROR} {json.dumps({'error': 'Benchmark not found'})}\n\n"
                     break
 
                 fresh_session.refresh(fresh_benchmark)
-                benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session)
+                benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org)
 
                 response_data = FetchBenchmarkResponse(
                     benchmark_name=fresh_benchmark.name,
@@ -868,7 +901,7 @@ async def stream_benchmark_results(
         yield DISCONNECT
 
 
-async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, force: bool) -> None:
+async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, force: bool, org: Org) -> None:
     """
     Sets the flags to initiate the stopping process for a benchmark.
 
@@ -882,6 +915,7 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
         result = session.exec(
             update(Task)
             .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.org_id) == org.id)
             .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING]))
             .values(status=TaskStatus.STOPPED)
         )
@@ -943,7 +977,7 @@ async def sandbox_generator(
 
 
 async def force_stop_sandboxes(
-    benchmark_row: Benchmark, session: Session, daytona_secret_name: str, aws: AWSCredentials
+    benchmark_row: Benchmark, session: Session, daytona_secret_name: str, aws: AWSCredentials, org: Org
 ) -> None:
     """
     Stops and deletes all sandboxes which are in progress or evaluating.
@@ -958,6 +992,7 @@ async def force_stop_sandboxes(
     session.exec(
         update(Task)
         .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.org_id) == org.id)
         .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
         .values(status=TaskStatus.STOPPED)
     )
@@ -980,6 +1015,7 @@ async def force_stop_sandboxes(
     tasks_still_running: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.org_id) == org.id)
         .where(col(Task.status).notin_(finished_statuses))
     ).one()
 
@@ -998,6 +1034,7 @@ async def reset_to_in_progress_status(
     benchmark_service: BenchmarkServiceClient,
     retry: bool,
     rerun_task_ids: list[str],
+    org: Org,
 ) -> list[str]:
     """
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
@@ -1017,6 +1054,7 @@ async def reset_to_in_progress_status(
 
         filter_query = [
             col(Task.benchmark) == benchmark_row.id,
+            col(Task.org_id) == org.id,
             or_(
                 col(Task.status).in_(retry_statuses),
                 col(Task.task_id).in_(rerun_task_ids),
@@ -1064,7 +1102,11 @@ async def reset_to_in_progress_status(
         )
 
         # Delete all evaluation results for the tasks (unlikely they exist)
-        session.exec(delete(EvaluationResult).where(col(EvaluationResult.task).in_(list(task_mapping.keys()))))
+        session.exec(
+            delete(EvaluationResult)
+            .where(col(EvaluationResult.task).in_(list(task_mapping.keys())))
+            .where(col(EvaluationResult.org_id) == org.id)
+        )
 
         session.commit()
 
@@ -1075,7 +1117,9 @@ async def reset_to_in_progress_status(
         raise TrackerServiceError(f"Unexpected error resuming benchmark {benchmark_row.id}: {str(e)}") from e
 
 
-def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Session) -> tuple[Sequence[Benchmark], int]:
+def fetch_filtered_benchmark_rows(
+    request: FetchBenchmarksRequest, session: Session, org: Org
+) -> tuple[Sequence[Benchmark], int]:
     """
     Creates a query to fetch benchmark rows from the database based on the fetch benchmark request.
 
@@ -1087,7 +1131,7 @@ def fetch_filtered_benchmark_rows(request: FetchBenchmarksRequest, session: Sess
         Sequence of benchmark rows and total count of benchmark rows
 
     """
-    query = select(Benchmark)
+    query = scoped_select(Benchmark, org)
 
     arguments_json = type_coerce(col(Benchmark.arguments), JSON)
 
@@ -1148,11 +1192,12 @@ class YieldingWriter(io.RawIOBase):
         return chunk
 
 
-def create_final_view(benchmark_row: Benchmark, session: Session) -> FinalViewResponse:
+def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> FinalViewResponse:
     """Creates final view of a benchmark that includes metadata about evaluations and score"""
     tasks_stopped: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.org_id) == org.id)
         .where(col(Task.status) == TaskStatus.STOPPED)
     ).one()
 

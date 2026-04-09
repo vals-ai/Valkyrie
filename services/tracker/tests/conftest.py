@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from sqlite3 import Connection, Cursor
 from typing import Any, cast
+from uuid import UUID
 
 import pytest
 from dotenv import load_dotenv
@@ -9,7 +10,10 @@ from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
 from tracker.database.models import *  # noqa: F403
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, DEFAULT_ORG_NAME, Org
+
+# Stable UUID for the default org in tests — matches the org seeded in database_session
+TEST_ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 _ = load_dotenv()
 
@@ -29,6 +33,9 @@ def database_session() -> Generator[Session, Any, None]:
     SQLModel.metadata.create_all(test_engine)
 
     with Session(test_engine, expire_on_commit=False) as session:
+        # Seed the default org so foreign keys resolve
+        session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
+        session.commit()
         yield session
 
     SQLModel.metadata.drop_all(test_engine)
@@ -46,6 +53,7 @@ def contract() -> AgentContractRequest:
 @pytest.fixture
 def example_benchmark_object(contract: AgentContractRequest) -> Benchmark:
     return Benchmark(
+        org_id=TEST_ORG_ID,
         name="swebench",
         arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=None, slice_str=None),
     )

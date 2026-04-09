@@ -36,6 +36,14 @@ if TYPE_CHECKING:
     )
 
 
+DEFAULT_ORG_NAME = "default"
+
+
+class Org(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    name: str = Field(unique=True, index=True)
+
+
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
     BUILDING = "BUILDING"
@@ -76,6 +84,7 @@ class BenchmarkArguments(BaseModel):
 
 class FinalEvaluation(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    org_id: UUID = Field(foreign_key="org.id")
     benchmark: UUID = Field(foreign_key="benchmark.id")
     final_score: float = Field(nullable=False)
     # NOTE: metadata was reserved by alchemy
@@ -88,7 +97,7 @@ class FinalEvaluation(SQLModel, table=True):
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
         from tracker.utils import fetch_evaluation_results
 
-        return fetch_evaluation_results(self.benchmark, session)
+        return fetch_evaluation_results(self.benchmark, session, self.org_id)
 
 
 class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
@@ -126,6 +135,7 @@ class Benchmark(SQLModel, table=True):
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    org_id: UUID = Field(foreign_key="org.id")
     name: str
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
@@ -147,12 +157,13 @@ class Benchmark(SQLModel, table=True):
     def fetch_evaluation_results(self, session: Session) -> dict[str, dict[str, Any]]:
         from tracker.utils import fetch_evaluation_results
 
-        return fetch_evaluation_results(self.id, session)
+        return fetch_evaluation_results(self.id, session, self.org_id)
 
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
         statement = (
             select(Task.task_id, Task.error_message)
             .where(Task.benchmark == self.id)
+            .where(Task.org_id == self.org_id)
             .where(Task.status == TaskStatus.ERROR)
         )
         tasks = session.exec(statement).all()
@@ -210,12 +221,15 @@ class Benchmark(SQLModel, table=True):
         from tracker.types import BenchmarkTableRow
 
         total_tasks: int = session.exec(
-            select(func.count(col(Task.task_id))).where(col(Task.benchmark) == self.id)
+            select(func.count(col(Task.task_id)))
+            .where(col(Task.benchmark) == self.id)
+            .where(col(Task.org_id) == self.org_id)
         ).one()
 
         finished_tasks: int = session.exec(
             select(func.count(col(Task.task_id)))
             .where(col(Task.benchmark) == self.id)
+            .where(col(Task.org_id) == self.org_id)
             .where(col(Task.status).in_([TaskStatus.FINISHED, TaskStatus.ERROR]))
         ).one()
 
@@ -266,6 +280,7 @@ class Task(SQLModel, table=True):
     )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    org_id: UUID = Field(foreign_key="org.id")
     task_id: str
     status: TaskStatus = Field(default=TaskStatus.PENDING)
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
@@ -305,6 +320,7 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
 
 class EvaluationResult(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
     instance_id: str = Field(unique=True)
     agent_timed_out: bool = Field(default=False)

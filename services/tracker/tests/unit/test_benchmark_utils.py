@@ -8,7 +8,8 @@ from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 
 from tests.unit.test_fastapi_server import client
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
+from tests.conftest import TEST_ORG_ID
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
@@ -20,6 +21,8 @@ from tracker.utils import (
 
 
 class TestBenchmarkUtils:
+    _test_org = Org(id=TEST_ORG_ID, name="default")
+
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
     ) -> FinalScoreResponse:
@@ -44,10 +47,10 @@ class TestBenchmarkUtils:
         # create tasks, some which are pending and some which are in progress
         initial_task_rows: list[Task] = []
         for i in range(5):
-            initial_task_rows.append(Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING))
+            initial_task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING))
         for i in range(5, 10):
             initial_task_rows.append(
-                Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
+                Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
             )
         database_session.add_all(initial_task_rows)
         database_session.commit()
@@ -58,7 +61,7 @@ class TestBenchmarkUtils:
         assert response.json() == {"status": "success"}
 
         # Check that the benchmark status is now "stopping"
-        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session)
+        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
         # Task status in pending state should be set to "stopped" / otherwise known as no pending tasks left
@@ -127,9 +130,9 @@ class TestBenchmarkUtils:
         # Add some tasks, non-pending (stopped and finished tasks only)
         task_rows: list[Task] = []
         for i in range(5):
-            task_rows.append(Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED))
+            task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED))
         for i in range(5, 10):
-            task_rows.append(Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED))
+            task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED))
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -152,7 +155,7 @@ class TestBenchmarkUtils:
         assert len(task_ids) == 5
 
         # Validate the benchmark is now in progress state
-        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session)
+        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
 
         # Reset benchmark row to stopped state
@@ -219,7 +222,7 @@ class TestBenchmarkUtils:
 
         # All of them finished
         task_rows = [
-            Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(5)
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(5)
         ]
         database_session.add_all(task_rows)
         database_session.commit()
@@ -238,7 +241,7 @@ class TestBenchmarkUtils:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request)
+        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_org)
 
         recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
         assert recreated_start_benchmark_request == original_start_benchmark_request
@@ -299,7 +302,7 @@ class TestBenchmarkUtils:
         verified_task_ids = [f"task_{i}" for i in range(5)]
 
         # Creates all tasks in pending state
-        task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session)
+        task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session, self._test_org)
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
@@ -308,7 +311,7 @@ class TestBenchmarkUtils:
             assert task_row[0] == verified_task_ids[i]
 
         # Try calling the same method again when the tasks already exist
-        task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session)
+        task_rows = create_task_rows(verified_task_ids, benchmark_row, database_session, self._test_org)
         assert len(task_rows) == len(verified_task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
@@ -334,13 +337,13 @@ class TestBenchmarkUtils:
 
         # Create some pending tasks
         task_ids = [f"task_{i}" for i in range(5)]
-        task_rows = create_task_rows(task_ids, benchmark_row, database_session)
+        task_rows = create_task_rows(task_ids, benchmark_row, database_session, self._test_org)
         assert len(task_rows) == len(task_ids)
         assert all(task_row[1].status == TaskStatus.PENDING for task_row in task_rows)
 
         # Error is raised because tasks are still in the pending state
         with pytest.raises(TrackerServiceError):
-            set_benchmark_final_status(benchmark_row, database_session)
+            set_benchmark_final_status(benchmark_row, database_session, self._test_org)
 
         # Make all tasks in finished state
         # NOTE: Need to manually set the finished_at timestamp because the event listener is not triggered with bulk updates
@@ -352,7 +355,7 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Benchmark status is set to finished
-        set_benchmark_final_status(benchmark_row, database_session)
+        set_benchmark_final_status(benchmark_row, database_session, self._test_org)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.FINISHED
 
@@ -371,6 +374,6 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Benchmark status is set to stopped when stopped tasks exist
-        set_benchmark_final_status(benchmark_row, database_session)
+        set_benchmark_final_status(benchmark_row, database_session, self._test_org)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED

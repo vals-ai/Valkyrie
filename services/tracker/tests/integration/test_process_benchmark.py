@@ -9,12 +9,14 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from tracker.cloudwatch import create_benchmark_group
+from tests.conftest import TEST_ORG_ID
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
     EvaluationResult,
+    Org,
     Task,
     TaskStatus,
 )
@@ -41,7 +43,7 @@ def _create_benchmark(
         task_ids=_TASK_IDS,
         harness_config=harness_config,
     )
-    benchmark = start_benchmark_request_to_benchmark(request)
+    benchmark = start_benchmark_request_to_benchmark(request, Org(id=TEST_ORG_ID, name="default"))
     session.add(benchmark)
     session.commit()
     return benchmark, request
@@ -56,7 +58,7 @@ async def test_process_task(
     """Single task runs through the full pipeline and finishes with an evaluation result."""
     benchmark, request = _create_benchmark(contract, harness_config, database_session, _TASK_IDS=[_TASK_ID])
 
-    task_row = Task(task_id=_TASK_ID, benchmark=benchmark.id)
+    task_row = Task(org_id=TEST_ORG_ID, task_id=_TASK_ID, benchmark=benchmark.id)
     database_session.add(task_row)
     database_session.commit()
 
@@ -65,7 +67,7 @@ async def test_process_task(
         str(benchmark.id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
     )
 
-    await process_task(task_row, request, benchmark_service, benchmark.id, _TASK_ID, harness_config)
+    await process_task(task_row, request, benchmark_service, benchmark.id, _TASK_ID, harness_config, Org(id=TEST_ORG_ID, name="default"))
 
     database_session.refresh(task_row)
     assert task_row.status == TaskStatus.FINISHED
@@ -185,6 +187,7 @@ async def test_concurrent_benchmarks_same_task(
     benchmarks: list[Benchmark] = []
     for _ in range(2):
         benchmark = Benchmark(
+            org_id=TEST_ORG_ID,
             name=_BENCHMARK,
             arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=[_TASK_ID]),
         )

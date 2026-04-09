@@ -13,6 +13,7 @@ from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, inspect, select
 
 from tests.utils import random_task_id
+from tests.conftest import TEST_ORG_ID
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 class TestDatabaseIntegration:
     async def _create_task(self, database_session: Session, task_id: str, benchmark_id: UUID) -> Task:
-        task_row = Task(task_id=task_id, benchmark=benchmark_id)
+        task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_id)
         database_session.add(task_row)
         database_session.flush()
 
@@ -38,7 +39,7 @@ class TestDatabaseIntegration:
         self, database_session: Session, task_row: Task, evaluation_result: dict[str, Any]
     ) -> EvaluationResult:
         evaluation_result_row = EvaluationResult(
-            task=task_row.id, instance_id=str(uuid.uuid4()), result=evaluation_result
+            org_id=TEST_ORG_ID, task=task_row.id, instance_id=str(uuid.uuid4()), result=evaluation_result
         )
         database_session.add(evaluation_result_row)
 
@@ -52,6 +53,7 @@ class TestDatabaseIntegration:
         self, database_session: Session, benchmark_row: Benchmark, final_score_response: FinalScoreResponse
     ) -> FinalEvaluation:
         final_evaluation_row = FinalEvaluation(
+            org_id=TEST_ORG_ID,
             benchmark=benchmark_row.id,
             final_score=final_score_response.final_score,
             properties=final_score_response.metadata,
@@ -102,7 +104,7 @@ class TestDatabaseIntegration:
         assert benchmark_row.finished_at, "Should be auto generated when the status is updated to finished"
 
         # Test the task table
-        task_row = Task(task_id=random_task_id(), benchmark=benchmark_row.id)
+        task_row = Task(org_id=TEST_ORG_ID, task_id=random_task_id(), benchmark=benchmark_row.id)
         database_session.add(task_row)
 
         # When created its in pending status
@@ -116,7 +118,7 @@ class TestDatabaseIntegration:
         assert task_row.finished_at, "Should be auto generated when the status is updated to finished"
 
         # When task status is marked as error, the finished_at timestamp should be set
-        task_row = Task(task_id=random_task_id(), benchmark=benchmark_row.id)
+        task_row = Task(org_id=TEST_ORG_ID, task_id=random_task_id(), benchmark=benchmark_row.id)
         task_row.status = TaskStatus.ERROR
         database_session.add(task_row)
         database_session.flush()

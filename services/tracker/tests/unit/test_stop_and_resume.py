@@ -10,7 +10,8 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Task, TaskStatus
+from tests.conftest import TEST_ORG_ID
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     TaskMonitor,
@@ -27,6 +28,7 @@ client = TestClient(app)
 
 
 class TestStopAndResume:
+    _test_org = Org(id=TEST_ORG_ID, name="default")
     @staticmethod
     async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
         return RetrieveTaskResponse(
@@ -91,7 +93,7 @@ class TestStopAndResume:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -106,17 +108,17 @@ class TestStopAndResume:
         pending_task_ids = task_ids[2:]
 
         for task_id in finished_task_ids:
-            task_row = Task(task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+            task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
             database_session.add(task_row)
 
         for task_id in pending_task_ids:
-            task_row = Task(task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
+            task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
             database_session.add(task_row)
 
         database_session.commit()
 
         # Stop benchmark - only tasks that are pending become stopped
-        await initiate_stop_benchmark(benchmark_row, database_session, force=False)
+        await initiate_stop_benchmark(benchmark_row, database_session, force=False, org=self._test_org)
 
         # Verify: 2 tasks are finished, 3 tasks are stopped
         finished_count = len(
@@ -148,6 +150,7 @@ class TestStopAndResume:
             benchmark_service=start_benchmark_request.benchmark_service,
             retry=False,
             rerun_task_ids=[],
+            org=self._test_org,
         )
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
         assert len(verified_task_ids) == 3
@@ -175,7 +178,7 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        task_rows = [Task(task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)]
+        task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)]
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -193,6 +196,7 @@ class TestStopAndResume:
             benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
             retry=True,
             rerun_task_ids=[],
+            org=self._test_org,
         )
 
         assert set(verified_task_ids) == set(original_aliases.keys())
@@ -208,13 +212,13 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        task_row = Task(task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
         database_session.add(task_row)
         database_session.commit()
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
-        tracked_task = TrackedTask(asyncio.sleep(0))
+        tracked_task = TrackedTask(asyncio.sleep(0), org=self._test_org)
         tracked_task._status = TrackedTaskStatus.WAITING  # type: ignore[attr-defined]
 
         cancel_mock = Mock()
@@ -225,7 +229,7 @@ class TestStopAndResume:
         cancel_mock.side_effect = _cancel
         tracked_task._task = Mock(cancel=cancel_mock, done=lambda: False)  # type: ignore[assignment]
 
-        monitor = TaskMonitor(benchmark_row.id, {task_row.task_id: tracked_task})
+        monitor = TaskMonitor(benchmark_row.id, {task_row.task_id: tracked_task}, org=self._test_org)
         monitor._TRACK_INTERVAL = 0
 
         await monitor.track_tasks()
@@ -258,10 +262,10 @@ class TestStopAndResume:
 
         # All tasks are already in a finished state
         tasks = [
-            Task(task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
-            Task(task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
-            Task(task_id="task_2", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
-            Task(task_id="task_3", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=TEST_ORG_ID, task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            Task(org_id=TEST_ORG_ID, task_id="task_2", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+            Task(org_id=TEST_ORG_ID, task_id="task_3", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
         ]
         database_session.add_all(tasks)
         database_session.commit()
@@ -269,7 +273,7 @@ class TestStopAndResume:
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
 
         # Set benchmark status to STOPPING
-        await initiate_stop_benchmark(benchmark_row, database_session, force=True)
+        await initiate_stop_benchmark(benchmark_row, database_session, force=True, org=self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
         # Mock daytona client since its not required
@@ -283,7 +287,7 @@ class TestStopAndResume:
 
         # Force stopping the sandboxes results in the benchmark row being stopped
         await force_stop_sandboxes(
-            benchmark_row, database_session, harness_config.daytona_secret_name, harness_config.aws
+            benchmark_row, database_session, harness_config.daytona_secret_name, harness_config.aws, self._test_org
         )
 
         database_session.refresh(benchmark_row)
