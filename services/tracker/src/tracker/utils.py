@@ -1214,3 +1214,13 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
         log_retention_policy=int(flat["log_retention_policy"]),
         daytona_secret_name=flat["daytona_secret_name"],
     )
+
+
+def fetch_optional_harness_config(request: Request) -> HarnessConfig | None:
+    prefix = "x-harness-"
+    flat = {
+        key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
+    }
+    if not flat:
+        return None
+    return fetch_harness_config(request)

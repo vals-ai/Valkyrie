@@ -94,9 +94,9 @@ class FetchBenchmarkResponse(BaseModel):
     agent_name: str
     model: str | None
     concurrency: int
-    cloudwatch_url: str
+    cloudwatch_url: str | None
     details: BenchmarkDetails
-    s3_bucket_url: str
+    s3_bucket_url: str | None
     platform_context: PlatformContext | None
 
 

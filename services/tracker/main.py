@@ -49,6 +49,7 @@ from tracker.utils import (
     create_final_view,
     fetch_filtered_benchmark_rows,
     fetch_harness_config,
+    fetch_optional_harness_config,
     force_stop_sandboxes,
     initiate_stop_benchmark,
     process_benchmark,
@@ -195,10 +196,10 @@ async def start_benchmark(
 
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
+    request: Request,
     benchmark_id: TrackedBenchmarkId,
     connect: bool = Query(default=False),
     session: Session = Depends(get_session),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
 ) -> FetchBenchmarkResponse | StreamingResponse:
     """
     Fetch a benchmark by its id.
@@ -231,6 +232,7 @@ async def fetch_benchmark(
         )
 
     benchmark_context = BenchmarkContext(benchmark_row, session)
+    harness_config = fetch_optional_harness_config(request)
 
     return FetchBenchmarkResponse(
         benchmark_name=benchmark_row.name,
@@ -238,12 +240,16 @@ async def fetch_benchmark(
         agent_name=benchmark_row.arguments.contract.name,
         model=benchmark_row.arguments.contract.model,
         concurrency=benchmark_row.arguments.concurrency,
-        cloudwatch_url=get_cloudwatch_url(
-            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.log_group
+        cloudwatch_url=(
+            get_cloudwatch_url(str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.log_group)
+            if harness_config
+            else None
         ),
         details=benchmark_context.benchmark_details,
-        s3_bucket_url=create_benchmark_url(
-            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
+        s3_bucket_url=(
+            create_benchmark_url(str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket)
+            if harness_config
+            else None
         ),
         platform_context=benchmark_row.arguments.platform_context,
     )
@@ -251,10 +257,10 @@ async def fetch_benchmark(
 
 @app.get("/retrieve-results")
 async def retrieve_results(
+    request: Request,
     benchmark_id: TrackedBenchmarkId,
     s3: bool = Query(default=False),
     session: Session = Depends(get_session),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
 ) -> RetrieveResultsResponse:
     """
     Retrieve the results of a benchmark by its id.
@@ -273,6 +279,7 @@ async def retrieve_results(
     final_view = create_final_view(benchmark_row, session)
 
     if s3:
+        harness_config = fetch_harness_config(request)
         s3_key = upload_final_view(benchmark_row, final_view, harness_config)
 
         https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"

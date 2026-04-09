@@ -33,6 +33,18 @@ from tracker.types import (
 client = TestClient(app)
 
 
+def harness_headers(harness_config: HarnessConfig) -> dict[str, str]:
+    return {
+        "x-harness-aws-access-key-id": harness_config.aws.aws_access_key_id,
+        "x-harness-aws-secret-access-key": harness_config.aws.aws_secret_access_key,
+        "x-harness-aws-default-region": harness_config.aws.aws_default_region,
+        "x-harness-s3-bucket": harness_config.s3_bucket,
+        "x-harness-log-group": harness_config.log_group,
+        "x-harness-log-retention-policy": str(harness_config.log_retention_policy),
+        "x-harness-daytona-secret-name": harness_config.daytona_secret_name,
+    }
+
+
 class TestFastapiServer:
     async def _mock_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
@@ -204,6 +216,7 @@ class TestFastapiServer:
         database_session: Session,
         example_benchmark_object: Benchmark,
         platform_context: PlatformContext,
+        harness_config: HarnessConfig,
     ):
         """
         Test fetch benchmark of the fastapi server.
@@ -234,7 +247,7 @@ class TestFastapiServer:
 
         # Send request to fetch the benchmark and ensure that the fetch response is returned
         query_params = {"benchmark_id": str(benchmark_row.id)}
-        response = client.get("/fetch-benchmark", params=query_params)
+        response = client.get("/fetch-benchmark", params=query_params, headers=harness_headers(harness_config))
 
         # Test case 2. Returns 200 OK
         assert response.status_code == 200
@@ -281,13 +294,32 @@ class TestFastapiServer:
 
         # Send request to fetch the benchmark and ensure that the fetch response is returned
         query_params = {"benchmark_id": str(benchmark_row.id)}
-        response = client.get("/fetch-benchmark", params=query_params)
+        response = client.get("/fetch-benchmark", params=query_params, headers=harness_headers(harness_config))
         details = response.json().get("details")
         assert details
 
         # Test case 5. Benchmark details are updated as benchmark progresses
         assert details.get("total_tasks") and details["total_tasks"] == 10
         assert details.get("finished_tasks") and details["finished_tasks"] == 6
+
+    async def test_fetch_benchmark_without_harness_headers(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        platform_context: PlatformContext,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.arguments.platform_context = platform_context
+        database_session.add(benchmark_row)
+        database_session.add(Task(task_id="task_0", benchmark=benchmark_row.id))
+        database_session.commit()
+
+        response = client.get("/fetch-benchmark", params={"benchmark_id": str(benchmark_row.id)})
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["cloudwatch_url"] is None
+        assert response_json["s3_bucket_url"] is None
 
     async def test_retrieve_results(self, database_session: Session, example_benchmark_object: Benchmark):
         """
