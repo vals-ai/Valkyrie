@@ -1,11 +1,9 @@
 """Sandbox management utilities for the tracker service."""
 
 import base64
-import io
 import logging
 import shlex
 import uuid
-import zipfile
 from asyncio import Semaphore
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -19,7 +17,6 @@ from daytona import (
     CreateSandboxFromImageParams,
     CreateSandboxFromSnapshotParams,
     DaytonaNotFoundError,
-    FileUpload,
     Resources,
     SandboxState,
     SessionExecuteRequest,
@@ -39,7 +36,7 @@ from tenacity import (
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import InvalidSandboxConfigurationError, SandboxError
 from tracker.logging import get_logger
-from tracker.s3 import download_from_s3, get_contract_s3_key, upload_to_s3
+from tracker.s3 import create_presigned_url, get_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
@@ -182,40 +179,68 @@ async def create_sandbox(
         await delete_sandbox(sandbox, daytona)
 
 
+@retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
 async def upload_agent_artifacts(
     sandbox: AsyncSandbox, contract: AgentContractRequest, aws: AWSCredentials, s3_bucket: str
 ) -> None:
     """
-    Upload contract from S3 to the sandbox.
+    Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
 
     Args:
-        sandbox: The sandbox to upload files to
-        contract_name: Name of the contract (without extension)
-        harness_config: Harness config for S3 access
+        sandbox: The sandbox to download and extract files in
+        contract: The agent contract configuration
+        aws: AWS credentials for presigned URL generation
+        s3_bucket: S3 bucket name
 
     Raises:
-        SandboxError: If directory creation or file upload fails
+        SandboxError: If download or extraction fails inside the sandbox
     """
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = get_contract_s3_key(contract.name)
-    contract_content = download_from_s3(contract_s3_key, aws, s3_bucket)
+    presigned_url = create_presigned_url(contract_s3_key, aws, s3_bucket)
 
-    # Unzip contract and collect files and directories, excluding contract.py
-    with zipfile.ZipFile(io.BytesIO(contract_content), "r") as zip_ref:
-        files_to_upload = [
-            FileUpload(
-                source=zip_ref.read(file_info),
-                destination=str(bundle_path / file_info.filename),
-            )
-            for file_info in zip_ref.infolist()
-            if not file_info.is_dir() and not file_info.filename.endswith("contract.py")
-        ]
+    zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
+    contract_dir = shlex.quote(str(bundle_path / contract.name))
+    bundle_dir = shlex.quote(str(bundle_path))
+    quoted_url = shlex.quote(presigned_url)
 
-    if files_to_upload:
-        await sandbox.fs.upload_files(files_to_upload)
-    else:
-        await sandbox.fs.create_folder(str(bundle_path / contract.name), "755")
+    # Install required dependencies inside of the instance
+    # Tracks if curl or unzip are missing and installs them if needed
+    install_deps = (
+        "NEED='';"
+        " command -v curl >/dev/null 2>&1 || NEED='curl';"
+        ' command -v unzip >/dev/null 2>&1 || NEED="$NEED unzip";'
+        ' if [ -n "$NEED" ]; then'
+        "  if command -v apt-get >/dev/null 2>&1; then DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq $NEED;"
+        "  elif command -v apk >/dev/null 2>&1; then apk add --no-cache $NEED;"
+        "  elif command -v yum >/dev/null 2>&1; then yum install -y $NEED;"
+        "  elif command -v dnf >/dev/null 2>&1; then dnf install -y $NEED;"
+        "  elif command -v pacman >/dev/null 2>&1; then pacman -Sy --noconfirm $NEED;"
+        "  elif command -v zypper >/dev/null 2>&1; then zypper install -y $NEED;"
+        "  fi;"
+        " fi"
+    )
+
+    steps = [
+        install_deps,
+        f"curl -sfL -o {zip_path} {quoted_url}",
+        f"mkdir -p {bundle_dir}",
+        f"unzip -o -d {bundle_dir} {zip_path} -x contract.py",
+        f"rm -f {zip_path}",
+        f"mkdir -p {contract_dir}",
+    ]
+
+    script = " && ".join(steps)
+
+    try:
+        result = await sandbox.process.exec(script)
+
+        if result.exit_code != 0:
+            raise RuntimeError(f"Command failed with exit code {result.exit_code}: {result.result}")
+
+    except Exception as e:
+        raise SandboxError(f"Failed to upload contract {contract.name} to sandbox {sandbox.name}: {e}") from e
 
 
 @retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
