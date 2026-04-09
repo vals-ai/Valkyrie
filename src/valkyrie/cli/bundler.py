@@ -96,15 +96,19 @@ def get_agent_zip_stream(agent_name: str | None, agent_path: Path) -> Generator[
 
 
 def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config: AgentConfig) -> AgentContractRequest:
-    """Extract contract.py from zip bytes into a temp dir and load it."""
+    """Extract contract from zip bytes into a temp dir and load it. Tries .yaml/.yml first, then .py."""
     try:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            contract_member = f"{agent_name}/contract.py"
             with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
-                zf.extract(contract_member, tmp_path)
+                names = zf.namelist()
+                for ext in (".yaml", ".yml", ".py"):
+                    contract_member = f"{agent_name}/contract{ext}"
+                    if contract_member in names:
+                        zf.extract(contract_member, tmp_path)
+                        return get_contract(tmp_path / contract_member, agent_config)
 
-            return get_contract(tmp_path / contract_member, agent_config)
+            raise BundlerError(f"No contract file found in zip for agent '{agent_name}'")
     except BundlerError:
         raise
     except Exception as e:
