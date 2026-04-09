@@ -6,6 +6,61 @@ This guide explains how to create agent contracts for Valkyrie.
 
 An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed.
 
+## Complete Contract Template
+
+Copy the template we created below to make integrating your own version easier.
+
+```yaml
+name: my_agent
+
+install_cmd: "bash setup.sh"
+
+run_cmd: >-
+  my_agent --task {problem_statement_path}
+  --model {model}
+  --temperature {temperature}
+
+final_output: /logs/my_agent
+
+secrets:
+  ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
+
+# Documentation only — these placeholders are always available and
+# substituted at runtime, changes will not be parsed
+provided:
+  task_id:
+    type: str
+    required: false
+  problem_statement_path:
+    type: str
+    required: true
+
+# Pre-defined parameters. The --model CLI flag is automatically
+# mapped here. Use `required: true` to enforce that users pass --model.
+defaults:
+  model:
+    type: str
+    required: false
+    description: "Model key (e.g. openai/gpt-4o)"
+
+# Custom parameters passed via -k on the CLI.
+# Defaults are applied when the user doesn't provide a value.
+kwargs:
+  temperature:
+    type: float
+    required: false
+    default: 0.7
+    description: "Sampling temperature"
+```
+
+```bash
+# Run with required model and default temperature (0.7)
+valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
+
+# Override the default temperature
+valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench -k temperature 1.0
+```
+
 ## Contract Definition
 
 Create a `contract.yaml` file in your agent directory:
