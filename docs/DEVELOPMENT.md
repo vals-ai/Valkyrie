@@ -53,23 +53,17 @@ valkyrie config init
 
 ### Testing with hosted mode (Descope auth)
 
-To test hosted mode locally with Docker, pass the auth env vars:
+Start the tracker with auth enabled:
 
 ```bash
 AUTH_REQUIRED=true DESCOPE_PROJECT_ID=<your-project-id> make tracker-service
 ```
 
-Then test with curl:
+Then configure the CLI for hosted mode:
 
 ```bash
-# /init — create org with your Descope access key
-curl -X POST http://localhost:8000/init -H "X-Api-Key: <your-key>"
-
-# Authenticated request
-curl http://localhost:8000/fetch-benchmarks -H "X-Api-Key: <your-key>"
-
-# Without a key — should return 401
-curl http://localhost:8000/fetch-benchmarks
+valkyrie config init
+# Choose "hosted", provide your Descope API key and AWS credentials
 ```
 
 Without the env vars, the service runs in self-hosted mode (no auth, default org).
