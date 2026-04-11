@@ -199,3 +199,78 @@ class TestSandboxOperations:
             command_timeout = await stream_command_output(sandbox, command, on_output=print)
 
             assert not command_timeout
+
+    async def test_named_pipe_reconnect_on_reader_kill(
+        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
+    ) -> None:
+        """Test that killing the reader session mid-stream doesn't kill the command.
+
+        The writer continues and a new reader picks up output after reconnect.
+        """
+        import asyncio
+
+        logged_messages: list[str] = []
+
+        def log_callback(message: str) -> None:
+            logged_messages.append(message)
+
+        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
+            # Run a command that produces output over several seconds
+            # The sleep gaps give us time to kill the reader mid-stream
+            command = (
+                "echo 'BEFORE_KILL' && sleep 3 && "
+                "echo 'MIDDLE' && sleep 3 && "
+                "echo 'AFTER_KILL'"
+            )
+
+            async def kill_reader_after_delay() -> None:
+                """Kill the cat process reading the pipe, simulating a reader failure."""
+                await asyncio.sleep(2)
+                # Kill the cat process inside the sandbox — this causes the reader
+                # session's stream to fail, triggering the reconnect path
+                try:
+                    await sandbox.process.exec("pkill -f 'cat /tmp/valkyrie'")
+                except Exception:
+                    pass
+
+            # Run the command and the reader-killer concurrently
+            timed_out, _ = await asyncio.gather(
+                stream_command_output(sandbox, command, on_output=log_callback),
+                kill_reader_after_delay(),
+            )
+
+            assert not timed_out
+            output = "\n".join(logged_messages)
+            # BEFORE_KILL should have been captured before the reader was killed
+            assert "BEFORE_KILL" in output
+            # AFTER_KILL proves the command survived the reader session death
+            assert "AFTER_KILL" in output
+
+    async def test_stream_command_raises_on_sandbox_crash(
+        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
+    ) -> None:
+        """Test that a sandbox crash during execution is detected and raised."""
+        import asyncio
+        from tracker.exceptions import SandboxError
+
+        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
+
+            async def destroy_sandbox_after_delay() -> None:
+                await asyncio.sleep(2)
+                await daytona_client.delete(sandbox)
+
+            with pytest.raises(SandboxError, match="crashed|health"):
+                await asyncio.gather(
+                    stream_command_output(sandbox, "sleep 30", on_output=lambda _: None),
+                    destroy_sandbox_after_delay(),
+                )
+
+    async def test_stream_command_raises_on_nonzero_exit(
+        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
+    ) -> None:
+        """Test that a command with non-zero exit code raises SandboxError."""
+        from tracker.exceptions import SandboxError
+
+        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
+            with pytest.raises(SandboxError, match="exit code: 1"):
+                await stream_command_output(sandbox, "exit 1", on_output=lambda _: None)
