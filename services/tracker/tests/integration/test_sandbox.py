@@ -229,7 +229,7 @@ class TestSandboxOperations:
                 # Kill the cat process inside the sandbox — this causes the reader
                 # session's stream to fail, triggering the reconnect path
                 try:
-                    await sandbox.process.exec("pkill -f 'cat /tmp/valkyrie'")
+                    await sandbox.process.exec("pkill -f 'cat /tmp/.valkyrie'")
                 except Exception:
                     pass
 
@@ -272,5 +272,7 @@ class TestSandboxOperations:
         from tracker.exceptions import SandboxError
 
         async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
+            # Use `false` (returns 1) instead of `exit 1` — exit kills the writer
+            # shell itself, preventing the status file from being written.
             with pytest.raises(SandboxError, match="exit code: 1"):
-                await stream_command_output(sandbox, "exit 1", on_output=lambda _: None)
+                await stream_command_output(sandbox, "false", on_output=lambda _: None)

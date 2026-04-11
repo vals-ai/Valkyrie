@@ -286,7 +286,8 @@ async def stream_command_output(
         bool - True if the command timed out, False otherwise
     """
     pipe_id = uuid.uuid4().hex
-    pipe_path = f"/tmp/valkyrie-{pipe_id}"
+    pipe_dir = "/tmp/.valkyrie"
+    pipe_path = f"{pipe_dir}/{pipe_id}"
     status_path = f"{pipe_path}.status"
     writer_session_id = f"{sandbox.id}:writer-{pipe_id}"
     reader_session_id: str | None = None
@@ -296,6 +297,7 @@ async def stream_command_output(
         await sandbox.process.create_session(writer_session_id)
 
         writer_shell_cmd = (
+            f"mkdir -p {pipe_dir} && "
             f"mkfifo {pipe_path} && "
             f"trap '' PIPE && "
             f"{{ {command} ; }} > {pipe_path} 2>&1 ; "
