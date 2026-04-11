@@ -360,7 +360,7 @@ async def stream_command_output(
         handle = await sandbox.process.create_pty_session(
             id=session_id,
             on_data=on_data,
-            envs={"TERM": "dumb"},
+            envs={"TERM": "dumb", "LANG": "C.UTF-8"},
         )
 
         # Disable echo to suppress command line noise in the output,
