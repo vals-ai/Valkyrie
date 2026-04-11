@@ -443,8 +443,8 @@ async def process_task(
 
                 raise e from e
     except Exception as e:
-        error_message = f"{str(e)}\n{traceback.format_exc()}"
-        logger.error(error_message)
+        error_message = str(e)
+        logger.error(error_message, exc_info=True)
 
         # include the error message
         log_output(f"\n[ERROR] {error_message}")

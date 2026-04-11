@@ -379,9 +379,15 @@ async def stream_command_output(
     status_dir = "/tmp/.valkyrie"
     status_path = f"{status_dir}/{pty_id}.status"
     handle = None
+    last_output: list[str] = []
 
     def on_data(data: bytes) -> None:
-        on_output(data.decode("utf-8", errors="replace"))
+        text = data.decode("utf-8", errors="replace")
+        on_output(text)
+        last_output.append(text)
+        # Keep only the tail to avoid unbounded memory growth
+        if len(last_output) > 50:
+            last_output.pop(0)
 
     try:
         handle = await _create_pty_session_with_retry(
@@ -410,7 +416,9 @@ async def stream_command_output(
             return True
 
         if exit_code != _SUCCESS_EXIT_CODE:
-            raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}")
+            tail = "".join(last_output).strip().splitlines()
+            recent = "\n".join(tail[-10:]) if tail else "(no output)"
+            raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
 
         return False
 
