@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import base64
 import logging
 import shlex
@@ -21,12 +22,9 @@ from daytona import (
     SandboxState,
     SessionExecuteRequest,
 )
-from daytona.common.errors import DaytonaError
 from tenacity import (
-    AsyncRetrying,
     before_sleep_log,
     retry,
-    retry_if_exception,
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
@@ -262,60 +260,13 @@ async def install_agent_dependencies(
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 
 
-LOG_STREAM_RETRY_DELAY_SECONDS = 1.0
-WEBSOCKET_STREAM_ERRORS = ("websocket", "http 502", "opening handshake", "no close frame", "1011")
-
-
-def is_websocket_stream_error(error: BaseException) -> bool:
-    return isinstance(error, DaytonaError) and any(pattern in str(error).lower() for pattern in WEBSOCKET_STREAM_ERRORS)
-
-
-async def start_session_command(
-    sandbox: AsyncSandbox,
-    session_id: str,
-    command: str,
-) -> str:
-    session_exec_resp = await sandbox.process.execute_session_command(
-        session_id, SessionExecuteRequest(command=command, run_async=True)
-    )
-    if not session_exec_resp.cmd_id:
-        raise SandboxError(f"Failed to execute command {command} in session {session_id}")
-    return session_exec_resp.cmd_id
-
-
-async def stream_session_command_logs(
-    sandbox: AsyncSandbox,
-    *,
-    session_id: str,
-    command_id: str,
-    on_output: Callable[[str], None],
-) -> None:
-    try:
-        async for attempt in AsyncRetrying(
-            retry=retry_if_exception(is_websocket_stream_error),
-            stop=stop_after_attempt(10),
-            wait=wait_fixed(LOG_STREAM_RETRY_DELAY_SECONDS),
-            before_sleep=before_sleep_log(logger, logging.WARNING),
-            reraise=True,
-        ):
-            with attempt:
-                await sandbox.process.get_session_command_logs_async(
-                    session_id=session_id,
-                    command_id=command_id,
-                    on_stdout=on_output,
-                    on_stderr=on_output,
-                )
-        return
-    except Exception as error:
-        warning = f"Log streaming unavailable; continuing without live logs: {error}"
-        logger.warning(warning)
-        on_output(f"[WARNING] {warning}\n")
-
-
 # NOTE: If this gets too big move it into a mapping
 # these are decoupled since its just 2 exit codes we need to track
 _TIMEOUT_EXIT_CODE: int = 124
 _SUCCESS_EXIT_CODE: int = 0
+
+_PIPE_RECONNECT_MAX_ATTEMPTS: int = 10
+_PIPE_RECONNECT_DELAY_SECONDS: float = 1.0
 
 
 async def stream_command_output(
@@ -324,49 +275,155 @@ async def stream_command_output(
     on_output: Callable[[str], None],
 ) -> bool:
     """
-    Execute a command inside of a sandbox using a session and stream the output to the given callbacks.
-    Command completion is authoritative; log streaming is best-effort only.
+    Execute a command inside a sandbox using a named pipe to decouple
+    command execution from log streaming.
+
+    A writer session runs the command with output redirected to a FIFO.
+    A disposable reader session streams the pipe contents. If the reader's
+    WebSocket dies, it is replaced without affecting the running command.
 
     Return:
         bool - True if the command timed out, False otherwise
     """
-    session_id = f"{sandbox.id}:{str(uuid.uuid4())}"
+    pipe_id = uuid.uuid4().hex
+    pipe_path = f"/tmp/valkyrie-{pipe_id}"
+    status_path = f"{pipe_path}.status"
+    writer_session_id = f"{sandbox.id}:writer-{pipe_id}"
+    reader_session_id: str | None = None
+
     try:
-        await sandbox.process.create_session(session_id)
-        cmd_id = await start_session_command(
-            sandbox,
-            session_id,
-            command,
-        )
-        await stream_session_command_logs(
-            sandbox,
-            session_id=session_id,
-            command_id=cmd_id,
-            on_output=on_output,
-        )
+        # --- Start the writer session ---
+        await sandbox.process.create_session(writer_session_id)
 
+        writer_shell_cmd = (
+            f"mkfifo {pipe_path} && "
+            f"trap '' PIPE && "
+            f"{{ {command} ; }} > {pipe_path} 2>&1 ; "
+            f"echo $? > {status_path}"
+        )
+        writer_exec = await sandbox.process.execute_session_command(
+            writer_session_id,
+            SessionExecuteRequest(command=writer_shell_cmd, run_async=True),
+        )
+        if not writer_exec.cmd_id:
+            raise SandboxError(f"Failed to start writer session for command: {command}")
+        writer_cmd_id = writer_exec.cmd_id
+
+        # --- Reader loop with reconnect ---
+        attempts = 0
+        while attempts < _PIPE_RECONNECT_MAX_ATTEMPTS:
+            # Create a fresh reader session
+            reader_session_id = f"{sandbox.id}:reader-{pipe_id}-{attempts}"
+            await sandbox.process.create_session(reader_session_id)
+
+            reader_exec = await sandbox.process.execute_session_command(
+                reader_session_id,
+                SessionExecuteRequest(command=f"cat {pipe_path}", run_async=True),
+            )
+            if not reader_exec.cmd_id:
+                raise SandboxError("Failed to start reader session")
+            reader_cmd_id = reader_exec.cmd_id
+
+            try:
+                await sandbox.process.get_session_command_logs_async(
+                    session_id=reader_session_id,
+                    command_id=reader_cmd_id,
+                    on_stdout=on_output,
+                    on_stderr=on_output,
+                )
+                # Stream ended — verify writer is actually done before breaking.
+                # cat can exit for reasons other than writer EOF (e.g., killed).
+                try:
+                    writer_status = await sandbox.process.get_session_command(
+                        writer_session_id, writer_cmd_id
+                    )
+                    if writer_status.exit_code is not None:
+                        break  # Writer is done
+                except Exception:
+                    break  # Can't check writer — assume done, status file read will catch errors
+
+                # Writer still running but reader exited — treat as disconnect
+                logger.warning("Reader exited but writer still running, reconnecting...")
+            except Exception as stream_error:
+                logger.warning(f"Reader stream failed (attempt {attempts + 1}): {stream_error}")
+
+            # --- Shared reconnect path for both exception and premature reader exit ---
+
+            # Clean up the dead reader session
+            try:
+                await sandbox.process.delete_session(reader_session_id)
+            except Exception:
+                pass
+            reader_session_id = None
+
+            # Check if the writer is already done
+            try:
+                writer_status = await sandbox.process.get_session_command(
+                    writer_session_id, writer_cmd_id
+                )
+                if writer_status.exit_code is not None:
+                    break
+            except Exception:
+                pass
+
+            # Check if the sandbox is still alive
+            try:
+                await sandbox.refresh_data()
+                if sandbox.state in (
+                    SandboxState.DESTROYING,
+                    SandboxState.DESTROYED,
+                    SandboxState.STOPPED,
+                ):
+                    raise SandboxError(
+                        f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})"
+                    )
+            except SandboxError:
+                raise
+            except Exception as health_error:
+                raise SandboxError(
+                    f"Failed to check sandbox {sandbox.name} health: {health_error}"
+                ) from health_error
+
+            attempts += 1
+            if attempts >= _PIPE_RECONNECT_MAX_ATTEMPTS:
+                raise SandboxError(
+                    f"Reader reconnect failed after {_PIPE_RECONNECT_MAX_ATTEMPTS} attempts"
+                )
+
+            await asyncio.sleep(_PIPE_RECONNECT_DELAY_SECONDS)
+
+        # --- Read exit code from status file ---
         try:
-            cmd = await sandbox.process.get_session_command(session_id, cmd_id)
-
-            # Exit code 124 = timeout(1) killed the process; treat as success so evaluation still runs
-            if cmd.exit_code == _TIMEOUT_EXIT_CODE:
-                return True
-
-            if cmd.exit_code != _SUCCESS_EXIT_CODE:
-                raise SandboxError(f"Failed to run command {command}, exit code: {cmd.exit_code}")
+            result = await sandbox.process.exec(f"cat {status_path}")
+            if result.exit_code != 0 or not result.result.strip():
+                raise SandboxError(f"Failed to read exit status from {status_path}")
+            exit_code = int(result.result.strip())
         except SandboxError:
             raise
-        except Exception as error:
-            logger.warning(f"Failed to get session command for {session_id}: {error}")
+        except Exception as e:
+            raise SandboxError(f"Failed to read exit status from {status_path}: {e}") from e
+
+        if exit_code == _TIMEOUT_EXIT_CODE:
+            return True
+
+        if exit_code != _SUCCESS_EXIT_CODE:
+            raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}")
 
         return False
 
     finally:
+        # Best-effort cleanup of sessions and files
+        for sid in (writer_session_id, reader_session_id):
+            if sid:
+                try:
+                    await sandbox.process.delete_session(sid)
+                except Exception:
+                    logger.warning(f"Failed to delete session {sid}")
+
         try:
-            await sandbox.process.delete_session(session_id)
+            await sandbox.process.exec(f"rm -f {pipe_path} {status_path}")
         except Exception:
-            logger.warning(f"Caught failure to delete session `{session_id}`")
-            pass
+            logger.warning(f"Failed to clean up pipe files: {pipe_path}")
 
 
 async def archive_and_upload_output(
