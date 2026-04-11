@@ -21,6 +21,7 @@ from daytona import (
     Resources,
     SandboxState,
 )
+from daytona.common.errors import DaytonaError
 from tenacity import (
     before_sleep_log,
     retry,
@@ -268,6 +269,32 @@ _PTY_RECONNECT_MAX_ATTEMPTS: int = 10
 _PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 
 _DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
+_PTY_CREATE_MAX_ATTEMPTS: int = 3
+_PTY_CREATE_DELAY_SECONDS: float = 2.0
+
+
+async def _create_pty_session_with_retry(
+    sandbox: AsyncSandbox,
+    session_id: str,
+    on_data: Callable[[bytes], None],
+    envs: dict[str, str] | None = None,
+) -> Any:
+    """Create a PTY session with retries for transient connection failures."""
+    for attempt in range(_PTY_CREATE_MAX_ATTEMPTS):
+        try:
+            return await sandbox.process.create_pty_session(
+                id=session_id if attempt == 0 else f"{session_id}-{attempt}",
+                on_data=on_data,
+                envs=envs,
+            )
+        except DaytonaError as e:
+            if attempt + 1 >= _PTY_CREATE_MAX_ATTEMPTS:
+                raise SandboxError(
+                    f"Failed to create PTY session after {_PTY_CREATE_MAX_ATTEMPTS} attempts: {e}"
+                ) from e
+            logger.warning(f"PTY session creation failed (attempt {attempt + 1}): {e}")
+            await asyncio.sleep(_PTY_CREATE_DELAY_SECONDS)
+    raise SandboxError("Failed to create PTY session")  # unreachable, satisfies type checker
 
 
 async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
@@ -357,10 +384,8 @@ async def stream_command_output(
         on_output(data.decode("utf-8", errors="replace"))
 
     try:
-        handle = await sandbox.process.create_pty_session(
-            id=session_id,
-            on_data=on_data,
-            envs={"TERM": "dumb", "LANG": "C.UTF-8"},
+        handle = await _create_pty_session_with_retry(
+            sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"}
         )
 
         # Disable echo to suppress command line noise in the output,
