@@ -296,12 +296,19 @@ async def stream_command_output(
         # --- Start the writer session ---
         await sandbox.process.create_session(writer_session_id)
 
+        # script allocates a PTY so child processes (python, tee, etc.)
+        # line-buffer instead of full-buffering through the named pipe.
+        # -q suppresses "Script started/done" messages, -f flushes after
+        # each write, -c runs a command instead of an interactive shell.
+        # The exit code is captured inside the script shell so we don't
+        # depend on script -e (not available on BusyBox/Alpine).
+        inner_cmd = shlex.quote(f"{command} ; echo $? > {status_path}")
         writer_shell_cmd = (
             f"mkdir -p {pipe_dir} && "
             f"mkfifo {pipe_path} && "
             f"trap '' PIPE && "
-            f"{{ {command} ; }} > {pipe_path} 2>&1 ; "
-            f"echo $? > {status_path}"
+            f"script -qfc {inner_cmd} /dev/null "
+            f"> {pipe_path} 2>&1"
         )
         writer_exec = await sandbox.process.execute_session_command(
             writer_session_id,
@@ -336,9 +343,7 @@ async def stream_command_output(
                 # Stream ended — verify writer is actually done before breaking.
                 # cat can exit for reasons other than writer EOF (e.g., killed).
                 try:
-                    writer_status = await sandbox.process.get_session_command(
-                        writer_session_id, writer_cmd_id
-                    )
+                    writer_status = await sandbox.process.get_session_command(writer_session_id, writer_cmd_id)
                     if writer_status.exit_code is not None:
                         break  # Writer is done
                 except Exception:
@@ -360,9 +365,7 @@ async def stream_command_output(
 
             # Check if the writer is already done
             try:
-                writer_status = await sandbox.process.get_session_command(
-                    writer_session_id, writer_cmd_id
-                )
+                writer_status = await sandbox.process.get_session_command(writer_session_id, writer_cmd_id)
                 if writer_status.exit_code is not None:
                     break
             except Exception:
@@ -382,15 +385,11 @@ async def stream_command_output(
             except SandboxError:
                 raise
             except Exception as health_error:
-                raise SandboxError(
-                    f"Failed to check sandbox {sandbox.name} health: {health_error}"
-                ) from health_error
+                raise SandboxError(f"Failed to check sandbox {sandbox.name} health: {health_error}") from health_error
 
             attempts += 1
             if attempts >= _PIPE_RECONNECT_MAX_ATTEMPTS:
-                raise SandboxError(
-                    f"Reader reconnect failed after {_PIPE_RECONNECT_MAX_ATTEMPTS} attempts"
-                )
+                raise SandboxError(f"Reader reconnect failed after {_PIPE_RECONNECT_MAX_ATTEMPTS} attempts")
 
             await asyncio.sleep(_PIPE_RECONNECT_DELAY_SECONDS)
 
