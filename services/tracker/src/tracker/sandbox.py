@@ -267,6 +267,66 @@ _SUCCESS_EXIT_CODE: int = 0
 _PTY_RECONNECT_MAX_ATTEMPTS: int = 10
 _PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 
+_DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
+
+
+async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
+    """Raise SandboxError if the sandbox is no longer running."""
+    try:
+        await sandbox.refresh_data()
+        if sandbox.state in _DEAD_SANDBOX_STATES:
+            raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
+    except SandboxError:
+        raise
+    except Exception as e:
+        raise SandboxError(f"Failed to check sandbox {sandbox.name} health: {e}") from e
+
+
+async def _wait_for_pty_with_reconnect(
+    sandbox: AsyncSandbox,
+    session_id: str,
+    handle: Any,
+    on_data: Callable[[bytes], None],
+    on_output: Callable[[str], None],
+) -> None:
+    """Wait for the PTY to close, reconnecting on WebSocket failures."""
+    attempts = 0
+    while True:
+        try:
+            await handle.wait()
+            return
+        except SandboxError:
+            raise
+        except Exception as e:
+            logger.debug(f"PTY stream disconnected (attempt {attempts + 1}): {e}")
+            on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
+
+            await _check_sandbox_health(sandbox)
+
+            attempts += 1
+            if attempts >= _PTY_RECONNECT_MAX_ATTEMPTS:
+                raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
+
+            await asyncio.sleep(_PTY_RECONNECT_DELAY_SECONDS)
+
+            try:
+                handle = await sandbox.process.connect_pty_session(session_id, on_data)
+            except Exception:
+                continue
+
+
+async def _read_exit_code(sandbox: AsyncSandbox, status_path: str) -> int:
+    """Read the command exit code from the status file."""
+    try:
+        result = await sandbox.process.exec(f"cat {status_path}")
+        if result.exit_code != 0 or not result.result.strip():
+            raise SandboxError(f"Failed to read exit status from {status_path}")
+        return int(result.result.strip())
+    except SandboxError:
+        raise
+    except Exception as e:
+        raise SandboxError(f"Failed to read exit status from {status_path}: {e}") from e
+
 
 async def stream_command_output(
     sandbox: AsyncSandbox,
@@ -309,72 +369,17 @@ async def stream_command_output(
         await handle.send_input("stty -echo\n")
         await handle.send_input(f"mkdir -p {status_dir} && {command}; echo $? > {status_path}; exit\n")
 
-        # Wait for PTY to close with reconnect on disconnect
-        attempts = 0
-        while True:
-            try:
-                await handle.wait()
-                break
-            except SandboxError:
-                raise
-            except Exception as e:
-                logger.debug(f"PTY stream disconnected (attempt {attempts + 1}): {e}")
-                on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
+        await _wait_for_pty_with_reconnect(sandbox, session_id, handle, on_data, on_output)
 
-                # Check if the sandbox is still alive
-                try:
-                    await sandbox.refresh_data()
-                    if sandbox.state in (
-                        SandboxState.DESTROYING,
-                        SandboxState.DESTROYED,
-                        SandboxState.STOPPED,
-                    ):
-                        raise SandboxError(
-                            f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})"
-                        )
-                except SandboxError:
-                    raise
-                except Exception as health_error:
-                    raise SandboxError(
-                        f"Failed to check sandbox {sandbox.name} health: {health_error}"
-                    ) from health_error
-
-                attempts += 1
-                if attempts >= _PTY_RECONNECT_MAX_ATTEMPTS:
-                    raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
-
-                await asyncio.sleep(_PTY_RECONNECT_DELAY_SECONDS)
-
-                # Reconnect to the existing PTY session
-                try:
-                    handle = await sandbox.process.connect_pty_session(session_id, on_data)
-                except Exception:
-                    continue
-
-        # Check sandbox health before reading status file
+        # Verify sandbox is still alive before reading the status file
         try:
-            await sandbox.refresh_data()
-            if sandbox.state in (
-                SandboxState.DESTROYING,
-                SandboxState.DESTROYED,
-                SandboxState.STOPPED,
-            ):
-                raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
+            await _check_sandbox_health(sandbox)
         except SandboxError:
             raise
         except Exception:
             pass
 
-        # Read exit code from status file
-        try:
-            result = await sandbox.process.exec(f"cat {status_path}")
-            if result.exit_code != 0 or not result.result.strip():
-                raise SandboxError(f"Failed to read exit status from {status_path}")
-            exit_code = int(result.result.strip())
-        except SandboxError:
-            raise
-        except Exception as e:
-            raise SandboxError(f"Failed to read exit status from {status_path}: {e}") from e
+        exit_code = await _read_exit_code(sandbox, status_path)
 
         if exit_code == _TIMEOUT_EXIT_CODE:
             return True
