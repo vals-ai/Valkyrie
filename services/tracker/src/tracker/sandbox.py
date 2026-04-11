@@ -350,9 +350,11 @@ async def stream_command_output(
                     break  # Can't check writer — assume done, status file read will catch errors
 
                 # Writer still running but reader exited — treat as disconnect
-                logger.warning("Reader exited but writer still running, reconnecting...")
+                logger.debug("Reader exited but writer still running, reconnecting...")
+                on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
             except Exception as stream_error:
-                logger.warning(f"Reader stream failed (attempt {attempts + 1}): {stream_error}")
+                logger.debug(f"Reader stream failed (attempt {attempts + 1}): {stream_error}")
+                on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
 
             # --- Shared reconnect path for both exception and premature reader exit ---
 
