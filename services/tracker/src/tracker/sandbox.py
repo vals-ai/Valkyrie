@@ -20,7 +20,6 @@ from daytona import (
     DaytonaNotFoundError,
     Resources,
     SandboxState,
-    SessionExecuteRequest,
 )
 from tenacity import (
     before_sleep_log,
@@ -265,8 +264,8 @@ async def install_agent_dependencies(
 _TIMEOUT_EXIT_CODE: int = 124
 _SUCCESS_EXIT_CODE: int = 0
 
-_PIPE_RECONNECT_MAX_ATTEMPTS: int = 10
-_PIPE_RECONNECT_DELAY_SECONDS: float = 1.0
+_PTY_RECONNECT_MAX_ATTEMPTS: int = 10
+_PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 
 
 async def stream_command_output(
@@ -275,127 +274,98 @@ async def stream_command_output(
     on_output: Callable[[str], None],
 ) -> bool:
     """
-    Execute a command inside a sandbox using a named pipe to decouple
-    command execution from log streaming.
+    Execute a command inside a sandbox using a PTY session for real
+    terminal buffering and native reconnection support.
 
-    A writer session runs the command with output redirected to a FIFO.
-    A disposable reader session streams the pipe contents. If the reader's
-    WebSocket dies, it is replaced without affecting the running command.
+    A PTY session provides a real terminal so child processes (python,
+    tee, etc.) line-buffer their output. On WebSocket disconnect, we
+    reconnect to the same PTY session — the command keeps running.
+
+    The exit code is written to a status file rather than relying on
+    the PTY WebSocket close frame, which doesn't reliably propagate it.
 
     Return:
         bool - True if the command timed out, False otherwise
     """
-    pipe_id = uuid.uuid4().hex
-    pipe_dir = "/tmp/.valkyrie"
-    pipe_path = f"{pipe_dir}/{pipe_id}"
-    status_path = f"{pipe_path}.status"
-    writer_session_id = f"{sandbox.id}:writer-{pipe_id}"
-    reader_session_id: str | None = None
+    pty_id = uuid.uuid4().hex
+    session_id = f"{sandbox.id}:pty-{pty_id}"
+    status_dir = "/tmp/.valkyrie"
+    status_path = f"{status_dir}/{pty_id}.status"
+    handle = None
+
+    def on_data(data: bytes) -> None:
+        on_output(data.decode("utf-8", errors="replace"))
 
     try:
-        # --- Start the writer session ---
-        await sandbox.process.create_session(writer_session_id)
-
-        # script allocates a PTY so child processes (python, tee, etc.)
-        # line-buffer instead of full-buffering through the named pipe.
-        # -q suppresses "Script started/done" messages, -f flushes after
-        # each write, -c runs a command instead of an interactive shell.
-        # The exit code is captured inside the script shell so we don't
-        # depend on script -e (not available on BusyBox/Alpine).
-        inner_cmd = shlex.quote(f"{command} ; echo $? > {status_path}")
-        writer_shell_cmd = (
-            f"mkdir -p {pipe_dir} && "
-            f"mkfifo {pipe_path} && "
-            f"trap '' PIPE && "
-            f"script -qfc {inner_cmd} /dev/null "
-            f"> {pipe_path} 2>&1"
+        handle = await sandbox.process.create_pty_session(
+            id=session_id,
+            on_data=on_data,
+            envs={"TERM": "dumb"},
         )
-        writer_exec = await sandbox.process.execute_session_command(
-            writer_session_id,
-            SessionExecuteRequest(command=writer_shell_cmd, run_async=True),
-        )
-        if not writer_exec.cmd_id:
-            raise SandboxError(f"Failed to start writer session for command: {command}")
-        writer_cmd_id = writer_exec.cmd_id
 
-        # --- Reader loop with reconnect ---
+        # Disable echo to suppress command line noise in the output,
+        # then run the command, capture its exit code to a status file,
+        # and exit the shell so the PTY closes.
+        await handle.send_input("stty -echo\n")
+        await handle.send_input(f"mkdir -p {status_dir} && {command}; echo $? > {status_path}; exit\n")
+
+        # Wait for PTY to close with reconnect on disconnect
         attempts = 0
-        while attempts < _PIPE_RECONNECT_MAX_ATTEMPTS:
-            # Create a fresh reader session
-            reader_session_id = f"{sandbox.id}:reader-{pipe_id}-{attempts}"
-            await sandbox.process.create_session(reader_session_id)
-
-            reader_exec = await sandbox.process.execute_session_command(
-                reader_session_id,
-                SessionExecuteRequest(command=f"cat {pipe_path}", run_async=True),
-            )
-            if not reader_exec.cmd_id:
-                raise SandboxError("Failed to start reader session")
-            reader_cmd_id = reader_exec.cmd_id
-
+        while True:
             try:
-                await sandbox.process.get_session_command_logs_async(
-                    session_id=reader_session_id,
-                    command_id=reader_cmd_id,
-                    on_stdout=on_output,
-                    on_stderr=on_output,
-                )
-                # Stream ended — verify writer is actually done before breaking.
-                # cat can exit for reasons other than writer EOF (e.g., killed).
-                try:
-                    writer_status = await sandbox.process.get_session_command(writer_session_id, writer_cmd_id)
-                    if writer_status.exit_code is not None:
-                        break  # Writer is done
-                except Exception:
-                    break  # Can't check writer — assume done, status file read will catch errors
-
-                # Writer still running but reader exited — treat as disconnect
-                logger.debug("Reader exited but writer still running, reconnecting...")
-                on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
-            except Exception as stream_error:
-                logger.debug(f"Reader stream failed (attempt {attempts + 1}): {stream_error}")
-                on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
-
-            # --- Shared reconnect path for both exception and premature reader exit ---
-
-            # Clean up the dead reader session
-            try:
-                await sandbox.process.delete_session(reader_session_id)
-            except Exception:
-                pass
-            reader_session_id = None
-
-            # Check if the writer is already done
-            try:
-                writer_status = await sandbox.process.get_session_command(writer_session_id, writer_cmd_id)
-                if writer_status.exit_code is not None:
-                    break
-            except Exception:
-                pass
-
-            # Check if the sandbox is still alive
-            try:
-                await sandbox.refresh_data()
-                if sandbox.state in (
-                    SandboxState.DESTROYING,
-                    SandboxState.DESTROYED,
-                    SandboxState.STOPPED,
-                ):
-                    raise SandboxError(
-                        f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})"
-                    )
+                await handle.wait()
+                break
             except SandboxError:
                 raise
-            except Exception as health_error:
-                raise SandboxError(f"Failed to check sandbox {sandbox.name} health: {health_error}") from health_error
+            except Exception as e:
+                logger.debug(f"PTY stream disconnected (attempt {attempts + 1}): {e}")
+                on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
 
-            attempts += 1
-            if attempts >= _PIPE_RECONNECT_MAX_ATTEMPTS:
-                raise SandboxError(f"Reader reconnect failed after {_PIPE_RECONNECT_MAX_ATTEMPTS} attempts")
+                # Check if the sandbox is still alive
+                try:
+                    await sandbox.refresh_data()
+                    if sandbox.state in (
+                        SandboxState.DESTROYING,
+                        SandboxState.DESTROYED,
+                        SandboxState.STOPPED,
+                    ):
+                        raise SandboxError(
+                            f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})"
+                        )
+                except SandboxError:
+                    raise
+                except Exception as health_error:
+                    raise SandboxError(
+                        f"Failed to check sandbox {sandbox.name} health: {health_error}"
+                    ) from health_error
 
-            await asyncio.sleep(_PIPE_RECONNECT_DELAY_SECONDS)
+                attempts += 1
+                if attempts >= _PTY_RECONNECT_MAX_ATTEMPTS:
+                    raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
 
-        # --- Read exit code from status file ---
+                await asyncio.sleep(_PTY_RECONNECT_DELAY_SECONDS)
+
+                # Reconnect to the existing PTY session
+                try:
+                    handle = await sandbox.process.connect_pty_session(session_id, on_data)
+                except Exception:
+                    continue
+
+        # Check sandbox health before reading status file
+        try:
+            await sandbox.refresh_data()
+            if sandbox.state in (
+                SandboxState.DESTROYING,
+                SandboxState.DESTROYED,
+                SandboxState.STOPPED,
+            ):
+                raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
+        except SandboxError:
+            raise
+        except Exception:
+            pass
+
+        # Read exit code from status file
         try:
             result = await sandbox.process.exec(f"cat {status_path}")
             if result.exit_code != 0 or not result.result.strip():
@@ -415,18 +385,19 @@ async def stream_command_output(
         return False
 
     finally:
-        # Best-effort cleanup of sessions and files
-        for sid in (writer_session_id, reader_session_id):
-            if sid:
-                try:
-                    await sandbox.process.delete_session(sid)
-                except Exception:
-                    logger.warning(f"Failed to delete session {sid}")
-
+        if handle:
+            try:
+                await handle.disconnect()
+            except Exception:
+                pass
         try:
-            await sandbox.process.exec(f"rm -f {pipe_path} {status_path}")
+            await sandbox.process.kill_pty_session(session_id)
         except Exception:
-            logger.warning(f"Failed to clean up pipe files: {pipe_path}")
+            logger.warning(f"Failed to kill PTY session {session_id}")
+        try:
+            await sandbox.process.exec(f"rm -f {status_path}")
+        except Exception:
+            pass
 
 
 async def archive_and_upload_output(
