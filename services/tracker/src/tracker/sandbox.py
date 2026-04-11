@@ -322,15 +322,15 @@ async def _wait_for_pty_with_reconnect(
         try:
             await handle.wait()
             return
-        except SandboxError:
-            raise
         except Exception as e:
-            logger.debug(f"PTY stream disconnected (attempt {attempts + 1}): {e}")
-            on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
+            attempts += 1
+            logger.debug(f"PTY stream disconnected (attempt {attempts}): {e}")
+            on_output(
+                f"[Debug]: Disconnected from websocket, creating a new reader and reconnecting (attempt {attempts})\n"
+            )
 
             await _check_sandbox_health(sandbox)
 
-            attempts += 1
             if attempts >= _PTY_RECONNECT_MAX_ATTEMPTS:
                 raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
 
