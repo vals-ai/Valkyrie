@@ -1,0 +1,229 @@
+{
+    "benchmark_name": "ioi",
+    "status": "FINISHED",
+    "benchmark_id": "235a0079-a18d-4114-86fe-6bc6446674c7",
+    "benchmark_arguments": {
+        "contract": {
+            "name": "ioi_agent",
+            "model": "google/gemini-3-flash-preview",
+            "install_cmd": "bash setup.sh",
+            "run_cmd": "uv run --project /bundle/ioi_agent python -m ioi_agent.run --model google/gemini-3-flash-preview --problem-file {problem_statement_path} --problem-dir /workspace --task-id {task_id} --output /workspace/result.json",
+            "final_output": "/workspace/result.json",
+            "secrets": {
+                "OPENAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "GOOGLE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "COHERE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "ANTHROPIC_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MISTRAL_API_KEY": "prodBenchmarksInfraApiKeys",
+                "XAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "AI21LABS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "FIREWORKS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DEEPSEEK_KEY": "prodBenchmarksInfraApiKeys",
+                "AZURE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DASHSCOPE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "PERPLEXITY_KEY": "prodBenchmarksInfraApiKeys",
+                "ZAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "KIMI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MERCURY_KEY": "prodBenchmarksInfraApiKeys",
+                "MINIMAX_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MODEL_PROXY_SSH_KEY": "model_proxy_ssh"
+            }
+        },
+        "concurrency": 6,
+        "dataset": "ioi2024"
+    },
+    "final_evaluation": {
+        "id": "e48882a1-8196-4aaf-a123-b06b0a810ad0",
+        "benchmark": "235a0079-a18d-4114-86fe-6bc6446674c7",
+        "final_score": 36.666666666666664,
+        "properties": {
+            "run": {
+                "id": "17c72afe-0591-4390-bf94-79f7e9c58f21",
+                "project_id": "ioi-s964z8",
+                "name": "#192: 2024 stub suite",
+                "status": "SUCCESS",
+                "error_message": null,
+                "qa_set_id": "387017b6-afb2-4ecd-b603-99539b048943",
+                "test_suite_id": "3c7a6e74-4fd3-43ba-90a2-98bac57a7c75",
+                "test_suite_title": "2024 stub suite",
+                "model": "Valkyrie IOI Agent",
+                "pass_rate": 0.0,
+                "pass_rate_error": 0.0,
+                "success_rate": 100.0,
+                "success_rate_error": 0.0,
+                "average_duration": 603.9063333333334,
+                "average_input_tokens": 131830.0,
+                "average_output_tokens": 11946.333333333334,
+                "average_cost": 0.279598225,
+                "custom_metrics": [
+                    {
+                        "metric_id": "0d0d626c-effe-4f77-be86-b891ea20f834",
+                        "name": "IOI stderr",
+                        "pass_rate": 18.32676650067792,
+                        "error": null
+                    },
+                    {
+                        "metric_id": "426410bc-3662-4d54-b986-8e2910f6c8a4",
+                        "name": "IOI accuracy",
+                        "pass_rate": 36.666666666666664,
+                        "error": null
+                    }
+                ],
+                "archived": false,
+                "text_summary": "",
+                "timestamp": "2026-03-25T18:08:32.153120Z",
+                "completed_at": "2026-03-25T18:08:36.756192Z",
+                "parameters": {
+                    "eval_model": "vals/dumbmar-5o-evaluator",
+                    "parallelism": 12,
+                    "eval_concurrency": null,
+                    "custom_parameters": {},
+                    "run_confidence_evaluation": false,
+                    "heavyweight_factor": 1,
+                    "create_text_summary": false,
+                    "temperature": 1.0,
+                    "max_output_tokens": 16384,
+                    "system_prompt": "",
+                    "retry_failed_calls_indefinitely": false,
+                    "model_under_test": null,
+                    "token_retry_params": null,
+                    "as_batch": false
+                },
+                "run_review_id": null
+            }
+        }
+    },
+    "evaluation_results": {
+        "2024/nile": {
+            "final_answer": "{'07-full': 18, '02-permutation': 13, '05-q5': 20, '01-equal': 6, '04-n2': 11, '03-minpack_q5': 17, '06-minpack': 15, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 33774,
+                "out_tokens": 3261,
+                "reasoning_tokens": 13109,
+                "cache_read_tokens": 9475,
+                "cache_write_tokens": null,
+                "duration_seconds": 96.918,
+                "cost": 0.06647075,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 3,
+                "tool_calls": {
+                    "cpp_executor": 1,
+                    "submission": 1
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/mosaic": {
+            "final_answer": "{'07-T=B': 19, '04-N5000': 10, '06-T=B&L=R': 22, '02-NQ200': 7, '05-X=Y=0': 8, '01-N2Q10': 5, '03-T=B=0': 7, '08-full': 22, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 95522,
+                "out_tokens": 10171,
+                "reasoning_tokens": 36636,
+                "cache_read_tokens": 176961,
+                "cache_write_tokens": null,
+                "duration_seconds": 302.524,
+                "cost": 0.19703005,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 9,
+                "tool_calls": {
+                    "cpp_executor": 4,
+                    "submission": 3
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/tree": {
+            "final_answer": "{'07-full': 0, '02-sqn2': 0, '01-sqwinc': 0, '04-W1': 7, '05-W01': 0, '03-sqnlg': 0, '06-L1': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 128006,
+                "out_tokens": 6711,
+                "reasoning_tokens": 59674,
+                "cache_read_tokens": 280979,
+                "cache_write_tokens": null,
+                "duration_seconds": 418.857,
+                "cost": 0.27720695,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 7,
+                "tool_calls": {
+                    "cpp_executor": 1,
+                    "submission": 4
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/hieroglyphs": {
+            "final_answer": "{'05-n2': 0, '06-full': 0, '03-bin': 0, '01-perm': 3, '02-cnt3': 0, '04-hasucs': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 154837,
+                "out_tokens": 10732,
+                "reasoning_tokens": 71628,
+                "cache_read_tokens": 750264,
+                "cache_write_tokens": null,
+                "duration_seconds": 566.773,
+                "cost": 0.3620117,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 11,
+                "tool_calls": {
+                    "cpp_executor": 2,
+                    "submission": 7
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/sphinx": {
+            "final_answer": "{'01-N2': 0, '05-full': 0, '02-N50': 0, '04-complete': 0, '03-chain': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 149688,
+                "out_tokens": 15605,
+                "reasoning_tokens": 43373,
+                "cache_read_tokens": 542685,
+                "cache_write_tokens": null,
+                "duration_seconds": 559.333,
+                "cost": 0.27891225,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 13,
+                "tool_calls": {
+                    "submission": 12
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/message": {
+            "final_answer": "{'01-len64': 10, '02-full': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 229153,
+                "out_tokens": 25198,
+                "reasoning_tokens": 68577,
+                "cache_read_tokens": 2001123,
+                "cache_write_tokens": null,
+                "duration_seconds": 1679.033,
+                "cost": 0.49595764999999997,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 26,
+                "tool_calls": {
+                    "cpp_executor": 1,
+                    "submission": 23
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        }
+    }
+}

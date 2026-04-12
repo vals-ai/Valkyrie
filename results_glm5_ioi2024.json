@@ -1,0 +1,147 @@
+{
+    "benchmark_name": "ioi",
+    "status": "FINISHED",
+    "benchmark_id": "b4e34533-9b54-4e10-a498-e234e367133d",
+    "benchmark_arguments": {
+        "contract": {
+            "name": "ioi_agent",
+            "model": "zai/glm-5-thinking",
+            "install_cmd": "bash setup.sh",
+            "run_cmd": "uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file {problem_statement_path} --problem-dir /workspace --task-id {task_id} --output /workspace/result.json",
+            "final_output": "/workspace/result.json",
+            "secrets": {
+                "OPENAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "GOOGLE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "COHERE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "ANTHROPIC_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MISTRAL_API_KEY": "prodBenchmarksInfraApiKeys",
+                "XAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "AI21LABS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "FIREWORKS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DEEPSEEK_KEY": "prodBenchmarksInfraApiKeys",
+                "AZURE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DASHSCOPE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "PERPLEXITY_KEY": "prodBenchmarksInfraApiKeys",
+                "ZAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "KIMI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MERCURY_KEY": "prodBenchmarksInfraApiKeys",
+                "MINIMAX_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MODEL_PROXY_SSH_KEY": "model_proxy_ssh"
+            }
+        },
+        "concurrency": 6,
+        "dataset": "ioi2024"
+    },
+    "final_evaluation": {
+        "id": "028e7c50-aa51-47be-b7b8-42fd3370dc65",
+        "benchmark": "b4e34533-9b54-4e10-a498-e234e367133d",
+        "final_score": 11.833333333333334,
+        "properties": {
+            "run": {
+                "id": "aa998429-075c-43b1-8236-09858256ba8e",
+                "project_id": "ioi-s964z8",
+                "name": "#195: 2024 stub suite",
+                "status": "SUCCESS",
+                "error_message": null,
+                "qa_set_id": "d919c7a4-15ce-48f5-926e-76b5d14ce66f",
+                "test_suite_id": "3c7a6e74-4fd3-43ba-90a2-98bac57a7c75",
+                "test_suite_title": "2024 stub suite",
+                "model": "Valkyrie IOI Agent",
+                "pass_rate": 0.0,
+                "pass_rate_error": 0.0,
+                "success_rate": 100.0,
+                "success_rate_error": 0.0,
+                "average_duration": 1158.3938333333333,
+                "average_input_tokens": 137257.16666666666,
+                "average_output_tokens": 18262.5,
+                "average_cost": 0.40834729999999997,
+                "custom_metrics": [
+                    {
+                        "metric_id": "0d0d626c-effe-4f77-be86-b891ea20f834",
+                        "name": "IOI stderr",
+                        "pass_rate": 6.841120224489988,
+                        "error": null
+                    },
+                    {
+                        "metric_id": "426410bc-3662-4d54-b986-8e2910f6c8a4",
+                        "name": "IOI accuracy",
+                        "pass_rate": 11.833333333333334,
+                        "error": null
+                    }
+                ],
+                "archived": false,
+                "text_summary": "",
+                "timestamp": "2026-03-25T20:17:40.601272Z",
+                "completed_at": "2026-03-25T20:17:45.285493Z",
+                "parameters": {
+                    "eval_model": "vals/dumbmar-5o-evaluator",
+                    "parallelism": 12,
+                    "eval_concurrency": null,
+                    "custom_parameters": {},
+                    "run_confidence_evaluation": false,
+                    "heavyweight_factor": 1,
+                    "create_text_summary": false,
+                    "temperature": 1.0,
+                    "max_output_tokens": 16384,
+                    "system_prompt": "",
+                    "retry_failed_calls_indefinitely": false,
+                    "model_under_test": null,
+                    "token_retry_params": null,
+                    "as_batch": false
+                },
+                "run_review_id": null
+            }
+        }
+    },
+    "evaluation_results": {
+        "2024/mosaic": {
+            "final_answer": "{'07-T=B': 0, '04-N5000': 10, '06-T=B&L=R': 0, '02-NQ200': 7, '05-X=Y=0': 8, '01-N2Q10': 5, '03-T=B=0': 7, '08-full': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 369360,
+                "out_tokens": 56765,
+                "reasoning_tokens": 19911,
+                "cache_read_tokens": 3060608,
+                "cache_write_tokens": null,
+                "duration_seconds": 2215.12,
+                "cost": 1.2268447999999998,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 65,
+                "tool_calls": {
+                    "cpp_executor": 50,
+                    "submission": 13
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/nile": {
+            "final_answer": "{'07-full': 0, '02-permutation': 0, '05-q5': 0, '01-equal': 6, '04-n2': 11, '03-minpack_q5': 17, '06-minpack': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 454183,
+                "out_tokens": 52810,
+                "reasoning_tokens": 89772,
+                "cache_read_tokens": 1563968,
+                "cache_write_tokens": null,
+                "duration_seconds": 4735.243,
+                "cost": 1.223239,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 23,
+                "tool_calls": {
+                    "submission": 21
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        }
+    },
+    "task_errors": {
+        "2024/tree": "Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2024/tree --output /workspace/result.json, exit code: 1\nTraceback (most recent call last):\n  File \"/app/src/tracker/utils.py\", line 424, in process_task\n    raise e from e\n  File \"/app/src/tracker/utils.py\", line 378, in process_task\n    await run_agent(\n  File \"/app/src/tracker/sandbox.py\", line 380, in run_agent\n    await stream_command_output(sandbox, f\"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}\", log_output)\n  File \"/app/src/tracker/sandbox.py\", line 295, in stream_command_output\n    raise SandboxError(f\"Failed to run command {command}, exit code: {cmd.exit_code}\")\ntracker.exceptions.SandboxError: Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2024/tree --output /workspace/result.json, exit code: 1\n",
+        "2024/message": "Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2024/message --output /workspace/result.json, exit code: 1\nTraceback (most recent call last):\n  File \"/app/src/tracker/utils.py\", line 424, in process_task\n    raise e from e\n  File \"/app/src/tracker/utils.py\", line 378, in process_task\n    await run_agent(\n  File \"/app/src/tracker/sandbox.py\", line 380, in run_agent\n    await stream_command_output(sandbox, f\"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}\", log_output)\n  File \"/app/src/tracker/sandbox.py\", line 295, in stream_command_output\n    raise SandboxError(f\"Failed to run command {command}, exit code: {cmd.exit_code}\")\ntracker.exceptions.SandboxError: Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2024/message --output /workspace/result.json, exit code: 1\n",
+        "2024/sphinx": "Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2024/sphinx --output /workspace/result.json, exit code: 1\nTraceback (most recent call last):\n  File \"/app/src/tracker/utils.py\", line 424, in process_task\n    raise e from e\n  File \"/app/src/tracker/utils.py\", line 378, in process_task\n    await run_agent(\n  File \"/app/src/tracker/sandbox.py\", line 380, in run_agent\n    await stream_command_output(sandbox, f\"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}\", log_output)\n  File \"/app/src/tracker/sandbox.py\", line 295, in stream_command_output\n    raise SandboxError(f\"Failed to run command {command}, exit code: {cmd.exit_code}\")\ntracker.exceptions.SandboxError: Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2024/sphinx --output /workspace/result.json, exit code: 1\n",
+        "2024/hieroglyphs": "Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2024/hieroglyphs --output /workspace/result.json, exit code: 1\nTraceback (most recent call last):\n  File \"/app/src/tracker/utils.py\", line 424, in process_task\n    raise e from e\n  File \"/app/src/tracker/utils.py\", line 378, in process_task\n    await run_agent(\n  File \"/app/src/tracker/sandbox.py\", line 380, in run_agent\n    await stream_command_output(sandbox, f\"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}\", log_output)\n  File \"/app/src/tracker/sandbox.py\", line 295, in stream_command_output\n    raise SandboxError(f\"Failed to run command {command}, exit code: {cmd.exit_code}\")\ntracker.exceptions.SandboxError: Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2024/hieroglyphs --output /workspace/result.json, exit code: 1\n"
+    }
+}

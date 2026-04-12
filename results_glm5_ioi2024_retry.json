@@ -1,0 +1,228 @@
+{
+    "benchmark_name": "ioi",
+    "status": "FINISHED",
+    "benchmark_id": "b4e34533-9b54-4e10-a498-e234e367133d",
+    "benchmark_arguments": {
+        "contract": {
+            "name": "ioi_agent",
+            "model": "zai/glm-5-thinking",
+            "install_cmd": "bash setup.sh",
+            "run_cmd": "uv run --project /bundle/ioi_agent python -m ioi_agent.run --model zai/glm-5-thinking --problem-file {problem_statement_path} --problem-dir /workspace --task-id {task_id} --output /workspace/result.json",
+            "final_output": "/workspace/result.json",
+            "secrets": {
+                "OPENAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "GOOGLE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "COHERE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "ANTHROPIC_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MISTRAL_API_KEY": "prodBenchmarksInfraApiKeys",
+                "XAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "AI21LABS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "FIREWORKS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DEEPSEEK_KEY": "prodBenchmarksInfraApiKeys",
+                "AZURE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DASHSCOPE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "PERPLEXITY_KEY": "prodBenchmarksInfraApiKeys",
+                "ZAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "KIMI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MERCURY_KEY": "prodBenchmarksInfraApiKeys",
+                "MINIMAX_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MODEL_PROXY_SSH_KEY": "model_proxy_ssh"
+            }
+        },
+        "concurrency": 6,
+        "dataset": "ioi2024"
+    },
+    "final_evaluation": {
+        "id": "4a94dcfe-e3a9-4237-9fea-ae252efd3db5",
+        "benchmark": "b4e34533-9b54-4e10-a498-e234e367133d",
+        "final_score": 15.666666666666666,
+        "properties": {
+            "run": {
+                "id": "7a624a89-3e78-4153-8f29-1487078fed78",
+                "project_id": "ioi-s964z8",
+                "name": "#196: 2024 stub suite",
+                "status": "SUCCESS",
+                "error_message": null,
+                "qa_set_id": "06f20748-0add-407d-a0ef-b04ea1547bb8",
+                "test_suite_id": "3c7a6e74-4fd3-43ba-90a2-98bac57a7c75",
+                "test_suite_title": "2024 stub suite",
+                "model": "Valkyrie IOI Agent",
+                "pass_rate": 0.0,
+                "pass_rate_error": 0.0,
+                "success_rate": 100.0,
+                "success_rate_error": 0.0,
+                "average_duration": 4337.312333333332,
+                "average_input_tokens": 452239.0,
+                "average_output_tokens": 45570.833333333336,
+                "average_cost": 1.3335222,
+                "custom_metrics": [
+                    {
+                        "metric_id": "0d0d626c-effe-4f77-be86-b891ea20f834",
+                        "name": "IOI stderr",
+                        "pass_rate": 6.144856325355319,
+                        "error": null
+                    },
+                    {
+                        "metric_id": "426410bc-3662-4d54-b986-8e2910f6c8a4",
+                        "name": "IOI accuracy",
+                        "pass_rate": 15.666666666666666,
+                        "error": null
+                    }
+                ],
+                "archived": false,
+                "text_summary": "",
+                "timestamp": "2026-03-25T23:29:59.847610Z",
+                "completed_at": "2026-03-25T23:30:03.636722Z",
+                "parameters": {
+                    "eval_model": "vals/dumbmar-5o-evaluator",
+                    "parallelism": 12,
+                    "eval_concurrency": null,
+                    "custom_parameters": {},
+                    "run_confidence_evaluation": false,
+                    "heavyweight_factor": 1,
+                    "create_text_summary": false,
+                    "temperature": 1.0,
+                    "max_output_tokens": 16384,
+                    "system_prompt": "",
+                    "retry_failed_calls_indefinitely": false,
+                    "model_under_test": null,
+                    "token_retry_params": null,
+                    "as_batch": false
+                },
+                "run_review_id": null
+            }
+        }
+    },
+    "evaluation_results": {
+        "2024/mosaic": {
+            "final_answer": "{'07-T=B': 0, '04-N5000': 10, '06-T=B&L=R': 0, '02-NQ200': 7, '05-X=Y=0': 8, '01-N2Q10': 5, '03-T=B=0': 7, '08-full': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 369360,
+                "out_tokens": 56765,
+                "reasoning_tokens": 19911,
+                "cache_read_tokens": 3060608,
+                "cache_write_tokens": null,
+                "duration_seconds": 2215.12,
+                "cost": 1.2268447999999998,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 65,
+                "tool_calls": {
+                    "cpp_executor": 50,
+                    "submission": 13
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/nile": {
+            "final_answer": "{'07-full': 0, '02-permutation': 0, '05-q5': 0, '01-equal': 6, '04-n2': 11, '03-minpack_q5': 17, '06-minpack': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 454183,
+                "out_tokens": 52810,
+                "reasoning_tokens": 89772,
+                "cache_read_tokens": 1563968,
+                "cache_write_tokens": null,
+                "duration_seconds": 4735.243,
+                "cost": 1.223239,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 23,
+                "tool_calls": {
+                    "submission": 21
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/sphinx": {
+            "final_answer": "{'01-N2': 3, '05-full': 0, '02-N50': 0, '04-complete': 0, '03-chain': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 424934,
+                "out_tokens": 19902,
+                "reasoning_tokens": 90315,
+                "cache_read_tokens": 3048832,
+                "cache_write_tokens": null,
+                "duration_seconds": 2985.345,
+                "cost": 1.3873948,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 43,
+                "tool_calls": {
+                    "submission": 42
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/message": {
+            "final_answer": "{'01-len64': 0, '02-full': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 408279,
+                "out_tokens": 34052,
+                "reasoning_tokens": 50197,
+                "cache_read_tokens": 2644032,
+                "cache_write_tokens": null,
+                "duration_seconds": 4253.133,
+                "cost": 1.2066822000000001,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 52,
+                "tool_calls": {
+                    "submission": 51,
+                    "cpp_executor": 1
+                },
+                "stop_reason": "done_tool",
+                "error": null
+            }
+        },
+        "2024/tree": {
+            "final_answer": "{'07-full': 0, '02-sqn2': 0, '01-sqwinc': 10, '04-W1': 7, '05-W01': 0, '03-sqnlg': 0, '06-L1': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 502533,
+                "out_tokens": 48150,
+                "reasoning_tokens": 59385,
+                "cache_read_tokens": 2539136,
+                "cache_write_tokens": null,
+                "duration_seconds": 5002.641,
+                "cost": 1.3544722,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 45,
+                "tool_calls": {
+                    "submission": 34,
+                    "cpp_executor": 10
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2024/hieroglyphs": {
+            "final_answer": "{'05-n2': 0, '06-full': 0, '03-bin': 0, '01-perm': 3, '02-cnt3': 0, '04-hasucs': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 554145,
+                "out_tokens": 61746,
+                "reasoning_tokens": 41185,
+                "cache_read_tokens": 3594880,
+                "cache_write_tokens": null,
+                "duration_seconds": 6832.392,
+                "cost": 1.6025002000000002,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 67,
+                "tool_calls": {
+                    "submission": 37,
+                    "cpp_executor": 28
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        }
+    }
+}

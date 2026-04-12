@@ -33,7 +33,7 @@ def get_default_org(session: Session) -> Org:
 
 def extract_api_key(request: Request) -> str:
     """Extract API key from request headers. Raises 401 if missing."""
-    api_key = request.headers.get("x-api-key")
+    api_key = request.headers.get("x-api-key") or request.headers.get("x-harness-api-key")
     if not api_key:
         raise HTTPException(status_code=401, detail="Missing API key")
     return api_key

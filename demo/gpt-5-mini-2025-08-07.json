@@ -1,0 +1,111 @@
+{
+  "results": {
+    "model_key": "openai/gpt-5-mini-2025-08-07",
+    "schema_version": 2,
+    "total_instances": 15,
+    "submitted_instances": 15,
+    "completed_instances": 15,
+    "resolved_instances": 5,
+    "unresolved_instances": 10,
+    "empty_patch_instances": 0,
+    "error_instances": 0,
+    "completed_ids": [
+      "django__django-16560",
+      "django__django-14631",
+      "django__django-13837",
+      "django__django-15268",
+      "django__django-15957",
+      "sympy__sympy-18199",
+      "sympy__sympy-13852",
+      "pylint-dev__pylint-4551",
+      "pylint-dev__pylint-8898",
+      "scikit-learn__scikit-learn-25102",
+      "django__django-10554",
+      "sphinx-doc__sphinx-9461",
+      "astropy__astropy-14369",
+      "pytest-dev__pytest-6197",
+      "pytest-dev__pytest-5787"
+    ],
+    "incomplete_ids": [],
+    "empty_patch_ids": [],
+    "submitted_ids": [
+      "django__django-16560",
+      "django__django-14631",
+      "django__django-13837",
+      "django__django-15268",
+      "django__django-15957",
+      "sympy__sympy-18199",
+      "sympy__sympy-13852",
+      "pylint-dev__pylint-4551",
+      "pylint-dev__pylint-8898",
+      "scikit-learn__scikit-learn-25102",
+      "django__django-10554",
+      "sphinx-doc__sphinx-9461",
+      "astropy__astropy-14369",
+      "pytest-dev__pytest-6197",
+      "pytest-dev__pytest-5787"
+    ],
+    "resolved_ids": [
+      "django__django-16560",
+      "django__django-14631",
+      "django__django-13837",
+      "django__django-15268",
+      "django__django-15957"
+    ],
+    "unresolved_ids": [
+      "sympy__sympy-18199",
+      "sympy__sympy-13852",
+      "pylint-dev__pylint-4551",
+      "pylint-dev__pylint-8898",
+      "scikit-learn__scikit-learn-25102",
+      "django__django-10554",
+      "sphinx-doc__sphinx-9461",
+      "astropy__astropy-14369",
+      "pytest-dev__pytest-6197",
+      "pytest-dev__pytest-5787"
+    ],
+    "error_ids": []
+  },
+  "stats": {
+    "overall": {
+      "instance_cost": 0.80140295,
+      "run_time": 3767.7499999999995,
+      "tokens_sent": 8099807,
+      "tokens_received": 167352,
+      "api_calls": 411,
+      "tool_call_definitions": {
+        "bash": 410
+      },
+      "total_steps": 410
+    },
+    "difficulty": {
+      "difficulty_count": {
+        "<15 min fix": 0,
+        "15 min - 1 hour": 0,
+        "1-4 hours": 15,
+        ">4 hours": 0
+      },
+      "<15 min fix": {},
+      "15 min - 1 hour": {},
+      "1-4 hours": {
+        "instance_cost": 0.80140295,
+        "run_time": 3767.7499999999995,
+        "tokens_sent": 8099807,
+        "tokens_received": 167352,
+        "api_calls": 411,
+        "tool_call_definitions": {
+          "bash": 410
+        },
+        "total_steps": 410
+      },
+      ">4 hours": {}
+    },
+    "model_key": "openai/gpt-5-mini-2025-08-07"
+  },
+  "vals_index_stats": {
+    "latency": 251.18333333333334,
+    "cost_per_test": 0.05342686333333333,
+    "accuracy": 4.901960784313726,
+    "stderr": 2.137817420303514
+  }
+}

@@ -1,0 +1,211 @@
+{
+    "benchmark_name": "ioi",
+    "status": "FINISHED",
+    "benchmark_id": "8426a2de-9ea7-4ffc-8d01-bc7fd42b6abb",
+    "benchmark_arguments": {
+        "contract": {
+            "name": "ioi_agent",
+            "model": "google/gemini-3-flash-preview",
+            "install_cmd": "bash setup.sh",
+            "run_cmd": "uv run --project /bundle/ioi_agent python -m ioi_agent.run --model google/gemini-3-flash-preview --problem-file {problem_statement_path} --problem-dir /workspace --task-id {task_id} --output /workspace/result.json",
+            "final_output": "/workspace/result.json",
+            "secrets": {
+                "OPENAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "GOOGLE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "COHERE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "ANTHROPIC_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MISTRAL_API_KEY": "prodBenchmarksInfraApiKeys",
+                "XAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "AI21LABS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "FIREWORKS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DEEPSEEK_KEY": "prodBenchmarksInfraApiKeys",
+                "AZURE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DASHSCOPE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "PERPLEXITY_KEY": "prodBenchmarksInfraApiKeys",
+                "ZAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "KIMI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MERCURY_KEY": "prodBenchmarksInfraApiKeys",
+                "MINIMAX_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MODEL_PROXY_SSH_KEY": "model_proxy_ssh"
+            }
+        },
+        "concurrency": 6,
+        "dataset": "ioi2025"
+    },
+    "final_evaluation": {
+        "id": "1d8d19f3-4bde-46f8-b799-86a30e354a9d",
+        "benchmark": "8426a2de-9ea7-4ffc-8d01-bc7fd42b6abb",
+        "final_score": 42.5,
+        "properties": {
+            "run": {
+                "id": "8aadb422-f5eb-4ef7-b077-82e9e2008433",
+                "project_id": "ioi-s964z8",
+                "name": "#175: 2025 stub suite",
+                "status": "SUCCESS",
+                "error_message": null,
+                "qa_set_id": "05e4c1f3-b42a-4469-b36b-b7f920ce4051",
+                "test_suite_id": "e37b9fb3-44e5-46c2-94b8-3503ef96ae9b",
+                "test_suite_title": "2025 stub suite",
+                "model": "Valkyrie IOI Agent",
+                "pass_rate": 0.0,
+                "pass_rate_error": 0.0,
+                "success_rate": 100.0,
+                "success_rate_error": 0.0,
+                "average_duration": 433.1813333333334,
+                "average_input_tokens": 126502.16666666667,
+                "average_output_tokens": 10605.5,
+                "average_cost": 0.264862675,
+                "custom_metrics": [
+                    {
+                        "metric_id": "0d0d626c-effe-4f77-be86-b891ea20f834",
+                        "name": "IOI stderr",
+                        "pass_rate": 14.321215808101709,
+                        "error": null
+                    },
+                    {
+                        "metric_id": "426410bc-3662-4d54-b986-8e2910f6c8a4",
+                        "name": "IOI accuracy",
+                        "pass_rate": 42.5,
+                        "error": null
+                    }
+                ],
+                "archived": false,
+                "text_summary": "",
+                "timestamp": "2026-03-25T19:38:38.460556Z",
+                "completed_at": "2026-03-25T19:38:44.224425Z",
+                "parameters": {
+                    "eval_model": "vals/dumbmar-5o-evaluator",
+                    "parallelism": 12,
+                    "eval_concurrency": null,
+                    "custom_parameters": {},
+                    "run_confidence_evaluation": false,
+                    "heavyweight_factor": 1,
+                    "create_text_summary": false,
+                    "temperature": 1.0,
+                    "max_output_tokens": 16384,
+                    "system_prompt": "",
+                    "retry_failed_calls_indefinitely": false,
+                    "model_under_test": null,
+                    "token_retry_params": null,
+                    "as_batch": false
+                },
+                "run_review_id": null
+            }
+        }
+    },
+    "evaluation_results": {
+        "2025/souvenirs": {
+            "final_answer": "{'03-almostKnownSequence': 0, '06-full': 0, '01-N2': 4, '04-N3': 0, '05-atMostDouble': 0, '02-knownSequence': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 131175,
+                "out_tokens": 8763,
+                "reasoning_tokens": 56304,
+                "cache_read_tokens": 761959,
+                "cache_write_tokens": null,
+                "duration_seconds": 487.734,
+                "cost": 0.29888645,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 14,
+                "tool_calls": {
+                    "cpp_executor": 2,
+                    "submission": 10
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/festival": {
+            "final_answer": "{'07-full': 18, '06-subtask6': 16, '03-subtask3': 12, '02-subtask2': 7, '05-subtask5': 27, '04-subtask4': 15, '00-samples': 0, '01-subtask1': 5}",
+            "metadata": {
+                "in_tokens": 84947,
+                "out_tokens": 7622,
+                "reasoning_tokens": 34856,
+                "cache_read_tokens": 155181,
+                "cache_write_tokens": null,
+                "duration_seconds": 247.677,
+                "cost": 0.17766655,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 6,
+                "tool_calls": {
+                    "cpp_executor": 4,
+                    "submission": 1
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/worldmap": {
+            "final_answer": "{'06-full': 0, '04-1adj': 8, '01-line': 5, '03-complete': 7, '05-smallN': 14, '02-tree': 10, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 141394,
+                "out_tokens": 9836,
+                "reasoning_tokens": 51705,
+                "cache_read_tokens": 530326,
+                "cache_write_tokens": null,
+                "duration_seconds": 567.209,
+                "cost": 0.2818363,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 11,
+                "tool_calls": {
+                    "cpp_executor": 1,
+                    "submission": 9
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/triples": {
+            "final_answer": "{'09-subtask9': 0, '12-subtask12': 0, '05-p1-n50000': 16, '10-subtask10': 0, '11-subtask11': 0, '04-p1-inc': 11, '01-p1-n100': 8, '08-subtask8': 0, '03-p1-n2000': 10, '07-subtask7': 0, '02-p1-h10': 6, '06-p1-full': 19, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 229586,
+                "out_tokens": 15866,
+                "reasoning_tokens": 57798,
+                "cache_read_tokens": 1739757,
+                "cache_write_tokens": null,
+                "duration_seconds": 549.318,
+                "cost": 0.42277285,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 28,
+                "tool_calls": {
+                    "cpp_executor": 22,
+                    "submission": 5
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/obstacles": {
+            "final_answer": "{'04-fewq': 0, '03-fixed': 13, '06-full': 0, '02-inc': 14, '05-unrestricted': 0, '01-n1': 10, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 171911,
+                "out_tokens": 21546,
+                "reasoning_tokens": 70878,
+                "cache_read_tokens": 895728,
+                "cache_write_tokens": null,
+                "duration_seconds": 747.15,
+                "cost": 0.4080139,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 13,
+                "tool_calls": {
+                    "cpp_executor": 2,
+                    "submission": 10
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        }
+    },
+    "task_errors": {
+        "2025/migrations": "Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model google/gemini-3-flash-preview --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2025/migrations --output /workspace/result.json, exit code: 1\nTraceback (most recent call last):\n  File \"/app/src/tracker/utils.py\", line 424, in process_task\n    raise e from e\n  File \"/app/src/tracker/utils.py\", line 378, in process_task\n    await run_agent(\n  File \"/app/src/tracker/sandbox.py\", line 380, in run_agent\n    await stream_command_output(sandbox, f\"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}\", log_output)\n  File \"/app/src/tracker/sandbox.py\", line 295, in stream_command_output\n    raise SandboxError(f\"Failed to run command {command}, exit code: {cmd.exit_code}\")\ntracker.exceptions.SandboxError: Sandbox error: Failed to run command cd /workspace && PYTHONSAFEPATH=1 uv run --project /bundle/ioi_agent python -m ioi_agent.run --model google/gemini-3-flash-preview --problem-file /tmp/problem_statement.txt --problem-dir /workspace --task-id 2025/migrations --output /workspace/result.json, exit code: 1\n"
+    }
+}

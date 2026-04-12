@@ -1,0 +1,230 @@
+{
+    "benchmark_name": "ioi",
+    "status": "FINISHED",
+    "benchmark_id": "38b4db9c-aec1-45a0-90fe-7fc6f851e39e",
+    "benchmark_arguments": {
+        "contract": {
+            "name": "ioi_agent",
+            "model": "openai/gpt-5.4-2026-03-05",
+            "install_cmd": "bash setup.sh",
+            "run_cmd": "uv run --project /bundle/ioi_agent python -m ioi_agent.run --model openai/gpt-5.4-2026-03-05 --problem-file {problem_statement_path} --problem-dir /workspace --task-id {task_id} --output /workspace/result.json",
+            "final_output": "/workspace/result.json",
+            "secrets": {
+                "OPENAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "GOOGLE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "COHERE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "ANTHROPIC_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MISTRAL_API_KEY": "prodBenchmarksInfraApiKeys",
+                "XAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "AI21LABS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "FIREWORKS_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DEEPSEEK_KEY": "prodBenchmarksInfraApiKeys",
+                "AZURE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "DASHSCOPE_API_KEY": "prodBenchmarksInfraApiKeys",
+                "PERPLEXITY_KEY": "prodBenchmarksInfraApiKeys",
+                "ZAI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "KIMI_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MERCURY_KEY": "prodBenchmarksInfraApiKeys",
+                "MINIMAX_API_KEY": "prodBenchmarksInfraApiKeys",
+                "MODEL_PROXY_SSH_KEY": "model_proxy_ssh"
+            }
+        },
+        "concurrency": 6,
+        "dataset": "ioi2025"
+    },
+    "final_evaluation": {
+        "id": "9f6600c4-eaf2-4dfd-9222-42ca8b52bfe7",
+        "benchmark": "38b4db9c-aec1-45a0-90fe-7fc6f851e39e",
+        "final_score": 60.166666666666664,
+        "properties": {
+            "run": {
+                "id": "819de3f9-272a-47da-9b58-962be770de1c",
+                "project_id": "ioi-s964z8",
+                "name": "#171: 2025 stub suite",
+                "status": "SUCCESS",
+                "error_message": null,
+                "qa_set_id": "ec7df813-d282-4c6d-b6de-b1abb07a0869",
+                "test_suite_id": "e37b9fb3-44e5-46c2-94b8-3503ef96ae9b",
+                "test_suite_title": "2025 stub suite",
+                "model": "Valkyrie IOI Agent",
+                "pass_rate": 0.0,
+                "pass_rate_error": 0.0,
+                "success_rate": 100.0,
+                "success_rate_error": 0.0,
+                "average_duration": 3363.772833333333,
+                "average_input_tokens": 123723.83333333333,
+                "average_output_tokens": 33183.166666666664,
+                "average_cost": 2.59489025,
+                "custom_metrics": [
+                    {
+                        "metric_id": "0d0d626c-effe-4f77-be86-b891ea20f834",
+                        "name": "IOI stderr",
+                        "pass_rate": 14.892982438918201,
+                        "error": null
+                    },
+                    {
+                        "metric_id": "426410bc-3662-4d54-b986-8e2910f6c8a4",
+                        "name": "IOI accuracy",
+                        "pass_rate": 60.166666666666664,
+                        "error": null
+                    }
+                ],
+                "archived": false,
+                "text_summary": "",
+                "timestamp": "2026-03-24T20:42:14.559336Z",
+                "completed_at": "2026-03-24T20:42:18.899319Z",
+                "parameters": {
+                    "eval_model": "vals/dumbmar-5o-evaluator",
+                    "parallelism": 12,
+                    "eval_concurrency": null,
+                    "custom_parameters": {},
+                    "run_confidence_evaluation": false,
+                    "heavyweight_factor": 1,
+                    "create_text_summary": false,
+                    "temperature": 1.0,
+                    "max_output_tokens": 16384,
+                    "system_prompt": "",
+                    "retry_failed_calls_indefinitely": false,
+                    "model_under_test": null,
+                    "token_retry_params": null,
+                    "as_batch": false
+                },
+                "run_review_id": null
+            }
+        }
+    },
+    "evaluation_results": {
+        "2025/festival": {
+            "final_answer": "{'07-full': 18, '06-subtask6': 16, '03-subtask3': 12, '02-subtask2': 7, '05-subtask5': 27, '04-subtask4': 15, '00-samples': 0, '01-subtask1': 5}",
+            "metadata": {
+                "in_tokens": 18746,
+                "out_tokens": 16801,
+                "reasoning_tokens": 37418,
+                "cache_read_tokens": 586880,
+                "cache_write_tokens": null,
+                "duration_seconds": 1407.568,
+                "cost": 1.00687,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 16,
+                "tool_calls": {
+                    "cpp_executor": 14,
+                    "submission": 1
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/worldmap": {
+            "final_answer": "{'06-full': 0, '04-1adj': 8, '01-line': 5, '03-complete': 7, '05-smallN': 14, '02-tree': 10, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 212972,
+                "out_tokens": 22260,
+                "reasoning_tokens": 62580,
+                "cache_read_tokens": 1562880,
+                "cache_write_tokens": null,
+                "duration_seconds": 2986.069,
+                "cost": 2.19575,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 20,
+                "tool_calls": {
+                    "cpp_executor": 15,
+                    "submission": 4
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/migrations": {
+            "final_answer": "{'02-full': 0, '01-from_root': 0, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 109407,
+                "out_tokens": 24039,
+                "reasoning_tokens": 56895,
+                "cache_read_tokens": 1707008,
+                "cache_write_tokens": null,
+                "duration_seconds": 2464.297,
+                "cost": 1.9142795000000001,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 17,
+                "tool_calls": {
+                    "cpp_executor": 10,
+                    "submission": 6
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/triples": {
+            "final_answer": "{'09-subtask9': 0, '12-subtask12': 0, '05-p1-n50000': 16, '10-subtask10': 0, '11-subtask11': 5, '04-p1-inc': 11, '01-p1-n100': 8, '08-subtask8': 0, '03-p1-n2000': 10, '07-subtask7': 5, '02-p1-h10': 6, '06-p1-full': 19, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 176371,
+                "out_tokens": 48248,
+                "reasoning_tokens": 110700,
+                "cache_read_tokens": 6004736,
+                "cache_write_tokens": null,
+                "duration_seconds": 5688.533,
+                "cost": 4.3263315,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 52,
+                "tool_calls": {
+                    "cpp_executor": 50,
+                    "submission": 1
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/souvenirs": {
+            "final_answer": "{'03-almostKnownSequence': 14, '06-full': 33, '01-N2': 4, '04-N3': 18, '05-atMostDouble': 28, '02-knownSequence': 3, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 118047,
+                "out_tokens": 17849,
+                "reasoning_tokens": 51906,
+                "cache_read_tokens": 1801344,
+                "cache_write_tokens": null,
+                "duration_seconds": 1758.587,
+                "cost": 1.7917785,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 23,
+                "tool_calls": {
+                    "cpp_executor": 21,
+                    "submission": 1
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        },
+        "2025/obstacles": {
+            "final_answer": "{'04-fewq': 0, '03-fixed': 13, '06-full': 0, '02-inc': 14, '05-unrestricted': 0, '01-n1': 10, '00-samples': 0}",
+            "metadata": {
+                "in_tokens": 106800,
+                "out_tokens": 69902,
+                "reasoning_tokens": 116430,
+                "cache_read_tokens": 5089408,
+                "cache_write_tokens": null,
+                "duration_seconds": 5877.583,
+                "cost": 4.334332,
+                "token_retry_metadata": null
+            },
+            "output_context": {
+                "total_turns": 44,
+                "tool_calls": {
+                    "cpp_executor": 37,
+                    "submission": 6
+                },
+                "stop_reason": "should_stop",
+                "error": null
+            }
+        }
+    }
+}
