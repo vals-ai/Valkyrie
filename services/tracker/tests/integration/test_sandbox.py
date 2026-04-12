@@ -1,5 +1,6 @@
 """Integration tests for sandbox operations."""
 
+import asyncio
 import io
 import zipfile
 from typing import AsyncGenerator
@@ -11,6 +12,7 @@ from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 
 from tests.utils import random_task_id
 from tracker.database.models import AgentContractRequest
+from tracker.exceptions import SandboxError
 from tracker.s3 import get_contract_s3_key
 from tracker.sandbox import (
     create_sandbox,
@@ -70,7 +72,7 @@ class TestSandboxOperations:
         zip_buffer.seek(0)
 
         # Upload zip to real S3
-        s3 = boto3.client(
+        s3 = boto3.client(  # type: ignore
             "s3",
             region_name=aws_credentials.aws_default_region,
             aws_access_key_id=aws_credentials.aws_access_key_id,
@@ -200,58 +202,74 @@ class TestSandboxOperations:
 
             assert not command_timeout
 
-    async def test_named_pipe_reconnect_on_reader_kill(
+    async def test_pty_streaming_captures_all_output(
         self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
     ) -> None:
-        """Test that killing the reader session mid-stream doesn't kill the command.
-
-        The writer continues and a new reader picks up output after reconnect.
-        """
-        import asyncio
-
+        """Test that PTY streaming captures output from a multi-stage command."""
         logged_messages: list[str] = []
 
         def log_callback(message: str) -> None:
             logged_messages.append(message)
 
         async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
-            # Run a command that produces output over several seconds
-            # The sleep gaps give us time to kill the reader mid-stream
-            command = (
-                "echo 'BEFORE_KILL' && sleep 3 && "
-                "echo 'MIDDLE' && sleep 3 && "
-                "echo 'AFTER_KILL'"
-            )
+            command = "echo 'STAGE_1' && sleep 1 && echo 'STAGE_2' && sleep 1 && echo 'STAGE_3'"
 
-            async def kill_reader_after_delay() -> None:
-                """Kill the cat process reading the pipe, simulating a reader failure."""
-                await asyncio.sleep(2)
-                # Kill the cat process inside the sandbox — this causes the reader
-                # session's stream to fail, triggering the reconnect path
-                try:
-                    await sandbox.process.exec("pkill -f 'cat /tmp/.valkyrie'")
-                except Exception:
-                    pass
-
-            # Run the command and the reader-killer concurrently
-            timed_out, _ = await asyncio.gather(
-                stream_command_output(sandbox, command, on_output=log_callback),
-                kill_reader_after_delay(),
-            )
+            timed_out = await stream_command_output(sandbox, command, on_output=log_callback)
 
             assert not timed_out
             output = "\n".join(logged_messages)
-            # BEFORE_KILL should have been captured before the reader was killed
-            assert "BEFORE_KILL" in output
-            # AFTER_KILL proves the command survived the reader session death
-            assert "AFTER_KILL" in output
+            assert "STAGE_1" in output
+            assert "STAGE_2" in output
+            assert "STAGE_3" in output
+
+    async def test_pty_reconnect_with_connect_pty_session(
+        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
+    ) -> None:
+        """Test that connect_pty_session can reconnect to a running PTY and receive output."""
+
+        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
+            session_id = f"{sandbox.id}:pty-reconnect-test"
+            before_messages: list[str] = []
+            after_messages: list[str] = []
+
+            def before_callback(data: bytes) -> None:
+                before_messages.append(data.decode("utf-8", errors="replace"))
+
+            def after_callback(data: bytes) -> None:
+                after_messages.append(data.decode("utf-8", errors="replace"))
+
+            # Create PTY session and start a long-running command
+            handle = await sandbox.process.create_pty_session(
+                id=session_id,
+                on_data=before_callback,
+                envs={"TERM": "dumb"},
+            )
+            await handle.send_input("stty -echo\n")
+            await handle.send_input("echo 'BEFORE_DISCONNECT' && sleep 3 && echo 'AFTER_RECONNECT' && sleep 1; exit\n")
+
+            # Wait for initial output, then disconnect
+            await asyncio.sleep(2)
+            await handle.disconnect()
+
+            # Reconnect to the same PTY session with a new callback
+            handle2 = await sandbox.process.connect_pty_session(session_id, after_callback)
+            await handle2.wait()
+            await handle2.disconnect()
+
+            # BEFORE_DISCONNECT was captured by the first handle
+            assert any("BEFORE_DISCONNECT" in msg for msg in before_messages)
+            # AFTER_RECONNECT was captured by the second handle after reconnect
+            assert any("AFTER_RECONNECT" in msg for msg in after_messages)
+
+            try:
+                await sandbox.process.kill_pty_session(session_id)
+            except Exception:
+                pass
 
     async def test_stream_command_raises_on_sandbox_crash(
         self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
     ) -> None:
         """Test that a sandbox crash during execution is detected and raised."""
-        import asyncio
-        from tracker.exceptions import SandboxError
 
         async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
 
@@ -269,8 +287,6 @@ class TestSandboxOperations:
         self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str
     ) -> None:
         """Test that a command with non-zero exit code raises SandboxError."""
-        from tracker.exceptions import SandboxError
-
         async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources) as sandbox:
             # Use `false` (returns 1) instead of `exit 1` — exit kills the writer
             # shell itself, preventing the status file from being written.
