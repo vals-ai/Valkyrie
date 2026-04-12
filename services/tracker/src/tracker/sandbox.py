@@ -171,7 +171,7 @@ async def create_sandbox(
     try:
         yield sandbox
     except Exception as e:
-        logger.error(f"Error creating sandbox {sandbox.name}: {e}")
+        logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
         await delete_sandbox(sandbox, daytona)
@@ -255,7 +255,7 @@ async def install_agent_dependencies(
 
     contract_path = get_contract_path(contract.name)
 
-    await stream_command_output(sandbox, f"cd {str(contract_path)} && {contract.install_cmd}", log_output)
+    await stream_command_output(sandbox, f"cd {shlex.quote(str(contract_path))} && {contract.install_cmd}", log_output)
 
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 
@@ -294,7 +294,7 @@ async def _create_pty_session(
     Create a PTY session, retried since network errors do happen
 
     Raises:
-        DaytonaError: If we fail to retry and reconnect
+        DaytonaError: If all retry attempts are exhausted
     """
     return await sandbox.process.create_pty_session(id=session_id, on_data=on_data, envs=envs)
 
@@ -445,7 +445,10 @@ async def stream_command_output(
     try:
         # Create a PTY session, this is where our agent will be running
         # Set term to DUMB and LANG to UTF-8 to account for terminal colors and unsupported unicode characters
-        handle = await _create_pty_session(sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"})
+        try:
+            handle = await _create_pty_session(sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"})
+        except DaytonaError as e:
+            raise SandboxError(f"Failed to create PTY session after {_PTY_CREATE_MAX_ATTEMPTS} attempts: {e}") from e
 
         # Disable echo to suppress command line noise in the output
         await handle.send_input("stty -echo\n")
@@ -558,7 +561,7 @@ async def run_agent(
     await sandbox.process.exec(f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    timed_out = await stream_command_output(sandbox, f"cd {cwd} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
+    timed_out = await stream_command_output(sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
 
     if timed_out:
         log_output(
