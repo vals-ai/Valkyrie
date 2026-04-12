@@ -315,13 +315,21 @@ async def _create_pty_session(
 ) -> tuple[AsyncPtyHandle, str]:
     """
     Create a PTY session, retried since network errors do happen.
-    Each attempt salts the session_id to avoid collisions from prior partial creates.
 
     Raises:
         DaytonaError: If all retry attempts are exhausted
     """
+
+    # Salt the session id to ensure that no collisions occur
     salted_id = f"{session_id}-{uuid.uuid4().hex[:8]}"
+
+    # Each time we run this we want it to be logged, makes debugging easier
+    on_data(f"[Debug]: Creating PTY session with the following id {salted_id}".encode())
+
+    # Attempt to make the PTY session, timeouts occur under load
     handle = await sandbox.process.create_pty_session(id=salted_id, on_data=on_data, envs=envs)
+
+    # Handle to access the PTY and the session id to pass on
     return handle, salted_id
 
 
