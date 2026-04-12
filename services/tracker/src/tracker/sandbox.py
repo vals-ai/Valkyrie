@@ -312,14 +312,17 @@ async def _create_pty_session(
     session_id: str,
     on_data: Callable[[bytes], None],
     envs: dict[str, str] | None = None,
-) -> AsyncPtyHandle:
+) -> tuple[AsyncPtyHandle, str]:
     """
-    Create a PTY session, retried since network errors do happen
+    Create a PTY session, retried since network errors do happen.
+    Each attempt salts the session_id to avoid collisions from prior partial creates.
 
     Raises:
         DaytonaError: If all retry attempts are exhausted
     """
-    return await sandbox.process.create_pty_session(id=session_id, on_data=on_data, envs=envs)
+    salted_id = f"{session_id}-{uuid.uuid4().hex[:8]}"
+    handle = await sandbox.process.create_pty_session(id=salted_id, on_data=on_data, envs=envs)
+    return handle, salted_id
 
 
 async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
@@ -439,6 +442,19 @@ async def _disconnect_pty(handle: AsyncPtyHandle | None) -> None:
         pass
 
 
+async def _kill_pty_session(sandbox: AsyncSandbox, session_id: str | None) -> None:
+    """
+    Kill a PTY session, ignoring errors if raised or if session was never created
+    """
+    if not session_id:
+        return
+
+    try:
+        await sandbox.process.kill_pty_session(session_id)
+    except Exception:
+        logger.warning(f"Failed to kill PTY session {session_id}")
+
+
 async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
@@ -469,7 +485,9 @@ async def stream_command_output(
         # Create a PTY session, this is where our agent will be running
         # Set term to DUMB and LANG to UTF-8 to account for terminal colors and unsupported unicode characters
         try:
-            handle = await _create_pty_session(sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"})
+            handle, session_id = await _create_pty_session(
+                sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"}
+            )
         except DaytonaError as e:
             raise SandboxError(f"Failed to create PTY session after {_PTY_CREATE_MAX_ATTEMPTS} attempts: {e}") from e
 
@@ -507,10 +525,7 @@ async def stream_command_output(
         await _disconnect_pty(handle)
 
         # Kill the PTY session, ignoring exception if raised
-        try:
-            await sandbox.process.kill_pty_session(session_id)
-        except Exception:
-            logger.warning(f"Failed to kill PTY session {session_id}")
+        await _kill_pty_session(sandbox, session_id)
 
         # Remove the status file, ignoring exception if raised
         try:
