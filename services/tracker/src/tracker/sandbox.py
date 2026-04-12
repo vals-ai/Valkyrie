@@ -1,11 +1,11 @@
 """Sandbox management utilities for the tracker service."""
 
-import asyncio
 import base64
 import logging
 import shlex
 import uuid
 from asyncio import Semaphore
+from collections import deque
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
@@ -22,6 +22,7 @@ from daytona import (
     SandboxState,
 )
 from daytona.common.errors import DaytonaError
+from daytona.handle.async_pty_handle import AsyncPtyHandle
 from tenacity import (
     before_sleep_log,
     retry,
@@ -58,7 +59,6 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     except DaytonaNotFoundError:
         # If we error here that means the sandbox has just been deleted before we could refresh the state
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
-        pass
     except Exception as e:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 
@@ -172,7 +172,7 @@ async def create_sandbox(
         yield sandbox
     except Exception as e:
         logger.error(f"Error creating sandbox {sandbox.name}: {e}")
-        raise e from e
+        raise
     finally:
         await delete_sandbox(sandbox, daytona)
 
@@ -265,40 +265,47 @@ async def install_agent_dependencies(
 _TIMEOUT_EXIT_CODE: int = 124
 _SUCCESS_EXIT_CODE: int = 0
 
+# Reconnect to the PTY retry settings
 _PTY_RECONNECT_MAX_ATTEMPTS: int = 10
 _PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 
-_DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
+# Creating a PTY retry settings
 _PTY_CREATE_MAX_ATTEMPTS: int = 3
 _PTY_CREATE_DELAY_SECONDS: float = 2.0
 
+# States that determine if the sandbox has been killed
+_DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
 
-async def _create_pty_session_with_retry(
+
+@retry(
+    retry=retry_if_exception_type(DaytonaError),
+    stop=stop_after_attempt(_PTY_CREATE_MAX_ATTEMPTS),
+    wait=wait_fixed(_PTY_CREATE_DELAY_SECONDS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+async def _create_pty_session(
     sandbox: AsyncSandbox,
     session_id: str,
     on_data: Callable[[bytes], None],
     envs: dict[str, str] | None = None,
-) -> Any:
-    """Create a PTY session with retries for transient connection failures."""
-    for attempt in range(_PTY_CREATE_MAX_ATTEMPTS):
-        try:
-            return await sandbox.process.create_pty_session(
-                id=session_id if attempt == 0 else f"{session_id}-{attempt}",
-                on_data=on_data,
-                envs=envs,
-            )
-        except DaytonaError as e:
-            if attempt + 1 >= _PTY_CREATE_MAX_ATTEMPTS:
-                raise SandboxError(
-                    f"Failed to create PTY session after {_PTY_CREATE_MAX_ATTEMPTS} attempts: {e}"
-                ) from e
-            logger.warning(f"PTY session creation failed (attempt {attempt + 1}): {e}")
-            await asyncio.sleep(_PTY_CREATE_DELAY_SECONDS)
-    raise SandboxError("Failed to create PTY session")  # unreachable, satisfies type checker
+) -> AsyncPtyHandle:
+    """
+    Create a PTY session, retried since network errors do happen
+
+    Raises:
+        DaytonaError: If we fail to retry and reconnect
+    """
+    return await sandbox.process.create_pty_session(id=session_id, on_data=on_data, envs=envs)
 
 
 async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
-    """Raise SandboxError if the sandbox is no longer running."""
+    """
+    Checks if we can connect to a sandbox
+
+    Raises:
+         SandboxError: if the sandbox cannot be connected to
+    """
     try:
         await sandbox.refresh_data()
         if sandbox.state in _DEAD_SANDBOX_STATES:
@@ -309,50 +316,104 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
         raise SandboxError(f"Failed to check sandbox {sandbox.name} health: {e}") from e
 
 
-async def _wait_for_pty_with_reconnect(
+@retry(
+    retry=retry_if_not_exception_type(SandboxError),
+    stop=stop_after_attempt(_PTY_RECONNECT_MAX_ATTEMPTS),
+    wait=wait_fixed(_PTY_RECONNECT_DELAY_SECONDS),
+    reraise=True,
+)
+async def _reconnect_and_wait_pty(
+    sandbox: AsyncSandbox,
+    session_id: str,
+    on_data: Callable[[bytes], None],
+    on_output: Callable[[str], None],
+) -> None:
+    """
+    Reconnect to a PTY session and wait for it to close,
+    Used to determine if a connection issue happened or if the sandbox was killed while the run was in progress
+
+    Raises:
+        SandboxError: If we cannot successfully check the sandbox health status
+    """
+
+    # Check if the sandbox has been closed
+    await _check_sandbox_health(sandbox)
+
+    # Log so the user can see we have seen a disconnection from the websocket (easier to pickup in logs)
+    on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
+
+    # Reconnect to the PTY
+    handle = await sandbox.process.connect_pty_session(session_id, on_data)
+
+    # Wait until the command has finished running
+    await handle.wait()
+
+
+async def _wait_for_pty(
     sandbox: AsyncSandbox,
     session_id: str,
     handle: Any,
     on_data: Callable[[bytes], None],
     on_output: Callable[[str], None],
 ) -> None:
-    """Wait for the PTY to close, reconnecting on WebSocket failures."""
-    attempts = 0
-    while True:
+    """
+    Wait for the PTY to close, reconnecting on WebSocket failures
+
+    Raises:
+        SandboxError: Failed to wait until the command has been completed
+    """
+    try:
+        await handle.wait()
+    except Exception as e:
+        on_output(f"[Debug]: PTY stream has been disconnected (Attempting reconnection): {e}")
         try:
-            await handle.wait()
-            return
+            await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
+        except SandboxError:
+            raise
         except Exception as e:
-            attempts += 1
-            logger.debug(f"PTY stream disconnected (attempt {attempts}): {e}")
-            on_output(
-                f"[Debug]: Disconnected from websocket, creating a new reader and reconnecting (attempt {attempts})\n"
-            )
-
-            await _check_sandbox_health(sandbox)
-
-            if attempts >= _PTY_RECONNECT_MAX_ATTEMPTS:
-                raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
-
-            await asyncio.sleep(_PTY_RECONNECT_DELAY_SECONDS)
-
-            try:
-                handle = await sandbox.process.connect_pty_session(session_id, on_data)
-            except Exception:
-                continue
+            raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
 
 
 async def _read_exit_code(sandbox: AsyncSandbox, status_path: str) -> int:
-    """Read the command exit code from the status file."""
+    """
+    Read the command exit code from the status file (Important to determine reason for exiting)
+
+    Raises:
+        SandboxError: If we fail to read the exit code from the status file
+    """
     try:
+        # Read the status file, extracting the exit code
         result = await sandbox.process.exec(f"cat {status_path}")
+
+        # If file does not exist or we have no content the command has not produced an exit code
+        # That would suggest the sandbox was killed or something interrupted the program
         if result.exit_code != 0 or not result.result.strip():
             raise SandboxError(f"Failed to read exit status from {status_path}")
+
+        # Should always be a integer
         return int(result.result.strip())
+
     except SandboxError:
         raise
     except Exception as e:
         raise SandboxError(f"Failed to read exit status from {status_path}: {e}") from e
+
+
+async def _disconnect_pty(handle: AsyncPtyHandle | None) -> None:
+    """
+    Disconnect from the PTY, ignoring exit errors
+    """
+
+    # Don't need to disconnect if it does not exist
+    if not handle:
+        return
+
+    # Ignore exceptions raised when disconnecting
+    # Most likely would be a network connection error
+    try:
+        await handle.disconnect()
+    except Exception:
+        pass
 
 
 async def stream_command_output(
@@ -361,12 +422,7 @@ async def stream_command_output(
     on_output: Callable[[str], None],
 ) -> bool:
     """
-    Execute a command inside a sandbox using a PTY session for real
-    terminal buffering and native reconnection support.
-
-    A PTY session provides a real terminal so child processes (python,
-    tee, etc.) line-buffer their output. On WebSocket disconnect, we
-    reconnect to the same PTY session — the command keeps running.
+    Execute a command inside a sandbox using a PTY session, reconnecting on errors
 
     The exit code is written to a status file rather than relying on
     the PTY WebSocket close frame, which doesn't reliably propagate it.
@@ -378,43 +434,41 @@ async def stream_command_output(
     session_id = f"{sandbox.id}:pty-{pty_id}"
     status_dir = "/tmp/.valkyrie"
     status_path = f"{status_dir}/{pty_id}.status"
-    handle = None
-    last_output: list[str] = []
+    handle: AsyncPtyHandle | None = None
+    last_output: deque[str] = deque(maxlen=50)
 
     def on_data(data: bytes) -> None:
         text = data.decode("utf-8", errors="replace")
         on_output(text)
         last_output.append(text)
-        # Keep only the tail to avoid unbounded memory growth
-        if len(last_output) > 50:
-            last_output.pop(0)
 
     try:
-        handle = await _create_pty_session_with_retry(
-            sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"}
-        )
+        # Create a PTY session, this is where our agent will be running
+        # Set term to DUMB and LANG to UTF-8 to account for terminal colors and unsupported unicode characters
+        handle = await _create_pty_session(sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"})
 
-        # Disable echo to suppress command line noise in the output,
-        # then run the command, capture its exit code to a status file,
-        # and exit the shell so the PTY closes.
+        # Disable echo to suppress command line noise in the output
         await handle.send_input("stty -echo\n")
+
+        # Capture exit code in a status file
         await handle.send_input(f"mkdir -p {status_dir} && {command}; echo $? > {status_path}; exit\n")
 
-        await _wait_for_pty_with_reconnect(sandbox, session_id, handle, on_data, on_output)
+        # Wait for the PTY to finish running the agent, logging data returned
+        await _wait_for_pty(sandbox, session_id, handle, on_data, on_output)
 
         # Verify sandbox is still alive before reading the status file
-        try:
-            await _check_sandbox_health(sandbox)
-        except SandboxError:
-            raise
-        except Exception:
-            pass
+        await _check_sandbox_health(sandbox)
 
+        # Read the exit code of the process running the agent
         exit_code = await _read_exit_code(sandbox, status_path)
 
+        # Timeout error has a special handle since its caused by the benchmark service
+        # Remaining exit codes get handled by waterfall
         if exit_code == _TIMEOUT_EXIT_CODE:
             return True
 
+        # Failed error code handling (truncate error shown to the user)
+        # Final log is shown to the user, ignore traceback since it provides no insight as to what actually happened in the sandbox
         if exit_code != _SUCCESS_EXIT_CODE:
             tail = "".join(last_output).strip().splitlines()
             recent = "\n".join(tail[-10:]) if tail else "(no output)"
@@ -423,15 +477,16 @@ async def stream_command_output(
         return False
 
     finally:
-        if handle:
-            try:
-                await handle.disconnect()
-            except Exception:
-                pass
+        # Disconnect form PTY, ignoring exception if raised
+        await _disconnect_pty(handle)
+
+        # Kill the PTY session, ignoring exception if raised
         try:
             await sandbox.process.kill_pty_session(session_id)
         except Exception:
             logger.warning(f"Failed to kill PTY session {session_id}")
+
+        # Remove the status file, ignoring exception if raised
         try:
             await sandbox.process.exec(f"rm -f {status_path}")
         except Exception:
@@ -455,12 +510,8 @@ async def archive_and_upload_output(
 
         upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
     finally:
-        # Check if file exists and remove it if it does
-        result = await sandbox.process.exec(f"test -e {shlex.quote(archive_path)}")
-        if result.exit_code == 0:
-            await sandbox.process.exec(f"rm -f {shlex.quote(archive_path)}")
-        else:
-            logger.warning(f"File {archive_path} does not exist, skipping removal")
+        # Remove the file if it exists `-f` exits silently if the file does not exist
+        await sandbox.process.exec(f"rm -f {shlex.quote(archive_path)}")
 
 
 async def run_agent(
