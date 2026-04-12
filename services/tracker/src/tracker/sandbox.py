@@ -552,7 +552,10 @@ async def archive_and_upload_output(
         upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
     finally:
         # Remove the file if it exists `-f` exits silently if the file does not exist
-        await _exec(sandbox, f"rm -f {shlex.quote(archive_path)}")
+        try:
+            await _exec(sandbox, f"rm -f {shlex.quote(archive_path)}")
+        except Exception:
+            pass
 
 
 async def run_agent(
