@@ -18,6 +18,7 @@ from daytona import (
     CreateSandboxFromImageParams,
     CreateSandboxFromSnapshotParams,
     DaytonaNotFoundError,
+    ExecuteResponse,
     Resources,
     SandboxState,
 )
@@ -232,7 +233,7 @@ async def upload_agent_artifacts(
     script = " && ".join(steps)
 
     try:
-        result = await sandbox.process.exec(script)
+        result = await _exec(sandbox, script)
 
         if result.exit_code != 0:
             raise RuntimeError(f"Command failed with exit code {result.exit_code}: {result.result}")
@@ -265,6 +266,10 @@ async def install_agent_dependencies(
 _TIMEOUT_EXIT_CODE: int = 124
 _SUCCESS_EXIT_CODE: int = 0
 
+# Process exec retry settings
+_EXEC_MAX_ATTEMPTS: int = 3
+_EXEC_DELAY_SECONDS: float = 2.0
+
 # Reconnect to the PTY retry settings
 _PTY_RECONNECT_MAX_ATTEMPTS: int = 10
 _PTY_RECONNECT_DELAY_SECONDS: float = 1.0
@@ -275,6 +280,24 @@ _PTY_CREATE_DELAY_SECONDS: float = 2.0
 
 # States that determine if the sandbox has been killed
 _DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
+
+
+@retry(
+    retry=retry_if_exception_type(DaytonaError),
+    stop=stop_after_attempt(_EXEC_MAX_ATTEMPTS),
+    wait=wait_fixed(_EXEC_DELAY_SECONDS),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+async def _exec(sandbox: AsyncSandbox, command: str) -> ExecuteResponse:
+    """
+    Execute a command inside the sandbox with retries for transient network failures.
+
+    Raises:
+        DaytonaError: If all retry attempts are exhausted
+    """
+
+    return await sandbox.process.exec(command)
 
 
 @retry(
@@ -383,7 +406,7 @@ async def _read_exit_code(sandbox: AsyncSandbox, status_path: str) -> int:
     """
     try:
         # Read the status file, extracting the exit code
-        result = await sandbox.process.exec(f"cat {status_path}")
+        result = await _exec(sandbox, f"cat {status_path}")
 
         # If file does not exist or we have no content the command has not produced an exit code
         # That would suggest the sandbox was killed or something interrupted the program
@@ -491,7 +514,7 @@ async def stream_command_output(
 
         # Remove the status file, ignoring exception if raised
         try:
-            await sandbox.process.exec(f"rm -f {status_path}")
+            await _exec(sandbox, f"rm -f {status_path}")
         except Exception:
             pass
 
@@ -502,19 +525,19 @@ async def archive_and_upload_output(
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
 
-    tar_result = await sandbox.process.exec(f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
+    tar_result = await _exec(sandbox, f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
     if tar_result.exit_code != 0:
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
-        b64_result = await sandbox.process.exec(f"base64 {shlex.quote(archive_path)}")
+        b64_result = await _exec(sandbox, f"base64 {shlex.quote(archive_path)}")
         if b64_result.exit_code != 0:
             raise SandboxError(f"Failed to read archive from {output_path}")
 
         upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
     finally:
         # Remove the file if it exists `-f` exits silently if the file does not exist
-        await sandbox.process.exec(f"rm -f {shlex.quote(archive_path)}")
+        await _exec(sandbox, f"rm -f {shlex.quote(archive_path)}")
 
 
 async def run_agent(
@@ -558,7 +581,7 @@ async def run_agent(
         run_cmd = f"timeout {agent_timeout} {run_cmd}"
 
     # Create cwd if it does not already exist
-    await sandbox.process.exec(f"mkdir -p {shlex.quote(cwd)}")
+    await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
     timed_out = await stream_command_output(sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
@@ -570,7 +593,7 @@ async def run_agent(
 
     # Upload any output from the agent to S3
     if contract.final_output:
-        result = await sandbox.process.exec(f"test -e {shlex.quote(contract.final_output)}")
+        result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
         if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
             await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
 
