@@ -389,17 +389,35 @@ async def _wait_for_pty(
     handle: Any,
     on_data: Callable[[bytes], None],
     on_output: Callable[[str], None],
+    status_path: str,
 ) -> None:
     """
-    Wait for the PTY to close, reconnecting on WebSocket failures
+    Wait for the PTY to close, reconnecting on WebSocket failures.
+    If the PTY closes prematurely (e.g. WebSocket idle timeout) but the status file
+    hasn't been written yet, reconnect and wait again until the command actually finishes.
 
     Raises:
         SandboxError: Failed to wait until the command has been completed
     """
     try:
         await handle.wait()
+        on_output("[Debug]: PTY has been disconnected, handler has stopped polling")
     except Exception as e:
         on_output(f"[Debug]: PTY stream has been disconnected (Attempting reconnection): {e}")
+        try:
+            await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
+        except SandboxError:
+            raise
+        except Exception as e:
+            raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
+
+    # If the PTY closed cleanly but the command is still running (e.g. idle WebSocket timeout),
+    # the status file won't exist yet — reconnect and wait again.
+    while True:
+        await _check_sandbox_health(sandbox)
+        if (await _exec(sandbox, f"test -e {status_path}")).exit_code == 0:
+            break
+        on_output("[Debug]: PTY closed but status file not written yet, reconnecting\n")
         try:
             await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
         except SandboxError:
@@ -506,7 +524,7 @@ async def stream_command_output(
         await handle.send_input(f"mkdir -p {status_dir} && {command}; echo $? > {status_path}; exit\n")
 
         # Wait for the PTY to finish running the agent, logging data returned
-        await _wait_for_pty(sandbox, session_id, handle, on_data, on_output)
+        await _wait_for_pty(sandbox, session_id, handle, on_data, on_output, status_path)
 
         # Verify sandbox is still alive before reading the status file
         await _check_sandbox_health(sandbox)
