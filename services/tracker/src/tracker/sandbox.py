@@ -417,6 +417,7 @@ async def _wait_for_pty(
         await _check_sandbox_health(sandbox)
         if (await _exec(sandbox, f"test -e {status_path}")).exit_code == 0:
             break
+
         on_output("[Debug]: PTY closed but status file not written yet, reconnecting\n")
         try:
             await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
