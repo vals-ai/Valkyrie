@@ -412,7 +412,7 @@ async def _wait_for_pty(
             raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
 
     # If the PTY closed cleanly but the command is still running (e.g. idle WebSocket timeout),
-    # the status file won't exist yet — reconnect and wait again.
+    # breaks when the file with the command status code is made
     while True:
         await _check_sandbox_health(sandbox)
         if (await _exec(sandbox, f"test -e {status_path}")).exit_code == 0:
