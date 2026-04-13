@@ -324,7 +324,7 @@ async def _create_pty_session(
     salted_id = f"{session_id}-{uuid.uuid4().hex[:8]}"
 
     # Each time we run this we want it to be logged, makes debugging easier
-    on_data(f"[Debug]: Creating PTY session with the following id {salted_id}".encode())
+    on_data(f"[Debug]: Creating PTY session with the following id {salted_id}\n".encode())
 
     # Attempt to make the PTY session, timeouts occur under load
     handle = await sandbox.process.create_pty_session(id=salted_id, on_data=on_data, envs=envs)
@@ -401,9 +401,9 @@ async def _wait_for_pty(
     """
     try:
         await handle.wait()
-        on_output("[Debug]: PTY has been disconnected, handler has stopped polling")
+        on_output("[Debug]: PTY has been disconnected, handler has stopped polling\n")
     except Exception as e:
-        on_output(f"[Debug]: PTY stream has been disconnected (Attempting reconnection): {e}")
+        on_output(f"[Debug]: PTY stream has been disconnected (Attempting reconnection): {e}\n")
         try:
             await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
         except SandboxError:
