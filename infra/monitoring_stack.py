@@ -143,7 +143,7 @@ class MonitoringStack(cdk.Stack):
                 "Worker containers not running (min=1 autoscale floor breached)."
             ),
             metric=aws_cloudwatch.Metric(
-                namespace="AWS/ECS",
+                namespace="ECS/ContainerInsights",
                 metric_name="RunningTaskCount",
                 dimensions_map={
                     "ClusterName": worker_service.cluster.cluster_name,
