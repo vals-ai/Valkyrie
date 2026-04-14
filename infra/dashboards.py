@@ -284,7 +284,7 @@ def create_ecs_dashboard(
                 title=f"{name} Running vs Desired Tasks",
                 left=[
                     aws_cloudwatch.Metric(
-                        namespace="AWS/ECS",
+                        namespace="ECS/ContainerInsights",
                         metric_name="RunningTaskCount",
                         dimensions_map={
                             "ClusterName": service.cluster.cluster_name,
@@ -295,7 +295,7 @@ def create_ecs_dashboard(
                         label="Running",
                     ),
                     aws_cloudwatch.Metric(
-                        namespace="AWS/ECS",
+                        namespace="ECS/ContainerInsights",
                         metric_name="DesiredTaskCount",
                         dimensions_map={
                             "ClusterName": service.cluster.cluster_name,
