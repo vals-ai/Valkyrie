@@ -3,6 +3,7 @@
 import os
 
 import aws_cdk as cdk
+from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from tracker_stack import TrackerStack
 from worker_stack import WorkerStack
@@ -44,8 +45,22 @@ worker = WorkerStack(
     env=env,
 )
 
+monitoring = MonitoringStack(
+    app,
+    "MonitoringStack",
+    cluster=shared.cluster,
+    tracker_service=tracker.tracker_fargate_service,
+    worker_service=worker.worker_service,
+    load_balancer=tracker.service.load_balancer,
+    target_group=tracker.service.target_group,
+    database=tracker.database,
+    redis_cluster=shared.redis_cluster,
+    env=env,
+)
+
 # Deployment order
 tracker.add_dependency(shared)
 worker.add_dependency(tracker)
+monitoring.add_dependency(worker)
 
 app.synth()
