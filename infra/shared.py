@@ -71,7 +71,7 @@ class SharedStack(Stack):
         slack.add_notification_topic(notification_topic)  # type: ignore[arg-type]
 
         # Only notify for stacks deployed by this project
-        stack_names = ["SharedStack", "TrackerStack", "WorkerStack"]
+        stack_names = ["SharedStack", "TrackerStack", "WorkerStack", "MonitoringStack"]
 
         # EventBridge rule Slack notification for successful stack deployments
         success_rule = aws_events.Rule(
