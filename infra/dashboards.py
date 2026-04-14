@@ -716,11 +716,7 @@ def create_redis_dashboard(
         ),
         aws_cloudwatch.GraphWidget(
             title="Engine CPU Utilization (%)",
-            left=[
-                redis_metric(
-                    redis_cluster, "EngineCPUUtilization", statistic="Average"
-                )
-            ],
+            left=[redis_metric(redis_cluster, "EngineCPUUtilization", statistic="Average")],
             width=12,
             height=_WIDGET_HEIGHT,
         ),
@@ -730,9 +726,7 @@ def create_redis_dashboard(
     dashboard.add_widgets(
         aws_cloudwatch.GraphWidget(
             title="Memory Used for Cache (bytes)",
-            left=[
-                redis_metric(redis_cluster, "BytesUsedForCache", statistic="Average")
-            ],
+            left=[redis_metric(redis_cluster, "BytesUsedForCache", statistic="Average")],
             width=12,
             height=_WIDGET_HEIGHT,
         ),
@@ -754,9 +748,7 @@ def create_redis_dashboard(
     dashboard.add_widgets(
         aws_cloudwatch.GraphWidget(
             title="Current Connections",
-            left=[
-                redis_metric(redis_cluster, "CurrConnections", statistic="Maximum")
-            ],
+            left=[redis_metric(redis_cluster, "CurrConnections", statistic="Maximum")],
             width=12,
             height=_WIDGET_HEIGHT,
         ),
@@ -814,9 +806,7 @@ def create_redis_dashboard(
     dashboard.add_widgets(
         aws_cloudwatch.GraphWidget(
             title="Replication Bytes",
-            left=[
-                redis_metric(redis_cluster, "ReplicationBytes", statistic="Average")
-            ],
+            left=[redis_metric(redis_cluster, "ReplicationBytes", statistic="Average")],
             width=24,
             height=_WIDGET_HEIGHT,
         ),
