@@ -4,6 +4,7 @@ import traceback
 from typing import Annotated
 from uuid import UUID
 
+import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -20,6 +21,7 @@ from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
+from tracker.sentry import init_sentry
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -61,6 +63,7 @@ from tracker.utils import (
 )
 
 configure_logging()
+init_sentry("valkyrie-tracker")
 
 logger = get_logger(__name__)
 
@@ -91,12 +94,14 @@ TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
 @app.exception_handler(TrackerServiceError)
 async def tracker_service_error_handler(_request: Request, exc: TrackerServiceError):
     logger.error(exc, exc_info=True)
+    sentry_sdk.capture_exception(exc)
     raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.exception_handler(BenchmarkServiceError)
 async def benchmark_service_error_handler(_request: Request, exc: BenchmarkServiceError):
     logger.error(exc, exc_info=True)
+    sentry_sdk.capture_exception(exc)
     raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -195,12 +200,16 @@ async def start_benchmark(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
-    await process_benchmark.kicker().with_labels(
-        request_id=request_id_var.get(),
-    ).kiq(
-        start_benchmark_request_json=request.model_dump(),
-        benchmark_id_str=str(benchmark_row.id),
-        verified_task_ids=verify_response.task_ids,
+    await (
+        process_benchmark.kicker()
+        .with_labels(
+            request_id=request_id_var.get(),
+        )
+        .kiq(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=verify_response.task_ids,
+        )
     )
 
     return StartBenchmarkResponse(
@@ -419,12 +428,16 @@ async def retry_or_resume_benchmark(
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
-    await process_benchmark.kicker().with_labels(
-        request_id=request_id_var.get(),
-    ).kiq(
-        start_benchmark_request_json=resume_request_json,
-        benchmark_id_str=str(benchmark_row.id),
-        verified_task_ids=verified_task_ids,
+    await (
+        process_benchmark.kicker()
+        .with_labels(
+            request_id=request_id_var.get(),
+        )
+        .kiq(
+            start_benchmark_request_json=resume_request_json,
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=verified_task_ids,
+        )
     )
 
     return RetryOrResumeBenchmarkResponse(

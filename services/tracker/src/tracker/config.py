@@ -10,9 +10,11 @@ from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
 from tracker.logging import configure_logging
 from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware
+from tracker.sentry import init_sentry
 
 load_dotenv()
 configure_logging()
+init_sentry("valkyrie-worker")
 
 
 _BENCHMARK_SERVICE_NAMESPACE: str = "local"

@@ -15,6 +15,7 @@ from aws_cdk import (
     aws_rds,
     aws_route53,
     aws_s3,
+    aws_secretsmanager,
     aws_servicediscovery,
 )
 from aws_cdk.aws_ecr_assets import Platform
@@ -127,8 +128,20 @@ class TrackerStack(Stack):
         }
 
         db_secrets = {
-            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(self.db_credentials, field="username"),
-            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(self.db_credentials, field="password"),
+            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(
+                self.db_credentials, field="username"
+            ),
+            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(
+                self.db_credentials, field="password"
+            ),
+        }
+
+        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+            self, "SentryDsnSecret", "valkyrie/sentry-dsn"
+        )
+
+        sentry_secrets = {
+            "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
         }
 
         # ── Tracker API service ──────────────────────────────────────────
@@ -160,8 +173,12 @@ class TrackerStack(Stack):
                 "REDIS_URL": redis_url,
                 "AUTH_REQUIRED": os.environ.get("AUTH_REQUIRED", "false"),
                 "DESCOPE_PROJECT_ID": os.environ.get("DESCOPE_PROJECT_ID", ""),
+                "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
-            secrets=db_secrets,
+            secrets={
+                **db_secrets,
+                **sentry_secrets,
+            },
             command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(
                 command=["CMD-SHELL", f"curl -f http://localhost:{TRACKER_PORT}/health || exit 1"],

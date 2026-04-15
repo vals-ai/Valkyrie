@@ -4,6 +4,7 @@ Deployed independently from the tracker so that long-running benchmark
 tasks can finish while a new worker version is rolled out.
 """
 
+import os
 from typing import Any
 
 import aws_cdk as cdk
@@ -16,6 +17,7 @@ from aws_cdk import (
     aws_logs,
     aws_rds,
     aws_s3,
+    aws_secretsmanager,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
@@ -90,6 +92,14 @@ class WorkerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
         }
 
+        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+            self, "SentryDsnSecret", "valkyrie/sentry-dsn"
+        )
+
+        sentry_secrets = {
+            "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
+        }
+
         # ── Worker service ────────────────────────────────────────────────
 
         worker_task_def = aws_ecs.FargateTaskDefinition(
@@ -116,8 +126,12 @@ class WorkerStack(Stack):
                 **shared_env,
                 **db_env,
                 "REDIS_URL": redis_url,
+                "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
-            secrets=db_secrets,
+            secrets={
+                **db_secrets,
+                **sentry_secrets,
+            },
             command=[
                 "uv",
                 "run",

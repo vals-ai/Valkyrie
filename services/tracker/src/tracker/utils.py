@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from fastapi import Request
+import sentry_sdk
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
@@ -157,6 +158,7 @@ class TrackedTask:
         except Exception as e:
             error_message = f"Task error was not handled: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_message)
+            sentry_sdk.capture_exception(e)
             with Session(bind=engine) as session:
                 task = fetch_task_row(task_row.id, session, self._org)
                 commit_task_error(task, session, error_message)
@@ -311,6 +313,8 @@ async def process_task(
     the evaluation will fail since the instance no longer exists. We handle this inside of the exception caught.
     """
     task_id_var.set(task_id)
+    sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
+    sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
     with Session(bind=engine) as task_session:
         benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
@@ -425,7 +429,11 @@ async def process_task(
                 # Save the evaluation result to the database with the task row
                 # Flag the agent timed out when trying to complete the task (expected)
                 evaluation_result_row = EvaluationResult(
-                    org_id=org.id, task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_timed_out=agent_timed_out
+                    org_id=org.id,
+                    task=task_row.id,
+                    instance_id=sandbox.id,
+                    result=evaluation_result,
+                    agent_timed_out=agent_timed_out,
                 )
 
                 with Session(bind=engine) as task_session:
@@ -445,6 +453,8 @@ async def process_task(
     except Exception as e:
         error_message = str(e)
         logger.error(error_message, exc_info=True)
+
+        sentry_sdk.capture_exception(e)
 
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
@@ -560,6 +570,8 @@ async def process_benchmark(
     benchmark_id: UUID = UUID(benchmark_id_str)
     benchmark_service = start_benchmark_request.benchmark_service
     harness_config: HarnessConfig = start_benchmark_request.harness_config
+    sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
+    sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
     # Create notifier if webhook is configured
     notifier: SlackNotifier | None = None
@@ -678,6 +690,8 @@ async def process_benchmark(
                 invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
 
     except Exception as e:
+        sentry_sdk.capture_exception(e)
+
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
