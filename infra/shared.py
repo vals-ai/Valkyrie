@@ -81,7 +81,10 @@ class SharedStack(Stack):
                 source=["aws.cloudformation"],
                 detail_type=["CloudFormation Stack Status Change"],
                 detail={
-                    "stack-id": [{"wildcard": f"*:stack/{name}/*"} for name in stack_names],
+                    "stack-id": [
+                        {"prefix": f"arn:aws:cloudformation:{self.region}:{self.account}:stack/{name}/"}
+                        for name in stack_names
+                    ],
                     "status-details": {
                         "status": ["CREATE_COMPLETE", "UPDATE_COMPLETE"],
                     },
@@ -133,7 +136,10 @@ class SharedStack(Stack):
                 source=["aws.cloudformation"],
                 detail_type=["CloudFormation Stack Status Change"],
                 detail={
-                    "stack-id": [{"wildcard": f"*:stack/{name}/*"} for name in stack_names],
+                    "stack-id": [
+                        {"prefix": f"arn:aws:cloudformation:{self.region}:{self.account}:stack/{name}/"}
+                        for name in stack_names
+                    ],
                     "status-details": {
                         "status": [
                             "CREATE_FAILED",
