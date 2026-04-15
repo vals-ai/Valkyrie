@@ -4,7 +4,7 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
-from taskiq import InMemoryBroker
+from taskiq import InMemoryBroker, TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
@@ -14,7 +14,6 @@ from tracker.sentry import init_sentry
 
 load_dotenv()
 configure_logging()
-init_sentry("valkyrie-worker")
 
 
 _BENCHMARK_SERVICE_NAMESPACE: str = "local"
@@ -65,6 +64,12 @@ broker = (
     .with_result_backend(result_backend)
     .with_middlewares(TaskProtectionMiddleware(), LoggingContextMiddleware())
 )
+
+
+@broker.on_event(TaskiqEvents.WORKER_STARTUP)
+async def _init_worker_sentry(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
+    init_sentry("valkyrie-worker")
+
 
 # Auth settings
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
