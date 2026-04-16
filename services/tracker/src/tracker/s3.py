@@ -225,7 +225,7 @@ def create_console_url(s3_key: str, region: str, s3_bucket: str) -> str:
     return f"https://{region}.console.aws.amazon.com/s3/object/{s3_bucket}?region={region}&prefix={s3_key}"
 
 
-@handle_s3_error(message="Failed to create benchmark URL")
+@handle_s3_error(message="Failed to create run URL")
 def create_benchmark_url(benchmark_id: str, region: str, s3_bucket: str) -> str:
     """
     Create the AWS Console URL for a benchmark's S3 folder.

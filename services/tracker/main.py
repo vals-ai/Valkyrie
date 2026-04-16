@@ -358,7 +358,7 @@ async def stop_benchmark(
     if benchmark_row.status not in valid_stop_states:
         raise HTTPException(
             status_code=400,
-            detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error benchmark.",
+            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error run.",
         )
 
     await initiate_stop_benchmark(benchmark_row, session, force, org)
@@ -517,7 +517,7 @@ async def fetch_agent_outputs(
     if not s3_keys:
         raise HTTPException(
             status_code=404,
-            detail=f"No outputs found for benchmark '{benchmark_id}'",
+            detail=f"No outputs found for run '{benchmark_id}'",
         )
 
     def tar_generator():

@@ -257,9 +257,9 @@ def fetch_benchmark_row(benchmark_id: UUID, session: Session, org: Org) -> Bench
     """Fetch benchmark row with org validation. Raises domain errors (not HTTPException) for use in background tasks."""
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
-        raise ValueError(f"Benchmark with id {benchmark_id} not found")
+        raise ValueError(f"Run with id {benchmark_id} not found")
     if benchmark_row.org_id != org.id:
-        raise ValueError(f"Benchmark {benchmark_id} does not belong to org {org.id}")
+        raise ValueError(f"Run {benchmark_id} does not belong to org {org.id}")
     return benchmark_row
 
 
@@ -586,7 +586,7 @@ async def process_benchmark(
     with Session(bind=engine) as session:
         benchmark_row = session.get(Benchmark, benchmark_id)
         if not benchmark_row:
-            raise TrackerServiceError(f"Benchmark with id {benchmark_id} not found")
+            raise TrackerServiceError(f"Run with id {benchmark_id} not found")
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
     try:
@@ -941,7 +941,7 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
             session.add(benchmark_row)
             session.commit()
     except Exception as e:
-        raise TrackerServiceError(f"Unexpected error stopping benchmark {benchmark_row.id}: {str(e)}") from e
+        raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
 
 
 async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> str | None:
@@ -1128,7 +1128,7 @@ async def reset_to_in_progress_status(
     except (TrackerServiceError, BenchmarkServiceError):
         raise
     except Exception as e:
-        raise TrackerServiceError(f"Unexpected error resuming benchmark {benchmark_row.id}: {str(e)}") from e
+        raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
 
 
 def fetch_filtered_benchmark_rows(
