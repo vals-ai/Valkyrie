@@ -34,27 +34,10 @@ def upgrade() -> None:
 
     # Backfill: existing agent_timed_out=true rows map to the timeout reason.
     # agent_timed_out=false rows remain NULL (clean exit).
-    op.execute(
-        "UPDATE evaluationresult SET agent_caused_exit_reason = 'timeout' WHERE agent_timed_out = true"
-    )
+    op.execute("UPDATE evaluationresult SET agent_caused_exit_reason = 'timeout' WHERE agent_timed_out = true")
 
     op.drop_column("evaluationresult", "agent_timed_out")
 
 
 def downgrade() -> None:
-    """Downgrade schema."""
-    op.add_column(
-        "evaluationresult",
-        sa.Column("agent_timed_out", sa.Boolean(), nullable=True),
-    )
-
-    # Only rows whose exit reason was a timeout are reconstructed as timed-out.
-    # Everything else (NULL or os_killed) becomes false — os_killed has no bool equivalent.
-    op.execute(
-        "UPDATE evaluationresult SET agent_timed_out = (agent_caused_exit_reason = 'timeout')"
-    )
-    op.alter_column("evaluationresult", "agent_timed_out", nullable=False)
-
-    op.drop_column("evaluationresult", "agent_caused_exit_reason")
-
-    sa.Enum(name=_ENUM_NAME).drop(op.get_bind(), checkfirst=True)
+    pass
