@@ -62,6 +62,13 @@ class BenchmarkStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class AgentCausedExitReason(str, Enum):
+    """Exit reasons caused by the agent that continue to evaluation"""
+
+    TIMEOUT = "TIMEOUT"
+    OS_KILLED = "OS_KILLED"
+
+
 class AgentContractRequest(BaseModel):
     name: str
     model: str | None = None
@@ -323,5 +330,5 @@ class EvaluationResult(SQLModel, table=True):
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
     instance_id: str = Field(unique=True)
-    agent_timed_out: bool = Field(default=False)
+    agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))

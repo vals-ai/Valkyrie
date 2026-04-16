@@ -1,3 +1,5 @@
+import asyncio
+
 from daytona import AsyncDaytona
 
 from tests.utils import random_task_id
@@ -16,6 +18,7 @@ class TestUploadToS3:
         test_resources: TrackerResources,
         daytona_client: AsyncDaytona,
         harness_config: HarnessConfig,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test creating a tar.gz from a file in sandbox and uploading to S3."""
         file_path = "/tmp/test_output.json"
@@ -28,6 +31,7 @@ class TestUploadToS3:
                 sandbox_name=random_sandbox_name,
                 image=test_image,
                 resources=test_resources,
+                creation_semaphore=creation_semaphore,
             ) as sandbox:
                 await sandbox.process.exec(f"echo '{file_content}' > {file_path}")
 
@@ -51,6 +55,7 @@ class TestUploadToS3:
         random_sandbox_name: str,
         test_resources: TrackerResources,
         daytona_client: AsyncDaytona,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test creating a tar.gz from a directory in sandbox and uploading to S3."""
         dir_path = "/tmp/test_output_dir"
@@ -62,6 +67,7 @@ class TestUploadToS3:
                 sandbox_name=random_sandbox_name,
                 image=test_image,
                 resources=test_resources,
+                creation_semaphore=creation_semaphore,
             ) as sandbox:
                 await sandbox.process.exec(f"mkdir -p {dir_path}")
                 await sandbox.process.exec(f"echo 'file1 content' > {dir_path}/file1.txt")

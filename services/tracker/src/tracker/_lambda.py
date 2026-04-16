@@ -1,4 +1,5 @@
 import json
+from functools import lru_cache
 from typing import Any
 
 import boto3
@@ -6,6 +7,17 @@ from botocore.exceptions import ClientError
 
 from tracker.exceptions import LambdaError
 from tracker.types import AWSCredentials
+
+
+@lru_cache(maxsize=32)
+def _lambda_client(aws: AWSCredentials) -> Any:
+    """Lambda client cached to share instances."""
+    return boto3.client(  # pyright: ignore[reportUnknownMemberType]
+        "lambda",
+        aws_access_key_id=aws.aws_access_key_id,
+        aws_secret_access_key=aws.aws_secret_access_key,
+        region_name=aws.aws_default_region,
+    )
 
 
 def invoke_lambda(function_name: str, payload: dict[str, Any], aws: AWSCredentials):
@@ -18,12 +30,7 @@ def invoke_lambda(function_name: str, payload: dict[str, Any], aws: AWSCredentia
     """
 
     try:
-        lambda_client = boto3.client(  # pyright: ignore[reportUnknownMemberType]
-            "lambda",
-            aws_access_key_id=aws.aws_access_key_id,
-            aws_secret_access_key=aws.aws_secret_access_key,
-            region_name=aws.aws_default_region,
-        )
+        lambda_client = _lambda_client(aws)
 
         response = lambda_client.invoke(
             FunctionName=function_name,

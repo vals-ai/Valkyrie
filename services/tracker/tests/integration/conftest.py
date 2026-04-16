@@ -1,5 +1,6 @@
 import os
 import uuid
+from asyncio import Semaphore
 from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
@@ -129,6 +130,11 @@ def harness_config(daytona_secret_name: str, aws_credentials: AWSCredentials) ->
         log_retention_policy=log_retention_policy,
         s3_bucket=aws_s3_bucket,
     )
+
+
+@pytest.fixture
+def creation_semaphore() -> Semaphore:
+    return Semaphore(10)
 
 
 @pytest.fixture(scope="function")
