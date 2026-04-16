@@ -619,24 +619,22 @@ def format_table(
 
 def format_agents_response(
     agents: list[tuple[str, datetime]],
-    current_page: int = 1,
-    total_pages: int = 1,
+    current_page: int,
+    total_pages: int,
+    total_count: int,
 ) -> None:
     """
     Format and display agents in a table format.
 
     Args:
-        agents: List of tuples (agent_name, last_modified)
+        agents: List of tuples (agent_name, last_modified) for the current page
         current_page: Current page number (1-indexed)
         total_pages: Total number of pages
+        total_count: Total agent count across all pages
     """
-    if not agents:
-        click.echo(click.style("No agents found.", fg="yellow"))
-        return
-
     rows = [{"Agent": name, "Last Modified": local_time(last_modified)} for name, last_modified in agents]
 
-    format_table(rows, ["Agent", "Last Modified"], current_page, total_pages, len(agents), "agent")
+    format_table(rows, ["Agent", "Last Modified"], current_page, total_pages, total_count, "agent")
 
 
 def paginate_agents(agents: list[tuple[str, datetime]], limit: int = 10) -> None:
@@ -660,7 +658,7 @@ def paginate_agents(agents: list[tuple[str, datetime]], limit: int = 10) -> None
             break
 
         page_agents = agents[offset : offset + limit]
-        format_agents_response(page_agents, current_page, total_pages)
+        format_agents_response(page_agents, current_page, total_pages, total_count)
 
         if total_pages <= 1:
             break
