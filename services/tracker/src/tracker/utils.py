@@ -39,6 +39,7 @@ from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
+    copy_agent_to_benchmark,
     create_benchmark_url,
     get_agent_result_s3_key,
     upload_to_s3,
@@ -386,7 +387,11 @@ async def process_task(
 
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(
-                    sandbox, start_benchmark_request.contract, harness_config.aws, harness_config.s3_bucket
+                    sandbox,
+                    start_benchmark_request.contract,
+                    str(benchmark_id),
+                    harness_config.aws,
+                    harness_config.s3_bucket,
                 )
 
                 _ = await benchmark_service.setup_task(
@@ -594,6 +599,15 @@ async def process_benchmark(
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
     try:
+        # Self-heal: freeze the agent contract into the benchmark's S3 folder.
+        # Idempotent — skips if /start-benchmark already copied it, and never overwrites on resume.
+        await copy_agent_to_benchmark(
+            str(benchmark_id),
+            start_benchmark_request.contract.name,
+            harness_config.aws,
+            harness_config.s3_bucket,
+        )
+
         # Create benchmark cloudwatch log group
         create_benchmark_group(
             str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy

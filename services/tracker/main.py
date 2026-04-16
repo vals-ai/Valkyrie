@@ -24,6 +24,7 @@ from tracker.middleware import RequestContextMiddleware
 from tracker.sentry import init_sentry
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
+    copy_agent_to_benchmark,
     create_benchmark_url,
     create_console_url,
     create_presigned_url,
@@ -189,6 +190,25 @@ async def start_benchmark(
     try:
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
+        )
+    except Exception as e:
+        error_message = f"{str(e)}\n{traceback.format_exc()}"
+        commit_benchmark_error(benchmark_row, session, error_message)
+        error_response = StartBenchmarkErrorResponse(
+            benchmark_id=benchmark_row.id,
+            error_message=error_message,
+        )
+
+        raise TrackerServiceError(error_response.model_dump_json()) from e
+
+    # Freeze the agent contract for this benchmark run so edits to agents/<name>.zip
+    # during the run don't affect results. Copy is idempotent (skip-if-dest-exists).
+    try:
+        await copy_agent_to_benchmark(
+            str(benchmark_row.id),
+            request.contract.name,
+            request.harness_config.aws,
+            request.harness_config.s3_bucket,
         )
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"

@@ -37,7 +37,7 @@ from tenacity import (
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import InvalidSandboxConfigurationError, SandboxError
 from tracker.logging import get_logger
-from tracker.s3 import create_presigned_url, get_contract_s3_key, upload_to_s3
+from tracker.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
@@ -188,14 +188,22 @@ async def create_sandbox(
 
 @retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
 async def upload_agent_artifacts(
-    sandbox: AsyncSandbox, contract: AgentContractRequest, aws: AWSCredentials, s3_bucket: str
+    sandbox: AsyncSandbox,
+    contract: AgentContractRequest,
+    benchmark_id: str,
+    aws: AWSCredentials,
+    s3_bucket: str,
 ) -> None:
     """
     Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
 
+    Reads from the per-benchmark frozen copy at benchmarks/<benchmark_id>/<name>.zip,
+    not the shared agents/<name>.zip, so edits to the shared agent don't affect runs in flight.
+
     Args:
         sandbox: The sandbox to download and extract files in
         contract: The agent contract configuration
+        benchmark_id: The benchmark run id, used to locate the frozen agent copy
         aws: AWS credentials for presigned URL generation
         s3_bucket: S3 bucket name
 
@@ -204,7 +212,7 @@ async def upload_agent_artifacts(
     """
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
-    contract_s3_key = get_contract_s3_key(contract.name)
+    contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
     presigned_url = create_presigned_url(contract_s3_key, aws, s3_bucket)
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
