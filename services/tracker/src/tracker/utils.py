@@ -12,10 +12,10 @@ from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from fastapi import Request
-import sentry_sdk
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
@@ -57,6 +57,8 @@ from tracker.types import (
 )
 
 logger = get_logger(__name__)
+
+_SANDBOX_CREATION_CAP: int = 10
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -305,6 +307,7 @@ async def process_task(
     task_id: str,
     harness_config: HarnessConfig,
     org: Org,
+    creation_semaphore: Semaphore,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -373,6 +376,7 @@ async def process_task(
             labels=labels,
             env_vars=resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
             resources=task_data.resources,
+            creation_semaphore=creation_semaphore,
         ) as sandbox:
             try:
                 with Session(bind=engine) as task_session:
@@ -607,11 +611,21 @@ async def process_benchmark(
                 f"Race condition occured when resuming benchmark {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
             )
 
+        # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
+        creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
+
         # Load the tasks we are going to be tracking
         tracked_tasks: dict[str, TrackedTask] = {
             task_id: TrackedTask(
                 process_task(
-                    task_row, start_benchmark_request, benchmark_service, benchmark_id, task_id, harness_config, org
+                    task_row,
+                    start_benchmark_request,
+                    benchmark_service,
+                    benchmark_id,
+                    task_id,
+                    harness_config,
+                    org,
+                    creation_semaphore=creation_semaphore,
                 ),
                 org,
             )
@@ -1232,7 +1246,9 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
     return final_view
 
 
-async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig) -> str:
+async def upload_final_view(
+    benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig
+) -> str:
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
     await upload_to_s3(

@@ -74,10 +74,6 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 
 
-_SANDBOX_CREATION_CAP: int = 10
-_sandbox_creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
-
-
 @retry(
     retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
     stop=stop_after_attempt(3),
@@ -155,6 +151,7 @@ async def create_sandbox(
     sandbox_name: str,
     image: str,
     resources: TrackerResources,
+    creation_semaphore: Semaphore,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
 ) -> AsyncGenerator[AsyncSandbox, Any]:
@@ -168,6 +165,7 @@ async def create_sandbox(
         resources: The resources to use for the sandbox
         labels: The labels to use for the sandbox
         env_vars: The environment variables to use for the sandbox
+        creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
 
     Returns:
         A context manager that yields the sandbox
@@ -176,7 +174,7 @@ async def create_sandbox(
 
     # If we run too many at once it can cause hanging issues
     # NOTE does not block how many context managers we can have open, just how many sandboxes we can create at once
-    async with _sandbox_creation_semaphore:
+    async with creation_semaphore:
         sandbox = await _create_sandbox(daytona, sandbox_name, image, resources, labels, env_vars)
 
     try:
