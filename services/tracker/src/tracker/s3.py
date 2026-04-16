@@ -19,23 +19,14 @@ S3_BENCHMARKS_PREFIX = "benchmarks"
 
 
 @lru_cache(maxsize=32)
-def _s3_client_cached(access_key: str, secret_key: str, region: str) -> Any:
-    """Create an S3 client cached to share instances."""
+def _s3_client(aws: "AWSCredentials") -> Any:
+    """S3 client cached to share instances."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "s3",
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=region,
+        aws_access_key_id=aws.aws_access_key_id,
+        aws_secret_access_key=aws.aws_secret_access_key,
+        region_name=aws.aws_default_region,
         config=Config(max_pool_connections=200),
-    )
-
-
-def _s3_client(aws: "AWSCredentials") -> Any:
-    """Create an S3 client from harness config credentials."""
-    return _s3_client_cached(
-        aws.aws_access_key_id,
-        aws.aws_secret_access_key,
-        aws.aws_default_region,
     )
 
 

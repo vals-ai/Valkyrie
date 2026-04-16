@@ -15,13 +15,13 @@ logger = get_logger(__name__)
 
 
 @lru_cache(maxsize=32)
-def _secretsmanager_client(access_key: str, secret_key: str, region: str) -> Any:
-    """Create a cached Secrets Manager client."""
+def _secretsmanager_client(aws: AWSCredentials) -> Any:
+    """Cached Secrets Manager client, shared per credential tuple."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "secretsmanager",
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=region,
+        aws_access_key_id=aws.aws_access_key_id,
+        aws_secret_access_key=aws.aws_secret_access_key,
+        region_name=aws.aws_default_region,
     )
 
 
@@ -38,11 +38,7 @@ def fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, Any] | 
     Raises:
         SecretsError: If the secret does not exist or cannot be retrieved.
     """
-    client = _secretsmanager_client(  # pyright: ignore[reportUnknownVariableType]
-        aws.aws_access_key_id,
-        aws.aws_secret_access_key,
-        aws.aws_default_region,
-    )
+    client = _secretsmanager_client(aws)  # pyright: ignore[reportUnknownVariableType]
     try:
         response: dict[str, Any] = client.get_secret_value(SecretId=secret_name)  # pyright: ignore[reportUnknownMemberType]
     except ClientError as e:

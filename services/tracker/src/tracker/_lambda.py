@@ -10,13 +10,13 @@ from tracker.types import AWSCredentials
 
 
 @lru_cache(maxsize=32)
-def _lambda_client(access_key: str, secret_key: str, region: str) -> Any:
+def _lambda_client(aws: AWSCredentials) -> Any:
     """Lambda client cached to share instances."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "lambda",
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        region_name=region,
+        aws_access_key_id=aws.aws_access_key_id,
+        aws_secret_access_key=aws.aws_secret_access_key,
+        region_name=aws.aws_default_region,
     )
 
 
@@ -30,11 +30,7 @@ def invoke_lambda(function_name: str, payload: dict[str, Any], aws: AWSCredentia
     """
 
     try:
-        lambda_client = _lambda_client(
-            aws.aws_access_key_id,
-            aws.aws_secret_access_key,
-            aws.aws_default_region,
-        )
+        lambda_client = _lambda_client(aws)
 
         response = lambda_client.invoke(
             FunctionName=function_name,
