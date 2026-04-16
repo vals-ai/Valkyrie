@@ -43,7 +43,7 @@ from tracker.s3 import (
     get_agent_result_s3_key,
     upload_to_s3,
 )
-from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
 from tracker.secrets import fetch_aws_secret, resolve_secrets
 from tracker.types import (
     AWSCredentials,
@@ -964,7 +964,7 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
         await sandbox.wait_for_sandbox_start(timeout=0)
 
         # Delete the sandbox
-        await daytona_client.delete(sandbox)
+        await delete_sandbox(sandbox, daytona_client)
 
         return None
     except Exception as e:
