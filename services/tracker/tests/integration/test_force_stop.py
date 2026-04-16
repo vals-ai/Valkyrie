@@ -29,6 +29,7 @@ class TestForceStop:
         aws_credentials: AWSCredentials,
         random_sandbox_name: str,
         test_image: str,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """
         Test force stopping a single sandbox that is building
@@ -58,6 +59,7 @@ class TestForceStop:
                 random_sandbox_name,
                 test_image,
                 resources=test_resources,
+                creation_semaphore=creation_semaphore,
             ) as _:
                 pass
 
@@ -86,6 +88,7 @@ class TestForceStop:
         benchmark_service: BenchmarkServiceClient,
         test_image: str,
         test_resources: TrackerResources,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """
         Test force stopping multiple sandboxes that are being built / already built
@@ -107,8 +110,9 @@ class TestForceStop:
                 daytona=daytona_client,
                 sandbox_name=sandbox_name,
                 image=test_image,
-                labels=labels,
                 resources=test_resources,
+                creation_semaphore=creation_semaphore,
+                labels=labels,
             ) as sandbox:
                 # NOTE: Must wait until sandboxes have been started
                 await sandbox.wait_for_sandbox_start(timeout=0)
