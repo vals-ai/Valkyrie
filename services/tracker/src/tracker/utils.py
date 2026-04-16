@@ -243,7 +243,7 @@ class TaskMonitor:
                     continue
 
                 if not self._validate_task(task_id) and task.task is not None and not task.task.done():
-                    task.task.cancel(f"Task {task_id} has been invalidated. Benchmark has been requested to stop")
+                    task.task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
 
             await self._check_notifications()
 
@@ -485,7 +485,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
     # Tasks will be in a non-finished state if something interrupts them while they are running and the state errors here
     if tasks_not_finished:
         raise TrackerServiceError(
-            f"Cannot set final status for benchmark {benchmark_row.id} because tasks are still in the pending or in progress state."
+            f"Cannot set final status for run {benchmark_row.id} because tasks are still in the pending or in progress state."
         )
 
     tasks_stopped: int = session.exec(
@@ -604,7 +604,7 @@ async def process_benchmark(
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
         if missing_task_ids:
             raise TrackerServiceError(
-                f"Race condition occured when resuming benchmark {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
+                f"Race condition occured when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
             )
 
         # Load the tasks we are going to be tracking
@@ -780,7 +780,7 @@ class BenchmarkContext:
 
         if not result:
             raise TrackerServiceError(
-                f"No tasks have been discovered for benchmark {self._benchmark_row.id}, cannot provide task breakdown"
+                f"No tasks have been discovered for run {self._benchmark_row.id}, cannot provide task breakdown"
             )
 
         return {TaskStatus(status): count for status, count in result}
@@ -852,7 +852,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
     commit_benchmark_error(
         benchmark_row,
         session,
-        f"Benchmark {benchmark_id} exited without finishing",
+        f"Run {benchmark_id} exited without finishing",
     )
 
 
