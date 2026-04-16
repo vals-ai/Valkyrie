@@ -30,6 +30,7 @@ from tenacity import (
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
+    wait_exponential,
     wait_fixed,
 )
 
@@ -51,6 +52,13 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
+@retry(
+    retry=retry_if_exception_type(DaytonaError),
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     """Delete sandbox if it is not already destroyed or being destroyed"""
     try:
@@ -60,6 +68,8 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     except DaytonaNotFoundError:
         # If we error here that means the sandbox has just been deleted before we could refresh the state
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
+    except DaytonaError:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 
@@ -71,7 +81,7 @@ _sandbox_creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
 @retry(
     retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
     stop=stop_after_attempt(3),
-    wait=wait_fixed(120),
+    wait=wait_exponential(multiplier=1, min=5, max=30),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
@@ -275,7 +285,7 @@ _PTY_RECONNECT_MAX_ATTEMPTS: int = 10
 _PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 
 # Creating a PTY retry settings
-_PTY_CREATE_MAX_ATTEMPTS: int = 3
+_PTY_CREATE_MAX_ATTEMPTS: int = 5
 _PTY_CREATE_DELAY_SECONDS: float = 2.0
 
 # States that determine if the sandbox has been killed
