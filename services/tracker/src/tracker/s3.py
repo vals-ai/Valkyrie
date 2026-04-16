@@ -1,9 +1,10 @@
 """S3 upload utilities for the tracker service."""
 
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from botocore.response import StreamingBody
 
@@ -16,13 +17,28 @@ S3_AGENTS_PREFIX = "agents"
 S3_BENCHMARKS_PREFIX = "benchmarks"
 
 
-def _s3_client(aws: "AWSCredentials") -> Any:
-    """Create an S3 client from harness config credentials."""
+@lru_cache(maxsize=32)
+def _s3_client_cached(access_key: str, secret_key: str, region: str) -> Any:
+    """Singleton S3 client keyed by credentials.
+
+    Pool size is bumped from the default 10 since caching means all concurrent
+    S3 calls share a single pool instead of each call getting its own.
+    """
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "s3",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        region_name=aws.aws_default_region,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=region,
+        config=Config(max_pool_connections=200),
+    )
+
+
+def _s3_client(aws: "AWSCredentials") -> Any:
+    """Get (or create on first use) a cached S3 client for these credentials."""
+    return _s3_client_cached(
+        aws.aws_access_key_id,
+        aws.aws_secret_access_key,
+        aws.aws_default_region,
     )
 
 

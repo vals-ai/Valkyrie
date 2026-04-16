@@ -1,5 +1,5 @@
 import time
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
 
 import boto3
@@ -14,14 +14,29 @@ if TYPE_CHECKING:
 _created_streams: set[str] = set()
 
 
-def _cloudwatch_client(aws: "AWSCredentials") -> Any:
-    """Create a CloudWatch Logs client from harness config credentials."""
+@lru_cache(maxsize=32)
+def _cloudwatch_client_cached(access_key: str, secret_key: str, region: str) -> Any:
+    """Singleton CloudWatch Logs client keyed by credentials.
+
+    Reuses the underlying connection pool across all callers so that
+    ``max_pool_connections=200`` is actually shared rather than re-allocated
+    per call.
+    """
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "logs",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        region_name=aws.aws_default_region,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        region_name=region,
         config=Config(max_pool_connections=200),
+    )
+
+
+def _cloudwatch_client(aws: "AWSCredentials") -> Any:
+    """Get (or create on first use) a cached CloudWatch Logs client for these credentials."""
+    return _cloudwatch_client_cached(
+        aws.aws_access_key_id,
+        aws.aws_secret_access_key,
+        aws.aws_default_region,
     )
 
 
