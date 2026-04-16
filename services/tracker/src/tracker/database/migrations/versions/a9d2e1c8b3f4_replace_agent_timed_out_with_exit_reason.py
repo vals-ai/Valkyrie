@@ -19,7 +19,7 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 _ENUM_NAME = "agentcausedexitreason"
-_ENUM_VALUES = ("timeout", "os_killed")
+_ENUM_VALUES = ("TIMEOUT", "OS_KILLED")
 
 
 def upgrade() -> None:
@@ -34,7 +34,7 @@ def upgrade() -> None:
 
     # Backfill: existing agent_timed_out=true rows map to the timeout reason.
     # agent_timed_out=false rows remain NULL (clean exit).
-    op.execute("UPDATE evaluationresult SET agent_caused_exit_reason = 'timeout' WHERE agent_timed_out = true")
+    op.execute("UPDATE evaluationresult SET agent_caused_exit_reason = 'TIMEOUT' WHERE agent_timed_out = true")
 
     op.drop_column("evaluationresult", "agent_timed_out")
 

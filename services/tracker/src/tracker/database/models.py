@@ -65,8 +65,8 @@ class BenchmarkStatus(str, Enum):
 class AgentCausedExitReason(str, Enum):
     """Exit reasons caused by the agent that continue to evaluation"""
 
-    TIMEOUT = "timeout"
-    OS_KILLED = "os_killed"
+    TIMEOUT = "TIMEOUT"
+    OS_KILLED = "OS_KILLED"
 
 
 class AgentContractRequest(BaseModel):
