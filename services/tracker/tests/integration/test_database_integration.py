@@ -334,8 +334,11 @@ class TestDatabaseIntegration:
                     .where(col(Task.task_id) == task_id)
                 ).first()
                 assert evaluation_result_row is not None
-                # fetch_evaluation_results appends agent_timed_out from the model column
-                expected = {**evaluation_result_row.result, "agent_timed_out": evaluation_result_row.agent_timed_out}
+                # fetch_evaluation_results appends agent_caused_exit_reason from the model column
+                expected = {
+                    **evaluation_result_row.result,
+                    "agent_caused_exit_reason": evaluation_result_row.agent_caused_exit_reason,
+                }
                 assert evaluation_result == expected
 
             # Verify that the final evaluation row matches what we have in the database
