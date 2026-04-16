@@ -8,8 +8,8 @@ from benchmark_service.schemas import SetupTaskResponse
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
-from tracker.cloudwatch import create_benchmark_group
 from tests.conftest import TEST_ORG_ID
+from tracker.cloudwatch import create_benchmark_group
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -69,11 +69,18 @@ async def test_process_task(
     )
 
     # Bypassing process_benchmark means the agent freeze (self-heal) is skipped, so stage it here.
-    await copy_agent_to_benchmark(
-        str(benchmark.id), contract.name, harness_config.aws, harness_config.s3_bucket
-    )
+    await copy_agent_to_benchmark(str(benchmark.id), contract.name, harness_config.aws, harness_config.s3_bucket)
 
-    await process_task(task_row, request, benchmark_service, benchmark.id, _TASK_ID, harness_config, Org(id=TEST_ORG_ID, name="default"), creation_semaphore=Semaphore(10))
+    await process_task(
+        task_row,
+        request,
+        benchmark_service,
+        benchmark.id,
+        _TASK_ID,
+        harness_config,
+        Org(id=TEST_ORG_ID, name="default"),
+        creation_semaphore=Semaphore(10),
+    )
 
     database_session.refresh(task_row)
     assert task_row.status == TaskStatus.FINISHED

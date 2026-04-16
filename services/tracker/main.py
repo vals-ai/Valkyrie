@@ -12,16 +12,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
+from tracker.auth import extract_api_key, find_org_by_tenant, get_current_org, resolve_descope_tenant
 from tracker.cloudwatch import get_cloudwatch_url
 from tracker.config import AUTH_REQUIRED
-from tracker.auth import extract_api_key, find_org_by_tenant, get_current_org, resolve_descope_tenant
 from tracker.database.models import Benchmark, BenchmarkStatus, Org
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
-from tracker.sentry import init_sentry
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
@@ -32,6 +31,7 @@ from tracker.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
+from tracker.sentry import init_sentry
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
@@ -141,7 +141,7 @@ def init_org(
     tenant_name = resolve_descope_tenant(api_key)
 
     stmt = pg_insert(Org).values(name=tenant_name).on_conflict_do_nothing(index_elements=["name"])
-    result = session.execute(stmt)
+    result = session.exec(stmt)
     created = result.rowcount > 0
     session.commit()
 
@@ -191,19 +191,8 @@ async def start_benchmark(
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
         )
-    except Exception as e:
-        error_message = f"{str(e)}\n{traceback.format_exc()}"
-        commit_benchmark_error(benchmark_row, session, error_message)
-        error_response = StartBenchmarkErrorResponse(
-            benchmark_id=benchmark_row.id,
-            error_message=error_message,
-        )
 
-        raise TrackerServiceError(error_response.model_dump_json()) from e
-
-    # Freeze the agent contract for this benchmark run so edits to agents/<name>.zip
-    # during the run don't affect results. Copy is idempotent (skip-if-dest-exists).
-    try:
+        # Copy agent so edits to agents/<name>.zip during the run doesn't affect it
         await copy_agent_to_benchmark(
             str(benchmark_row.id),
             request.contract.name,

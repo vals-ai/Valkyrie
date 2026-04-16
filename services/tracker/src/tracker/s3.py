@@ -36,7 +36,7 @@ def get_contract_s3_key(contract_name: str) -> str:
 
 
 def get_benchmark_contract_s3_key(benchmark_id: str, contract_name: str) -> str:
-    """Get the S3 key for an agent zip copied into a benchmark's folder (frozen per-run)."""
+    """Get the S3 key for an agent zip copied into a benchmark's folder."""
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{contract_name}.zip"
 
 
@@ -144,15 +144,12 @@ async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSCredentials", 
         raise S3Error(f"Failed to copy S3 object from {source_key} to {dest_key}: {e}") from e
 
 
-async def copy_agent_to_benchmark(
-    benchmark_id: str, contract_name: str, aws: "AWSCredentials", s3_bucket: str
-) -> None:
+async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, aws: "AWSCredentials", s3_bucket: str) -> None:
     """
-    Freeze the agent contract zip for a benchmark run by copying
+    Freeze the agent for a benchmark run by copying
     agents/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
 
-    Idempotent: skips the copy if the destination already exists, so retry/resume
-    preserves the originally-frozen version even if agents/<name>.zip has since changed.
+    # NOTE: Skips if it already exists at that location
     """
     source_key = get_contract_s3_key(contract_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)

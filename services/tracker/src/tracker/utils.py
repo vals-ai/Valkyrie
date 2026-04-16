@@ -599,8 +599,7 @@ async def process_benchmark(
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
     try:
-        # Self-heal: freeze the agent contract into the benchmark's S3 folder.
-        # Idempotent — skips if /start-benchmark already copied it, and never overwrites on resume.
+        # Copy the agent into the benchmarks S3 folder
         await copy_agent_to_benchmark(
             str(benchmark_id),
             start_benchmark_request.contract.name,

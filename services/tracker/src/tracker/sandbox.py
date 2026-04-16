@@ -197,13 +197,12 @@ async def upload_agent_artifacts(
     """
     Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
 
-    Reads from the per-benchmark frozen copy at benchmarks/<benchmark_id>/<name>.zip,
-    not the shared agents/<name>.zip, so edits to the shared agent don't affect runs in flight.
+    Reads from benchmarks/<benchmark_id>/<name>.zip so edits to the shared agent don't affect runs in flight.
 
     Args:
         sandbox: The sandbox to download and extract files in
         contract: The agent contract configuration
-        benchmark_id: The benchmark run id, used to locate the frozen agent copy
+        benchmark_id: The benchmark run id, used to locate the agent
         aws: AWS credentials for presigned URL generation
         s3_bucket: S3 bucket name
 
