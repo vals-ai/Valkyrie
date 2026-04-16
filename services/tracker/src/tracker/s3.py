@@ -1,9 +1,11 @@
 """S3 upload utilities for the tracker service."""
 
-from functools import wraps
+import asyncio
+from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from botocore.response import StreamingBody
 
@@ -16,13 +18,15 @@ S3_AGENTS_PREFIX = "agents"
 S3_BENCHMARKS_PREFIX = "benchmarks"
 
 
+@lru_cache(maxsize=32)
 def _s3_client(aws: "AWSCredentials") -> Any:
-    """Create an S3 client from harness config credentials."""
+    """S3 client cached to share instances."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "s3",
         aws_access_key_id=aws.aws_access_key_id,
         aws_secret_access_key=aws.aws_secret_access_key,
         region_name=aws.aws_default_region,
+        config=Config(max_pool_connections=200),
     )
 
 
@@ -50,10 +54,9 @@ def handle_s3_error(message: str):
     return decorator
 
 
-@handle_s3_error(message="Failed to upload to S3")
-def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
     """
-    Upload file content to S3.
+    Upload file content to S3 without blocking the event loop.
 
     Args:
         file_content: File content as bytes
@@ -64,8 +67,15 @@ def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_buc
     Raises:
         S3Error: If upload fails due to AWS errors or network issues
     """
-    client = _s3_client(aws)
-    client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+
+    def _upload() -> None:
+        client = _s3_client(aws)
+        client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+
+    try:
+        await asyncio.to_thread(_upload)
+    except (ClientError, BotoCoreError) as e:
+        raise S3Error(f"Failed to upload to S3: {e}") from e
 
 
 @handle_s3_error(message="Failed to download from S3")

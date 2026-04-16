@@ -28,7 +28,7 @@ class BenchmarkDetails(BaseModel):
     task_breakdown: dict[TaskStatus, int]
 
 
-class AWSCredentials(BaseModel):
+class AWSCredentials(BaseModel, frozen=True):
     aws_access_key_id: str
     aws_secret_access_key: str
     aws_default_region: str

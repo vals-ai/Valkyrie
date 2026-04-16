@@ -62,7 +62,7 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_get_contract_s3_key(contract_name: str) -> str:
         return f"contracts/{contract_name}.zip"
 
-    def _mock_upload_to_s3(*_args: Any, **_kwargs: Any) -> None:
+    async def _mock_upload_to_s3(*_args: Any, **_kwargs: Any) -> None:
         pass
 
     monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
@@ -125,7 +125,7 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
+    async def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
         pass
 
     def _mock_fetch_aws_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:

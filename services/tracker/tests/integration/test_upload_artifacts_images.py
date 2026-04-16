@@ -30,6 +30,7 @@ class TestUploadArtifactsAcrossImages:
         contract: AgentContractRequest,
         aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Run upload_agent_artifacts on all images bases and confirm that the agent can successfully be uploaded"""
 
@@ -38,7 +39,7 @@ class TestUploadArtifactsAcrossImages:
 
             async with (
                 asyncio.timeout(60),
-                create_sandbox(daytona_client, sandbox_name, image, test_resources) as sandbox,
+                create_sandbox(daytona_client, sandbox_name, image, test_resources, creation_semaphore) as sandbox,
             ):
                 await upload_agent_artifacts(sandbox, contract, aws_credentials, harness_config.s3_bucket)
 

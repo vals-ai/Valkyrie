@@ -299,7 +299,7 @@ async def retrieve_results(
     final_view = create_final_view(benchmark_row, session, org)
 
     if s3:
-        s3_key = upload_final_view(benchmark_row, final_view, harness_config)
+        s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
 
         https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"
         presigned_url = create_presigned_url(s3_key, harness_config.aws, harness_config.s3_bucket)
