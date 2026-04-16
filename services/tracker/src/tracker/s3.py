@@ -20,11 +20,7 @@ S3_BENCHMARKS_PREFIX = "benchmarks"
 
 @lru_cache(maxsize=32)
 def _s3_client_cached(access_key: str, secret_key: str, region: str) -> Any:
-    """Singleton S3 client keyed by credentials.
-
-    Pool size is bumped from the default 10 since caching means all concurrent
-    S3 calls share a single pool instead of each call getting its own.
-    """
+    """Create an S3 client cached to share instances."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "s3",
         aws_access_key_id=access_key,
@@ -35,7 +31,7 @@ def _s3_client_cached(access_key: str, secret_key: str, region: str) -> Any:
 
 
 def _s3_client(aws: "AWSCredentials") -> Any:
-    """Get (or create on first use) a cached S3 client for these credentials."""
+    """Create an S3 client from harness config credentials."""
     return _s3_client_cached(
         aws.aws_access_key_id,
         aws.aws_secret_access_key,

@@ -11,7 +11,7 @@ from tracker.types import AWSCredentials
 
 @lru_cache(maxsize=32)
 def _lambda_client(access_key: str, secret_key: str, region: str) -> Any:
-    """Singleton Lambda client keyed by credentials."""
+    """Lambda client cached to share instances."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "lambda",
         aws_access_key_id=access_key,

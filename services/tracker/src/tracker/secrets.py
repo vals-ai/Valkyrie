@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 
 @lru_cache(maxsize=32)
 def _secretsmanager_client(access_key: str, secret_key: str, region: str) -> Any:
-    """Singleton Secrets Manager client keyed by credentials."""
+    """Create a cached Secrets Manager client."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "secretsmanager",
         aws_access_key_id=access_key,

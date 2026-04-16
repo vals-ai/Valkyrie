@@ -16,12 +16,7 @@ _created_streams: set[str] = set()
 
 @lru_cache(maxsize=32)
 def _cloudwatch_client_cached(access_key: str, secret_key: str, region: str) -> Any:
-    """Singleton CloudWatch Logs client keyed by credentials.
-
-    Reuses the underlying connection pool across all callers so that
-    ``max_pool_connections=200`` is actually shared rather than re-allocated
-    per call.
-    """
+    """Cloudwatch client cached to share instances."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "logs",
         aws_access_key_id=access_key,
@@ -32,7 +27,7 @@ def _cloudwatch_client_cached(access_key: str, secret_key: str, region: str) -> 
 
 
 def _cloudwatch_client(aws: "AWSCredentials") -> Any:
-    """Get (or create on first use) a cached CloudWatch Logs client for these credentials."""
+    """Create a CloudWatch Logs client from harness config credentials."""
     return _cloudwatch_client_cached(
         aws.aws_access_key_id,
         aws.aws_secret_access_key,
