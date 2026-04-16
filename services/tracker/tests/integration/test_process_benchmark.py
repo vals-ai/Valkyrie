@@ -68,7 +68,7 @@ async def test_process_task(
         str(benchmark.id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
     )
 
-    # Bypassing process_benchmark means the agent freeze (self-heal) is skipped, so stage it here.
+    # Need to copy agent inside subdir before we start the task
     await copy_agent_to_benchmark(str(benchmark.id), contract.name, harness_config.aws, harness_config.s3_bucket)
 
     await process_task(

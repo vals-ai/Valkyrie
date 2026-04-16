@@ -1,4 +1,5 @@
 import asyncio
+from uuid import uuid4
 
 import boto3
 from benchmark_service.schemas import Resources
@@ -36,7 +37,7 @@ class TestUploadArtifactsAcrossImages:
     ) -> None:
         """Run upload_agent_artifacts on all images bases and confirm that the agent can successfully be uploaded"""
 
-        benchmark_id = "test-images-benchmark"
+        benchmark_id = f"test-benchmark-{uuid4().hex[:5]}"
 
         # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.
         s3 = boto3.client(  # type: ignore

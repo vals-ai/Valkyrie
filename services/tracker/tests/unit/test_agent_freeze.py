@@ -2,25 +2,17 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 from pytest import MonkeyPatch
 
 from tracker import s3 as s3_module
 from tracker.s3 import copy_agent_to_benchmark
-from tracker.types import AWSCredentials
-
-
-@pytest.fixture
-def aws() -> AWSCredentials:
-    return AWSCredentials(
-        aws_access_key_id="test-key",
-        aws_secret_access_key="test-secret",
-        aws_default_region="us-east-1",
-    )
+from tracker.types import HarnessConfig
 
 
 class TestCopyAgentToBenchmark:
-    async def test_copies_when_destination_missing(self, aws: AWSCredentials, monkeypatch: MonkeyPatch) -> None:
+    async def test_copies_when_destination_missing(
+        self, harness_config: HarnessConfig, monkeypatch: MonkeyPatch
+    ) -> None:
         """On first call, the agent zip is copied from agents/<name>.zip into the benchmark folder."""
         exists_mock = MagicMock(return_value=False)
         copy_mock = AsyncMock()
@@ -34,20 +26,20 @@ class TestCopyAgentToBenchmark:
         await copy_agent_to_benchmark(
             benchmark_id="bench-123",
             contract_name="my_agent",
-            aws=aws,
+            aws=harness_config.aws,
             s3_bucket="test-bucket",
         )
 
-        exists_mock.assert_called_once_with("benchmarks/bench-123/my_agent.zip", aws, "test-bucket")
+        exists_mock.assert_called_once_with("benchmarks/bench-123/my_agent.zip", harness_config.aws, "test-bucket")
         copy_mock.assert_awaited_once_with(
             "agents/my_agent.zip",
             "benchmarks/bench-123/my_agent.zip",
-            aws,
+            harness_config.aws,
             "test-bucket",
         )
 
     async def test_skips_copy_when_destination_exists(
-        self, aws: AWSCredentials, monkeypatch: MonkeyPatch
+        self, harness_config: HarnessConfig, monkeypatch: MonkeyPatch
     ) -> None:
         """
         Retry/resume must not overwrite the frozen agent copy. If benchmarks/<id>/<name>.zip
@@ -63,9 +55,9 @@ class TestCopyAgentToBenchmark:
         await copy_agent_to_benchmark(
             benchmark_id="bench-123",
             contract_name="my_agent",
-            aws=aws,
+            aws=harness_config.aws,
             s3_bucket="test-bucket",
         )
 
-        exists_mock.assert_called_once_with("benchmarks/bench-123/my_agent.zip", aws, "test-bucket")
+        exists_mock.assert_called_once_with("benchmarks/bench-123/my_agent.zip", harness_config.aws, "test-bucket")
         copy_mock.assert_not_awaited()
