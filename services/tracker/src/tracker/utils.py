@@ -677,7 +677,7 @@ async def process_benchmark(
             # Push the final benchmark view to the bucket
             final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
 
-            upload_final_view(benchmark_row, final_view, harness_config)
+            await upload_final_view(benchmark_row, final_view, harness_config)
 
             # If the user has chosen to invoke a lambda function at the end of the benchmark
             # We run it but do not let a failure affect the benchmark status
@@ -1232,10 +1232,10 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
     return final_view
 
 
-def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig) -> str:
+async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig) -> str:
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
-    upload_to_s3(
+    await upload_to_s3(
         final_view.model_dump_json(indent=4, exclude_none=True).encode(),
         s3_key,
         harness_config.aws,

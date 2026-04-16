@@ -1,5 +1,6 @@
 """S3 upload utilities for the tracker service."""
 
+import asyncio
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
 
@@ -66,10 +67,9 @@ def handle_s3_error(message: str):
     return decorator
 
 
-@handle_s3_error(message="Failed to upload to S3")
-def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
     """
-    Upload file content to S3.
+    Upload file content to S3 without blocking the event loop.
 
     Args:
         file_content: File content as bytes
@@ -80,8 +80,15 @@ def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_buc
     Raises:
         S3Error: If upload fails due to AWS errors or network issues
     """
-    client = _s3_client(aws)
-    client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+
+    def _upload() -> None:
+        client = _s3_client(aws)
+        client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+
+    try:
+        await asyncio.to_thread(_upload)
+    except (ClientError, BotoCoreError) as e:
+        raise S3Error(f"Failed to upload to S3: {e}") from e
 
 
 @handle_s3_error(message="Failed to download from S3")
