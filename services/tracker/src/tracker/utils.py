@@ -12,10 +12,10 @@ from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from fastapi import Request
-import sentry_sdk
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
@@ -43,7 +43,7 @@ from tracker.s3 import (
     get_agent_result_s3_key,
     upload_to_s3,
 )
-from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import AgentTerminationReason, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.secrets import fetch_aws_secret, resolve_secrets
 from tracker.types import (
     AWSCredentials,
@@ -398,7 +398,7 @@ async def process_task(
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
                 # Run the agent inside of the sandbox
-                agent_timed_out = await run_agent(
+                termination_reason = await run_agent(
                     sandbox,
                     start_benchmark_request.contract,
                     task_data.problem_path,
@@ -410,6 +410,8 @@ async def process_task(
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
                 )
+
+                agent_timed_out = termination_reason == AgentTerminationReason.TIMEOUT
 
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)

@@ -8,6 +8,7 @@ from asyncio import Semaphore
 from collections import deque
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from enum import Enum
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
@@ -264,7 +265,19 @@ async def install_agent_dependencies(
 # NOTE: If this gets too big move it into a mapping
 # these are decoupled since its just 2 exit codes we need to track
 _TIMEOUT_EXIT_CODE: int = 124
+_OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
+
+
+class AgentTerminationReason(str, Enum):
+    """
+    Agent exit reasons that are contributed to an action the agent took,
+    tasks with these exit reasons are still evaluated
+    """
+
+    TIMEOUT = "timeout"
+    OS_KILLED = "os_killed"
+
 
 # Process exec retry settings
 _EXEC_MAX_ATTEMPTS: int = 3
@@ -486,7 +499,7 @@ async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
-) -> bool:
+) -> AgentTerminationReason | None:
     """
     Execute a command inside a sandbox using a PTY session, reconnecting on errors
 
@@ -494,7 +507,8 @@ async def stream_command_output(
     the PTY WebSocket close frame, which doesn't reliably propagate it.
 
     Return:
-        bool - True if the command timed out, False otherwise
+        AgentTerminationReason if the command terminated abnormally but recoverably
+        (e.g., timeout or OS kill), None on clean exit.
     """
     pty_id = uuid.uuid4().hex
     session_id = f"{sandbox.id}:pty-{pty_id}"
@@ -534,9 +548,13 @@ async def stream_command_output(
         exit_code = await _read_exit_code(sandbox, status_path)
 
         # Timeout error has a special handle since its caused by the benchmark service
-        # Remaining exit codes get handled by waterfall
+        # Exit codes are waterfalled
         if exit_code == _TIMEOUT_EXIT_CODE:
-            return True
+            return AgentTerminationReason.TIMEOUT
+
+        # OS killed the process
+        if exit_code == _OS_KILL_EXIT_CODE:
+            return AgentTerminationReason.OS_KILLED
 
         # Failed error code handling (truncate error shown to the user)
         # Final log is shown to the user, ignore traceback since it provides no insight as to what actually happened in the sandbox
@@ -545,7 +563,7 @@ async def stream_command_output(
             recent = "\n".join(tail[-10:]) if tail else "(no output)"
             raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
 
-        return False
+        return None
 
     finally:
         # Disconnect form PTY, ignoring exception if raised
@@ -596,7 +614,7 @@ async def run_agent(
     s3_bucket: str,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
-) -> bool:
+) -> AgentTerminationReason | None:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -610,7 +628,8 @@ async def run_agent(
         agent_timeout: Optional timeout in seconds to enforce on the agent command
 
     Returns:
-        bool - True if the command timed out, False otherwise
+        AgentTerminationReason if the agent was terminated abnormally but recoverably
+        (timeout or OS kill), None on clean exit.
 
     Raises:
         SandboxError: If the agent fails to run or times out
@@ -629,11 +648,17 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    timed_out = await stream_command_output(sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
+    termination_reason = await stream_command_output(
+        sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
+    )
 
-    if timed_out:
+    if termination_reason == AgentTerminationReason.TIMEOUT:
         log_output(
             f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
+        )
+    elif termination_reason == AgentTerminationReason.OS_KILLED:
+        log_output(
+            f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
         )
 
     # Upload any output from the agent to S3
@@ -642,5 +667,5 @@ async def run_agent(
         if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
             await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
 
-    # Return if the agent timed out from the agent timeout provided by the benchmark service
-    return timed_out
+    # Return why the agent terminated abnormally, or None on clean exit
+    return termination_reason
