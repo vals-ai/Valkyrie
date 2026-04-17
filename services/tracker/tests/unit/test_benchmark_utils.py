@@ -257,7 +257,10 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Task id is provided as a force parameter but does not exist in dataset
-        response = client.post(f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false", json=["task_5"])
+        response = client.post(
+            f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
+            json={"task_ids": ["task_5"]},
+        )
         assert response.status_code == 500
         assert "task_5" in response.json()["detail"]
 
@@ -273,7 +276,10 @@ class TestBenchmarkUtils:
 
         # Try again with the correct task ids
 
-        response = client.post(f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false", json=task_ids)
+        response = client.post(
+            f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
+            json={"task_ids": task_ids},
+        )
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
