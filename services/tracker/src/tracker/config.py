@@ -9,11 +9,15 @@ from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
 from tracker.logging import configure_logging
-from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware
+from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware, TracingContextMiddleware
 from tracker.sentry import init_sentry
 
 load_dotenv()
 configure_logging()
+
+from tracker.tracing import configure_logfire  # noqa: E402
+
+configure_logfire("valkyrie-worker")
 
 
 _BENCHMARK_SERVICE_NAMESPACE: str = "local"
@@ -55,14 +59,14 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
 )
 
 broker = (
-    InMemoryBroker()
+    InMemoryBroker().with_middlewares(TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
     if BROKER_ENVIRONMENT == "testing"
     else RedisStreamBroker(
         url=REDIS_URL,
         idle_timeout=86400000,  # 24 hours
     )
     .with_result_backend(result_backend)
-    .with_middlewares(TaskProtectionMiddleware(), LoggingContextMiddleware())
+    .with_middlewares(TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
 )
 
 

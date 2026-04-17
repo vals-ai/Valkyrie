@@ -3,6 +3,8 @@ import io
 import json
 import time
 import traceback
+
+import logfire
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Buffer, Coroutine
 from datetime import datetime
@@ -319,158 +321,175 @@ async def process_task(
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
-    with Session(bind=engine) as task_session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
-        task_row = task_session.merge(task_row)
+    with logfire.span(
+        "process_task {task_id}",
+        task_id=task_id,
+        benchmark_id=str(benchmark_id),
+        benchmark_name=start_benchmark_request.benchmark_name,
+        agent_name=start_benchmark_request.contract.name,
+    ):
+        with Session(bind=engine) as task_session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
+            task_row = task_session.merge(task_row)
 
-        # If user has requested to stop the benchmark we exit before we process the task
-        if benchmark_row.status == BenchmarkStatus.STOPPING:
-            handle_early_exit(task_row, task_session)
+            # If user has requested to stop the benchmark we exit before we process the task
+            if benchmark_row.status == BenchmarkStatus.STOPPING:
+                handle_early_exit(task_row, task_session)
+                return {task_id: None}
+
+        # Setup logging infrastructure before try block so it's always available
+        stream_key: str = f"{benchmark_id}:{task_id}"
+        log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
+
+        # If we are retrying the task we clear logs from previous run
+        reset_cloudwatch_stream(stream_key, harness_config.aws, harness_config.log_group)
+
+        last_log_time: float = time.monotonic()
+
+        # Collects the logs and dumps them when the queue is full
+        def log_output(data: str) -> None:
+            nonlocal last_log_time
+            last_log_time = time.monotonic()
+            log_queue.put_nowait(data)
+            buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
+
+        # Auto flush if process takes a while to produce next log
+        # If a process pauses without producing anymore logs, the logs we have collected get stuck
+        async def auto_flush_logs() -> None:
+            while True:
+                await asyncio.sleep(1)
+                if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
+                    buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+
+        flush_task = asyncio.create_task(auto_flush_logs())
+
+        try:
+            task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
+
+            # Labels that show up in the UI we can use to filter sandboxes
+            labels = {
+                "Benchmark": start_benchmark_request.benchmark_name,
+                "Id": str(benchmark_id),
+                "Task": task_row.task_id,
+            }
+
+            with Session(bind=engine) as task_session:
+                task = fetch_task_row(task_row.id, task_session, org)
+                task.status = TaskStatus.BUILDING
+                task_session.commit()
+
+            async with create_sandbox(
+                daytona=benchmark_service.daytona_client,
+                sandbox_name=task_row.alias,
+                image=task_data.docker_image,
+                labels=labels,
+                env_vars=resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+                resources=task_data.resources,
+                creation_semaphore=creation_semaphore,
+            ) as sandbox:
+                try:
+                    with Session(bind=engine) as task_session:
+                        task = fetch_task_row(task_row.id, task_session, org)
+                        task.status = TaskStatus.IN_PROGRESS
+                        task_session.commit()
+
+                    # Upload the contract to the sandbox after creating and install the dependencies
+                    with logfire.span(
+                        "upload_agent {agent_name}",
+                        agent_name=start_benchmark_request.contract.name,
+                        task_id=task_id,
+                    ):
+                        await upload_agent_artifacts(
+                            sandbox, start_benchmark_request.contract, harness_config.aws, harness_config.s3_bucket
+                        )
+
+                    with logfire.span("setup_task {task_id}", task_id=task_id):
+                        _ = await benchmark_service.setup_task(
+                            task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
+                        )
+
+                    # Force flush the logs if anything has been buffered
+                    buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+
+                    # Compute the S3 key for the agent's output archive
+                    agent_output_s3_key = None
+                    if start_benchmark_request.contract.final_output:
+                        agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
+
+                    # Run the agent inside of the sandbox
+                    with logfire.span(
+                        "run_agent {task_id}",
+                        task_id=task_id,
+                        agent_name=start_benchmark_request.contract.name,
+                        agent_timeout=task_data.agent_timeout,
+                    ):
+                        agent_timed_out = await run_agent(
+                            sandbox,
+                            start_benchmark_request.contract,
+                            task_data.problem_path,
+                            task_id,
+                            log_output,
+                            task_data.cwd,
+                            aws=harness_config.aws,
+                            s3_bucket=harness_config.s3_bucket,
+                            agent_output_s3_key=agent_output_s3_key,
+                            agent_timeout=task_data.agent_timeout,
+                        )
+
+                    with Session(bind=engine) as task_session:
+                        task = fetch_task_row(task_row.id, task_session, org)
+                        task.status = TaskStatus.EVALUATING
+                        task_session.commit()
+
+                    # Evaluate the instance
+                    # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                    logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
+                    with logfire.span("evaluate_instance {task_id}", task_id=task_id):
+                        evaluation_result = await benchmark_service.evaluate_instance(
+                            task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
+                        )
+
+                    # Force flush the logs, maybe redundant since we have the one in finally:
+                    buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+
+                    # Save the evaluation result to the database with the task row
+                    # Flag the agent timed out when trying to complete the task (expected)
+                    evaluation_result_row = EvaluationResult(
+                        org_id=org.id, task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_timed_out=agent_timed_out
+                    )
+
+                    with Session(bind=engine) as task_session:
+                        task = fetch_task_row(task_row.id, task_session, org)
+                        task_session.add(evaluation_result_row)
+                        task.status = TaskStatus.FINISHED
+                        task_session.commit()
+
+                        return {task_id: evaluation_result_row.result}
+                except Exception as e:
+                    with Session(bind=engine) as task_session:
+                        task = fetch_task_row(task_row.id, task_session, org)
+                        if task.status == TaskStatus.STOPPED:
+                            return {task_id: None}
+
+                    raise e from e
+        except Exception as e:
+            logfire.exception("process_task failed")
+            error_message = str(e)
+            logger.error(error_message, exc_info=True)
+
+            sentry_sdk.capture_exception(e)
+
+            # include the error message
+            log_output(f"\n[ERROR] {error_message}")
+
+            with Session(bind=engine) as task_session:
+                task = fetch_task_row(task_row.id, task_session, org)
+                commit_task_error(task, task_session, error_message)
+
             return {task_id: None}
-
-    # Setup logging infrastructure before try block so it's always available
-    stream_key: str = f"{benchmark_id}:{task_id}"
-    log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
-
-    # If we are retrying the task we clear logs from previous run
-    reset_cloudwatch_stream(stream_key, harness_config.aws, harness_config.log_group)
-
-    last_log_time: float = time.monotonic()
-
-    # Collects the logs and dumps them when the queue is full
-    def log_output(data: str) -> None:
-        nonlocal last_log_time
-        last_log_time = time.monotonic()
-        log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
-
-    # Auto flush if process takes a while to produce next log
-    # If a process pauses without producing anymore logs, the logs we have collected get stuck
-    async def auto_flush_logs() -> None:
-        while True:
-            await asyncio.sleep(1)
-            if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
-
-    flush_task = asyncio.create_task(auto_flush_logs())
-
-    try:
-        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
-
-        # Labels that show up in the UI we can use to filter sandboxes
-        labels = {
-            "Benchmark": start_benchmark_request.benchmark_name,
-            "Id": str(benchmark_id),
-            "Task": task_row.task_id,
-        }
-
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            task.status = TaskStatus.BUILDING
-            task_session.commit()
-
-        async with create_sandbox(
-            daytona=benchmark_service.daytona_client,
-            sandbox_name=task_row.alias,
-            image=task_data.docker_image,
-            labels=labels,
-            env_vars=resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
-            resources=task_data.resources,
-            creation_semaphore=creation_semaphore,
-        ) as sandbox:
-            try:
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    task.status = TaskStatus.IN_PROGRESS
-                    task_session.commit()
-
-                # Upload the contract to the sandbox after creating and install the dependencies
-                await upload_agent_artifacts(
-                    sandbox, start_benchmark_request.contract, harness_config.aws, harness_config.s3_bucket
-                )
-
-                _ = await benchmark_service.setup_task(
-                    task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
-                )
-
-                # Force flush the logs if anything has been buffered
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
-
-                # Compute the S3 key for the agent's output archive
-                agent_output_s3_key = None
-                if start_benchmark_request.contract.final_output:
-                    agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
-
-                # Run the agent inside of the sandbox
-                agent_timed_out = await run_agent(
-                    sandbox,
-                    start_benchmark_request.contract,
-                    task_data.problem_path,
-                    task_id,
-                    log_output,
-                    task_data.cwd,
-                    aws=harness_config.aws,
-                    s3_bucket=harness_config.s3_bucket,
-                    agent_output_s3_key=agent_output_s3_key,
-                    agent_timeout=task_data.agent_timeout,
-                )
-
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    task.status = TaskStatus.EVALUATING
-                    task_session.commit()
-
-                # Evaluate the instance
-                # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
-                logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                evaluation_result = await benchmark_service.evaluate_instance(
-                    task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
-                )
-
-                # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
-
-                # Save the evaluation result to the database with the task row
-                # Flag the agent timed out when trying to complete the task (expected)
-                evaluation_result_row = EvaluationResult(
-                    org_id=org.id,
-                    task=task_row.id,
-                    instance_id=sandbox.id,
-                    result=evaluation_result,
-                    agent_timed_out=agent_timed_out,
-                )
-
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    task_session.add(evaluation_result_row)
-                    task.status = TaskStatus.FINISHED
-                    task_session.commit()
-
-                    return {task_id: evaluation_result_row.result}
-            except Exception as e:
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    if task.status == TaskStatus.STOPPED:
-                        return {task_id: None}
-
-                raise e from e
-    except Exception as e:
-        error_message = str(e)
-        logger.error(error_message, exc_info=True)
-
-        sentry_sdk.capture_exception(e)
-
-        # include the error message
-        log_output(f"\n[ERROR] {error_message}")
-
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message)
-
-        return {task_id: None}
-    finally:
-        flush_task.cancel()
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+        finally:
+            flush_task.cancel()
+            buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
@@ -577,160 +596,169 @@ async def process_benchmark(
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
-    # Create notifier if webhook is configured
-    notifier: SlackNotifier | None = None
-    if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
-        notifier = SlackNotifier(
-            secret_name=start_benchmark_request.webhook_secret_name,
-            aws=harness_config.aws,
-            intervals=start_benchmark_request.webhook_intervals,
-        )
+    with logfire.span(
+        "process_benchmark {benchmark_id}",
+        benchmark_id=benchmark_id_str,
+        benchmark_name=start_benchmark_request.benchmark_name,
+        agent_name=start_benchmark_request.contract.name,
+        task_count=len(verified_task_ids),
+    ):
+        # Create notifier if webhook is configured
+        notifier: SlackNotifier | None = None
+        if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
+            notifier = SlackNotifier(
+                secret_name=start_benchmark_request.webhook_secret_name,
+                aws=harness_config.aws,
+                intervals=start_benchmark_request.webhook_intervals,
+            )
 
-    # Resolve the org from the benchmark row (no org check on first fetch since the benchmark was just created by our system)
-    with Session(bind=engine) as session:
-        benchmark_row = session.get(Benchmark, benchmark_id)
-        if not benchmark_row:
-            raise TrackerServiceError(f"Benchmark with id {benchmark_id} not found")
-        org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
-
-    try:
-        # Create benchmark cloudwatch log group
-        create_benchmark_group(
-            str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
-        )
-
-        # Create tasks inside of the database for each task id
+        # Resolve the org from the benchmark row (no org check on first fetch since the benchmark was just created by our system)
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session, org)
+            benchmark_row = session.get(Benchmark, benchmark_id)
+            if not benchmark_row:
+                raise TrackerServiceError(f"Benchmark with id {benchmark_id} not found")
+            org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
-        task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
-        missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
-        if missing_task_ids:
-            raise TrackerServiceError(
-                f"Race condition occured when resuming benchmark {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
+        try:
+            # Create benchmark cloudwatch log group
+            create_benchmark_group(
+                str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
             )
 
-        # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
-        creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
+            # Create tasks inside of the database for each task id
+            with Session(bind=engine) as session:
+                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session, org)
 
-        # Load the tasks we are going to be tracking
-        tracked_tasks: dict[str, TrackedTask] = {
-            task_id: TrackedTask(
-                process_task(
-                    task_row,
-                    start_benchmark_request,
-                    benchmark_service,
-                    benchmark_id,
-                    task_id,
-                    harness_config,
+            task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
+            missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
+            if missing_task_ids:
+                raise TrackerServiceError(
+                    f"Race condition occured when resuming benchmark {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
+                )
+
+            # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
+            creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
+
+            # Load the tasks we are going to be tracking
+            tracked_tasks: dict[str, TrackedTask] = {
+                task_id: TrackedTask(
+                    process_task(
+                        task_row,
+                        start_benchmark_request,
+                        benchmark_service,
+                        benchmark_id,
+                        task_id,
+                        harness_config,
+                        org,
+                        creation_semaphore=creation_semaphore,
+                    ),
                     org,
-                    creation_semaphore=creation_semaphore,
-                ),
-                org,
-            )
-            for task_id, task_row in task_rows
-        }
-
-        # Start the monitor to track the state the tasks are in and cancel them when no longer valid
-        monitor = TaskMonitor(benchmark_id, tracked_tasks, org, notifier=notifier)
-        monitor_task = asyncio.create_task(monitor.track_tasks())
-
-        semaphore = Semaphore(start_benchmark_request.concurrency)
-
-        evaluation_result_rows: list[dict[str, dict[str, Any] | None]] = await gather(
-            *[tracked_tasks[task_id].run(semaphore, task_row) for task_id, task_row in task_rows]
-        )
-
-        await monitor_task
-
-        evaluation_results: dict[str, dict[str, Any] | None] = {}
-        if any(result_dict for result_dict in evaluation_result_rows):
-            # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
-            evaluation_results = {
-                task_id: evaluation_result
-                for result_dict in evaluation_result_rows
-                for task_id, evaluation_result in result_dict.items()
+                )
+                for task_id, task_row in task_rows
             }
 
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            # Fetch remaining tasks (in case this benchmark was resumed)
-            remaining_task_results = await fetch_missing_tasks(session, benchmark_row, evaluation_results, org)
+            # Start the monitor to track the state the tasks are in and cancel them when no longer valid
+            monitor = TaskMonitor(benchmark_id, tracked_tasks, org, notifier=notifier)
+            monitor_task = asyncio.create_task(monitor.track_tasks())
 
-        evaluation_results.update(remaining_task_results)
+            semaphore = Semaphore(start_benchmark_request.concurrency)
 
-        if not evaluation_results:
-            raise TrackerServiceError("No tasks were completed successfully")
+            evaluation_result_rows: list[dict[str, dict[str, Any] | None]] = await gather(
+                *[tracked_tasks[task_id].run(semaphore, task_row) for task_id, task_row in task_rows]
+            )
 
-        # Calculate the final score based off the tasks that were ran
-        final_score_response = await benchmark_service.final_score(
-            evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
-        )
+            await monitor_task
 
-        # Create the final evaluation row and add it to the database
-        final_evaluation_row = FinalEvaluation(
-            org_id=org.id,
-            benchmark=benchmark_id,
-            final_score=final_score_response.final_score,
-            properties=final_score_response.metadata,
-        )
+            evaluation_results: dict[str, dict[str, Any] | None] = {}
+            if any(result_dict for result_dict in evaluation_result_rows):
+                # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
+                evaluation_results = {
+                    task_id: evaluation_result
+                    for result_dict in evaluation_result_rows
+                    for task_id, evaluation_result in result_dict.items()
+                }
 
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            # Delete existing final evaluation if re-running
-            if benchmark_row.final_evaluation:
-                session.delete(benchmark_row.final_evaluation)
-                session.flush()
+            with Session(bind=engine) as session:
+                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                # Fetch remaining tasks (in case this benchmark was resumed)
+                remaining_task_results = await fetch_missing_tasks(session, benchmark_row, evaluation_results, org)
 
-            session.add(final_evaluation_row)
-            session.commit()
+            evaluation_results.update(remaining_task_results)
 
-            set_benchmark_final_status(benchmark_row, session, org)
+            if not evaluation_results:
+                raise TrackerServiceError("No tasks were completed successfully")
 
-            # Push the final benchmark view to the bucket
-            final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
+            # Calculate the final score based off the tasks that were ran
+            with logfire.span("final_score {benchmark_id}", benchmark_id=benchmark_id_str):
+                final_score_response = await benchmark_service.final_score(
+                    evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
+                )
 
-            await upload_final_view(benchmark_row, final_view, harness_config)
+            # Create the final evaluation row and add it to the database
+            final_evaluation_row = FinalEvaluation(
+                org_id=org.id,
+                benchmark=benchmark_id,
+                final_score=final_score_response.final_score,
+                properties=final_score_response.metadata,
+            )
 
-            # If the user has chosen to invoke a lambda function at the end of the benchmark
-            # We run it but do not let a failure affect the benchmark status
-            arguments = benchmark_row.arguments
-            if arguments.lambda_function:
-                # Expose the benchmark arguments and the benchmark id inside of the lambda
-                lambda_payload: dict[str, Any] = arguments.model_dump()
-                lambda_payload["benchmark_id"] = str(benchmark_id)
+            with Session(bind=engine) as session:
+                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                # Delete existing final evaluation if re-running
+                if benchmark_row.final_evaluation:
+                    session.delete(benchmark_row.final_evaluation)
+                    session.flush()
 
-                invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
+                session.add(final_evaluation_row)
+                session.commit()
 
-    except Exception as e:
-        sentry_sdk.capture_exception(e)
+                set_benchmark_final_status(benchmark_row, session, org)
 
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            error_message = f"{str(e)}\n{traceback.format_exc()}"
-            commit_benchmark_error(benchmark_row, session, error_message)
-    finally:
-        with Session(bind=engine) as session:
-            # Handle any misalignments between the benchmark status and tasks
-            catch_errors_during_cleanup(benchmark_id, session, org)
+                # Push the final benchmark view to the bucket
+                final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
 
-        if notifier:
-            try:
-                with Session(bind=engine) as session:
-                    benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
-                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
-                    await notifier.send_terminal_notification(
-                        notification_context,
-                        status=benchmark_row.status,
-                        final_score=final_score,
-                        error_message=benchmark_row.error_message,
-                    )
-            except Exception as notification_error:
-                logger.warning(f"Failed to send terminal notification: {notification_error}")
+                with logfire.span("upload_results {benchmark_id}", benchmark_id=benchmark_id_str):
+                    await upload_final_view(benchmark_row, final_view, harness_config)
 
-        await benchmark_service.close()
+                # If the user has chosen to invoke a lambda function at the end of the benchmark
+                # We run it but do not let a failure affect the benchmark status
+                arguments = benchmark_row.arguments
+                if arguments.lambda_function:
+                    # Expose the benchmark arguments and the benchmark id inside of the lambda
+                    lambda_payload: dict[str, Any] = arguments.model_dump()
+                    lambda_payload["benchmark_id"] = str(benchmark_id)
+
+                    invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
+
+        except Exception as e:
+            logfire.exception("process_benchmark failed")
+            sentry_sdk.capture_exception(e)
+            with Session(bind=engine) as session:
+                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                error_message = f"{str(e)}\n{traceback.format_exc()}"
+                commit_benchmark_error(benchmark_row, session, error_message)
+        finally:
+            with Session(bind=engine) as session:
+                # Handle any misalignments between the benchmark status and tasks
+                catch_errors_during_cleanup(benchmark_id, session, org)
+
+            if notifier:
+                try:
+                    with Session(bind=engine) as session:
+                        benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                        notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
+                        final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                        await notifier.send_terminal_notification(
+                            notification_context,
+                            status=benchmark_row.status,
+                            final_score=final_score,
+                            error_message=benchmark_row.error_message,
+                        )
+                except Exception as notification_error:
+                    logger.warning(f"Failed to send terminal notification: {notification_error}")
+
+            await benchmark_service.close()
 
 
 class TaskCounts(NamedTuple):

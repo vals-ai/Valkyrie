@@ -100,6 +100,14 @@ class WorkerStack(Stack):
             "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
         }
 
+        # Logfire tracing token (must be pre-created in Secrets Manager)
+        logfire_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "LogfireSecret",
+            secret_name="valkyrie/logfire-token",
+        )
+
+
         # ── Worker service ────────────────────────────────────────────────
 
         worker_task_def = aws_ecs.FargateTaskDefinition(
@@ -127,10 +135,12 @@ class WorkerStack(Stack):
                 **db_env,
                 "REDIS_URL": redis_url,
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
+                "LOGFIRE_SERVICE_NAME": "valkyrie-worker",
             },
             secrets={
                 **db_secrets,
                 **sentry_secrets,
+                "LOGFIRE_TOKEN": aws_ecs.Secret.from_secrets_manager(logfire_secret),
             },
             command=[
                 "uv",

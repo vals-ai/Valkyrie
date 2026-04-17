@@ -5,6 +5,7 @@ from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
 
 import boto3
+import logfire
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from botocore.response import StreamingBody
@@ -67,15 +68,16 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
     Raises:
         S3Error: If upload fails due to AWS errors or network issues
     """
+    with logfire.span("upload_to_s3 {s3_key}", s3_key=s3_key, s3_bucket=s3_bucket):
 
-    def _upload() -> None:
-        client = _s3_client(aws)
-        client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+        def _upload() -> None:
+            client = _s3_client(aws)
+            client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
 
-    try:
-        await asyncio.to_thread(_upload)
-    except (ClientError, BotoCoreError) as e:
-        raise S3Error(f"Failed to upload to S3: {e}") from e
+        try:
+            await asyncio.to_thread(_upload)
+        except (ClientError, BotoCoreError) as e:
+            raise S3Error(f"Failed to upload to S3: {e}") from e
 
 
 @handle_s3_error(message="Failed to download from S3")
