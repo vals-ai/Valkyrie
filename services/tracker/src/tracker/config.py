@@ -59,7 +59,9 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
 )
 
 broker = (
-    InMemoryBroker().with_middlewares(TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
+    InMemoryBroker().with_middlewares(
+        TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware()
+    )
     if BROKER_ENVIRONMENT == "testing"
     else RedisStreamBroker(
         url=REDIS_URL,

@@ -67,7 +67,16 @@ async def test_process_task(
         str(benchmark.id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
     )
 
-    await process_task(task_row, request, benchmark_service, benchmark.id, _TASK_ID, harness_config, Org(id=TEST_ORG_ID, name="default"), creation_semaphore=Semaphore(10))
+    await process_task(
+        task_row,
+        request,
+        benchmark_service,
+        benchmark.id,
+        _TASK_ID,
+        harness_config,
+        Org(id=TEST_ORG_ID, name="default"),
+        creation_semaphore=Semaphore(10),
+    )
 
     database_session.refresh(task_row)
     assert task_row.status == TaskStatus.FINISHED

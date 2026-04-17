@@ -47,7 +47,9 @@ class TestBenchmarkUtils:
         # create tasks, some which are pending and some which are in progress
         initial_task_rows: list[Task] = []
         for i in range(5):
-            initial_task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING))
+            initial_task_rows.append(
+                Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING)
+            )
         for i in range(5, 10):
             initial_task_rows.append(
                 Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
@@ -130,9 +132,13 @@ class TestBenchmarkUtils:
         # Add some tasks, non-pending (stopped and finished tasks only)
         task_rows: list[Task] = []
         for i in range(5):
-            task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED))
+            task_rows.append(
+                Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+            )
         for i in range(5, 10):
-            task_rows.append(Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED))
+            task_rows.append(
+                Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+            )
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -222,7 +228,8 @@ class TestBenchmarkUtils:
 
         # All of them finished
         task_rows = [
-            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(5)
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+            for i in range(5)
         ]
         database_session.add_all(task_rows)
         database_session.commit()

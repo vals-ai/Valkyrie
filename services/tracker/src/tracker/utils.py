@@ -455,7 +455,11 @@ async def process_task(
                     # Save the evaluation result to the database with the task row
                     # Flag the agent timed out when trying to complete the task (expected)
                     evaluation_result_row = EvaluationResult(
-                        org_id=org.id, task=task_row.id, instance_id=sandbox.id, result=evaluation_result, agent_timed_out=agent_timed_out
+                        org_id=org.id,
+                        task=task_row.id,
+                        instance_id=sandbox.id,
+                        result=evaluation_result,
+                        agent_timed_out=agent_timed_out,
                     )
 
                     with Session(bind=engine) as task_session:
@@ -748,7 +752,9 @@ async def process_benchmark(
                     with Session(bind=engine) as session:
                         benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
                         notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
-                        final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                        final_score = (
+                            benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                        )
                         await notifier.send_terminal_notification(
                             notification_context,
                             status=benchmark_row.status,

@@ -227,7 +227,9 @@ class TestDatabaseIntegration:
         database_session.add(task_row)
         database_session.flush()
 
-        async with create_sandbox(daytona_client, task_row.task_id, docker_image, test_resources, creation_semaphore) as sandbox:
+        async with create_sandbox(
+            daytona_client, task_row.task_id, docker_image, test_resources, creation_semaphore
+        ) as sandbox:
             response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
             assert response.status == "ok"
 
@@ -295,7 +297,13 @@ class TestDatabaseIntegration:
                         task_data = await benchmark_service.retrieve_task(task_id=task_id)
                         task_row = task_row_mapping[task_id]
                         evaluation_result = await self._evaluate_instance(
-                            database_session, benchmark_service, daytona_client, task_row, task_data, test_resources, creation_semaphore
+                            database_session,
+                            benchmark_service,
+                            daytona_client,
+                            task_row,
+                            task_data,
+                            test_resources,
+                            creation_semaphore,
                         )
                         evaluation_result_row = await self._create_evaluation_result(
                             database_session, task_row, evaluation_result

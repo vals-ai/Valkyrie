@@ -92,9 +92,7 @@ class WorkerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
         }
 
-        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
-            self, "SentryDsnSecret", "valkyrie/sentry-dsn"
-        )
+        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")
 
         sentry_secrets = {
             "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
@@ -106,7 +104,6 @@ class WorkerStack(Stack):
             "LogfireSecret",
             secret_name="valkyrie/logfire-token",
         )
-
 
         # ── Worker service ────────────────────────────────────────────────
 
