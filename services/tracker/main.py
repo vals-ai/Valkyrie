@@ -15,16 +15,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
+from tracker.auth import extract_api_key, find_org_by_tenant, get_current_org, resolve_descope_tenant
 from tracker.cloudwatch import get_cloudwatch_url
 from tracker.config import AUTH_REQUIRED
-from tracker.auth import extract_api_key, find_org_by_tenant, get_current_org, resolve_descope_tenant
 from tracker.database.models import Benchmark, BenchmarkStatus, Org
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
-from tracker.sentry import init_sentry
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -34,6 +33,7 @@ from tracker.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
+from tracker.sentry import init_sentry
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
@@ -367,7 +367,7 @@ async def stop_benchmark(
     if benchmark_row.status not in valid_stop_states:
         raise HTTPException(
             status_code=400,
-            detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error benchmark.",
+            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error run.",
         )
 
     await initiate_stop_benchmark(benchmark_row, session, force, org)
@@ -413,7 +413,7 @@ async def retry_or_resume_benchmark(
     if benchmark_row.status in invalid_states:
         raise HTTPException(
             status_code=400,
-            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a benchmark that is currently running.",
+            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is currently running.",
         )
 
     # NOTE: 0 is not acceptable
@@ -531,7 +531,7 @@ async def fetch_agent_outputs(
     if not s3_keys:
         raise HTTPException(
             status_code=404,
-            detail=f"No outputs found for benchmark '{benchmark_id}'",
+            detail=f"No outputs found for run '{benchmark_id}'",
         )
 
     def tar_generator():

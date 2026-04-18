@@ -45,7 +45,7 @@ from tracker.s3 import (
     get_agent_result_s3_key,
     upload_to_s3,
 )
-from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
 from tracker.secrets import fetch_aws_secret, resolve_secrets
 from tracker.types import (
     AWSCredentials,
@@ -247,7 +247,7 @@ class TaskMonitor:
                     continue
 
                 if not self._validate_task(task_id) and task.task is not None and not task.task.done():
-                    task.task.cancel(f"Task {task_id} has been invalidated. Benchmark has been requested to stop")
+                    task.task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
 
             await self._check_notifications()
 
@@ -261,9 +261,9 @@ def fetch_benchmark_row(benchmark_id: UUID, session: Session, org: Org) -> Bench
     """Fetch benchmark row with org validation. Raises domain errors (not HTTPException) for use in background tasks."""
     benchmark_row = session.get(Benchmark, benchmark_id)
     if not benchmark_row:
-        raise ValueError(f"Benchmark with id {benchmark_id} not found")
+        raise ValueError(f"Run with id {benchmark_id} not found")
     if benchmark_row.org_id != org.id:
-        raise ValueError(f"Benchmark {benchmark_id} does not belong to org {org.id}")
+        raise ValueError(f"Run {benchmark_id} does not belong to org {org.id}")
     return benchmark_row
 
 
@@ -423,7 +423,7 @@ async def process_task(
                         agent_name=start_benchmark_request.contract.name,
                         agent_timeout=task_data.agent_timeout,
                     ):
-                        agent_timed_out = await run_agent(
+                        exit_reason = await run_agent(
                             sandbox,
                             start_benchmark_request.contract,
                             task_data.problem_path,
@@ -453,13 +453,13 @@ async def process_task(
                     buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
                     # Save the evaluation result to the database with the task row
-                    # Flag the agent timed out when trying to complete the task (expected)
+                    # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
                     evaluation_result_row = EvaluationResult(
                         org_id=org.id,
                         task=task_row.id,
                         instance_id=sandbox.id,
                         result=evaluation_result,
-                        agent_timed_out=agent_timed_out,
+                        agent_caused_exit_reason=exit_reason,
                     )
 
                     with Session(bind=engine) as task_session:
@@ -512,7 +512,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
     # Tasks will be in a non-finished state if something interrupts them while they are running and the state errors here
     if tasks_not_finished:
         raise TrackerServiceError(
-            f"Cannot set final status for benchmark {benchmark_row.id} because tasks are still in the pending or in progress state."
+            f"Cannot set final status for run {benchmark_row.id} because tasks are still in the pending or in progress state."
         )
 
     tasks_stopped: int = session.exec(
@@ -620,7 +620,7 @@ async def process_benchmark(
         with Session(bind=engine) as session:
             benchmark_row = session.get(Benchmark, benchmark_id)
             if not benchmark_row:
-                raise TrackerServiceError(f"Benchmark with id {benchmark_id} not found")
+                raise TrackerServiceError(f"Run with id {benchmark_id} not found")
             org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
         try:
@@ -638,7 +638,7 @@ async def process_benchmark(
             missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
             if missing_task_ids:
                 raise TrackerServiceError(
-                    f"Race condition occured when resuming benchmark {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
+                    f"Race condition occured when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
                 )
 
             # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
@@ -828,7 +828,7 @@ class BenchmarkContext:
 
         if not result:
             raise TrackerServiceError(
-                f"No tasks have been discovered for benchmark {self._benchmark_row.id}, cannot provide task breakdown"
+                f"No tasks have been discovered for run {self._benchmark_row.id}, cannot provide task breakdown"
             )
 
         return {TaskStatus(status): count for status, count in result}
@@ -858,7 +858,7 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
     for evaluation_result, task_id in results:
         result_data = evaluation_result.result
         # NOTE: We append this because its important for the user to know
-        result_data["agent_timed_out"] = evaluation_result.agent_timed_out
+        result_data["agent_caused_exit_reason"] = evaluation_result.agent_caused_exit_reason
         evaluation_results[task_id] = result_data
 
     return evaluation_results
@@ -900,7 +900,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
     commit_benchmark_error(
         benchmark_row,
         session,
-        f"Benchmark {benchmark_id} exited without finishing",
+        f"Run {benchmark_id} exited without finishing",
     )
 
 
@@ -935,7 +935,7 @@ async def stream_benchmark_results(
             with Session(bind=session.bind) as fresh_session:
                 fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
                 if not fresh_benchmark or fresh_benchmark.org_id != org.id:
-                    yield f"{EVENT_ERROR} {json.dumps({'error': 'Benchmark not found'})}\n\n"
+                    yield f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"
                     break
 
                 fresh_session.refresh(fresh_benchmark)
@@ -989,7 +989,7 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
             session.add(benchmark_row)
             session.commit()
     except Exception as e:
-        raise TrackerServiceError(f"Unexpected error stopping benchmark {benchmark_row.id}: {str(e)}") from e
+        raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
 
 
 async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> str | None:
@@ -998,7 +998,7 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
         await sandbox.wait_for_sandbox_start(timeout=0)
 
         # Delete the sandbox
-        await daytona_client.delete(sandbox)
+        await delete_sandbox(sandbox, daytona_client)
 
         return None
     except Exception as e:
@@ -1176,7 +1176,7 @@ async def reset_to_in_progress_status(
     except (TrackerServiceError, BenchmarkServiceError):
         raise
     except Exception as e:
-        raise TrackerServiceError(f"Unexpected error resuming benchmark {benchmark_row.id}: {str(e)}") from e
+        raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
 
 
 def fetch_filtered_benchmark_rows(
