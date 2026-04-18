@@ -29,7 +29,6 @@ client = TestClient(app)
 
 class TestStopAndResume:
     _test_org = Org(id=TEST_ORG_ID, name="default")
-
     @staticmethod
     async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
         return RetrieveTaskResponse(
@@ -179,10 +178,7 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        task_rows = [
-            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
-            for i in range(2)
-        ]
+        task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)]
         database_session.add_all(task_rows)
         database_session.commit()
 

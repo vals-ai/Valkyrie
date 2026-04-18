@@ -57,7 +57,9 @@ def configure_logging() -> None:
     log_level = os.getenv("LOG_LEVEL", "INFO")
 
     if environment not in _FORMATTERS:
-        raise ValueError(f"Unknown ENVIRONMENT={environment!r}. Must be one of: {', '.join(_FORMATTERS)}")
+        raise ValueError(
+            f"Unknown ENVIRONMENT={environment!r}. Must be one of: {', '.join(_FORMATTERS)}"
+        )
 
     logging.config.dictConfig(
         {

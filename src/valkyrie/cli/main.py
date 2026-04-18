@@ -77,6 +77,7 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
 }
 
 
+
 @config.command()
 def init() -> None:
     """
