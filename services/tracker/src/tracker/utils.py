@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
+from daytona.common.errors import DaytonaNotFoundError
 from fastapi import Request
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
@@ -966,6 +967,9 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
         # Delete the sandbox
         await delete_sandbox(sandbox, daytona_client)
 
+        return None
+    except DaytonaNotFoundError:
+        logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
         return None
     except Exception as e:
         return f"{str(e)}: {traceback.format_exc()}"
