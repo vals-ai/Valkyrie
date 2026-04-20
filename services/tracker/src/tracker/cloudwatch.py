@@ -1,5 +1,5 @@
 import time
-from functools import wraps
+from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
 
 import boto3
@@ -14,8 +14,9 @@ if TYPE_CHECKING:
 _created_streams: set[str] = set()
 
 
+@lru_cache(maxsize=32)
 def _cloudwatch_client(aws: "AWSCredentials") -> Any:
-    """Create a CloudWatch Logs client from harness config credentials."""
+    """Cloudwatch client cached to share instances."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "logs",
         aws_access_key_id=aws.aws_access_key_id,

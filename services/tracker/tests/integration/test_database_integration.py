@@ -218,6 +218,7 @@ class TestDatabaseIntegration:
         task_row: Task,
         task_data: RetrieveTaskResponse,
         test_resources: TrackerResources,
+        creation_semaphore: Semaphore,
     ) -> dict[str, str]:
         docker_image: str = task_data.docker_image
 
@@ -226,7 +227,7 @@ class TestDatabaseIntegration:
         database_session.add(task_row)
         database_session.flush()
 
-        async with create_sandbox(daytona_client, task_row.task_id, docker_image, test_resources) as sandbox:
+        async with create_sandbox(daytona_client, task_row.task_id, docker_image, test_resources, creation_semaphore) as sandbox:
             response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
             assert response.status == "ok"
 
@@ -242,6 +243,7 @@ class TestDatabaseIntegration:
         daytona_client: AsyncDaytona,
         example_benchmark_object: Benchmark,
         test_resources: TrackerResources,
+        creation_semaphore: Semaphore,
     ):
         """
         Test the end to end flow when using database with a benchmark service
@@ -293,7 +295,7 @@ class TestDatabaseIntegration:
                         task_data = await benchmark_service.retrieve_task(task_id=task_id)
                         task_row = task_row_mapping[task_id]
                         evaluation_result = await self._evaluate_instance(
-                            database_session, benchmark_service, daytona_client, task_row, task_data, test_resources
+                            database_session, benchmark_service, daytona_client, task_row, task_data, test_resources, creation_semaphore
                         )
                         evaluation_result_row = await self._create_evaluation_result(
                             database_session, task_row, evaluation_result
@@ -332,8 +334,11 @@ class TestDatabaseIntegration:
                     .where(col(Task.task_id) == task_id)
                 ).first()
                 assert evaluation_result_row is not None
-                # fetch_evaluation_results appends agent_timed_out from the model column
-                expected = {**evaluation_result_row.result, "agent_timed_out": evaluation_result_row.agent_timed_out}
+                # fetch_evaluation_results appends agent_caused_exit_reason from the model column
+                expected = {
+                    **evaluation_result_row.result,
+                    "agent_caused_exit_reason": evaluation_result_row.agent_caused_exit_reason,
+                }
                 assert evaluation_result == expected
 
             # Verify that the final evaluation row matches what we have in the database

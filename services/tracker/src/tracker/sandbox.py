@@ -30,10 +30,11 @@ from tenacity import (
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
+    wait_exponential,
     wait_fixed,
 )
 
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, AgentCausedExitReason
 from tracker.exceptions import InvalidSandboxConfigurationError, SandboxError
 from tracker.logging import get_logger
 from tracker.s3 import create_presigned_url, get_contract_s3_key, upload_to_s3
@@ -51,6 +52,13 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
+@retry(
+    retry=retry_if_exception_type(DaytonaError),
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     """Delete sandbox if it is not already destroyed or being destroyed"""
     try:
@@ -60,18 +68,16 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     except DaytonaNotFoundError:
         # If we error here that means the sandbox has just been deleted before we could refresh the state
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
+    except DaytonaError:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
-
-
-_SANDBOX_CREATION_CAP: int = 10
-_sandbox_creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
 
 
 @retry(
     retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
     stop=stop_after_attempt(3),
-    wait=wait_fixed(120),
+    wait=wait_exponential(multiplier=1, min=5, max=30),
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
@@ -145,6 +151,7 @@ async def create_sandbox(
     sandbox_name: str,
     image: str,
     resources: TrackerResources,
+    creation_semaphore: Semaphore,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
 ) -> AsyncGenerator[AsyncSandbox, Any]:
@@ -158,6 +165,7 @@ async def create_sandbox(
         resources: The resources to use for the sandbox
         labels: The labels to use for the sandbox
         env_vars: The environment variables to use for the sandbox
+        creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
 
     Returns:
         A context manager that yields the sandbox
@@ -166,7 +174,7 @@ async def create_sandbox(
 
     # If we run too many at once it can cause hanging issues
     # NOTE does not block how many context managers we can have open, just how many sandboxes we can create at once
-    async with _sandbox_creation_semaphore:
+    async with creation_semaphore:
         sandbox = await _create_sandbox(daytona, sandbox_name, image, resources, labels, env_vars)
 
     try:
@@ -264,6 +272,7 @@ async def install_agent_dependencies(
 # NOTE: If this gets too big move it into a mapping
 # these are decoupled since its just 2 exit codes we need to track
 _TIMEOUT_EXIT_CODE: int = 124
+_OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
 
 # Process exec retry settings
@@ -275,7 +284,7 @@ _PTY_RECONNECT_MAX_ATTEMPTS: int = 10
 _PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 
 # Creating a PTY retry settings
-_PTY_CREATE_MAX_ATTEMPTS: int = 3
+_PTY_CREATE_MAX_ATTEMPTS: int = 5
 _PTY_CREATE_DELAY_SECONDS: float = 2.0
 
 # States that determine if the sandbox has been killed
@@ -486,7 +495,7 @@ async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
-) -> bool:
+) -> AgentCausedExitReason | None:
     """
     Execute a command inside a sandbox using a PTY session, reconnecting on errors
 
@@ -494,7 +503,8 @@ async def stream_command_output(
     the PTY WebSocket close frame, which doesn't reliably propagate it.
 
     Return:
-        bool - True if the command timed out, False otherwise
+        AgentCausedExitReason if the command terminated abnormally but recoverably
+        (e.g., timeout or OS kill), None on clean exit.
     """
     pty_id = uuid.uuid4().hex
     session_id = f"{sandbox.id}:pty-{pty_id}"
@@ -534,9 +544,13 @@ async def stream_command_output(
         exit_code = await _read_exit_code(sandbox, status_path)
 
         # Timeout error has a special handle since its caused by the benchmark service
-        # Remaining exit codes get handled by waterfall
+        # Exit codes are waterfalled
         if exit_code == _TIMEOUT_EXIT_CODE:
-            return True
+            return AgentCausedExitReason.TIMEOUT
+
+        # OS killed the process
+        if exit_code == _OS_KILL_EXIT_CODE:
+            return AgentCausedExitReason.OS_KILLED
 
         # Failed error code handling (truncate error shown to the user)
         # Final log is shown to the user, ignore traceback since it provides no insight as to what actually happened in the sandbox
@@ -545,7 +559,7 @@ async def stream_command_output(
             recent = "\n".join(tail[-10:]) if tail else "(no output)"
             raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
 
-        return False
+        return None
 
     finally:
         # Disconnect form PTY, ignoring exception if raised
@@ -576,7 +590,7 @@ async def archive_and_upload_output(
         if b64_result.exit_code != 0:
             raise SandboxError(f"Failed to read archive from {output_path}")
 
-        upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
+        await upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
     finally:
         # Remove the file if it exists `-f` exits silently if the file does not exist
         try:
@@ -596,7 +610,7 @@ async def run_agent(
     s3_bucket: str,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
-) -> bool:
+) -> AgentCausedExitReason | None:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -610,7 +624,8 @@ async def run_agent(
         agent_timeout: Optional timeout in seconds to enforce on the agent command
 
     Returns:
-        bool - True if the command timed out, False otherwise
+        AgentCausedExitReason if the agent was terminated abnormally but recoverably
+        (timeout or OS kill), None on clean exit.
 
     Raises:
         SandboxError: If the agent fails to run or times out
@@ -629,11 +644,17 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    timed_out = await stream_command_output(sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output)
+    exit_reason = await stream_command_output(
+        sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
+    )
 
-    if timed_out:
+    if exit_reason == AgentCausedExitReason.TIMEOUT:
         log_output(
             f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
+        )
+    elif exit_reason == AgentCausedExitReason.OS_KILLED:
+        log_output(
+            f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
         )
 
     # Upload any output from the agent to S3
@@ -642,5 +663,5 @@ async def run_agent(
         if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
             await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
 
-    # Return if the agent timed out from the agent timeout provided by the benchmark service
-    return timed_out
+    # Return why the agent terminated abnormally, or None on clean exit
+    return exit_reason
