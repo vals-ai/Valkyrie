@@ -535,9 +535,15 @@ def create_task_rows(
     session.commit()
     session.expire_all()
 
-    # Fetch all task rows with the status of pending
+    # Fetch task rows with the status of pending, scoped to the verified task ids we were
+    # given. Scoping by task id is what makes it safe to have multiple process_benchmark
+    # invocations for the same benchmark (e.g. retry/resume while another worker is still
+    # running) - each worker only picks up the tasks it was asked to process.
     pending_task_rows: Sequence[tuple[str, Task]] = session.exec(
-        select(Task.task_id, Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.PENDING)
+        select(Task.task_id, Task)
+        .where(Task.benchmark == benchmark_row.id)
+        .where(Task.status == TaskStatus.PENDING)
+        .where(col(Task.task_id).in_(verified_task_ids))
     ).all()
 
     return pending_task_rows
@@ -653,6 +659,17 @@ async def process_benchmark(
                 for task_id, evaluation_result in result_dict.items()
             }
 
+        # If another worker is still processing tasks for this benchmark (e.g. a concurrent
+        # retry/resume invocation), defer finalization to the worker that finishes last. Only
+        # the last worker should compute the final score, write the final view, and invoke
+        # the completion lambda.
+        with Session(bind=engine) as session:
+            if has_active_tasks(benchmark_id, session, org):
+                logger.info(
+                    f"Skipping finalization for run {benchmark_id}: other tasks are still running in a concurrent worker"
+                )
+                return
+
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             # Fetch remaining tasks (in case this benchmark was resumed)
@@ -707,26 +724,50 @@ async def process_benchmark(
         sentry_sdk.capture_exception(e)
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            error_message = f"{str(e)}\n{traceback.format_exc()}"
-            commit_benchmark_error(benchmark_row, session, error_message)
+            # If another worker is still running tasks for this benchmark we must not flip
+            # the whole benchmark into an error state - that would stomp on the other
+            # worker's progress. The other worker (or the final one to exit) will handle
+            # the final status transition.
+            if has_active_tasks(benchmark_id, session, org):
+                logger.warning(
+                    f"Run {benchmark_id} worker errored but other tasks are still running in a concurrent worker; "
+                    f"not committing benchmark error. Underlying error: {e}"
+                )
+            else:
+                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                error_message = f"{str(e)}\n{traceback.format_exc()}"
+                commit_benchmark_error(benchmark_row, session, error_message)
     finally:
         with Session(bind=engine) as session:
-            # Handle any misalignments between the benchmark status and tasks
-            catch_errors_during_cleanup(benchmark_id, session, org)
+            # Handle any misalignments between the benchmark status and tasks. Skip this
+            # when another worker is still actively processing tasks for this benchmark -
+            # otherwise we would incorrectly mark those running tasks as errored.
+            if not has_active_tasks(benchmark_id, session, org):
+                catch_errors_during_cleanup(benchmark_id, session, org)
 
         if notifier:
             try:
                 with Session(bind=engine) as session:
                     benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
-                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
-                    await notifier.send_terminal_notification(
-                        notification_context,
-                        status=benchmark_row.status,
-                        final_score=final_score,
-                        error_message=benchmark_row.error_message,
-                    )
+                    # Only fire the terminal notification once, when this is the last
+                    # worker to finish and the benchmark has actually reached a terminal
+                    # state. Concurrent workers that exit while others are still running
+                    # should stay quiet.
+                    if benchmark_row.status in [
+                        BenchmarkStatus.FINISHED,
+                        BenchmarkStatus.ERROR,
+                        BenchmarkStatus.STOPPED,
+                    ]:
+                        notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
+                        final_score = (
+                            benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                        )
+                        await notifier.send_terminal_notification(
+                            notification_context,
+                            status=benchmark_row.status,
+                            final_score=final_score,
+                            error_message=benchmark_row.error_message,
+                        )
             except Exception as notification_error:
                 logger.warning(f"Failed to send terminal notification: {notification_error}")
 
@@ -835,6 +876,29 @@ def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_mes
     benchmark_row.error_message = error_message
     session.add(benchmark_row)
     session.commit()
+
+
+def has_active_tasks(benchmark_id: UUID, session: Session, org: Org) -> bool:
+    """
+    Return True if the benchmark has any tasks in a non-terminal status (i.e. tasks that
+    are still being processed by a worker). This is used to coordinate finalization across
+    multiple concurrent process_benchmark invocations for the same run: only the worker
+    that sees no remaining active tasks may transition the benchmark into a terminal
+    state.
+    """
+    active_statuses = [
+        TaskStatus.PENDING,
+        TaskStatus.BUILDING,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.EVALUATING,
+    ]
+    active_count: int = session.exec(
+        select(func.count(col(Task.id)))
+        .where(col(Task.benchmark) == benchmark_id)
+        .where(col(Task.org_id) == org.id)
+        .where(col(Task.status).in_(active_statuses))
+    ).one()
+    return active_count > 0
 
 
 def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) -> None:
@@ -1073,14 +1137,16 @@ async def reset_to_in_progress_status(
     Benchmark - In progress status
     Tasks - Pending status
 
-    NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
+    NOTE: When the benchmark is already IN_PROGRESS (another worker is actively processing
+    tasks) we only reset tasks that are already in a terminal state so we do not race the
+    running worker over tasks it is currently handling.
     """
     try:
         retry_statuses = [TaskStatus.STOPPED]
         if retry:
             retry_statuses.append(TaskStatus.ERROR)
 
-        filter_query = [
+        filter_query: list[Any] = [
             col(Task.benchmark) == benchmark_row.id,
             col(Task.org_id) == org.id,
             or_(
@@ -1089,17 +1155,34 @@ async def reset_to_in_progress_status(
             ),
         ]
 
+        # When the benchmark is still IN_PROGRESS another worker may be actively handling
+        # tasks for this run. Restrict the reset to tasks already in a terminal state so we
+        # do not race that worker over the tasks it is processing.
+        benchmark_is_running = benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        if benchmark_is_running:
+            terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
+            filter_query.append(col(Task.status).in_(terminal_statuses))
+
         # Check if there are any tasks that have been stopped
         task_ids = session.exec(select(Task.id, Task.task_id).where(*filter_query)).all()
 
         # id is task row primary key, task_id is the task id
         task_mapping: dict[UUID, str] = {id: task_id for id, task_id in task_ids}
 
-        # Ensure we are not missing any tasks that were requested (skips if force is empty)
+        # Ensure we are not missing any tasks that were requested (skips if force is empty).
+        # When the benchmark is currently IN_PROGRESS a task is also reported as missing if
+        # it exists but is not in a terminal state (still running in another worker).
         missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in task_mapping.values()]
         if missing_task_ids:
+            suffix = (
+                " or is still running. While a run is IN_PROGRESS only tasks in a terminal state "
+                "(FINISHED, ERROR, STOPPED) can be retried or resumed."
+                if benchmark_is_running
+                else ""
+            )
             raise TrackerServiceError(
                 f"{', '.join(missing_task_ids)} was requested to be force resumed but does not exist in the dataset"
+                + suffix
             )
 
         # Allow re-running the end of the benchmark without running any tasks

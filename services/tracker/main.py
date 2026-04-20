@@ -399,12 +399,14 @@ async def retry_or_resume_benchmark(
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
-
-    if benchmark_row.status in invalid_states:
+    # STOPPING is a transient state that we cannot safely restart from; every other status
+    # (including IN_PROGRESS) is allowed. When the run is still IN_PROGRESS the existing
+    # worker continues to process its tasks and the retry/resume request only affects tasks
+    # that are already in a terminal state (FINISHED / ERROR / STOPPED).
+    if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
             status_code=400,
-            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is currently running.",
+            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Wait for the run to finish stopping before continuing it.",
         )
 
     # NOTE: 0 is not acceptable

@@ -77,7 +77,6 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
 }
 
 
-
 @config.command()
 def init() -> None:
     """
@@ -737,7 +736,13 @@ def stop(run_id: UUID, force: bool):
 
 
 @run.command(
-    help="Resume a run by its run id. \n\nExample:\nvalkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
+    help=(
+        "Resume a run by its run id. Can be used on runs that are STOPPED, FINISHED, "
+        "ERROR or still IN_PROGRESS - in the IN_PROGRESS case only tasks in a terminal "
+        "state (FINISHED/ERROR/STOPPED) are reset, so it is safe to retry errored tasks "
+        "without stopping the rest of the run.\n\n"
+        "Example:\nvalkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
+    )
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -822,7 +827,13 @@ retry_command = click.Command(
     name="retry",
     callback=resume.callback,
     params=resume.params,
-    help="Retry a run by its run id. \n\nExample:\nvalkyrie run retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
+    help=(
+        "Retry a run by its run id. Can be used on runs that are STOPPED, FINISHED, ERROR "
+        "or still IN_PROGRESS - in the IN_PROGRESS case only tasks in a terminal state "
+        "(FINISHED/ERROR/STOPPED) are reset, so it is safe to retry errored tasks without "
+        "stopping the rest of the run.\n\n"
+        "Example:\nvalkyrie run retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20"
+    ),
     short_help="Retry a run by its run id.",
 )
 run.add_command(retry_command)

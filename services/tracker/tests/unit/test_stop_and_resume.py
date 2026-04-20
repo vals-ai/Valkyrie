@@ -29,6 +29,7 @@ client = TestClient(app)
 
 class TestStopAndResume:
     _test_org = Org(id=TEST_ORG_ID, name="default")
+
     @staticmethod
     async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
         return RetrieveTaskResponse(
@@ -178,7 +179,10 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)]
+        task_rows = [
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+            for i in range(2)
+        ]
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -237,6 +241,162 @@ class TestStopAndResume:
         cancel_mock.assert_called_once()
         assert monitor._task_tracking == {}
         tracked_task._coro.close()
+
+    async def test_reset_to_in_progress_on_running_benchmark_only_resets_terminal_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ):
+        """
+        When the benchmark is still IN_PROGRESS, reset_to_in_progress_status should only
+        reset tasks that are already in a terminal state (FINISHED/ERROR/STOPPED). It must
+        leave actively-running tasks (PENDING/BUILDING/IN_PROGRESS/EVALUATING) untouched so
+        we do not race the existing worker over them.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # Mix of terminal and active tasks
+        running_task = Task(
+            org_id=TEST_ORG_ID, task_id="running", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS
+        )
+        pending_task = Task(
+            org_id=TEST_ORG_ID, task_id="pending", benchmark=benchmark_row.id, status=TaskStatus.PENDING
+        )
+        errored_task = Task(org_id=TEST_ORG_ID, task_id="errored", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        stopped_task = Task(
+            org_id=TEST_ORG_ID, task_id="stopped", benchmark=benchmark_row.id, status=TaskStatus.STOPPED
+        )
+        finished_task = Task(
+            org_id=TEST_ORG_ID, task_id="finished", benchmark=benchmark_row.id, status=TaskStatus.FINISHED
+        )
+        database_session.add_all([running_task, pending_task, errored_task, stopped_task, finished_task])
+        database_session.commit()
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["errored", "stopped", "finished"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
+            retry=True,
+            rerun_task_ids=["finished"],
+            org=self._test_org,
+        )
+
+        # errored (retry=True picks it up), stopped (always picked up), finished (forced) = 3
+        assert set(verified_task_ids) == {"errored", "stopped", "finished"}
+
+        # Active tasks must still be in their original status
+        database_session.refresh(running_task)
+        database_session.refresh(pending_task)
+        assert running_task.status == TaskStatus.IN_PROGRESS
+        assert pending_task.status == TaskStatus.PENDING
+
+        # Terminal tasks that were reset are now PENDING
+        for task in [errored_task, stopped_task, finished_task]:
+            database_session.refresh(task)
+            assert task.status == TaskStatus.PENDING, task.task_id
+
+        # Benchmark stays in IN_PROGRESS (already running)
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+    async def test_reset_to_in_progress_on_running_benchmark_rejects_live_rerun_ids(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ):
+        """
+        While a benchmark is IN_PROGRESS, asking to force-rerun a task that is currently
+        being processed by another worker must fail loudly rather than silently racing.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        running_task = Task(
+            org_id=TEST_ORG_ID, task_id="running", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS
+        )
+        database_session.add(running_task)
+        database_session.commit()
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["running"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        import pytest
+        from tracker.exceptions import TrackerServiceError
+
+        with pytest.raises(TrackerServiceError, match="still running"):
+            await reset_to_in_progress_status(
+                benchmark_row=benchmark_row,
+                session=database_session,
+                benchmark_service=benchmark_row.benchmark_service(
+                    harness_config.daytona_secret_name, harness_config.aws
+                ),
+                retry=False,
+                rerun_task_ids=["running"],
+                org=self._test_org,
+            )
+
+    async def test_retry_resume_endpoint_on_in_progress_benchmark_succeeds(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ):
+        """
+        End-to-end: the /retry-or-resume-benchmark endpoint now accepts IN_PROGRESS runs.
+        Only terminal tasks are reset; active tasks are left alone.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        running_task = Task(
+            org_id=TEST_ORG_ID, task_id="running", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS
+        )
+        errored_task = Task(org_id=TEST_ORG_ID, task_id="errored", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        database_session.add_all([running_task, errored_task])
+        database_session.commit()
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+        assert response.status_code == 200, response.text
+
+        database_session.refresh(running_task)
+        database_session.refresh(errored_task)
+        assert running_task.status == TaskStatus.IN_PROGRESS
+        assert errored_task.status == TaskStatus.PENDING
+
+    async def test_retry_resume_endpoint_rejects_stopping_benchmark(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ):
+        """
+        A run that is still in the STOPPING state cannot be retried or resumed - it is a
+        transient state that must fully resolve before the run can continue.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPING
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
+        assert response.status_code == 400
+        assert "STOPPING" in response.json()["detail"]
 
     async def test_force_stop_edge_case(
         self,

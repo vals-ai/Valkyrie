@@ -280,6 +280,11 @@ valkyrie run retry <id>
 valkyrie run resume <id> --concurrency 20
 ```
 
+Resume / retry can be issued against runs in any status except `STOPPING`, including
+`IN_PROGRESS` runs. When the run is still `IN_PROGRESS` only tasks in a terminal state
+(`FINISHED`, `ERROR`, `STOPPED`) are reset, so retrying errored tasks does not disturb
+the tasks currently being processed by the existing worker.
+
 ### List runs
 
 ```bash
