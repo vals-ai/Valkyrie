@@ -1,4 +1,7 @@
+import asyncio
+import concurrent.futures
 import time
+from collections import defaultdict
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
 
@@ -7,11 +10,22 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker.exceptions import CloudWatchError
+from tracker.logging import get_logger
 
 if TYPE_CHECKING:
     from tracker.types import AWSCredentials
 
+logger = get_logger(__name__)
+
 _created_streams: set[str] = set()
+
+# Dedicated pool for CloudWatch flushes (4 vCPU / 8 GiB worker).
+# put_log_events is ~90% network-wait, so thread count >> CPU count is correct.
+# Math: 1000 tasks × 1 flush/s × ~100ms/flush = 100 concurrent threads needed.
+# 96 workers gives ~960 flushes/s capacity with headroom; ~100 MB stack overhead.
+_cw_executor: concurrent.futures.ThreadPoolExecutor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=96, thread_name_prefix="cw-flush"
+)
 
 
 @lru_cache(maxsize=32)
@@ -159,3 +173,104 @@ def cloudwatch_stream(stream_key: str, message: str, aws: "AWSCredentials", log_
         )
     except (ClientError, BotoCoreError) as e:
         raise CloudWatchError(f"Failed to put log event: {e}") from e
+
+
+class LogDispatcher:
+    """Single CloudWatch dispatcher for all streams in a benchmark run."""
+
+    def __init__(self, aws: "AWSCredentials", log_group: str) -> None:
+        self._aws = aws
+        self._log_group = log_group
+        self._queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=500_000)
+        self._stop = asyncio.Event()
+        self._consumer: asyncio.Task[None] | None = None
+        self._pending: set[asyncio.Task[None]] = set()
+        self._dropped = 0
+
+    def log(self, stream_key: str, data: str) -> None:
+        """Non-blocking enqueue. Drops silently on overflow."""
+        if not data:
+            return
+        try:
+            self._queue.put_nowait((stream_key, data))
+        except asyncio.QueueFull:
+            self._dropped += 1
+
+    async def async_log(self, stream_key: str, data: str) -> None:
+        """Awaitable enqueue with backpressure."""
+        if not data:
+            return
+        await self._queue.put((stream_key, data))
+
+    def start(self) -> None:
+        self._consumer = asyncio.create_task(self._run(), name="cw-dispatcher")
+
+    async def stop(self) -> None:
+        assert self._consumer is not None
+        self._stop.set()
+        try:
+            await asyncio.wait_for(asyncio.shield(self._consumer), timeout=15.0)
+        except asyncio.TimeoutError:
+            self._consumer.cancel()
+            try:
+                await self._consumer
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._pending:
+            await asyncio.gather(*list(self._pending), return_exceptions=True)
+        if self._dropped:
+            logger.warning(f"LogDispatcher dropped {self._dropped} messages (queue overflow)")
+
+    async def _run(self) -> None:
+        batches: defaultdict[str, list[str]] = defaultdict(list)
+        chars: defaultdict[str, int] = defaultdict(int)
+        last_flush = time.monotonic()
+
+        while True:
+            # Fast-path: drain all queued items without scheduler overhead.
+            while True:
+                try:
+                    stream_key, msg = self._queue.get_nowait()
+                    batches[stream_key].append(msg)
+                    chars[stream_key] += len(msg)
+                except asyncio.QueueEmpty:
+                    break
+
+            now = time.monotonic()
+            flush_interval = now - last_flush >= 1.0
+
+            ready = [k for k in batches if len(batches[k]) >= 256 or chars[k] >= 200_000 or flush_interval]
+            for key in ready:
+                self._dispatch(key, batches.pop(key))
+                chars.pop(key)
+
+            if flush_interval:
+                last_flush = now
+
+            if self._stop.is_set() and self._queue.empty():
+                for key, batch in batches.items():
+                    self._dispatch(key, batch)
+                return
+
+            # Slow-path: block until next message or flush deadline.
+            remaining = max(0.0, last_flush + 1.0 - time.monotonic())
+            try:
+                async with asyncio.timeout(remaining):
+                    stream_key, msg = await self._queue.get()
+                batches[stream_key].append(msg)
+                chars[stream_key] += len(msg)
+            except TimeoutError:
+                pass
+
+    def _dispatch(self, stream_key: str, batch: list[str]) -> None:
+        t = asyncio.create_task(self._flush(stream_key, batch))
+        self._pending.add(t)
+        t.add_done_callback(self._pending.discard)
+
+    async def _flush(self, stream_key: str, batch: list[str]) -> None:
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                _cw_executor, cloudwatch_stream, stream_key, "".join(batch), self._aws, self._log_group
+            )
+        except CloudWatchError as e:
+            logger.warning(f"flush failed {stream_key}: {e}")

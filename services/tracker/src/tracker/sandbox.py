@@ -1,15 +1,28 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import base64
 import logging
 import shlex
 import uuid
 from asyncio import Semaphore
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
+
+# Callbacks that can be either plain sync or async (coroutine-returning).
+# Using Any return type lets callers pass either without a cast.
+OutputCallback = Callable[[str], Awaitable[None] | None]
+DataCallback = Callable[[bytes], Awaitable[None] | None]
+
+
+async def _call(cb: Callable[[Any], Awaitable[None] | None], arg: Any) -> None:
+    """Invoke a callback that may be sync or async."""
+    result = cb(arg)
+    if asyncio.iscoroutine(result):
+        await result
 
 from benchmark_service.schemas import Resources as TrackerResources
 from daytona import (
@@ -254,19 +267,19 @@ async def upload_agent_artifacts(
 async def install_agent_dependencies(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
-    log_output: Callable[[str], None],
+    log_output: OutputCallback,
 ) -> None:
     """Install agent dependencies in the sandbox."""
     if not contract.install_cmd:
         return
 
-    log_output(f"Installing dependencies for contract: {contract.name}")
+    await _call(log_output, f"Installing dependencies for contract: {contract.name}")
 
     contract_path = get_contract_path(contract.name)
 
     await stream_command_output(sandbox, f"cd {shlex.quote(str(contract_path))} && {contract.install_cmd}", log_output)
 
-    log_output(f"Finished installing dependencies for contract: {contract.name}")
+    await _call(log_output, f"Finished installing dependencies for contract: {contract.name}")
 
 
 # NOTE: If this gets too big move it into a mapping
@@ -319,7 +332,7 @@ async def _exec(sandbox: AsyncSandbox, command: str) -> ExecuteResponse:
 async def _create_pty_session(
     sandbox: AsyncSandbox,
     session_id: str,
-    on_data: Callable[[bytes], None],
+    on_data: DataCallback,
     envs: dict[str, str] | None = None,
 ) -> tuple[AsyncPtyHandle, str]:
     """
@@ -333,7 +346,7 @@ async def _create_pty_session(
     salted_id = f"{session_id}-{uuid.uuid4().hex[:8]}"
 
     # Each time we run this we want it to be logged, makes debugging easier
-    on_data(f"[Debug]: Creating PTY session with the following id {salted_id}\n".encode())
+    await _call(on_data, f"[Debug]: Creating PTY session with the following id {salted_id}\n".encode())
 
     # Attempt to make the PTY session, timeouts occur under load
     handle = await sandbox.process.create_pty_session(id=salted_id, on_data=on_data, envs=envs)
@@ -368,8 +381,8 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
 async def _reconnect_and_wait_pty(
     sandbox: AsyncSandbox,
     session_id: str,
-    on_data: Callable[[bytes], None],
-    on_output: Callable[[str], None],
+    on_data: DataCallback,
+    on_output: OutputCallback,
 ) -> None:
     """
     Reconnect to a PTY session and wait for it to close,
@@ -383,7 +396,7 @@ async def _reconnect_and_wait_pty(
     await _check_sandbox_health(sandbox)
 
     # Log so the user can see we have seen a disconnection from the websocket (easier to pickup in logs)
-    on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
+    await _call(on_output, "[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
 
     # Reconnect to the PTY
     handle = await sandbox.process.connect_pty_session(session_id, on_data)
@@ -396,8 +409,8 @@ async def _wait_for_pty(
     sandbox: AsyncSandbox,
     session_id: str,
     handle: Any,
-    on_data: Callable[[bytes], None],
-    on_output: Callable[[str], None],
+    on_data: DataCallback,
+    on_output: OutputCallback,
     status_path: str,
 ) -> None:
     """
@@ -410,9 +423,9 @@ async def _wait_for_pty(
     """
     try:
         await handle.wait()
-        on_output("[Debug]: PTY has been disconnected, handler has stopped polling\n")
+        await _call(on_output, "[Debug]: PTY has been disconnected, handler has stopped polling\n")
     except Exception as e:
-        on_output(f"[Debug]: PTY stream has been disconnected (Attempting reconnection): {e}\n")
+        await _call(on_output, f"[Debug]: PTY stream has been disconnected (Attempting reconnection): {e}\n")
         try:
             await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
         except SandboxError:
@@ -427,7 +440,7 @@ async def _wait_for_pty(
         if (await _exec(sandbox, f"test -e {status_path}")).exit_code == 0:
             break
 
-        on_output("[Debug]: PTY closed but status file not written yet, reconnecting\n")
+        await _call(on_output, "[Debug]: PTY closed but status file not written yet, reconnecting\n")
         try:
             await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
         except SandboxError:
@@ -494,7 +507,7 @@ async def _kill_pty_session(sandbox: AsyncSandbox, session_id: str | None) -> No
 async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
-    on_output: Callable[[str], None],
+    on_output: OutputCallback,
 ) -> AgentCausedExitReason | None:
     """
     Execute a command inside a sandbox using a PTY session, reconnecting on errors
@@ -513,10 +526,10 @@ async def stream_command_output(
     handle: AsyncPtyHandle | None = None
     last_output: deque[str] = deque(maxlen=50)
 
-    def on_data(data: bytes) -> None:
+    async def on_data(data: bytes) -> None:
         text = data.decode("utf-8", errors="replace")
-        on_output(text)
         last_output.append(text)
+        await _call(on_output, text)
 
     try:
         # Create a PTY session, this is where our agent will be running
@@ -604,7 +617,7 @@ async def run_agent(
     contract: AgentContractRequest,
     problem_path: str,
     task_id: str,
-    log_output: Callable[[str], None],
+    log_output: OutputCallback,
     cwd: str,
     aws: AWSCredentials,
     s3_bucket: str,
@@ -618,7 +631,7 @@ async def run_agent(
         sandbox: The sandbox to run the agent in
         contract: The agent contract configuration
         problem_path: Path inside the sandbox where the problem statement file was written during setup
-        log_output: Callback to log output
+        log_output: Callback to log output (sync or async)
         cwd: Working directory to run the agent in
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
@@ -630,7 +643,7 @@ async def run_agent(
     Raises:
         SandboxError: If the agent fails to run or times out
     """
-    log_output(f"Running agent {contract.name}")
+    await _call(log_output, f"Running agent {contract.name}")
 
     await install_agent_dependencies(sandbox, contract, log_output)
 
@@ -649,12 +662,14 @@ async def run_agent(
     )
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
-        log_output(
-            f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed."
+        await _call(
+            log_output,
+            f"[WARNING]:`{contract.name}` has reached the designated timeout provided by the benchmark service for this task: `{agent_timeout}`. The process has been terminated and evaluation will proceed.",
         )
     elif exit_reason == AgentCausedExitReason.OS_KILLED:
-        log_output(
-            f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
+        await _call(
+            log_output,
+            f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed.",
         )
 
     # Upload any output from the agent to S3

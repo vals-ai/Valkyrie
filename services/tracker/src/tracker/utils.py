@@ -1,7 +1,6 @@
 import asyncio
 import io
 import json
-import time
 import traceback
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Buffer, Coroutine
@@ -20,7 +19,11 @@ from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
 from tracker._lambda import invoke_lambda
-from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group, reset_cloudwatch_stream
+from tracker.cloudwatch import (
+    LogDispatcher,
+    create_benchmark_group,
+    reset_cloudwatch_stream,
+)
 from tracker.config import broker
 from tracker.database.models import (
     Benchmark,
@@ -281,24 +284,6 @@ def fetch_task_row(task_id: UUID, session: Session, org: Org) -> Task:
     return task_row
 
 
-def buffer_logs(
-    log_queue: asyncio.Queue[str], stream_key: str, aws: AWSCredentials, log_group: str, force_flush: bool = False
-) -> None:
-    """
-    Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
-    """
-    if not log_queue.full() and not force_flush:
-        return
-
-    messages: list[str] = []
-    while not log_queue.empty():
-        messages.append(log_queue.get_nowait())
-
-    message = "".join(messages)
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, cloudwatch_stream, stream_key, message, aws, log_group)
-
-
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -308,6 +293,7 @@ async def process_task(
     harness_config: HarnessConfig,
     org: Org,
     creation_semaphore: Semaphore,
+    dispatcher: LogDispatcher,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -328,31 +314,16 @@ async def process_task(
             handle_early_exit(task_row, task_session)
             return {task_id: None}
 
-    # Setup logging infrastructure before try block so it's always available
     stream_key: str = f"{benchmark_id}:{task_id}"
-    log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
-    # If we are retrying the task we clear logs from previous run
+    # Clear logs from a previous run if retrying.
     reset_cloudwatch_stream(stream_key, harness_config.aws, harness_config.log_group)
 
-    last_log_time: float = time.monotonic()
-
-    # Collects the logs and dumps them when the queue is full
     def log_output(data: str) -> None:
-        nonlocal last_log_time
-        last_log_time = time.monotonic()
-        log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
+        dispatcher.log(stream_key, data)
 
-    # Auto flush if process takes a while to produce next log
-    # If a process pauses without producing anymore logs, the logs we have collected get stuck
-    async def auto_flush_logs() -> None:
-        while True:
-            await asyncio.sleep(1)
-            if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
-
-    flush_task = asyncio.create_task(auto_flush_logs())
+    async def async_log(data: str) -> None:
+        await dispatcher.async_log(stream_key, data)
 
     try:
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
@@ -384,7 +355,6 @@ async def process_task(
                     task.status = TaskStatus.IN_PROGRESS
                     task_session.commit()
 
-                # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(
                     sandbox, start_benchmark_request.contract, harness_config.aws, harness_config.s3_bucket
                 )
@@ -393,21 +363,17 @@ async def process_task(
                     task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
 
-                # Force flush the logs if anything has been buffered
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
-
-                # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                # Run the agent inside of the sandbox
+                # PTY on_data is async — passes async_log for full backpressure through the chain.
                 exit_reason = await run_agent(
                     sandbox,
                     start_benchmark_request.contract,
                     task_data.problem_path,
                     task_id,
-                    log_output,
+                    async_log,
                     task_data.cwd,
                     aws=harness_config.aws,
                     s3_bucket=harness_config.s3_bucket,
@@ -420,18 +386,11 @@ async def process_task(
                     task.status = TaskStatus.EVALUATING
                     task_session.commit()
 
-                # Evaluate the instance
-                # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                 evaluation_result = await benchmark_service.evaluate_instance(
                     task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
 
-                # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
-
-                # Save the evaluation result to the database with the task row
-                # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
                     task=task_row.id,
@@ -457,20 +416,12 @@ async def process_task(
     except Exception as e:
         error_message = str(e)
         logger.error(error_message, exc_info=True)
-
         sentry_sdk.capture_exception(e)
-
-        # include the error message
         log_output(f"\n[ERROR] {error_message}")
-
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             commit_task_error(task, task_session, error_message)
-
         return {task_id: None}
-    finally:
-        flush_task.cancel()
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
@@ -593,6 +544,8 @@ async def process_benchmark(
             raise TrackerServiceError(f"Run with id {benchmark_id} not found")
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
+    dispatcher: LogDispatcher | None = None
+
     try:
         # Create benchmark cloudwatch log group
         create_benchmark_group(
@@ -614,6 +567,9 @@ async def process_benchmark(
         # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
         creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
 
+        dispatcher = LogDispatcher(harness_config.aws, harness_config.log_group)
+        dispatcher.start()
+
         # Load the tasks we are going to be tracking
         tracked_tasks: dict[str, TrackedTask] = {
             task_id: TrackedTask(
@@ -626,6 +582,7 @@ async def process_benchmark(
                     harness_config,
                     org,
                     creation_semaphore=creation_semaphore,
+                    dispatcher=dispatcher,
                 ),
                 org,
             )
@@ -711,6 +668,9 @@ async def process_benchmark(
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(benchmark_row, session, error_message)
     finally:
+        if dispatcher is not None:
+            await dispatcher.stop()
+
         with Session(bind=engine) as session:
             # Handle any misalignments between the benchmark status and tasks
             catch_errors_during_cleanup(benchmark_id, session, org)
