@@ -291,11 +291,9 @@ _PTY_CREATE_DELAY_SECONDS: float = 2.0
 # Process-global cap on concurrent PTY WebSocket handshakes.
 # Daytona starts failing above ~500 concurrent handshakes; 100 held 800 PTYs cleanly in testing.
 _PTY_HANDSHAKE_CAP: int = 100
-_PTY_HANDSHAKE_WAIT_LOG_THRESHOLD: float = 0.1
 _PTY_HANDSHAKE_SLOW_LOG_THRESHOLD: float = 2.0
 
 _pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)
-_pty_handshake_inflight: int = 0
 
 # States that determine if the sandbox has been killed
 _DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
@@ -307,20 +305,18 @@ async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator
     Gate a PTY WebSocket handshake with a process-global semaphore. Released as soon as the
     handshake call returns, so the PTY's subsequent lifetime (wait, send_input, etc.) is not gated.
 
-    Logs when we queue behind the cap or when the handshake itself is slow.
+    Logs when the gate is saturated on entry or when the handshake itself is slow.
     """
-    global _pty_handshake_inflight
+    gate_full_on_entry = _pty_handshake_semaphore.locked()
 
     wait_start = time.monotonic()
     async with _pty_handshake_semaphore:
         wait_duration = time.monotonic() - wait_start
-        _pty_handshake_inflight += 1
-        inflight = _pty_handshake_inflight
 
-        if wait_duration > _PTY_HANDSHAKE_WAIT_LOG_THRESHOLD:
+        if gate_full_on_entry:
             logger.info(
-                f"PTY handshake queued: {operation} session={session_id} "
-                f"waited={wait_duration:.2f}s inflight={inflight}/{_PTY_HANDSHAKE_CAP}"
+                f"PTY handshake gate full: {operation} session={session_id} "
+                f"cap={_PTY_HANDSHAKE_CAP} waited={wait_duration:.2f}s"
             )
 
         handshake_start = time.monotonic()
@@ -328,11 +324,9 @@ async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator
             yield
         finally:
             handshake_duration = time.monotonic() - handshake_start
-            _pty_handshake_inflight -= 1
             if handshake_duration > _PTY_HANDSHAKE_SLOW_LOG_THRESHOLD:
                 logger.warning(
-                    f"PTY handshake slow: {operation} session={session_id} "
-                    f"duration={handshake_duration:.2f}s inflight={inflight}/{_PTY_HANDSHAKE_CAP}"
+                    f"PTY handshake slow: {operation} session={session_id} duration={handshake_duration:.2f}s"
                 )
 
 
