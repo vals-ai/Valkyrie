@@ -11,7 +11,16 @@ from sqlmodel import Session, select
 
 from main import app
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkStatus,
+    EvaluationResult,
+    FinalEvaluation,
+    Org,
+    Task,
+    TaskStatus,
+)
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     TaskMonitor,
@@ -22,6 +31,7 @@ from tracker.utils import (
     process_benchmark,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
+    try_claim_finalization,
 )
 
 client = TestClient(app)
@@ -379,6 +389,138 @@ class TestStopAndResume:
         database_session.refresh(errored_task)
         assert running_task.status == TaskStatus.IN_PROGRESS
         assert errored_task.status == TaskStatus.PENDING
+
+    async def test_try_claim_finalization_guards_against_concurrent_finalization(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ):
+        """
+        ``try_claim_finalization`` is the row-level-lock mutex that serializes concurrent
+        ``process_benchmark`` workers. The first worker to call it while the benchmark is
+        still IN_PROGRESS and has no active tasks must receive ``claimed=True``; every
+        subsequent call must receive ``claimed=False`` once the benchmark has been
+        transitioned into a terminal state, so only one worker can ever write the
+        FinalEvaluation / fire terminal side effects.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # No tasks + IN_PROGRESS ⇒ first worker claims finalization.
+        claimed, _ = try_claim_finalization(benchmark_row.id, database_session, self._test_org)
+        assert claimed is True
+
+        # Active task ⇒ worker must defer finalization to whoever runs it last.
+        active_task = Task(
+            org_id=TEST_ORG_ID, task_id="active", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS
+        )
+        database_session.add(active_task)
+        database_session.commit()
+
+        claimed, _ = try_claim_finalization(benchmark_row.id, database_session, self._test_org)
+        assert claimed is False
+
+        # Task terminal + benchmark already finalized ⇒ no worker may re-finalize,
+        # preventing duplicate FinalEvaluation inserts / duplicate lambda invocations.
+        active_task.status = TaskStatus.FINISHED
+        database_session.add(active_task)
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        claimed, _ = try_claim_finalization(benchmark_row.id, database_session, self._test_org)
+        assert claimed is False
+
+    async def test_concurrent_process_benchmark_does_not_duplicate_final_evaluation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ):
+        """
+        Simulates two concurrent ``process_benchmark`` invocations racing through the
+        finalization path (the situation a retry/resume against an IN_PROGRESS run can
+        produce). Only one worker must write a FinalEvaluation row and transition the
+        benchmark into a terminal state; the other must observe the terminal state under
+        the row lock and skip.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # One finished task + matching EvaluationResult so final_score has something to
+        # score over; no active tasks so both workers reach the finalization claim.
+        finished_task = Task(
+            org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED
+        )
+        database_session.add(finished_task)
+        database_session.commit()
+
+        database_session.add(
+            EvaluationResult(
+                org_id=TEST_ORG_ID,
+                task=finished_task.id,
+                instance_id=f"{benchmark_row.id}-task_0",
+                result={"score": 1.0},
+            )
+        )
+        database_session.commit()
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", self._mock_request_final_score)
+
+        # Stub out the side effects that hit external systems so the test is hermetic.
+        upload_mock = AsyncMock()
+        monkeypatch.setattr("tracker.utils.upload_final_view", upload_mock)
+
+        def _noop_create_final_view(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+        def _noop_create_benchmark_group(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def _noop_create_task_rows(*_args: Any, **_kwargs: Any) -> list[Any]:
+            return []
+
+        monkeypatch.setattr("tracker.utils.create_final_view", _noop_create_final_view)
+        monkeypatch.setattr("tracker.utils.create_benchmark_group", _noop_create_benchmark_group)
+
+        # Skip the actual gather() over tasks (already finished) by short-circuiting the
+        # task rows lookup — both workers should produce no new tasks and fall straight
+        # through to the finalization claim.
+        monkeypatch.setattr("tracker.utils.create_task_rows", _noop_create_task_rows)
+
+        start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
+
+        # Run both workers back-to-back. Even without true parallelism, the second worker
+        # exercises the "benchmark already finalized" branch of try_claim_finalization —
+        # which is exactly the branch that prevents duplicate FinalEvaluation inserts.
+        await process_benchmark(
+            start_benchmark_request_json=start_benchmark_request.model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=[],
+        )
+        await process_benchmark(
+            start_benchmark_request_json=start_benchmark_request.model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=[],
+        )
+
+        final_evaluations = database_session.exec(
+            select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
+        ).all()
+        assert len(final_evaluations) == 1, f"Expected exactly one FinalEvaluation but found {len(final_evaluations)}"
+
+        # upload_final_view / create_final_view are terminal side effects that must fire
+        # exactly once per benchmark run, not once per worker.
+        assert upload_mock.await_count == 1
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.FINISHED
 
     async def test_retry_resume_endpoint_rejects_stopping_benchmark(
         self,

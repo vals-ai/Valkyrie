@@ -599,6 +599,12 @@ async def process_benchmark(
             raise TrackerServiceError(f"Run with id {benchmark_id} not found")
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
+    # Tracks whether this worker was the one that exclusively claimed finalization for
+    # the benchmark. Used to ensure terminal side effects (lambda invocation, cleanup,
+    # completion notification) fire exactly once per benchmark run across concurrent
+    # process_benchmark invocations.
+    did_finalize: bool = False
+
     try:
         # Create benchmark cloudwatch log group
         create_benchmark_group(
@@ -659,10 +665,10 @@ async def process_benchmark(
                 for task_id, evaluation_result in result_dict.items()
             }
 
-        # If another worker is still processing tasks for this benchmark (e.g. a concurrent
-        # retry/resume invocation), defer finalization to the worker that finishes last. Only
-        # the last worker should compute the final score, write the final view, and invoke
-        # the completion lambda.
+        # Fast path: if another worker is still running tasks for this benchmark (e.g. a
+        # concurrent retry/resume invocation), defer finalization to the worker that
+        # finishes last. Skipping the row lock here avoids unnecessary contention when
+        # we already know we are not the last worker.
         with Session(bind=engine) as session:
             if has_active_tasks(benchmark_id, session, org):
                 logger.info(
@@ -670,9 +676,12 @@ async def process_benchmark(
                 )
                 return
 
+        # Fill in evaluation results for any tasks processed by earlier worker invocations
+        # (e.g. resume/retry), then compute the final score. These steps are side-effect
+        # free at the database level so we do them outside any row lock - the final score
+        # calculation is a network call that can take a while.
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            # Fetch remaining tasks (in case this benchmark was resumed)
             remaining_task_results = await fetch_missing_tasks(session, benchmark_row, evaluation_results, org)
 
         evaluation_results.update(remaining_task_results)
@@ -680,84 +689,100 @@ async def process_benchmark(
         if not evaluation_results:
             raise TrackerServiceError("No tasks were completed successfully")
 
-        # Calculate the final score based off the tasks that were ran
         final_score_response = await benchmark_service.final_score(
             evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
         )
 
-        # Create the final evaluation row and add it to the database
-        final_evaluation_row = FinalEvaluation(
-            org_id=org.id,
-            benchmark=benchmark_id,
-            final_score=final_score_response.final_score,
-            properties=final_score_response.metadata,
-        )
-
+        # Atomically claim finalization via a row-level lock on the benchmark row so
+        # concurrent workers cannot race through the terminal-status transition or write
+        # duplicate FinalEvaluation rows. The lock is released when this session commits
+        # or is closed.
+        final_view: FinalViewResponse | None = None
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            # Delete existing final evaluation if re-running
+            claimed, benchmark_row = try_claim_finalization(benchmark_id, session, org)
+            if not claimed:
+                logger.info(
+                    f"Skipping finalization for run {benchmark_id}: another worker already finalized "
+                    f"or still has active tasks (status={benchmark_row.status})"
+                )
+                return
+
+            # Replace any stale FinalEvaluation from a prior run of the same benchmark.
+            # Safe against concurrent workers because the benchmark row is locked.
             if benchmark_row.final_evaluation:
                 session.delete(benchmark_row.final_evaluation)
                 session.flush()
 
-            session.add(final_evaluation_row)
-            session.commit()
-
+            session.add(
+                FinalEvaluation(
+                    org_id=org.id,
+                    benchmark=benchmark_id,
+                    final_score=final_score_response.final_score,
+                    properties=final_score_response.metadata,
+                )
+            )
+            # set_benchmark_final_status commits internally, which atomically persists
+            # the FinalEvaluation insert + terminal status transition and releases the
+            # row lock. Any concurrent worker that was blocked on the SELECT FOR UPDATE
+            # will then observe the terminal status and skip finalization.
             set_benchmark_final_status(benchmark_row, session, org)
 
-            # Push the final benchmark view to the bucket
-            final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
+            did_finalize = True
 
-            await upload_final_view(benchmark_row, final_view, harness_config)
+            # Build the final view after the commit; benchmark_row is still attached to
+            # the session and reflects the just-committed terminal state and
+            # FinalEvaluation relationship.
+            final_view = create_final_view(benchmark_row, session, org)
 
-            # If the user has chosen to invoke a lambda function at the end of the benchmark
-            # We run it but do not let a failure affect the benchmark status
-            arguments = benchmark_row.arguments
-            if arguments.lambda_function:
-                # Expose the benchmark arguments and the benchmark id inside of the lambda
-                lambda_payload: dict[str, Any] = arguments.model_dump()
-                lambda_payload["benchmark_id"] = str(benchmark_id)
+            benchmark_arguments = benchmark_row.arguments
 
-                invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
+        # Side effects below only run from the worker that won the finalization claim,
+        # so they fire exactly once per benchmark run.
+        await upload_final_view(benchmark_row, final_view, harness_config)
+
+        if benchmark_arguments.lambda_function:
+            # Expose the benchmark arguments and the benchmark id inside of the lambda.
+            # If the lambda fails we do not let it affect the benchmark status.
+            lambda_payload: dict[str, Any] = benchmark_arguments.model_dump()
+            lambda_payload["benchmark_id"] = str(benchmark_id)
+            invoke_lambda(benchmark_arguments.lambda_function, lambda_payload, harness_config.aws)
 
     except Exception as e:
         sentry_sdk.capture_exception(e)
 
+        # Only the worker that exclusively claims finalization may flip the benchmark
+        # into an error state. Any other concurrent worker could still be running tasks,
+        # or could have already committed a terminal state.
         with Session(bind=engine) as session:
-            # If another worker is still running tasks for this benchmark we must not flip
-            # the whole benchmark into an error state - that would stomp on the other
-            # worker's progress. The other worker (or the final one to exit) will handle
-            # the final status transition.
-            if has_active_tasks(benchmark_id, session, org):
+            claimed, benchmark_row = try_claim_finalization(benchmark_id, session, org)
+            if not claimed:
                 logger.warning(
-                    f"Run {benchmark_id} worker errored but other tasks are still running in a concurrent worker; "
-                    f"not committing benchmark error. Underlying error: {e}"
+                    f"Run {benchmark_id} worker errored but another worker is still running "
+                    f"or has already finalized (status={benchmark_row.status}); not committing "
+                    f"benchmark error. Underlying error: {e}"
                 )
             else:
-                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
                 error_message = f"{str(e)}\n{traceback.format_exc()}"
                 commit_benchmark_error(benchmark_row, session, error_message)
+                did_finalize = True
     finally:
-        with Session(bind=engine) as session:
-            # Handle any misalignments between the benchmark status and tasks. Skip this
-            # when another worker is still actively processing tasks for this benchmark -
-            # otherwise we would incorrectly mark those running tasks as errored.
-            if not has_active_tasks(benchmark_id, session, org):
-                catch_errors_during_cleanup(benchmark_id, session, org)
+        # Cleanup path: force any orphaned tasks to ERROR and transition the benchmark
+        # into a terminal state if it was never reached. Reuses the same claim helper so
+        # only one worker performs the cleanup per benchmark run.
+        if not did_finalize:
+            with Session(bind=engine) as session:
+                claimed, _ = try_claim_finalization(benchmark_id, session, org)
+                if claimed:
+                    catch_errors_during_cleanup(benchmark_id, session, org)
+                    did_finalize = True
 
-        if notifier:
+        if notifier and did_finalize:
+            # Fire the terminal notification from the worker that owned finalization
+            # exactly once per benchmark run.
             try:
                 with Session(bind=engine) as session:
                     benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-                    # Only fire the terminal notification once, when this is the last
-                    # worker to finish and the benchmark has actually reached a terminal
-                    # state. Concurrent workers that exit while others are still running
-                    # should stay quiet.
-                    if benchmark_row.status in [
-                        BenchmarkStatus.FINISHED,
-                        BenchmarkStatus.ERROR,
-                        BenchmarkStatus.STOPPED,
-                    ]:
+                    if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
                         notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
                         final_score = (
                             benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
@@ -899,6 +924,47 @@ def has_active_tasks(benchmark_id: UUID, session: Session, org: Org) -> bool:
         .where(col(Task.status).in_(active_statuses))
     ).one()
     return active_count > 0
+
+
+_TERMINAL_BENCHMARK_STATUSES: list[BenchmarkStatus] = [
+    BenchmarkStatus.FINISHED,
+    BenchmarkStatus.ERROR,
+    BenchmarkStatus.STOPPED,
+]
+
+
+def try_claim_finalization(benchmark_id: UUID, session: Session, org: Org) -> tuple[bool, Benchmark]:
+    """
+    Attempt to exclusively claim the right to finalize this benchmark under a row-level
+    lock (``SELECT ... FOR UPDATE``). Concurrent ``process_benchmark`` workers for the
+    same run are serialized through this critical section so that exactly one worker
+    transitions the benchmark into a terminal state, writes the FinalEvaluation row, and
+    fires terminal side effects.
+
+    Returns ``(claimed, benchmark_row)``:
+
+    - ``claimed=True``: the caller exclusively owns finalization. The caller must perform
+      the terminal-state transition (and any other writes that should be serialized with
+      it) inside the same session; the lock is released when the caller commits or closes
+      the session.
+    - ``claimed=False``: another worker is still processing tasks for this benchmark or
+      has already finalized it. The caller must not write a terminal state or fire
+      terminal side effects (lambda invocation, completion notification, etc.).
+    """
+    benchmark_row = session.exec(
+        select(Benchmark)
+        .where(col(Benchmark.id) == benchmark_id)
+        .where(col(Benchmark.org_id) == org.id)
+        .with_for_update()
+    ).one()
+
+    if has_active_tasks(benchmark_id, session, org):
+        return False, benchmark_row
+
+    if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
+        return False, benchmark_row
+
+    return True, benchmark_row
 
 
 def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) -> None:
