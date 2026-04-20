@@ -39,6 +39,7 @@ from tracker.types import (
     FetchBenchmarksResponse,
     HarnessConfig,
     RetrieveResultsResponse,
+    RetryOrResumeBenchmarkRequest,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     StartBenchmarkErrorResponse,
@@ -376,7 +377,7 @@ async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
     retry: bool = Query(default=False),
     concurrency: int | None = Query(default=None),
-    task_ids: list[str] = Body(default=[]),
+    body: RetryOrResumeBenchmarkRequest = Body(default_factory=RetryOrResumeBenchmarkRequest),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -386,13 +387,14 @@ async def retry_or_resume_benchmark(
 
     Usage:
     curl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20
-      -d '{"task_ids": ["task_id_1", "task_id_2"]}'
+      -d '{"task_ids": ["task_id_1", "task_id_2"], "service_headers": {"Authorization": "Bearer ..."}}'
 
     Args:
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
         concurrency: Optional new concurrency level (overrides original value)
-        task_ids: Optional list of specific task IDs to run
+        body: Optional task_ids and service_headers. service_headers are request-scoped and
+            forwarded to the benchmark service for this retry/resume only (not persisted).
 
     Returns:
         RetryOrResumeBenchmarkResponse
@@ -417,14 +419,20 @@ async def retry_or_resume_benchmark(
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
+        benchmark_service=benchmark_row.benchmark_service(
+            harness_config.daytona_secret_name, harness_config.aws, service_headers=body.service_headers
+        ),
         retry=retry,
-        rerun_task_ids=task_ids,
+        rerun_task_ids=body.task_ids,
         org=org,
     )
 
-    # Ensure that credentials are included with the model dump
-    resume_request_json = benchmark_row.start_benchmark_request(harness_config).model_dump()
+    # Ensure that credentials are included with the model dump. service_headers are
+    # request-scoped for retry/resume — apply them on the rebuilt request so the worker's
+    # benchmark-service calls authenticate for this run.
+    resume_request = benchmark_row.start_benchmark_request(harness_config)
+    resume_request.service_headers = body.service_headers
+    resume_request_json = resume_request.model_dump()
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running

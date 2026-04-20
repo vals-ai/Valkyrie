@@ -128,6 +128,11 @@ class RetryOrResumeBenchmarkResponse(StatusResponse):
     pass
 
 
+class RetryOrResumeBenchmarkRequest(BaseModel):
+    task_ids: list[str] = []
+    service_headers: dict[str, str] = {}
+
+
 class Order(str, Enum):
     ASC = "asc"
     DESC = "desc"

@@ -197,12 +197,22 @@ class Benchmark(SQLModel, table=True):
             webhook_intervals=self.webhook_intervals,
         )
 
-    def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":
+    def benchmark_service(
+        self,
+        daytona_secret_name: str,
+        aws: "AWSCredentials",
+        service_headers: dict[str, str] | None = None,
+    ) -> "BenchmarkServiceClient":
         from tracker.config import create_benchmark_service_url
         from tracker.utils import create_benchmark_service_client
 
         url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
-        return create_benchmark_service_client(url=url, daytona_secret_name=daytona_secret_name, aws=aws)
+        return create_benchmark_service_client(
+            url=url,
+            daytona_secret_name=daytona_secret_name,
+            aws=aws,
+            service_headers=service_headers,
+        )
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":

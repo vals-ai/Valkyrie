@@ -77,7 +77,6 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
 }
 
 
-
 @config.command()
 def init() -> None:
     """
@@ -768,6 +767,15 @@ def stop(run_id: UUID, force: bool):
     default=None,
     help="Path to a text file with one task ID per line",
 )
+@click.option(
+    "--header",
+    "-H",
+    "headers",
+    multiple=True,
+    nargs=2,
+    type=(str, str),
+    help="Custom header for benchmark service requests (e.g., -H Authorization my-credential)",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -776,6 +784,7 @@ def resume(
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: Path | None,
+    headers: tuple[tuple[str, str]],
 ):
     """
     Resume a run by its run id.
@@ -800,11 +809,23 @@ def resume(
                 return
 
             retry_task_ids = task_ids.split(",") if task_ids else []
+
+            # Resolve auth headers for this retry/resume. Benchmark name is needed to
+            # look up the configured auth credential; fetch it from the run metadata.
+            metadata = tracker.fetch_benchmark_metadata(run_id)
+            service_headers: dict[str, str] = {}
+            auth_credential = TrackerService.get_benchmark_auth(metadata.benchmark_name)
+            if auth_credential:
+                service_headers["Authorization"] = str(auth_credential)
+            for name, value in headers:
+                service_headers[name] = value
+
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
                 concurrency,
                 retry_task_ids,
+                service_headers=service_headers or None,
             )
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(
