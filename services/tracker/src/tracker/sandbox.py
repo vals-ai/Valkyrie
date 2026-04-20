@@ -3,6 +3,7 @@
 import base64
 import logging
 import shlex
+import time
 import uuid
 from asyncio import Semaphore
 from collections import deque
@@ -287,8 +288,52 @@ _PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 _PTY_CREATE_MAX_ATTEMPTS: int = 5
 _PTY_CREATE_DELAY_SECONDS: float = 2.0
 
+# Process-global cap on concurrent PTY WebSocket handshakes.
+# Daytona starts failing above ~500 concurrent handshakes; 100 held 800 PTYs cleanly in testing.
+_PTY_HANDSHAKE_CAP: int = 100
+_PTY_HANDSHAKE_WAIT_LOG_THRESHOLD: float = 0.1
+_PTY_HANDSHAKE_SLOW_LOG_THRESHOLD: float = 2.0
+
+_pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)
+_pty_handshake_inflight: int = 0
+
 # States that determine if the sandbox has been killed
 _DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
+
+
+@asynccontextmanager
+async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator[None, None]:
+    """
+    Gate a PTY WebSocket handshake with a process-global semaphore. Released as soon as the
+    handshake call returns, so the PTY's subsequent lifetime (wait, send_input, etc.) is not gated.
+
+    Logs when we queue behind the cap or when the handshake itself is slow.
+    """
+    global _pty_handshake_inflight
+
+    wait_start = time.monotonic()
+    async with _pty_handshake_semaphore:
+        wait_duration = time.monotonic() - wait_start
+        _pty_handshake_inflight += 1
+        inflight = _pty_handshake_inflight
+
+        if wait_duration > _PTY_HANDSHAKE_WAIT_LOG_THRESHOLD:
+            logger.info(
+                f"PTY handshake queued: {operation} session={session_id} "
+                f"waited={wait_duration:.2f}s inflight={inflight}/{_PTY_HANDSHAKE_CAP}"
+            )
+
+        handshake_start = time.monotonic()
+        try:
+            yield
+        finally:
+            handshake_duration = time.monotonic() - handshake_start
+            _pty_handshake_inflight -= 1
+            if handshake_duration > _PTY_HANDSHAKE_SLOW_LOG_THRESHOLD:
+                logger.warning(
+                    f"PTY handshake slow: {operation} session={session_id} "
+                    f"duration={handshake_duration:.2f}s inflight={inflight}/{_PTY_HANDSHAKE_CAP}"
+                )
 
 
 @retry(
@@ -336,7 +381,8 @@ async def _create_pty_session(
     on_data(f"[Debug]: Creating PTY session with the following id {salted_id}\n".encode())
 
     # Attempt to make the PTY session, timeouts occur under load
-    handle = await sandbox.process.create_pty_session(id=salted_id, on_data=on_data, envs=envs)
+    async with _pty_handshake_slot("create", salted_id):
+        handle = await sandbox.process.create_pty_session(id=salted_id, on_data=on_data, envs=envs)
 
     # Handle to access the PTY and the session id to pass on
     return handle, salted_id
@@ -385,8 +431,9 @@ async def _reconnect_and_wait_pty(
     # Log so the user can see we have seen a disconnection from the websocket (easier to pickup in logs)
     on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
 
-    # Reconnect to the PTY
-    handle = await sandbox.process.connect_pty_session(session_id, on_data)
+    # Reconnect to the PTY. Only the connect handshake is gated; handle.wait() runs ungated below.
+    async with _pty_handshake_slot("reconnect", session_id):
+        handle = await sandbox.process.connect_pty_session(session_id, on_data)
 
     # Wait until the command has finished running
     await handle.wait()
