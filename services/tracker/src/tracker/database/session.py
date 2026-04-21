@@ -1,7 +1,6 @@
 from collections.abc import Generator
 from typing import Any
 
-import logfire
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from tracker.config import DATABASE_URL
@@ -16,8 +15,6 @@ engine = create_engine(
     pool_pre_ping=True,
     pool_recycle=3600,
 )
-
-logfire.instrument_sqlalchemy(engine=engine)
 
 
 def get_session() -> Generator[Session, Any, None]:

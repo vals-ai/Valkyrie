@@ -16,9 +16,15 @@ def configure_logfire(service_name: str) -> None:
     instrument_sqlalchemy, etc.) since those depend on an active
     TracerProvider being configured.
 
-    Auto-instruments httpx and Redis here since both tracker and worker
-    use them. FastAPI and SQLAlchemy are instrumented at their respective
+    Auto-instruments httpx here since both tracker and worker make outbound
+    HTTP calls. FastAPI and SQLAlchemy are instrumented at their respective
     setup sites since they need the app/engine instance.
+
+    Redis is intentionally NOT instrumented: all Redis usage is Taskiq broker
+    plumbing (XREADGROUP polling, XAUTOCLAIM, result backend GET/SET), which
+    produces high-volume, low-signal spans. Application-level tracing of
+    benchmark execution is captured by manual spans on process_benchmark
+    and process_task, plus trace context propagated via Taskiq message labels.
 
     Args:
         service_name: Identifies this process in Logfire UI.
@@ -30,10 +36,11 @@ def configure_logfire(service_name: str) -> None:
         service_name=service_name,
         environment=environment,
         send_to_logfire="if-token-present",
+        # We intentionally propagate trace context from the API into Taskiq
+        # worker tasks via TracingContextMiddleware. Opt in so Logfire doesn't
+        # warn on every extracted context.
+        distributed_tracing=True,
     )
 
     # Auto-instrument outbound HTTP (covers Daytona, benchmark service, Slack webhook calls)
     logfire.instrument_httpx()
-
-    # Auto-instrument Redis commands (covers Taskiq broker + result backend)
-    logfire.instrument_redis()
