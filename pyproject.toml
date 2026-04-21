@@ -72,5 +72,8 @@ filterwarnings = [
     "ignore::DeprecationWarning"
 ]
 
+[tool.uv]
+prerelease = "allow"
+
 [tool.uv.sources]
 tracker = { path = "services/tracker", editable = true }
