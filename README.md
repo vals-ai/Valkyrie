@@ -295,7 +295,11 @@ Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`. Suppo
 ### Download agent outputs
 
 ```bash
+# Download all task outputs for a run
 valkyrie agent outputs <id> --output-dir ./outputs
+
+# Download specific tasks (comma-separated)
+valkyrie agent outputs <id> --task-ids astropy__astropy-7606,django__django-10880
 ```
 
 ## Documentation
