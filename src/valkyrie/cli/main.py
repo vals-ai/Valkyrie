@@ -799,12 +799,20 @@ def resume(
             if not check_tracker_service_health(tracker):
                 return
 
+            # Resolve service headers from config using the benchmark name
+            benchmark_info = tracker.fetch_benchmark(run_id)
+            service_headers: dict[str, str] = {}
+            auth_credential = TrackerService.get_benchmark_auth(benchmark_info.benchmark_name)
+            if auth_credential:
+                service_headers["Authorization"] = str(auth_credential)
+
             retry_task_ids = task_ids.split(",") if task_ids else []
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
                 concurrency,
                 retry_task_ids,
+                service_headers=service_headers,
             )
             click.echo(click.style("Run continued successfully!", fg="green", bold=True))
             click.echo(

@@ -180,7 +180,9 @@ class Benchmark(SQLModel, table=True):
 
         return {task_id: (error_message or "No error message was provided") for task_id, error_message in tasks}
 
-    def start_benchmark_request(self, harness_config: "HarnessConfig") -> "StartBenchmarkRequest":
+    def start_benchmark_request(
+        self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
+    ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
         return StartBenchmarkRequest(
@@ -195,14 +197,17 @@ class Benchmark(SQLModel, table=True):
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,
+            service_headers=service_headers or {},
         )
 
-    def benchmark_service(self, daytona_secret_name: str, aws: "AWSCredentials") -> "BenchmarkServiceClient":
+    def benchmark_service(
+        self, daytona_secret_name: str, aws: "AWSCredentials", service_headers: dict[str, str] | None = None
+    ) -> "BenchmarkServiceClient":
         from tracker.config import create_benchmark_service_url
         from tracker.utils import create_benchmark_service_client
 
         url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
-        return create_benchmark_service_client(url=url, daytona_secret_name=daytona_secret_name, aws=aws)
+        return create_benchmark_service_client(url=url, daytona_secret_name=daytona_secret_name, aws=aws, service_headers=service_headers)
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":
