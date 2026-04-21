@@ -29,6 +29,7 @@ client = TestClient(app)
 
 class TestStopAndResume:
     _test_org = Org(id=TEST_ORG_ID, name="default")
+
     @staticmethod
     async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
         return RetrieveTaskResponse(
@@ -178,7 +179,10 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(2)]
+        task_rows = [
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+            for i in range(2)
+        ]
         database_session.add_all(task_rows)
         database_session.commit()
 
@@ -276,13 +280,16 @@ class TestStopAndResume:
         await initiate_stop_benchmark(benchmark_row, database_session, force=True, org=self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
-        # Mock daytona client since its not required
-        mock_daytona = AsyncMock()
-        mock_daytona.list = AsyncMock(return_value=AsyncMock(items=[], total_pages=0, page=1))
+        async def empty_sandboxes(_query):
+            if False:
+                yield Mock()
+
+        mock_provider = Mock(list_sandboxes=lambda query: empty_sandboxes(query), delete_sandbox=AsyncMock())
+        mock_benchmark_service = Mock(get_sandbox_provider=AsyncMock(return_value=mock_provider))
         monkeypatch.setattr(
             Benchmark,
             "benchmark_service",
-            lambda *_args, **_kwargs: Mock(daytona_client=mock_daytona),  # type: ignore
+            lambda *_args, **_kwargs: mock_benchmark_service,  # type: ignore
         )
 
         # Force stopping the sandboxes results in the benchmark row being stopped

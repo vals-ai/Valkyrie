@@ -4,7 +4,7 @@ import os
 import re
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 import httpx
@@ -27,6 +27,8 @@ from tracker.types import (
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError
+
+SandboxProviderName = Literal["daytona", "modal"]
 
 load_dotenv()
 
@@ -246,6 +248,7 @@ class TrackerService:
         lambda_function: str | None = None,
         dataset: str | None = None,
         service_headers: dict[str, str] | None = None,
+        sandbox_provider: SandboxProviderName = "daytona",
         webhook_secret_name: str | None = None,
         webhook_intervals: list[int] | None = None,
     ) -> Response:
@@ -280,6 +283,7 @@ class TrackerService:
                 if not ignore_custom_services
                 else None,
                 service_headers=service_headers or {},
+                sandbox_provider=sandbox_provider,
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,
             )

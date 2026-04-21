@@ -22,7 +22,7 @@ dependencies = [
     "tenacity>=9.0.0",
     "sentry-sdk[fastapi]>=2.0.0",
     "python-json-logger>=3.2.1",
-    "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@main",
+    "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@ht/modal-integration-rebased",
 ]
 
 [dependency-groups]

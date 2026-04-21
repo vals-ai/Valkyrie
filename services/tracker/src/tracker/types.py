@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -18,6 +18,9 @@ from tracker.database.models import (
     FinalEvaluation,
     TaskStatus,
 )
+
+
+SandboxProviderName = Literal["daytona", "modal"]
 
 
 class BenchmarkDetails(BaseModel):
@@ -52,6 +55,7 @@ class StartBenchmarkRequest(BaseModel):
     dataset: str | None = None
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
+    sandbox_provider: SandboxProviderName = "daytona"
     service_headers: dict[str, str] = {}
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
@@ -66,6 +70,7 @@ class StartBenchmarkRequest(BaseModel):
             url=benchmark_service_url,
             daytona_secret_name=self.harness_config.daytona_secret_name,
             aws=self.harness_config.aws,
+            sandbox_provider=self.sandbox_provider,
             service_headers=self.service_headers,
         )
 

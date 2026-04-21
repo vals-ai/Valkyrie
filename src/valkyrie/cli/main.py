@@ -22,7 +22,7 @@ from valkyrie.cli.s3_client import (
     push_agent,
     remove_agent,
 )
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.tracker_service import SandboxProviderName, TrackerService
 from valkyrie.cli.utils import (
     CONFIG_LOCATION,
     ConfigValue,
@@ -75,7 +75,6 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
     "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
     "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
 }
-
 
 
 @config.command()
@@ -469,6 +468,13 @@ def auth_list() -> None:
     help="Progress percentage threshold for Slack notification (e.g., -i 25 -i 75). Max 3, must be divisible by 5, range 5-100.",
 )
 @click.option(
+    "--sandbox-provider",
+    type=click.Choice(["daytona", "modal"]),
+    default="daytona",
+    show_default=True,
+    help="Sandbox provider to use for this run.",
+)
+@click.option(
     "--ignore-custom-services",
     "--ics",
     is_flag=True,
@@ -488,6 +494,7 @@ def start(
     secrets: tuple[tuple[str, str]],
     headers: tuple[tuple[str, str]],
     intervals: tuple[int, ...],
+    sandbox_provider: SandboxProviderName,
     ignore_custom_services: bool,
 ):
     """
@@ -509,6 +516,7 @@ def start(
     if model:
         click.echo(f"  - Model: {model}")
     click.echo(f"  - Concurrency: {concurrency}")
+    click.echo(f"  - Sandbox provider: {sandbox_provider}")
     click.echo(f"  - Slice: {slice_str}")
     if dataset:
         click.echo(f"  - Dataset: {dataset}")
@@ -586,6 +594,7 @@ def start(
                 lambda_function,
                 dataset,
                 service_headers=service_headers or None,
+                sandbox_provider=sandbox_provider,
                 webhook_secret_name=webhook_secret if webhook_intervals else None,
                 webhook_intervals=webhook_intervals,
             )

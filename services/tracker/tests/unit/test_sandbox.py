@@ -1,92 +1,145 @@
-import asyncio
-from typing import Any
-from unittest.mock import Mock
+from asyncio import Semaphore
+from collections.abc import AsyncIterator, Callable, Mapping
+from pathlib import Path
 
 import pytest
+from benchmark_service.sandbox import (
+    ExecResult,
+    ImageSandboxCreateRequest,
+    Sandbox,
+    SandboxCreateRequest,
+    SandboxFile,
+    SandboxNotFoundError,
+    SandboxProvider,
+    SandboxQuery,
+    SnapshotSandboxCreateRequest,
+)
+from benchmark_service.schemas import Resources
 
-from tracker import sandbox as sandbox_module
-from tracker.sandbox import _create_pty_session
+from tracker.database.models import AgentCausedExitReason
+from tracker.exceptions import SandboxError
+from tracker.sandbox import create_sandbox, stream_command_output
 
 
-class TestPtyHandshakeSemaphore:
-    async def test_semaphore_caps_concurrent_handshakes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """
-        Concurrent _create_pty_session calls never exceed the cap on in-flight
-        sandbox.process.create_pty_session calls.
+class FakeSandbox(Sandbox):
+    def __init__(self, provider: SandboxProvider, result: ExecResult | None = None) -> None:
+        super().__init__(provider=provider, id="sandbox-id", name="sandbox-name")
+        self.result = result or ExecResult(exit_code=0, stdout="ok")
 
-        Regression guard: if someone removes the `async with _pty_handshake_slot(...)`
-        wrapper around the handshake call, concurrency becomes unbounded.
-        """
-        cap = 5
-        total = 25
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(cap))
+    async def exec(
+        self,
+        command: str,
+        cwd: str | None = None,
+        env: Mapping[str, str] | None = None,
+        timeout: float | None = None,
+        on_stdout: Callable[[str], None] | None = None,
+        on_stderr: Callable[[str], None] | None = None,
+    ) -> ExecResult:
+        if on_stdout and self.result.stdout:
+            on_stdout(self.result.stdout)
+        if on_stderr and self.result.stderr:
+            on_stderr(self.result.stderr)
+        return self.result
 
-        concurrent = 0
-        max_concurrent = 0
+    async def upload_file(self, file: SandboxFile) -> None:
+        raise AssertionError(file)
 
-        async def fake_create_pty_session(*_args: Any, **_kwargs: Any) -> Mock:
-            nonlocal concurrent, max_concurrent
+    async def upload_local_file(self, local_path: Path, remote_path: str) -> None:
+        raise AssertionError((local_path, remote_path))
 
-            concurrent += 1
-            max_concurrent = max(max_concurrent, concurrent)
+    async def upload_files(self, files: list[SandboxFile]) -> None:
+        raise AssertionError(files)
 
-            # Hold long enough for other tasks to pile up behind the gate
-            await asyncio.sleep(0.05)
+    async def download_file(self, remote_path: str) -> bytes:
+        raise AssertionError(remote_path)
 
-            concurrent -= 1
-            return Mock()
+    async def wait_until_ready(self) -> None:
+        return None
 
-        mock_sandbox = Mock()
-        mock_sandbox.process.create_pty_session = fake_create_pty_session
+    async def wait_until_stopped(self) -> None:
+        return None
 
-        results = await asyncio.gather(
-            *[_create_pty_session(mock_sandbox, f"session-{i}", lambda _data: None) for i in range(total)]
+
+class FakeProvider(SandboxProvider):
+    def __init__(self, result: ExecResult | None = None) -> None:
+        self.sandbox = FakeSandbox(self, result)
+        self.create_request: SandboxCreateRequest | None = None
+        self.deleted: Sandbox | None = None
+
+    @classmethod
+    async def from_headers(cls, headers: Mapping[str, str]) -> "FakeProvider":
+        raise AssertionError(headers)
+
+    async def get_sandbox(self, id: str) -> FakeSandbox:
+        raise SandboxNotFoundError()
+
+    async def create_sandbox(self, request: SandboxCreateRequest) -> FakeSandbox:
+        self.create_request = request
+        return self.sandbox
+
+    async def delete_sandbox(self, sandbox: Sandbox) -> None:
+        self.deleted = sandbox
+
+    def list_sandboxes(self, query: SandboxQuery | None = None) -> AsyncIterator[Sandbox]:
+        raise AssertionError(query)
+
+
+async def test_create_sandbox_uses_image_request() -> None:
+    provider = FakeProvider()
+
+    async with create_sandbox(
+        provider=provider,
+        sandbox_name="task-alias",
+        image="python:3.12",
+        resources=Resources(vcpu=2, memory=4, disk=8),
+        creation_semaphore=Semaphore(1),
+        labels={"Task": "task-id"},
+        env_vars={"A": "B"},
+    ) as sandbox:
+        assert sandbox is provider.sandbox
+
+    assert isinstance(provider.create_request, ImageSandboxCreateRequest)
+    assert provider.create_request.image == "python:3.12"
+    assert provider.create_request.name == "task-alias"
+    assert provider.create_request.resources
+    assert provider.create_request.resources.cpu == 2
+    assert provider.deleted is provider.sandbox
+
+
+async def test_create_sandbox_uses_snapshot_request() -> None:
+    provider = FakeProvider()
+
+    async with create_sandbox(
+        provider=provider,
+        sandbox_name="task-alias",
+        image="snapshot:vcb-ready",
+        resources=Resources(vcpu=2, memory=4, disk=8),
+        creation_semaphore=Semaphore(1),
+        labels={},
+        env_vars={},
+    ):
+        pass
+
+    assert isinstance(provider.create_request, SnapshotSandboxCreateRequest)
+    assert provider.create_request.snapshot == "vcb-ready"
+
+
+async def test_stream_command_output_maps_agent_exit_reasons() -> None:
+    assert await stream_command_output(FakeProvider(ExecResult(exit_code=0)).sandbox, "cmd", lambda _data: None) is None
+    assert (
+        await stream_command_output(FakeProvider(ExecResult(exit_code=124)).sandbox, "cmd", lambda _data: None)
+        == AgentCausedExitReason.TIMEOUT
+    )
+    assert (
+        await stream_command_output(FakeProvider(ExecResult(exit_code=137)).sandbox, "cmd", lambda _data: None)
+        == AgentCausedExitReason.OS_KILLED
+    )
+
+
+async def test_stream_command_output_raises_on_unknown_failure() -> None:
+    with pytest.raises(SandboxError, match="exit code: 128"):
+        await stream_command_output(
+            FakeProvider(ExecResult(exit_code=128, stderr="control server refused")).sandbox,
+            "cmd",
+            lambda _data: None,
         )
-
-        assert len(results) == total
-        assert max_concurrent <= cap
-        # Sanity: without the cap we'd see total concurrency; confirm contention actually happened
-        assert max_concurrent > 1
-
-    async def test_semaphore_released_after_handshake_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """
-        The semaphore slot is released as soon as the handshake call returns, before the
-        caller does anything else with the handle (handle.wait, send_input, etc.).
-
-        Regression guard: if someone widens the `async with _pty_handshake_slot(...)` scope
-        — e.g. wraps code after create_pty_session returns, or wraps the whole caller flow
-        around handle.wait() — a second concurrent handshake would block until the first
-        task finishes its session lifetime. With cap=1 and a simulated long-running
-        post-handshake step, that regression turns this test into a timeout.
-        """
-        cap = 1
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(cap))
-
-        async def fake_create_pty_session(*_args: Any, **_kwargs: Any) -> Mock:
-            return Mock()
-
-        mock_sandbox = Mock()
-        mock_sandbox.process.create_pty_session = fake_create_pty_session
-
-        events: list[str] = []
-
-        async def task_holding_handle() -> None:
-            await _create_pty_session(mock_sandbox, "s1", lambda _data: None)
-            events.append("a:handshake_done")
-
-            # Simulate a long-running handle.wait() AFTER the handshake.
-            # The slot must already be released, otherwise the other task can't acquire.
-            await asyncio.sleep(0.2)
-            events.append("a:post_handshake_done")
-
-        async def task_needing_slot() -> None:
-            # Tiny delay so task A acquires the slot first
-            await asyncio.sleep(0.01)
-            await _create_pty_session(mock_sandbox, "s2", lambda _data: None)
-            events.append("b:handshake_done")
-
-        await asyncio.wait_for(asyncio.gather(task_holding_handle(), task_needing_slot()), timeout=1.0)
-
-        # Task B's handshake must complete BEFORE task A's post-handshake work finishes.
-        # That ordering is only reachable if the slot was released at handshake exit.
-        assert events.index("b:handshake_done") < events.index("a:post_handshake_done")

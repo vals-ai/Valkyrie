@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
     )
 
 
+SandboxProviderName = Literal["daytona", "modal"]
 DEFAULT_ORG_NAME = "default"
 
 
@@ -87,6 +88,7 @@ class BenchmarkArguments(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    sandbox_provider: SandboxProviderName = "daytona"
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -194,6 +196,7 @@ class Benchmark(SQLModel, table=True):
             lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
             harness_config=harness_config,
+            sandbox_provider=self.arguments.sandbox_provider,
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,
@@ -207,7 +210,13 @@ class Benchmark(SQLModel, table=True):
         from tracker.utils import create_benchmark_service_client
 
         url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
-        return create_benchmark_service_client(url=url, daytona_secret_name=daytona_secret_name, aws=aws, service_headers=service_headers)
+        return create_benchmark_service_client(
+            url=url,
+            daytona_secret_name=daytona_secret_name,
+            aws=aws,
+            sandbox_provider=self.arguments.sandbox_provider,
+            service_headers=service_headers or {},
+        )
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":
