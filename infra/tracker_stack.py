@@ -129,17 +129,11 @@ class TrackerStack(Stack):
         }
 
         db_secrets = {
-            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(
-                self.db_credentials, field="username"
-            ),
-            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(
-                self.db_credentials, field="password"
-            ),
+            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(self.db_credentials, field="username"),
+            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(self.db_credentials, field="password"),
         }
 
-        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
-            self, "SentryDsnSecret", "valkyrie/sentry-dsn"
-        )
+        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")
 
         sentry_secrets = {
             "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),

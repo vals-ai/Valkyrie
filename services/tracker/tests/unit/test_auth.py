@@ -27,6 +27,7 @@ def test_get_default_org_returns_vals_org(session: Session):
 
 def test_get_default_org_raises_if_missing(session: Session):
     import tracker.auth as auth_module
+
     auth_module._cached_default_org = None  # clear cache from prior test
 
     with pytest.raises(RuntimeError, match="Default org not found"):

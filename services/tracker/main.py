@@ -418,14 +418,18 @@ async def retry_or_resume_benchmark(
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws, service_headers=service_headers),
+        benchmark_service=benchmark_row.benchmark_service(
+            harness_config.daytona_secret_name, harness_config.aws, service_headers=service_headers
+        ),
         retry=retry,
         rerun_task_ids=task_ids,
         org=org,
     )
 
     # Ensure that credentials are included with the model dump
-    resume_request_json = benchmark_row.start_benchmark_request(harness_config, service_headers=service_headers).model_dump()
+    resume_request_json = benchmark_row.start_benchmark_request(
+        harness_config, service_headers=service_headers
+    ).model_dump()
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
