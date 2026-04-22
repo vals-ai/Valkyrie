@@ -1,46 +1,49 @@
-"""Logfire tracing configuration for the tracker service.
-
-Configures Pydantic Logfire (built on OpenTelemetry) for distributed tracing
-and correlated structured logs. Called once per process at startup.
-"""
+"""Logfire tracing configuration for the tracker service."""
 
 import os
 
 import logfire
+from opentelemetry.context import Context
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+
+from tracker.logging.context import benchmark_id_var, request_id_var, task_id_var
+
+
+class _ContextVarSpanProcessor(SpanProcessor):
+    """Attaches request/benchmark/task context vars to every span, mirroring sentry._before_send."""
+
+    def on_start(self, span: Span, parent_context: Context | None = None) -> None:
+        existing = span.attributes or {}
+        if "request_id" not in existing and (rid := request_id_var.get("")):
+            span.set_attribute("request_id", rid)
+        if "benchmark_id" not in existing and (bid := benchmark_id_var.get("")):
+            span.set_attribute("benchmark_id", bid)
+        if "task_id" not in existing and (tid := task_id_var.get("")):
+            span.set_attribute("task_id", tid)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        pass
+
+    def shutdown(self) -> None:
+        pass
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
 
 
 def configure_logfire(service_name: str) -> None:
-    """Configure Logfire tracing for the given service.
-
-    Must be called before any instrumentation hooks (instrument_fastapi,
-    instrument_sqlalchemy, etc.) since those depend on an active
-    TracerProvider being configured.
-
-    Auto-instruments httpx here since both tracker and worker make outbound
-    HTTP calls. FastAPI and SQLAlchemy are instrumented at their respective
-    setup sites since they need the app/engine instance.
-
-    Redis is intentionally NOT instrumented: all Redis usage is Taskiq broker
-    plumbing (XREADGROUP polling, XAUTOCLAIM, result backend GET/SET), which
-    produces high-volume, low-signal spans. Application-level tracing of
-    benchmark execution is captured by manual spans on process_benchmark
-    and process_task, plus trace context propagated via Taskiq message labels.
-
-    Args:
-        service_name: Identifies this process in Logfire UI.
-                      Use "valkyrie-tracker" or "valkyrie-worker".
-    """
+    """Configure Logfire tracing. Must run before any instrumentation hooks (instrument_fastapi, etc.)."""
     environment = os.environ.get("ENVIRONMENT", "development")
 
     logfire.configure(
         service_name=service_name,
         environment=environment,
         send_to_logfire="if-token-present",
-        # We intentionally propagate trace context from the API into Taskiq
-        # worker tasks via TracingContextMiddleware. Opt in so Logfire doesn't
-        # warn on every extracted context.
+        # Opt in: trace context is propagated via TracingContextMiddleware.
         distributed_tracing=True,
+        # configure_logging() owns stdout; LogfireLoggingHandler ships to the cloud.
+        console=False,
+        additional_span_processors=[_ContextVarSpanProcessor()],
     )
 
-    # Auto-instrument outbound HTTP (covers Daytona, benchmark service, Slack webhook calls)
     logfire.instrument_httpx()

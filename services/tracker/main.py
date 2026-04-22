@@ -34,6 +34,7 @@ from tracker.s3 import (
     s3_object_exists,
 )
 from tracker.sentry import init_sentry
+from tracker.tracing import configure_logfire
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
@@ -66,13 +67,14 @@ from tracker.utils import (
 )
 
 configure_logging()
+configure_logfire("valkyrie-tracker")
 init_sentry("valkyrie-tracker")
 
 logger = get_logger(__name__)
 
 app = FastAPI()
 
-logfire.instrument_fastapi(app)
+logfire.instrument_fastapi(app, excluded_urls="/health$")
 
 app.add_middleware(RequestContextMiddleware)
 
@@ -204,7 +206,6 @@ async def start_benchmark(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
-    # Inject OTel trace context so the worker continues this trace
     trace_context: dict[str, str] = {}
     inject(trace_context)
 
@@ -438,7 +439,6 @@ async def retry_or_resume_benchmark(
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
-    # Inject OTel trace context so the worker continues this trace
     trace_context: dict[str, str] = {}
     inject(trace_context)
 

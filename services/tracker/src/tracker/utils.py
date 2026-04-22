@@ -3,8 +3,6 @@ import io
 import json
 import time
 import traceback
-
-import logfire
 from asyncio import Semaphore, gather
 from collections.abc import AsyncGenerator, Buffer, Coroutine
 from datetime import datetime
@@ -14,6 +12,7 @@ from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
+import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
@@ -163,6 +162,7 @@ class TrackedTask:
         except Exception as e:
             error_message = f"Task error was not handled: {str(e)}\n{traceback.format_exc()}"
             logger.error(error_message)
+            logfire.exception("tracked_task_run failed")
             sentry_sdk.capture_exception(e)
             with Session(bind=engine) as session:
                 task = fetch_task_row(task_row.id, session, self._org)

@@ -48,6 +48,7 @@ services:
       - DB_HOST=postgres
       - DB_PORT=5432
       - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
+      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,7 +63,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uv", "run", "--no-sync", "python", "-m", "tracker.serve"]
     ports:
       - "8000:8000"
     environment:
@@ -73,6 +74,7 @@ services:
       - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
       - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
       - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
+      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
     depends_on:
       postgres:
         condition: service_healthy

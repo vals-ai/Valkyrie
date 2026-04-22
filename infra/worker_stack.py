@@ -133,7 +133,6 @@ class WorkerStack(Stack):
                 **db_env,
                 "REDIS_URL": redis_url,
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
-                "LOGFIRE_SERVICE_NAME": "valkyrie-worker",
             },
             secrets={
                 **db_secrets,

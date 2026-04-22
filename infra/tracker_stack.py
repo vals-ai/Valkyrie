@@ -176,7 +176,6 @@ class TrackerStack(Stack):
                 "AUTH_REQUIRED": os.environ.get("AUTH_REQUIRED", "false"),
                 "DESCOPE_PROJECT_ID": os.environ.get("DESCOPE_PROJECT_ID", ""),
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
-                "LOGFIRE_SERVICE_NAME": "valkyrie-tracker",
             },
             secrets={
                 **db_secrets,

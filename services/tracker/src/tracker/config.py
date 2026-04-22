@@ -55,17 +55,19 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=REDIS_URL,
 )
 
+# Order is load-bearing: TracingContextMiddleware must precede LoggingContextMiddleware
+# so the OTel trace context is active when logging context vars are set.
+_BROKER_MIDDLEWARES = (TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
+
 broker = (
-    InMemoryBroker().with_middlewares(
-        TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware()
-    )
+    InMemoryBroker().with_middlewares(*_BROKER_MIDDLEWARES)
     if BROKER_ENVIRONMENT == "testing"
     else RedisStreamBroker(
         url=REDIS_URL,
         idle_timeout=86400000,  # 24 hours
     )
     .with_result_backend(result_backend)
-    .with_middlewares(TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
+    .with_middlewares(*_BROKER_MIDDLEWARES)
 )
 
 

@@ -81,14 +81,19 @@ def configure_logging() -> None:
                     "formatter": "default",
                     "filters": ["context"],
                 },
+                # uvicorn.access is excluded below; instrument_fastapi already produces request spans.
+                "logfire": {
+                    "class": "logfire.LogfireLoggingHandler",
+                    "filters": ["context"],
+                },
             },
-            "root": {"handlers": ["console"], "level": log_level},
+            "root": {"handlers": ["console", "logfire"], "level": log_level},
             "loggers": {
-                "tracker": {"handlers": ["console"], "level": log_level, "propagate": False},
-                "uvicorn": {"handlers": ["console"], "level": "INFO", "propagate": False},
+                "tracker": {"handlers": ["console", "logfire"], "level": log_level, "propagate": False},
+                "uvicorn": {"handlers": ["console", "logfire"], "level": "INFO", "propagate": False},
                 "uvicorn.access": {"handlers": ["console"], "level": "INFO", "propagate": False},
-                "uvicorn.error": {"handlers": ["console"], "level": "INFO", "propagate": False},
-                "taskiq": {"handlers": ["console"], "level": log_level, "propagate": False},
+                "uvicorn.error": {"handlers": ["console", "logfire"], "level": "INFO", "propagate": False},
+                "taskiq": {"handlers": ["console", "logfire"], "level": log_level, "propagate": False},
             },
         }
     )

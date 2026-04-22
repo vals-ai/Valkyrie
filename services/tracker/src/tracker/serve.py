@@ -6,12 +6,8 @@ is not overwritten by uvicorn's default logging setup.
 
 import uvicorn
 
-from tracker.tracing import configure_logfire
-
 
 def main() -> None:
-    configure_logfire("valkyrie-tracker")
-
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
