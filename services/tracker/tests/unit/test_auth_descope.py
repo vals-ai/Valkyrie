@@ -34,9 +34,7 @@ def mock_descope():
 def test_valid_api_key_resolves_tenant(mock_descope):
     from tracker.auth import resolve_descope_tenant
 
-    mock_descope.exchange_access_key.return_value = {
-        "tenants": {"test-tenant": {}}
-    }
+    mock_descope.exchange_access_key.return_value = {"tenants": {"test-tenant": {}}}
 
     tenant = resolve_descope_tenant("valid-key")
     assert tenant == "test-tenant"
@@ -45,9 +43,7 @@ def test_valid_api_key_resolves_tenant(mock_descope):
 def test_valid_api_key_finds_org(mock_descope, session, test_org):
     from tracker.auth import find_org_by_tenant, resolve_descope_tenant
 
-    mock_descope.exchange_access_key.return_value = {
-        "tenants": {"test-tenant": {}}
-    }
+    mock_descope.exchange_access_key.return_value = {"tenants": {"test-tenant": {}}}
 
     tenant = resolve_descope_tenant("valid-key")
     org = find_org_by_tenant(tenant, session)
@@ -59,9 +55,7 @@ def test_invalid_api_key_raises_401(mock_descope):
     from descope import AuthException
     from tracker.auth import resolve_descope_tenant
 
-    mock_descope.exchange_access_key.side_effect = AuthException(
-        status_code=401, error_message="Invalid key"
-    )
+    mock_descope.exchange_access_key.side_effect = AuthException(status_code=401, error_message="Invalid key")
 
     with pytest.raises(HTTPException) as exc_info:
         resolve_descope_tenant("bad-key")
@@ -71,9 +65,7 @@ def test_invalid_api_key_raises_401(mock_descope):
 def test_multiple_tenants_raises_400(mock_descope):
     from tracker.auth import resolve_descope_tenant
 
-    mock_descope.exchange_access_key.return_value = {
-        "tenants": {"tenant-a": {}, "tenant-b": {}}
-    }
+    mock_descope.exchange_access_key.return_value = {"tenants": {"tenant-a": {}, "tenant-b": {}}}
 
     with pytest.raises(HTTPException) as exc_info:
         resolve_descope_tenant("multi-tenant-key")

@@ -26,11 +26,17 @@ from tracker.types import AWSCredentials, HarnessConfig
 
 @pytest.fixture
 async def test_sandbox(
-    daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str, creation_semaphore: asyncio.Semaphore
+    daytona_client: AsyncDaytona,
+    test_resources: Resources,
+    test_image: str,
+    random_sandbox_name: str,
+    creation_semaphore: asyncio.Semaphore,
 ) -> AsyncGenerator[AsyncSandbox, None]:
     """Create a test sandbox with Python."""
 
-    async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox:
+    async with create_sandbox(
+        daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+    ) as sandbox:
         yield sandbox
 
 
@@ -38,11 +44,18 @@ class TestSandboxOperations:
     """Integration tests for sandbox operations."""
 
     async def test_create_and_cleanup_sandbox(
-        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str, creation_semaphore: asyncio.Semaphore
+        self,
+        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        test_image: str,
+        random_sandbox_name: str,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test that sandbox is created and cleaned up properly."""
 
-        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox:
+        async with create_sandbox(
+            daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+        ) as sandbox:
             assert sandbox.name == random_sandbox_name
             result = await sandbox.process.exec("echo 'test'")
             assert result.exit_code == 0
@@ -165,20 +178,34 @@ class TestSandboxOperations:
         assert "line3" in output
 
     async def test_create_sandbox_reuse(
-        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str, creation_semaphore: asyncio.Semaphore
+        self,
+        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        test_image: str,
+        random_sandbox_name: str,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test that create_sandbox reuses existing sandbox instead of creating new one."""
 
-        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox1:
+        async with create_sandbox(
+            daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+        ) as sandbox1:
             result = await sandbox1.process.exec("echo 'test'")
             assert result.exit_code == 0
             first_id = sandbox1.id
 
-            async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox2:
+            async with create_sandbox(
+                daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+            ) as sandbox2:
                 assert sandbox2.id == first_id
 
     async def test_deterministic_timeout_behavior(
-        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str, creation_semaphore: asyncio.Semaphore
+        self,
+        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        test_image: str,
+        random_sandbox_name: str,
+        creation_semaphore: asyncio.Semaphore,
     ):
         """
         Timeouts are correct caught and returned from the stream outputs method
@@ -188,14 +215,18 @@ class TestSandboxOperations:
         - Sandbox does not timeout when the sleep is less than the timeout
         """
 
-        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox:
+        async with create_sandbox(
+            daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+        ) as sandbox:
             command = "timeout 15 sleep 70"
 
             command_timeout = await stream_command_output(sandbox, command, on_output=print)
 
             assert command_timeout
 
-        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox:
+        async with create_sandbox(
+            daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+        ) as sandbox:
             command = "timeout 15 sleep 10"
 
             command_timeout = await stream_command_output(sandbox, command, on_output=print)
@@ -203,7 +234,12 @@ class TestSandboxOperations:
             assert not command_timeout
 
     async def test_pty_streaming_captures_all_output(
-        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str, creation_semaphore: asyncio.Semaphore
+        self,
+        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        test_image: str,
+        random_sandbox_name: str,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test that PTY streaming captures output from a multi-stage command."""
         logged_messages: list[str] = []
@@ -211,7 +247,9 @@ class TestSandboxOperations:
         def log_callback(message: str) -> None:
             logged_messages.append(message)
 
-        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox:
+        async with create_sandbox(
+            daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+        ) as sandbox:
             command = "echo 'STAGE_1' && sleep 1 && echo 'STAGE_2' && sleep 1 && echo 'STAGE_3'"
 
             timed_out = await stream_command_output(sandbox, command, on_output=log_callback)
@@ -223,11 +261,18 @@ class TestSandboxOperations:
             assert "STAGE_3" in output
 
     async def test_pty_reconnect_with_connect_pty_session(
-        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str, creation_semaphore: asyncio.Semaphore
+        self,
+        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        test_image: str,
+        random_sandbox_name: str,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test that connect_pty_session can reconnect to a running PTY and receive output."""
 
-        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox:
+        async with create_sandbox(
+            daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+        ) as sandbox:
             session_id = f"{sandbox.id}:pty-reconnect-test"
             before_messages: list[str] = []
             after_messages: list[str] = []
@@ -267,11 +312,18 @@ class TestSandboxOperations:
                 pass
 
     async def test_stream_command_raises_on_sandbox_crash(
-        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str, creation_semaphore: asyncio.Semaphore
+        self,
+        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        test_image: str,
+        random_sandbox_name: str,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test that a sandbox crash during execution is detected and raised."""
 
-        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox:
+        async with create_sandbox(
+            daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+        ) as sandbox:
 
             async def destroy_sandbox_after_delay() -> None:
                 await asyncio.sleep(2)
@@ -284,10 +336,17 @@ class TestSandboxOperations:
                 )
 
     async def test_stream_command_raises_on_nonzero_exit(
-        self, daytona_client: AsyncDaytona, test_resources: Resources, test_image: str, random_sandbox_name: str, creation_semaphore: asyncio.Semaphore
+        self,
+        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        test_image: str,
+        random_sandbox_name: str,
+        creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test that a command with non-zero exit code raises SandboxError."""
-        async with create_sandbox(daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore) as sandbox:
+        async with create_sandbox(
+            daytona_client, random_sandbox_name, test_image, test_resources, creation_semaphore
+        ) as sandbox:
             # Use `false` (returns 1) instead of `exit 1` — exit kills the writer
             # shell itself, preventing the status file from being written.
             with pytest.raises(SandboxError, match="exit code: 1"):

@@ -42,7 +42,12 @@ class TestForceStop:
         database_session.commit()
 
         # Create a single task
-        task = Task(org_id=TEST_ORG_ID, benchmark=example_benchmark_object.id, task_id=random_task_id(), status=TaskStatus.IN_PROGRESS)
+        task = Task(
+            org_id=TEST_ORG_ID,
+            benchmark=example_benchmark_object.id,
+            task_id=random_task_id(),
+            status=TaskStatus.IN_PROGRESS,
+        )
         database_session.add(task)
         database_session.commit()
 
@@ -51,7 +56,13 @@ class TestForceStop:
         async def force_stop_sandbox() -> None:
             await asyncio.sleep(0.5)
 
-            await force_stop_sandboxes(example_benchmark_object, database_session, daytona_secret_name, aws_credentials, Org(id=TEST_ORG_ID, name="default"))
+            await force_stop_sandboxes(
+                example_benchmark_object,
+                database_session,
+                daytona_secret_name,
+                aws_credentials,
+                Org(id=TEST_ORG_ID, name="default"),
+            )
 
         async def _generator_to_courtine():
             async with create_sandbox(
@@ -121,7 +132,9 @@ class TestForceStop:
         tasks: list[Task] = []
         for i in range(12):
             status = TaskStatus.IN_PROGRESS if i < 6 else TaskStatus.EVALUATING
-            task = Task(org_id=TEST_ORG_ID, benchmark=example_benchmark_object.id, task_id=random_task_id(), status=status)
+            task = Task(
+                org_id=TEST_ORG_ID, benchmark=example_benchmark_object.id, task_id=random_task_id(), status=status
+            )
             tasks.append(task)
             database_session.add(task)
 
@@ -137,7 +150,13 @@ class TestForceStop:
         await asyncio.sleep(2)
 
         # Force stop the benchmark run with all sandboxes
-        await force_stop_sandboxes(example_benchmark_object, database_session, daytona_secret_name, aws_credentials, Org(id=TEST_ORG_ID, name="default"))
+        await force_stop_sandboxes(
+            example_benchmark_object,
+            database_session,
+            daytona_secret_name,
+            aws_credentials,
+            Org(id=TEST_ORG_ID, name="default"),
+        )
 
         await created_sandboxes
 
