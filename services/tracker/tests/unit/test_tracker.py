@@ -13,6 +13,7 @@ from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
 
 class TestTracker:
     _test_org = Org(id=TEST_ORG_ID, name="default")
+
     async def _mock_coro(self, task_id: str) -> dict[str, dict[str, Any] | None]:
         """Blank coro that returns the same format as process_task method"""
         await asyncio.sleep(5)
@@ -59,7 +60,8 @@ class TestTracker:
             database_session.commit()
 
         task_tracking: dict[str, TrackedTask] = {
-            task_id: TrackedTask(coro=self._mock_coro(task_id=task_id), org=self._test_org) for task_id in tasks_to_track
+            task_id: TrackedTask(coro=self._mock_coro(task_id=task_id), org=self._test_org)
+            for task_id in tasks_to_track
         }
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
@@ -129,7 +131,9 @@ class TestTracker:
 
         # Create another task that tracks the status of the first task
         # Allows us to test that the task status changes to running once the semaphore is aquired.
-        tracked_task_2 = TrackedTask(coro=self._validate_task_state_before_run(tracked_task, "task_id_2"), org=self._test_org)
+        tracked_task_2 = TrackedTask(
+            coro=self._validate_task_state_before_run(tracked_task, "task_id_2"), org=self._test_org
+        )
 
         mock_task_row_2 = MagicMock(spec=Task)
         mock_task_row_2.task_id = "task_id_2"

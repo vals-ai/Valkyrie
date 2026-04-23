@@ -367,7 +367,7 @@ async def stop_benchmark(
     if benchmark_row.status not in valid_stop_states:
         raise HTTPException(
             status_code=400,
-            detail=f"Benchmark {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error benchmark.",
+            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error run.",
         )
 
     await initiate_stop_benchmark(benchmark_row, session, force, org)
@@ -386,6 +386,7 @@ async def retry_or_resume_benchmark(
     retry: bool = Query(default=False),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
+    service_headers: dict[str, str] = Body(default={}),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -413,7 +414,7 @@ async def retry_or_resume_benchmark(
     if benchmark_row.status in invalid_states:
         raise HTTPException(
             status_code=400,
-            detail=f"Benchmark {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a benchmark that is currently running.",
+            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is currently running.",
         )
 
     # NOTE: 0 is not acceptable
@@ -426,14 +427,18 @@ async def retry_or_resume_benchmark(
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
+        benchmark_service=benchmark_row.benchmark_service(
+            harness_config.daytona_secret_name, harness_config.aws, service_headers=service_headers
+        ),
         retry=retry,
         rerun_task_ids=task_ids,
         org=org,
     )
 
     # Ensure that credentials are included with the model dump
-    resume_request_json = benchmark_row.start_benchmark_request(harness_config).model_dump()
+    resume_request_json = benchmark_row.start_benchmark_request(
+        harness_config, service_headers=service_headers
+    ).model_dump()
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
@@ -526,7 +531,7 @@ async def fetch_agent_outputs(
     if not s3_keys:
         raise HTTPException(
             status_code=404,
-            detail=f"No outputs found for benchmark '{benchmark_id}'",
+            detail=f"No outputs found for run '{benchmark_id}'",
         )
 
     def tar_generator():

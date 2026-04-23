@@ -1,4 +1,4 @@
-.PHONY: help install style format lint typecheck \
+.PHONY: help install style format format-check lint typecheck \
 	tracker-service venv_check tool-install build
 
 PYTHON_VERSION := 3.12
@@ -51,7 +51,10 @@ build: venv_check
 
 format: venv_check
 	@uv run ruff format .
-	
+
+format-check: venv_check
+	@uv run ruff format --check .
+
 lint: venv_check
 	@uv run ruff check --fix .
 
