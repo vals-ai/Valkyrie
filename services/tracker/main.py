@@ -527,9 +527,6 @@ async def fetch_agent_outputs(
     else:
         s3_keys = list_s3_objects(benchmark_prefix, harness_config.aws, harness_config.s3_bucket)
 
-    prefix = benchmark_prefix
-    s3_keys = list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket)
-
     if not s3_keys:
         raise HTTPException(
             status_code=404,
@@ -541,7 +538,7 @@ async def fetch_agent_outputs(
 
         with tarfile.open(fileobj=writer, mode="w|") as tar:
             for s3_key in s3_keys:
-                relative_path: str = s3_key.removeprefix(prefix)
+                relative_path: str = s3_key.removeprefix(benchmark_prefix)
 
                 try:
                     body, size = download_from_s3_stream(s3_key, harness_config.aws, harness_config.s3_bucket)
