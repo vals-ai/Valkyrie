@@ -16,6 +16,7 @@ from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.s3_client import (
     download_agent,
+    download_s3_path,
     get_contract_from_s3,
     install_agent,
     list_agents,
@@ -924,12 +925,20 @@ def list_benchmarks(
     default=None,
     help="Directory to save agent outputs (defaults to ./agent_outputs/<run-id>)",
 )
-def outputs(run_id: UUID, output_dir: Path | None):
+@click.option(
+    "--task-ids",
+    type=str,
+    required=False,
+    default=None,
+    help="Comma-separated list of task IDs to download (e.g., astropy__astropy-7606,django__django-10880)",
+)
+def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
     """
     Fetch agent outputs for a benchmark by its run id.
 
     Example:
         valkyrie agent outputs 123e4567-e89b-12d3-a456-426614174000
+        valkyrie agent outputs 123e4567-e89b-12d3-a456-426614174000 --task-ids astropy__astropy-7606,django__django-10880
     """
 
     try:
@@ -946,13 +955,50 @@ def outputs(run_id: UUID, output_dir: Path | None):
 
             click.echo(f"\r\033[KFetching agent outputs for run {run_id}...", nl=False)
 
-            response = tracker.fetch_agent_outputs(run_id)
+            response = tracker.fetch_agent_outputs(
+                run_id, task_ids=[task.strip() for task in task_ids.split(",")] if task_ids else None
+            )
 
             download_agent_outputs(response, output_dir)
 
             click.echo(click.style(f"\r\033[K✓ Agent outputs extracted to: {output_dir}", fg="green"))
 
     except TrackerServiceError as e:
+        click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)
+        raise click.Abort()
+
+
+@agent.command(name="output", help="Download files from a benchmark run by its ID.")
+@click.argument("benchmark_id", type=UUID)
+@click.argument("subpath", type=str, default="", required=False)
+@click.option(
+    "-o",
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Directory to save downloaded files (defaults to ./<benchmark_id>)",
+)
+def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
+    """
+    Download all files under a benchmark's S3 directory.
+
+    Example:
+        valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9
+        valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9 astropy__astropy-7606
+        valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9 swebench.json -o .
+    """
+    try:
+        path = f"benchmarks/{benchmark_id}"
+        if subpath:
+            path = f"{path}/{subpath.strip('/')}"
+
+        if output_dir is None:
+            output_dir = Path(str(benchmark_id))
+
+        click.echo(f"\r\033[KDownloading from s3://{path}...", nl=False)
+        count = asyncio.run(download_s3_path(path, output_dir))
+        click.echo(click.style(f"\r\033[K✓ {count} file(s) downloaded to: {output_dir}", fg="green"))
+    except Exception as e:
         click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)
         raise click.Abort()
 

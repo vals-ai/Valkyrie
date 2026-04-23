@@ -513,6 +513,7 @@ async def fetch_agent_outputs(
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
+    task_ids: list[str] | None = Query(default=None),
 ) -> StreamingResponse:
     """
     Stream a tar file with agent outputs to the client.
@@ -525,8 +526,15 @@ async def fetch_agent_outputs(
     """
     get_scoped(Benchmark, benchmark_id, session, org)
 
-    prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
-    s3_keys = list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket)
+    benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
+    if task_ids:
+        s3_keys = [
+            key
+            for task_id in task_ids
+            for key in list_s3_objects(f"{benchmark_prefix}{task_id}/", harness_config.aws, harness_config.s3_bucket)
+        ]
+    else:
+        s3_keys = list_s3_objects(benchmark_prefix, harness_config.aws, harness_config.s3_bucket)
 
     if not s3_keys:
         raise HTTPException(
@@ -539,7 +547,7 @@ async def fetch_agent_outputs(
 
         with tarfile.open(fileobj=writer, mode="w|") as tar:
             for s3_key in s3_keys:
-                relative_path: str = s3_key.removeprefix(prefix)
+                relative_path: str = s3_key.removeprefix(benchmark_prefix)
 
                 try:
                     body, size = download_from_s3_stream(s3_key, harness_config.aws, harness_config.s3_bucket)
