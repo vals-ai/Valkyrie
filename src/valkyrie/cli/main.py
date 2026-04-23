@@ -837,7 +837,7 @@ def resume(
                     fg="cyan",
                 )
             )
-    except TrackerServiceError as e:
+    except (TrackerServiceError, S3Error) as e:
         raise click.ClickException(str(e))
 
 
