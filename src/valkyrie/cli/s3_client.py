@@ -198,6 +198,22 @@ async def push_agent(agent_name: str | None, agent_path: Path):
                 raise
 
 
+async def push_agent_to_benchmark(agent_name: str, agent_path: Path, benchmark_id: str) -> None:
+    """Push agent to S3 and overwrite the frozen benchmark copy so resumed tasks pick up the new version."""
+    await push_agent(agent_name, agent_path)
+
+    bucket_name = _fetch_bucket_name()
+    source_key = f"agents/{agent_name}.zip"
+    dest_key = f"benchmarks/{benchmark_id}/{agent_name}.zip"
+
+    async with aioboto3.Session().client("s3") as s3_client:
+        await s3_client.copy_object(
+            Bucket=bucket_name,
+            CopySource={"Bucket": bucket_name, "Key": source_key},
+            Key=dest_key,
+        )
+
+
 @handle_s3_error(message="Failed to remove agent from S3")
 async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""

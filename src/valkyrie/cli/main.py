@@ -21,6 +21,7 @@ from valkyrie.cli.s3_client import (
     list_agents,
     push_agent,
     remove_agent,
+    update_benchmark_agent_version,
 )
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import (
@@ -767,6 +768,14 @@ def stop(run_id: UUID, force: bool):
     default=None,
     help="Path to a text file with one task ID per line",
 )
+@click.option(
+    "--update-agent",
+    "-u",
+    type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
+    required=False,
+    default=None,
+    help="Path to a local agent directory to push before resuming",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -775,6 +784,7 @@ def resume(
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: Path | None,
+    update_agent: Path | None,
 ):
     """
     Resume a run by its run id.
@@ -804,6 +814,13 @@ def resume(
             auth_credential = TrackerService.get_benchmark_auth(benchmark_info.benchmark_name)
             if auth_credential:
                 service_headers["Authorization"] = str(auth_credential)
+
+            if update_agent:
+                metadata = tracker.fetch_benchmark_metadata(run_id)
+                agent_name = metadata.benchmark_arguments.contract.name
+                click.echo(f"\r\033[KPushing updated agent '{agent_name}'...", nl=False)
+                asyncio.run(update_benchmark_agent_version(agent_name, update_agent, str(run_id)))
+                click.echo(click.style(f"\r\033[K✓ Agent '{agent_name}' updated", fg="green"))
 
             retry_task_ids = task_ids.split(",") if task_ids else []
             _ = tracker.retry_or_resume_benchmark(
