@@ -955,6 +955,7 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
 @click.argument("benchmark_id", type=UUID)
 @click.argument("subpath", type=str, default="", required=False)
 @click.option(
+    "-o",
     "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
@@ -967,6 +968,7 @@ def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
     Example:
         valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9
         valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9 astropy__astropy-7606
+        valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9 swebench.json -o .
     """
     try:
         path = f"benchmarks/{benchmark_id}"

@@ -298,7 +298,7 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
 async def download_s3_path(s3_path: str, output_dir: Path) -> int:
     """Download all objects under an S3 path prefix into output_dir. Returns count of files downloaded."""
     bucket_name = _fetch_bucket_name()
-    prefix = s3_path.rstrip("/") + "/"
+    prefix = s3_path.rstrip("/") + "/" if not Path(s3_path).suffix else s3_path
 
     async with aioboto3.Session().client("s3") as s3_client:
         paginator = s3_client.get_paginator("list_objects_v2")
