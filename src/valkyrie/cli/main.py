@@ -772,10 +772,9 @@ def stop(run_id: UUID, force: bool):
 @click.option(
     "--update-agent",
     "-u",
-    type=str,
-    required=False,
-    default=None,
-    help="Agent to update before resuming. Accepts a local directory path or an agent name already in S3.",
+    is_flag=True,
+    default=False,
+    help="Refresh the frozen agent copy from the current agents/<name>.zip in S3 before resuming.",
 )
 @click.pass_context
 def resume(
@@ -785,7 +784,7 @@ def resume(
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: Path | None,
-    update_agent: str | None,
+    update_agent: bool,
 ):
     """
     Resume a run by its run id.
@@ -820,7 +819,7 @@ def resume(
                 metadata = tracker.fetch_benchmark_metadata(run_id)
                 agent_name = metadata.benchmark_arguments.contract.name
                 click.echo(f"\r\033[KUpdating agent '{agent_name}'...", nl=False)
-                asyncio.run(update_benchmark_agent_version(update_agent, agent_name, str(run_id)))
+                asyncio.run(update_benchmark_agent_version(agent_name, str(run_id)))
                 click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
 
             retry_task_ids = task_ids.split(",") if task_ids else []

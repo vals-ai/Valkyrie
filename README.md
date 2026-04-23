@@ -285,7 +285,7 @@ valkyrie run resume <id> --concurrency 20
 | `--concurrency` | Override concurrency level |
 | `--task-ids` | Comma-separated task IDs to resume/retry |
 | `--task-ids-file` | Path to a text file with one task ID per line |
-| `--update-agent, -u` | Path to a local agent directory — pushes it to S3 and updates the frozen benchmark copy before resuming so resumed tasks run the new agent version |
+| `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
 
 ### List runs
 
