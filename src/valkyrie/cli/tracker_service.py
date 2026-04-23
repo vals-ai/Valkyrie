@@ -498,7 +498,7 @@ class TrackerService:
             httpx Response with agent outputs
         """
         try:
-            params = {}
+            params: dict[str, Any] = {}
             if task_ids:
                 params["task_ids"] = task_ids
             response = self._client.get(f"{self._base_url}/fetch-agent-outputs/{benchmark_id}", params=params)

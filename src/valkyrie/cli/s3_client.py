@@ -305,7 +305,7 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
         keys: list[str] = []
         async for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
             for obj in page.get("Contents", []):
-                keys.append(obj["Key"])
+                keys.append(cast(str, obj["Key"]))
 
         if not keys:
             raise S3Error(f"No files found at '{s3_path}' in bucket '{bucket_name}'")
@@ -318,7 +318,7 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
             dest.parent.mkdir(parents=True, exist_ok=True)
 
             response = await s3_client.get_object(Bucket=bucket_name, Key=key)
-            dest.write_bytes(await response["Body"].read())
+            dest.write_bytes(cast(bytes, await response["Body"].read()))
 
         return len(keys)
 

@@ -951,24 +951,30 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
         raise click.Abort()
 
 
-@agent.command(name="output", help="Download files from a specific S3 path in the bucket.")
-@click.argument("path", type=str)
+@agent.command(name="output", help="Download files from a benchmark run by its ID.")
+@click.argument("benchmark_id", type=UUID)
+@click.argument("subpath", type=str, default="", required=False)
 @click.option(
     "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
-    help="Directory to save downloaded files (defaults to the last segment of the path)",
+    help="Directory to save downloaded files (defaults to ./<benchmark_id>)",
 )
-def output_path(path: str, output_dir: Path | None):
+def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
     """
-    Download all files under an S3 bucket path.
+    Download all files under a benchmark's S3 directory.
 
     Example:
-        valkyrie agent output benchmarks/6f176c17-7199-4ebc-b931-973e5600c1c9/some-file
+        valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9
+        valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9 astropy__astropy-7606
     """
     try:
+        path = f"benchmarks/{benchmark_id}"
+        if subpath:
+            path = f"{path}/{subpath.strip('/')}"
+
         if output_dir is None:
-            output_dir = Path(path.rstrip("/").split("/")[-1])
+            output_dir = Path(str(benchmark_id))
 
         click.echo(f"\r\033[KDownloading from s3://{path}...", nl=False)
         count = asyncio.run(download_s3_path(path, output_dir))
