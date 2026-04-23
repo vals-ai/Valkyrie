@@ -120,8 +120,13 @@ def test_dev_formatter_shows_context():
     """DevFormatter includes non-empty context fields."""
     fmt = DevFormatter("%(message)s")
     record = logging.LogRecord(
-        name="tracker.test", level=logging.INFO, pathname="", lineno=0,
-        msg="test msg", args=(), exc_info=None,
+        name="tracker.test",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg="test msg",
+        args=(),
+        exc_info=None,
     )
     record.request_id = "req-1"  # type: ignore[attr-defined]
     record.benchmark_id = ""  # type: ignore[attr-defined]
@@ -136,8 +141,13 @@ def test_dev_formatter_no_context():
     """DevFormatter works cleanly with no context set."""
     fmt = DevFormatter("%(message)s")
     record = logging.LogRecord(
-        name="tracker.test", level=logging.WARNING, pathname="", lineno=0,
-        msg="no ctx", args=(), exc_info=None,
+        name="tracker.test",
+        level=logging.WARNING,
+        pathname="",
+        lineno=0,
+        msg="no ctx",
+        args=(),
+        exc_info=None,
     )
     record.request_id = ""  # type: ignore[attr-defined]
     record.benchmark_id = ""  # type: ignore[attr-defined]

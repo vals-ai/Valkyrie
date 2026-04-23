@@ -11,7 +11,7 @@ dependencies = [
     "boto3-stubs[s3]",
     "moto[s3]",
     "fastapi[standard]>=0.135.3",
-    "daytona>=0.161.0",
+    "daytona>=0.169.0a2",
     "sqlmodel>=0.0.38",
     "psycopg2-binary>=2.9.11",
     "httpx>=0.28.1",
@@ -39,6 +39,9 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+prerelease = "allow"
 
 [tool.hatch.metadata]
 allow-direct-references = true

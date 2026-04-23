@@ -45,9 +45,7 @@ def upgrade() -> None:
 
     # 4. Backfill all existing rows
     for table in ("benchmark", "task", "finalevaluation", "evaluationresult"):
-        op.execute(
-            sa.text(f"UPDATE {table} SET org_id = :org_id").bindparams(org_id=default_org_id)
-        )
+        op.execute(sa.text(f"UPDATE {table} SET org_id = :org_id").bindparams(org_id=default_org_id))
 
     # 5. Set NOT NULL + FK constraints
     for table in ("benchmark", "task", "finalevaluation", "evaluationresult"):

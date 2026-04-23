@@ -290,7 +290,8 @@ _PTY_CREATE_DELAY_SECONDS: float = 2.0
 
 # Process-global cap on concurrent PTY WebSocket handshakes.
 # Daytona starts failing above ~500 concurrent handshakes; 100 held 800 PTYs cleanly in testing.
-_PTY_HANDSHAKE_CAP: int = 100
+# Temporarily effectively unbounded while validating the new Daytona SDK.
+_PTY_HANDSHAKE_CAP: int = 1_000_000
 _PTY_HANDSHAKE_SLOW_LOG_THRESHOLD: float = 2.0
 
 _pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)

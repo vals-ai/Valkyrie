@@ -207,7 +207,9 @@ class Benchmark(SQLModel, table=True):
         from tracker.utils import create_benchmark_service_client
 
         url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
-        return create_benchmark_service_client(url=url, daytona_secret_name=daytona_secret_name, aws=aws, service_headers=service_headers)
+        return create_benchmark_service_client(
+            url=url, daytona_secret_name=daytona_secret_name, aws=aws, service_headers=service_headers
+        )
 
     @property
     def benchmark_metadata(self) -> "FetchBenchmarkMetadataResponse":
