@@ -198,20 +198,31 @@ async def push_agent(agent_name: str | None, agent_path: Path):
                 raise
 
 
-async def push_agent_to_benchmark(agent_name: str, agent_path: Path, benchmark_id: str) -> None:
-    """Push agent to S3 and overwrite the frozen benchmark copy so resumed tasks pick up the new version."""
-    await push_agent(agent_name, agent_path)
+async def update_benchmark_agent_version(update_agent: str, agent_name: str, benchmark_id: str) -> None:
+    """Either updates using the local path to an agent or uses the agent inside of s3"""
+    local_path = Path(update_agent)
+    if local_path.is_dir():
+        await push_agent(agent_name, local_path)
+        source_name = agent_name
+    else:
+        source_name = update_agent
 
     bucket_name = _fetch_bucket_name()
-    source_key = f"agents/{agent_name}.zip"
+    source_key = f"agents/{source_name}.zip"
     dest_key = f"benchmarks/{benchmark_id}/{agent_name}.zip"
 
     async with aioboto3.Session().client("s3") as s3_client:
-        await s3_client.copy_object(
-            Bucket=bucket_name,
-            CopySource={"Bucket": bucket_name, "Key": source_key},
-            Key=dest_key,
-        )
+        try:
+            await s3_client.copy_object(
+                Bucket=bucket_name,
+                CopySource={"Bucket": bucket_name, "Key": source_key},
+                Key=dest_key,
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                raise S3Error(f"Agent '{source_name}.zip' not found in S3.") from e
+
+            raise
 
 
 @handle_s3_error(message="Failed to remove agent from S3")

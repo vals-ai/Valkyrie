@@ -771,10 +771,10 @@ def stop(run_id: UUID, force: bool):
 @click.option(
     "--update-agent",
     "-u",
-    type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True),
+    type=str,
     required=False,
     default=None,
-    help="Path to a local agent directory to push before resuming",
+    help="Agent to update before resuming. Accepts a local directory path or an agent name already in S3.",
 )
 @click.pass_context
 def resume(
@@ -784,7 +784,7 @@ def resume(
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: Path | None,
-    update_agent: Path | None,
+    update_agent: str | None,
 ):
     """
     Resume a run by its run id.
@@ -818,9 +818,9 @@ def resume(
             if update_agent:
                 metadata = tracker.fetch_benchmark_metadata(run_id)
                 agent_name = metadata.benchmark_arguments.contract.name
-                click.echo(f"\r\033[KPushing updated agent '{agent_name}'...", nl=False)
-                asyncio.run(update_benchmark_agent_version(agent_name, update_agent, str(run_id)))
-                click.echo(click.style(f"\r\033[K✓ Agent '{agent_name}' updated", fg="green"))
+                click.echo(f"\r\033[KUpdating agent '{agent_name}'...", nl=False)
+                asyncio.run(update_benchmark_agent_version(update_agent, agent_name, str(run_id)))
+                click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
 
             retry_task_ids = task_ids.split(",") if task_ids else []
             _ = tracker.retry_or_resume_benchmark(

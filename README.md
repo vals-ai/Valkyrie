@@ -280,6 +280,13 @@ valkyrie run retry <id>
 valkyrie run resume <id> --concurrency 20
 ```
 
+| Option | Description |
+| --- | --- |
+| `--concurrency` | Override concurrency level |
+| `--task-ids` | Comma-separated task IDs to resume/retry |
+| `--task-ids-file` | Path to a text file with one task ID per line |
+| `--update-agent, -u` | Path to a local agent directory — pushes it to S3 and updates the frozen benchmark copy before resuming so resumed tasks run the new agent version |
+
 ### List runs
 
 ```bash
@@ -310,4 +317,4 @@ valkyrie agent outputs <id> --output-dir ./outputs
 | Database & migrations | [DATABASE.md](services/tracker/src/tracker/database/README.md) |
 | Infrastructure (AWS CDK) | [INFRASTRUCTURE.md](infra/README.md) |
 | Sandbox secrets | [PROVIDER.md](docs/PROVIDER.md) |
-| Contribute benchmark services | [Create benchmark service](https://github.com/vals-ai/create-benchmark-service)
+| Contribute benchmark services | [Create benchmark service](https://github.com/vals-ai/create-benchmark-service) |
