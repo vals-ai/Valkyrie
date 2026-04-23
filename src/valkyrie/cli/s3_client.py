@@ -214,7 +214,7 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
         except ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
                 raise S3Error(f"Agent '{agent_name}.zip' not found in S3.") from e
-            raise
+            raise S3Error(f"Failed to copy agent '{agent_name}' in S3: {e}") from e
 
 
 @handle_s3_error(message="Failed to remove agent from S3")
