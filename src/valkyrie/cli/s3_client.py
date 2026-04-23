@@ -313,7 +313,7 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         for key in keys:
-            relative = key.removeprefix(prefix)
+            relative = key.removeprefix(prefix).lstrip("/")
             dest = output_dir / relative if relative else output_dir / Path(key).name
             dest.parent.mkdir(parents=True, exist_ok=True)
 
