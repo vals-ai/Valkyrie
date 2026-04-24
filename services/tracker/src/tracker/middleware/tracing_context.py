@@ -1,4 +1,4 @@
-"""Taskiq middleware that extracts W3C trace context from message labels."""
+"""Taskiq middleware that extracts OTel trace context from message labels."""
 
 from contextvars import Token
 from typing import Any
@@ -7,7 +7,9 @@ from opentelemetry.context import Context, attach, detach
 from opentelemetry.propagate import extract
 from taskiq import TaskiqMessage, TaskiqMiddleware, TaskiqResult
 
-_TRACE_CONTEXT_KEYS = frozenset({"traceparent", "tracestate"})
+# Union of keys written by the composite propagator (W3C + Sentry).
+# Hardcoded rather than derived at import — the global propagator is set later at startup.
+_TRACE_CONTEXT_KEYS = frozenset({"traceparent", "tracestate", "sentry-trace", "baggage"})
 
 
 class TracingContextMiddleware(TaskiqMiddleware):

@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 import time
 import traceback
 from asyncio import Semaphore, gather
@@ -379,12 +380,23 @@ async def process_task(
                 task.status = TaskStatus.BUILDING
                 task_session.commit()
 
+            environment = os.environ.get("ENVIRONMENT", "development")
+            env_vars = {
+                **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+                # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
+                # are filterable per benchmark run and separable from other environments sharing the
+                # same Daytona account (sandbox OTLP export is account-level).
+                "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
+                    f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={environment}"
+                ),
+            }
+
             async with create_sandbox(
                 daytona=benchmark_service.daytona_client,
                 sandbox_name=task_row.alias,
                 image=task_data.docker_image,
                 labels=labels,
-                env_vars=resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+                env_vars=env_vars,
                 resources=task_data.resources,
                 creation_semaphore=creation_semaphore,
             ) as sandbox:

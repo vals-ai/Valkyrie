@@ -1,25 +1,32 @@
-"""Logfire tracing configuration for the tracker service."""
+"""Tracing configuration: OTel instrumentation (via logfire) with Sentry as the backend."""
 
 import os
 
 import logfire
+from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.context import Context
+from opentelemetry.propagate import set_global_textmap
+from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+from sentry_sdk.integrations.opentelemetry import SentryPropagator, SentrySpanProcessor
+from sentry_sdk.integrations.opentelemetry import span_processor as _sentry_span_processor
 
-from tracker.logging.context import benchmark_id_var, request_id_var, task_id_var
+from tracker.logging.context import get_context_tags
+
+# SentrySpanProcessor drops spans from its in-memory map after 10 minutes by default, which
+# silently loses long-running parents like process_benchmark / process_task. Bump to 4 hours.
+_sentry_span_processor.SPAN_MAX_TIME_OPEN_MINUTES = 240
 
 
 class _ContextVarSpanProcessor(SpanProcessor):
-    """Attaches request/benchmark/task context vars to every span, mirroring sentry._before_send."""
+    """Attaches request/benchmark/task context vars to every span as attributes."""
 
     def on_start(self, span: Span, parent_context: Context | None = None) -> None:
         existing = span.attributes or {}
-        if "request_id" not in existing and (rid := request_id_var.get("")):
-            span.set_attribute("request_id", rid)
-        if "benchmark_id" not in existing and (bid := benchmark_id_var.get("")):
-            span.set_attribute("benchmark_id", bid)
-        if "task_id" not in existing and (tid := task_id_var.get("")):
-            span.set_attribute("task_id", tid)
+        for key, value in get_context_tags().items():
+            if value and key not in existing:
+                span.set_attribute(key, value)
 
     def on_end(self, span: ReadableSpan) -> None:
         pass
@@ -31,19 +38,24 @@ class _ContextVarSpanProcessor(SpanProcessor):
         return True
 
 
-def configure_logfire(service_name: str) -> None:
-    """Configure Logfire tracing. Must run before any instrumentation hooks (instrument_fastapi, etc.)."""
+def configure_tracing(service_name: str) -> None:
+    """Configure OTel tracing. Call after init_sentry() and before any instrument_*() hooks."""
     environment = os.environ.get("ENVIRONMENT", "development")
 
     logfire.configure(
         service_name=service_name,
         environment=environment,
-        send_to_logfire="if-token-present",
+        send_to_logfire=False,
         # Opt in: trace context is propagated via TracingContextMiddleware.
         distributed_tracing=True,
-        # configure_logging() owns stdout; LogfireLoggingHandler ships to the cloud.
+        # configure_logging() owns stdout.
         console=False,
-        additional_span_processors=[_ContextVarSpanProcessor()],
+        additional_span_processors=[_ContextVarSpanProcessor(), SentrySpanProcessor()],
+    )
+    # Composite: inject both W3C traceparent/tracestate (for non-Sentry peers like Daytona /
+    # benchmark_service) and Sentry's sentry-trace/baggage. Extract honors whichever headers arrive.
+    set_global_textmap(
+        CompositePropagator([TraceContextTextMapPropagator(), W3CBaggagePropagator(), SentryPropagator()])
     )
 
     logfire.instrument_httpx()

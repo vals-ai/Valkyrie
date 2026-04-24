@@ -12,7 +12,9 @@ from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
+import logfire
 from benchmark_service.schemas import Resources as TrackerResources
+from opentelemetry.trace import StatusCode
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
@@ -514,8 +516,16 @@ async def _disconnect_pty(handle: AsyncPtyHandle | None) -> None:
 
     # Ignore exceptions raised when disconnecting
     # Most likely would be a network connection error
+    # Outer try guards against rare observability failures (span enter/exit or record_exception
+    # raising); this function's contract is best-effort cleanup.
     try:
-        await handle.disconnect()
+        with logfire.span("pty_disconnect") as span:
+            try:
+                await handle.disconnect()
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(StatusCode.ERROR)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
+                logger.warning(f"PTY disconnect failed: {type(e).__name__}: {e}")
     except Exception:
         pass
 
@@ -528,9 +538,15 @@ async def _kill_pty_session(sandbox: AsyncSandbox, session_id: str | None) -> No
         return
 
     try:
-        await sandbox.process.kill_pty_session(session_id)
+        with logfire.span("kill_pty_session {session_id}", session_id=session_id) as span:
+            try:
+                await sandbox.process.kill_pty_session(session_id)
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(StatusCode.ERROR)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
+                logger.warning(f"Failed to kill PTY session {session_id}: {type(e).__name__}: {e}")
     except Exception:
-        logger.warning(f"Failed to kill PTY session {session_id}")
+        pass
 
 
 async def stream_command_output(

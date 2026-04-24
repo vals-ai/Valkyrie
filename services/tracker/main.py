@@ -34,7 +34,7 @@ from tracker.s3 import (
     s3_object_exists,
 )
 from tracker.sentry import init_sentry
-from tracker.tracing import configure_logfire
+from tracker.tracing import configure_tracing
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
@@ -67,8 +67,8 @@ from tracker.utils import (
 )
 
 configure_logging()
-configure_logfire("valkyrie-tracker")
 init_sentry("valkyrie-tracker")
+configure_tracing("valkyrie-tracker")
 
 logger = get_logger(__name__)
 

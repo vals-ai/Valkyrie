@@ -139,13 +139,6 @@ class TrackerStack(Stack):
             "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
         }
 
-        # Logfire tracing token (must be pre-created in Secrets Manager)
-        logfire_secret = aws_secretsmanager.Secret.from_secret_name_v2(
-            self,
-            "LogfireSecret",
-            secret_name="valkyrie/logfire-token",
-        )
-
         # ── Tracker API service ──────────────────────────────────────────
 
         tracker_task_def = aws_ecs.FargateTaskDefinition(
@@ -180,7 +173,6 @@ class TrackerStack(Stack):
             secrets={
                 **db_secrets,
                 **sentry_secrets,
-                "LOGFIRE_TOKEN": aws_ecs.Secret.from_secrets_manager(logfire_secret),
             },
             command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(

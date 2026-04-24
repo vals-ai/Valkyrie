@@ -48,7 +48,11 @@ services:
       - DB_HOST=postgres
       - DB_PORT=5432
       - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
-      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
     depends_on:
       postgres:
         condition: service_healthy
@@ -74,7 +78,11 @@ services:
       - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
       - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
       - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
-      - LOGFIRE_TOKEN=${LOGFIRE_TOKEN:-}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
     depends_on:
       postgres:
         condition: service_healthy

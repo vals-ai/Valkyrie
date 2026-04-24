@@ -1,33 +1,25 @@
 """Sentry SDK initialization shared by the Tracker API and Worker processes."""
 
+import logging
 import os
 
 import sentry_sdk
+from sentry_sdk.consts import INSTRUMENTER
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.types import Event, Hint
 
-from tracker.logging.context import benchmark_id_var, request_id_var, task_id_var
+from tracker.logging.context import get_context_tags
 
 
 def _before_send(
     event: Event,
     hint: Hint,
 ) -> Event | None:
-    """Inject structured logging context vars as Sentry tags on every event."""
-    if "tags" not in event:
-        event["tags"] = {}
-
-    request_id = request_id_var.get("")
-    benchmark_id = benchmark_id_var.get("")
-    task_id = task_id_var.get("")
-
-    if request_id:
-        event["tags"]["request_id"] = request_id
-    if benchmark_id:
-        event["tags"]["benchmark_id"] = benchmark_id
-    if task_id:
-        event["tags"]["task_id"] = task_id
-
+    """Attach structured logging context vars as Sentry tags on every event."""
+    tags = event.setdefault("tags", {})
+    for key, value in get_context_tags().items():
+        if value:
+            tags[key] = value
     return event
 
 
@@ -41,18 +33,28 @@ def init_sentry(service_name: str) -> None:
     if not dsn:
         return
 
-    sentry_sdk.init(
-        dsn=dsn,
-        environment=os.environ.get("ENVIRONMENT", "development"),
-        release=os.environ.get("SENTRY_RELEASE", ""),
-        server_name=service_name,
-        traces_sample_rate=0,
-        send_default_pii=False,
-        before_send=_before_send,
-        integrations=[
-            LoggingIntegration(
-                level=None,
-                event_level=None,
-            ),
-        ],
-    )
+    try:
+        sentry_sdk.init(
+            dsn=dsn,
+            environment=os.environ.get("ENVIRONMENT", "development"),
+            release=os.environ.get("SENTRY_RELEASE", ""),
+            server_name=service_name,
+            # Sampling happens upstream in OTel; pass everything through.
+            traces_sample_rate=1.0,
+            instrumenter=INSTRUMENTER.OTEL,
+            enable_logs=True,
+            send_default_pii=False,
+            before_send=_before_send,
+            integrations=[
+                # level=None disables breadcrumb capture (spans carry context instead).
+                # event_level=None disables auto-error events (we capture_exception explicitly).
+                LoggingIntegration(
+                    level=None,
+                    event_level=None,
+                    sentry_logs_level=logging.INFO,
+                ),
+            ],
+        )
+    except Exception as e:
+        # A malformed SENTRY_DSN or invalid integration shouldn't crash service startup.
+        logging.getLogger(__name__).warning("Failed to initialize Sentry: %s: %s", type(e).__name__, e)

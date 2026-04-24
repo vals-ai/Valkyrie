@@ -11,7 +11,7 @@ from taskiq_redis.redis_backend import RedisAsyncResultBackend
 from tracker.logging import configure_logging
 from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware, TracingContextMiddleware
 from tracker.sentry import init_sentry
-from tracker.tracing import configure_logfire
+from tracker.tracing import configure_tracing
 
 load_dotenv()
 configure_logging()
@@ -73,8 +73,8 @@ broker = (
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
-    configure_logfire("valkyrie-worker")
     init_sentry("valkyrie-worker")
+    configure_tracing("valkyrie-worker")
 
 
 # Auth settings
