@@ -21,7 +21,7 @@ from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 
 from tracker._lambda import invoke_lambda
-from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group, reset_cloudwatch_stream
+from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group
 from tracker.config import broker
 from tracker.database.models import (
     Benchmark,
@@ -331,11 +331,10 @@ async def process_task(
             return {task_id: None}
 
     # Setup logging infrastructure before try block so it's always available
-    stream_key: str = f"{benchmark_id}:{task_id}"
+    # Suffix is required to version control streams, never delete between retires
+    stream_suffix = task_row.started_at.strftime("%m%d-%H%M")
+    stream_key: str = f"{benchmark_id}:{task_id}_{stream_suffix}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
-
-    # If we are retrying the task we clear logs from previous run
-    reset_cloudwatch_stream(stream_key, harness_config.aws, harness_config.log_group)
 
     last_log_time: float = time.monotonic()
 

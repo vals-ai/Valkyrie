@@ -140,7 +140,6 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
     monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
     monkeypatch.setattr("tracker.utils.cloudwatch_stream", _mock_cloudwatch_stream)
-    monkeypatch.setattr("tracker.utils.reset_cloudwatch_stream", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("tracker.utils.upload_final_view", _mock_upload_final_view)
     monkeypatch.setattr("tracker.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
     monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)
