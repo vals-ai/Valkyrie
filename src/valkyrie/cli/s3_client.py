@@ -198,6 +198,25 @@ async def push_agent(agent_name: str | None, agent_path: Path):
                 raise
 
 
+async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
+    """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
+    bucket_name = _fetch_bucket_name()
+    source_key = f"agents/{agent_name}.zip"
+    dest_key = f"benchmarks/{benchmark_id}/{agent_name}.zip"
+
+    async with aioboto3.Session().client("s3") as s3_client:
+        try:
+            await s3_client.copy_object(
+                Bucket=bucket_name,
+                CopySource={"Bucket": bucket_name, "Key": source_key},
+                Key=dest_key,
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                raise S3Error(f"Agent '{agent_name}.zip' not found in S3.") from e
+            raise S3Error(f"Failed to copy agent '{agent_name}' in S3: {e}") from e
+
+
 @handle_s3_error(message="Failed to remove agent from S3")
 async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""
@@ -292,6 +311,35 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
     finally:
         # Clean up temporary zip file
         tmp_path.unlink()
+
+
+@handle_s3_error(message="Failed to download from S3")
+async def download_s3_path(s3_path: str, output_dir: Path) -> int:
+    """Download all objects under an S3 path prefix into output_dir. Returns count of files downloaded."""
+    bucket_name = _fetch_bucket_name()
+    prefix = s3_path.rstrip("/") + "/" if not Path(s3_path).suffix else s3_path
+
+    async with aioboto3.Session().client("s3") as s3_client:
+        paginator = s3_client.get_paginator("list_objects_v2")
+        keys: list[str] = []
+        async for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                keys.append(cast(str, obj["Key"]))
+
+        if not keys:
+            raise S3Error(f"No files found at '{s3_path}' in bucket '{bucket_name}'")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for key in keys:
+            relative = key.removeprefix(prefix).lstrip("/")
+            dest = output_dir / relative if relative else output_dir / Path(key).name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+
+            response = await s3_client.get_object(Bucket=bucket_name, Key=key)
+            dest.write_bytes(cast(bytes, await response["Body"].read()))
+
+        return len(keys)
 
 
 async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:

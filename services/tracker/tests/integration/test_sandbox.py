@@ -13,7 +13,7 @@ from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 from tests.utils import random_task_id
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
-from tracker.s3 import get_contract_s3_key
+from tracker.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.sandbox import (
     create_sandbox,
     install_agent_dependencies,
@@ -68,6 +68,7 @@ class TestSandboxOperations:
     ) -> None:
         """Test that agent artifacts are uploaded to the sandbox."""
         contract_name = "test_contract"
+        benchmark_id = "test-benchmark-id-abc"
         contract = AgentContractRequest(
             name=contract_name,
             install_cmd="bash setup.sh",
@@ -91,15 +92,24 @@ class TestSandboxOperations:
             aws_access_key_id=aws_credentials.aws_access_key_id,
             aws_secret_access_key=aws_credentials.aws_secret_access_key,
         )
-        s3_key = get_contract_s3_key(contract_name)
+        agent_key = get_contract_s3_key(contract_name)
+        frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
         s3.put_object(
             Bucket=harness_config.s3_bucket,
-            Key=s3_key,
+            Key=agent_key,
+            Body=zip_buffer.getvalue(),
+        )
+        # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.
+        s3.put_object(
+            Bucket=harness_config.s3_bucket,
+            Key=frozen_key,
             Body=zip_buffer.getvalue(),
         )
 
         try:
-            await upload_agent_artifacts(test_sandbox, contract, aws_credentials, harness_config.s3_bucket)
+            await upload_agent_artifacts(
+                test_sandbox, contract, benchmark_id, aws_credentials, harness_config.s3_bucket
+            )
 
             # Verify files exist in sandbox
             result = await test_sandbox.process.exec(f"cat /bundle/{setup_file}")
@@ -110,7 +120,8 @@ class TestSandboxOperations:
             assert result.exit_code == 0
             assert "hello world" in result.result
         finally:
-            s3.delete_object(Bucket=harness_config.s3_bucket, Key=s3_key)
+            s3.delete_object(Bucket=harness_config.s3_bucket, Key=agent_key)
+            s3.delete_object(Bucket=harness_config.s3_bucket, Key=frozen_key)
 
     async def test_install_agent_dependencies(self, test_sandbox: AsyncSandbox) -> None:
         """Test that install command is correctly executed in the sandbox."""

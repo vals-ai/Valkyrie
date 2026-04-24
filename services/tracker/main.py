@@ -26,6 +26,7 @@ from tracker.logging import benchmark_id_var, configure_logging, get_logger, req
 from tracker.middleware import RequestContextMiddleware
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
+    copy_agent_to_benchmark,
     create_benchmark_url,
     create_console_url,
     create_presigned_url,
@@ -146,7 +147,7 @@ def init_org(
     tenant_name = resolve_descope_tenant(api_key)
 
     stmt = pg_insert(Org).values(name=tenant_name).on_conflict_do_nothing(index_elements=["name"])
-    result = session.execute(stmt)
+    result = session.exec(stmt)
     created = result.rowcount > 0
     session.commit()
 
@@ -195,6 +196,14 @@ async def start_benchmark(
     try:
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
+        )
+
+        # Copy agent so edits to agents/<name>.zip during the run doesn't affect it
+        await copy_agent_to_benchmark(
+            str(benchmark_row.id),
+            request.contract.name,
+            request.harness_config.aws,
+            request.harness_config.s3_bucket,
         )
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -518,6 +527,7 @@ async def fetch_agent_outputs(
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
+    task_ids: list[str] | None = Query(default=None),
 ) -> StreamingResponse:
     """
     Stream a tar file with agent outputs to the client.
@@ -530,8 +540,15 @@ async def fetch_agent_outputs(
     """
     get_scoped(Benchmark, benchmark_id, session, org)
 
-    prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
-    s3_keys = list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket)
+    benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
+    if task_ids:
+        s3_keys = [
+            key
+            for task_id in task_ids
+            for key in list_s3_objects(f"{benchmark_prefix}{task_id}/", harness_config.aws, harness_config.s3_bucket)
+        ]
+    else:
+        s3_keys = list_s3_objects(benchmark_prefix, harness_config.aws, harness_config.s3_bucket)
 
     if not s3_keys:
         raise HTTPException(
@@ -544,7 +561,7 @@ async def fetch_agent_outputs(
 
         with tarfile.open(fileobj=writer, mode="w|") as tar:
             for s3_key in s3_keys:
-                relative_path: str = s3_key.removeprefix(prefix)
+                relative_path: str = s3_key.removeprefix(benchmark_prefix)
 
                 try:
                     body, size = download_from_s3_stream(s3_key, harness_config.aws, harness_config.s3_bucket)
