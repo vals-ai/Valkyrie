@@ -767,9 +767,7 @@ async def process_benchmark(
                 with Session(bind=engine) as session:
                     benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
                     notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
-                    final_score = (
-                        benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
-                    )
+                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
                     await notifier.send_terminal_notification(
                         notification_context,
                         status=benchmark_row.status,
