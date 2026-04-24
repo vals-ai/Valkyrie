@@ -1,16 +1,15 @@
 import logging
 import tarfile
 import traceback
-
-import logfire
-from opentelemetry.propagate import inject
 from typing import Annotated
 from uuid import UUID
 
+import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session
@@ -96,6 +95,13 @@ def bind_benchmark_id(benchmark_id: UUID) -> UUID:
 
 
 TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
+
+
+def _taskiq_labels() -> dict[str, str]:
+    """Labels attached to a kicked task: current request id + injected OTel trace context."""
+    trace_context: dict[str, str] = {}
+    inject(trace_context)
+    return {"request_id": request_id_var.get(), **trace_context}
 
 
 @app.exception_handler(TrackerServiceError)
@@ -215,15 +221,9 @@ async def start_benchmark(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
-    trace_context: dict[str, str] = {}
-    inject(trace_context)
-
     await (
         process_benchmark.kicker()
-        .with_labels(
-            request_id=request_id_var.get(),
-            **trace_context,
-        )
+        .with_labels(**_taskiq_labels())
         .kiq(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
@@ -452,15 +452,9 @@ async def retry_or_resume_benchmark(
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
-    trace_context: dict[str, str] = {}
-    inject(trace_context)
-
     await (
         process_benchmark.kicker()
-        .with_labels(
-            request_id=request_id_var.get(),
-            **trace_context,
-        )
+        .with_labels(**_taskiq_labels())
         .kiq(
             start_benchmark_request_json=resume_request_json,
             benchmark_id_str=str(benchmark_row.id),

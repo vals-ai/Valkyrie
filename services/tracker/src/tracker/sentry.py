@@ -46,8 +46,8 @@ def init_sentry(service_name: str) -> None:
             send_default_pii=False,
             before_send=_before_send,
             integrations=[
-                # level=None disables breadcrumb capture (spans carry context instead).
-                # event_level=None disables auto-error events (we capture_exception explicitly).
+                # level=None / event_level=None: spans carry context and we capture_exception explicitly,
+                # so we only want LoggingIntegration for shipping log records to Sentry Logs.
                 LoggingIntegration(
                     level=None,
                     event_level=None,

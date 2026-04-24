@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import httpx
-import logfire
 from pydantic import BaseModel
 
 from tracker.database.models import BenchmarkStatus
@@ -134,14 +133,13 @@ class SlackNotifier:
                 )
                 return
 
-            with logfire.span("send_notification", notification_type="slack"):
-                async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT) as client:
-                    response = await client.post(
-                        secret_value,
-                        json={"text": text},
-                    )
-                    if response.status_code != 200:
-                        logger.warning(f"Slack webhook returned {response.status_code}: {response.text[:200]}")
+            async with httpx.AsyncClient(timeout=WEBHOOK_TIMEOUT) as client:
+                response = await client.post(
+                    secret_value,
+                    json={"text": text},
+                )
+                if response.status_code != 200:
+                    logger.warning(f"Slack webhook returned {response.status_code}: {response.text[:200]}")
         except SecretsError as e:
             logger.warning(f"Failed to resolve webhook secret '{self._secret_name}': {e}")
         except Exception as e:

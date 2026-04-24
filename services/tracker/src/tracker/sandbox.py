@@ -14,7 +14,6 @@ from typing import Any, AsyncGenerator
 
 import logfire
 from benchmark_service.schemas import Resources as TrackerResources
-from opentelemetry.trace import StatusCode
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
@@ -513,47 +512,27 @@ async def _read_exit_code(sandbox: AsyncSandbox, status_path: str) -> int:
 
 
 async def _disconnect_pty(handle: AsyncPtyHandle | None) -> None:
-    """
-    Disconnect from the PTY, ignoring exit errors
-    """
-
-    # Don't need to disconnect if it does not exist
+    """Disconnect from the PTY, ignoring exit errors (typically network errors)."""
     if not handle:
         return
 
-    # Ignore exceptions raised when disconnecting
-    # Most likely would be a network connection error
-    # Outer try guards against rare observability failures (span enter/exit or record_exception
-    # raising); this function's contract is best-effort cleanup.
     try:
-        with logfire.span("pty_disconnect") as span:
-            try:
-                await handle.disconnect()
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(StatusCode.ERROR)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
-                logger.warning(f"PTY disconnect failed: {type(e).__name__}: {e}")
-    except Exception:
-        pass
+        with logfire.span("pty_disconnect"):
+            await handle.disconnect()
+    except Exception as e:
+        logger.warning(f"PTY disconnect failed: {type(e).__name__}: {e}")
 
 
 async def _kill_pty_session(sandbox: AsyncSandbox, session_id: str | None) -> None:
-    """
-    Kill a PTY session, ignoring errors if raised or if session was never created
-    """
+    """Kill a PTY session, ignoring errors if raised or if session was never created."""
     if not session_id:
         return
 
     try:
-        with logfire.span("kill_pty_session {session_id}", session_id=session_id) as span:
-            try:
-                await sandbox.process.kill_pty_session(session_id)
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(StatusCode.ERROR)  # pyright: ignore[reportAttributeAccessIssue,reportUnknownMemberType]
-                logger.warning(f"Failed to kill PTY session {session_id}: {type(e).__name__}: {e}")
-    except Exception:
-        pass
+        with logfire.span("kill_pty_session {session_id}", session_id=session_id):
+            await sandbox.process.kill_pty_session(session_id)
+    except Exception as e:
+        logger.warning(f"Failed to kill PTY session {session_id}: {type(e).__name__}: {e}")
 
 
 async def stream_command_output(
