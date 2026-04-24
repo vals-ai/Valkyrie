@@ -332,7 +332,7 @@ async def process_task(
 
     # Setup logging infrastructure before try block so it's always available
     # Suffix is required to version control streams, never delete between retires
-    stream_suffix = task_row.started_at.strftime("%m%d-%H%M")
+    stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
     stream_key: str = f"{benchmark_id}:{task_id}_{stream_suffix}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
