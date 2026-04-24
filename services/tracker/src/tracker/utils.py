@@ -325,7 +325,7 @@ async def process_task(
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
     with logfire.span(
-        "process_task {task_id}",
+        "process_task",
         task_id=task_id,
         benchmark_id=str(benchmark_id),
         benchmark_name=start_benchmark_request.benchmark_name,
@@ -409,7 +409,7 @@ async def process_task(
 
                     # Upload the contract to the sandbox after creating and install the dependencies
                     with logfire.span(
-                        "upload_agent {agent_name}",
+                        "upload_agent",
                         agent_name=start_benchmark_request.contract.name,
                         task_id=task_id,
                     ):
@@ -421,7 +421,7 @@ async def process_task(
                             harness_config.s3_bucket,
                         )
 
-                    with logfire.span("setup_task {task_id}", task_id=task_id):
+                    with logfire.span("setup_task", task_id=task_id):
                         _ = await benchmark_service.setup_task(
                             task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                         )
@@ -436,7 +436,7 @@ async def process_task(
 
                     # Run the agent inside of the sandbox
                     with logfire.span(
-                        "run_agent {task_id}",
+                        "run_agent",
                         task_id=task_id,
                         agent_name=start_benchmark_request.contract.name,
                         agent_timeout=task_data.agent_timeout,
@@ -462,7 +462,7 @@ async def process_task(
                     # Evaluate the instance
                     # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
                     logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                    with logfire.span("evaluate_instance {task_id}", task_id=task_id):
+                    with logfire.span("evaluate_instance", task_id=task_id):
                         evaluation_result = await benchmark_service.evaluate_instance(
                             task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                         )
@@ -619,7 +619,7 @@ async def process_benchmark(
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
 
     with logfire.span(
-        "process_benchmark {benchmark_id}",
+        "process_benchmark",
         benchmark_id=benchmark_id_str,
         benchmark_name=start_benchmark_request.benchmark_name,
         agent_name=start_benchmark_request.contract.name,
@@ -720,7 +720,7 @@ async def process_benchmark(
                 raise TrackerServiceError("No tasks were completed successfully")
 
             # Calculate the final score based off the tasks that were ran
-            with logfire.span("final_score {benchmark_id}", benchmark_id=benchmark_id_str):
+            with logfire.span("final_score", benchmark_id=benchmark_id_str):
                 final_score_response = await benchmark_service.final_score(
                     evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
                 )
@@ -748,7 +748,7 @@ async def process_benchmark(
                 # Push the final benchmark view to the bucket
                 final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
 
-                with logfire.span("upload_results {benchmark_id}", benchmark_id=benchmark_id_str):
+                with logfire.span("upload_results", benchmark_id=benchmark_id_str):
                     await upload_final_view(benchmark_row, final_view, harness_config)
 
                 # If the user has chosen to invoke a lambda function at the end of the benchmark

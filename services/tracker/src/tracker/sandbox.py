@@ -529,7 +529,7 @@ async def _kill_pty_session(sandbox: AsyncSandbox, session_id: str | None) -> No
         return
 
     try:
-        with logfire.span("kill_pty_session {session_id}", session_id=session_id):
+        with logfire.span("kill_pty_session", session_id=session_id):
             await sandbox.process.kill_pty_session(session_id)
     except Exception as e:
         logger.warning(f"Failed to kill PTY session {session_id}: {type(e).__name__}: {e}")

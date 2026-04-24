@@ -73,7 +73,7 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
     Raises:
         S3Error: If upload fails due to AWS errors or network issues
     """
-    with logfire.span("upload_to_s3 {s3_key}", s3_key=s3_key, s3_bucket=s3_bucket):
+    with logfire.span("upload_to_s3", s3_key=s3_key, s3_bucket=s3_bucket):
 
         def _upload() -> None:
             client = _s3_client(aws)

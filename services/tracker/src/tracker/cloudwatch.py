@@ -76,7 +76,7 @@ def create_benchmark_group(benchmark_id: str, aws: "AWSCredentials", log_group: 
     Returns:
         The log group name
     """
-    with logfire.span("create_log_group {benchmark_id}", benchmark_id=benchmark_id):
+    with logfire.span("create_log_group", benchmark_id=benchmark_id):
         client = _cloudwatch_client(aws)
         log_group_name: str = f"{log_group}/{benchmark_id}"
 
