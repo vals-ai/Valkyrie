@@ -63,6 +63,7 @@ def get_cloudwatch_url(benchmark_id: str, region: str, log_group: str, task_id: 
 
 
 @handle_cloudwatch_error(message="Failed to create log group")
+@logfire.instrument("create_log_group", extract_args=("benchmark_id",))
 def create_benchmark_group(benchmark_id: str, aws: "AWSCredentials", log_group: str, log_retention_policy: int) -> str:
     """
     Create a log group for a benchmark.
@@ -76,18 +77,17 @@ def create_benchmark_group(benchmark_id: str, aws: "AWSCredentials", log_group: 
     Returns:
         The log group name
     """
-    with logfire.span("create_log_group", benchmark_id=benchmark_id):
-        client = _cloudwatch_client(aws)
-        log_group_name: str = f"{log_group}/{benchmark_id}"
+    client = _cloudwatch_client(aws)
+    log_group_name: str = f"{log_group}/{benchmark_id}"
 
-        try:
-            client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
-            client.put_retention_policy(logGroupName=log_group_name, retentionInDays=log_retention_policy)  # pyright: ignore[reportUnknownMemberType]
-        except ClientError as e:
-            if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
-                raise
+    try:
+        client.create_log_group(logGroupName=log_group_name)  # pyright: ignore[reportUnknownMemberType]
+        client.put_retention_policy(logGroupName=log_group_name, retentionInDays=log_retention_policy)  # pyright: ignore[reportUnknownMemberType]
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
+            raise
 
-        return log_group_name
+    return log_group_name
 
 
 @handle_cloudwatch_error(message="Failed to delete log stream")
