@@ -54,8 +54,8 @@ async def _run_git_command(repo_path: Path | None, *args: str) -> None:
         raise RuntimeError(f"Git command failed: {error_message}")
 
 
-async def install_agent(agent_name: str | None, github_url: str):
-    """Clone a GitHub repository and install it as an agent to S3"""
+async def install_agent(agent_name: str | None, github_url: str) -> str:
+    """Clone a GitHub repository and install it as an agent to S3. Returns the resolved agent name."""
 
     # Parse the GitHub URL to detect subfolder specification
     # Matches: https://github.com/user/repo or https://github.com/user/repo/tree/branch/path/to/folder
@@ -76,6 +76,15 @@ async def install_agent(agent_name: str | None, github_url: str):
             agent_name = subfolder.split("/")[-1]
         else:
             agent_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
+
+    # Resolve the agent name to a guaranteed str
+    if agent_name is None:
+        if subfolder:
+            resolved_name: str = subfolder.split("/")[-1]
+        else:
+            resolved_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
+    else:
+        resolved_name = agent_name
 
     # Clone the repo to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -116,7 +125,9 @@ async def install_agent(agent_name: str | None, github_url: str):
         if subfolder and not agent_path.exists():
             raise RuntimeError(f"Subfolder '{subfolder}' not found in repository")
 
-        await push_agent(agent_name, agent_path)
+        await push_agent(resolved_name, agent_path)
+
+    return resolved_name
 
 
 @handle_s3_error(message="Failed to push agent to S3")

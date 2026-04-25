@@ -176,7 +176,7 @@ class BenchmarkFormatter:
             colored_part = click.style(f"{label}: {count}", fg=color)
             parts.append(colored_part)
 
-        return f"│ {' │ '.join(parts)} │" if parts else ""
+        return f"{' │ '.join(parts)}" if parts else ""
 
 
 def check_tracker_service_health(tracker: TrackerService) -> bool:
@@ -200,35 +200,89 @@ def check_tracker_service_health(tracker: TrackerService) -> bool:
 
 def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     """
-    Format and display run status with a progress bar.
+    Format and display run status in a box with a progress bar.
 
     Args:
         benchmark_response: FetchBenchmarkResponse
     """
-    benchmark_name = benchmark_response.benchmark_name
-    benchmark_id = benchmark_response.benchmark_id
     details = benchmark_response.details
 
-    status = details.status
-    started_at = details.started_at
-    total_tasks = details.total_tasks
-    finished_tasks = details.finished_tasks
+    bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
+    status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
+    status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
+    progress_line = f"[{bar}] {details.finished_tasks}/{details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
+    breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
 
-    bar, progress_pct = BenchmarkFormatter.create_progress_bar(finished_tasks, total_tasks)
-    status_color = BenchmarkFormatter.STATUS_COLORS[status.value]
+    click.echo("┌─ Run Status " + "─" * 66)
+    click.echo(f"│ {'Benchmark:':<12} {benchmark_response.benchmark_name}")
+    click.echo(f"│ {'Run ID:':<12} {benchmark_response.benchmark_id}")
+    click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
+    click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
+    click.echo("├" + "─" * 79)
+    click.echo(f"│ {progress_line}")
+    if breakdown_text:
+        click.echo(f"│ {breakdown_text}")
+    click.echo("└" + "─" * 79)
 
-    click.echo(f"{click.style('Run:', bold=True)} {benchmark_name}")
-    click.echo(f"{click.style('Started at:', bold=True)} {local_time(started_at)}")
-    click.echo(f"{click.style('Run ID:', bold=True)} {benchmark_id}")
-    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
-    click.echo(f"{benchmark_response.s3_bucket_url}")
+
+def format_start_config_boxes(
+    benchmark: str,
+    agent: str,
+    model: str | None,
+    concurrency: int,
+    dataset: str | None,
+    slice_str: str | None,
+    task_ids: str | None,
+    secrets: tuple[tuple[str, str], ...],
+    kwargs: tuple[tuple[str, str], ...],
+    service_headers: dict[str, str],
+    webhook_secret: str | None,
+    webhook_intervals: list[int] | None,
+) -> None:
+    """Print Benchmark and Agent config boxes before starting a run."""
+    L = 14  # label column width
+
+    def row(label: str, value: str) -> str:
+        return f"│ {label:<{L}} {value}"
+
+    def cont(value: str) -> str:
+        """Continuation line (no label) for multi-value fields."""
+        return f"│ {' ' * L} {value}"
+
+    # ── Benchmark box ─────────────────────────────────────────────────────────
+    click.echo("┌─ Benchmark " + "─" * 67)
+    click.echo(row("Name:", benchmark))
+    click.echo(row("Dataset:", dataset or "default"))
+    click.echo(row("Concurrency:", str(concurrency)))
+    if slice_str:
+        click.echo(row("Slice:", slice_str))
+    if task_ids:
+        display = task_ids[:60] + "..." if len(task_ids) > 60 else task_ids
+        click.echo(row("Task IDs:", display))
+    else:
+        click.echo(row("Task IDs:", "all tasks"))
+    click.echo("└" + "─" * 79)
     click.echo()
 
-    status_text = click.style(status.value.replace("_", " ").title(), fg=status_color, bold=True)
-    click.echo(f"[{bar}] {finished_tasks}/{total_tasks} ({progress_pct:.1f}%) • {status_text}")
-
-    breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
-    click.echo(breakdown_text)
+    # ── Agent box ─────────────────────────────────────────────────────────────
+    click.echo("┌─ Agent " + "─" * 71)
+    click.echo(row("Agent:", agent))
+    if model:
+        click.echo(row("Model:", model))
+    if secrets:
+        for i, (env_var, secret_name) in enumerate(secrets):
+            if i == 0:
+                click.echo(row("Secrets:", f"{env_var} → {secret_name}"))
+            else:
+                click.echo(cont(f"{env_var} → {secret_name}"))
+    if kwargs:
+        click.echo(row("Kwargs:", ", ".join(f"{k}={v}" for k, v in kwargs)))
+    if service_headers:
+        click.echo(row("Headers:", ", ".join(service_headers.keys())))
+    if webhook_secret and webhook_intervals:
+        click.echo(row("Notify at:", ", ".join(f"{i}%" for i in webhook_intervals)))
+    click.echo("└" + "─" * 79)
+    click.echo()
 
 
 def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse) -> None:
@@ -239,58 +293,35 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
         start_benchmark_response: StartBenchmarkResponse
     """
 
+    rid = start_benchmark_response.benchmark_id
+
     click.echo()
     click.echo("┌─ Run Details " + "─" * 65)
-    click.echo(f"│ Benchmark:     {start_benchmark_response.benchmark_name}")
-    click.echo(f"│ Agent:      {start_benchmark_response.agent_name}")
-    click.echo(f"│ Run ID:  {start_benchmark_response.benchmark_id}")
-    click.echo(f"│ Started at:    {local_time(start_benchmark_response.started_at)}")
-    click.echo(f"│ Max concurrency:   {start_benchmark_response.concurrency}")
-    click.echo(f"│ Total tasks:   {start_benchmark_response.task_count}")
-    click.echo(f"│ CloudWatch:    {start_benchmark_response.cloudwatch_url}")
-    click.echo(f"│ S3 Bucket:     {start_benchmark_response.s3_bucket_url}")
+    click.echo(f"│ {'Benchmark:':<17} {start_benchmark_response.benchmark_name}")
+    click.echo(f"│ {'Agent:':<17} {start_benchmark_response.agent_name}")
+    click.echo(f"│ {'Run ID:':<17} {rid}")
+    click.echo(f"│ {'Started at:':<17} {local_time(start_benchmark_response.started_at)}")
+    click.echo(f"│ {'Max concurrency:':<17} {start_benchmark_response.concurrency}")
+    click.echo(f"│ {'Total tasks:':<17} {start_benchmark_response.task_count}")
+    click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
+    click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
+    click.echo("├" + "─" * 79)
+    click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {rid} --connect", fg="cyan"))
+    click.echo(f"│ {'Get results:':<17} " + click.style(f"valkyrie run results {rid} --path ./results.json", fg="cyan"))
+    click.echo(f"│ {'Stop:':<17} " + click.style(f"valkyrie run stop {rid}", fg="cyan"))
+    click.echo(f"│ {'Resume:':<17} " + click.style(f"valkyrie run resume {rid}", fg="cyan"))
+    click.echo(f"│ {'Retry:':<17} " + click.style(f"valkyrie run retry {rid}", fg="cyan"))
+    click.echo(f"│ {'Agent outputs:':<17} " + click.style(f"valkyrie agent outputs {rid} --output-dir .", fg="cyan"))
     click.echo("└" + "─" * 79)
     click.echo()
-    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
-    click.echo(f"{start_benchmark_response.s3_bucket_url}")
-    click.echo()
-    click.echo(
-        click.style(
-            f"Track progress: valkyrie run fetch {start_benchmark_response.benchmark_id} --connect",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Retrieve results: valkyrie run results {start_benchmark_response.benchmark_id} --path ./results.json",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Stop run: valkyrie run stop {start_benchmark_response.benchmark_id}",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Resume run: valkyrie run resume {start_benchmark_response.benchmark_id}",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Retry run: valkyrie run retry {start_benchmark_response.benchmark_id}",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Fetch agent outputs: valkyrie agent outputs {start_benchmark_response.benchmark_id} --output-dir .",
-            fg="cyan",
-        )
-    )
-    click.echo()
+
+
+def _stream_next_steps(benchmark_id: UUID) -> None:
+    """Print next-step commands after a stream ends."""
+    rid = benchmark_id
+    click.echo(f"│ {'Get results:':<17} " + click.style(f"valkyrie run results {rid} --path ./results.json", fg="cyan"))
+    click.echo(f"│ {'Agent outputs:':<17} " + click.style(f"valkyrie agent outputs {rid} --output-dir .", fg="cyan"))
+    click.echo("└" + "─" * 79)
 
 
 def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None:
@@ -306,7 +337,18 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
     click.echo(f"{initial.s3_bucket_url}")
     click.echo()
     click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
-    click.echo()
+
+    # Render initial state so there is something visible before the first SSE event
+    initial_details = initial.details
+    bar, progress_pct = BenchmarkFormatter.create_progress_bar(
+        initial_details.finished_tasks, initial_details.total_tasks
+    )
+    status_color = BenchmarkFormatter.STATUS_COLORS[initial_details.status.value]
+    status_text = click.style(initial_details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
+    click.echo(
+        f"[{bar}] {initial_details.finished_tasks}/{initial_details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
+    )
+    click.echo(BenchmarkFormatter.format_task_breakdown(initial_details.task_breakdown), nl=False)
 
     try:
         for event in tracker.stream_benchmark(benchmark_id):
@@ -332,21 +374,27 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
             elif event.startswith("event: complete"):
                 click.echo("\n")
                 click.echo(click.style("✓ Run completed!", fg="green", bold=True))
+                click.echo("┌─ Next Steps " + "─" * 66)
+                _stream_next_steps(benchmark_id)
                 break
 
             elif event.startswith("event: error"):
                 click.echo("\n")
-                click.echo(click.style("✗ Error occurred while streaming", fg="red", bold=True))
+                click.echo(click.style("✗ Run errored.", fg="red", bold=True))
+                click.echo("┌─ Next Steps " + "─" * 66)
+                _stream_next_steps(benchmark_id)
                 break
 
             elif event.startswith("event: disconnect"):
                 click.echo("\n")
-                click.echo(click.style("Disconnected from stream", fg="yellow"))
+                click.echo(click.style("Disconnected from stream.", fg="yellow"))
                 break
 
     except KeyboardInterrupt:
         click.echo("\n")
-        click.echo(click.style("Stopped streaming", fg="yellow"))
+        click.echo(click.style("Streaming stopped.", fg="yellow"))
+        click.echo("┌─ Next Steps " + "─" * 66)
+        _stream_next_steps(benchmark_id)
 
 
 def format_fetch_benchmarks_response(
@@ -547,7 +595,7 @@ def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
             )
         )
 
-    click.echo(click.style(f"View the  '{path}'", fg="green", bold=True))
+    click.echo(click.style(f"Results saved to '{path}'", fg="green", bold=True))
 
 
 def format_table(
@@ -714,7 +762,7 @@ def resolve_webhook_config(
         click.echo(
             click.style(
                 "  Warning: --interval specified but no webhook secret configured. "
-                "Run `valkyrie config webhook set <secret-name>` first. Ignoring intervals.",
+                "Run `valkyrie config set webhook <secret-name>` first. Ignoring intervals.",
                 fg="yellow",
             )
         )
