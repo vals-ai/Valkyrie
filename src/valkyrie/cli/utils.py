@@ -316,11 +316,13 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo()
 
 
-def _stream_next_steps(benchmark_id: UUID) -> None:
+def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
     """Print next-step commands after a stream ends."""
     rid = benchmark_id
     click.echo(f"│ {'Get results:':<17} " + click.style(f"valkyrie run results {rid} --path ./results.json", fg="cyan"))
     click.echo(f"│ {'Agent outputs:':<17} " + click.style(f"valkyrie agent outputs {rid} --output-dir .", fg="cyan"))
+    if s3_url:
+        click.echo(f"│ {'S3 view:':<17} " + click.style(s3_url, fg="cyan"))
     click.echo("└" + "─" * 79)
 
 
@@ -333,9 +335,7 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
         benchmark_id: Run UUID to stream
     """
     initial = tracker.fetch_benchmark(benchmark_id)
-    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
-    click.echo(f"{initial.s3_bucket_url}")
-    click.echo()
+    s3_url = initial.s3_bucket_url
     click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
 
     # Render initial state so there is something visible before the first SSE event
@@ -375,14 +375,14 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
                 click.echo("\n")
                 click.echo(click.style("✓ Run completed!", fg="green", bold=True))
                 click.echo("┌─ Next Steps " + "─" * 66)
-                _stream_next_steps(benchmark_id)
+                _stream_next_steps(benchmark_id, s3_url)
                 break
 
             elif event.startswith("event: error"):
                 click.echo("\n")
                 click.echo(click.style("✗ Run errored.", fg="red", bold=True))
                 click.echo("┌─ Next Steps " + "─" * 66)
-                _stream_next_steps(benchmark_id)
+                _stream_next_steps(benchmark_id, s3_url)
                 break
 
             elif event.startswith("event: disconnect"):
@@ -394,7 +394,7 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
         click.echo("\n")
         click.echo(click.style("Streaming stopped.", fg="yellow"))
         click.echo("┌─ Next Steps " + "─" * 66)
-        _stream_next_steps(benchmark_id)
+        _stream_next_steps(benchmark_id, s3_url)
 
 
 def format_fetch_benchmarks_response(
