@@ -1,5 +1,3 @@
-"""Integration tests for parallel sandbox create and delete."""
-
 import asyncio
 from asyncio import Semaphore
 
