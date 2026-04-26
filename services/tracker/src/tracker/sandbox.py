@@ -65,9 +65,9 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     try:
         await sandbox.refresh_data()
 
-        # Set auto-stop interval in-case we fail to delete the sandbox
-        await sandbox.set_autostop_interval(interval=1)
         if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
+            # Set auto-stop interval in-case we fail to delete the sandbox
+            await sandbox.set_autostop_interval(interval=1)
             await daytona.delete(sandbox)
     except DaytonaNotFoundError:
         # If we error here that means the sandbox has just been deleted before we could refresh the state
