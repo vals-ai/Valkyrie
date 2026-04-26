@@ -470,7 +470,8 @@ async def process_task(
                         return {task_id: None}
 
                 raise e from e
-    except PtyCreationError:
+    except PtyCreationError as e:
+        log_output(f"\n[ERROR] {e}")
         raise
     except Exception as e:
         error_message = str(e)
