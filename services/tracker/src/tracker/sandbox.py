@@ -575,7 +575,9 @@ async def stream_command_output(
                 sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"}
             )
         except DaytonaError as e:
-            raise PtyCreationError(f"Failed to create PTY session after {_PTY_CREATE_MAX_ATTEMPTS} attempts: {e}") from e
+            raise PtyCreationError(
+                f"Failed to create PTY session after {_PTY_CREATE_MAX_ATTEMPTS} attempts: {e}"
+            ) from e
 
         # Disable echo to suppress command line noise in the output
         await handle.send_input("stty -echo\n")
