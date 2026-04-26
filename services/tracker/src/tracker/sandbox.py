@@ -35,7 +35,7 @@ from tenacity import (
     wait_fixed,
 )
 
-from tracker.database.models import AgentContractRequest, AgentCausedExitReason
+from tracker.database.models import AgentCausedExitReason, AgentContractRequest
 from tracker.exceptions import InvalidSandboxConfigurationError, PtyCreationError, SandboxError
 from tracker.logging import get_logger
 from tracker.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
@@ -64,6 +64,9 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     """Delete sandbox if it is not already destroyed or being destroyed"""
     try:
         await sandbox.refresh_data()
+
+        # Set auto-stop interval in-case we fail to delete the sandbox
+        await sandbox.set_autostop_interval(interval=1)
         if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
             await daytona.delete(sandbox)
     except DaytonaNotFoundError:
@@ -115,7 +118,7 @@ async def _create_sandbox(
         return await daytona.create(
             CreateSandboxFromSnapshotParams(
                 auto_stop_interval=0,
-                auto_delete_interval=60,
+                auto_delete_interval=0,
                 name=sandbox_name,
                 labels=labels,
                 snapshot=snapshot_name,
@@ -130,7 +133,7 @@ async def _create_sandbox(
     return await daytona.create(
         CreateSandboxFromImageParams(
             auto_stop_interval=0,
-            auto_delete_interval=60,
+            auto_delete_interval=0,
             name=sandbox_name,
             labels=labels,
             image=image,
