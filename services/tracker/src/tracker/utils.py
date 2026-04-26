@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import time
 import traceback
 from asyncio import Semaphore, gather
@@ -19,6 +20,8 @@ from daytona.common.errors import DaytonaNotFoundError
 from fastapi import Request
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
+from tenacity import before_sleep_log, retry_if_exception_type, stop_after_attempt, wait_fixed
+from tenacity import retry as tenacity_retry
 
 from tracker._lambda import invoke_lambda
 from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group
@@ -35,7 +38,7 @@ from tracker.database.models import (
 )
 from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
-from tracker.exceptions import TrackerServiceError
+from tracker.exceptions import PtyCreationError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.s3 import (
@@ -61,6 +64,7 @@ from tracker.types import (
 logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
+_PTY_TASK_RETRY_LIMIT: int = 1
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -301,6 +305,13 @@ def buffer_logs(
     loop.run_in_executor(None, cloudwatch_stream, stream_key, message, aws, log_group)
 
 
+@tenacity_retry(
+    retry=retry_if_exception_type(PtyCreationError),
+    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
+    wait=wait_fixed(2),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -459,6 +470,8 @@ async def process_task(
                         return {task_id: None}
 
                 raise e from e
+    except PtyCreationError:
+        raise
     except Exception as e:
         error_message = str(e)
         logger.error(error_message, exc_info=True)

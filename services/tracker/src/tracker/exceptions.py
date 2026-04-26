@@ -18,6 +18,10 @@ class InvalidSandboxConfigurationError(SandboxError):
     """Exception raised for deterministic sandbox configuration errors."""
 
 
+class PtyCreationError(SandboxError):
+    """Exception raised when PTY session creation fails after all retry attempts."""
+
+
 class S3Error(TrackerServiceError):
     """Exception raised for S3 storage operation errors."""
 
