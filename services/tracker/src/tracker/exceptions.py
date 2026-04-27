@@ -18,7 +18,11 @@ class InvalidSandboxConfigurationError(SandboxError):
     """Exception raised for deterministic sandbox configuration errors."""
 
 
-class PtyCreationError(SandboxError):
+class SandboxSetupError(SandboxError):
+    """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
+
+
+class PtyCreationError(SandboxSetupError):
     """Exception raised when PTY session creation fails after all retry attempts."""
 
 
