@@ -224,7 +224,9 @@ class TestStopAndResume:
         observed_headers: dict[str, str] = {}
         captured_request_json: dict[str, Any] = {}
 
-        async def _mock_reset_to_in_progress_status(*_args: Any, benchmark_service: BenchmarkServiceClient, **_kwargs: Any):
+        async def _mock_reset_to_in_progress_status(
+            *_args: Any, benchmark_service: BenchmarkServiceClient, **_kwargs: Any
+        ):
             observed_headers.update(benchmark_service._headers)
             return ["task_0"]
 
