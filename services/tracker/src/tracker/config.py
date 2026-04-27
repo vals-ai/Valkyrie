@@ -55,8 +55,8 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=REDIS_URL,
 )
 
-# Order is load-bearing: TracingContextMiddleware must precede LoggingContextMiddleware
-# so the OTel trace context is active when logging context vars are set.
+# Tracing precedes Logging so that anything emitted after (logs, child spans
+# from middlewares or the task body) is captured under the propagated parent trace.
 _BROKER_MIDDLEWARES = (TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
 
 broker = (
