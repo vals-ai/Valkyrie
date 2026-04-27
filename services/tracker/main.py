@@ -12,7 +12,13 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
-from tracker.auth import extract_api_key, find_org_by_tenant, get_current_org, resolve_descope_tenant
+from tracker.auth import (
+    extract_api_key,
+    find_org_by_tenant,
+    forward_tracker_api_key,
+    get_current_org,
+    resolve_descope_tenant,
+)
 from tracker.cloudwatch import get_cloudwatch_url
 from tracker.config import AUTH_REQUIRED
 from tracker.database.models import Benchmark, BenchmarkStatus, Org
@@ -153,6 +159,7 @@ def init_org(
 
 @app.post("/start-benchmark")
 async def start_benchmark(
+    http_request: Request,
     request: StartBenchmarkRequest,
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
@@ -173,6 +180,14 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
+    request = request.model_copy(
+        update={
+            "service_headers": forward_tracker_api_key(
+                request.service_headers,
+                http_request.headers.get("x-api-key"),
+            )
+        }
+    )
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
@@ -383,6 +398,7 @@ async def stop_benchmark(
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
 async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
+    http_request: Request,
     retry: bool = Query(default=False),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
@@ -417,6 +433,11 @@ async def retry_or_resume_benchmark(
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is currently running.",
         )
 
+    effective_service_headers = forward_tracker_api_key(
+        service_headers,
+        http_request.headers.get("x-api-key"),
+    )
+
     # NOTE: 0 is not acceptable
     if concurrency:
         benchmark_row.arguments.concurrency = concurrency
@@ -428,7 +449,7 @@ async def retry_or_resume_benchmark(
         benchmark_row=benchmark_row,
         session=session,
         benchmark_service=benchmark_row.benchmark_service(
-            harness_config.daytona_secret_name, harness_config.aws, service_headers=service_headers
+            harness_config.daytona_secret_name, harness_config.aws, service_headers=effective_service_headers
         ),
         retry=retry,
         rerun_task_ids=task_ids,
@@ -437,7 +458,7 @@ async def retry_or_resume_benchmark(
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(
-        harness_config, service_headers=service_headers
+        harness_config, service_headers=effective_service_headers
     ).model_dump()
 
     # start the benchmark with the same args used to create it
