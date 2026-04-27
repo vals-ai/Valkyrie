@@ -7,7 +7,7 @@ from daytona import ExecuteResponse
 
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
-from tracker.exceptions import SandboxError, SandboxSetupError
+from tracker.exceptions import SSLConnectionError, SandboxError, SandboxSetupError
 from tracker.sandbox import _create_pty_session, upload_agent_artifacts
 from tracker.types import AWSCredentials
 
@@ -100,8 +100,8 @@ class TestUploadAgentArtifacts:
     @pytest.mark.parametrize(
         "exit_code,retryable",
         [
-            (35, True),   # curl SSL/TLS error — transient, retry with new sandbox
-            (1, False),   # generic failure — deterministic, fail the task
+            (35, True),  # curl SSL/TLS error — transient, retry with new sandbox
+            (1, False),  # generic failure — deterministic, fail the task
         ],
     )
     async def test_exit_code_maps_to_retryable_exception(
@@ -139,7 +139,7 @@ class TestUploadAgentArtifacts:
             aws_default_region="us-east-1",
         )
 
-        expected = SandboxSetupError if retryable else SandboxError
+        expected = SSLConnectionError if retryable else SandboxError
         with pytest.raises(expected) as exc_info:
             await upload_agent_artifacts(mock_sandbox, contract, "bench-123", aws, "test-bucket")
 

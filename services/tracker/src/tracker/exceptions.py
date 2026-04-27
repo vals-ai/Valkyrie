@@ -26,6 +26,10 @@ class PtyCreationError(SandboxSetupError):
     """Exception raised when PTY session creation fails after all retry attempts."""
 
 
+class SSLConnectionError(SandboxSetupError):
+    """Exception raised when a sandbox command fails due to an SSL/TLS connection error (curl exit code 35)."""
+
+
 class S3Error(TrackerServiceError):
     """Exception raised for S3 storage operation errors."""
 
