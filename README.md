@@ -105,7 +105,7 @@ If hosting locally please use the [documentation](https://github.com/vals-ai/cre
 ### Set a custom benchmark service
 
 ```bash
-valkyrie config service set swebench https://my-tunnel.ngrok.io
+valkyrie config service set swebench https://my-tunnel-address
 valkyrie config service set external-service https://endpoint
 ```
 

@@ -229,7 +229,7 @@ def service() -> None:
 def service_set(name: str, url: str) -> None:
     """Set a custom URL for a benchmark service (creates or updates).
 
-    Example: valkyrie config service set swebench https://my-tunnel.ngrok.io
+    Example: valkyrie config service set swebench https://my-tunnel-address
     """
     if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
