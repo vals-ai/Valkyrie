@@ -47,7 +47,7 @@ services:
       - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
+      - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=50
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,7 +72,7 @@ services:
       - DB_PORT=5432
       - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
       - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
-      - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
+      - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=50
     depends_on:
       postgres:
         condition: service_healthy
