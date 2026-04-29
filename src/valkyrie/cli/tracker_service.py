@@ -195,6 +195,7 @@ class TrackerService:
             "aws": {
                 "aws_access_key_id": flat["aws_access_key_id"],
                 "aws_secret_access_key": flat["aws_secret_access_key"],
+                "aws_session_token": flat.get("aws_session_token"),
                 "aws_default_region": flat["aws_default_region"],
             },
             "s3_bucket": flat["s3_bucket"],
