@@ -311,6 +311,15 @@ wheels = [
 ]
 
 [[package]]
+name = "cachetools"
+version = "7.0.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/7b/1755ed2c6bfabd1d98b37ae73152f8dcf94aa40fee119d163c19ed484704/cachetools-7.0.6.tar.gz", hash = "sha256:e5d524d36d65703a87243a26ff08ad84f73352adbeafb1cde81e207b456aaf24", size = 37526, upload-time = "2026-04-20T19:02:23.289Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/fe/c4/cf76242a5da1410917107ff14551764aa405a5fd10cd10cf9a5ca8fa77f4/cachetools-7.0.6-py3-none-any.whl", hash = "sha256:4e94956cfdd3086f12042cdd29318f5ced3893014f7d0d059bf3ead3f85b7f8b", size = 13976, upload-time = "2026-04-20T19:02:21.187Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.2.25"
 source = { registry = "https://pypi.org/simple" }
@@ -473,10 +482,12 @@ wheels = [
 [[package]]
 name = "create-benchmark-service"
 version = "0.1.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=main#0d06ceecd2b0d886cbef8fa8dec0a62543774598" }
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=main#e52f5a90b33788e807280464c4bb4be9c43775ff" }
 dependencies = [
+    { name = "cachetools" },
     { name = "click" },
     { name = "daytona" },
+    { name = "descope" },
     { name = "fastapi", extra = ["standard"] },
     { name = "httpx" },
     { name = "jinja2" },
@@ -644,7 +655,7 @@ wheels = [
 
 [[package]]
 name = "descope"
-version = "1.12.2"
+version = "1.13.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "email-validator" },
@@ -652,9 +663,9 @@ dependencies = [
     { name = "pyjwt", extra = ["crypto"] },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4b/87/8de56a0d31de3f88cbb12fb9abdbe44d2b9d01709cca8a9b6493158db1b9/descope-1.12.2.tar.gz", hash = "sha256:1b9a109a55a9cc15cbbf047645d1bc453c179b3c3cb160159e7aa2234637ce70", size = 93576, upload-time = "2026-04-12T16:02:23.83Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/b3/d67f38dfcdca2202455a012f59e988d2348bb49d6878cab88c21eddf193f/descope-1.13.0.tar.gz", hash = "sha256:eafb65d00f415771430acb9c0e7ca4f54e96488bbb3f813147c0d42404683e6b", size = 93621, upload-time = "2026-04-20T06:14:42.906Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/8e/36/7de59242a68a9e039a6f9dc12d054893ce70695932af1afacbf92b5891de/descope-1.12.2-py3-none-any.whl", hash = "sha256:75a00c41d956eb69e2d0823f77c4c1c4201f16cba8cf4f03ac52813007af70c5", size = 100260, upload-time = "2026-04-12T16:02:22.103Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/9e/20da15caaf498f5c4bd9d58291a16f052016017e4bb6660e4b855aee9500/descope-1.13.0-py3-none-any.whl", hash = "sha256:ecd021f82e1b60f865a3ef9814c2a757b6a7391538b27ea65be6031d478880d1", size = 100313, upload-time = "2026-04-20T06:14:41.257Z" },
 ]
 
 [[package]]
