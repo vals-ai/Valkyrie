@@ -1,7 +1,6 @@
 """CLI views/commands for Valkyrie."""
 
 import asyncio
-import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -44,9 +43,7 @@ from valkyrie.cli.utils import (
 )
 from valkyrie.schemas import AgentConfig
 
-# Suppress noisy INFO logs from HTTP/AWS libraries so they don't bleed into CLI output
-for _logger in ("httpx", "aiobotocore", "aioboto3", "botocore", "boto3"):
-    logging.getLogger(_logger).setLevel(logging.WARNING)
+os.environ.setdefault("HTTPX_LOG_LEVEL", "warning")
 
 
 @click.group()
