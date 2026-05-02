@@ -43,8 +43,6 @@ from valkyrie.cli.utils import (
 )
 from valkyrie.schemas import AgentConfig
 
-os.environ.setdefault("HTTPX_LOG_LEVEL", "warning")
-
 
 @click.group()
 def cli():
