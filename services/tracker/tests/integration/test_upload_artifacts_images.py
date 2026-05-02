@@ -1,10 +1,13 @@
 import asyncio
+from uuid import uuid4
 
+import boto3
 from benchmark_service.schemas import Resources
 from daytona import AsyncDaytona
 
 from tests.utils import random_task_id
 from tracker.database.models import AgentContractRequest
+from tracker.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.sandbox import create_sandbox, upload_agent_artifacts
 from tracker.types import AWSCredentials, HarnessConfig
 
@@ -34,6 +37,23 @@ class TestUploadArtifactsAcrossImages:
     ) -> None:
         """Run upload_agent_artifacts on all images bases and confirm that the agent can successfully be uploaded"""
 
+        benchmark_id = f"test-benchmark-{uuid4().hex[:5]}"
+
+        # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.
+        s3 = boto3.client(  # type: ignore
+            "s3",
+            region_name=aws_credentials.aws_default_region,
+            aws_access_key_id=aws_credentials.aws_access_key_id,
+            aws_secret_access_key=aws_credentials.aws_secret_access_key,
+        )
+        agent_key = get_contract_s3_key(contract.name)
+        frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
+        s3.copy_object(
+            Bucket=harness_config.s3_bucket,
+            CopySource={"Bucket": harness_config.s3_bucket, "Key": agent_key},
+            Key=frozen_key,
+        )
+
         async def verify_image(image: str, label: str) -> None:
             sandbox_name = random_task_id()
 
@@ -41,7 +61,7 @@ class TestUploadArtifactsAcrossImages:
                 asyncio.timeout(60),
                 create_sandbox(daytona_client, sandbox_name, image, test_resources, creation_semaphore) as sandbox,
             ):
-                await upload_agent_artifacts(sandbox, contract, aws_credentials, harness_config.s3_bucket)
+                await upload_agent_artifacts(sandbox, contract, benchmark_id, aws_credentials, harness_config.s3_bucket)
 
                 dir_check = await sandbox.process.exec(f"test -d /bundle/{contract.name}")
                 assert dir_check.exit_code == 0, f"[{label}] contract dir /bundle/{contract.name} should exist"

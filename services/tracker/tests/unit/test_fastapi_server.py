@@ -122,6 +122,52 @@ class TestFastapiServer:
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
+    async def test_start_benchmark_forwards_tracker_api_key_to_benchmark_service(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        observed_headers: dict[str, str] = {}
+        captured_request_json: dict[str, Any] = {}
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=10,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+
+        async def _mock_health_check(service_client: BenchmarkServiceClient, *args: Any, **kwargs: Any):
+            observed_headers.update(service_client._headers)
+            return {"status": "ok"}
+
+        async def _mock_verify_task_ids(service_client: BenchmarkServiceClient, *args: Any, **kwargs: Any):
+            observed_headers.update(service_client._headers)
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_request_json.update(kwargs["start_benchmark_request_json"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post(
+            "/start-benchmark",
+            json=request.model_dump(),
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+
+        assert response.status_code == 200
+        assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
+        assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test fetch benchmark of the fastapi server.
@@ -241,7 +287,8 @@ class TestFastapiServer:
 
         # Test case 4. Evaluation results are returned as the tasks are being completed
         task_rows = [
-            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED) for i in range(10)
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+            for i in range(10)
         ]
         evaluation_result_rows = [
             EvaluationResult(org_id=TEST_ORG_ID, task=task_row.id, instance_id=str(uuid4()), result={"finished": True})
@@ -273,7 +320,10 @@ class TestFastapiServer:
         database_session.commit()
 
         final_evaluation_row = FinalEvaluation(
-            org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=100, properties={"resolved_tasks": [], "unresolved_tasks": []}
+            org_id=TEST_ORG_ID,
+            benchmark=benchmark_row.id,
+            final_score=100,
+            properties={"resolved_tasks": [], "unresolved_tasks": []},
         )
         database_session.add(final_evaluation_row)
         database_session.commit()
@@ -294,7 +344,8 @@ class TestFastapiServer:
 
         # Add some new tasks with the status stopped
         task_rows = [
-            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED) for i in range(11, 21)
+            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+            for i in range(11, 21)
         ]
         database_session.add_all(task_rows)
         database_session.commit()
@@ -428,7 +479,8 @@ class TestFastapiServer:
 
         # Create 4 more benchmark rows that have the same data
         benchmark_rows = [
-            Benchmark(org_id=TEST_ORG_ID, id=uuid4(), name="swebench", arguments=example_benchmark_object.arguments) for _ in range(4)
+            Benchmark(org_id=TEST_ORG_ID, id=uuid4(), name="swebench", arguments=example_benchmark_object.arguments)
+            for _ in range(4)
         ]
         for benchmark_row in benchmark_rows:
             database_session.add(benchmark_row)

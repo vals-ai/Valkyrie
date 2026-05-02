@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from descope import AuthException, DescopeClient
 from fastapi import Depends, HTTPException, Request
 from sqlmodel import Session, select
@@ -12,6 +14,8 @@ from tracker.database.session import get_session
 from tracker.logging import get_logger
 
 logger = get_logger(__name__)
+
+BENCHMARK_SERVICE_API_KEY_HEADER = "X-Descope-Api-Key"
 
 _cached_default_org: Org | None = None
 _descope_client: DescopeClient | None = (
@@ -60,6 +64,26 @@ def resolve_descope_tenant(api_key: str) -> str:
 def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
     """Look up an org by Descope tenant name. Returns None if not found."""
     return session.exec(select(Org).where(Org.name == tenant_name)).first()
+
+
+def forward_tracker_api_key(
+    service_headers: Mapping[str, str] | None,
+    tracker_api_key: str | None,
+) -> dict[str, str]:
+    """Copy service headers and inject the tracker API key for benchmark-service auth.
+
+    The downstream benchmark-service auth header must not reuse ``X-Api-Key`` because that
+    header is already reserved for Daytona sandbox credentials.
+    """
+    forwarded_headers = dict(service_headers or {})
+    if not tracker_api_key:
+        return forwarded_headers
+
+    has_explicit_override = any(key.lower() == BENCHMARK_SERVICE_API_KEY_HEADER.lower() for key in forwarded_headers)
+    if not has_explicit_override:
+        forwarded_headers[BENCHMARK_SERVICE_API_KEY_HEADER] = tracker_api_key
+
+    return forwarded_headers
 
 
 def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:

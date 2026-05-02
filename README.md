@@ -280,6 +280,13 @@ valkyrie run retry <id>
 valkyrie run resume <id> --concurrency 20
 ```
 
+| Option | Description |
+| --- | --- |
+| `--concurrency` | Override concurrency level |
+| `--task-ids` | Comma-separated task IDs to resume/retry |
+| `--task-ids-file` | Path to a text file with one task ID per line |
+| `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
+
 ### List runs
 
 ```bash
@@ -295,8 +302,24 @@ Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`. Suppo
 ### Download agent outputs
 
 ```bash
+# Download all task outputs for a run
 valkyrie agent outputs <id> --output-dir ./outputs
+
+# Download specific tasks (comma-separated)
+valkyrie agent outputs <id> --task-ids astropy__astropy-7606,django__django-10880
 ```
+
+### Download a specific file or folder from a run
+
+```bash
+valkyrie agent output <id> [subpath] [-o ./output-dir]
+```
+
+| Argument / Option | Description |
+| --- | --- |
+| `BENCHMARK_ID` | UUID of the benchmark run |
+| `SUBPATH` | Optional file or folder within the benchmark directory |
+| `-o` / `--output-dir` | Local destination directory (defaults to `./<benchmark_id>`) |
 
 ## Documentation
 
@@ -310,4 +333,4 @@ valkyrie agent outputs <id> --output-dir ./outputs
 | Database & migrations | [DATABASE.md](services/tracker/src/tracker/database/README.md) |
 | Infrastructure (AWS CDK) | [INFRASTRUCTURE.md](infra/README.md) |
 | Sandbox secrets | [PROVIDER.md](docs/PROVIDER.md) |
-| Contribute benchmark services | [Create benchmark service](https://github.com/vals-ai/create-benchmark-service)
+| Contribute benchmark services | [Create benchmark service](https://github.com/vals-ai/create-benchmark-service) |

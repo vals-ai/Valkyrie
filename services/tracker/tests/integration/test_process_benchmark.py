@@ -8,8 +8,8 @@ from benchmark_service.schemas import SetupTaskResponse
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
-from tracker.cloudwatch import create_benchmark_group
 from tests.conftest import TEST_ORG_ID
+from tracker.cloudwatch import create_benchmark_group
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -20,6 +20,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.s3 import copy_agent_to_benchmark
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import process_benchmark, process_task, start_benchmark_request_to_benchmark
 
@@ -67,7 +68,19 @@ async def test_process_task(
         str(benchmark.id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
     )
 
-    await process_task(task_row, request, benchmark_service, benchmark.id, _TASK_ID, harness_config, Org(id=TEST_ORG_ID, name="default"), creation_semaphore=Semaphore(10))
+    # Need to copy agent inside subdir before we start the task
+    await copy_agent_to_benchmark(str(benchmark.id), contract.name, harness_config.aws, harness_config.s3_bucket)
+
+    await process_task(
+        task_row,
+        request,
+        benchmark_service,
+        benchmark.id,
+        _TASK_ID,
+        harness_config,
+        Org(id=TEST_ORG_ID, name="default"),
+        creation_semaphore=Semaphore(10),
+    )
 
     database_session.refresh(task_row)
     assert task_row.status == TaskStatus.FINISHED

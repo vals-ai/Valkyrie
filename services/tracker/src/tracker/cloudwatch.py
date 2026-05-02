@@ -88,35 +88,6 @@ def create_benchmark_group(benchmark_id: str, aws: "AWSCredentials", log_group: 
     return log_group_name
 
 
-@handle_cloudwatch_error(message="Failed to delete log stream")
-def reset_cloudwatch_stream(stream_key: str, aws: "AWSCredentials", log_group: str) -> None:
-    """
-    Delete and recreate a CloudWatch log stream to reset it.
-
-    Used when restarting a task to clear old logs from previous runs.
-
-    Args:
-        stream_key: The stream key (benchmark_id:task_id)
-        aws: AWS credentials for CloudWatch client
-        log_group: The root log group name
-    """
-    benchmark_id, task_id = stream_key.split(":")
-
-    if not benchmark_id or not task_id:
-        raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")
-
-    client = _cloudwatch_client(aws)
-    log_group_name = f"{log_group}/{benchmark_id}"
-
-    try:
-        client.delete_log_stream(logGroupName=log_group_name, logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
-    except ClientError as e:
-        if e.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
-            raise
-
-    _created_streams.discard(stream_key)
-
-
 @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
 def cloudwatch_stream(stream_key: str, message: str, aws: "AWSCredentials", log_group: str) -> None:
     """
@@ -133,7 +104,7 @@ def cloudwatch_stream(stream_key: str, message: str, aws: "AWSCredentials", log_
     if not message.strip():
         return
 
-    benchmark_id, task_id = stream_key.split(":")
+    benchmark_id, task_id = stream_key.split(":", 1)
 
     if not benchmark_id or not task_id:
         raise CloudWatchError(f"Invalid stream key '{stream_key}', expected format 'benchmark_id:task_id'")

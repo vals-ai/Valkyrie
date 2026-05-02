@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import time
 import traceback
 from asyncio import Semaphore, gather
@@ -19,9 +20,11 @@ from daytona.common.errors import DaytonaNotFoundError
 from fastapi import Request
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
+from tenacity import before_sleep_log, retry_if_exception_type, stop_after_attempt, wait_fixed
+from tenacity import retry as tenacity_retry
 
 from tracker._lambda import invoke_lambda
-from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group, reset_cloudwatch_stream
+from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group
 from tracker.config import broker
 from tracker.database.models import (
     Benchmark,
@@ -35,11 +38,12 @@ from tracker.database.models import (
 )
 from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
-from tracker.exceptions import TrackerServiceError
+from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
+    copy_agent_to_benchmark,
     create_benchmark_url,
     get_agent_result_s3_key,
     upload_to_s3,
@@ -60,6 +64,7 @@ from tracker.types import (
 logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
+_PTY_TASK_RETRY_LIMIT: int = 1
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -300,6 +305,13 @@ def buffer_logs(
     loop.run_in_executor(None, cloudwatch_stream, stream_key, message, aws, log_group)
 
 
+@tenacity_retry(
+    retry=retry_if_exception_type(SandboxSetupError),
+    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
+    wait=wait_fixed(2),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -330,11 +342,10 @@ async def process_task(
             return {task_id: None}
 
     # Setup logging infrastructure before try block so it's always available
-    stream_key: str = f"{benchmark_id}:{task_id}"
+    # Suffix is required to version control streams, never delete between retires
+    stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
+    stream_key: str = f"{benchmark_id}:{task_id}_{stream_suffix}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
-
-    # If we are retrying the task we clear logs from previous run
-    reset_cloudwatch_stream(stream_key, harness_config.aws, harness_config.log_group)
 
     last_log_time: float = time.monotonic()
 
@@ -387,7 +398,11 @@ async def process_task(
 
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(
-                    sandbox, start_benchmark_request.contract, harness_config.aws, harness_config.s3_bucket
+                    sandbox,
+                    start_benchmark_request.contract,
+                    str(benchmark_id),
+                    harness_config.aws,
+                    harness_config.s3_bucket,
                 )
 
                 _ = await benchmark_service.setup_task(
@@ -455,6 +470,9 @@ async def process_task(
                         return {task_id: None}
 
                 raise e from e
+    except SandboxSetupError as e:
+        log_output(f"\n[ERROR] {e}")
+        raise
     except Exception as e:
         error_message = str(e)
         logger.error(error_message, exc_info=True)
@@ -595,6 +613,14 @@ async def process_benchmark(
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
     try:
+        # Copy the agent into the benchmarks S3 folder
+        await copy_agent_to_benchmark(
+            str(benchmark_id),
+            start_benchmark_request.contract.name,
+            harness_config.aws,
+            harness_config.s3_bucket,
+        )
+
         # Create benchmark cloudwatch log group
         create_benchmark_group(
             str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy

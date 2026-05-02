@@ -65,9 +65,14 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_upload_to_s3(*_args: Any, **_kwargs: Any) -> None:
         pass
 
+    async def _mock_copy_agent_to_benchmark(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
     monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
     monkeypatch.setattr("tracker.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.upload_to_s3", _mock_upload_to_s3)
+    monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
+    monkeypatch.setattr("tracker.utils.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
 
 
 @pytest.fixture(autouse=True)
@@ -135,7 +140,6 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
     monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
     monkeypatch.setattr("tracker.utils.cloudwatch_stream", _mock_cloudwatch_stream)
-    monkeypatch.setattr("tracker.utils.reset_cloudwatch_stream", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("tracker.utils.upload_final_view", _mock_upload_final_view)
     monkeypatch.setattr("tracker.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
     monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)

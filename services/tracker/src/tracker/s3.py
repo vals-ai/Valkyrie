@@ -35,6 +35,11 @@ def get_contract_s3_key(contract_name: str) -> str:
     return f"{S3_AGENTS_PREFIX}/{contract_name}.zip"
 
 
+def get_benchmark_contract_s3_key(benchmark_id: str, contract_name: str) -> str:
+    """Get the S3 key for an agent zip copied into a benchmark's folder."""
+    return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{contract_name}.zip"
+
+
 def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -> str:
     """Get the S3 key for an agent output archive."""
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/{output_name}"
@@ -115,6 +120,44 @@ def delete_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
     """
     client = _s3_client(aws)
     client.delete_object(Bucket=s3_bucket, Key=s3_key)
+
+
+async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+    """
+    Copy an S3 object from source_key to dest_key within the same bucket, without blocking the event loop.
+
+    Raises:
+        S3Error: If copy fails due to AWS errors or network issues
+    """
+
+    def _copy() -> None:
+        client = _s3_client(aws)
+        client.copy_object(
+            Bucket=s3_bucket,
+            CopySource={"Bucket": s3_bucket, "Key": source_key},
+            Key=dest_key,
+        )
+
+    try:
+        await asyncio.to_thread(_copy)
+    except (ClientError, BotoCoreError) as e:
+        raise S3Error(f"Failed to copy S3 object from {source_key} to {dest_key}: {e}") from e
+
+
+async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+    """
+    Freeze the agent for a benchmark run by copying
+    agents/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
+
+    # NOTE: Skips if it already exists at that location
+    """
+    source_key = get_contract_s3_key(contract_name)
+    dest_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
+
+    if s3_object_exists(dest_key, aws, s3_bucket):
+        return
+
+    await copy_s3_object(source_key, dest_key, aws, s3_bucket)
 
 
 @handle_s3_error(message="Failed to stream download from S3")
