@@ -25,6 +25,8 @@ dev = [
   "ruff",
   "basedpyright",
   "pyinstaller",
+  "pytest-cov>=7.1.0",
+  "docstr-coverage>=2.3.2",
 ]
 
 [tool.ruff]
@@ -71,6 +73,15 @@ asyncio_default_fixture_loop_scope = "session"
 filterwarnings = [
     "ignore::DeprecationWarning"
 ]
+
+[tool.coverage.run]
+source = ["src/valkyrie"]
+branch = true
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+fail_under = 1
+show_missing = true
 
 [tool.uv]
 prerelease = "allow"
