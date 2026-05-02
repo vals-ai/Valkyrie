@@ -225,31 +225,31 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo("└" + "─" * 79)
 
 
-def format_start_config_boxes(
-    benchmark: str,
-    agent: str,
-    model: str | None,
-    concurrency: int,
-    dataset: str | None,
-    slice_str: str | None,
-    task_ids: str | None,
-    secrets: tuple[tuple[str, str], ...],
-    kwargs: tuple[tuple[str, str], ...],
-    service_headers: dict[str, str],
-    webhook_secret: str | None,
-    webhook_intervals: list[int] | None,
+COLUMN_WIDTH = 14
+
+
+def row(label: str, value: str) -> str:
+    return f"│ {label:<{COLUMN_WIDTH}} {value}"
+
+
+def cont(value: str) -> str:
+    """Continuation line (no label) for multi-value fields."""
+    return f"│ {' ' * COLUMN_WIDTH} {value}"
+
+
+def format_run_start_details(
+    benchmark: str, dataset: str | None, concurrency: int, slice_str: str | None, task_ids: str | None
 ) -> None:
-    """Print Benchmark and Agent config boxes before starting a run."""
-    L = 14  # label column width
+    """
+    Format and display the start details of a run.
 
-    def row(label: str, value: str) -> str:
-        return f"│ {label:<{L}} {value}"
-
-    def cont(value: str) -> str:
-        """Continuation line (no label) for multi-value fields."""
-        return f"│ {' ' * L} {value}"
-
-    # ── Benchmark box ─────────────────────────────────────────────────────────
+    Args:
+        benchmark: The name of the benchmark
+        dataset: The name of the dataset
+        concurrency: The number of concurrent tasks
+        slice_str: The slice of the dataset to use
+        task_ids: The IDs of the tasks to run
+    """
     click.echo("┌─ Benchmark " + "─" * 67)
     click.echo(row("Name:", benchmark))
     click.echo(row("Dataset:", dataset or "default"))
@@ -264,7 +264,28 @@ def format_start_config_boxes(
     click.echo("└" + "─" * 79)
     click.echo()
 
-    # ── Agent box ─────────────────────────────────────────────────────────────
+
+def format_agent_start_details(
+    agent: str,
+    model: str | None,
+    secrets: tuple[tuple[str, str], ...],
+    kwargs: tuple[tuple[str, str], ...],
+    service_headers: dict[str, str],
+    webhook_secret: str | None,
+    webhook_intervals: list[int] | None,
+) -> None:
+    """
+    Format and display the start details of an agent.
+
+    Args:
+        agent: The name of the agent
+        model: The model used by the agent
+        secrets: A tuple of secret environment variable and secret name pairs
+        kwargs: A tuple of keyword argument pairs
+        service_headers: A dictionary of service headers
+        webhook_secret: The secret for the webhook
+        webhook_intervals: A list of intervals for the webhook
+    """
     click.echo("┌─ Agent " + "─" * 71)
     click.echo(row("Agent:", agent))
     if model:

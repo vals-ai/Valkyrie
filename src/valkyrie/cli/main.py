@@ -31,9 +31,10 @@ from valkyrie.cli.utils import (
     check_tracker_service_health,
     download_agent_outputs,
     download_final_view,
+    format_agent_start_details,
     format_benchmark_status,
+    format_run_start_details,
     format_start_benchmark_response,
-    format_start_config_boxes,
     format_table,
     paginate_agents,
     paginate_benchmarks,
@@ -516,20 +517,9 @@ def start(
     # Webhook notification setup (may print a warning before the boxes)
     webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
-    format_start_config_boxes(
-        benchmark=benchmark,
-        agent=agent,
-        model=model,
-        concurrency=concurrency,
-        dataset=dataset,
-        slice_str=slice_str,
-        task_ids=task_ids,
-        secrets=secrets,
-        kwargs=kwargs,
-        service_headers=service_headers,
-        webhook_secret=webhook_secret,
-        webhook_intervals=webhook_intervals,
-    )
+    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids)
+
+    format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
 
     formatted_task_ids: list[str] | None = None
     if task_ids:
