@@ -497,12 +497,14 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
     Delegates status depending on if any tasks have been stopped.
     """
 
-    # Check if any tasks are still in the pending or in progress state
+    task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
+
+    # Check if any tasks are still running.
     tasks_not_finished: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS]))
+        .where(col(Task.status).notin_(task_terminal_statuses))
     ).one()
 
     # Tasks will be in a non-finished state if something interrupts them while they are running and the state errors here
@@ -1142,8 +1144,13 @@ async def reset_to_in_progress_status(
             task_ids=list(task_mapping.values()), slice_str=None, dataset=benchmark_row.arguments.dataset
         )
 
-        # Set the benchmark status to in progress to flag resuming the benchmark
+        if benchmark_row.final_evaluation:
+            session.delete(benchmark_row.final_evaluation)
+
+        # Set the benchmark status to in progress to flag resuming the benchmark.
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.finished_at = None
+        benchmark_row.error_message = None
         session.add(benchmark_row)
         session.commit()
 

@@ -358,6 +358,13 @@ class TestBenchmarkUtils:
         with pytest.raises(TrackerServiceError):
             set_benchmark_final_status(benchmark_row, database_session, self._test_org)
 
+        task_rows[0][1].status = TaskStatus.EVALUATING
+        database_session.add(task_rows[0][1])
+        database_session.commit()
+
+        with pytest.raises(TrackerServiceError):
+            set_benchmark_final_status(benchmark_row, database_session, self._test_org)
+
         # Make all tasks in finished state
         # NOTE: Need to manually set the finished_at timestamp because the event listener is not triggered with bulk updates
         database_session.exec(

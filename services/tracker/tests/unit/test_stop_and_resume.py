@@ -11,7 +11,16 @@ from sqlmodel import Session, select
 
 from main import app
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkStatus,
+    EvaluationResult,
+    FinalEvaluation,
+    Org,
+    Task,
+    TaskStatus,
+)
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     TaskMonitor,
@@ -249,6 +258,72 @@ class TestStopAndResume:
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+
+    async def test_retry_clears_stale_final_evaluation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        finished_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="finished_task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        retry_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="retry_task",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+        )
+        database_session.add_all([finished_task, retry_task])
+        database_session.commit()
+
+        database_session.add(
+            FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=50.0, properties={})
+        )
+        database_session.add(
+            EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, instance_id="finished", result={"score": 1})
+        )
+        database_session.add(
+            EvaluationResult(org_id=TEST_ORG_ID, task=retry_task.id, instance_id="retry", result={"score": 0})
+        )
+        database_session.commit()
+
+        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["retry_task"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
+            retry=True,
+            rerun_task_ids=[],
+            org=self._test_org,
+        )
+
+        database_session.expire_all()
+        benchmark_row = database_session.get(Benchmark, benchmark_row.id)
+        assert benchmark_row
+        retry_task = database_session.exec(select(Task).where(Task.task_id == "retry_task")).one()
+        evaluation_rows = database_session.exec(select(EvaluationResult)).all()
+
+        assert verified_task_ids == ["retry_task"]
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.finished_at is None
+        assert benchmark_row.final_evaluation is None
+        assert retry_task.status == TaskStatus.PENDING
+        assert retry_task.finished_at is None
+        assert [row.instance_id for row in evaluation_rows] == ["finished"]
 
     async def test_task_monitor_cancels_waiting_stopped_task(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch
