@@ -37,7 +37,13 @@ from tenacity import (
 )
 
 from tracker.database.models import AgentCausedExitReason, AgentContractRequest
-from tracker.exceptions import InvalidSandboxConfigurationError, PtyCreationError, SandboxError
+from tracker.exceptions import (
+    InvalidSandboxConfigurationError,
+    PtyCreationError,
+    SandboxError,
+    SandboxSetupError,
+    SSLConnectionError,
+)
 from tracker.logging import get_logger
 from tracker.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
@@ -191,7 +197,11 @@ async def create_sandbox(
         await delete_sandbox(sandbox, daytona)
 
 
-@retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
+@retry(
+    retry=retry_if_exception_type(SandboxError) & retry_if_not_exception_type(SandboxSetupError),
+    reraise=True,
+    stop=stop_after_attempt(3),
+)
 async def upload_agent_artifacts(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
@@ -254,12 +264,18 @@ async def upload_agent_artifacts(
 
     try:
         result = await _exec(sandbox, script)
-
-        if result.exit_code != 0:
-            raise RuntimeError(f"Command failed with exit code {result.exit_code}: {result.result}")
-
     except Exception as e:
         raise SandboxError(f"Failed to upload contract {contract.name} to sandbox {sandbox.name}: {e}") from e
+
+    error_message: str = (
+        f"Failed to upload contract {contract.name} to sandbox {sandbox.name}: "
+        f"Command failed with exit code {result.exit_code}: {result.result}"
+    )
+    if result.exit_code == 35:
+        raise SSLConnectionError(error_message)
+
+    if result.exit_code != 0:
+        raise SandboxError(error_message)
 
 
 @retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))

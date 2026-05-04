@@ -209,6 +209,47 @@ class TestStopAndResume:
         for task_row in updated_task_rows:
             assert task_row.alias != original_aliases[task_row.task_id]
 
+    async def test_retry_or_resume_forwards_tracker_api_key_to_benchmark_service(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        observed_headers: dict[str, str] = {}
+        captured_request_json: dict[str, Any] = {}
+
+        async def _mock_reset_to_in_progress_status(
+            *_args: Any, benchmark_service: BenchmarkServiceClient, **_kwargs: Any
+        ):
+            observed_headers.update(benchmark_service._headers)
+            return ["task_0"]
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_request_json.update(kwargs["start_benchmark_request_json"])
+
+        monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={"task_ids": [], "service_headers": {}},
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+
+        assert response.status_code == 200
+        assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
+        assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+
     async def test_task_monitor_cancels_waiting_stopped_task(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch
     ):

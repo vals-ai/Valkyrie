@@ -18,8 +18,16 @@ class InvalidSandboxConfigurationError(SandboxError):
     """Exception raised for deterministic sandbox configuration errors."""
 
 
-class PtyCreationError(SandboxError):
+class SandboxSetupError(SandboxError):
+    """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
+
+
+class PtyCreationError(SandboxSetupError):
     """Exception raised when PTY session creation fails after all retry attempts."""
+
+
+class SSLConnectionError(SandboxSetupError):
+    """Exception raised when a sandbox command fails due to an SSL/TLS connection error (curl exit code 35)."""
 
 
 class S3Error(TrackerServiceError):

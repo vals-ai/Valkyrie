@@ -41,7 +41,7 @@ from tracker.database.models import (
 )
 from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
-from tracker.exceptions import PtyCreationError, TrackerServiceError
+from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.s3 import (
@@ -311,7 +311,7 @@ def buffer_logs(
 
 @logfire.instrument("process_task")
 @tenacity_retry(
-    retry=retry_if_exception_type(PtyCreationError),
+    retry=retry_if_exception_type(SandboxSetupError),
     stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
     wait=wait_fixed(2),
     before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -493,7 +493,7 @@ async def process_task(
                         return {task_id: None}
 
                 raise e from e
-    except PtyCreationError as e:
+    except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")
         raise
     except Exception as e:

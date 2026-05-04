@@ -1,11 +1,15 @@
 import asyncio
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from daytona import ExecuteResponse
 
 from tracker import sandbox as sandbox_module
-from tracker.sandbox import _create_pty_session
+from tracker.database.models import AgentContractRequest
+from tracker.exceptions import SSLConnectionError, SandboxError, SandboxSetupError
+from tracker.sandbox import _create_pty_session, upload_agent_artifacts
+from tracker.types import AWSCredentials
 
 
 class TestPtyHandshakeSemaphore:
@@ -90,3 +94,54 @@ class TestPtyHandshakeSemaphore:
         # Task B's handshake must complete BEFORE task A's post-handshake work finishes.
         # That ordering is only reachable if the slot was released at handshake exit.
         assert events.index("b:handshake_done") < events.index("a:post_handshake_done")
+
+
+class TestUploadAgentArtifacts:
+    @pytest.mark.parametrize(
+        "exit_code,retryable",
+        [
+            (35, True),  # curl SSL/TLS error — transient, retry with new sandbox
+            (1, False),  # generic failure — deterministic, fail the task
+        ],
+    )
+    async def test_exit_code_maps_to_retryable_exception(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: pytest.MonkeyPatch,
+        exit_code: int,
+        retryable: bool,
+    ) -> None:
+        """
+        Exit code 35 (curl SSL/TLS) raises SandboxSetupError so process_task retries
+        with a fresh sandbox. All other non-zero exit codes raise the base SandboxError,
+        which marks the task as failed without a sandbox retry.
+
+        Test Cases:
+            - Exit code 35 raises SandboxSetupError (retryable — triggers a new sandbox)
+            - Other non-zero exit codes raise SandboxError but not SandboxSetupError (non-retryable)
+        """
+        mock_sandbox = AsyncMock()
+        mock_sandbox.name = "test-sandbox"
+
+        monkeypatch.setattr(
+            sandbox_module,
+            "_exec",
+            AsyncMock(return_value=ExecuteResponse(exit_code=exit_code, result="error output")),
+        )
+        monkeypatch.setattr(
+            "tracker.sandbox.create_presigned_url",
+            Mock(return_value="https://example.com/presigned"),
+        )
+
+        aws = AWSCredentials(
+            aws_access_key_id="test",
+            aws_secret_access_key="test",
+            aws_default_region="us-east-1",
+        )
+
+        expected = SSLConnectionError if retryable else SandboxError
+        with pytest.raises(expected) as exc_info:
+            await upload_agent_artifacts(mock_sandbox, contract, "bench-123", aws, "test-bucket")
+
+        if not retryable:
+            assert not isinstance(exc_info.value, SandboxSetupError)

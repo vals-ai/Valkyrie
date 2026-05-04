@@ -122,6 +122,52 @@ class TestFastapiServer:
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
+    async def test_start_benchmark_forwards_tracker_api_key_to_benchmark_service(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        observed_headers: dict[str, str] = {}
+        captured_request_json: dict[str, Any] = {}
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=10,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+
+        async def _mock_health_check(service_client: BenchmarkServiceClient, *args: Any, **kwargs: Any):
+            observed_headers.update(service_client._headers)
+            return {"status": "ok"}
+
+        async def _mock_verify_task_ids(service_client: BenchmarkServiceClient, *args: Any, **kwargs: Any):
+            observed_headers.update(service_client._headers)
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_request_json.update(kwargs["start_benchmark_request_json"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post(
+            "/start-benchmark",
+            json=request.model_dump(),
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+
+        assert response.status_code == 200
+        assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
+        assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test fetch benchmark of the fastapi server.
