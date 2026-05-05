@@ -8,8 +8,32 @@ from daytona import ExecuteResponse
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SSLConnectionError, SandboxError, SandboxSetupError
-from tracker.sandbox import _create_pty_session, upload_agent_artifacts
+from tracker.sandbox import _create_pty_session, _resolve_pty_handshake_cap, upload_agent_artifacts
 from tracker.types import AWSCredentials
+
+
+class TestResolvePtyHandshakeCap:
+    def test_default_when_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PTY_HANDSHAKE_CAP", raising=False)
+        assert _resolve_pty_handshake_cap() == sandbox_module._PTY_HANDSHAKE_CAP_DEFAULT
+
+    def test_default_when_blank(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PTY_HANDSHAKE_CAP", "   ")
+        assert _resolve_pty_handshake_cap() == sandbox_module._PTY_HANDSHAKE_CAP_DEFAULT
+
+    def test_explicit_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PTY_HANDSHAKE_CAP", "250")
+        assert _resolve_pty_handshake_cap() == 250
+
+    def test_invalid_falls_back_to_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PTY_HANDSHAKE_CAP", "not-a-number")
+        assert _resolve_pty_handshake_cap() == sandbox_module._PTY_HANDSHAKE_CAP_DEFAULT
+
+    def test_zero_or_negative_treated_as_unbounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PTY_HANDSHAKE_CAP", "0")
+        assert _resolve_pty_handshake_cap() == 1_000_000
+        monkeypatch.setenv("PTY_HANDSHAKE_CAP", "-5")
+        assert _resolve_pty_handshake_cap() == 1_000_000
 
 
 class TestPtyHandshakeSemaphore:

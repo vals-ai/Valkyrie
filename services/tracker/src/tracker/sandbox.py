@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import os
 import shlex
 import time
 import uuid
@@ -317,9 +318,26 @@ _PTY_CREATE_MAX_ATTEMPTS: int = 5
 _PTY_CREATE_DELAY_SECONDS: float = 2.0
 
 # Process-global cap on concurrent PTY WebSocket handshakes.
-# Daytona starts failing above ~500 concurrent handshakes; 100 held 800 PTYs cleanly in testing.
-# Temporarily effectively unbounded while validating the new Daytona SDK.
-_PTY_HANDSHAKE_CAP: int = 1_000_000
+# Daytona starts failing above ~500 concurrent handshakes; 100 held 800 PTYs cleanly
+# in testing, so we default to that. Tune at runtime via the PTY_HANDSHAKE_CAP env
+# var (e.g. raise it gradually while validating the Daytona SDK). Values <= 0 are
+# treated as unbounded; the floor of 1 keeps the asyncio.Semaphore valid.
+_PTY_HANDSHAKE_CAP_DEFAULT: int = 100
+
+
+def _resolve_pty_handshake_cap() -> int:
+    raw = os.environ.get("PTY_HANDSHAKE_CAP")
+    if raw is None or raw.strip() == "":
+        return _PTY_HANDSHAKE_CAP_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(f"Invalid PTY_HANDSHAKE_CAP={raw!r}, falling back to default {_PTY_HANDSHAKE_CAP_DEFAULT}")
+        return _PTY_HANDSHAKE_CAP_DEFAULT
+    return value if value >= 1 else 1_000_000
+
+
+_PTY_HANDSHAKE_CAP: int = _resolve_pty_handshake_cap()
 _PTY_HANDSHAKE_SLOW_LOG_THRESHOLD: float = 2.0
 
 _pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)
