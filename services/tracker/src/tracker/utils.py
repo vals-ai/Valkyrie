@@ -479,9 +479,13 @@ async def process_task(
                     task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
 
-                task_breakdown.evaluation_time = (
+                task_breakdown.evaluation_run_time = (
                     time.perf_counter() - evaluation_start_time
                 )  # Time taken to evaluate the instance
+
+                task_breakdown.sandbox_run_time = (
+                    time.perf_counter() - start_sandbox_run_time
+                )  # End the sandbox run timer
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
@@ -494,11 +498,12 @@ async def process_task(
                     instance_id=sandbox.id,
                     result=evaluation_result,
                     agent_caused_exit_reason=exit_reason,
-                    task_breakdown=task_breakdown,
+                    task_breakdown=task_breakdown.id,
                 )
 
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
+                    task_session.add(task_breakdown)
                     task_session.add(evaluation_result_row)
                     task.status = TaskStatus.FINISHED
                     task_session.commit()
@@ -511,10 +516,6 @@ async def process_task(
                         return {task_id: None}
 
                 raise e from e
-            finally:
-                task_breakdown.sandbox_run_time = (
-                    time.perf_counter() - start_sandbox_run_time
-                )  # End the sandbox run timer
 
     except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")

@@ -347,4 +347,4 @@ class EvaluationResult(SQLModel, table=True):
     instance_id: str = Field(unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
-    task_breakdown: TaskBreakdown | None = Field(default=None, foreign_key="taskbreakdown.id")
+    task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
