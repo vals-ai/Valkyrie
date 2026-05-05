@@ -91,7 +91,8 @@ async def test_process_task(
     assert evaluation.result is not None
 
     # Task breakdown is tracked while the task runs
-    task_breakdown = database_session.get(TaskBreakdown, evaluation.task_breakdown)
+    database_session.refresh(task_row)
+    task_breakdown = database_session.get(TaskBreakdown, task_row.task_breakdown)
     assert task_breakdown is not None
     for attr in task_breakdown.__dict__:
         if not attr.startswith("_"):

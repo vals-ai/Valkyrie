@@ -301,6 +301,7 @@ class Task(SQLModel, table=True):
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
     benchmark: UUID = Field(foreign_key="benchmark.id")
+    task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 
     @computed_field
     @property
@@ -334,10 +335,10 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
 
 class TaskBreakdown(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    sandbox_build_time: float | None = Field(default=None)
-    agent_run_time: float | None = Field(default=None)
-    evaluation_run_time: float | None = Field(default=None)
-    sandbox_run_time: float | None = Field(default=None)
+    sandbox_build_duration: float | None = Field(default=None)
+    agent_run_duration: float | None = Field(default=None)
+    evaluation_run_duration: float | None = Field(default=None)
+    sandbox_run_duration: float | None = Field(default=None)
 
 
 class EvaluationResult(SQLModel, table=True):
@@ -347,4 +348,3 @@ class EvaluationResult(SQLModel, table=True):
     instance_id: str = Field(unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
-    task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")

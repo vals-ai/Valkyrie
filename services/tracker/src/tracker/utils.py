@@ -417,7 +417,7 @@ async def process_task(
             resources=task_data.resources,
             creation_semaphore=creation_semaphore,
         ) as sandbox:
-            task_breakdown.sandbox_build_time = (
+            task_breakdown.sandbox_build_duration = (
                 time.perf_counter() - start_sandbox_build_time
             )  # End sandbox build timer
             start_sandbox_run_time = time.perf_counter()  # Start sandbox run timer
@@ -462,9 +462,7 @@ async def process_task(
                     agent_timeout=task_data.agent_timeout,
                 )
 
-                task_breakdown.agent_run_time = (
-                    agent_run_time  # Agent run time is captured by the process, excluding time it takes to create pty
-                )
+                task_breakdown.agent_run_duration = agent_run_time
 
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
@@ -479,13 +477,9 @@ async def process_task(
                     task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
 
-                task_breakdown.evaluation_run_time = (
-                    time.perf_counter() - evaluation_start_time
-                )  # Time taken to evaluate the instance
+                task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
 
-                task_breakdown.sandbox_run_time = (
-                    time.perf_counter() - start_sandbox_run_time
-                )  # End the sandbox run timer
+                task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
@@ -498,24 +492,24 @@ async def process_task(
                     instance_id=sandbox.id,
                     result=evaluation_result,
                     agent_caused_exit_reason=exit_reason,
-                    task_breakdown=task_breakdown.id,
                 )
 
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
                     task_session.add(task_breakdown)
                     task_session.add(evaluation_result_row)
+                    task.task_breakdown = task_breakdown.id
                     task.status = TaskStatus.FINISHED
                     task_session.commit()
 
                     return {task_id: evaluation_result_row.result}
-            except Exception as e:
+            except Exception:
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
-                raise e from e
+                raise
 
     except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")
@@ -899,7 +893,7 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
     statement = (
         select(EvaluationResult, Task.task_id, TaskBreakdown)
         .join(Task, col(EvaluationResult.task) == col(Task.id))
-        .outerjoin(TaskBreakdown, col(EvaluationResult.task_breakdown) == col(TaskBreakdown.id))
+        .outerjoin(TaskBreakdown, col(Task.task_breakdown) == col(TaskBreakdown.id))
         .where(Task.benchmark == benchmark_id)
         .where(Task.org_id == org_id)
     )
@@ -907,6 +901,7 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
 
     evaluation_results: dict[str, dict[str, Any]] = {}
     for evaluation_result, task_id, task_breakdown in results:
+        task_breakdown = cast(TaskBreakdown | None, task_breakdown)
         result_data = evaluation_result.result
         result_data["agent_caused_exit_reason"] = evaluation_result.agent_caused_exit_reason
         if task_breakdown is not None:
