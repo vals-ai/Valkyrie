@@ -50,9 +50,13 @@ class TestBenchmarkUtils:
             initial_task_rows.append(
                 Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING)
             )
-        for i in range(5, 10):
+        for i in range(5, 8):
             initial_task_rows.append(
                 Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
+            )
+        for i in range(8, 10):
+            initial_task_rows.append(
+                Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.EVALUATING)
             )
         database_session.add_all(initial_task_rows)
         database_session.commit()
@@ -81,7 +85,7 @@ class TestBenchmarkUtils:
             .where(Task.benchmark == benchmark_row.id)
             .where(Task.status == TaskStatus.STOPPED)
         ).one()
-        assert task_rows == 5
+        assert task_rows == 7
 
         # The remaining tasks have been left alone in in progress state
         task_rows = database_session.exec(
@@ -90,7 +94,7 @@ class TestBenchmarkUtils:
             .where(Task.status == TaskStatus.IN_PROGRESS)
         ).one()
 
-        assert task_rows == 5
+        assert task_rows == 3
 
     def test_stop_benchmark_edge_cases(self, example_benchmark_object: Benchmark, database_session: Session):
         """

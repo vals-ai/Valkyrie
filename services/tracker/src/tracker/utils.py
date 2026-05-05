@@ -1049,7 +1049,7 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
             update(Task)
             .where(col(Task.benchmark) == benchmark_row.id)
             .where(col(Task.org_id) == org.id)
-            .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING]))
+            .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
             .values(status=TaskStatus.STOPPED)
         )
         session.commit()
