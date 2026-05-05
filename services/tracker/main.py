@@ -22,7 +22,7 @@ from tracker.auth import (
     resolve_descope_tenant,
 )
 from tracker.cloudwatch import get_cloudwatch_url
-from tracker.config import AUTH_REQUIRED
+from tracker.config import AUTH_REQUIRED, ENVIRONMENT
 from tracker.database.models import Benchmark, BenchmarkStatus, Org
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
@@ -73,8 +73,8 @@ from tracker.utils import (
 )
 
 configure_logging()
-init_sentry("valkyrie-tracker")
-configure_tracing("valkyrie-tracker")
+init_sentry("valkyrie-tracker", environment=ENVIRONMENT)
+configure_tracing("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
 

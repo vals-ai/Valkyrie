@@ -1,7 +1,6 @@
 import asyncio
 import io
 import json
-import os
 import logging
 import time
 import traceback
@@ -28,7 +27,7 @@ from tenacity import retry as tenacity_retry
 
 from tracker._lambda import invoke_lambda
 from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group
-from tracker.config import broker
+from tracker.config import ENVIRONMENT, broker
 from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
@@ -394,14 +393,13 @@ async def process_task(
             task.status = TaskStatus.BUILDING
             task_session.commit()
 
-        environment = os.environ.get("ENVIRONMENT", "development")
         env_vars = {
             **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per benchmark run and separable from other environments sharing the
             # same Daytona account (sandbox OTLP export is account-level).
             "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
-                f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={environment}"
+                f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
             ),
         }
 

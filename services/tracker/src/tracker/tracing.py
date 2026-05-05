@@ -1,7 +1,5 @@
 """Tracing configuration: OTel instrumentation (via logfire) with Sentry as the backend."""
 
-import os
-
 import logfire
 from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.context import Context
@@ -38,10 +36,8 @@ class _ContextVarSpanProcessor(SpanProcessor):
         return True
 
 
-def configure_tracing(service_name: str) -> None:
+def configure_tracing(service_name: str, environment: str) -> None:
     """Configure OTel tracing. Call after init_sentry() and before any instrument_*() hooks."""
-    environment = os.environ.get("ENVIRONMENT", "development")
-
     logfire.configure(
         service_name=service_name,
         environment=environment,

@@ -23,11 +23,12 @@ def _before_send(
     return event
 
 
-def init_sentry(service_name: str) -> None:
+def init_sentry(service_name: str, environment: str) -> None:
     """Initialize Sentry SDK. No-op if SENTRY_DSN is not set.
 
     Args:
         service_name: Identifies the process in Sentry (e.g. "valkyrie-tracker", "valkyrie-worker").
+        environment: Deployment environment tag (e.g. "development", "production").
     """
     dsn = os.environ.get("SENTRY_DSN", "")
     if not dsn:
@@ -36,7 +37,7 @@ def init_sentry(service_name: str) -> None:
     try:
         sentry_sdk.init(
             dsn=dsn,
-            environment=os.environ.get("ENVIRONMENT", "development"),
+            environment=environment,
             release=os.environ.get("SENTRY_RELEASE", ""),
             server_name=service_name,
             # Sampling happens upstream in OTel; pass everything through.

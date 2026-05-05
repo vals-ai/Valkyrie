@@ -33,6 +33,7 @@ def create_benchmark_service_url(benchmark_name: str) -> str:
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
 
@@ -73,8 +74,8 @@ broker = (
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
-    init_sentry("valkyrie-worker")
-    configure_tracing("valkyrie-worker")
+    init_sentry("valkyrie-worker", environment=ENVIRONMENT)
+    configure_tracing("valkyrie-worker", environment=ENVIRONMENT)
 
 
 # Auth settings
