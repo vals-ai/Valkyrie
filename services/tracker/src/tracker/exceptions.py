@@ -19,12 +19,7 @@ class InvalidSandboxConfigurationError(SandboxError):
 
 
 class SandboxGoneError(SandboxError):
-    """Exception raised when a sandbox no longer exists on the Daytona side mid-run.
-
-    Distinct from transient connection failures (which retry) and from generic
-    SandboxError (which can mean many things). Once a sandbox is gone, no retry
-    will recover it; the task must restart with a new sandbox.
-    """
+    """Exception raised when a sandbox no longer exists on the Daytona side mid-run."""
 
 
 class SandboxSetupError(SandboxError):

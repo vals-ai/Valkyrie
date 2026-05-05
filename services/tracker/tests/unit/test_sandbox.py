@@ -20,19 +20,9 @@ from tracker.types import AWSCredentials
 
 
 class TestCheckSandboxHealthRetry:
-    """
-    `_check_sandbox_health` must retry on transient Daytona/aiohttp connection failures
-    (regression for VALKYRIE-19, VALKYRIE-1M ~229 events combined: a single broken pipe
-    or server disconnect was aborting the entire task because the function had no retry).
-
-    DaytonaNotFoundError is *not* retryable — the sandbox is gone, surface as SandboxGoneError.
-    """
-
     @pytest.fixture(autouse=True)
     def _fast_retries(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Drop the per-attempt wait to ~0 so retry tests don't add real seconds.
         monkeypatch.setattr(sandbox_module, "_HEALTHCHECK_RETRY_WAIT_SECONDS", 0.0)
-        # Re-decorate the helper at runtime with the new wait.
         from tenacity import (
             before_sleep_log,
             retry,
@@ -57,8 +47,6 @@ class TestCheckSandboxHealthRetry:
         )
 
     async def test_predicate_matches_wrapped_daytona_broken_pipe(self) -> None:
-        # Daytona wraps aiohttp errors via `raise DaytonaError(...)` without `from`, so __cause__
-        # is None. Predicate must match on the message instead.
         for msg in (
             "Failed to refresh sandbox data: [Errno 32] Broken pipe",
             "Failed to get sandbox: Server disconnected",
@@ -72,7 +60,6 @@ class TestCheckSandboxHealthRetry:
         assert _is_transient_daytona_connection_error(asyncio.TimeoutError())
 
     async def test_predicate_rejects_daytona_not_found(self) -> None:
-        # NotFound is permanent, must not be retried.
         assert not _is_transient_daytona_connection_error(DaytonaNotFoundError("Sandbox X not found"))
 
     async def test_predicate_rejects_unrelated_errors(self) -> None:
@@ -125,8 +112,6 @@ class TestCheckSandboxHealthRetry:
 
         with pytest.raises(SandboxError) as exc_info:
             await _check_sandbox_health(sandbox)
-        # Retried-then-exhausted path: the wrapped DaytonaError falls through the
-        # final `except Exception` to a SandboxError, NOT a SandboxGoneError.
         assert not isinstance(exc_info.value, SandboxGoneError)
         assert "Broken pipe" in str(exc_info.value)
 
@@ -146,11 +131,9 @@ class TestCheckSandboxHealthRetry:
         assert isinstance(exc_info.value, SandboxError)
 
     async def test_dead_state_still_raises_plain_sandbox_error(self) -> None:
-        # Sandbox refresh succeeds but state is dead — preserve existing behavior.
         sandbox = AsyncMock()
         sandbox.name = "mock-sandbox-1"
         sandbox.refresh_data = AsyncMock(return_value=None)
-        # Pick a state that's in _DEAD_SANDBOX_STATES.
         sandbox.state = next(iter(sandbox_module._DEAD_SANDBOX_STATES))
 
         with pytest.raises(SandboxError) as exc_info:

@@ -415,10 +415,8 @@ async def _create_pty_session(
     return handle, salted_id
 
 
-# Substrings the Daytona SDK leaves in DaytonaError.message when wrapping a transient
-# aiohttp failure. The SDK uses `raise DaytonaError(...)` without `from`, so the
-# original exception is reachable only via __context__ (which `from None` paths suppress);
-# matching on the message is the most reliable signal in practice.
+# Daytona SDK wraps aiohttp errors via `raise DaytonaError(...)` (no `from`),
+# discarding __cause__; substring-match on the wrapped message instead.
 _TRANSIENT_DAYTONA_PATTERNS: tuple[str, ...] = (
     "Broken pipe",
     "Server disconnected",
@@ -431,12 +429,6 @@ _HEALTHCHECK_RETRY_WAIT_SECONDS = 1.0
 
 
 def _is_transient_daytona_connection_error(exc: BaseException) -> bool:
-    """Predicate for tenacity: True for retryable transient connection failures.
-
-    Covers both the unwrapped aiohttp path and the wrapped DaytonaError path. Explicitly
-    does NOT match DaytonaNotFoundError — a missing sandbox is permanent and must surface
-    as SandboxGoneError, not retried.
-    """
     if isinstance(exc, DaytonaNotFoundError):
         return False
     if isinstance(exc, (aiohttp.ServerDisconnectedError, aiohttp.ClientOSError, asyncio.TimeoutError)):
@@ -455,7 +447,6 @@ def _is_transient_daytona_connection_error(exc: BaseException) -> bool:
     reraise=True,
 )
 async def _refresh_sandbox_data_with_retry(sandbox: AsyncSandbox) -> None:
-    """refresh_data() with bounded retry on transient Daytona/aiohttp connection errors."""
     await sandbox.refresh_data()
 
 
@@ -464,7 +455,7 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
     Checks if we can connect to a sandbox
 
     Raises:
-        SandboxGoneError: if the sandbox no longer exists on the Daytona side
+        SandboxGoneError: if the sandbox no longer exists
         SandboxError: if the sandbox cannot be connected to or is in a dead state
     """
     try:
