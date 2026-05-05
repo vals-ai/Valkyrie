@@ -196,7 +196,8 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        # Suppress: cleanup errors raised here would replace the in-flight exception.
+        # Cleanup is best-effort: report failures separately so they do not
+        # mask the task exception raised from the context body.
         try:
             await delete_sandbox(sandbox, daytona)
         except Exception as cleanup_exc:
