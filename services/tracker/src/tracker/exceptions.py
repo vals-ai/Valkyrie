@@ -18,6 +18,15 @@ class InvalidSandboxConfigurationError(SandboxError):
     """Exception raised for deterministic sandbox configuration errors."""
 
 
+class SandboxGoneError(SandboxError):
+    """Exception raised when a sandbox no longer exists on the Daytona side mid-run.
+
+    Distinct from transient connection failures (which retry) and from generic
+    SandboxError (which can mean many things). Once a sandbox is gone, no retry
+    will recover it; the task must restart with a new sandbox.
+    """
+
+
 class SandboxSetupError(SandboxError):
     """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
 

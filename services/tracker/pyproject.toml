@@ -26,6 +26,7 @@ dependencies = [
     "sentry-sdk[fastapi]>=2.58.0",
     "python-json-logger>=3.2.1",
     "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@main",
+    "aiohttp>=3.9.0",
 ]
 
 [dependency-groups]
