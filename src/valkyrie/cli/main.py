@@ -14,6 +14,7 @@ from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, Sta
 
 from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
+from valkyrie.cli.logging import configure_cli_logging
 from valkyrie.cli.s3_client import (
     download_agent,
     download_s3_path,
@@ -48,7 +49,7 @@ from valkyrie.schemas import AgentConfig
 @click.group()
 def cli():
     """Valkyrie CLI."""
-    pass
+    configure_cli_logging()
 
 
 @cli.group()

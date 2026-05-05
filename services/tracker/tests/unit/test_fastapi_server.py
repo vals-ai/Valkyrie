@@ -3,6 +3,7 @@ from datetime import timezone
 from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from dateutil.parser import isoparse
@@ -121,6 +122,31 @@ class TestFastapiServer:
         assert json_response["benchmark_name"] == request.benchmark_name
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
+
+    async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=10,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+
+        async def _mock_health_check(*_args: Any, **_kwargs: Any):
+            raise httpx.ConnectError("Name or service not known")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
+
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        response = no_raise_client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 502
+        assert response.json() == {"detail": "Benchmark service 'swebench' is not reachable"}
 
     async def test_start_benchmark_forwards_tracker_api_key_to_benchmark_service(
         self,

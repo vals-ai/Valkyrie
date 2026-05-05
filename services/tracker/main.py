@@ -4,6 +4,7 @@ import traceback
 from typing import Annotated
 from uuid import UUID
 
+import httpx
 import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError
@@ -205,7 +206,13 @@ async def start_benchmark(
     benchmark_service = request.benchmark_service
 
     # Check service is running
-    _ = await benchmark_service.health_check()
+    try:
+        _ = await benchmark_service.health_check()
+    except httpx.ConnectError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
+        ) from exc
 
     # Create benchmark row inside of database to mark start of the benchmark
     benchmark_row = start_benchmark_request_to_benchmark(request, org)
