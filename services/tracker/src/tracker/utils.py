@@ -392,27 +392,35 @@ async def process_task(
     try:
         if task_row.status == TaskStatus.EVALUATING:
             assert task_row.eval_resume_state is not None
-            log_output("Resuming evaluation from durable benchmark state\n")
-            evaluation_result = await benchmark_service.evaluate_response(
-                task_row.task_id,
-                eval_resume_state=task_row.eval_resume_state,
-                dataset=start_benchmark_request.dataset,
-            )
-            evaluation_result_row = EvaluationResult(
-                org_id=org.id,
-                task=task_row.id,
-                instance_id=None,
-                result=evaluation_result,
-                agent_caused_exit_reason=None,
-            )
+            try:
+                log_output("Resuming evaluation from durable benchmark state\n")
+                evaluation_result = await benchmark_service.evaluate_response(
+                    task_row.task_id,
+                    eval_resume_state=task_row.eval_resume_state,
+                    dataset=start_benchmark_request.dataset,
+                )
+                evaluation_result_row = EvaluationResult(
+                    org_id=org.id,
+                    task=task_row.id,
+                    instance_id=None,
+                    result=evaluation_result,
+                    agent_caused_exit_reason=None,
+                )
 
-            with Session(bind=engine) as task_session:
-                task = fetch_task_row(task_row.id, task_session, org)
-                task_session.add(evaluation_result_row)
-                task.status = TaskStatus.FINISHED
-                task_session.commit()
+                with Session(bind=engine) as task_session:
+                    task = fetch_task_row(task_row.id, task_session, org)
+                    task_session.add(evaluation_result_row)
+                    task.status = TaskStatus.FINISHED
+                    task_session.commit()
 
-                return {task_id: evaluation_result_row.result}
+                    return {task_id: evaluation_result_row.result}
+            except Exception as e:
+                with Session(bind=engine) as task_session:
+                    task = fetch_task_row(task_row.id, task_session, org)
+                    if task.status == TaskStatus.STOPPED:
+                        return {task_id: None}
+
+                raise e from e
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
 

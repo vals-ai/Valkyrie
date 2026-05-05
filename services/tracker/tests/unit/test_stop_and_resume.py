@@ -338,6 +338,70 @@ class TestStopAndResume:
         assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
         assert evaluation.instance_id is None
 
+    async def test_process_task_keeps_stopped_eval_resume_task_stopped(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        request = StartBenchmarkRequest(
+            benchmark_name="vcb",
+            contract=contract,
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_org)
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.EVALUATING,
+            eval_resume_state={"artifact_prefix": "s3://bucket/run"},
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        async def _mock_evaluate_response(
+            _self: BenchmarkServiceClient,
+            task_id: str,
+            *_args: Any,
+            eval_resume_state: dict[str, Any],
+            **_kwargs: Any,
+        ) -> dict[str, Any]:
+            assert task_id == "task_0"
+            assert eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
+            task = database_session.get(Task, task_row.id)
+            assert task is not None
+            task.status = TaskStatus.STOPPED
+            database_session.add(task)
+            database_session.commit()
+            raise RuntimeError("evaluation interrupted")
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_response", _mock_evaluate_response, raising=False)
+
+        result = await process_task(
+            task_row,
+            request,
+            request.benchmark_service,
+            benchmark_row.id,
+            task_row.task_id,
+            harness_config,
+            self._test_org,
+            creation_semaphore=asyncio.Semaphore(1),
+        )
+
+        database_session.refresh(task_row)
+        evaluations = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).all()
+        assert result == {"task_0": None}
+        assert task_row.status == TaskStatus.STOPPED
+        assert evaluations == []
+
     async def test_retry_or_resume_forwards_tracker_api_key_to_benchmark_service(
         self,
         example_benchmark_object: Benchmark,
