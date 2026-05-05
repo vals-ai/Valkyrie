@@ -37,6 +37,7 @@ dev = [
     "pytest-env>=1.2.0",
     "pytest-alembic>=0.12.1",
     "testcontainers[postgres]>=4.10.0",
+    "pytest-cov>=7.1.0",
 ]
 
 [build-system]
@@ -82,3 +83,12 @@ env = [
 markers = [
     "slow: marks tests as slow (require Daytona/external services)",
 ]
+
+[tool.coverage.run]
+source = ["src/tracker"]
+branch = true
+omit = ["*/tests/*", "*/__pycache__/*", "*/migrations/*"]
+
+[tool.coverage.report]
+fail_under = 1
+show_missing = true
