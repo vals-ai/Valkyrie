@@ -8,8 +8,41 @@ from daytona import ExecuteResponse
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SSLConnectionError, SandboxError, SandboxSetupError
-from tracker.sandbox import _create_pty_session, upload_agent_artifacts
+from tracker.sandbox import _classify_agent_failure, _create_pty_session, upload_agent_artifacts
 from tracker.types import AWSCredentials
+
+
+class TestClassifyAgentFailure:
+    @pytest.mark.parametrize(
+        "exit_code,tail,expected",
+        [
+            # Exit-code shortcuts win even when tail is empty/misleading
+            (127, [], "command_not_found"),
+            (127, ["yaml.YAMLError: bad"], "command_not_found"),
+            (126, [], "command_not_executable"),
+            # No output at all
+            (1, [], "no_output"),
+            # YAML parsing — the dominant pattern in VALKYRIE-Z
+            (1, ["yaml.scanner.ScannerError: while scanning a simple key"], "yaml_parse"),
+            (1, ['  File "x.py", line 1', "yaml.YAMLError: nope"], "yaml_parse"),
+            (1, ["mapping values are not allowed here"], "yaml_parse"),
+            # OOM
+            (1, ["MemoryError"], "oom"),
+            (1, ["bash: fork: Cannot allocate memory"], "oom"),
+            (1, ["Killed"], "oom"),
+            # command not found in tail (e.g. exit 1 from a pipeline)
+            (1, ["bash: openhands: command not found"], "command_not_found"),
+            # Agent finished cleanly but exited non-zero downstream
+            (1, ["[INFO] agent finished", "logout"], "agent_finished_clean"),
+            (1, ["Final report uploaded to s3://..."], "agent_finished_clean"),
+            # Plain Python traceback with no other signal
+            (1, ["Traceback (most recent call last):", '  File "x.py", line 1'], "python_traceback"),
+            # Fallback bucket
+            (1, ["some unrelated error message"], "unknown"),
+        ],
+    )
+    def test_classification(self, exit_code: int, tail: list[str], expected: str) -> None:
+        assert _classify_agent_failure(exit_code, tail) == expected
 
 
 class TestPtyHandshakeSemaphore:

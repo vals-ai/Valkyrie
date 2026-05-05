@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import re
 import shlex
 import time
 import uuid
@@ -13,6 +14,7 @@ from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 import logfire
+import sentry_sdk
 from benchmark_service.schemas import Resources as TrackerResources
 from daytona import (
     AsyncDaytona,
@@ -328,6 +330,75 @@ _pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)
 _DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
 
 
+# Regex patterns for classifying the tail of an agent PTY's output when it exits non-zero.
+# Order matters: the first matching class wins. Patterns are matched against the joined tail
+# (case-insensitive, multiline). Keep these conservative — false negatives ("unknown") are
+# fine; false positives muddy Sentry grouping.
+_AGENT_FAILURE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "yaml_parse",
+        re.compile(
+            r"yaml\.(?:YAMLError|scanner\.ScannerError|parser\.ParserError)"
+            r"|could not find expected ':'"
+            r"|while scanning a (?:simple key|block mapping)"
+            r"|mapping values are not allowed here",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "oom",
+        re.compile(
+            r"\bMemoryError\b"
+            r"|out of memory"
+            r"|Cannot allocate memory"
+            r"|killed\s*$",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
+    (
+        "command_not_found",
+        re.compile(r"command not found|No such file or directory", re.IGNORECASE),
+    ),
+    (
+        "agent_finished_clean",
+        re.compile(
+            r"agent (?:finished|completed)|task completed|final report (?:uploaded|written)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "python_traceback",
+        re.compile(r"^Traceback \(most recent call last\):", re.MULTILINE),
+    ),
+)
+
+
+def _classify_agent_failure(exit_code: int, tail_lines: list[str]) -> str:
+    """
+    Best-effort bucket the trailing PTY output into one of a small set of failure classes,
+    so non-zero agent exits can be grouped/filtered in Sentry instead of all colliding
+    on the generic SandboxError fingerprint.
+
+    Returns one of: command_not_found, oom, yaml_parse, agent_finished_clean,
+    python_traceback, no_output, unknown.
+    """
+    # Exit-code shortcuts first — these are unambiguous regardless of tail content.
+    if exit_code == 127:
+        return "command_not_found"
+    if exit_code == 126:
+        return "command_not_executable"
+
+    if not tail_lines:
+        return "no_output"
+
+    haystack = "\n".join(tail_lines)
+    for label, pattern in _AGENT_FAILURE_PATTERNS:
+        if pattern.search(haystack):
+            return label
+
+    return "unknown"
+
+
 @asynccontextmanager
 async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator[None, None]:
     """
@@ -624,7 +695,20 @@ async def stream_command_output(
         # Final log is shown to the user, ignore traceback since it provides no insight as to what actually happened in the sandbox
         if exit_code != _SUCCESS_EXIT_CODE:
             tail = "".join(last_output).strip().splitlines()
-            recent = "\n".join(tail[-10:]) if tail else "(no output)"
+            recent_lines = tail[-10:] if tail else []
+            recent = "\n".join(recent_lines) if recent_lines else "(no output)"
+
+            # Bucket the failure for Sentry so a flood of non-zero agent exits doesn't all
+            # land in one SandboxError group. Tags let you filter; the fingerprint override
+            # makes Sentry actually split them into separate issues.
+            failure_class = _classify_agent_failure(exit_code, recent_lines)
+            sentry_sdk.set_tag("agent_failure_class", failure_class)
+            sentry_sdk.set_tag("agent_exit_code", str(exit_code))
+            sentry_sdk.get_isolation_scope().fingerprint = [
+                "stream_command_output_nonzero_exit",
+                failure_class,
+            ]
+
             raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
 
         return None
