@@ -26,6 +26,7 @@ from daytona import (
 )
 from daytona.common.errors import DaytonaError
 from daytona.handle.async_pty_handle import AsyncPtyHandle
+from opentelemetry import trace
 from tenacity import (
     before_sleep_log,
     retry,
@@ -530,28 +531,30 @@ async def _read_exit_code(sandbox: AsyncSandbox, status_path: str) -> int:
         raise SandboxError(f"Failed to read exit status from {status_path}: {e}") from e
 
 
-async def _disconnect_pty(handle: AsyncPtyHandle | None) -> None:
+@logfire.instrument("pty_disconnect")
+async def _disconnect_pty(handle: AsyncPtyHandle | None, sandbox: AsyncSandbox) -> None:
     """Disconnect from the PTY, ignoring exit errors (typically network errors)."""
     if not handle:
         return
 
+    trace.get_current_span().set_attribute("sandbox_id", sandbox.id)
     try:
-        with logfire.span("pty_disconnect"):
-            await handle.disconnect()
-    except Exception as e:
-        logger.warning(f"PTY disconnect failed: {type(e).__name__}: {e}")
+        await handle.disconnect()
+    except Exception:
+        logfire.exception(f"PTY disconnect failed on sandbox {sandbox.id}")
 
 
+@logfire.instrument("kill_pty_session", extract_args=("session_id",))
 async def _kill_pty_session(sandbox: AsyncSandbox, session_id: str | None) -> None:
     """Kill a PTY session, ignoring errors if raised or if session was never created."""
     if not session_id:
         return
 
+    trace.get_current_span().set_attribute("sandbox_id", sandbox.id)
     try:
-        with logfire.span("kill_pty_session", session_id=session_id):
-            await sandbox.process.kill_pty_session(session_id)
-    except Exception as e:
-        logger.warning(f"Failed to kill PTY session {session_id}: {type(e).__name__}: {e}")
+        await sandbox.process.kill_pty_session(session_id)
+    except Exception:
+        logfire.exception(f"Failed to kill PTY session {session_id} on sandbox {sandbox.id}")
 
 
 async def stream_command_output(
@@ -628,7 +631,7 @@ async def stream_command_output(
 
     finally:
         # Disconnect form PTY, ignoring exception if raised
-        await _disconnect_pty(handle)
+        await _disconnect_pty(handle, sandbox)
 
         # Kill the PTY session, ignoring exception if raised
         await _kill_pty_session(sandbox, session_id)
