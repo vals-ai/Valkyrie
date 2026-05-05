@@ -13,6 +13,7 @@ from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 import logfire
+import sentry_sdk
 from benchmark_service.schemas import Resources as TrackerResources
 from daytona import (
     AsyncDaytona,
@@ -195,7 +196,18 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        await delete_sandbox(sandbox, daytona)
+        # Cleanup failures must not mask the in-flight task exception (see VALKYRIE-19,
+        # where a broken pipe during refresh_data was replacing the original
+        # _check_sandbox_health error and obscuring the real failure cause). Always
+        # suppress; report separately to Sentry under a scoped tag. set_autostop_interval
+        # inside delete_sandbox bounds the leak window if delete itself fails.
+        try:
+            await delete_sandbox(sandbox, daytona)
+        except Exception as cleanup_exc:
+            logger.exception(f"Sandbox cleanup failed for {sandbox.name}")
+            with sentry_sdk.new_scope() as scope:
+                scope.set_tag("sandbox_cleanup_failed", "true")
+                sentry_sdk.capture_exception(cleanup_exc)
 
 
 @retry(

@@ -8,8 +8,90 @@ from daytona import ExecuteResponse
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SSLConnectionError, SandboxError, SandboxSetupError
-from tracker.sandbox import _create_pty_session, upload_agent_artifacts
+from tracker.sandbox import _create_pty_session, create_sandbox, upload_agent_artifacts
 from tracker.types import AWSCredentials
+
+
+class TestCreateSandboxCleanupNonFatal:
+    """
+    The `create_sandbox` async context manager must guarantee that a cleanup-time
+    `delete_sandbox` failure never masks the in-flight task exception (regression for
+    VALKYRIE-19, where a broken pipe during refresh_data was replacing the original
+    _check_sandbox_health failure in Sentry). On a successful task, cleanup failures
+    are suppressed and reported separately.
+    """
+
+    @pytest.fixture
+    def daytona_with_failing_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, Mock]:
+        """Mocks `_create_sandbox` to succeed and `delete_sandbox` to raise."""
+        from daytona.common.errors import DaytonaError
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "mock-sandbox-1"
+        mock_sandbox.name = "mock-sandbox-1"
+        mock_daytona = AsyncMock()
+
+        async def _mock_create(*_args: Any, **_kwargs: Any) -> Any:
+            return mock_sandbox
+
+        cleanup_calls = Mock()
+
+        async def _mock_delete(*_args: Any, **_kwargs: Any) -> None:
+            cleanup_calls()
+            raise DaytonaError("Failed to refresh sandbox data: [Errno 32] Broken pipe")
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", _mock_create)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", _mock_delete)
+        return mock_sandbox, mock_daytona, cleanup_calls
+
+    async def test_cleanup_failure_does_not_mask_original_exception(
+        self, daytona_with_failing_cleanup: tuple[Any, Any, Mock], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: list[BaseException] = []
+        monkeypatch.setattr(sandbox_module.sentry_sdk, "capture_exception", lambda exc: captured.append(exc))
+
+        _, mock_daytona, cleanup_calls = daytona_with_failing_cleanup
+        original_error = SandboxError("original task failure")
+
+        from benchmark_service.schemas import Resources as TrackerResources
+
+        with pytest.raises(SandboxError) as exc_info:
+            async with create_sandbox(
+                daytona=mock_daytona,
+                sandbox_name="mock-sandbox-1",
+                image="python:3.12-slim",
+                resources=TrackerResources(vcpu=2, memory=4, disk=2),
+                creation_semaphore=asyncio.Semaphore(1),
+            ) as _sandbox:
+                raise original_error
+
+        # The original exception must propagate, not the cleanup error.
+        assert exc_info.value is original_error
+        cleanup_calls.assert_called_once()
+        assert len(captured) == 1
+        assert "Broken pipe" in str(captured[0])
+
+    async def test_cleanup_failure_on_successful_task_is_suppressed(
+        self, daytona_with_failing_cleanup: tuple[Any, Any, Mock], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: list[BaseException] = []
+        monkeypatch.setattr(sandbox_module.sentry_sdk, "capture_exception", lambda exc: captured.append(exc))
+
+        _, mock_daytona, cleanup_calls = daytona_with_failing_cleanup
+        from benchmark_service.schemas import Resources as TrackerResources
+
+        # Successful task: no exception inside the `async with` body.
+        async with create_sandbox(
+            daytona=mock_daytona,
+            sandbox_name="mock-sandbox-1",
+            image="python:3.12-slim",
+            resources=TrackerResources(vcpu=2, memory=4, disk=2),
+            creation_semaphore=asyncio.Semaphore(1),
+        ) as _sandbox:
+            pass
+
+        cleanup_calls.assert_called_once()
+        assert len(captured) == 1
 
 
 class TestPtyHandshakeSemaphore:
