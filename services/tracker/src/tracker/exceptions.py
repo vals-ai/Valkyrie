@@ -21,10 +21,8 @@ class InvalidSandboxConfigurationError(SandboxError):
 class AgentRunFailedError(SandboxError):
     """Exception raised when the agent process inside a healthy sandbox exits non-zero.
 
-    Distinct from infra-caused SandboxErrors: the sandbox itself worked, the PTY
-    handshake worked, the command executed — the agent just produced a non-zero
-    exit code. Sandbox retries don't help these and they should be triaged
-    separately from real infra failures in Sentry.
+    Distinct from infra-caused SandboxErrors. Sandbox retries don't help these
+    and they should be triaged separately from real infra failures.
     """
 
 
