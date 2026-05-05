@@ -7,9 +7,28 @@ from daytona import ExecuteResponse
 
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
-from tracker.exceptions import SSLConnectionError, SandboxError, SandboxSetupError
+from tracker.exceptions import AgentRunFailedError, SSLConnectionError, SandboxError, SandboxSetupError
 from tracker.sandbox import _create_pty_session, upload_agent_artifacts
 from tracker.types import AWSCredentials
+
+
+class TestAgentRunFailedError:
+    """
+    AgentRunFailedError must be a SandboxError (so existing pytest.raises and isinstance
+    checks still match) but NOT a SandboxSetupError (process_task retries with a fresh
+    sandbox on SandboxSetupError; agent failures don't get retried that way).
+    """
+
+    def test_is_sandbox_error(self) -> None:
+        assert issubclass(AgentRunFailedError, SandboxError)
+        assert isinstance(AgentRunFailedError("boom"), SandboxError)
+
+    def test_is_not_sandbox_setup_error(self) -> None:
+        # Critical: process_task's `except SandboxSetupError` branch retries the sandbox.
+        # AgentRunFailedError must not be caught by that — agent exits aren't retryable
+        # by spinning up a new sandbox.
+        assert not issubclass(AgentRunFailedError, SandboxSetupError)
+        assert not isinstance(AgentRunFailedError("boom"), SandboxSetupError)
 
 
 class TestPtyHandshakeSemaphore:

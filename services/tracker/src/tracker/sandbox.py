@@ -13,6 +13,7 @@ from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 import logfire
+import sentry_sdk
 from benchmark_service.schemas import Resources as TrackerResources
 from daytona import (
     AsyncDaytona,
@@ -39,6 +40,7 @@ from tenacity import (
 
 from tracker.database.models import AgentCausedExitReason, AgentContractRequest
 from tracker.exceptions import (
+    AgentRunFailedError,
     InvalidSandboxConfigurationError,
     PtyCreationError,
     SandboxError,
@@ -625,7 +627,15 @@ async def stream_command_output(
         if exit_code != _SUCCESS_EXIT_CODE:
             tail = "".join(last_output).strip().splitlines()
             recent = "\n".join(tail[-10:]) if tail else "(no output)"
-            raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
+
+            # Tag the exit code for Sentry filtering. The exception type itself
+            # (AgentRunFailedError, a SandboxError subclass) is what splits these from
+            # infra-caused SandboxErrors in Sentry grouping.
+            sentry_sdk.set_tag("agent_exit_code", str(exit_code))
+
+            raise AgentRunFailedError(
+                f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}"
+            )
 
         return None
 
