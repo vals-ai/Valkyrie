@@ -332,6 +332,14 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
         target.finished_at = datetime.now(ZoneInfo("UTC"))
 
 
+class TaskBreakdown(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    sandbox_build_time: float | None = Field(default=None)
+    agent_run_time: float | None = Field(default=None)
+    evaluation_run_time: float | None = Field(default=None)
+    sandbox_run_time: float | None = Field(default=None)
+
+
 class EvaluationResult(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
@@ -339,3 +347,4 @@ class EvaluationResult(SQLModel, table=True):
     instance_id: str = Field(unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+    task_breakdown: TaskBreakdown | None = Field(default=None, foreign_key="taskbreakdown.id")
