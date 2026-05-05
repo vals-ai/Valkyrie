@@ -1,7 +1,7 @@
 name: Docstring coverage badge
 on:
   push:
-    branches: [dev, jf/code-and-doc-coverage]
+    branches: [dev]
 
 permissions:
   contents: write
@@ -29,7 +29,7 @@ jobs:
       - name: Generate docstring coverage badge
         run: |
           mkdir -p badge-output
-          uv run docstr-coverage src/valkyrie --badge badge-output/docstr-coverage.svg --fail-under 0
+          uv run docstr-coverage src/valkyrie services/tracker/src/tracker --badge badge-output/docstr-coverage.svg --fail-under 0
 
       - name: Publish to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4

@@ -1,7 +1,7 @@
 name: Cli unit tests
 on:
   push:
-    branches: [dev, jf/code-and-doc-coverage]
+    branches: [dev]
   pull_request:
     branches: [dev]
 
