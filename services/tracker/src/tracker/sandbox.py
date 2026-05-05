@@ -577,6 +577,8 @@ async def stream_command_output(
     session_id = f"{sandbox.id}:pty-{pty_id}"
     status_dir = "/tmp/.valkyrie"
     status_path = f"{status_dir}/{pty_id}.status"
+    start_ns_path = f"{status_dir}/{pty_id}.start_ns"
+    end_ns_path = f"{status_dir}/{pty_id}.end_ns"
     handle: AsyncPtyHandle | None = None
     last_output: deque[str] = deque(maxlen=50)
 
@@ -600,20 +602,26 @@ async def stream_command_output(
         # Disable echo to suppress command line noise in the output
         await handle.send_input("stty -echo\n")
 
-        # Ignore pty in time to reduce noise
-        start_time = time.perf_counter()
-
-        # Capture exit code in a status file
-        await handle.send_input(f"mkdir -p {status_dir} && {command}; echo $? > {status_path}; exit\n")
+        # Record timestamps inside the sandbox so duration excludes network latency and additional noise from requests in-between
+        await handle.send_input(
+            f"mkdir -p {status_dir}"
+            f" && date +%s%N > {start_ns_path}"
+            f" && {command}"
+            f"; echo $? > {status_path}"
+            f"; date +%s%N > {end_ns_path}"
+            f"; exit\n"
+        )
 
         # Wait for the PTY to finish running the agent, logging data returned
         await _wait_for_pty(sandbox, session_id, handle, on_data, on_output, status_path)
 
-        # Command execution time
-        duration = time.perf_counter() - start_time
-
         # Verify sandbox is still alive before reading the status file
         await _check_sandbox_health(sandbox)
+
+        # Compute process duration
+        start_ns_result = await _exec(sandbox, f"cat {start_ns_path}")
+        end_ns_result = await _exec(sandbox, f"cat {end_ns_path}")
+        duration = (int(end_ns_result.result.strip()) - int(start_ns_result.result.strip())) / 1e9
 
         # Read the exit code of the process running the agent
         exit_code = await _read_exit_code(sandbox, status_path)
@@ -643,9 +651,9 @@ async def stream_command_output(
         # Kill the PTY session, ignoring exception if raised
         await _kill_pty_session(sandbox, session_id)
 
-        # Remove the status file, ignoring exception if raised
+        # Remove the status and timing files, ignoring exception if raised
         try:
-            await _exec(sandbox, f"rm -f {status_path}")
+            await _exec(sandbox, f"rm -f {status_path} {start_ns_path} {end_ns_path}")
         except Exception:
             pass
 
