@@ -9,6 +9,12 @@ env
 .ruff_cache
 __pycache__/
 
+# coverage
+.coverage
+coverage.xml
+htmlcov/
+badge-output/
+
 # Config files
 config/**.yaml
 

@@ -1,5 +1,9 @@
 name: Tracker unit tests
-on: [pull_request, push]
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
 
 jobs:
   tracker-unit-tests:
@@ -24,7 +28,14 @@ jobs:
           uv venv --python 3.12
           uv sync --group dev
 
-      - name: Run unit tests
+      - name: Run unit tests with coverage
         run: |
           cd services/tracker
-          uv run pytest tests/unit --test-alembic
+          uv run pytest tests/unit --test-alembic --cov=src/tracker --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: services/tracker/coverage.xml
+          flags: tracker

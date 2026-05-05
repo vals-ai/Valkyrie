@@ -1,5 +1,5 @@
 .PHONY: help install style format format-check lint typecheck \
-	tracker-service venv_check tool-install build
+	tracker-service venv_check tool-install build unit-test
 
 PYTHON_VERSION := 3.12
 
@@ -12,6 +12,7 @@ help:
 	@echo "  make tool-install        Install valkyrie as a global executable"
 	@echo ""
 	@echo "Development:"
+	@echo "  make unit-test           Run CLI unit tests with coverage"
 	@echo "  make style               Lint & Format"
 	@echo "  make typecheck           Typecheck"
 	@echo ""
@@ -57,6 +58,9 @@ format-check: venv_check
 
 lint: venv_check
 	@uv run ruff check --fix .
+
+unit-test: venv_check
+	@uv run pytest tests/unit --cov=src/valkyrie --cov-report=xml --cov-report=term-missing
 
 style: format lint
 
