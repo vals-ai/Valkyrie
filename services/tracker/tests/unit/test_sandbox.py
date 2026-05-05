@@ -7,8 +7,8 @@ from daytona import ExecuteResponse
 
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
-from tracker.exceptions import SSLConnectionError, SandboxError, SandboxSetupError
-from tracker.sandbox import _create_pty_session, upload_agent_artifacts
+from tracker.exceptions import AgentRunFailedError, SSLConnectionError, SandboxError, SandboxSetupError
+from tracker.sandbox import _create_pty_session, stream_command_output, upload_agent_artifacts
 from tracker.types import AWSCredentials
 
 
@@ -145,3 +145,39 @@ class TestUploadAgentArtifacts:
 
         if not retryable:
             assert not isinstance(exc_info.value, SandboxSetupError)
+
+
+class TestStreamCommandOutputAgentFailure:
+    @pytest.mark.parametrize("exit_code", [1, 2, 127])
+    async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
+        self, monkeypatch: pytest.MonkeyPatch, exit_code: int
+    ) -> None:
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sb-1"
+        mock_sandbox.name = "sb-1"
+        mock_handle = AsyncMock()
+
+        async def _mock_create_pty(*_args: Any, **_kwargs: Any) -> tuple[AsyncMock, str]:
+            return mock_handle, "sb-1:pty-abc"
+
+        async def _noop(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        async def _mock_read_exit_code(*_args: Any, **_kwargs: Any) -> int:
+            return exit_code
+
+        monkeypatch.setattr(sandbox_module, "_create_pty_session", _mock_create_pty)
+        monkeypatch.setattr(sandbox_module, "_wait_for_pty", _noop)
+        monkeypatch.setattr(sandbox_module, "_check_sandbox_health", _noop)
+        monkeypatch.setattr(sandbox_module, "_read_exit_code", _mock_read_exit_code)
+
+        tagged: dict[str, str] = {}
+        monkeypatch.setattr(sandbox_module.sentry_sdk, "set_tag", lambda key, value: tagged.__setitem__(key, value))
+
+        with pytest.raises(AgentRunFailedError) as exc_info:
+            await stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+
+        assert isinstance(exc_info.value, SandboxError)
+        assert not isinstance(exc_info.value, SandboxSetupError)
+        assert f"exit code: {exit_code}" in str(exc_info.value)
+        assert tagged == {"agent_exit_code": str(exit_code)}

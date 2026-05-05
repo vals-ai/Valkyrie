@@ -627,12 +627,7 @@ async def stream_command_output(
         if exit_code != _SUCCESS_EXIT_CODE:
             tail = "".join(last_output).strip().splitlines()
             recent = "\n".join(tail[-10:]) if tail else "(no output)"
-
-            # Tag the exit code for Sentry filtering. The exception type itself
-            # (AgentRunFailedError, a SandboxError subclass) is what splits these from
-            # infra-caused SandboxErrors in Sentry grouping.
             sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-
             raise AgentRunFailedError(
                 f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}"
             )
