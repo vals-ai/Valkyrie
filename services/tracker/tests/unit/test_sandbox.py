@@ -1,8 +1,9 @@
 import asyncio
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from tenacity import wait_fixed
 
 from tracker import sandbox as sandbox_module
 from tracker.sandbox import _create_pty_session
@@ -90,3 +91,15 @@ class TestPtyHandshakeSemaphore:
         # Task B's handshake must complete BEFORE task A's post-handshake work finishes.
         # That ordering is only reachable if the slot was released at handshake exit.
         assert events.index("b:handshake_done") < events.index("a:post_handshake_done")
+
+
+class TestSandboxHealth:
+    async def test_refresh_sandbox_data_retries_transient_failure(self) -> None:
+        mock_sandbox = AsyncMock()
+        mock_sandbox.refresh_data.side_effect = [RuntimeError("502 Bad Gateway"), None]
+
+        refresh = sandbox_module._refresh_sandbox_data.retry_with(wait=wait_fixed(0))
+
+        await refresh(mock_sandbox)
+
+        assert mock_sandbox.refresh_data.await_count == 2

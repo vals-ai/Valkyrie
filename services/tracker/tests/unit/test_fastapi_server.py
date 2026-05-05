@@ -246,6 +246,22 @@ class TestFastapiServer:
         assert details.get("total_tasks") and details["total_tasks"] == 10
         assert details.get("finished_tasks") and details["finished_tasks"] == 6
 
+    async def test_fetch_benchmark_with_no_discovered_tasks(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ):
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmark", params={"benchmark_id": str(example_benchmark_object.id)})
+
+        assert response.status_code == 200
+        details = response.json()["details"]
+        assert details["total_tasks"] == 0
+        assert details["finished_tasks"] == 0
+        assert details["task_breakdown"] == {}
+
     async def test_retrieve_results(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test the retrieve results endpoint of the fastapi server.

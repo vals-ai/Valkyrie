@@ -819,11 +819,6 @@ class BenchmarkContext:
 
         result = self._session.exec(statement).all()
 
-        if not result:
-            raise TrackerServiceError(
-                f"No tasks have been discovered for run {self._benchmark_row.id}, cannot provide task breakdown"
-            )
-
         return {TaskStatus(status): count for status, count in result}
 
     @cached_property

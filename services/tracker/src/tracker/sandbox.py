@@ -310,6 +310,16 @@ _pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)
 _DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+async def _refresh_sandbox_data(sandbox: AsyncSandbox) -> None:
+    await sandbox.refresh_data()
+
+
 @asynccontextmanager
 async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator[None, None]:
     """
@@ -401,7 +411,7 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
          SandboxError: if the sandbox cannot be connected to
     """
     try:
-        await sandbox.refresh_data()
+        await _refresh_sandbox_data(sandbox)
         if sandbox.state in _DEAD_SANDBOX_STATES:
             raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
     except SandboxError:
