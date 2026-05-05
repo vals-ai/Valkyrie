@@ -17,11 +17,13 @@ from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
 from tracker.auth import (
+    RequestIdentity,
     extract_api_key,
     find_org_by_tenant,
     forward_tracker_api_key,
     get_current_org,
-    resolve_descope_tenant,
+    get_current_starter,
+    resolve_descope_identity,
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.s3 import (
@@ -158,7 +160,7 @@ def init_org(
         raise HTTPException(status_code=405, detail="Init is only available in hosted mode")
 
     api_key = extract_api_key(request)
-    tenant_name = resolve_descope_tenant(api_key)
+    tenant_name, _access_key_id, email, _name = resolve_descope_identity(api_key)
 
     stmt = pg_insert(Org).values(name=tenant_name).on_conflict_do_nothing(index_elements=["name"])
     result = session.exec(stmt)
@@ -168,7 +170,8 @@ def init_org(
     org = find_org_by_tenant(tenant_name, session)
     if not org:
         raise HTTPException(status_code=500, detail="Internal error during org creation")
-    return {"org_name": org.name, "created": created}
+
+    return {"org_name": org.name, "created": created, "email_claim_missing": email is None}
 
 
 @app.post("/start-benchmark")
@@ -176,7 +179,7 @@ async def start_benchmark(
     http_request: Request,
     request: StartBenchmarkRequest,
     session: Session = Depends(get_session),
-    org: Org = Depends(get_current_org),
+    starter: RequestIdentity = Depends(get_current_starter),
 ) -> StartBenchmarkResponse:
     """
     Start a benchmark run with the uploaded contract.
@@ -216,7 +219,7 @@ async def start_benchmark(
         ) from exc
 
     # Create benchmark row inside of database to mark start of the benchmark
-    benchmark_row = start_benchmark_request_to_benchmark(request, org)
+    benchmark_row = start_benchmark_request_to_benchmark(request, starter)
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))

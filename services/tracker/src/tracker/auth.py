@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from descope import AuthException, DescopeClient
 from fastapi import Depends, HTTPException, Request
@@ -16,6 +17,22 @@ from tracker.logging import get_logger
 logger = get_logger(__name__)
 
 BENCHMARK_SERVICE_API_KEY_HEADER = "X-Descope-Api-Key"
+
+
+@dataclass(frozen=True)
+class RequestIdentity:
+    """Identity that authenticated the current request.
+
+    In hosted mode `access_key_id` is always set; `email` and `name` are populated only
+    when the corresponding custom claims are present on the Descope access key. In
+    self-hosted mode all three are None.
+    """
+
+    org: Org
+    access_key_id: str | None
+    email: str | None
+    name: str | None
+
 
 _cached_default_org: Org | None = None
 _descope_client: DescopeClient | None = (
@@ -61,6 +78,45 @@ def resolve_descope_tenant(api_key: str) -> str:
     return tenants[0]
 
 
+def resolve_descope_identity(api_key: str) -> tuple[str, str, str | None, str | None]:
+    """Validate an API key and return (tenant_name, access_key_id, email, name).
+
+    Pulls all four from the same JWT response — no extra Descope round-trips. Logs a
+    warning when the `email` custom claim is missing so admins can locate keys that
+    need updating in Descope.
+    """
+    if not _descope_client:
+        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
+    try:
+        jwt_response = _descope_client.exchange_access_key(api_key)
+    except AuthException as e:
+        raise HTTPException(status_code=401, detail=f"Invalid API key: {e.error_message}") from e
+
+    tenants = list(jwt_response.get("tenants", {}).keys())
+    if len(tenants) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Access key must be scoped to exactly one tenant, got {len(tenants)}",
+        )
+
+    access_key_id = jwt_response.get("sub")
+    if not access_key_id:
+        raise HTTPException(status_code=400, detail="Descope JWT missing 'sub' claim")
+
+    raw_email = jwt_response.get("email")
+    email = raw_email.strip().lower() if isinstance(raw_email, str) and raw_email.strip() else None
+    raw_name = jwt_response.get("name")
+    name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
+
+    if email is None:
+        logger.warning(
+            "Access key %s has no 'email' custom claim; run attribution will be empty for runs started with this key",
+            access_key_id,
+        )
+
+    return tenants[0], access_key_id, email, name
+
+
 def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
     """Look up an org by Descope tenant name. Returns None if not found."""
     return session.exec(select(Org).where(Org.name == tenant_name)).first()
@@ -86,21 +142,26 @@ def forward_tracker_api_key(
     return forwarded_headers
 
 
-def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
-    """FastAPI dependency that resolves the current org.
+def get_current_starter(request: Request, session: Session = Depends(get_session)) -> RequestIdentity:
+    """FastAPI dependency that returns the full identity behind the current request.
 
-    Self-hosted (AUTH_REQUIRED=false): returns default org.
-    Hosted (AUTH_REQUIRED=true): validates Descope API key and resolves org.
+    Self-hosted (AUTH_REQUIRED=False): returns RequestIdentity with default org and Nones.
+    Hosted (AUTH_REQUIRED=True): validates Descope API key and resolves org + identity.
     """
     if not AUTH_REQUIRED:
-        return get_default_org(session)
+        return RequestIdentity(org=get_default_org(session), access_key_id=None, email=None, name=None)
 
     api_key = extract_api_key(request)
-    tenant_name = resolve_descope_tenant(api_key)
+    tenant_name, access_key_id, email, name = resolve_descope_identity(api_key)
     org = find_org_by_tenant(tenant_name, session)
     if not org:
         raise HTTPException(
             status_code=404,
             detail=f"Organization '{tenant_name}' not configured — run valk config init",
         )
-    return org
+    return RequestIdentity(org=org, access_key_id=access_key_id, email=email, name=name)
+
+
+def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
+    """FastAPI dependency that resolves the current org. Thin shim over get_current_starter."""
+    return get_current_starter(request, session).org

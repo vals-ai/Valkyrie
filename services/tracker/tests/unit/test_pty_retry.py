@@ -9,6 +9,7 @@ from benchmark_service.schemas import Resources, RetrieveTaskResponse
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
+from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.exceptions import PtyCreationError, SandboxSetupError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
@@ -17,6 +18,7 @@ from tracker.utils import process_task, start_benchmark_request_to_benchmark
 
 class TestPtyRetry:
     _test_org = Org(id=TEST_ORG_ID, name="default")
+    _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     def test_process_task_retry_decorator_uses_observability_retry_callback(self) -> None:
         before_sleep = process_task.retry.before_sleep
@@ -58,7 +60,7 @@ class TestPtyRetry:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         database_session.add(benchmark_row)
         database_session.commit()
@@ -149,7 +151,7 @@ class TestPtyRetry:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         database_session.add(benchmark_row)
         database_session.commit()

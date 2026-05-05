@@ -122,6 +122,17 @@ def init() -> None:
             raise click.ClickException(str(e))
         click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
 
+        if result.get("email_claim_missing"):
+            click.echo(
+                click.style(
+                    "⚠  This access key is missing the 'email' custom claim. "
+                    "Run attribution for runs you start will be empty.\n"
+                    "   Ask your Vals admin to add an 'email' (and optionally 'name') "
+                    "custom claim to this key.",
+                    fg="yellow",
+                )
+            )
+
     # Both modes require AWS credentials
     collected_keys: dict[str, str] = {}
     for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
@@ -974,12 +985,20 @@ run.add_command(retry_command)
     default=Order.DESC.value,
     help="Order by the benchmarks to fetch (e.g., desc, asc)",
 )
+@click.option(
+    "--started-by",
+    type=str,
+    required=False,
+    default=None,
+    help="Comma-separated list of starter emails (e.g., alice@vals.ai,bob@vals.ai). Case-insensitive.",
+)
 def list_benchmarks(
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,
     status: str | None,
     order_by: str = "desc",
+    started_by: str | None = None,
 ):
     """
     List runs based on the request parameters.
@@ -989,12 +1008,22 @@ def list_benchmarks(
     Example:
         valkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
     """
+    started_by_list: list[str] = [s.strip() for s in started_by.split(",") if s.strip()] if started_by else []
+
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            paginate_benchmarks(tracker, agent_name, benchmark_name, model, status, order_by)
+            paginate_benchmarks(
+                tracker,
+                agent_name,
+                benchmark_name,
+                model,
+                status,
+                order_by,
+                started_by=started_by_list or None,
+            )
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 

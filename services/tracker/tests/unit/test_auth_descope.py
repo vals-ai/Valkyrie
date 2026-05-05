@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -5,7 +6,8 @@ import pytest
 from fastapi import HTTPException
 from sqlmodel import Session, SQLModel, create_engine
 
-from tracker.database.models import Org
+from tracker.auth import RequestIdentity, get_current_starter, resolve_descope_identity
+from tracker.database.models import DEFAULT_ORG_NAME, Org
 
 
 @pytest.fixture
@@ -29,6 +31,22 @@ def mock_descope():
     mock_client = MagicMock()
     with patch("tracker.auth._descope_client", mock_client):
         yield mock_client
+
+
+@pytest.fixture
+def propagate_tracker_logs():
+    """Re-enable propagation on the `tracker` logger so pytest's caplog can capture records.
+
+    `configure_logging()` sets `propagate=False` to avoid duplicate handlers in production,
+    which also blocks caplog's root-level handler. Restore the original setting on teardown.
+    """
+    tracker_logger = logging.getLogger("tracker")
+    original = tracker_logger.propagate
+    tracker_logger.propagate = True
+    try:
+        yield
+    finally:
+        tracker_logger.propagate = original
 
 
 def test_valid_api_key_resolves_tenant(mock_descope):
@@ -77,3 +95,131 @@ def test_org_not_in_db_returns_none(mock_descope, session):
 
     org = find_org_by_tenant("nonexistent-org", session)
     assert org is None
+
+
+def test_resolve_descope_identity_full_claims(mock_descope):
+    mock_descope.exchange_access_key.return_value = {
+        "tenants": {"test-tenant": {}},
+        "sub": "K2abc",
+        "email": "Alice@Vals.AI",
+        "name": "Alice Smith",
+    }
+
+    tenant, key_id, email, name = resolve_descope_identity("valid-key")
+    assert tenant == "test-tenant"
+    assert key_id == "K2abc"
+    assert email == "alice@vals.ai"
+    assert name == "Alice Smith"
+
+
+def test_resolve_descope_identity_missing_email_warns(mock_descope, caplog, propagate_tracker_logs):
+    mock_descope.exchange_access_key.return_value = {
+        "tenants": {"test-tenant": {}},
+        "sub": "K2abc",
+    }
+
+    with caplog.at_level(logging.WARNING, logger="tracker.auth"):
+        _tenant, key_id, email, name = resolve_descope_identity("valid-key")
+
+    assert key_id == "K2abc"
+    assert email is None
+    assert name is None
+    assert any("K2abc" in record.message and "email" in record.message for record in caplog.records)
+
+
+def test_resolve_descope_identity_missing_name_silent(mock_descope, caplog, propagate_tracker_logs):
+    mock_descope.exchange_access_key.return_value = {
+        "tenants": {"test-tenant": {}},
+        "sub": "K2abc",
+        "email": "alice@vals.ai",
+    }
+
+    with caplog.at_level(logging.WARNING, logger="tracker.auth"):
+        _tenant, _key_id, _email, name = resolve_descope_identity("valid-key")
+
+    assert name is None
+    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+
+def test_resolve_descope_identity_whitespace_only_email_treated_as_missing(
+    mock_descope, caplog, propagate_tracker_logs
+):
+    """A whitespace-only email claim is treated identically to a missing one (warns + None)."""
+    mock_descope.exchange_access_key.return_value = {
+        "tenants": {"test-tenant": {}},
+        "sub": "K2abc",
+        "email": "   ",
+    }
+
+    with caplog.at_level(logging.WARNING, logger="tracker.auth"):
+        _tenant, _key_id, email, _name = resolve_descope_identity("valid-key")
+
+    assert email is None
+    assert any("email" in record.message for record in caplog.records if record.levelno == logging.WARNING)
+
+
+def test_resolve_descope_identity_multiple_tenants_raises_400(mock_descope):
+    mock_descope.exchange_access_key.return_value = {
+        "tenants": {"a": {}, "b": {}},
+        "sub": "K2abc",
+        "email": "alice@vals.ai",
+    }
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_descope_identity("multi-tenant-key")
+    assert exc_info.value.status_code == 400
+
+
+def test_get_current_starter_self_hosted(monkeypatch, session):
+    session.add(Org(id=uuid4(), name=DEFAULT_ORG_NAME))
+    session.commit()
+
+    monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", False)
+    monkeypatch.setattr("tracker.auth._cached_default_org", None)
+
+    fake_request = MagicMock()
+    identity = get_current_starter(fake_request, session)
+
+    assert isinstance(identity, RequestIdentity)
+    assert identity.org.name == DEFAULT_ORG_NAME
+    assert identity.access_key_id is None
+    assert identity.email is None
+    assert identity.name is None
+
+
+def test_get_current_starter_hosted_full_claims(monkeypatch, mock_descope, session, test_org):
+    monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+    mock_descope.exchange_access_key.return_value = {
+        "tenants": {"test-tenant": {}},
+        "sub": "K2abc",
+        "email": "alice@vals.ai",
+        "name": "Alice",
+    }
+
+    fake_request = MagicMock()
+    fake_request.headers = {"x-api-key": "valid-key"}
+
+    identity = get_current_starter(fake_request, session)
+
+    assert isinstance(identity, RequestIdentity)
+    assert identity.org.id == test_org.id
+    assert identity.access_key_id == "K2abc"
+    assert identity.email == "alice@vals.ai"
+    assert identity.name == "Alice"
+
+
+def test_get_current_starter_hosted_missing_email(monkeypatch, mock_descope, session, test_org):
+    monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+    mock_descope.exchange_access_key.return_value = {
+        "tenants": {"test-tenant": {}},
+        "sub": "K2abc",
+    }
+
+    fake_request = MagicMock()
+    fake_request.headers = {"x-api-key": "valid-key"}
+
+    identity = get_current_starter(fake_request, session)
+
+    assert identity.org.id == test_org.id
+    assert identity.access_key_id == "K2abc"
+    assert identity.email is None
