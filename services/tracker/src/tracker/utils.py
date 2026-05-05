@@ -897,18 +897,20 @@ class BenchmarkContext:
 def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID) -> dict[str, dict[str, Any]]:
     """Select all evaluation results for a given benchmark"""
     statement = (
-        select(EvaluationResult, Task.task_id)
+        select(EvaluationResult, Task.task_id, TaskBreakdown)
         .join(Task, col(EvaluationResult.task) == col(Task.id))
+        .outerjoin(TaskBreakdown, col(EvaluationResult.task_breakdown) == col(TaskBreakdown.id))
         .where(Task.benchmark == benchmark_id)
         .where(Task.org_id == org_id)
     )
     results = session.exec(statement).all()
 
     evaluation_results: dict[str, dict[str, Any]] = {}
-    for evaluation_result, task_id in results:
+    for evaluation_result, task_id, task_breakdown in results:
         result_data = evaluation_result.result
-        # NOTE: We append this because its important for the user to know
         result_data["agent_caused_exit_reason"] = evaluation_result.agent_caused_exit_reason
+        if task_breakdown is not None:
+            result_data["task_breakdown"] = task_breakdown.model_dump()
         evaluation_results[task_id] = result_data
 
     return evaluation_results
