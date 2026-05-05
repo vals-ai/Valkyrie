@@ -13,17 +13,8 @@ from tracker.types import AWSCredentials
 
 
 class TestCreateSandboxCleanupNonFatal:
-    """
-    The `create_sandbox` async context manager must guarantee that a cleanup-time
-    `delete_sandbox` failure never masks the in-flight task exception (regression for
-    VALKYRIE-19, where a broken pipe during refresh_data was replacing the original
-    _check_sandbox_health failure in Sentry). On a successful task, cleanup failures
-    are suppressed and reported separately.
-    """
-
     @pytest.fixture
     def daytona_with_failing_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, Mock]:
-        """Mocks `_create_sandbox` to succeed and `delete_sandbox` to raise."""
         from daytona.common.errors import DaytonaError
 
         mock_sandbox = AsyncMock()
@@ -65,7 +56,6 @@ class TestCreateSandboxCleanupNonFatal:
             ) as _sandbox:
                 raise original_error
 
-        # The original exception must propagate, not the cleanup error.
         assert exc_info.value is original_error
         cleanup_calls.assert_called_once()
         assert len(captured) == 1
@@ -80,7 +70,6 @@ class TestCreateSandboxCleanupNonFatal:
         _, mock_daytona, cleanup_calls = daytona_with_failing_cleanup
         from benchmark_service.schemas import Resources as TrackerResources
 
-        # Successful task: no exception inside the `async with` body.
         async with create_sandbox(
             daytona=mock_daytona,
             sandbox_name="mock-sandbox-1",

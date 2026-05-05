@@ -196,11 +196,7 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        # Cleanup failures must not mask the in-flight task exception (see VALKYRIE-19,
-        # where a broken pipe during refresh_data was replacing the original
-        # _check_sandbox_health error and obscuring the real failure cause). Always
-        # suppress; report separately to Sentry under a scoped tag. set_autostop_interval
-        # inside delete_sandbox bounds the leak window if delete itself fails.
+        # Suppress: cleanup errors raised here would replace the in-flight exception.
         try:
             await delete_sandbox(sandbox, daytona)
         except Exception as cleanup_exc:
