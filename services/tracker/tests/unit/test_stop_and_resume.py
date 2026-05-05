@@ -305,22 +305,20 @@ class TestStopAndResume:
             raise AssertionError("eval resume should not create a sandbox")
             yield
 
-        async def _mock_resume_evaluation(
+        async def _mock_evaluate_response(
             _self: BenchmarkServiceClient,
             task_id: str,
-            eval_resume_state: dict[str, Any],
             *_args: Any,
-            on_eval_resume_state: Any,
+            eval_resume_state: dict[str, Any],
             **_kwargs: Any,
         ) -> dict[str, Any]:
             assert task_id == "task_0"
             assert eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
-            on_eval_resume_state({"artifact_prefix": "s3://bucket/run", "job_id": "job-1"})
             return {"score": 1.0}
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.create_sandbox", _unexpected_create_sandbox)
-        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_response", _mock_evaluate_response, raising=False)
 
         result = await process_task(
             task_row,
@@ -337,7 +335,7 @@ class TestStopAndResume:
         evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
         assert result == {"task_0": {"score": 1.0}}
         assert task_row.status == TaskStatus.FINISHED
-        assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+        assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
         assert evaluation.instance_id is None
 
     async def test_retry_or_resume_forwards_tracker_api_key_to_benchmark_service(
