@@ -36,6 +36,7 @@ from tracker.database.models import (
     FinalEvaluation,
     Org,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.database.scoping import scoped_select
@@ -403,6 +404,10 @@ async def process_task(
             ),
         }
 
+        # We don't want to track the task until the sandbox is actually created.
+        task_breakdown = TaskBreakdown()
+
+        start_sandbox_build_time = time.perf_counter()  # Start sandbox build timer
         async with create_sandbox(
             daytona=benchmark_service.daytona_client,
             sandbox_name=task_row.alias,
@@ -412,6 +417,11 @@ async def process_task(
             resources=task_data.resources,
             creation_semaphore=creation_semaphore,
         ) as sandbox:
+            task_breakdown.sandbox_build_time = (
+                time.perf_counter() - start_sandbox_build_time
+            )  # End sandbox build timer
+            start_sandbox_run_time = time.perf_counter()  # Start sandbox run timer
+
             try:
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
@@ -439,7 +449,7 @@ async def process_task(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                exit_reason = await run_agent(
+                exit_reason, agent_run_time = await run_agent(
                     sandbox,
                     start_benchmark_request.contract,
                     task_data.problem_path,
@@ -452,17 +462,26 @@ async def process_task(
                     agent_timeout=task_data.agent_timeout,
                 )
 
+                task_breakdown.agent_run_time = (
+                    agent_run_time  # Agent run time is captured by the process, excluding time it takes to create pty
+                )
+
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
                     task.status = TaskStatus.EVALUATING
                     task_session.commit()
 
                 # Evaluate the instance
-                # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                evaluation_start_time = time.perf_counter()  # Start evaluation timer
+
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                 evaluation_result = await benchmark_service.evaluate_instance(
                     task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
+
+                task_breakdown.evaluation_time = (
+                    time.perf_counter() - evaluation_start_time
+                )  # Time taken to evaluate the instance
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
@@ -475,6 +494,7 @@ async def process_task(
                     instance_id=sandbox.id,
                     result=evaluation_result,
                     agent_caused_exit_reason=exit_reason,
+                    task_breakdown=task_breakdown,
                 )
 
                 with Session(bind=engine) as task_session:
@@ -491,6 +511,11 @@ async def process_task(
                         return {task_id: None}
 
                 raise e from e
+            finally:
+                task_breakdown.sandbox_run_time = (
+                    time.perf_counter() - start_sandbox_run_time
+                )  # End the sandbox run timer
+
     except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")
         raise

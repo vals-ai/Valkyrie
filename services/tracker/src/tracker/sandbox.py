@@ -561,7 +561,7 @@ async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
-) -> AgentCausedExitReason | None:
+) -> tuple[AgentCausedExitReason | None, float]:
     """
     Execute a command inside a sandbox using a PTY session, reconnecting on errors
 
@@ -571,6 +571,7 @@ async def stream_command_output(
     Return:
         AgentCausedExitReason if the command terminated abnormally but recoverably
         (e.g., timeout or OS kill), None on clean exit.
+        float: The duration of the command that is executed.
     """
     pty_id = uuid.uuid4().hex
     session_id = f"{sandbox.id}:pty-{pty_id}"
@@ -599,11 +600,17 @@ async def stream_command_output(
         # Disable echo to suppress command line noise in the output
         await handle.send_input("stty -echo\n")
 
+        # Ignore pty in time to reduce noise
+        start_time = time.perf_counter()
+
         # Capture exit code in a status file
         await handle.send_input(f"mkdir -p {status_dir} && {command}; echo $? > {status_path}; exit\n")
 
         # Wait for the PTY to finish running the agent, logging data returned
         await _wait_for_pty(sandbox, session_id, handle, on_data, on_output, status_path)
+
+        # Command execution time
+        duration = time.perf_counter() - start_time
 
         # Verify sandbox is still alive before reading the status file
         await _check_sandbox_health(sandbox)
@@ -614,11 +621,11 @@ async def stream_command_output(
         # Timeout error has a special handle since its caused by the benchmark service
         # Exit codes are waterfalled
         if exit_code == _TIMEOUT_EXIT_CODE:
-            return AgentCausedExitReason.TIMEOUT
+            return AgentCausedExitReason.TIMEOUT, duration
 
         # OS killed the process
         if exit_code == _OS_KILL_EXIT_CODE:
-            return AgentCausedExitReason.OS_KILLED
+            return AgentCausedExitReason.OS_KILLED, duration
 
         # Failed error code handling (truncate error shown to the user)
         # Final log is shown to the user, ignore traceback since it provides no insight as to what actually happened in the sandbox
@@ -627,7 +634,7 @@ async def stream_command_output(
             recent = "\n".join(tail[-10:]) if tail else "(no output)"
             raise SandboxError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
 
-        return None
+        return None, duration
 
     finally:
         # Disconnect form PTY, ignoring exception if raised
@@ -678,7 +685,7 @@ async def run_agent(
     s3_bucket: str,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
-) -> AgentCausedExitReason | None:
+) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -712,7 +719,7 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    exit_reason = await stream_command_output(
+    exit_reason, agent_run_time = await stream_command_output(
         sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
     )
 
@@ -732,4 +739,4 @@ async def run_agent(
             await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
 
     # Return why the agent terminated abnormally, or None on clean exit
-    return exit_reason
+    return exit_reason, agent_run_time
