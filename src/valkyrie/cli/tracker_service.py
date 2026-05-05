@@ -11,7 +11,7 @@ import httpx
 import yaml
 from dotenv import load_dotenv
 from httpx._models import Response
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, RetryMode
 from tracker.types import (
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
@@ -425,6 +425,7 @@ class TrackerService:
         self,
         benchmark_id: UUID,
         retry: bool,
+        retry_mode: RetryMode,
         concurrency: int | None,
         task_ids: list[str],
         service_headers: dict[str, str] | None = None,
@@ -443,7 +444,7 @@ class TrackerService:
             RetryOrResumeBenchmarkResponse with status and message
         """
         try:
-            params: dict[str, Any] = {"retry": retry}
+            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
 
             # NOTE: 0 is not acceptable
             if concurrency:
