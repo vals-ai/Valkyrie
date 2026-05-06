@@ -18,6 +18,12 @@ from tracker.utils import process_task, start_benchmark_request_to_benchmark
 class TestPtyRetry:
     _test_org = Org(id=TEST_ORG_ID, name="default")
 
+    def test_process_task_retry_decorator_uses_observability_retry_callback(self) -> None:
+        before_sleep = process_task.retry.before_sleep
+
+        assert before_sleep is not None
+        assert before_sleep.__module__ == "tracker.observability"
+
     @pytest.mark.parametrize(
         "fail_target,error",
         [
