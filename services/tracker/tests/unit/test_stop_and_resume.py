@@ -223,15 +223,22 @@ class TestStopAndResume:
             assert task_row.alias != original_aliases[task_row.task_id]
 
     @pytest.mark.parametrize(
-        ("retry_mode", "expected_status", "expected_state"),
+        ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),
         [
-            (RetryMode.AUTO, TaskStatus.EVALUATING, {"artifact_prefix": "s3://bucket/run"}),
-            (RetryMode.FROM_SCRATCH, TaskStatus.PENDING, None),
+            (
+                RetryMode.AUTO,
+                {"artifact_prefix": "s3://bucket/run"},
+                TaskStatus.EVALUATING,
+                {"artifact_prefix": "s3://bucket/run"},
+            ),
+            (RetryMode.AUTO, None, TaskStatus.PENDING, None),
+            (RetryMode.FROM_SCRATCH, {"artifact_prefix": "s3://bucket/run"}, TaskStatus.PENDING, None),
         ],
     )
     async def test_reset_handles_eval_resume_state(
         self,
         retry_mode: RetryMode,
+        eval_resume_state: dict[str, str] | None,
         expected_status: TaskStatus,
         expected_state: dict[str, str] | None,
         example_benchmark_object: Benchmark,
@@ -246,7 +253,7 @@ class TestStopAndResume:
             task_id="task_0",
             benchmark=benchmark_row.id,
             status=TaskStatus.STOPPED,
-            eval_resume_state={"artifact_prefix": "s3://bucket/run"},
+            eval_resume_state=eval_resume_state,
         )
         database_session.add(benchmark_row)
         database_session.add(task_row)

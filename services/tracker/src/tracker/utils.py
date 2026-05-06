@@ -390,9 +390,7 @@ async def process_task(
         save_eval_resume_state(task_row.id, org, state)
 
     try:
-        if task_row.status == TaskStatus.EVALUATING:
-            if task_row.eval_resume_state is None:
-                raise ValueError("Cannot resume evaluation without eval_resume_state")
+        if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
                 evaluation_result = await benchmark_service.evaluate_response(
