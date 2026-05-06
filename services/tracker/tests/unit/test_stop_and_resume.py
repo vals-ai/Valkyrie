@@ -310,10 +310,12 @@ class TestStopAndResume:
             task_id: str,
             *_args: Any,
             eval_resume_state: dict[str, Any],
+            on_eval_resume_state: Any,
             **_kwargs: Any,
         ) -> dict[str, Any]:
             assert task_id == "task_0"
             assert eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
+            on_eval_resume_state({"artifact_prefix": "s3://bucket/run", "job_id": "job-1"})
             return {"score": 1.0}
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
@@ -335,7 +337,7 @@ class TestStopAndResume:
         evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
         assert result == {"task_0": {"score": 1.0}}
         assert task_row.status == TaskStatus.FINISHED
-        assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
+        assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         assert evaluation.instance_id is None
 
     async def test_process_task_keeps_stopped_eval_resume_task_stopped(
