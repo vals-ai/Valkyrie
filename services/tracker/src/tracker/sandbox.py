@@ -46,6 +46,7 @@ from tracker.exceptions import (
     SSLConnectionError,
 )
 from tracker.logging import get_logger
+from tracker.observability import distribution, gauge, incr, retry_callback
 from tracker.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
@@ -323,9 +324,29 @@ _PTY_HANDSHAKE_CAP: int = 1_000_000
 _PTY_HANDSHAKE_SLOW_LOG_THRESHOLD: float = 2.0
 
 _pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)
+_pty_handshake_in_flight_count: int = 0
 
 # States that determine if the sandbox has been killed
 _DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
+
+
+def _set_pty_span_attributes(sandbox: AsyncSandbox, session_id: str) -> None:
+    span = trace.get_current_span()
+    span.set_attribute("valkyrie.sandbox_id", sandbox.id)
+    span.set_attribute("valkyrie.sandbox_name", sandbox.name)
+    span.set_attribute("valkyrie.pty_session_id", session_id)
+
+
+def _log_pty_event(event: str, sandbox: AsyncSandbox, session_id: str, **extra: Any) -> None:
+    logger.info(
+        f"pty.{event}",
+        extra={
+            "pty_event": event,
+            "session_id": session_id,
+            "sandbox_id": sandbox.id,
+            **extra,
+        },
+    )
 
 
 @asynccontextmanager
@@ -340,7 +361,17 @@ async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator
 
     wait_start = time.monotonic()
     async with _pty_handshake_semaphore:
+        global _pty_handshake_in_flight_count
+
         wait_duration = time.monotonic() - wait_start
+        distribution("valkyrie.pty.handshake.wait_duration", wait_duration, tags={"operation": operation})
+
+        _pty_handshake_in_flight_count += 1
+        gauge(
+            "valkyrie.pty.handshake.in_flight",
+            _pty_handshake_in_flight_count,
+            tags={"operation": operation},
+        )
 
         if gate_full_on_entry:
             logger.info(
@@ -353,6 +384,13 @@ async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator
             yield
         finally:
             handshake_duration = time.monotonic() - handshake_start
+            distribution("valkyrie.pty.handshake.duration", handshake_duration, tags={"operation": operation})
+            _pty_handshake_in_flight_count = max(0, _pty_handshake_in_flight_count - 1)
+            gauge(
+                "valkyrie.pty.handshake.in_flight",
+                _pty_handshake_in_flight_count,
+                tags={"operation": operation},
+            )
             if handshake_duration > _PTY_HANDSHAKE_SLOW_LOG_THRESHOLD:
                 logger.warning(
                     f"PTY handshake slow: {operation} session={session_id} duration={handshake_duration:.2f}s"
@@ -381,9 +419,10 @@ async def _exec(sandbox: AsyncSandbox, command: str) -> ExecuteResponse:
     retry=retry_if_exception_type(DaytonaError),
     stop=stop_after_attempt(_PTY_CREATE_MAX_ATTEMPTS),
     wait=wait_fixed(_PTY_CREATE_DELAY_SECONDS),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
+    before_sleep=retry_callback("valkyrie.pty.create"),
     reraise=True,
 )
+@logfire.instrument("pty.create", extract_args=False)
 async def _create_pty_session(
     sandbox: AsyncSandbox,
     session_id: str,
@@ -402,6 +441,8 @@ async def _create_pty_session(
 
     # Each time we run this we want it to be logged, makes debugging easier
     on_data(f"[Debug]: Creating PTY session with the following id {salted_id}\n".encode())
+    _set_pty_span_attributes(sandbox, salted_id)
+    _log_pty_event("create", sandbox, salted_id)
 
     # Attempt to make the PTY session, timeouts occur under load
     async with _pty_handshake_slot("create", salted_id):
@@ -432,8 +473,10 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
     retry=retry_if_not_exception_type(SandboxError),
     stop=stop_after_attempt(_PTY_RECONNECT_MAX_ATTEMPTS),
     wait=wait_fixed(_PTY_RECONNECT_DELAY_SECONDS),
+    before_sleep=retry_callback("valkyrie.pty.reconnect"),
     reraise=True,
 )
+@logfire.instrument("pty.reconnect", extract_args=False)
 async def _reconnect_and_wait_pty(
     sandbox: AsyncSandbox,
     session_id: str,
@@ -447,12 +490,15 @@ async def _reconnect_and_wait_pty(
     Raises:
         SandboxError: If we cannot successfully check the sandbox health status
     """
+    incr("valkyrie.pty.reconnect.count", tags={"operation": "reconnect"})
+    _set_pty_span_attributes(sandbox, session_id)
 
     # Check if the sandbox has been closed
     await _check_sandbox_health(sandbox)
 
     # Log so the user can see we have seen a disconnection from the websocket (easier to pickup in logs)
     on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
+    _log_pty_event("reconnect_start", sandbox, session_id)
 
     # Reconnect to the PTY. Only the connect handshake is gated; handle.wait() runs ungated below.
     async with _pty_handshake_slot("reconnect", session_id):
@@ -462,6 +508,7 @@ async def _reconnect_and_wait_pty(
     await handle.wait()
 
 
+@logfire.instrument("pty.wait", extract_args=False)
 async def _wait_for_pty(
     sandbox: AsyncSandbox,
     session_id: str,
@@ -478,11 +525,14 @@ async def _wait_for_pty(
     Raises:
         SandboxError: Failed to wait until the command has been completed
     """
+    _set_pty_span_attributes(sandbox, session_id)
     try:
         await handle.wait()
         on_output("[Debug]: PTY has been disconnected, handler has stopped polling\n")
+        _log_pty_event("stream_disconnect", sandbox, session_id)
     except Exception as e:
         on_output(f"[Debug]: PTY stream has been disconnected (Attempting reconnection): {e}\n")
+        _log_pty_event("stream_disconnect_with_error", sandbox, session_id, error_class=type(e).__name__)
         try:
             await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
         except SandboxError:
@@ -498,6 +548,7 @@ async def _wait_for_pty(
             break
 
         on_output("[Debug]: PTY closed but status file not written yet, reconnecting\n")
+        _log_pty_event("reconnect_status_missing", sandbox, session_id)
         try:
             await _reconnect_and_wait_pty(sandbox, session_id, on_data, on_output)
         except SandboxError:
@@ -557,6 +608,7 @@ async def _kill_pty_session(sandbox: AsyncSandbox, session_id: str | None) -> No
         logfire.exception(f"Failed to kill PTY session {session_id} on sandbox {sandbox.id}")
 
 
+@logfire.instrument("pty.stream_command_output", extract_args=False)
 async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
@@ -578,6 +630,7 @@ async def stream_command_output(
     status_path = f"{status_dir}/{pty_id}.status"
     handle: AsyncPtyHandle | None = None
     last_output: deque[str] = deque(maxlen=50)
+    _set_pty_span_attributes(sandbox, session_id)
 
     def on_data(data: bytes) -> None:
         text = data.decode("utf-8", errors="replace")
