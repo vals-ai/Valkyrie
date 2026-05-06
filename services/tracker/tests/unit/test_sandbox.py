@@ -1,19 +1,26 @@
 import asyncio
+from collections import deque
 from collections.abc import Mapping
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from daytona import ExecuteResponse
+from daytona import ExecuteResponse, SandboxState
+from daytona.common.errors import DaytonaError
+from tenacity import stop_after_attempt, wait_none
 
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SSLConnectionError, SandboxError, SandboxSetupError
-from tracker.sandbox import upload_agent_artifacts
+from tracker.sandbox import create_sandbox, upload_agent_artifacts
 from tracker.types import AWSCredentials
 
+_create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _create_pty_session = getattr(sandbox_module, "_create_pty_session")
+_check_sandbox_health = getattr(sandbox_module, "_check_sandbox_health")
+_delete_sandbox = getattr(sandbox_module, "delete_sandbox")
+_exec = getattr(sandbox_module, "_exec")
 _reconnect_and_wait_pty = getattr(sandbox_module, "_reconnect_and_wait_pty")
 _wait_for_pty = getattr(sandbox_module, "_wait_for_pty")
 
@@ -266,6 +273,317 @@ class TestPtyHandshakeSemaphore:
         assert reconnect_before_sleep is not None
         assert create_before_sleep.__module__ == "tracker.observability"
         assert reconnect_before_sleep.__module__ == "tracker.observability"
+
+    def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
+        create_before_sleep = _create_sandbox.retry.before_sleep
+        exec_before_sleep = _exec.retry.before_sleep
+        delete_before_sleep = _delete_sandbox.retry.before_sleep
+
+        assert create_before_sleep is not None
+        assert exec_before_sleep is not None
+        assert delete_before_sleep is not None
+        assert create_before_sleep.__module__ == "tracker.observability"
+        assert exec_before_sleep.__module__ == "tracker.observability"
+        assert delete_before_sleep.__module__ == "tracker.observability"
+
+    def test_metric_image_name_drops_high_cardinality_tag_and_digest(self) -> None:
+        metric_image_name = getattr(sandbox_module, "_metric_image_name")
+
+        assert metric_image_name("ghcr.io/vals/swebench:latest") == "ghcr.io/vals/swebench"
+        assert (
+            metric_image_name("registry.local:5000/vals/swebench@sha256:abcdef") == "registry.local:5000/vals/swebench"
+        )
+        assert metric_image_name("snapshot:base-python") == "snapshot"
+
+    def test_sandbox_span_helpers_set_safe_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        span_attributes: dict[str, str | int] = {}
+
+        class FakeSpan:
+            def set_attribute(self, key: str, value: str | int) -> None:
+                span_attributes[key] = value
+
+        monkeypatch.setattr(sandbox_module.trace, "get_current_span", lambda: FakeSpan())
+
+        create_span_attrs = getattr(sandbox_module, "_set_sandbox_create_span_attributes")
+        sandbox_span_attrs = getattr(sandbox_module, "_set_sandbox_span_attributes")
+        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+
+        create_span_attrs("task-alias", "ghcr.io/vals/swebench:latest", resources)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        sandbox_span_attrs(mock_sandbox)
+
+        mock_sandbox.state = SandboxState.STARTED
+        sandbox_span_attrs(mock_sandbox)
+
+        assert span_attributes == {
+            "valkyrie.sandbox_name": "task-alias",
+            "valkyrie.image": "ghcr.io/vals/swebench:latest",
+            "valkyrie.resources.vcpu": 2,
+            "valkyrie.resources.memory": 4,
+            "valkyrie.resources.disk": 5,
+            "valkyrie.sandbox_id": "sandbox-123",
+            "valkyrie.sandbox_state": str(SandboxState.STARTED),
+        }
+
+    async def test_create_sandbox_sets_create_span_attributes_for_existing_sandbox(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        span_calls: list[tuple[str, str, int]] = []
+
+        def fake_create_span_attrs(sandbox_name: str, image: str, resources: Any) -> None:
+            span_calls.append((sandbox_name, image, resources.vcpu))
+
+        monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.wait_for_sandbox_start = AsyncMock()
+        daytona = AsyncMock()
+        daytona.get = AsyncMock(return_value=mock_sandbox)
+
+        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        sandbox = await _create_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(
+            daytona,
+            "task-alias",
+            "ghcr.io/vals/swebench:latest",
+            resources,
+        )
+
+        assert sandbox is mock_sandbox
+        assert span_calls == [("task-alias", "ghcr.io/vals/swebench:latest", 2)]
+
+    async def test_delete_sandbox_tags_daytona_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        daytona_error = DaytonaError("delete failed")
+        daytona_errors: list[tuple[Exception, str]] = []
+
+        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
+            daytona_errors.append((exc, op))
+
+        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.refresh_data = AsyncMock(side_effect=daytona_error)
+
+        with pytest.raises(DaytonaError):
+            await _delete_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(mock_sandbox, AsyncMock())
+
+        assert daytona_errors == [(daytona_error, "sandbox.delete")]
+
+    async def test_exec_tags_daytona_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        daytona_error = DaytonaError("exec failed")
+        daytona_errors: list[tuple[Exception, str]] = []
+
+        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
+            daytona_errors.append((exc, op))
+
+        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
+        monkeypatch.setattr(sandbox_module, "_set_sandbox_span_attributes", Mock(), raising=False)
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.process.exec = AsyncMock(side_effect=daytona_error)
+
+        with pytest.raises(DaytonaError):
+            await _exec.retry_with(stop=stop_after_attempt(1), wait=wait_none())(mock_sandbox, "echo hi")
+
+        assert daytona_errors == [(daytona_error, "sandbox.exec")]
+
+    async def test_create_sandbox_emits_create_duration_and_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        distributions: list[tuple[str, float, dict[str, str]]] = []
+        context_calls: list[tuple[str, str]] = []
+
+        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+            return mock_sandbox
+
+        def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
+            distributions.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_set_sandbox_context(sandbox: Any, *, image: str | None = None) -> None:
+            context_calls.append((sandbox.id, image or ""))
+
+        monotonic_values: deque[float] = deque([10.0, 13.5])
+
+        def fake_monotonic() -> float:
+            if monotonic_values:
+                return monotonic_values.popleft()
+            return 13.5
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "distribution", fake_distribution, raising=False)
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", fake_set_sandbox_context, raising=False)
+        monkeypatch.setattr(sandbox_module.time, "monotonic", fake_monotonic)
+
+        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        async with create_sandbox(
+            daytona=AsyncMock(),
+            sandbox_name="task-alias",
+            image="ghcr.io/vals/swebench:latest",
+            resources=resources,
+            creation_semaphore=asyncio.Semaphore(1),
+        ) as sandbox:
+            assert sandbox is mock_sandbox
+
+        assert distributions == [
+            (
+                "valkyrie.sandbox.create.duration",
+                3.5,
+                {"image": "ghcr.io/vals/swebench"},
+            )
+        ]
+        assert context_calls == [("sandbox-123", "ghcr.io/vals/swebench:latest")]
+
+    async def test_create_sandbox_emits_error_metric_and_daytona_tag(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        daytona_error = DaytonaError("create failed")
+        increments: list[tuple[str, dict[str, str]]] = []
+        daytona_errors: list[tuple[Exception, str]] = []
+
+        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+            raise daytona_error
+
+        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
+            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
+            daytona_errors.append((exc, op))
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
+        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
+
+        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        with pytest.raises(DaytonaError):
+            async with create_sandbox(
+                daytona=AsyncMock(),
+                sandbox_name="task-alias",
+                image="ghcr.io/vals/swebench:latest",
+                resources=resources,
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                pass
+
+        assert increments == [("valkyrie.sandbox.create.errors", {"error_class": "DaytonaError"})]
+        assert daytona_errors == [(daytona_error, "sandbox.create")]
+
+    async def test_create_sandbox_does_not_tag_non_daytona_create_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        increments: list[tuple[str, dict[str, str]]] = []
+        daytona_errors: list[tuple[Exception, str]] = []
+
+        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+            raise ValueError("bad config")
+
+        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
+            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
+            daytona_errors.append((exc, op))
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
+        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
+
+        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        with pytest.raises(ValueError, match="bad config"):
+            async with create_sandbox(
+                daytona=AsyncMock(),
+                sandbox_name="task-alias",
+                image="ghcr.io/vals/swebench:latest",
+                resources=resources,
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                pass
+
+        assert increments == [("valkyrie.sandbox.create.errors", {"error_class": "ValueError"})]
+        assert daytona_errors == []
+
+    async def test_check_sandbox_health_allows_running_sandboxes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        increments: list[tuple[str, dict[str, str]]] = []
+
+        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
+            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.state = SandboxState.STARTED
+
+        await _check_sandbox_health(mock_sandbox)
+
+        assert increments == []
+
+    async def test_check_sandbox_health_emits_unhealthy_state_telemetry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        tags: dict[str, str] = {}
+        increments: list[tuple[str, dict[str, str]]] = []
+
+        def fake_set_tag(key: str, value: str) -> None:
+            tags[key] = value
+
+        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
+            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        monkeypatch.setattr(sandbox_module, "sentry_sdk", SimpleNamespace(set_tag=fake_set_tag), raising=False)
+        monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.state = SandboxState.DESTROYED
+
+        with pytest.raises(SandboxError, match="crashed during command execution"):
+            await _check_sandbox_health(mock_sandbox)
+
+        assert tags == {"sandbox_state": str(SandboxState.DESTROYED)}
+        assert increments == [
+            (
+                "valkyrie.sandbox.unhealthy",
+                {"state": str(SandboxState.DESTROYED)},
+            )
+        ]
+
+    async def test_check_sandbox_health_tags_daytona_refresh_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        daytona_error = DaytonaError("refresh failed")
+        daytona_errors: list[tuple[Exception, str]] = []
+
+        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
+            daytona_errors.append((exc, op))
+
+        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.refresh_data = AsyncMock(side_effect=daytona_error)
+
+        with pytest.raises(SandboxError, match="Failed to check sandbox"):
+            await _check_sandbox_health(mock_sandbox)
+
+        assert daytona_errors == [(daytona_error, "sandbox.health_check")]
+
+    async def test_check_sandbox_health_does_not_tag_non_daytona_refresh_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        daytona_errors: list[tuple[Exception, str]] = []
+
+        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
+            daytona_errors.append((exc, op))
+
+        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.refresh_data = AsyncMock(side_effect=RuntimeError("refresh failed"))
+
+        with pytest.raises(SandboxError, match="Failed to check sandbox"):
+            await _check_sandbox_health(mock_sandbox)
+
+        assert daytona_errors == []
 
     async def test_semaphore_caps_concurrent_handshakes(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """

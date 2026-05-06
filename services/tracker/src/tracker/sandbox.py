@@ -1,7 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
 import base64
-import logging
 import shlex
 import time
 import uuid
@@ -13,6 +12,7 @@ from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 import logfire
+import sentry_sdk
 from benchmark_service.schemas import Resources as TrackerResources
 from daytona import (
     AsyncDaytona,
@@ -28,7 +28,6 @@ from daytona.common.errors import DaytonaError
 from daytona.handle.async_pty_handle import AsyncPtyHandle
 from opentelemetry import trace
 from tenacity import (
-    before_sleep_log,
     retry,
     retry_if_exception_type,
     retry_if_not_exception_type,
@@ -46,7 +45,7 @@ from tracker.exceptions import (
     SSLConnectionError,
 )
 from tracker.logging import get_logger
-from tracker.observability import distribution, gauge, incr, retry_callback
+from tracker.observability import distribution, gauge, incr, retry_callback, set_sandbox_context, tag_daytona_error
 from tracker.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
@@ -66,7 +65,7 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     retry=retry_if_exception_type(DaytonaError),
     stop=stop_after_attempt(3),
     wait=wait_fixed(2),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
+    before_sleep=retry_callback("valkyrie.sandbox.delete"),
     reraise=True,
 )
 async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
@@ -81,19 +80,56 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     except DaytonaNotFoundError:
         # If we error here that means the sandbox has just been deleted before we could refresh the state
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
-    except DaytonaError:
+    except DaytonaError as e:
+        tag_daytona_error(e, op="sandbox.delete")
         raise
     except Exception as e:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+
+
+def _metric_image_name(image: str) -> str:
+    if image.startswith(SNAPSHOT_IMAGE_PREFIX):
+        return "snapshot"
+
+    without_digest = image.split("@", maxsplit=1)[0]
+    last_slash = without_digest.rfind("/")
+    last_colon = without_digest.rfind(":")
+    if last_colon > last_slash:
+        without_digest = without_digest[:last_colon]
+
+    return without_digest[:80]
+
+
+def _set_sandbox_create_span_attributes(
+    sandbox_name: str,
+    image: str,
+    resources: TrackerResources,
+) -> None:
+    span = trace.get_current_span()
+    span.set_attribute("valkyrie.sandbox_name", sandbox_name)
+    span.set_attribute("valkyrie.image", image)
+    span.set_attribute("valkyrie.resources.vcpu", resources.vcpu)
+    span.set_attribute("valkyrie.resources.memory", resources.memory)
+    span.set_attribute("valkyrie.resources.disk", resources.disk)
+
+
+def _set_sandbox_span_attributes(sandbox: AsyncSandbox) -> None:
+    span = trace.get_current_span()
+    span.set_attribute("valkyrie.sandbox_id", sandbox.id)
+    span.set_attribute("valkyrie.sandbox_name", sandbox.name)
+    state = getattr(sandbox, "state", None)
+    if state is not None:
+        span.set_attribute("valkyrie.sandbox_state", str(state))
 
 
 @retry(
     retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=5, max=30),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
+    before_sleep=retry_callback("valkyrie.sandbox.create"),
     reraise=True,
 )
+@logfire.instrument("sandbox.create", extract_args=False)
 async def _create_sandbox(
     daytona: AsyncDaytona,
     sandbox_name: str,
@@ -108,6 +144,7 @@ async def _create_sandbox(
     This retry only works in the following case:
     - Client times out while sandbox is being created
     """
+    _set_sandbox_create_span_attributes(sandbox_name, image, resources)
 
     # If the container already exists we reuse it
     try:
@@ -187,8 +224,22 @@ async def create_sandbox(
 
     # If we run too many at once it can cause hanging issues
     # NOTE does not block how many context managers we can have open, just how many sandboxes we can create at once
-    async with creation_semaphore:
-        sandbox = await _create_sandbox(daytona, sandbox_name, image, resources, labels, env_vars)
+    try:
+        async with creation_semaphore:
+            start = time.monotonic()
+            sandbox = await _create_sandbox(daytona, sandbox_name, image, resources, labels, env_vars)
+    except Exception as e:
+        incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
+        if isinstance(e, DaytonaError):
+            tag_daytona_error(e, op="sandbox.create")
+        raise
+
+    distribution(
+        "valkyrie.sandbox.create.duration",
+        time.monotonic() - start,
+        tags={"image": _metric_image_name(image)},
+    )
+    set_sandbox_context(sandbox, image=image)
 
     try:
         yield sandbox
@@ -401,9 +452,10 @@ async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator
     retry=retry_if_exception_type(DaytonaError),
     stop=stop_after_attempt(_EXEC_MAX_ATTEMPTS),
     wait=wait_fixed(_EXEC_DELAY_SECONDS),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
+    before_sleep=retry_callback("valkyrie.sandbox.exec"),
     reraise=True,
 )
+@logfire.instrument("sandbox.exec", extract_args=False)
 async def _exec(sandbox: AsyncSandbox, command: str) -> ExecuteResponse:
     """
     Execute a command inside the sandbox with retries for transient network failures.
@@ -411,8 +463,12 @@ async def _exec(sandbox: AsyncSandbox, command: str) -> ExecuteResponse:
     Raises:
         DaytonaError: If all retry attempts are exhausted
     """
-
-    return await sandbox.process.exec(command)
+    _set_sandbox_span_attributes(sandbox)
+    try:
+        return await sandbox.process.exec(command)
+    except DaytonaError as e:
+        tag_daytona_error(e, op="sandbox.exec")
+        raise
 
 
 @retry(
@@ -452,6 +508,7 @@ async def _create_pty_session(
     return handle, salted_id
 
 
+@logfire.instrument("sandbox.health_check", extract_args=False)
 async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
     """
     Checks if we can connect to a sandbox
@@ -461,11 +518,16 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
     """
     try:
         await sandbox.refresh_data()
+        _set_sandbox_span_attributes(sandbox)
         if sandbox.state in _DEAD_SANDBOX_STATES:
+            sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
+            incr("valkyrie.sandbox.unhealthy", tags={"state": str(sandbox.state)})
             raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
     except SandboxError:
         raise
     except Exception as e:
+        if isinstance(e, DaytonaError):
+            tag_daytona_error(e, op="sandbox.health_check")
         raise SandboxError(f"Failed to check sandbox {sandbox.name} health: {e}") from e
 
 
@@ -645,6 +707,7 @@ async def stream_command_output(
                 sandbox, session_id, on_data, envs={"TERM": "dumb", "LANG": "C.UTF-8"}
             )
         except DaytonaError as e:
+            tag_daytona_error(e, op="pty.create")
             raise PtyCreationError(
                 f"Failed to create PTY session after {_PTY_CREATE_MAX_ATTEMPTS} attempts: {e}"
             ) from e
