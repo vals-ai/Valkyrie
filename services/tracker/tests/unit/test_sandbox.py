@@ -21,7 +21,9 @@ _create_pty_session = getattr(sandbox_module, "_create_pty_session")
 _check_sandbox_health = getattr(sandbox_module, "_check_sandbox_health")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
+_install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
 _reconnect_and_wait_pty = getattr(sandbox_module, "_reconnect_and_wait_pty")
+_upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 _wait_for_pty = getattr(sandbox_module, "_wait_for_pty")
 
 
@@ -43,6 +45,7 @@ class TestPtyHandshakeSemaphore:
         gauges: list[tuple[str, float, dict[str, str]]] = []
         log_records: list[dict[str, Any]] = []
         span_calls: list[tuple[str, str, str]] = []
+        pty_context_calls: list[str] = []
 
         def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
             distributions.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
@@ -60,6 +63,12 @@ class TestPtyHandshakeSemaphore:
         monkeypatch.setattr(sandbox_module, "gauge", fake_gauge, raising=False)
         monkeypatch.setattr(sandbox_module.logger, "info", fake_info)
         monkeypatch.setattr(sandbox_module, "_set_pty_span_attributes", fake_set_span_attrs, raising=False)
+        monkeypatch.setattr(
+            sandbox_module,
+            "set_pty_context",
+            lambda *, session_id, attempt=None: pty_context_calls.append(session_id),
+            raising=False,
+        )
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
@@ -89,6 +98,7 @@ class TestPtyHandshakeSemaphore:
             }
         ]
         assert span_calls == [("sandbox-123", "task-alias", "session-1-abcdef12")]
+        assert pty_context_calls == ["session-1-abcdef12"]
 
     async def test_reconnect_emits_counter_metrics_structured_log_and_span_attrs(
         self, monkeypatch: pytest.MonkeyPatch
@@ -101,6 +111,7 @@ class TestPtyHandshakeSemaphore:
         gauges: list[tuple[str, float, dict[str, str]]] = []
         log_records: list[dict[str, Any]] = []
         span_calls: list[tuple[str, str, str]] = []
+        pty_context_calls: list[str] = []
 
         def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
             increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
@@ -122,6 +133,12 @@ class TestPtyHandshakeSemaphore:
         monkeypatch.setattr(sandbox_module, "gauge", fake_gauge, raising=False)
         monkeypatch.setattr(sandbox_module.logger, "info", fake_info)
         monkeypatch.setattr(sandbox_module, "_set_pty_span_attributes", fake_set_span_attrs, raising=False)
+        monkeypatch.setattr(
+            sandbox_module,
+            "set_pty_context",
+            lambda *, session_id, attempt=None: pty_context_calls.append(session_id),
+            raising=False,
+        )
         monkeypatch.setattr(sandbox_module, "_check_sandbox_health", AsyncMock())
 
         mock_handle = AsyncMock()
@@ -151,6 +168,7 @@ class TestPtyHandshakeSemaphore:
             ("valkyrie.pty.handshake.in_flight", 0, {"operation": "reconnect"}),
         ]
         assert span_calls == [("sandbox-123", "task-alias", "session-1")]
+        assert pty_context_calls == ["session-1"]
 
     async def test_handshake_slot_warns_when_handshake_is_slow(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(5))
@@ -278,13 +296,19 @@ class TestPtyHandshakeSemaphore:
         create_before_sleep = _create_sandbox.retry.before_sleep
         exec_before_sleep = _exec.retry.before_sleep
         delete_before_sleep = _delete_sandbox.retry.before_sleep
+        upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
+        deps_before_sleep = _install_agent_dependencies.retry.before_sleep
 
         assert create_before_sleep is not None
         assert exec_before_sleep is not None
         assert delete_before_sleep is not None
+        assert upload_before_sleep is not None
+        assert deps_before_sleep is not None
         assert create_before_sleep.__module__ == "tracker.observability"
         assert exec_before_sleep.__module__ == "tracker.observability"
         assert delete_before_sleep.__module__ == "tracker.observability"
+        assert upload_before_sleep.__module__ == "tracker.observability"
+        assert deps_before_sleep.__module__ == "tracker.observability"
 
     def test_metric_image_name_drops_high_cardinality_tag_and_digest(self) -> None:
         metric_image_name = getattr(sandbox_module, "_metric_image_name")

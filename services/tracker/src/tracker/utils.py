@@ -1,7 +1,6 @@
 import asyncio
 import io
 import json
-import logging
 import time
 import traceback
 from asyncio import Semaphore, gather
@@ -22,7 +21,7 @@ from fastapi import Request
 from opentelemetry import trace
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
-from tenacity import before_sleep_log, retry_if_exception_type, stop_after_attempt, wait_fixed
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from tenacity import retry as tenacity_retry
 
 from tracker._lambda import invoke_lambda
@@ -44,6 +43,7 @@ from tracker.database.session import engine
 from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
+from tracker.observability import retry_callback
 from tracker.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
@@ -321,7 +321,7 @@ def save_eval_resume_state(task_row_id: UUID, org: Org, eval_resume_state: dict[
     retry=retry_if_exception_type(SandboxSetupError),
     stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
     wait=wait_fixed(2),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
+    before_sleep=retry_callback("valkyrie.task"),
     reraise=True,
 )
 async def process_task(

@@ -46,7 +46,15 @@ from tracker.exceptions import (
     SSLConnectionError,
 )
 from tracker.logging import get_logger
-from tracker.observability import distribution, gauge, incr, retry_callback, set_sandbox_context, tag_daytona_error
+from tracker.observability import (
+    distribution,
+    gauge,
+    incr,
+    retry_callback,
+    set_pty_context,
+    set_sandbox_context,
+    tag_daytona_error,
+)
 from tracker.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
@@ -255,6 +263,7 @@ async def create_sandbox(
     retry=retry_if_exception_type(SandboxError) & retry_if_not_exception_type(SandboxSetupError),
     reraise=True,
     stop=stop_after_attempt(3),
+    before_sleep=retry_callback("valkyrie.sandbox.upload"),
 )
 async def upload_agent_artifacts(
     sandbox: AsyncSandbox,
@@ -332,7 +341,12 @@ async def upload_agent_artifacts(
         raise SandboxError(error_message)
 
 
-@retry(retry=retry_if_exception_type(SandboxError), reraise=True, stop=stop_after_attempt(3))
+@retry(
+    retry=retry_if_exception_type(SandboxError),
+    reraise=True,
+    stop=stop_after_attempt(3),
+    before_sleep=retry_callback("valkyrie.sandbox.deps"),
+)
 async def install_agent_dependencies(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
@@ -499,6 +513,7 @@ async def _create_pty_session(
     # Each time we run this we want it to be logged, makes debugging easier
     on_data(f"[Debug]: Creating PTY session with the following id {salted_id}\n".encode())
     _set_pty_span_attributes(sandbox, salted_id)
+    set_pty_context(session_id=salted_id)
     _log_pty_event("create", sandbox, salted_id)
 
     # Attempt to make the PTY session, timeouts occur under load
@@ -555,6 +570,7 @@ async def _reconnect_and_wait_pty(
     """
     incr("valkyrie.pty.reconnect.count", tags={"operation": "reconnect"})
     _set_pty_span_attributes(sandbox, session_id)
+    set_pty_context(session_id=session_id)
 
     # Check if the sandbox has been closed
     await _check_sandbox_health(sandbox)
