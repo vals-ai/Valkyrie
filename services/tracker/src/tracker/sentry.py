@@ -3,11 +3,13 @@
 import logging
 import os
 
+import daytona
 import sentry_sdk
 from sentry_sdk.consts import INSTRUMENTER
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.types import Event, Hint
 
+from tracker.exceptions import PtyCreationError, SSLConnectionError, SandboxError
 from tracker.logging.context import get_context_tags
 
 
@@ -16,6 +18,16 @@ def _before_send(
     hint: Hint,
 ) -> Event | None:
     """Attach structured logging context vars as Sentry tags on every event."""
+    exc_info = hint.get("exc_info")
+    if exc_info:
+        exc = exc_info[1]
+        if isinstance(exc, PtyCreationError):
+            event["fingerprint"] = ["{{ default }}", "PtyCreationError"]
+        elif isinstance(exc, SandboxError) and "PTY reconnect failed" in str(exc):
+            event["fingerprint"] = ["{{ default }}", "pty_reconnect_failed"]
+        elif isinstance(exc, SSLConnectionError):
+            event["fingerprint"] = ["{{ default }}", "SSLConnectionError"]
+
     tags = event.setdefault("tags", {})
     for key, value in get_context_tags().items():
         if value:
@@ -56,6 +68,7 @@ def init_sentry(service_name: str, environment: str) -> None:
                 ),
             ],
         )
+        sentry_sdk.set_tag("daytona.sdk_version", getattr(daytona, "__version__", "unknown"))
     except Exception as e:
         # A malformed SENTRY_DSN or invalid integration shouldn't crash service startup.
         logging.getLogger(__name__).warning("Failed to initialize Sentry: %s: %s", type(e).__name__, e)

@@ -47,7 +47,6 @@ services:
       - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=50
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
@@ -77,7 +76,6 @@ services:
       - DB_PORT=5432
       - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
       - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
-      - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=50
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
