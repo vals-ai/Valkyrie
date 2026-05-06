@@ -11,16 +11,6 @@ The service runs as two separate containers:
 
 Redis and PostgreSQL run as shared infrastructure. The worker can continue processing benchmarks independently of the tracker API, allowing the tracker to be restarted without interrupting running benchmarks.
 
-## Eval-only retry
-
-Some benchmark services can persist enough evaluation state to retry evaluation without rerunning agent generation.
-
-During fresh evaluation, the tracker still creates a Daytona sandbox, runs the agent, and calls `evaluate_instance`. If the benchmark service emits an `eval_resume_state` stream chunk, the tracker stores that opaque object on the task row.
-
-On retry, tasks with stored `eval_resume_state` start in `EVALUATING`. The worker skips sandbox creation and calls `evaluate_response` with the saved state. The benchmark service owns the state shape and decides how to resume. For example, the state can point at uploaded artifacts, an external eval job, or completed partial checks.
-
-Use retry-from-scratch when generation itself must be rerun; eval-only retry is only for reusing existing generated output.
-
 ## Running
 
 ```bash
