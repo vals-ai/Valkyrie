@@ -41,6 +41,37 @@ def test_before_send_fingerprints_ssl_connection_errors() -> None:
     assert event.get("fingerprint") == ["{{ default }}", "SSLConnectionError"]
 
 
+def test_before_send_preserves_non_grouped_errors_and_filters_empty_context_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exc = SandboxError("ordinary sandbox setup failure")
+
+    def fake_context_tags() -> dict[str, str]:
+        return {
+            "benchmark_id": "benchmark-123",
+            "task_id": "",
+        }
+
+    monkeypatch.setattr(sentry_module, "get_context_tags", fake_context_tags)
+
+    event = _before_send()({}, {"exc_info": (type(exc), exc, None)})
+
+    assert event is not None
+    assert "fingerprint" not in event
+    assert event.get("tags") == {"benchmark_id": "benchmark-123"}
+
+
+def test_before_send_handles_events_without_exception_info(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_context_tags() -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(sentry_module, "get_context_tags", fake_context_tags)
+
+    event = _before_send()({"message": "log event"}, {})
+
+    assert event == {"message": "log event", "tags": {}}
+
+
 def test_init_sentry_sets_daytona_sdk_version_tag(monkeypatch: pytest.MonkeyPatch) -> None:
     tags: dict[str, str] = {}
 
@@ -55,3 +86,24 @@ def test_init_sentry_sets_daytona_sdk_version_tag(monkeypatch: pytest.MonkeyPatc
     sentry_module.init_sentry("valkyrie-worker", environment="test")
 
     assert tags["daytona.sdk_version"] == "0.169.0a2"
+
+
+def test_init_sentry_logs_warning_when_initialization_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    warnings: list[tuple[str, tuple[object, ...]]] = []
+    logger = Mock()
+
+    def fake_warning(message: str, *args: object) -> None:
+        warnings.append((message, args))
+
+    logger.warning.side_effect = fake_warning
+
+    monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
+    monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=RuntimeError("bad dsn")))
+    monkeypatch.setattr(sentry_module.logging, "getLogger", Mock(return_value=logger))
+
+    sentry_module.init_sentry("valkyrie-worker", environment="test")
+
+    assert len(warnings) == 1
+    assert warnings[0][0] == "Failed to initialize Sentry: %s: %s"
+    assert warnings[0][1][:1] == ("RuntimeError",)
+    assert str(warnings[0][1][1]) == "bad dsn"

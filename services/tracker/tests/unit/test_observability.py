@@ -89,6 +89,28 @@ def test_metric_failures_are_logged_without_propagating(monkeypatch: pytest.Monk
     assert str(warnings[0][1][2]) == "boom"
 
 
+def test_distribution_and_gauge_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
+    observability = _observability()
+    warnings: list[tuple[str, tuple[object, ...]]] = []
+
+    def fake_warning(message: str, *args: object) -> None:
+        warnings.append((message, args))
+
+    monkeypatch.setattr(observability._sentry_metrics, "distribution", Mock(side_effect=RuntimeError("dist boom")))
+    monkeypatch.setattr(observability._sentry_metrics, "gauge", Mock(side_effect=RuntimeError("gauge boom")))
+    monkeypatch.setattr(observability.logger, "warning", fake_warning)
+
+    observability.distribution("valkyrie.test.duration", 1.5)
+    observability.gauge("valkyrie.test.in_flight", 4)
+
+    assert warnings[0][0] == "metric distribution(%s) failed: %s: %s"
+    assert warnings[0][1][:2] == ("valkyrie.test.duration", "RuntimeError")
+    assert str(warnings[0][1][2]) == "dist boom"
+    assert warnings[1][0] == "metric gauge(%s) failed: %s: %s"
+    assert warnings[1][1][:2] == ("valkyrie.test.in_flight", "RuntimeError")
+    assert str(warnings[1][1][2]) == "gauge boom"
+
+
 def test_set_sandbox_context_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
     observability = _observability()
     tags: dict[str, str] = {}
@@ -121,6 +143,46 @@ def test_set_sandbox_context_sets_tags_and_context(monkeypatch: pytest.MonkeyPat
     }
 
 
+def test_set_sandbox_context_omits_optional_image_and_missing_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    observability = _observability()
+    contexts: dict[str, dict[str, Any]] = {}
+
+    def fake_set_context(key: str, value: dict[str, Any]) -> None:
+        contexts[key] = value
+
+    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock())
+    monkeypatch.setattr(observability.sentry_sdk, "set_context", fake_set_context)
+
+    sandbox = SimpleNamespace(id="sandbox-123", name="bench-task-1")
+
+    observability.set_sandbox_context(sandbox)
+
+    assert contexts == {
+        "sandbox": {
+            "id": "sandbox-123",
+            "name": "bench-task-1",
+            "state": None,
+        }
+    }
+
+
+def test_set_sandbox_context_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
+    observability = _observability()
+    warnings: list[tuple[str, tuple[object, ...]]] = []
+
+    def fake_warning(message: str, *args: object) -> None:
+        warnings.append((message, args))
+
+    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock(side_effect=RuntimeError("scope closed")))
+    monkeypatch.setattr(observability.logger, "warning", fake_warning)
+
+    observability.set_sandbox_context(SimpleNamespace(id="sandbox-123", name="bench-task-1"))
+
+    assert warnings[0][0] == "set_sandbox_context failed: %s: %s"
+    assert warnings[0][1][:1] == ("RuntimeError",)
+    assert str(warnings[0][1][1]) == "scope closed"
+
+
 def test_set_pty_context_sets_session_and_attempt_tags(monkeypatch: pytest.MonkeyPatch) -> None:
     observability = _observability()
     tags: dict[str, str] = {}
@@ -136,6 +198,37 @@ def test_set_pty_context_sets_session_and_attempt_tags(monkeypatch: pytest.Monke
         "pty_session_id": "sandbox:pty-123",
         "pty_attempt": "3",
     }
+
+
+def test_set_pty_context_omits_attempt_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    observability = _observability()
+    tags: dict[str, str] = {}
+
+    def fake_set_tag(key: str, value: str) -> None:
+        tags[key] = value
+
+    monkeypatch.setattr(observability.sentry_sdk, "set_tag", fake_set_tag)
+
+    observability.set_pty_context(session_id="sandbox:pty-123")
+
+    assert tags == {"pty_session_id": "sandbox:pty-123"}
+
+
+def test_set_pty_context_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
+    observability = _observability()
+    warnings: list[tuple[str, tuple[object, ...]]] = []
+
+    def fake_warning(message: str, *args: object) -> None:
+        warnings.append((message, args))
+
+    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock(side_effect=RuntimeError("scope closed")))
+    monkeypatch.setattr(observability.logger, "warning", fake_warning)
+
+    observability.set_pty_context(session_id="sandbox:pty-123")
+
+    assert warnings[0][0] == "set_pty_context failed: %s: %s"
+    assert warnings[0][1][:1] == ("RuntimeError",)
+    assert str(warnings[0][1][1]) == "scope closed"
 
 
 def test_retry_callback_logs_attempt_and_emits_retry_metric(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -215,6 +308,37 @@ def test_tag_daytona_error_sets_tags_and_metric(monkeypatch: pytest.MonkeyPatch)
         "daytona.op": "sandbox.create",
         "error_class": "TimeoutError",
     }
+    assert increments == [
+        (
+            "valkyrie.daytona.error",
+            {
+                "op": "sandbox.create",
+                "error_class": "TimeoutError",
+            },
+        )
+    ]
+
+
+def test_tag_daytona_error_logs_tag_failures_and_still_emits_metric(monkeypatch: pytest.MonkeyPatch) -> None:
+    observability = _observability()
+    warnings: list[tuple[str, tuple[object, ...]]] = []
+    increments: list[tuple[str, dict[str, str]]] = []
+
+    def fake_warning(message: str, *args: object) -> None:
+        warnings.append((message, args))
+
+    def fake_incr(name: str, value: float = 1, tags: dict[str, str] | None = None) -> None:
+        increments.append((name, tags or {}))
+
+    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock(side_effect=RuntimeError("scope closed")))
+    monkeypatch.setattr(observability.logger, "warning", fake_warning)
+    monkeypatch.setattr(observability, "incr", fake_incr)
+
+    observability.tag_daytona_error(TimeoutError("timed out"), op="sandbox.create")
+
+    assert warnings[0][0] == "tag_daytona_error failed: %s: %s"
+    assert warnings[0][1][:1] == ("RuntimeError",)
+    assert str(warnings[0][1][1]) == "scope closed"
     assert increments == [
         (
             "valkyrie.daytona.error",

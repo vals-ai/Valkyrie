@@ -145,6 +145,27 @@ class TestPtyHandshakeSemaphore:
         ]
         assert span_calls == [("sandbox-123", "task-alias", "session-1")]
 
+    async def test_handshake_slot_warns_when_handshake_is_slow(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(5))
+        monkeypatch.setattr(sandbox_module, "_pty_handshake_in_flight_count", 0, raising=False)
+        monkeypatch.setattr(sandbox_module, "_PTY_HANDSHAKE_SLOW_LOG_THRESHOLD", -1)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock(), raising=False)
+        monkeypatch.setattr(sandbox_module, "gauge", Mock(), raising=False)
+
+        warnings: list[str] = []
+
+        def fake_warning(message: str) -> None:
+            warnings.append(message)
+
+        monkeypatch.setattr(sandbox_module.logger, "warning", fake_warning)
+
+        pty_handshake_slot = getattr(sandbox_module, "_pty_handshake_slot")
+        async with pty_handshake_slot("create", "session-1"):
+            pass
+
+        assert warnings
+        assert warnings[0].startswith("PTY handshake slow: create session=session-1 duration=")
+
     def test_set_pty_span_attributes_sets_safe_span_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         span_attributes: dict[str, str] = {}
 
