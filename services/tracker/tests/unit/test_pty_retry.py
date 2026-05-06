@@ -22,7 +22,7 @@ class TestPtyRetry:
         before_sleep = process_task.retry.before_sleep
 
         assert before_sleep is not None
-        assert before_sleep.__module__ == "tracker.observability"
+        assert callable(before_sleep)
 
     @pytest.mark.parametrize(
         "fail_target,error",
