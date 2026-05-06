@@ -312,7 +312,7 @@ class TestStopAndResume:
             raise AssertionError("eval resume should not create a sandbox")
             yield
 
-        async def _mock_evaluate_response(
+        async def _mock_resume_evaluation(
             _self: BenchmarkServiceClient,
             task_id: str,
             *_args: Any,
@@ -327,7 +327,7 @@ class TestStopAndResume:
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.create_sandbox", _unexpected_create_sandbox)
-        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_response", _mock_evaluate_response, raising=False)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
 
         result = await process_task(
             task_row,
@@ -375,7 +375,7 @@ class TestStopAndResume:
         database_session.add(task_row)
         database_session.commit()
 
-        async def _mock_evaluate_response(
+        async def _mock_resume_evaluation(
             _self: BenchmarkServiceClient,
             task_id: str,
             *_args: Any,
@@ -392,7 +392,7 @@ class TestStopAndResume:
             raise RuntimeError("evaluation interrupted")
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_response", _mock_evaluate_response, raising=False)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
 
         result = await process_task(
             task_row,

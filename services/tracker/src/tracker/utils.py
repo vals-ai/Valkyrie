@@ -393,7 +393,7 @@ async def process_task(
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
-                evaluation_result = await benchmark_service.evaluate_response(
+                evaluation_result = await benchmark_service.resume_evaluation(
                     task_row.task_id,
                     eval_resume_state=task_row.eval_resume_state,
                     on_message=log_output,
