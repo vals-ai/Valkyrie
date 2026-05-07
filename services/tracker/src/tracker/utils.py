@@ -536,6 +536,7 @@ async def process_task(
                     s3_bucket=harness_config.s3_bucket,
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
+                    benchmark_id=str(benchmark_id),
                 )
                 logger.info(
                     "agent.run.complete",

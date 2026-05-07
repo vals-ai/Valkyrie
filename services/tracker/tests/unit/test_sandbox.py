@@ -265,6 +265,8 @@ class TestAgentOutputTelemetry:
             "benchmarks/run/task/agent_output.tar.gz",
             harness_config.aws,
             harness_config.s3_bucket,
+            benchmark_id="benchmark-123",
+            task_id="task",
         )
 
         assert uploaded_content == [b"hello"]
@@ -278,6 +280,8 @@ class TestAgentOutputTelemetry:
             "agent_output.upload.complete",
         ]
         assert all(record["sandbox_id"] == "sandbox-123" for record in log_records)
+        assert all(record["benchmark_id"] == "benchmark-123" for record in log_records)
+        assert all(record["task_id"] == "task" for record in log_records)
         assert all(record["s3_key"] == "benchmarks/run/task/agent_output.tar.gz" for record in log_records)
         assert all("duration_ms" in record for record in log_records if record["message"].endswith(".complete"))
         assert next(record for record in log_records if record["message"] == "agent_output.base64.complete")[
@@ -317,8 +321,11 @@ class TestAgentOutputTelemetry:
             _s3_key: str,
             _aws: Any,
             _s3_bucket: str,
+            *,
+            benchmark_id: str | None = None,
+            task_id: str | None = None,
         ) -> None:
-            archive_calls.append(output_path)
+            archive_calls.append(f"{benchmark_id}:{task_id}:{output_path}")
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
         monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
@@ -338,9 +345,10 @@ class TestAgentOutputTelemetry:
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
+            benchmark_id="benchmark-123",
         )
 
-        assert archive_calls == ["/tmp/agent_output"]
+        assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
         assert "Agent command finished; checking final output\n" in outputs
         assert "Final output found; archiving and uploading\n" in outputs
         assert "Final output archive uploaded\n" in outputs

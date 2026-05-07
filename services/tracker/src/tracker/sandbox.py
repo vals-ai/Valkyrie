@@ -786,6 +786,9 @@ def _log_agent_output_event(
     output_path: str,
     s3_key: str,
     start: float | None = None,
+    *,
+    benchmark_id: str | None = None,
+    task_id: str | None = None,
     **extra: Any,
 ) -> None:
     context: dict[str, Any] = {
@@ -795,6 +798,10 @@ def _log_agent_output_event(
         "s3_key": s3_key,
         **extra,
     }
+    if benchmark_id is not None:
+        context["benchmark_id"] = benchmark_id
+    if task_id is not None:
+        context["task_id"] = task_id
     if start is not None:
         context["duration_ms"] = elapsed_ms(start)
 
@@ -803,20 +810,49 @@ def _log_agent_output_event(
 
 @logfire.instrument("agent_output.archive_and_upload", extract_args=("output_path", "agent_output_s3_key"))
 async def archive_and_upload_output(
-    sandbox: AsyncSandbox, output_path: str, agent_output_s3_key: str, aws: AWSCredentials, s3_bucket: str
+    sandbox: AsyncSandbox,
+    output_path: str,
+    agent_output_s3_key: str,
+    aws: AWSCredentials,
+    s3_bucket: str,
+    *,
+    benchmark_id: str | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
 
-    _log_agent_output_event("agent_output.archive.start", sandbox, output_path, agent_output_s3_key)
+    _log_agent_output_event(
+        "agent_output.archive.start",
+        sandbox,
+        output_path,
+        agent_output_s3_key,
+        benchmark_id=benchmark_id,
+        task_id=task_id,
+    )
     archive_start = time.monotonic()
     tar_result = await _exec(sandbox, f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
     if tar_result.exit_code != 0:
         raise SandboxError(f"Failed to create archive from {output_path}")
-    _log_agent_output_event("agent_output.archive.complete", sandbox, output_path, agent_output_s3_key, archive_start)
+    _log_agent_output_event(
+        "agent_output.archive.complete",
+        sandbox,
+        output_path,
+        agent_output_s3_key,
+        archive_start,
+        benchmark_id=benchmark_id,
+        task_id=task_id,
+    )
 
     try:
-        _log_agent_output_event("agent_output.base64.start", sandbox, output_path, agent_output_s3_key)
+        _log_agent_output_event(
+            "agent_output.base64.start",
+            sandbox,
+            output_path,
+            agent_output_s3_key,
+            benchmark_id=benchmark_id,
+            task_id=task_id,
+        )
         base64_start = time.monotonic()
         b64_result = await _exec(sandbox, f"base64 {shlex.quote(archive_path)}")
         if b64_result.exit_code != 0:
@@ -827,6 +863,8 @@ async def archive_and_upload_output(
             output_path,
             agent_output_s3_key,
             base64_start,
+            benchmark_id=benchmark_id,
+            task_id=task_id,
             base64_bytes=len(b64_result.result),
         )
 
@@ -839,6 +877,8 @@ async def archive_and_upload_output(
             output_path,
             agent_output_s3_key,
             decode_start,
+            benchmark_id=benchmark_id,
+            task_id=task_id,
             archive_bytes=archive_bytes,
         )
 
@@ -847,6 +887,8 @@ async def archive_and_upload_output(
             sandbox,
             output_path,
             agent_output_s3_key,
+            benchmark_id=benchmark_id,
+            task_id=task_id,
             archive_bytes=archive_bytes,
         )
         upload_start = time.monotonic()
@@ -857,6 +899,8 @@ async def archive_and_upload_output(
             output_path,
             agent_output_s3_key,
             upload_start,
+            benchmark_id=benchmark_id,
+            task_id=task_id,
             archive_bytes=archive_bytes,
         )
     finally:
@@ -878,6 +922,7 @@ async def run_agent(
     s3_bucket: str,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
+    benchmark_id: str | None = None,
 ) -> AgentCausedExitReason | None:
     """
     Run the agent inside the sandbox for a given task.
@@ -931,7 +976,15 @@ async def run_agent(
         result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
         if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
             log_output("Final output found; archiving and uploading\n")
-            await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
+            await archive_and_upload_output(
+                sandbox,
+                contract.final_output,
+                agent_output_s3_key,
+                aws,
+                s3_bucket,
+                benchmark_id=benchmark_id,
+                task_id=task_id,
+            )
             log_output("Final output archive uploaded\n")
         elif result.exit_code == _SUCCESS_EXIT_CODE:
             log_output("Final output found but no upload destination was configured\n")

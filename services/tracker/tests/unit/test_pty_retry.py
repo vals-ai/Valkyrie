@@ -163,7 +163,10 @@ class TestPtyRetry:
         async def _mock_upload_agent_artifacts(*_args: Any, **_kwargs: Any) -> None:
             return None
 
-        async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> None:
+        run_agent_kwargs: dict[str, Any] = {}
+
+        async def _mock_run_agent(*_args: Any, **kwargs: Any) -> None:
+            run_agent_kwargs.update(kwargs)
             return None
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -212,6 +215,7 @@ class TestPtyRetry:
         assert all(record["benchmark_id"] == str(benchmark_row.id) for record in transition_records)
         assert all("commit_duration_ms" in record for record in transition_records)
         assert all("duration_ms" in record for record in transition_records)
+        assert run_agent_kwargs["benchmark_id"] == str(benchmark_row.id)
 
         event_names = [record["message"] for record in log_records]
         assert "agent.run.complete" in event_names
