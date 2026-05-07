@@ -7,13 +7,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  cli-tool-smoke-test:
-    uses: ./.github/workflows/cli-tool-smoke-test.yaml
-    secrets:
-      GH_PAT: ${{ secrets.GH_PAT }}
-
   deploy:
-    needs: cli-tool-smoke-test
     runs-on: ubuntu-24.04-arm
 
     steps:

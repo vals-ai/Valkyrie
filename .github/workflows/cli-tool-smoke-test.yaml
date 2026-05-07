@@ -2,12 +2,7 @@ name: CLI tool smoke test
 
 on:
   pull_request:
-    branches: [dev]
-
-  workflow_call:
-    secrets:
-      GH_PAT:
-        required: true
+    branches: [dev, prod]
 
 jobs:
   cli-tool-smoke-test:
