@@ -584,6 +584,7 @@ dependencies = [
     { name = "fastapi", extra = ["standard"] },
     { name = "httpx" },
     { name = "jinja2" },
+    { name = "pyyaml" },
     { name = "tenacity" },
     { name = "websockets" },
 ]
