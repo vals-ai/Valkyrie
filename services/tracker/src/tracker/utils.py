@@ -34,6 +34,7 @@ from tracker.database.models import (
     EvaluationResult,
     FinalEvaluation,
     Org,
+    RetryMode,
     Task,
     TaskStatus,
 )
@@ -308,6 +309,13 @@ def buffer_logs(
     loop.run_in_executor(None, cloudwatch_stream, stream_key, message, aws, log_group)
 
 
+def save_eval_resume_state(task_row_id: UUID, org: Org, eval_resume_state: dict[str, Any]) -> None:
+    with Session(bind=engine) as session:
+        task = fetch_task_row(task_row_id, session, org)
+        task.eval_resume_state = eval_resume_state
+        session.commit()
+
+
 @logfire.instrument("process_task")
 @tenacity_retry(
     retry=retry_if_exception_type(SandboxSetupError),
@@ -378,7 +386,43 @@ async def process_task(
 
     flush_task = asyncio.create_task(auto_flush_logs())
 
+    def on_eval_resume_state(state: dict[str, Any]) -> None:
+        save_eval_resume_state(task_row.id, org, state)
+
     try:
+        if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
+            try:
+                log_output("Resuming evaluation from durable benchmark state\n")
+                evaluation_result = await benchmark_service.resume_evaluation(
+                    task_row.task_id,
+                    eval_resume_state=task_row.eval_resume_state,
+                    on_message=log_output,
+                    on_eval_resume_state=on_eval_resume_state,
+                    dataset=start_benchmark_request.dataset,
+                )
+                evaluation_result_row = EvaluationResult(
+                    org_id=org.id,
+                    task=task_row.id,
+                    instance_id=None,
+                    result=evaluation_result,
+                    agent_caused_exit_reason=None,
+                )
+
+                with Session(bind=engine) as task_session:
+                    task = fetch_task_row(task_row.id, task_session, org)
+                    task_session.add(evaluation_result_row)
+                    task.status = TaskStatus.FINISHED
+                    task_session.commit()
+
+                    return {task_id: evaluation_result_row.result}
+            except Exception as e:
+                with Session(bind=engine) as task_session:
+                    task = fetch_task_row(task_row.id, task_session, org)
+                    if task.status == TaskStatus.STOPPED:
+                        return {task_id: None}
+
+                raise e from e
+
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
 
         # Labels that show up in the UI we can use to filter sandboxes
@@ -461,7 +505,11 @@ async def process_task(
                 # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                 evaluation_result = await benchmark_service.evaluate_instance(
-                    task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
+                    task_row.task_id,
+                    sandbox.id,
+                    on_message=log_output,
+                    on_eval_resume_state=on_eval_resume_state,
+                    dataset=start_benchmark_request.dataset,
                 )
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
@@ -524,13 +572,17 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS]))
+        .where(
+            col(Task.status).in_(
+                [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+            )
+        )
     ).one()
 
     # Tasks will be in a non-finished state if something interrupts them while they are running and the state errors here
     if tasks_not_finished:
         raise TrackerServiceError(
-            f"Cannot set final status for run {benchmark_row.id} because tasks are still in the pending or in progress state."
+            f"Cannot set final status for run {benchmark_row.id} because tasks are still runnable."
         )
 
     tasks_stopped: int = session.exec(
@@ -558,7 +610,7 @@ def create_task_rows(
     """
     Create task_rows that do not already exist in the database for the benchmark row.
 
-    NOTE: Only return pending tasks to support resuming the benchmark.
+    NOTE: Only return runnable tasks to support resuming the benchmark.
     """
 
     # Find task ids that already exist so that we can filter them out
@@ -576,12 +628,14 @@ def create_task_rows(
     session.commit()
     session.expire_all()
 
-    # Fetch all task rows with the status of pending
-    pending_task_rows: Sequence[tuple[str, Task]] = session.exec(
-        select(Task.task_id, Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.PENDING)
+    runnable_statuses = [TaskStatus.PENDING, TaskStatus.EVALUATING]
+    task_rows: Sequence[tuple[str, Task]] = session.exec(
+        select(Task.task_id, Task)
+        .where(Task.benchmark == benchmark_row.id)
+        .where(col(Task.status).in_(runnable_statuses))
     ).all()
 
-    return pending_task_rows
+    return task_rows
 
 
 async def fetch_missing_tasks(
@@ -1002,7 +1056,7 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
             update(Task)
             .where(col(Task.benchmark) == benchmark_row.id)
             .where(col(Task.org_id) == org.id)
-            .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING]))
+            .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
             .values(status=TaskStatus.STOPPED)
         )
         session.commit()
@@ -1122,6 +1176,7 @@ async def reset_to_in_progress_status(
     session: Session,
     benchmark_service: BenchmarkServiceClient,
     retry: bool,
+    retry_mode: RetryMode,
     rerun_task_ids: list[str],
     org: Org,
 ) -> list[str]:
@@ -1132,7 +1187,7 @@ async def reset_to_in_progress_status(
     Rerun Task IDs: even if task has been finished we restart it
 
     Benchmark - In progress status
-    Tasks - Pending status
+    Tasks - Pending status, or Evaluating status when retrying durable eval state
 
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
@@ -1150,11 +1205,8 @@ async def reset_to_in_progress_status(
             ),
         ]
 
-        # Check if there are any tasks that have been stopped
-        task_ids = session.exec(select(Task.id, Task.task_id).where(*filter_query)).all()
-
-        # id is task row primary key, task_id is the task id
-        task_mapping: dict[UUID, str] = {id: task_id for id, task_id in task_ids}
+        task_rows = session.exec(select(Task).where(*filter_query)).all()
+        task_mapping: dict[UUID, str] = {task.id: task.task_id for task in task_rows}
 
         # Ensure we are not missing any tasks that were requested (skips if force is empty)
         missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in task_mapping.values()]
@@ -1164,7 +1216,7 @@ async def reset_to_in_progress_status(
             )
 
         # Allow re-running the end of the benchmark without running any tasks
-        if not task_ids:
+        if not task_rows:
             return []
 
         # Verify the task ids are still valid before priming to resume
@@ -1178,17 +1230,18 @@ async def reset_to_in_progress_status(
         session.add(benchmark_row)
         session.commit()
 
-        # Set the task status to pending to flag resuming the tasks
-        session.exec(
-            update(Task)
-            .where(*filter_query)
-            .values(  # Reset to defaults
-                status=TaskStatus.PENDING,
-                started_at=datetime.now(ZoneInfo("UTC")),
-                error_message=None,
-                finished_at=None,
+        for task in task_rows:
+            task.status = (
+                TaskStatus.EVALUATING
+                if retry_mode == RetryMode.AUTO and task.eval_resume_state is not None
+                else TaskStatus.PENDING
             )
-        )
+            task.started_at = datetime.now(ZoneInfo("UTC"))
+            task.error_message = None
+            task.finished_at = None
+            if retry_mode == RetryMode.FROM_SCRATCH:
+                task.eval_resume_state = None
+            session.add(task)
 
         # Delete all evaluation results for the tasks (unlikely they exist)
         session.exec(

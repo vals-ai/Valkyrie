@@ -8,7 +8,7 @@ from uuid import UUID
 
 import click
 import yaml
-from tracker.database.models import BenchmarkStatus
+from tracker.database.models import BenchmarkStatus, RetryMode
 from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
@@ -765,6 +765,12 @@ def stop(run_id: UUID, force: bool):
     default=False,
     help="Refresh the frozen agent copy from the current agents/<name>.zip in S3 before resuming.",
 )
+@click.option(
+    "--from-scratch",
+    is_flag=True,
+    default=False,
+    help="Clear durable eval state and rerun generation.",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -774,6 +780,7 @@ def resume(
     task_ids: str | None,
     task_ids_file: Path | None,
     update_agent: bool,
+    from_scratch: bool,
 ):
     """
     Resume a run by its run id.
@@ -815,6 +822,7 @@ def resume(
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
+                RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,

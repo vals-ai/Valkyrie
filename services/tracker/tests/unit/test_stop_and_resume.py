@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
@@ -11,7 +12,16 @@ from sqlmodel import Session, select
 
 from main import app
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkStatus,
+    EvaluationResult,
+    Org,
+    RetryMode,
+    Task,
+    TaskStatus,
+)
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     TaskMonitor,
@@ -20,6 +30,7 @@ from tracker.utils import (
     force_stop_sandboxes,
     initiate_stop_benchmark,
     process_benchmark,
+    process_task,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
 )
@@ -150,6 +161,7 @@ class TestStopAndResume:
             session=database_session,
             benchmark_service=start_benchmark_request.benchmark_service,
             retry=False,
+            retry_mode=RetryMode.AUTO,
             rerun_task_ids=[],
             org=self._test_org,
         )
@@ -199,6 +211,7 @@ class TestStopAndResume:
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
             retry=True,
+            retry_mode=RetryMode.AUTO,
             rerun_task_ids=[],
             org=self._test_org,
         )
@@ -208,6 +221,195 @@ class TestStopAndResume:
         updated_task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         for task_row in updated_task_rows:
             assert task_row.alias != original_aliases[task_row.task_id]
+
+    @pytest.mark.parametrize(
+        ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),
+        [
+            (
+                RetryMode.AUTO,
+                {"artifact_prefix": "s3://bucket/run"},
+                TaskStatus.EVALUATING,
+                {"artifact_prefix": "s3://bucket/run"},
+            ),
+            (RetryMode.AUTO, None, TaskStatus.PENDING, None),
+            (RetryMode.FROM_SCRATCH, {"artifact_prefix": "s3://bucket/run"}, TaskStatus.PENDING, None),
+        ],
+    )
+    async def test_reset_handles_eval_resume_state(
+        self,
+        retry_mode: RetryMode,
+        eval_resume_state: dict[str, str] | None,
+        expected_status: TaskStatus,
+        expected_state: dict[str, str] | None,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.STOPPED,
+            eval_resume_state=eval_resume_state,
+        )
+        database_session.add(benchmark_row)
+        database_session.add(task_row)
+        database_session.commit()
+
+        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task_row.task_id])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
+            retry=False,
+            retry_mode=retry_mode,
+            rerun_task_ids=[],
+            org=self._test_org,
+        )
+
+        database_session.refresh(task_row)
+        assert verified_task_ids == [task_row.task_id]
+        assert task_row.status == expected_status
+        assert task_row.eval_resume_state == expected_state
+
+    async def test_process_task_resumes_evaluation_without_sandbox(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        request = StartBenchmarkRequest(
+            benchmark_name="vcb",
+            contract=contract,
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_org)
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.EVALUATING,
+            eval_resume_state={"artifact_prefix": "s3://bucket/run"},
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        @asynccontextmanager
+        async def _unexpected_create_sandbox(*_args: Any, **_kwargs: Any):
+            raise AssertionError("eval resume should not create a sandbox")
+            yield
+
+        async def _mock_resume_evaluation(
+            _self: BenchmarkServiceClient,
+            task_id: str,
+            *_args: Any,
+            eval_resume_state: dict[str, Any],
+            on_eval_resume_state: Any,
+            **_kwargs: Any,
+        ) -> dict[str, Any]:
+            assert task_id == "task_0"
+            assert eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
+            on_eval_resume_state({"artifact_prefix": "s3://bucket/run", "job_id": "job-1"})
+            return {"score": 1.0}
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.create_sandbox", _unexpected_create_sandbox)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
+
+        result = await process_task(
+            task_row,
+            request,
+            request.benchmark_service,
+            benchmark_row.id,
+            task_row.task_id,
+            harness_config,
+            self._test_org,
+            creation_semaphore=asyncio.Semaphore(1),
+        )
+
+        database_session.refresh(task_row)
+        evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
+        assert result == {"task_0": {"score": 1.0}}
+        assert task_row.status == TaskStatus.FINISHED
+        assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+        assert evaluation.instance_id is None
+
+    async def test_process_task_keeps_stopped_eval_resume_task_stopped(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        request = StartBenchmarkRequest(
+            benchmark_name="vcb",
+            contract=contract,
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_org)
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.EVALUATING,
+            eval_resume_state={"artifact_prefix": "s3://bucket/run"},
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        async def _mock_resume_evaluation(
+            _self: BenchmarkServiceClient,
+            task_id: str,
+            *_args: Any,
+            eval_resume_state: dict[str, Any],
+            **_kwargs: Any,
+        ) -> dict[str, Any]:
+            assert task_id == "task_0"
+            assert eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
+            task = database_session.get(Task, task_row.id)
+            assert task is not None
+            task.status = TaskStatus.STOPPED
+            database_session.add(task)
+            database_session.commit()
+            raise RuntimeError("evaluation interrupted")
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
+
+        result = await process_task(
+            task_row,
+            request,
+            request.benchmark_service,
+            benchmark_row.id,
+            task_row.task_id,
+            harness_config,
+            self._test_org,
+            creation_semaphore=asyncio.Semaphore(1),
+        )
+
+        database_session.refresh(task_row)
+        evaluations = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).all()
+        assert result == {"task_0": None}
+        assert task_row.status == TaskStatus.STOPPED
+        assert evaluations == []
 
     async def test_retry_or_resume_forwards_tracker_api_key_to_benchmark_service(
         self,

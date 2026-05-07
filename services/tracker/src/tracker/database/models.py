@@ -69,6 +69,11 @@ class AgentCausedExitReason(str, Enum):
     OS_KILLED = "OS_KILLED"
 
 
+class RetryMode(str, Enum):
+    AUTO = "auto"
+    FROM_SCRATCH = "from_scratch"
+
+
 class AgentContractRequest(BaseModel):
     name: str
     model: str | None = None
@@ -300,6 +305,7 @@ class Task(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
+    eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     benchmark: UUID = Field(foreign_key="benchmark.id")
 
     @computed_field
@@ -336,6 +342,6 @@ class EvaluationResult(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
-    instance_id: str = Field(unique=True)
+    instance_id: str | None = Field(default=None, unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))

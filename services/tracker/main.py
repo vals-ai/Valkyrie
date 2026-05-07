@@ -24,7 +24,7 @@ from tracker.auth import (
 )
 from tracker.cloudwatch import get_cloudwatch_url
 from tracker.config import AUTH_REQUIRED, ENVIRONMENT
-from tracker.database.models import Benchmark, BenchmarkStatus, Org
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, RetryMode
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
@@ -417,6 +417,7 @@ async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
     retry: bool = Query(default=False),
+    retry_mode: RetryMode = Query(default=RetryMode.AUTO),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
@@ -469,6 +470,7 @@ async def retry_or_resume_benchmark(
             harness_config.daytona_secret_name, harness_config.aws, service_headers=effective_service_headers
         ),
         retry=retry,
+        retry_mode=retry_mode,
         rerun_task_ids=task_ids,
         org=org,
     )
