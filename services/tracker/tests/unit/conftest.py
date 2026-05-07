@@ -68,8 +68,8 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_copy_agent_to_benchmark(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
-    monkeypatch.setattr("tracker.s3.get_contract_s3_key", _mock_get_contract_s3_key)
+    monkeypatch.setattr("tracker.aws.s3.download_from_s3", _mock_download_from_s3)
+    monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
     monkeypatch.setattr("tracker.utils.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
@@ -124,10 +124,10 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> str:
+    def _mock_create_benchmark_log_group(*_args: Any, **_kwargs: Any) -> str:
         return "mock-group"
 
-    def _mock_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
+    def _mock_write_benchmark_log_event(*_args: Any, **_kwargs: Any) -> None:
         pass
 
     async def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
@@ -136,12 +136,12 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_fetch_aws_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:
         return {"DAYTONA_API_KEY": "test-key", "DAYTONA_API_URL": "http://localhost:8001", "DAYTONA_TARGET": "us"}
 
-    monkeypatch.setattr("tracker.cloudwatch.create_benchmark_group", _mock_create_benchmark_group)
-    monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
-    monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
-    monkeypatch.setattr("tracker.utils.cloudwatch_stream", _mock_cloudwatch_stream)
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.create_benchmark_log_group", _mock_create_benchmark_log_group)
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.write_benchmark_log_event", _mock_write_benchmark_log_event)
+    monkeypatch.setattr("tracker.utils.create_benchmark_log_group", _mock_create_benchmark_log_group)
+    monkeypatch.setattr("tracker.utils.write_benchmark_log_event", _mock_write_benchmark_log_event)
     monkeypatch.setattr("tracker.utils.upload_final_view", _mock_upload_final_view)
-    monkeypatch.setattr("tracker.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
+    monkeypatch.setattr("tracker.aws.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
     monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)
 
 

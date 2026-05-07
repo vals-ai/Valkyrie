@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 from pytest import MonkeyPatch
 
-from tracker import s3 as s3_module
-from tracker.s3 import copy_agent_to_benchmark
+import tracker.aws.s3 as s3_module
+from tracker.aws.s3 import copy_agent_to_benchmark
 from tracker.types import HarnessConfig
 
 

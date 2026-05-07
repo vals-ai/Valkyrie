@@ -15,10 +15,38 @@ def _observability() -> Any:
         raise AssertionError("tracker.observability module should exist") from e
 
 
+def _metrics() -> Any:
+    return importlib.import_module("tracker.observability.metrics")
+
+
+def _sentry() -> Any:
+    return importlib.import_module("tracker.observability.sentry")
+
+
+def _retry() -> Any:
+    return importlib.import_module("tracker.observability.retry")
+
+
+def test_observability_package_reexports_app_api() -> None:
+    observability = _observability()
+
+    for name in (
+        "configure_observability",
+        "distribution",
+        "gauge",
+        "incr",
+        "retry_callback",
+        "set_pty_context",
+        "set_sandbox_context",
+        "tag_daytona_error",
+    ):
+        assert callable(getattr(observability, name))
+
+
 def test_incr_uses_sentry_count_attributes_and_drops_high_cardinality_tags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    observability = _observability()
+    observability = _metrics()
     calls: list[tuple[str, float, dict[str, str]]] = []
 
     def fake_count(name: str, value: float, *, attributes: dict[str, str]) -> None:
@@ -51,7 +79,7 @@ def test_incr_uses_sentry_count_attributes_and_drops_high_cardinality_tags(
 
 
 def test_distribution_and_gauge_use_sentry_attributes(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _metrics()
     distribution_calls: list[tuple[str, float, dict[str, str]]] = []
     gauge_calls: list[tuple[str, float, dict[str, str]]] = []
 
@@ -72,7 +100,7 @@ def test_distribution_and_gauge_use_sentry_attributes(monkeypatch: pytest.Monkey
 
 
 def test_metric_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _metrics()
     warnings: list[tuple[str, tuple[object, ...]]] = []
 
     def fake_warning(message: str, *args: object) -> None:
@@ -90,7 +118,7 @@ def test_metric_failures_are_logged_without_propagating(monkeypatch: pytest.Monk
 
 
 def test_distribution_and_gauge_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _metrics()
     warnings: list[tuple[str, tuple[object, ...]]] = []
 
     def fake_warning(message: str, *args: object) -> None:
@@ -112,7 +140,7 @@ def test_distribution_and_gauge_failures_are_logged_without_propagating(monkeypa
 
 
 def test_set_sandbox_context_sets_tags_and_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _sentry()
     tags: dict[str, str] = {}
     contexts: dict[str, dict[str, Any]] = {}
 
@@ -144,7 +172,7 @@ def test_set_sandbox_context_sets_tags_and_context(monkeypatch: pytest.MonkeyPat
 
 
 def test_set_sandbox_context_omits_optional_image_and_missing_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _sentry()
     contexts: dict[str, dict[str, Any]] = {}
 
     def fake_set_context(key: str, value: dict[str, Any]) -> None:
@@ -167,7 +195,7 @@ def test_set_sandbox_context_omits_optional_image_and_missing_state(monkeypatch:
 
 
 def test_set_sandbox_context_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _sentry()
     warnings: list[tuple[str, tuple[object, ...]]] = []
 
     def fake_warning(message: str, *args: object) -> None:
@@ -184,7 +212,7 @@ def test_set_sandbox_context_failures_are_logged_without_propagating(monkeypatch
 
 
 def test_set_pty_context_sets_session_and_attempt_tags(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _sentry()
     tags: dict[str, str] = {}
 
     def fake_set_tag(key: str, value: str) -> None:
@@ -201,7 +229,7 @@ def test_set_pty_context_sets_session_and_attempt_tags(monkeypatch: pytest.Monke
 
 
 def test_set_pty_context_omits_attempt_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _sentry()
     tags: dict[str, str] = {}
 
     def fake_set_tag(key: str, value: str) -> None:
@@ -215,7 +243,7 @@ def test_set_pty_context_omits_attempt_when_absent(monkeypatch: pytest.MonkeyPat
 
 
 def test_set_pty_context_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _sentry()
     warnings: list[tuple[str, tuple[object, ...]]] = []
 
     def fake_warning(message: str, *args: object) -> None:
@@ -232,7 +260,7 @@ def test_set_pty_context_failures_are_logged_without_propagating(monkeypatch: py
 
 
 def test_retry_callback_logs_attempt_and_emits_retry_metric(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _retry()
     increments: list[tuple[str, dict[str, str]]] = []
     log_records: list[dict[str, Any]] = []
 
@@ -289,7 +317,7 @@ def test_retry_callback_logs_attempt_and_emits_retry_metric(monkeypatch: pytest.
 
 
 def test_tag_daytona_error_sets_tags_and_metric(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _sentry()
     tags: dict[str, str] = {}
     increments: list[tuple[str, dict[str, str]]] = []
 
@@ -320,7 +348,7 @@ def test_tag_daytona_error_sets_tags_and_metric(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_tag_daytona_error_logs_tag_failures_and_still_emits_metric(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _observability()
+    observability = _sentry()
     warnings: list[tuple[str, tuple[object, ...]]] = []
     increments: list[tuple[str, dict[str, str]]] = []
 

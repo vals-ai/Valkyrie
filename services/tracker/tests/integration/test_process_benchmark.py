@@ -9,7 +9,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from tests.conftest import TEST_ORG_ID
-from tracker.cloudwatch import create_benchmark_group
+from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -20,7 +20,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.s3 import copy_agent_to_benchmark
+from tracker.aws.s3 import copy_agent_to_benchmark
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import process_benchmark, process_task, start_benchmark_request_to_benchmark
 
@@ -64,7 +64,7 @@ async def test_process_task(
     database_session.commit()
 
     # process_task expects the log group to already exist
-    create_benchmark_group(
+    create_benchmark_log_group(
         str(benchmark.id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
     )
 
