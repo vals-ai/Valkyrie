@@ -4,6 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 import sentry_sdk
+from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint
 
 import tracker.observability.sentry as sentry_module
@@ -86,6 +87,28 @@ def test_init_sentry_sets_daytona_sdk_version_tag(monkeypatch: pytest.MonkeyPatc
     sentry_module.init_sentry("valkyrie-worker", environment="test")
 
     assert tags["daytona.sdk_version"] == "0.169.0a2"
+
+
+def test_init_sentry_registers_otlp_integration_for_trace_correlation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """OTLPIntegration must be registered so metrics/logs inherit OTel trace context.
+
+    Without this, sentry_sdk.metrics.* calls produce trace_id="00000000-..." because Sentry's
+    scope has no way to look up the active OTel trace_id.
+    """
+    init_mock = Mock()
+    monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
+    monkeypatch.setattr(sentry_sdk, "init", init_mock)
+    monkeypatch.setattr(sentry_sdk, "set_tag", Mock())
+
+    sentry_module.init_sentry("valkyrie-worker", environment="test")
+
+    integrations = init_mock.call_args.kwargs["integrations"]
+    otlp_integrations = [i for i in integrations if isinstance(i, OTLPIntegration)]
+    assert len(otlp_integrations) == 1, "expected exactly one OTLPIntegration in integrations="
+    otlp = otlp_integrations[0]
+    # Both flags must be False; defaults would double-publish spans and replace the global propagator.
+    assert otlp.setup_otlp_traces_exporter is False
+    assert otlp.setup_propagator is False
 
 
 def test_init_sentry_logs_warning_when_initialization_fails(monkeypatch: pytest.MonkeyPatch) -> None:

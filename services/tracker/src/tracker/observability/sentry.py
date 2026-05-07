@@ -8,6 +8,7 @@ import daytona
 import sentry_sdk
 from sentry_sdk.consts import INSTRUMENTER
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint
 
 from tracker.exceptions import PtyCreationError, SSLConnectionError, SandboxError
@@ -69,6 +70,17 @@ def init_sentry(service_name: str, environment: str) -> None:
                     level=None,
                     event_level=None,
                     sentry_logs_level=logging.INFO,
+                ),
+                # Bridges the active OpenTelemetry span context into Sentry's scope so metrics
+                # and logs inherit the OTel trace_id/span_id instead of the all-zeros placeholder.
+                # setup_otlp_traces_exporter=False: SentrySpanProcessor in tracing.py already ships
+                # spans to Sentry; the default would double-publish via an OTLP exporter.
+                # setup_propagator=False: tracing.py installs a CompositePropagator that supports
+                # both W3C traceparent (Daytona / benchmark_service) and sentry-trace; the default
+                # would replace it with SentryOTLPPropagator only.
+                OTLPIntegration(
+                    setup_otlp_traces_exporter=False,
+                    setup_propagator=False,
                 ),
             ],
         )
