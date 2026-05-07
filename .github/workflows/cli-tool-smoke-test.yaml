@@ -1,6 +1,9 @@
 name: CLI tool smoke test
 
 on:
+  pull_request:
+    branches: [dev]
+
   workflow_call:
     secrets:
       GH_PAT:
