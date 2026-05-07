@@ -13,6 +13,7 @@ from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkSt
 from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
     set_benchmark_final_status,
@@ -336,6 +337,38 @@ class TestBenchmarkUtils:
         all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
+
+    def test_commit_task_error_logs_timed_status_transition(
+        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
+    ):
+        log_records: list[dict[str, Any]] = []
+
+        def fake_info(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
+            log_records.append({"message": message, **(extra or {})})
+
+        monkeypatch.setattr("tracker.utils.logger.info", fake_info)
+
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.IN_PROGRESS,
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        commit_task_error(task_row, database_session, "agent failed")
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        transition_record = next(
+            record for record in log_records if record["message"] == "task.status_transition.complete"
+        )
+        assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
+        assert transition_record["to_status"] == TaskStatus.ERROR.value
+        assert transition_record["task_id"] == "task_0"
+        assert transition_record["benchmark_id"] == str(example_benchmark_object.id)
+        assert "commit_duration_ms" in transition_record
 
     async def test_set_benchmark_final_status(self, example_benchmark_object: Benchmark, database_session: Session):
         """
