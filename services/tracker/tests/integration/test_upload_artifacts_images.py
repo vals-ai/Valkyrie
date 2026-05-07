@@ -24,6 +24,16 @@ _IMAGES = [
     ("archlinux:base", "archlinux-pacman"),
 ]
 
+# 9 sandboxes are pulled and warmed up concurrently; slower images (e.g. fedora)
+# occasionally exceed a 60s budget under image-pull contention on CI runners.
+_PER_IMAGE_TIMEOUT_SECONDS = 120
+
+
+def _format_failure(exc: BaseException) -> str:
+    """Render an exception so that bare ``TimeoutError()`` doesn't show up empty."""
+    text = str(exc)
+    return text if text else f"{type(exc).__name__}()"
+
 
 class TestUploadArtifactsAcrossImages:
     async def test_upload_all_images(
@@ -58,7 +68,7 @@ class TestUploadArtifactsAcrossImages:
             sandbox_name = random_task_id()
 
             async with (
-                asyncio.timeout(60),
+                asyncio.timeout(_PER_IMAGE_TIMEOUT_SECONDS),
                 create_sandbox(daytona_client, sandbox_name, image, test_resources, creation_semaphore) as sandbox,
             ):
                 await upload_agent_artifacts(sandbox, contract, benchmark_id, aws_credentials, harness_config.s3_bucket)
@@ -78,7 +88,9 @@ class TestUploadArtifactsAcrossImages:
         )
 
         failures = [
-            f"[{label}] {result}" for (_, label), result in zip(_IMAGES, results) if isinstance(result, BaseException)
+            f"[{label}] {_format_failure(result)}"
+            for (_, label), result in zip(_IMAGES, results)
+            if isinstance(result, BaseException)
         ]
 
         assert not failures, f"Failed on {len(failures)} image(s):\n" + "\n".join(failures)
