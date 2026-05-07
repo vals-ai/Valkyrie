@@ -1,9 +1,9 @@
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
-from tracker.cloudwatch import handle_cloudwatch_error
+from tracker.aws.cloudwatch_logs import handle_cloudwatch_error
 from tracker.exceptions import CloudWatchError, S3Error
-from tracker.s3 import handle_s3_error
+from tracker.aws.s3 import handle_s3_error
 
 
 class TestS3DecoratorClient:

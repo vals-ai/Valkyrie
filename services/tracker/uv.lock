@@ -1867,7 +1867,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.20.0" },
     { name = "psycopg2-binary", specifier = ">=2.9.11" },
     { name = "python-json-logger", specifier = ">=3.2.1" },
-    { name = "sentry-sdk", extras = ["fastapi"], specifier = ">=2.58.0" },
+    { name = "sentry-sdk", extras = ["fastapi"], specifier = "==2.58.0" },
     { name = "sqlmodel", specifier = ">=0.0.38" },
     { name = "taskiq", specifier = ">=0.12.1" },
     { name = "taskiq-redis", specifier = ">=1.2.2" },

@@ -25,7 +25,15 @@ from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from tenacity import retry as tenacity_retry
 
 from tracker._lambda import invoke_lambda
-from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group
+from tracker.aws.cloudwatch_logs import create_benchmark_log_group, write_benchmark_log_event
+from tracker.aws.s3 import (
+    S3_BENCHMARKS_PREFIX,
+    copy_agent_to_benchmark,
+    create_benchmark_url,
+    get_agent_result_s3_key,
+    upload_to_s3,
+)
+from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
 from tracker.config import ENVIRONMENT, broker
 from tracker.database.models import (
     Benchmark,
@@ -44,15 +52,7 @@ from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import retry_callback
-from tracker.s3 import (
-    S3_BENCHMARKS_PREFIX,
-    copy_agent_to_benchmark,
-    create_benchmark_url,
-    get_agent_result_s3_key,
-    upload_to_s3,
-)
 from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
-from tracker.secrets import fetch_aws_secret, resolve_secrets
 from tracker.types import (
     AWSCredentials,
     BenchmarkDetails,
@@ -306,7 +306,7 @@ def buffer_logs(
 
     message = "".join(messages)
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, cloudwatch_stream, stream_key, message, aws, log_group)
+    loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws, log_group)
 
 
 def save_eval_resume_state(task_row_id: UUID, org: Org, eval_resume_state: dict[str, Any]) -> None:
@@ -707,7 +707,7 @@ async def process_benchmark(
         )
 
         # Create benchmark cloudwatch log group
-        create_benchmark_group(
+        create_benchmark_log_group(
             str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
         )
 

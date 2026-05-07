@@ -6,7 +6,7 @@ import pytest
 import sentry_sdk
 from sentry_sdk.types import Event, Hint
 
-import tracker.sentry as sentry_module
+import tracker.observability.sentry as sentry_module
 from tracker.exceptions import PtyCreationError, SSLConnectionError, SandboxError
 
 
@@ -90,16 +90,13 @@ def test_init_sentry_sets_daytona_sdk_version_tag(monkeypatch: pytest.MonkeyPatc
 
 def test_init_sentry_logs_warning_when_initialization_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     warnings: list[tuple[str, tuple[object, ...]]] = []
-    logger = Mock()
 
     def fake_warning(message: str, *args: object) -> None:
         warnings.append((message, args))
 
-    logger.warning.side_effect = fake_warning
-
     monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
     monkeypatch.setattr(sentry_sdk, "init", Mock(side_effect=RuntimeError("bad dsn")))
-    monkeypatch.setattr(sentry_module.logging, "getLogger", Mock(return_value=logger))
+    monkeypatch.setattr(sentry_module.logger, "warning", fake_warning)
 
     sentry_module.init_sentry("valkyrie-worker", environment="test")
 

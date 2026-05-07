@@ -23,7 +23,7 @@ dependencies = [
     "alembic>=1.18.4",
     "descope>=0.9.0",
     "tenacity>=9.0.0",
-    "sentry-sdk[fastapi]>=2.58.0",
+    "sentry-sdk[fastapi]==2.58.0",
     "python-json-logger>=3.2.1",
     "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@9479df5e7399d08016c6f0c1e32bc1eb3cb4229a",
 ]

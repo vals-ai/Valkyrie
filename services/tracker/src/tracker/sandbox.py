@@ -55,7 +55,7 @@ from tracker.observability import (
     set_sandbox_context,
     tag_daytona_error,
 )
-from tracker.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
+from tracker.aws.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
