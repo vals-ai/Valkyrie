@@ -1,9 +1,11 @@
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock
 
 import pytest
 import sentry_sdk
+from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint
 
 import tracker.observability.sentry as sentry_module
@@ -86,6 +88,48 @@ def test_init_sentry_sets_daytona_sdk_version_tag(monkeypatch: pytest.MonkeyPatc
     sentry_module.init_sentry("valkyrie-worker", environment="test")
 
     assert tags["daytona.sdk_version"] == "0.169.0a2"
+
+
+def test_init_sentry_registers_otlp_integration_without_exporter_or_propagator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    init_mock = Mock()
+    monkeypatch.setenv("SENTRY_DSN", "https://public@example.com/1")
+    monkeypatch.setattr(sentry_sdk, "init", init_mock)
+    monkeypatch.setattr(sentry_sdk, "set_tag", Mock())
+
+    sentry_module.init_sentry("valkyrie-worker", environment="test")
+
+    integrations = init_mock.call_args.kwargs["integrations"]
+    otlp_integrations = [i for i in integrations if isinstance(i, OTLPIntegration)]
+    assert len(otlp_integrations) == 1, "expected exactly one OTLPIntegration in integrations="
+    otlp = otlp_integrations[0]
+    # Both flags must be False; defaults would double-publish spans and replace the global propagator.
+    assert otlp.setup_otlp_traces_exporter is False
+    assert otlp.setup_propagator is False
+
+
+def test_before_send_log_prefers_current_otel_trace_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    trace_id = "019e04c6fbf0397e32a8d9601f98e45c"
+    span_id = "a1f0f4fc15b83e82"
+    span_context = SimpleNamespace(
+        trace_id=int(trace_id, 16),
+        span_id=int(span_id, 16),
+        is_valid=True,
+    )
+    span = SimpleNamespace(get_span_context=lambda: span_context)
+    log = {
+        "body": "created sandbox",
+        "trace_id": "00000000-0000-0000-0000-000000000000",
+        "span_id": None,
+    }
+    monkeypatch.setattr(sentry_module, "get_current_span", lambda: span)
+
+    result = sentry_module._before_send_log(log, {})
+
+    assert result is log
+    assert log["trace_id"] == trace_id
+    assert log["span_id"] == span_id
 
 
 def test_init_sentry_logs_warning_when_initialization_fails(monkeypatch: pytest.MonkeyPatch) -> None:

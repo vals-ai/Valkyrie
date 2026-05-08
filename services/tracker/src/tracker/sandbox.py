@@ -48,6 +48,7 @@ from tracker.exceptions import (
 from tracker.logging import get_logger
 from tracker.observability import (
     distribution,
+    elapsed_ms,
     gauge,
     incr,
     retry_callback,
@@ -779,11 +780,23 @@ async def stream_command_output(
             pass
 
 
+@logfire.instrument(
+    "agent_output.archive_and_upload",
+    extract_args=("output_path", "agent_output_s3_key", "benchmark_id", "task_id"),
+)
 async def archive_and_upload_output(
-    sandbox: AsyncSandbox, output_path: str, agent_output_s3_key: str, aws: AWSCredentials, s3_bucket: str
+    sandbox: AsyncSandbox,
+    output_path: str,
+    agent_output_s3_key: str,
+    aws: AWSCredentials,
+    s3_bucket: str,
+    *,
+    benchmark_id: str | None = None,
+    task_id: str | None = None,
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
+    start = time.monotonic()
 
     tar_result = await _exec(sandbox, f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
     if tar_result.exit_code != 0:
@@ -794,9 +807,24 @@ async def archive_and_upload_output(
         if b64_result.exit_code != 0:
             raise SandboxError(f"Failed to read archive from {output_path}")
 
-        await upload_to_s3(base64.b64decode(b64_result.result), agent_output_s3_key, aws, s3_bucket)
+        file_content = base64.b64decode(b64_result.result)
+        await upload_to_s3(file_content, agent_output_s3_key, aws, s3_bucket)
+
+        logger.info(
+            "agent_output.archive_and_upload.complete",
+            extra={
+                "sandbox_id": sandbox.id,
+                "sandbox_name": sandbox.name,
+                "output_path": output_path,
+                "s3_key": agent_output_s3_key,
+                "benchmark_id": benchmark_id,
+                "task_id": task_id,
+                "archive_bytes": len(file_content),
+                "duration_ms": elapsed_ms(start),
+            },
+        )
     finally:
-        # Remove the file if it exists `-f` exits silently if the file does not exist
+        # `-f` exits silently if the file does not exist
         try:
             await _exec(sandbox, f"rm -f {shlex.quote(archive_path)}")
         except Exception:
@@ -814,6 +842,7 @@ async def run_agent(
     s3_bucket: str,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
+    benchmark_id: str | None = None,
 ) -> AgentCausedExitReason | None:
     """
     Run the agent inside the sandbox for a given task.
@@ -865,7 +894,15 @@ async def run_agent(
     if contract.final_output:
         result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
         if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
-            await archive_and_upload_output(sandbox, contract.final_output, agent_output_s3_key, aws, s3_bucket)
+            await archive_and_upload_output(
+                sandbox,
+                contract.final_output,
+                agent_output_s3_key,
+                aws,
+                s3_bucket,
+                benchmark_id=benchmark_id,
+                task_id=task_id,
+            )
 
     # Return why the agent terminated abnormally, or None on clean exit
     return exit_reason

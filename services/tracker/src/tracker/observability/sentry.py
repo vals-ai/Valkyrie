@@ -6,8 +6,10 @@ from typing import Any
 
 import daytona
 import sentry_sdk
+from opentelemetry.trace import get_current_span
 from sentry_sdk.consts import INSTRUMENTER
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint
 
 from tracker.exceptions import PtyCreationError, SSLConnectionError, SandboxError
@@ -39,6 +41,19 @@ def _before_send(
     return event
 
 
+def _apply_current_otel_trace_context(telemetry: dict[str, Any]) -> None:
+    span_context = get_current_span().get_span_context()
+    if not span_context.is_valid:
+        return
+    telemetry["trace_id"] = f"{span_context.trace_id:032x}"
+    telemetry["span_id"] = f"{span_context.span_id:016x}"
+
+
+def _before_send_log(log: dict[str, Any], _hint: Hint) -> dict[str, Any] | None:
+    _apply_current_otel_trace_context(log)
+    return log
+
+
 def init_sentry(service_name: str, environment: str) -> None:
     """Initialize Sentry SDK. No-op if SENTRY_DSN is not set.
 
@@ -62,6 +77,7 @@ def init_sentry(service_name: str, environment: str) -> None:
             enable_logs=True,
             send_default_pii=False,
             before_send=_before_send,
+            before_send_log=_before_send_log,
             integrations=[
                 # level=None / event_level=None: spans carry context and we capture_exception explicitly,
                 # so we only want LoggingIntegration for shipping log records to Sentry Logs.
@@ -69,6 +85,16 @@ def init_sentry(service_name: str, environment: str) -> None:
                     level=None,
                     event_level=None,
                     sentry_logs_level=logging.INFO,
+                ),
+                # Bridges the active OpenTelemetry span context into Sentry's scope.
+                # setup_otlp_traces_exporter=False: SentrySpanProcessor in tracing.py already ships
+                # spans to Sentry; the default would double-publish via an OTLP exporter.
+                # setup_propagator=False: tracing.py installs a CompositePropagator that supports
+                # both W3C traceparent (Daytona / benchmark_service) and sentry-trace; the default
+                # would replace it with SentryOTLPPropagator only.
+                OTLPIntegration(
+                    setup_otlp_traces_exporter=False,
+                    setup_propagator=False,
                 ),
             ],
         )

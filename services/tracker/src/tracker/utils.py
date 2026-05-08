@@ -51,7 +51,7 @@ from tracker.database.session import engine
 from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.observability import retry_callback
+from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     AWSCredentials,
@@ -276,9 +276,7 @@ def fetch_benchmark_row(benchmark_id: UUID, session: Session, org: Org) -> Bench
 
 
 def handle_early_exit(task_row: Task, task_session: Session) -> None:
-    task_row.status = TaskStatus.STOPPED
-    task_session.add(task_row)
-    task_session.commit()
+    _commit_task_status(task_row, task_session, TaskStatus.STOPPED)
 
 
 def fetch_task_row(task_id: UUID, session: Session, org: Org) -> Task:
@@ -314,6 +312,39 @@ def save_eval_resume_state(task_row_id: UUID, org: Org, eval_resume_state: dict[
         task = fetch_task_row(task_row_id, session, org)
         task.eval_resume_state = eval_resume_state
         session.commit()
+
+
+def _commit_task_status(
+    task: Task,
+    session: Session,
+    to_status: TaskStatus,
+    *,
+    error_message: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    from_status = task.status
+    span_attributes = {
+        "benchmark_id": str(task.benchmark),
+        "task_id": task.task_id,
+        "from_status": from_status.value,
+        "to_status": to_status.value,
+        **(extra or {}),
+    }
+    if error_message is not None:
+        span_attributes["has_error_message"] = True
+
+    with logfire.span("task.status_transition", **span_attributes):
+        task.status = to_status
+        if error_message is not None:
+            task.error_message = error_message
+        session.add(task)
+        session.commit()
+
+
+def commit_task_status_transition(task_row_id: UUID, session: Session, org: Org, to_status: TaskStatus) -> None:
+    fetch_start = time.monotonic()
+    task = fetch_task_row(task_row_id, session, org)
+    _commit_task_status(task, session, to_status, extra={"fetch_duration_ms": elapsed_ms(fetch_start)})
 
 
 @logfire.instrument("process_task")
@@ -409,10 +440,8 @@ async def process_task(
                 )
 
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
                     task_session.add(evaluation_result_row)
-                    task.status = TaskStatus.FINISHED
-                    task_session.commit()
+                    commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
 
                     return {task_id: evaluation_result_row.result}
             except Exception as e:
@@ -433,9 +462,7 @@ async def process_task(
         }
 
         with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            task.status = TaskStatus.BUILDING
-            task_session.commit()
+            commit_task_status_transition(task_row.id, task_session, org, TaskStatus.BUILDING)
 
         env_vars = {
             **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
@@ -458,9 +485,7 @@ async def process_task(
         ) as sandbox:
             try:
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    task.status = TaskStatus.IN_PROGRESS
-                    task_session.commit()
+                    commit_task_status_transition(task_row.id, task_session, org, TaskStatus.IN_PROGRESS)
 
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(
@@ -494,15 +519,33 @@ async def process_task(
                     s3_bucket=harness_config.s3_bucket,
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
+                    benchmark_id=str(benchmark_id),
+                )
+                logger.info(
+                    "agent.run.complete",
+                    extra={
+                        "benchmark_id": str(benchmark_id),
+                        "task_id": task_row.task_id,
+                        "sandbox_id": sandbox.id,
+                        "sandbox_name": sandbox.name,
+                        "exit_reason": exit_reason.value if exit_reason else None,
+                    },
                 )
 
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    task.status = TaskStatus.EVALUATING
-                    task_session.commit()
+                    commit_task_status_transition(task_row.id, task_session, org, TaskStatus.EVALUATING)
 
                 # Evaluate the instance
                 # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                logger.info(
+                    "task.evaluation.start",
+                    extra={
+                        "benchmark_id": str(benchmark_id),
+                        "task_id": task_row.task_id,
+                        "sandbox_id": sandbox.id,
+                        "sandbox_name": sandbox.name,
+                    },
+                )
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                 evaluation_result = await benchmark_service.evaluate_instance(
                     task_row.task_id,
@@ -526,10 +569,8 @@ async def process_task(
                 )
 
                 with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
                     task_session.add(evaluation_result_row)
-                    task.status = TaskStatus.FINISHED
-                    task_session.commit()
+                    commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
 
                     return {task_id: evaluation_result_row.result}
             except Exception as e:
@@ -983,10 +1024,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
 
 
 def commit_task_error(task_row: Task, session: Session, error_message: str) -> None:
-    task_row.status = TaskStatus.ERROR
-    task_row.error_message = error_message
-    session.add(task_row)
-    session.commit()
+    _commit_task_status(task_row, session, TaskStatus.ERROR, error_message=error_message)
 
 
 async def stream_benchmark_results(
