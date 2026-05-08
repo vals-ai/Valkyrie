@@ -6,6 +6,7 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from daytona.common.errors import DaytonaRateLimitError
 
 
 def _observability() -> Any:
@@ -344,6 +345,30 @@ def test_tag_daytona_error_sets_tags_and_metric(monkeypatch: pytest.MonkeyPatch)
                 "error_class": "TimeoutError",
             },
         )
+    ]
+
+
+def test_tag_daytona_error_emits_rate_limit_metric(monkeypatch: pytest.MonkeyPatch) -> None:
+    observability = _sentry()
+    increments: list[tuple[str, dict[str, str]]] = []
+
+    def fake_incr(name: str, value: float = 1, tags: dict[str, str] | None = None) -> None:
+        increments.append((name, tags or {}))
+
+    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock())
+    monkeypatch.setattr(observability, "incr", fake_incr)
+
+    observability.tag_daytona_error(DaytonaRateLimitError("rate limited"), op="sandbox.create")
+
+    assert increments == [
+        (
+            "valkyrie.daytona.error",
+            {
+                "op": "sandbox.create",
+                "error_class": "DaytonaRateLimitError",
+            },
+        ),
+        ("valkyrie.daytona.rate_limit.error", {"op": "sandbox.create"}),
     ]
 
 
