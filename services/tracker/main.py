@@ -4,6 +4,7 @@ import traceback
 from typing import Annotated
 from uuid import UUID
 
+import httpx
 import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError
@@ -21,15 +22,8 @@ from tracker.auth import (
     get_current_org,
     resolve_descope_tenant,
 )
-from tracker.cloudwatch import get_cloudwatch_url
-from tracker.config import AUTH_REQUIRED, ENVIRONMENT
-from tracker.database.models import Benchmark, BenchmarkStatus, Org
-from tracker.database.scoping import assert_org, get_scoped
-from tracker.database.session import check_database_connection, get_session
-from tracker.exceptions import TrackerServiceError
-from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
-from tracker.middleware import RequestContextMiddleware
-from tracker.s3 import (
+from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
     create_benchmark_url,
@@ -39,8 +33,14 @@ from tracker.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
-from tracker.sentry import init_sentry
-from tracker.tracing import configure_tracing
+from tracker.config import AUTH_REQUIRED, ENVIRONMENT
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, RetryMode
+from tracker.database.scoping import assert_org, get_scoped
+from tracker.database.session import check_database_connection, get_session
+from tracker.exceptions import TrackerServiceError
+from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
+from tracker.middleware import RequestContextMiddleware
+from tracker.observability import configure_observability
 from tracker.types import (
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
@@ -73,8 +73,7 @@ from tracker.utils import (
 )
 
 configure_logging()
-init_sentry("valkyrie-tracker", environment=ENVIRONMENT)
-configure_tracing("valkyrie-tracker", environment=ENVIRONMENT)
+configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
 
@@ -205,7 +204,13 @@ async def start_benchmark(
     benchmark_service = request.benchmark_service
 
     # Check service is running
-    _ = await benchmark_service.health_check()
+    try:
+        _ = await benchmark_service.health_check()
+    except httpx.ConnectError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
+        ) from exc
 
     # Create benchmark row inside of database to mark start of the benchmark
     benchmark_row = start_benchmark_request_to_benchmark(request, org)
@@ -253,7 +258,7 @@ async def start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=get_cloudwatch_url(
+        cloudwatch_url=get_benchmark_log_url(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group
         ),
         s3_bucket_url=create_benchmark_url(
@@ -410,6 +415,7 @@ async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
     retry: bool = Query(default=False),
+    retry_mode: RetryMode = Query(default=RetryMode.AUTO),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
@@ -462,6 +468,7 @@ async def retry_or_resume_benchmark(
             harness_config.daytona_secret_name, harness_config.aws, service_headers=effective_service_headers
         ),
         retry=retry,
+        retry_mode=retry_mode,
         rerun_task_ids=task_ids,
         org=org,
     )

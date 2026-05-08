@@ -13,7 +13,7 @@ from daytona import AsyncDaytona, AsyncSandbox, DaytonaError
 from tests.utils import random_task_id
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
-from tracker.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
+from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.sandbox import (
     create_sandbox,
     install_agent_dependencies,

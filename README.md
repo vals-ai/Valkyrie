@@ -1,6 +1,8 @@
 # Valkyrie
 
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vals-ai/Valkyrie)
+[![Test Coverage](https://codecov.io/gh/vals-ai/Valkyrie/branch/dev/graph/badge.svg)](https://codecov.io/gh/vals-ai/Valkyrie)
+[![Doc Coverage](https://vals-ai.github.io/Valkyrie/docstr-coverage.svg)](https://github.com/vals-ai/Valkyrie)
 
 Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
@@ -286,6 +288,7 @@ valkyrie run resume <id> --concurrency 20
 | `--task-ids` | Comma-separated task IDs to resume/retry |
 | `--task-ids-file` | Path to a text file with one task ID per line |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
+| `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
 
 ### List runs
 

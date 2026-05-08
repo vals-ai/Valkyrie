@@ -18,6 +18,14 @@ class InvalidSandboxConfigurationError(SandboxError):
     """Exception raised for deterministic sandbox configuration errors."""
 
 
+class AgentRunFailedError(SandboxError):
+    """Exception raised when the agent process inside a healthy sandbox exits non-zero.
+
+    Distinct from infra-caused SandboxErrors. Sandbox retries don't help these
+    and they should be triaged separately from real infra failures.
+    """
+
+
 class SandboxSetupError(SandboxError):
     """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
 
