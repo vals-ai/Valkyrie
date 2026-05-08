@@ -121,7 +121,7 @@ class TestPtyRetry:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.FINISHED
 
-    async def test_process_task_logs_timed_status_transitions(
+    async def test_process_task_spans_timed_status_transitions(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -173,6 +173,7 @@ class TestPtyRetry:
             return {"status": "success", "score": 1.0}
 
         log_records: list[dict[str, Any]] = []
+        span_records: list[dict[str, Any]] = []
 
         def _mock_logger_info(
             message: str,
@@ -182,11 +183,28 @@ class TestPtyRetry:
         ) -> None:
             log_records.append({"message": message, **(extra or {})})
 
+        class _MockSpan:
+            def __init__(self, record: dict[str, Any]) -> None:
+                self._record = record
+
+            def __enter__(self) -> "_MockSpan":
+                self._record["entered"] = True
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                self._record["exited"] = True
+
+        def _mock_span(message: str, **attributes: Any) -> _MockSpan:
+            record = {"message": message, **attributes}
+            span_records.append(record)
+            return _MockSpan(record)
+
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _mock_upload_agent_artifacts)
         monkeypatch.setattr("tracker.utils.run_agent", _mock_run_agent)
         monkeypatch.setattr("tracker.utils.logger.info", _mock_logger_info)
+        monkeypatch.setattr("tracker.utils.logfire.span", _mock_span)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
@@ -201,9 +219,7 @@ class TestPtyRetry:
             creation_semaphore=Semaphore(1),
         )
 
-        transition_records = [
-            record for record in log_records if record["message"] == "task.status_transition.complete"
-        ]
+        transition_records = [record for record in span_records if record["message"] == "task.status_transition"]
 
         assert [(record["from_status"], record["to_status"]) for record in transition_records] == [
             (TaskStatus.PENDING.value, TaskStatus.BUILDING.value),
@@ -213,8 +229,8 @@ class TestPtyRetry:
         ]
         assert all(record["task_id"] == "task_0" for record in transition_records)
         assert all(record["benchmark_id"] == str(benchmark_row.id) for record in transition_records)
-        assert all("commit_duration_ms" in record for record in transition_records)
-        assert all("duration_ms" in record for record in transition_records)
+        assert all(record["entered"] and record["exited"] for record in transition_records)
+        assert not any(record["message"].startswith("task.status_transition") for record in log_records)
         assert run_agent_kwargs["benchmark_id"] == str(benchmark_row.id)
 
         event_names = [record["message"] for record in log_records]

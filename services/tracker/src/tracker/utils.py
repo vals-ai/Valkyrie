@@ -51,7 +51,7 @@ from tracker.database.session import engine
 from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.observability import distribution, elapsed_ms, retry_callback
+from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     AWSCredentials,
@@ -322,40 +322,23 @@ def _commit_task_status(
     error_message: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    transition_start = time.monotonic()
     from_status = task.status
-    log_context = {
+    span_attributes = {
         "benchmark_id": str(task.benchmark),
         "task_id": task.task_id,
         "from_status": from_status.value,
         "to_status": to_status.value,
         **(extra or {}),
     }
-
-    logger.info("task.status_transition.start", extra=log_context)
-
-    commit_start = time.monotonic()
-    task.status = to_status
     if error_message is not None:
-        task.error_message = error_message
-    session.add(task)
-    session.commit()
-    commit_duration_ms = elapsed_ms(commit_start)
-    transition_seconds = time.monotonic() - transition_start
+        span_attributes["has_error_message"] = True
 
-    logger.info(
-        "task.status_transition.complete",
-        extra={
-            **log_context,
-            "commit_duration_ms": commit_duration_ms,
-            "duration_ms": round(transition_seconds * 1000, 2),
-        },
-    )
-    distribution(
-        "valkyrie.task.status_transition.duration",
-        transition_seconds,
-        tags={"from_status": from_status.value, "to_status": to_status.value},
-    )
+    with logfire.span("task.status_transition", **span_attributes):
+        task.status = to_status
+        if error_message is not None:
+            task.error_message = error_message
+        session.add(task)
+        session.commit()
 
 
 def commit_task_status_transition(task_row_id: UUID, session: Session, org: Org, to_status: TaskStatus) -> None:

@@ -780,35 +780,10 @@ async def stream_command_output(
             pass
 
 
-def _log_agent_output_event(
-    event: str,
-    sandbox: AsyncSandbox,
-    output_path: str,
-    s3_key: str,
-    start: float | None = None,
-    *,
-    benchmark_id: str | None = None,
-    task_id: str | None = None,
-    **extra: Any,
-) -> None:
-    context: dict[str, Any] = {
-        "sandbox_id": sandbox.id,
-        "sandbox_name": sandbox.name,
-        "output_path": output_path,
-        "s3_key": s3_key,
-        **extra,
-    }
-    if benchmark_id is not None:
-        context["benchmark_id"] = benchmark_id
-    if task_id is not None:
-        context["task_id"] = task_id
-    if start is not None:
-        context["duration_ms"] = elapsed_ms(start)
-
-    logger.info(event, extra=context)
-
-
-@logfire.instrument("agent_output.archive_and_upload", extract_args=("output_path", "agent_output_s3_key"))
+@logfire.instrument(
+    "agent_output.archive_and_upload",
+    extract_args=("output_path", "agent_output_s3_key", "benchmark_id", "task_id"),
+)
 async def archive_and_upload_output(
     sandbox: AsyncSandbox,
     output_path: str,
@@ -821,90 +796,35 @@ async def archive_and_upload_output(
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
+    start = time.monotonic()
 
-    _log_agent_output_event(
-        "agent_output.archive.start",
-        sandbox,
-        output_path,
-        agent_output_s3_key,
-        benchmark_id=benchmark_id,
-        task_id=task_id,
-    )
-    archive_start = time.monotonic()
     tar_result = await _exec(sandbox, f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
     if tar_result.exit_code != 0:
         raise SandboxError(f"Failed to create archive from {output_path}")
-    _log_agent_output_event(
-        "agent_output.archive.complete",
-        sandbox,
-        output_path,
-        agent_output_s3_key,
-        archive_start,
-        benchmark_id=benchmark_id,
-        task_id=task_id,
-    )
 
     try:
-        _log_agent_output_event(
-            "agent_output.base64.start",
-            sandbox,
-            output_path,
-            agent_output_s3_key,
-            benchmark_id=benchmark_id,
-            task_id=task_id,
-        )
-        base64_start = time.monotonic()
         b64_result = await _exec(sandbox, f"base64 {shlex.quote(archive_path)}")
         if b64_result.exit_code != 0:
             raise SandboxError(f"Failed to read archive from {output_path}")
-        _log_agent_output_event(
-            "agent_output.base64.complete",
-            sandbox,
-            output_path,
-            agent_output_s3_key,
-            base64_start,
-            benchmark_id=benchmark_id,
-            task_id=task_id,
-            base64_bytes=len(b64_result.result),
-        )
 
-        decode_start = time.monotonic()
         file_content = base64.b64decode(b64_result.result)
-        archive_bytes = len(file_content)
-        _log_agent_output_event(
-            "agent_output.decode.complete",
-            sandbox,
-            output_path,
-            agent_output_s3_key,
-            decode_start,
-            benchmark_id=benchmark_id,
-            task_id=task_id,
-            archive_bytes=archive_bytes,
-        )
-
-        _log_agent_output_event(
-            "agent_output.upload.start",
-            sandbox,
-            output_path,
-            agent_output_s3_key,
-            benchmark_id=benchmark_id,
-            task_id=task_id,
-            archive_bytes=archive_bytes,
-        )
-        upload_start = time.monotonic()
         await upload_to_s3(file_content, agent_output_s3_key, aws, s3_bucket)
-        _log_agent_output_event(
-            "agent_output.upload.complete",
-            sandbox,
-            output_path,
-            agent_output_s3_key,
-            upload_start,
-            benchmark_id=benchmark_id,
-            task_id=task_id,
-            archive_bytes=archive_bytes,
+
+        logger.info(
+            "agent_output.archive_and_upload.complete",
+            extra={
+                "sandbox_id": sandbox.id,
+                "sandbox_name": sandbox.name,
+                "output_path": output_path,
+                "s3_key": agent_output_s3_key,
+                "benchmark_id": benchmark_id,
+                "task_id": task_id,
+                "archive_bytes": len(file_content),
+                "duration_ms": elapsed_ms(start),
+            },
         )
     finally:
-        # Remove the file if it exists `-f` exits silently if the file does not exist
+        # `-f` exits silently if the file does not exist
         try:
             await _exec(sandbox, f"rm -f {shlex.quote(archive_path)}")
         except Exception:
@@ -960,7 +880,6 @@ async def run_agent(
     exit_reason = await stream_command_output(
         sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
     )
-    log_output("Agent command finished; checking final output\n")
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         log_output(
@@ -975,7 +894,6 @@ async def run_agent(
     if contract.final_output:
         result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
         if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
-            log_output("Final output found; archiving and uploading\n")
             await archive_and_upload_output(
                 sandbox,
                 contract.final_output,
@@ -985,12 +903,6 @@ async def run_agent(
                 benchmark_id=benchmark_id,
                 task_id=task_id,
             )
-            log_output("Final output archive uploaded\n")
-        elif result.exit_code == _SUCCESS_EXIT_CODE:
-            log_output("Final output found but no upload destination was configured\n")
-        else:
-            log_output("Final output not found; skipping upload\n")
 
     # Return why the agent terminated abnormally, or None on clean exit
-    log_output("Agent run complete; proceeding to evaluation\n")
     return exit_reason
