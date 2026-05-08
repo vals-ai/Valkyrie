@@ -42,9 +42,11 @@ def daytona_rate_limit_throttler(exc: DaytonaRateLimitError) -> str:
     for key in exc.headers:
         lower_key = str(key).lower()
         if lower_key.startswith(_RETRY_AFTER_PREFIX):
-            return lower_key.removeprefix(_RETRY_AFTER_PREFIX)
+            throttler = lower_key.removeprefix(_RETRY_AFTER_PREFIX)
+            return throttler if throttler in _KNOWN_THROTTLERS else "unknown"
         if lower_key.startswith(_RATE_LIMIT_REMAINING_PREFIX):
-            return lower_key.removeprefix(_RATE_LIMIT_REMAINING_PREFIX)
+            throttler = lower_key.removeprefix(_RATE_LIMIT_REMAINING_PREFIX)
+            return throttler if throttler in _KNOWN_THROTTLERS else "unknown"
 
     return "unknown"
 

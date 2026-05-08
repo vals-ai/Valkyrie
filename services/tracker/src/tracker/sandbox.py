@@ -33,6 +33,7 @@ from tenacity import (
     retry_if_not_exception_type,
     stop_after_attempt,
     wait_exponential,
+    wait_fixed,
 )
 
 from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
@@ -377,6 +378,7 @@ _EXEC_MAX_ATTEMPTS: int = 3
 
 # Reconnect to the PTY retry settings
 _PTY_RECONNECT_MAX_ATTEMPTS: int = 10
+_PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 
 # Creating a PTY retry settings
 _PTY_CREATE_MAX_ATTEMPTS: int = 5
@@ -548,7 +550,7 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
 @retry(
     retry=retry_if_not_exception_type(SandboxError),
     stop=stop_after_attempt(_PTY_RECONNECT_MAX_ATTEMPTS),
-    wait=wait_daytona_rate_limit(wait_exponential(multiplier=1, min=1, max=30)),
+    wait=wait_daytona_rate_limit(wait_fixed(_PTY_RECONNECT_DELAY_SECONDS)),
     before_sleep=daytona_retry_callback("valkyrie.pty.reconnect", op="pty.reconnect"),
     reraise=True,
 )

@@ -10,6 +10,8 @@ from daytona import ExecuteResponse, SandboxState
 from daytona.common.errors import DaytonaError, DaytonaRateLimitError
 from tenacity import stop_after_attempt, wait_none
 
+import tracker.daytona_retry as daytona_retry_module
+import tracker.observability.retry as retry_module
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import AgentRunFailedError, SSLConnectionError, SandboxError, SandboxSetupError
@@ -59,16 +61,14 @@ class TestPtyHandshakeSemaphore:
         def fake_set_span_attrs(sandbox: Any, session_id: str) -> None:
             span_calls.append((sandbox.id, sandbox.name, session_id))
 
+        def fake_set_pty_context(*, session_id: str, attempt: int | None = None) -> None:
+            pty_context_calls.append(session_id)
+
         monkeypatch.setattr(sandbox_module, "distribution", fake_distribution, raising=False)
         monkeypatch.setattr(sandbox_module, "gauge", fake_gauge, raising=False)
         monkeypatch.setattr(sandbox_module.logger, "info", fake_info)
         monkeypatch.setattr(sandbox_module, "_set_pty_span_attributes", fake_set_span_attrs, raising=False)
-        monkeypatch.setattr(
-            sandbox_module,
-            "set_pty_context",
-            lambda *, session_id, attempt=None: pty_context_calls.append(session_id),
-            raising=False,
-        )
+        monkeypatch.setattr(sandbox_module, "set_pty_context", fake_set_pty_context, raising=False)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
@@ -128,17 +128,15 @@ class TestPtyHandshakeSemaphore:
         def fake_set_span_attrs(sandbox: Any, session_id: str) -> None:
             span_calls.append((sandbox.id, sandbox.name, session_id))
 
+        def fake_set_pty_context(*, session_id: str, attempt: int | None = None) -> None:
+            pty_context_calls.append(session_id)
+
         monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
         monkeypatch.setattr(sandbox_module, "distribution", fake_distribution, raising=False)
         monkeypatch.setattr(sandbox_module, "gauge", fake_gauge, raising=False)
         monkeypatch.setattr(sandbox_module.logger, "info", fake_info)
         monkeypatch.setattr(sandbox_module, "_set_pty_span_attributes", fake_set_span_attrs, raising=False)
-        monkeypatch.setattr(
-            sandbox_module,
-            "set_pty_context",
-            lambda *, session_id, attempt=None: pty_context_calls.append(session_id),
-            raising=False,
-        )
+        monkeypatch.setattr(sandbox_module, "set_pty_context", fake_set_pty_context, raising=False)
         monkeypatch.setattr(sandbox_module, "_check_sandbox_health", AsyncMock())
 
         mock_handle = AsyncMock()
@@ -427,6 +425,14 @@ class TestAgentOutputTelemetry:
 
         assert wait_strategy(retry_state) == 2
 
+    def test_pty_reconnect_retry_wait_keeps_fast_fallback_for_non_rate_limit_errors(self) -> None:
+        retry_state = Mock()
+        retry_state.attempt_number = 4
+        retry_state.outcome.exception.return_value = DaytonaError("transient")
+        wait_strategy = _reconnect_and_wait_pty.retry.wait
+
+        assert wait_strategy(retry_state) == 1
+
     def test_daytona_retry_callback_emits_rate_limit_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []
         distributions: list[tuple[str, float, dict[str, str]]] = []
@@ -443,9 +449,6 @@ class TestAgentOutputTelemetry:
 
         monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
         monkeypatch.setattr(sandbox_module, "distribution", fake_distribution, raising=False)
-
-        import tracker.daytona_retry as daytona_retry_module
-        import tracker.observability.retry as retry_module
 
         monkeypatch.setattr(retry_module, "incr", fake_incr, raising=False)
         monkeypatch.setattr(daytona_retry_module, "incr", fake_incr, raising=False)
@@ -495,9 +498,6 @@ class TestAgentOutputTelemetry:
         ]
 
     def test_daytona_retry_callback_uses_remaining_header_for_throttler(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import tracker.daytona_retry as daytona_retry_module
-        import tracker.observability.retry as retry_module
-
         increments: list[tuple[str, dict[str, str]]] = []
         distributions: list[tuple[str, float, dict[str, str]]] = []
         log_records: list[dict[str, Any]] = []
@@ -539,10 +539,60 @@ class TestAgentOutputTelemetry:
         assert log_records[0]["rate_limit_remaining"] == "0"
         assert log_records[0]["rate_limit_reset"] is None
 
-    def test_daytona_retry_callback_ignores_non_rate_limit_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import tracker.daytona_retry as daytona_retry_module
-        import tracker.observability.retry as retry_module
+    def test_daytona_retry_callback_collapses_unknown_throttler_metric_tag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        increments: list[tuple[str, dict[str, str]]] = []
+        distributions: list[tuple[str, float, dict[str, str]]] = []
+        log_records: list[dict[str, Any]] = []
 
+        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
+            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
+            distributions.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_warning(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
+            log_records.append({"message": message, **(extra or {})})
+
+        monkeypatch.setattr(retry_module, "incr", fake_incr, raising=False)
+        monkeypatch.setattr(daytona_retry_module, "incr", fake_incr, raising=False)
+        monkeypatch.setattr(daytona_retry_module, "distribution", fake_distribution, raising=False)
+        monkeypatch.setattr(daytona_retry_module.logger, "warning", fake_warning)
+
+        state = Mock()
+        state.attempt_number = 1
+        state.fn.__name__ = "_create_sandbox"
+        state.idle_for = 0
+        state.next_action.sleep = 4
+        state.outcome.exception.return_value = DaytonaRateLimitError(
+            "rate limited",
+            headers={
+                "Retry-After-Custom-Tenant": "4",
+                "X-RateLimit-Remaining-Custom-Tenant": "0",
+            },
+        )
+        callback = _create_sandbox.retry.before_sleep
+        assert callback is not None
+
+        callback(state)
+
+        assert (
+            "valkyrie.daytona.rate_limit.retry",
+            {"op": "sandbox.create", "throttler": "unknown"},
+        ) in increments
+        assert distributions == [
+            (
+                "valkyrie.daytona.rate_limit.retry_sleep",
+                4,
+                {"op": "sandbox.create", "throttler": "unknown"},
+            )
+        ]
+        assert log_records[0]["throttler"] == "unknown"
+        assert log_records[0]["rate_limit_remaining"] is None
+        assert log_records[0]["rate_limit_reset"] is None
+
+    def test_daytona_retry_callback_ignores_non_rate_limit_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []
         distributions: list[tuple[str, float, dict[str, str]]] = []
         log_records: list[dict[str, Any]] = []
@@ -1034,7 +1084,11 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr(sandbox_module, "_read_exit_code", _mock_read_exit_code)
 
         tagged: dict[str, str] = {}
-        monkeypatch.setattr(sandbox_module.sentry_sdk, "set_tag", lambda key, value: tagged.__setitem__(key, value))
+
+        def fake_set_tag(key: str, value: object) -> None:
+            tagged[key] = str(value)
+
+        monkeypatch.setattr(sandbox_module.sentry_sdk, "set_tag", fake_set_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
             await stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
