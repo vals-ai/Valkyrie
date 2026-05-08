@@ -378,6 +378,26 @@ class TestAgentOutputTelemetry:
 
         assert wait_strategy(retry_state) == 7
 
+    def test_daytona_retry_wait_uses_generic_retry_after_header(self) -> None:
+        retry_state = Mock()
+        retry_state.outcome.exception.return_value = DaytonaRateLimitError(
+            "rate limited",
+            headers={"Retry-After": "3"},
+        )
+        wait_strategy = _create_sandbox.retry.wait
+
+        assert wait_strategy(retry_state) == 3
+
+    def test_daytona_retry_wait_uses_unknown_throttler_retry_after_header(self) -> None:
+        retry_state = Mock()
+        retry_state.outcome.exception.return_value = DaytonaRateLimitError(
+            "rate limited",
+            headers={"Retry-After-Custom-Throttler": "4"},
+        )
+        wait_strategy = _create_sandbox.retry.wait
+
+        assert wait_strategy(retry_state) == 4
+
     def test_daytona_retry_wait_caps_retry_after_header(self) -> None:
         retry_state = Mock()
         retry_state.outcome.exception.return_value = DaytonaRateLimitError(
@@ -388,10 +408,21 @@ class TestAgentOutputTelemetry:
 
         assert wait_strategy(retry_state) == 60
 
-    def test_daytona_retry_wait_falls_back_to_exponential_backoff(self) -> None:
+    @pytest.mark.parametrize(
+        "headers", [{}, {"Retry-After-Sandbox-Create": "bad"}, {"Retry-After-Sandbox-Create": "-1"}]
+    )
+    def test_daytona_retry_wait_falls_back_to_exponential_backoff(self, headers: dict[str, str]) -> None:
         retry_state = Mock()
         retry_state.attempt_number = 2
-        retry_state.outcome.exception.return_value = DaytonaRateLimitError("rate limited")
+        retry_state.outcome.exception.return_value = DaytonaRateLimitError("rate limited", headers=headers)
+        wait_strategy = _create_sandbox.retry.wait
+
+        assert wait_strategy(retry_state) == 2
+
+    def test_daytona_retry_wait_falls_back_for_non_rate_limit_errors(self) -> None:
+        retry_state = Mock()
+        retry_state.attempt_number = 2
+        retry_state.outcome.exception.return_value = DaytonaError("transient")
         wait_strategy = _create_sandbox.retry.wait
 
         assert wait_strategy(retry_state) == 2
@@ -462,6 +493,88 @@ class TestAgentOutputTelemetry:
                 "rate_limit_reset": "7",
             }
         ]
+
+    def test_daytona_retry_callback_uses_remaining_header_for_throttler(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import tracker.daytona_retry as daytona_retry_module
+        import tracker.observability.retry as retry_module
+
+        increments: list[tuple[str, dict[str, str]]] = []
+        distributions: list[tuple[str, float, dict[str, str]]] = []
+        log_records: list[dict[str, Any]] = []
+
+        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
+            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
+            distributions.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_warning(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
+            log_records.append({"message": message, **(extra or {})})
+
+        monkeypatch.setattr(retry_module, "incr", fake_incr, raising=False)
+        monkeypatch.setattr(daytona_retry_module, "incr", fake_incr, raising=False)
+        monkeypatch.setattr(daytona_retry_module, "distribution", fake_distribution, raising=False)
+        monkeypatch.setattr(daytona_retry_module.logger, "warning", fake_warning)
+
+        state = Mock()
+        state.attempt_number = 1
+        state.fn.__name__ = "_create_sandbox"
+        state.idle_for = 0
+        state.next_action = None
+        state.outcome.exception.return_value = DaytonaRateLimitError(
+            "rate limited",
+            headers={"X-RateLimit-Remaining-Sandbox-Lifecycle": "0"},
+        )
+        callback = _create_sandbox.retry.before_sleep
+        assert callback is not None
+
+        callback(state)
+
+        assert (
+            "valkyrie.daytona.rate_limit.retry",
+            {"op": "sandbox.create", "throttler": "sandbox-lifecycle"},
+        ) in increments
+        assert distributions == []
+        assert log_records[0]["throttler"] == "sandbox-lifecycle"
+        assert log_records[0]["rate_limit_remaining"] == "0"
+        assert log_records[0]["rate_limit_reset"] is None
+
+    def test_daytona_retry_callback_ignores_non_rate_limit_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import tracker.daytona_retry as daytona_retry_module
+        import tracker.observability.retry as retry_module
+
+        increments: list[tuple[str, dict[str, str]]] = []
+        distributions: list[tuple[str, float, dict[str, str]]] = []
+        log_records: list[dict[str, Any]] = []
+
+        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
+            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
+            distributions.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
+
+        def fake_warning(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
+            log_records.append({"message": message, **(extra or {})})
+
+        monkeypatch.setattr(retry_module, "incr", fake_incr, raising=False)
+        monkeypatch.setattr(daytona_retry_module, "incr", fake_incr, raising=False)
+        monkeypatch.setattr(daytona_retry_module, "distribution", fake_distribution, raising=False)
+        monkeypatch.setattr(daytona_retry_module.logger, "warning", fake_warning)
+
+        state = Mock()
+        state.attempt_number = 1
+        state.fn.__name__ = "_create_sandbox"
+        state.idle_for = 0
+        state.next_action.sleep = 2
+        state.outcome.exception.return_value = DaytonaError("transient")
+        callback = _create_sandbox.retry.before_sleep
+        assert callback is not None
+
+        callback(state)
+
+        assert increments == [("valkyrie.sandbox.create.retry", {"error_class": "DaytonaError"})]
+        assert distributions == []
+        assert log_records == []
 
     def test_metric_image_name_drops_high_cardinality_tag_and_digest(self) -> None:
         metric_image_name = getattr(sandbox_module, "_metric_image_name")
