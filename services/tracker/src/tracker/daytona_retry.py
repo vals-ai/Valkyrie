@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 
 from daytona.common.errors import DaytonaRateLimitError
 from tenacity import RetryCallState
+from tenacity import wait_exponential
 from tenacity.wait import wait_base
 
 from tracker.observability.metrics import distribution, incr
@@ -82,18 +83,20 @@ def daytona_retry_after_seconds(exc: DaytonaRateLimitError) -> float | None:
 
 
 class wait_daytona_rate_limit(wait_base):
-    def __init__(self, fallback: wait_base, *, max_retry_after_seconds: float = 60.0) -> None:
-        self._fallback = fallback
-        self._max_retry_after_seconds = max_retry_after_seconds
+    def __init__(self, *, non_rate_limit_wait: wait_base, rate_limit_wait: wait_base | None = None) -> None:
+        self._non_rate_limit_wait = non_rate_limit_wait
+        self._rate_limit_wait = rate_limit_wait or wait_exponential(multiplier=1, min=1, max=30)
 
     def __call__(self, retry_state: RetryCallState) -> float:
         exc = retry_state.outcome.exception() if retry_state.outcome else None
         if isinstance(exc, DaytonaRateLimitError):
             seconds = daytona_retry_after_seconds(exc)
             if seconds is not None:
-                return min(seconds, self._max_retry_after_seconds)
+                return seconds
 
-        return self._fallback(retry_state)
+            return self._rate_limit_wait(retry_state)
+
+        return self._non_rate_limit_wait(retry_state)
 
 
 def daytona_retry_callback(

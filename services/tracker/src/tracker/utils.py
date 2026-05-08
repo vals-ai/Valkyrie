@@ -16,12 +16,12 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
-from daytona.common.errors import DaytonaError, DaytonaNotFoundError
+from daytona.common.errors import DaytonaNotFoundError, DaytonaRateLimitError
 from fastapi import Request
 from opentelemetry import trace
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
-from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential, wait_fixed
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from tenacity import retry as tenacity_retry
 
 from tracker._lambda import invoke_lambda
@@ -1126,9 +1126,9 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
 
 
 @tenacity_retry(
-    retry=retry_if_exception_type(DaytonaError),
+    retry=retry_if_exception_type(DaytonaRateLimitError),
     stop=stop_after_attempt(5),
-    wait=wait_daytona_rate_limit(wait_exponential(multiplier=1, min=1, max=30)),
+    wait=wait_daytona_rate_limit(non_rate_limit_wait=wait_fixed(0)),
     before_sleep=daytona_retry_callback("valkyrie.sandbox.list", op="sandbox.list"),
     reraise=True,
 )

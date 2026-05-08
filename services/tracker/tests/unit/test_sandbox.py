@@ -12,6 +12,7 @@ from tenacity import stop_after_attempt, wait_none
 
 import tracker.daytona_retry as daytona_retry_module
 import tracker.observability.retry as retry_module
+import tracker.utils as utils_module
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import AgentRunFailedError, SSLConnectionError, SandboxError, SandboxSetupError
@@ -27,6 +28,7 @@ _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencie
 _reconnect_and_wait_pty = getattr(sandbox_module, "_reconnect_and_wait_pty")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 _wait_for_pty = getattr(sandbox_module, "_wait_for_pty")
+_fetch_sandboxes = getattr(utils_module, "fetch_sandboxes")
 
 
 def _ignore_pty_data(_data: bytes) -> None:
@@ -396,7 +398,7 @@ class TestAgentOutputTelemetry:
 
         assert wait_strategy(retry_state) == 4
 
-    def test_daytona_retry_wait_caps_retry_after_header(self) -> None:
+    def test_daytona_retry_wait_uses_retry_after_header_without_local_cap(self) -> None:
         retry_state = Mock()
         retry_state.outcome.exception.return_value = DaytonaRateLimitError(
             "rate limited",
@@ -404,7 +406,7 @@ class TestAgentOutputTelemetry:
         )
         wait_strategy = _create_sandbox.retry.wait
 
-        assert wait_strategy(retry_state) == 60
+        assert wait_strategy(retry_state) == 120
 
     @pytest.mark.parametrize(
         "headers", [{}, {"Retry-After-Sandbox-Create": "bad"}, {"Retry-After-Sandbox-Create": "-1"}]
@@ -417,21 +419,44 @@ class TestAgentOutputTelemetry:
 
         assert wait_strategy(retry_state) == 2
 
-    def test_daytona_retry_wait_falls_back_for_non_rate_limit_errors(self) -> None:
-        retry_state = Mock()
-        retry_state.attempt_number = 2
-        retry_state.outcome.exception.return_value = DaytonaError("transient")
-        wait_strategy = _create_sandbox.retry.wait
+    def test_daytona_retry_wait_preserves_non_rate_limit_waits(self) -> None:
+        cases = [
+            (_delete_sandbox.retry.wait, 4, 2),
+            (_create_sandbox.retry.wait, 2, 5),
+            (_exec.retry.wait, 4, 2),
+            (_create_pty_session.retry.wait, 4, 2),
+            (_reconnect_and_wait_pty.retry.wait, 4, 1),
+        ]
 
-        assert wait_strategy(retry_state) == 2
+        for wait_strategy, attempt_number, expected_seconds in cases:
+            retry_state = Mock()
+            retry_state.attempt_number = attempt_number
+            retry_state.outcome.exception.return_value = DaytonaError("transient")
 
-    def test_pty_reconnect_retry_wait_keeps_fast_fallback_for_non_rate_limit_errors(self) -> None:
+            assert wait_strategy(retry_state) == expected_seconds
+
+    @pytest.mark.parametrize("headers", [{}, {"Retry-After-Sandbox-Lifecycle": "bad"}])
+    def test_pty_reconnect_retry_wait_uses_exponential_fallback_for_rate_limits(self, headers: dict[str, str]) -> None:
         retry_state = Mock()
         retry_state.attempt_number = 4
-        retry_state.outcome.exception.return_value = DaytonaError("transient")
+        retry_state.outcome.exception.return_value = DaytonaRateLimitError("rate limited", headers=headers)
         wait_strategy = _reconnect_and_wait_pty.retry.wait
 
-        assert wait_strategy(retry_state) == 1
+        assert wait_strategy(retry_state) == 8
+
+    async def test_fetch_sandboxes_does_not_retry_non_rate_limit_daytona_errors(self) -> None:
+        benchmark = Mock()
+        benchmark.name = "benchmark"
+        benchmark.id = "benchmark-id"
+        daytona_client = AsyncMock()
+        daytona_client.list = AsyncMock(side_effect=DaytonaError("transient"))
+
+        with pytest.raises(DaytonaError):
+            await _fetch_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
+                benchmark, daytona_client, 1
+            )
+
+        assert daytona_client.list.await_count == 1
 
     def test_daytona_retry_callback_emits_rate_limit_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []
