@@ -396,7 +396,7 @@ class TestAgentOutputTelemetry:
 
         assert wait_strategy(retry_state) == 4
 
-    def test_daytona_retry_wait_caps_retry_after_header(self) -> None:
+    def test_daytona_retry_wait_uses_retry_after_header_without_local_cap(self) -> None:
         retry_state = Mock()
         retry_state.outcome.exception.return_value = DaytonaRateLimitError(
             "rate limited",
@@ -404,7 +404,7 @@ class TestAgentOutputTelemetry:
         )
         wait_strategy = _create_sandbox.retry.wait
 
-        assert wait_strategy(retry_state) == 60
+        assert wait_strategy(retry_state) == 120
 
     @pytest.mark.parametrize(
         "headers", [{}, {"Retry-After-Sandbox-Create": "bad"}, {"Retry-After-Sandbox-Create": "-1"}]
@@ -432,6 +432,15 @@ class TestAgentOutputTelemetry:
         wait_strategy = _reconnect_and_wait_pty.retry.wait
 
         assert wait_strategy(retry_state) == 1
+
+    @pytest.mark.parametrize("headers", [{}, {"Retry-After-Sandbox-Lifecycle": "bad"}])
+    def test_pty_reconnect_retry_wait_uses_exponential_fallback_for_rate_limits(self, headers: dict[str, str]) -> None:
+        retry_state = Mock()
+        retry_state.attempt_number = 4
+        retry_state.outcome.exception.return_value = DaytonaRateLimitError("rate limited", headers=headers)
+        wait_strategy = _reconnect_and_wait_pty.retry.wait
+
+        assert wait_strategy(retry_state) == 8
 
     def test_daytona_retry_callback_emits_rate_limit_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []
