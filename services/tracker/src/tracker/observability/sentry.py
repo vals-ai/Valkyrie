@@ -6,6 +6,7 @@ from typing import Any
 
 import daytona
 import sentry_sdk
+from daytona.common.errors import DaytonaRateLimitError
 from opentelemetry.trace import get_current_span
 from sentry_sdk.consts import INSTRUMENTER
 from sentry_sdk.integrations.logging import LoggingIntegration
@@ -144,3 +145,5 @@ def tag_daytona_error(exc: Exception, *, op: str) -> None:
         logger.warning("tag_daytona_error failed: %s: %s", type(e).__name__, e)
 
     incr("valkyrie.daytona.error", tags={"op": op, "error_class": error_class})
+    if isinstance(exc, DaytonaRateLimitError):
+        incr("valkyrie.daytona.rate_limit.error", tags={"op": op})
