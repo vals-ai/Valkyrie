@@ -16,12 +16,12 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
-from daytona.common.errors import DaytonaNotFoundError
+from daytona.common.errors import DaytonaError, DaytonaNotFoundError
 from fastapi import Request
 from opentelemetry import trace
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
-from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential, wait_fixed
 from tenacity import retry as tenacity_retry
 
 from tracker._lambda import invoke_lambda
@@ -48,6 +48,7 @@ from tracker.database.models import (
 )
 from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
+from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
 from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -1124,6 +1125,13 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
         return f"{str(e)}: {traceback.format_exc()}"
 
 
+@tenacity_retry(
+    retry=retry_if_exception_type(DaytonaError),
+    stop=stop_after_attempt(5),
+    wait=wait_daytona_rate_limit(wait_exponential(multiplier=1, min=1, max=30)),
+    before_sleep=daytona_retry_callback("valkyrie.sandbox.list", op="sandbox.list"),
+    reraise=True,
+)
 async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona, page: int) -> AsyncPaginatedSandboxes:
     return await daytona_client.list(
         labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)}, limit=10, page=page

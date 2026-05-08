@@ -33,9 +33,9 @@ from tenacity import (
     retry_if_not_exception_type,
     stop_after_attempt,
     wait_exponential,
-    wait_fixed,
 )
 
+from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
 from tracker.database.models import AgentCausedExitReason, AgentContractRequest
 from tracker.exceptions import (
     AgentRunFailedError,
@@ -74,8 +74,8 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
 @retry(
     retry=retry_if_exception_type(DaytonaError),
     stop=stop_after_attempt(3),
-    wait=wait_fixed(2),
-    before_sleep=retry_callback("valkyrie.sandbox.delete"),
+    wait=wait_daytona_rate_limit(wait_exponential(multiplier=1, min=1, max=30)),
+    before_sleep=daytona_retry_callback("valkyrie.sandbox.delete", op="sandbox.delete"),
     reraise=True,
 )
 async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
@@ -135,8 +135,8 @@ def _set_sandbox_span_attributes(sandbox: AsyncSandbox) -> None:
 @retry(
     retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
     stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=5, max=30),
-    before_sleep=retry_callback("valkyrie.sandbox.create"),
+    wait=wait_daytona_rate_limit(wait_exponential(multiplier=1, min=1, max=30)),
+    before_sleep=daytona_retry_callback("valkyrie.sandbox.create", op="sandbox.create"),
     reraise=True,
 )
 @logfire.instrument("sandbox.create", extract_args=False)
@@ -374,15 +374,12 @@ _SUCCESS_EXIT_CODE: int = 0
 
 # Process exec retry settings
 _EXEC_MAX_ATTEMPTS: int = 3
-_EXEC_DELAY_SECONDS: float = 2.0
 
 # Reconnect to the PTY retry settings
 _PTY_RECONNECT_MAX_ATTEMPTS: int = 10
-_PTY_RECONNECT_DELAY_SECONDS: float = 1.0
 
 # Creating a PTY retry settings
 _PTY_CREATE_MAX_ATTEMPTS: int = 5
-_PTY_CREATE_DELAY_SECONDS: float = 2.0
 
 # Process-global cap on concurrent PTY WebSocket handshakes.
 # Daytona starts failing above ~500 concurrent handshakes; 100 held 800 PTYs cleanly in testing.
@@ -467,8 +464,8 @@ async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator
 @retry(
     retry=retry_if_exception_type(DaytonaError),
     stop=stop_after_attempt(_EXEC_MAX_ATTEMPTS),
-    wait=wait_fixed(_EXEC_DELAY_SECONDS),
-    before_sleep=retry_callback("valkyrie.sandbox.exec"),
+    wait=wait_daytona_rate_limit(wait_exponential(multiplier=1, min=1, max=30)),
+    before_sleep=daytona_retry_callback("valkyrie.sandbox.exec", op="sandbox.exec"),
     reraise=True,
 )
 @logfire.instrument("sandbox.exec", extract_args=False)
@@ -490,8 +487,8 @@ async def _exec(sandbox: AsyncSandbox, command: str) -> ExecuteResponse:
 @retry(
     retry=retry_if_exception_type(DaytonaError),
     stop=stop_after_attempt(_PTY_CREATE_MAX_ATTEMPTS),
-    wait=wait_fixed(_PTY_CREATE_DELAY_SECONDS),
-    before_sleep=retry_callback("valkyrie.pty.create"),
+    wait=wait_daytona_rate_limit(wait_exponential(multiplier=1, min=1, max=30)),
+    before_sleep=daytona_retry_callback("valkyrie.pty.create", op="pty.create"),
     reraise=True,
 )
 @logfire.instrument("pty.create", extract_args=False)
@@ -551,8 +548,8 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
 @retry(
     retry=retry_if_not_exception_type(SandboxError),
     stop=stop_after_attempt(_PTY_RECONNECT_MAX_ATTEMPTS),
-    wait=wait_fixed(_PTY_RECONNECT_DELAY_SECONDS),
-    before_sleep=retry_callback("valkyrie.pty.reconnect"),
+    wait=wait_daytona_rate_limit(wait_exponential(multiplier=1, min=1, max=30)),
+    before_sleep=daytona_retry_callback("valkyrie.pty.reconnect", op="pty.reconnect"),
     reraise=True,
 )
 @logfire.instrument("pty.reconnect", extract_args=False)
