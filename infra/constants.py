@@ -54,7 +54,7 @@ POSTGRES_USER = "tracker"
 POSTGRES_DB = "tracker"
 
 # RDS
-RDS_INSTANCE_CLASS = "t4g.micro"  # Smallest instance, ~$12/month
+RDS_INSTANCE_CLASS = "t4g.small"
 RDS_ALLOCATED_STORAGE_GB = 20
 RDS_SECRET_NAME = "tracker-db-credentials"
 
