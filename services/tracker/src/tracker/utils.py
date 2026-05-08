@@ -72,6 +72,12 @@ _WS_SETUP_TIMEOUT: float = 1800
 _WS_EVAL_TIMEOUT: float = 3600
 
 
+def _benchmark_service_ws_timeout_error(operation: str, timeout: float, task_id: str) -> BenchmarkServiceError:
+    return BenchmarkServiceError(
+        f"{operation} timed out waiting for benchmark service websocket result after {timeout}s for task {task_id}"
+    )
+
+
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
     """Fetch Daytona credentials from AWS Secrets Manager and return as headers for BenchmarkServiceClient."""
     daytona_keys: list[str] = ["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"]
@@ -437,11 +443,10 @@ async def process_task(
                         ),
                         timeout=_WS_EVAL_TIMEOUT,
                     )
-                except TimeoutError:
-                    raise BenchmarkServiceError(
-                        f"resume_evaluation timed out after {_WS_EVAL_TIMEOUT}s for task {task_row.task_id} — "
-                        f"possible half-open WebSocket connection"
-                    )
+                except TimeoutError as e:
+                    raise _benchmark_service_ws_timeout_error(
+                        "resume_evaluation", _WS_EVAL_TIMEOUT, task_row.task_id
+                    ) from e
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
                     task=task_row.id,
@@ -514,11 +519,8 @@ async def process_task(
                         ),
                         timeout=_WS_SETUP_TIMEOUT,
                     )
-                except TimeoutError:
-                    raise BenchmarkServiceError(
-                        f"setup_task timed out after {_WS_SETUP_TIMEOUT}s for task {task_row.task_id} — "
-                        f"possible half-open WebSocket connection"
-                    )
+                except TimeoutError as e:
+                    raise _benchmark_service_ws_timeout_error("setup_task", _WS_SETUP_TIMEOUT, task_row.task_id) from e
 
                 # Force flush the logs if anything has been buffered
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
@@ -567,7 +569,6 @@ async def process_task(
                     },
                 )
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                eval_timeout = task_data.agent_timeout if task_data.agent_timeout else _WS_EVAL_TIMEOUT
                 try:
                     evaluation_result = await asyncio.wait_for(
                         benchmark_service.evaluate_instance(
@@ -577,13 +578,12 @@ async def process_task(
                             on_eval_resume_state=on_eval_resume_state,
                             dataset=start_benchmark_request.dataset,
                         ),
-                        timeout=eval_timeout,
+                        timeout=_WS_EVAL_TIMEOUT,
                     )
-                except TimeoutError:
-                    raise BenchmarkServiceError(
-                        f"evaluate_instance timed out after {eval_timeout}s for task {task_row.task_id} — "
-                        f"possible half-open WebSocket connection"
-                    )
+                except TimeoutError as e:
+                    raise _benchmark_service_ws_timeout_error(
+                        "evaluate_instance", _WS_EVAL_TIMEOUT, task_row.task_id
+                    ) from e
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)

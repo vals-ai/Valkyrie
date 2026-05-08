@@ -1,4 +1,4 @@
-from asyncio import Semaphore
+from asyncio import Semaphore, sleep
 from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import AsyncMock
@@ -9,7 +9,7 @@ from benchmark_service.schemas import Resources, RetrieveTaskResponse
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.exceptions import PtyCreationError, SandboxSetupError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import process_task, start_benchmark_request_to_benchmark
@@ -17,6 +17,31 @@ from tracker.utils import process_task, start_benchmark_request_to_benchmark
 
 class TestPtyRetry:
     _test_org = Org(id=TEST_ORG_ID, name="default")
+
+    def _create_process_task_rows(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ) -> tuple[StartBenchmarkRequest, Benchmark, Task]:
+        start_benchmark_request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id)
+        database_session.add(task_row)
+        database_session.commit()
+
+        return start_benchmark_request, benchmark_row, task_row
 
     def test_process_task_retry_decorator_uses_observability_retry_callback(self) -> None:
         before_sleep = process_task.retry.before_sleep
@@ -50,22 +75,9 @@ class TestPtyRetry:
             - Task ends in FINISHED state after the retry succeeds
             - The sandbox context manager is entered twice (one per attempt)
         """
-        start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench",
-            contract=contract,
-            concurrency=1,
-            task_ids=["task_0"],
-            harness_config=harness_config,
+        start_benchmark_request, benchmark_row, task_row = self._create_process_task_rows(
+            contract, database_session, harness_config
         )
-
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
-        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(benchmark_row)
-        database_session.commit()
-
-        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id)
-        database_session.add(task_row)
-        database_session.commit()
 
         sandbox_entry_count = 0
 
@@ -128,22 +140,9 @@ class TestPtyRetry:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench",
-            contract=contract,
-            concurrency=1,
-            task_ids=["task_0"],
-            harness_config=harness_config,
+        start_benchmark_request, benchmark_row, task_row = self._create_process_task_rows(
+            contract, database_session, harness_config
         )
-
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
-        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(benchmark_row)
-        database_session.commit()
-
-        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id)
-        database_session.add(task_row)
-        database_session.commit()
 
         @asynccontextmanager
         async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
@@ -246,3 +245,108 @@ class TestPtyRetry:
         assert evaluation_start_record["task_id"] == "task_0"
         assert evaluation_start_record["benchmark_id"] == str(benchmark_row.id)
         assert evaluation_start_record["sandbox_id"] == "mock-sandbox-id"
+
+    async def test_process_task_eval_websocket_timeout_does_not_use_agent_timeout(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, benchmark_row, task_row = self._create_process_task_rows(
+            contract, database_session, harness_config
+        )
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
+            mock_sandbox = AsyncMock()
+            mock_sandbox.id = "mock-sandbox-id"
+            mock_sandbox.name = "mock-sandbox-name"
+            yield mock_sandbox
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return RetrieveTaskResponse(
+                docker_image="test-image:latest",
+                problem_path="/tmp/problem.txt",
+                cwd="/testbed",
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                agent_timeout=0.001,
+            )
+
+        async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            await sleep(0.01)
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr("tracker.utils._WS_EVAL_TIMEOUT", 0.2)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await process_task(
+            task_row=task_row,
+            start_benchmark_request=start_benchmark_request,
+            benchmark_service=start_benchmark_request.benchmark_service,
+            benchmark_id=benchmark_row.id,
+            task_id="task_0",
+            harness_config=harness_config,
+            org=self._test_org,
+            creation_semaphore=Semaphore(1),
+        )
+
+        database_session.refresh(task_row)
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert task_row.status == TaskStatus.FINISHED
+
+    async def test_process_task_eval_websocket_timeout_errors_task(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, benchmark_row, task_row = self._create_process_task_rows(
+            contract, database_session, harness_config
+        )
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
+            mock_sandbox = AsyncMock()
+            mock_sandbox.id = "mock-sandbox-id"
+            mock_sandbox.name = "mock-sandbox-name"
+            yield mock_sandbox
+
+        async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return RetrieveTaskResponse(
+                docker_image="test-image:latest",
+                problem_path="/tmp/problem.txt",
+                cwd="/testbed",
+                resources=Resources(vcpu=2, memory=4, disk=5),
+            )
+
+        async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            await sleep(1)
+            return {"status": "success", "score": 1.0}
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr("tracker.utils._WS_EVAL_TIMEOUT", 0.001)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await process_task(
+            task_row=task_row,
+            start_benchmark_request=start_benchmark_request,
+            benchmark_service=start_benchmark_request.benchmark_service,
+            benchmark_id=benchmark_row.id,
+            task_id="task_0",
+            harness_config=harness_config,
+            org=self._test_org,
+            creation_semaphore=Semaphore(1),
+        )
+
+        database_session.refresh(task_row)
+        assert result == {"task_0": None}
+        assert task_row.status == TaskStatus.ERROR
+        assert task_row.error_message is not None
+        assert "evaluate_instance timed out waiting for benchmark service websocket result" in task_row.error_message
