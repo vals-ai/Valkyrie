@@ -13,7 +13,7 @@ from tenacity import stop_after_attempt, wait_none
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import AgentRunFailedError, SSLConnectionError, SandboxError, SandboxSetupError
-from tracker.sandbox import create_sandbox, stream_command_output, upload_agent_artifacts
+from tracker.sandbox import create_sandbox, run_agent, stream_command_output, upload_agent_artifacts
 from tracker.types import AWSCredentials
 
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
@@ -212,6 +212,64 @@ class TestPtyHandshakeSemaphore:
             "valkyrie.sandbox_name": "task-alias",
             "valkyrie.pty_session_id": "session-1",
         }
+
+
+class TestAgentOutputTelemetry:
+    async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="echo done",
+            final_output="/tmp/agent_output",
+        )
+        archive_calls: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecuteResponse:
+            if command.startswith("mkdir -p") or command.startswith("test -e"):
+                return ExecuteResponse(exit_code=0, result="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        async def fake_archive_and_upload_output(
+            _sandbox: Any,
+            output_path: str,
+            _s3_key: str,
+            _aws: Any,
+            _s3_bucket: str,
+            *,
+            benchmark_id: str | None = None,
+            task_id: str | None = None,
+        ) -> None:
+            archive_calls.append(f"{benchmark_id}:{task_id}:{output_path}")
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+        monkeypatch.setattr(sandbox_module, "archive_and_upload_output", fake_archive_and_upload_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/testbed",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
+            benchmark_id="benchmark-123",
+        )
+
+        assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
 
     async def test_wait_for_pty_emits_structured_logs_for_clean_disconnect_and_missing_status(
         self, monkeypatch: pytest.MonkeyPatch
