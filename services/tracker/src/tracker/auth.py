@@ -60,24 +60,6 @@ def extract_api_key(request: Request) -> str:
     return api_key
 
 
-def resolve_descope_tenant(api_key: str) -> str:
-    """Validate an API key against Descope and return the tenant name (no DB lookup)."""
-    if not _descope_client:
-        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
-    try:
-        jwt_response = _descope_client.exchange_access_key(api_key)
-    except AuthException as e:
-        raise HTTPException(status_code=401, detail=f"Invalid API key: {e.error_message}") from e
-
-    tenants = list(jwt_response.get("tenants", {}).keys())
-    if len(tenants) != 1:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Access key must be scoped to exactly one tenant, got {len(tenants)}",
-        )
-    return tenants[0]
-
-
 def resolve_descope_identity(api_key: str) -> tuple[str, str, str | None, str | None]:
     """Validate an API key and return (tenant_name, access_key_id, email, name).
 
