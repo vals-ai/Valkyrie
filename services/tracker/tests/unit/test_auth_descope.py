@@ -1,4 +1,3 @@
-import logging
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -33,22 +32,6 @@ def mock_descope():
         yield mock_client
 
 
-@pytest.fixture
-def propagate_tracker_logs():
-    """Re-enable propagation on the `tracker` logger so pytest's caplog can capture records.
-
-    `configure_logging()` sets `propagate=False` to avoid duplicate handlers in production,
-    which also blocks caplog's root-level handler. Restore the original setting on teardown.
-    """
-    tracker_logger = logging.getLogger("tracker")
-    original = tracker_logger.propagate
-    tracker_logger.propagate = True
-    try:
-        yield
-    finally:
-        tracker_logger.propagate = original
-
-
 def test_resolve_descope_identity_invalid_api_key_raises_401(mock_descope):
     from descope import AuthException
 
@@ -81,50 +64,40 @@ def test_resolve_descope_identity_full_claims(mock_descope):
     assert name == "Alice Smith"
 
 
-def test_resolve_descope_identity_missing_email_warns(mock_descope, caplog, propagate_tracker_logs):
+def test_resolve_descope_identity_missing_email_returns_none(mock_descope):
     mock_descope.exchange_access_key.return_value = {
         "tenants": {"test-tenant": {}},
         "sub": "K2abc",
     }
 
-    with caplog.at_level(logging.WARNING, logger="tracker.auth"):
-        _tenant, key_id, email, name = resolve_descope_identity("valid-key")
-
+    _tenant, key_id, email, name = resolve_descope_identity("valid-key")
     assert key_id == "K2abc"
     assert email is None
     assert name is None
-    assert any("K2abc" in record.message and "email" in record.message for record in caplog.records)
 
 
-def test_resolve_descope_identity_missing_name_silent(mock_descope, caplog, propagate_tracker_logs):
+def test_resolve_descope_identity_missing_name_returns_none(mock_descope):
     mock_descope.exchange_access_key.return_value = {
         "tenants": {"test-tenant": {}},
         "sub": "K2abc",
         "email": "alice@vals.ai",
     }
 
-    with caplog.at_level(logging.WARNING, logger="tracker.auth"):
-        _tenant, _key_id, _email, name = resolve_descope_identity("valid-key")
-
+    _tenant, _key_id, email, name = resolve_descope_identity("valid-key")
+    assert email == "alice@vals.ai"
     assert name is None
-    assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
-def test_resolve_descope_identity_whitespace_only_email_treated_as_missing(
-    mock_descope, caplog, propagate_tracker_logs
-):
-    """A whitespace-only email claim is treated identically to a missing one (warns + None)."""
+def test_resolve_descope_identity_whitespace_only_email_treated_as_missing(mock_descope):
+    """A whitespace-only email claim is treated identically to a missing one."""
     mock_descope.exchange_access_key.return_value = {
         "tenants": {"test-tenant": {}},
         "sub": "K2abc",
         "email": "   ",
     }
 
-    with caplog.at_level(logging.WARNING, logger="tracker.auth"):
-        _tenant, _key_id, email, _name = resolve_descope_identity("valid-key")
-
+    _tenant, _key_id, email, _name = resolve_descope_identity("valid-key")
     assert email is None
-    assert any("email" in record.message for record in caplog.records if record.levelno == logging.WARNING)
 
 
 def test_resolve_descope_identity_multiple_tenants_raises_400(mock_descope):

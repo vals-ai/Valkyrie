@@ -1,8 +1,11 @@
 import json
+import logging
 from datetime import timezone
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
+
+import pytest
 
 import httpx
 from benchmark_service.client import BenchmarkServiceClient
@@ -690,6 +693,44 @@ class TestFastapiServer:
         assert benchmark_row is not None
         assert benchmark_row.started_by_id is None
         assert benchmark_row.started_by_email is None
+
+    async def test_start_benchmark_warns_when_email_claim_missing(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Hosted-mode start with an email-less access key emits a one-shot warning. Self-hosted
+        identity (access_key_id is None) must NOT warn — that's the bug fix for the warning
+        firing on every authenticated request."""
+        test_org = Org(id=TEST_ORG_ID, name="default")
+        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+            org=test_org,
+            access_key_id="K2abc",
+            email=None,
+            name=None,
+        )
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+        with caplog.at_level(logging.WARNING, logger="main"):
+            response = client.post("/start-benchmark", json=request.model_dump())
+        assert response.status_code == 200
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "email" in r.message]
+        assert len(warnings) == 1
+        assert "K2abc" in warnings[0].message
 
     async def test_init_org_returns_email_claim_present(
         self,

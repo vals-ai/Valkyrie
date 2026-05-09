@@ -207,6 +207,12 @@ async def start_benchmark(
     )
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
+    if starter.access_key_id is not None and starter.email is None:
+        logger.warning(
+            "Access key %s has no 'email' custom claim; run attribution for this run will be empty",
+            starter.access_key_id,
+        )
+
     benchmark_service = request.benchmark_service
 
     # Check service is running

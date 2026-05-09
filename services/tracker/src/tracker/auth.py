@@ -63,9 +63,10 @@ def extract_api_key(request: Request) -> str:
 def resolve_descope_identity(api_key: str) -> tuple[str, str, str | None, str | None]:
     """Validate an API key and return (tenant_name, access_key_id, email, name).
 
-    Pulls all four from the same JWT response — no extra Descope round-trips. Logs a
-    warning when the `email` custom claim is missing so admins can locate keys that
-    need updating in Descope.
+    Pulls all four from the same JWT response — no extra Descope round-trips. Whitespace-only
+    email and name claims are normalized to None. Callers that care about a missing email
+    (e.g. the start-benchmark handler, where it means run attribution will be empty) should
+    log their own warning conditioned on the returned email.
     """
     if not _descope_client:
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
@@ -89,12 +90,6 @@ def resolve_descope_identity(api_key: str) -> tuple[str, str, str | None, str | 
     email = raw_email.strip().lower() if isinstance(raw_email, str) and raw_email.strip() else None
     raw_name = jwt_response.get("name")
     name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
-
-    if email is None:
-        logger.warning(
-            "Access key %s has no 'email' custom claim; run attribution will be empty for runs started with this key",
-            access_key_id,
-        )
 
     return tenants[0], access_key_id, email, name
 
