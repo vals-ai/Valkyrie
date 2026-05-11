@@ -23,28 +23,6 @@ class TestCheckSandboxHealthRetry:
     @pytest.fixture(autouse=True)
     def _fast_retries(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sandbox_module, "_HEALTHCHECK_RETRY_WAIT_SECONDS", 0.0)
-        from tenacity import (
-            before_sleep_log,
-            retry,
-            retry_if_exception,
-            stop_after_attempt,
-            wait_fixed,
-        )
-
-        async def _refresh(sandbox: Any) -> None:
-            await sandbox.refresh_data()
-
-        monkeypatch.setattr(
-            sandbox_module,
-            "_refresh_sandbox_data_with_retry",
-            retry(
-                retry=retry_if_exception(sandbox_module._is_transient_daytona_connection_error),
-                stop=stop_after_attempt(sandbox_module._HEALTHCHECK_RETRY_ATTEMPTS),
-                wait=wait_fixed(0.0),
-                before_sleep=before_sleep_log(sandbox_module.logger, 30),
-                reraise=True,
-            )(_refresh),
-        )
 
     async def test_predicate_matches_wrapped_daytona_broken_pipe(self) -> None:
         for msg in (

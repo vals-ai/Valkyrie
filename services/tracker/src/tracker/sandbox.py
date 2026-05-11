@@ -30,6 +30,7 @@ from daytona.common.errors import DaytonaError
 from daytona.handle.async_pty_handle import AsyncPtyHandle
 from opentelemetry import trace
 from tenacity import (
+    AsyncRetrying,
     before_sleep_log,
     retry,
     retry_if_exception,
@@ -439,17 +440,6 @@ def _is_transient_daytona_connection_error(exc: BaseException) -> bool:
     return False
 
 
-@retry(
-    retry=retry_if_exception(_is_transient_daytona_connection_error),
-    stop=stop_after_attempt(_HEALTHCHECK_RETRY_ATTEMPTS),
-    wait=wait_fixed(_HEALTHCHECK_RETRY_WAIT_SECONDS),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-    reraise=True,
-)
-async def _refresh_sandbox_data_with_retry(sandbox: AsyncSandbox) -> None:
-    await sandbox.refresh_data()
-
-
 async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
     """
     Checks if we can connect to a sandbox
@@ -459,7 +449,16 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
         SandboxError: if the sandbox cannot be connected to or is in a dead state
     """
     try:
-        await _refresh_sandbox_data_with_retry(sandbox)
+        # Retry the connection probe only; state-check failures below are terminal and must not be retried.
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception(_is_transient_daytona_connection_error),
+            stop=stop_after_attempt(_HEALTHCHECK_RETRY_ATTEMPTS),
+            wait=wait_fixed(_HEALTHCHECK_RETRY_WAIT_SECONDS),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+            reraise=True,
+        ):
+            with attempt:
+                await sandbox.refresh_data()
         if sandbox.state in _DEAD_SANDBOX_STATES:
             raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
     except DaytonaNotFoundError as e:
