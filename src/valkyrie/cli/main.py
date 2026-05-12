@@ -140,6 +140,8 @@ def init() -> None:
         collected_keys[key] = value
 
     current_config.update(collected_keys)
+    if session_token := current_config.get("AWS_SESSION_TOKEN") or os.environ.get("AWS_SESSION_TOKEN"):
+        current_config["AWS_SESSION_TOKEN"] = session_token
 
     if mode != "hosted":
         current_config.pop("api_key", None)

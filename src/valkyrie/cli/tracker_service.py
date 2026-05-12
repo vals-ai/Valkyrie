@@ -191,12 +191,16 @@ class TrackerService:
     def _build_harness_config_payload(self) -> dict[str, Any]:
         """Build the Valkyrie config in a way that can be packed into a object"""
         flat = {key.lower(): value for key, value in self._config_values.items()}
+        aws = {
+            "aws_access_key_id": flat["aws_access_key_id"],
+            "aws_secret_access_key": flat["aws_secret_access_key"],
+            "aws_default_region": flat["aws_default_region"],
+        }
+        if "aws_session_token" in flat:
+            aws["aws_session_token"] = flat["aws_session_token"]
+
         return {
-            "aws": {
-                "aws_access_key_id": flat["aws_access_key_id"],
-                "aws_secret_access_key": flat["aws_secret_access_key"],
-                "aws_default_region": flat["aws_default_region"],
-            },
+            "aws": aws,
             "s3_bucket": flat["s3_bucket"],
             "log_group": flat["log_group"],
             "log_retention_policy": int(flat["log_retention_policy"]),

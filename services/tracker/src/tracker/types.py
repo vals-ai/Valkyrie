@@ -32,6 +32,17 @@ class AWSCredentials(BaseModel, frozen=True):
     aws_access_key_id: str
     aws_secret_access_key: str
     aws_default_region: str
+    aws_session_token: str | None = None
+
+    def client_kwargs(self) -> dict[str, str]:
+        kwargs = {
+            "aws_access_key_id": self.aws_access_key_id,
+            "aws_secret_access_key": self.aws_secret_access_key,
+            "region_name": self.aws_default_region,
+        }
+        if self.aws_session_token:
+            kwargs["aws_session_token"] = self.aws_session_token
+        return kwargs
 
 
 class HarnessConfig(BaseModel):

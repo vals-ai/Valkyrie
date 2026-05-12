@@ -19,9 +19,7 @@ def _secretsmanager_client(aws: AWSCredentials) -> Any:
     """Cached Secrets Manager client, shared per credential tuple."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "secretsmanager",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        region_name=aws.aws_default_region,
+        **aws.client_kwargs(),
     )
 
 

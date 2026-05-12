@@ -4,6 +4,23 @@ from botocore.exceptions import BotoCoreError, ClientError
 from tracker.aws.cloudwatch_logs import handle_cloudwatch_error
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.aws.s3 import handle_s3_error
+from tracker.types import AWSCredentials
+
+
+def test_aws_credentials_client_kwargs_include_session_token():
+    aws = AWSCredentials(
+        aws_access_key_id="access-key",
+        aws_secret_access_key="secret-key",
+        aws_session_token="session-token",
+        aws_default_region="us-east-1",
+    )
+
+    assert aws.client_kwargs() == {
+        "aws_access_key_id": "access-key",
+        "aws_secret_access_key": "secret-key",
+        "aws_session_token": "session-token",
+        "region_name": "us-east-1",
+    }
 
 
 class TestS3DecoratorClient:
