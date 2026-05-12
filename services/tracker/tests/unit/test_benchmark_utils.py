@@ -339,9 +339,7 @@ class TestBenchmarkUtils:
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
 
-    def test_create_task_rows_with_deferred_tasks(
-        self, example_benchmark_object: Benchmark, database_session: Session
-    ):
+    def test_create_task_rows_with_deferred_tasks(self, example_benchmark_object: Benchmark, database_session: Session):
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
