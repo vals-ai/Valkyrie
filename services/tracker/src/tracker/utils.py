@@ -931,6 +931,9 @@ class BenchmarkContext:
     def _task_counts(self) -> TaskCounts:
         finished_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
 
+        # Exclude DEFERRED from both totals — those tasks were intentionally not queued
+        # and shouldn't drag down progress (e.g. a subset-only run with 180/180 done
+        # should show 100%, not 180/450). They'll re-enter the counts when promoted.
         statement = (
             select(
                 func.count().label("total_tasks"),
@@ -940,6 +943,7 @@ class BenchmarkContext:
             .select_from(Task)
             .where(Task.benchmark == self._benchmark_row.id)
             .where(Task.org_id == self._org.id)
+            .where(Task.status != TaskStatus.DEFERRED)
         )
 
         result = self._session.exec(statement).one()
@@ -1025,8 +1029,9 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
     if benchmark_row.status in terminal_statuses:
         return
 
-    # Force non exited tasks to be ERROR
-    task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
+    # Force non exited tasks to be ERROR. DEFERRED tasks were intentionally
+    # not queued, so leave them alone — they should still be promotable later.
+    task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED, TaskStatus.DEFERRED]
     session.exec(
         update(Task)
         .where(col(Task.benchmark) == benchmark_id)
@@ -1219,8 +1224,15 @@ async def force_stop_sandboxes(
         f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
     )
 
-    # If all tasks are already in a stopped state, we need to update the final status here since the worker has exited
-    finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
+    # If all tasks are already in a stopped state, we need to update the final status here since the worker has exited.
+    # DEFERRED counts as terminal here too — those tasks were never queued, so they don't block the benchmark from
+    # transitioning out of STOPPING.
+    finished_statuses: list[TaskStatus] = [
+        TaskStatus.FINISHED,
+        TaskStatus.ERROR,
+        TaskStatus.STOPPED,
+        TaskStatus.DEFERRED,
+    ]
     tasks_still_running: int = session.exec(
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)

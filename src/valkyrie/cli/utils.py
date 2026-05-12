@@ -129,6 +129,7 @@ class BenchmarkFormatter:
         "STOPPING": "magenta",
         "FINISHED": "green",
         "ERROR": "red",
+        "DEFERRED": "white",
     }
 
     @staticmethod
@@ -161,6 +162,7 @@ class BenchmarkFormatter:
             TaskStatus.EVALUATING,
             TaskStatus.ERROR,
             TaskStatus.STOPPED,
+            TaskStatus.DEFERRED,
             TaskStatus.FINISHED,
         ]
 

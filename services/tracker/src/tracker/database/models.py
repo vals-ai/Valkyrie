@@ -242,10 +242,13 @@ class Benchmark(SQLModel, table=True):
         """
         from tracker.types import BenchmarkTableRow
 
+        # Exclude DEFERRED tasks from totals — they were intentionally not queued
+        # and shouldn't drag down progress (subset run shows 100% with deferred parked).
         total_tasks: int = session.exec(
             select(func.count(col(Task.task_id)))
             .where(col(Task.benchmark) == self.id)
             .where(col(Task.org_id) == self.org_id)
+            .where(Task.status != TaskStatus.DEFERRED)
         ).one()
 
         finished_tasks: int = session.exec(
