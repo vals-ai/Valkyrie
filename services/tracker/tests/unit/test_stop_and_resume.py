@@ -1,7 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock
+from zoneinfo import ZoneInfo
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
@@ -327,6 +329,112 @@ class TestStopAndResume:
             "task_1": TaskStatus.PENDING,
             "task_2": TaskStatus.PENDING,
         }
+
+    async def test_resume_runs_lazily_added_task_and_recomputes_final_score(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        """A FINISHED run + new --task-ids: the new task runs to completion and the final
+        score is recomputed over the merged set (existing + new)."""
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
+            mock_sandbox = AsyncMock()
+            mock_sandbox.id = "mock-sandbox-id"
+            yield mock_sandbox
+
+        existing_task_ids = ["task_0", "task_1"]
+        new_task_id = "task_2"
+
+        start_benchmark_request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=1,
+            task_ids=existing_task_ids,
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
+        database_session.add(benchmark_row)
+
+        # Seed pre-existing FINISHED tasks with stored EvaluationResults
+        for task_id in existing_task_ids:
+            task = Task(
+                org_id=TEST_ORG_ID,
+                task_id=task_id,
+                benchmark=benchmark_row.id,
+                status=TaskStatus.FINISHED,
+                finished_at=datetime.now(ZoneInfo("UTC")),
+            )
+            database_session.add(task)
+            database_session.flush()
+            database_session.add(
+                EvaluationResult(org_id=TEST_ORG_ID, task=task.id, result={"resolved": True, "score": 1.0})
+            )
+        database_session.commit()
+
+        # Capture what final_score sees so we can assert the merge
+        final_score_calls: list[set[str]] = []
+
+        async def _mock_request_final_score(
+            *_args: Any, evaluation_results: dict[str, Any], **_kwargs: Any
+        ) -> FinalScoreResponse:
+            tasks_evaluated = list(evaluation_results.keys())
+            final_score_calls.append(set(tasks_evaluated))
+            return FinalScoreResponse(
+                tasks_evaluated=tasks_evaluated,
+                final_score=float(len(tasks_evaluated)),
+                metadata={"resolved_tasks": tasks_evaluated, "unresolved_tasks": []},
+            )
+
+        async def _mock_request_verify_task_ids(
+            *_args: Any, task_ids: list[str], **_kwargs: Any
+        ) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", self._mock_request_retrieve_task)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", self._mock_request_evaluate_instance)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_request_final_score)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+
+        # Resume with a new task id — should be lazily created as PENDING
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=start_benchmark_request.benchmark_service,
+            retry=False,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=[new_task_id],
+            org=self._test_org,
+        )
+        assert verified_task_ids == [new_task_id]
+
+        # Run the worker — the new task should make it through evaluation
+        await process_benchmark(
+            start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=verified_task_ids,
+        )
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
+
+        task_statuses = {
+            task.task_id: task.status
+            for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+        assert task_statuses[new_task_id] == TaskStatus.FINISHED
+
+        # final_score was called with the merged set: pre-existing + newly run task
+        assert final_score_calls == [{"task_0", "task_1", new_task_id}]
+        assert benchmark_row.final_evaluation is not None
+        assert benchmark_row.final_evaluation.final_score == 3.0
 
     async def test_process_task_resumes_evaluation_without_sandbox(
         self,
