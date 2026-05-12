@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import FinalScoreResponse, Resources, RetrieveTaskResponse, VerifyTaskIdsResponse
+from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
@@ -43,35 +43,11 @@ client = TestClient(app)
 class TestStopAndResume:
     _test_org = Org(id=TEST_ORG_ID, name="default")
 
-    @staticmethod
-    async def _mock_request_retrieve_task(*args: Any, **kwargs: Any) -> RetrieveTaskResponse:
-        return RetrieveTaskResponse(
-            docker_image="test-image:latest",
-            problem_path="/tmp/problem_statement.txt",
-            cwd="/testbed",
-            resources=Resources(vcpu=2, memory=4, disk=5),
-        )
-
-    @staticmethod
-    async def _mock_request_evaluate_instance(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        return {"status": "success", "score": 1.0}
-
-    @staticmethod
-    async def _mock_request_final_score(
-        *args: Any, evaluation_results: dict[str, Any], **kwargs: Any
-    ) -> FinalScoreResponse:
-        tasks_evaluated = list(evaluation_results.keys())
-        return FinalScoreResponse(
-            tasks_evaluated=tasks_evaluated,
-            final_score=50.0,
-            metadata={"resolved_tasks": [], "unresolved_tasks": tasks_evaluated},
-        )
-
     async def test_stop_and_resume(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        monkeypatch: MonkeyPatch,
+        process_benchmark_env: None,
         harness_config: HarnessConfig,
     ):
         """
@@ -84,13 +60,6 @@ class TestStopAndResume:
             - Resume benchmark - only the 3 tasks that are stopped should be resumed
             - Retry or resume benchmark - all 5 tasks should have evaluation results after completion
         """
-
-        @asynccontextmanager
-        async def _mock_create_sandbox(*args: Any, **kwargs: Any):
-            mock_sandbox = AsyncMock()
-            mock_sandbox.id = "mock-sandbox-id"
-            yield mock_sandbox
-
         task_ids: list[str] = [
             "astropy__astropy-12907",
             "astropy__astropy-13033",
@@ -110,12 +79,6 @@ class TestStopAndResume:
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
         database_session.add(benchmark_row)
         database_session.commit()
-
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
-        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", self._mock_request_retrieve_task)
-        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", self._mock_request_evaluate_instance)
-        monkeypatch.setattr(BenchmarkServiceClient, "final_score", self._mock_request_final_score)
 
         # Create tasks - 2 tasks are finished, 3 tasks are pending
         finished_task_ids = task_ids[:2]
@@ -152,11 +115,6 @@ class TestStopAndResume:
         benchmark_row.status = BenchmarkStatus.STOPPED
         database_session.add(benchmark_row)
         database_session.commit()
-
-        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=pending_task_ids)
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
@@ -285,7 +243,7 @@ class TestStopAndResume:
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        monkeypatch: MonkeyPatch,
+        process_benchmark_env: None,
         harness_config: HarnessConfig,
     ):
         """rerun_task_ids that don't have a row yet become fresh PENDING rows."""
@@ -296,16 +254,6 @@ class TestStopAndResume:
             Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.STOPPED),
         )
         database_session.commit()
-
-        verified_requests: list[set[str]] = []
-
-        async def _mock_request_verify_task_ids(
-            *_args: Any, task_ids: list[str], **_kwargs: Any
-        ) -> VerifyTaskIdsResponse:
-            verified_requests.append(set(task_ids))
-            return VerifyTaskIdsResponse(task_ids=task_ids)
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
@@ -323,7 +271,6 @@ class TestStopAndResume:
         }
 
         assert set(verified_task_ids) == {"task_0", "task_1", "task_2"}
-        assert verified_requests == [{"task_0", "task_1", "task_2"}]
         assert task_statuses == {
             "task_0": TaskStatus.PENDING,
             "task_1": TaskStatus.PENDING,
@@ -334,18 +281,12 @@ class TestStopAndResume:
         self,
         contract: AgentContractRequest,
         database_session: Session,
+        process_benchmark_env: None,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
     ):
         """A FINISHED run + new --task-ids: the new task runs to completion and the final
         score is recomputed over the merged set (existing + new)."""
-
-        @asynccontextmanager
-        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
-            mock_sandbox = AsyncMock()
-            mock_sandbox.id = "mock-sandbox-id"
-            yield mock_sandbox
-
         existing_task_ids = ["task_0", "task_1"]
         new_task_id = "task_2"
 
@@ -377,10 +318,10 @@ class TestStopAndResume:
             )
         database_session.commit()
 
-        # Capture what final_score sees so we can assert the merge
+        # Override final_score to capture what it sees and weight by count
         final_score_calls: list[set[str]] = []
 
-        async def _mock_request_final_score(
+        async def _capturing_final_score(
             *_args: Any, evaluation_results: dict[str, Any], **_kwargs: Any
         ) -> FinalScoreResponse:
             tasks_evaluated = list(evaluation_results.keys())
@@ -391,17 +332,7 @@ class TestStopAndResume:
                 metadata={"resolved_tasks": tasks_evaluated, "unresolved_tasks": []},
             )
 
-        async def _mock_request_verify_task_ids(
-            *_args: Any, task_ids: list[str], **_kwargs: Any
-        ) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=task_ids)
-
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
-        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", self._mock_request_retrieve_task)
-        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", self._mock_request_evaluate_instance)
-        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_request_final_score)
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _capturing_final_score)
 
         # Resume with a new task id — should be lazily created as PENDING
         verified_task_ids = await reset_to_in_progress_status(

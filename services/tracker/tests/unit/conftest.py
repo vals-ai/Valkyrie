@@ -1,10 +1,18 @@
 import os
+from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, VerifyTaskIdsResponse
+from benchmark_service.schemas import (
+    FinalScoreResponse,
+    HealthCheckResponse,
+    Resources,
+    RetrieveTaskResponse,
+    SetupTaskResponse,
+    VerifyTaskIdsResponse,
+)
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
@@ -165,3 +173,45 @@ def mock_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_kicker.return_value.with_labels.return_value.kiq = _mock_kiq
 
     monkeypatch.setattr("main.process_benchmark.kicker", mock_kicker)
+
+
+@pytest.fixture
+def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> None:
+    """Common process_benchmark deps: test DB engine, no-op sandbox, echo verify, static
+    retrieve/evaluate/final_score. Tests requesting this fixture can override any one method
+    with their own monkeypatch.setattr call."""
+
+    @asynccontextmanager
+    async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "mock-sandbox-id"
+        yield mock_sandbox
+
+    async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+        return RetrieveTaskResponse(
+            docker_image="test-image:latest",
+            problem_path="/tmp/problem_statement.txt",
+            cwd="/testbed",
+            resources=Resources(vcpu=2, memory=4, disk=5),
+        )
+
+    async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "success", "score": 1.0}
+
+    async def _mock_final_score(*_args: Any, evaluation_results: dict[str, Any], **_kwargs: Any) -> FinalScoreResponse:
+        tasks_evaluated = list(evaluation_results.keys())
+        return FinalScoreResponse(
+            tasks_evaluated=tasks_evaluated,
+            final_score=50.0,
+            metadata={"resolved_tasks": [], "unresolved_tasks": tasks_evaluated},
+        )
+
+    async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=task_ids)
+
+    monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+    monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+    monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+    monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
