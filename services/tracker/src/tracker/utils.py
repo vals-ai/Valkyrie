@@ -666,7 +666,7 @@ def create_task_rows(
     task_ids_to_create = [task_id for task_id in verified_task_ids if task_id not in existing_task_ids]
 
     for task_id in task_ids_to_create:
-        task_row = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
+        task_row = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id)
         session.add(task_row)
 
     session.commit()
