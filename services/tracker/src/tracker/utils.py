@@ -657,6 +657,7 @@ def create_task_rows(
 
     NOTE: Only return runnable tasks to support resuming the benchmark.
     """
+    # Find task ids that already exist so that we can filter them out
     existing_task_ids: Sequence[str] = session.exec(
         select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(col(Task.task_id).in_(verified_task_ids))
     ).all()
@@ -1006,7 +1007,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
     if benchmark_row.status in terminal_statuses:
         return
 
-    # Force non-terminal tasks to ERROR.
+    # Force non exited tasks to be ERROR
     task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
     session.exec(
         update(Task)
@@ -1200,7 +1201,7 @@ async def force_stop_sandboxes(
         f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
     )
 
-    # Worker has exited, so flip the benchmark here if no tasks remain in a non-terminal state.
+    # If all tasks are already in a stopped state, we need to update the final status here since the worker has exited
     finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
     tasks_still_running: int = session.exec(
         select(func.count(col(Task.id)))
@@ -1231,9 +1232,8 @@ async def reset_to_in_progress_status(
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
 
     Retry: we reset objects with an error status ontop of the stopped status
-    Rerun Task IDs: rerun a task even if finished; if the task has no row yet but is
-        valid in the current dataset, a fresh PENDING row is created (supports running
-        tasks added to the dataset after the benchmark started).
+    Rerun Task IDs: even if task has been finished we restart it. If the task has no
+        row yet, a fresh PENDING row is created when valid in the current dataset.
 
     Benchmark - In progress status
     Tasks - Pending status, or Evaluating status when retrying durable eval state
@@ -1256,16 +1256,14 @@ async def reset_to_in_progress_status(
 
         existing_rows = session.exec(select(Task).where(*filter_query)).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
-
-        # rerun_task_ids that don't have a row yet — created lazily if valid in the dataset.
         new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
             return []
 
-        # Verify all requested task ids are still valid in the current dataset.
-        # Raises if any are invalid.
+        # Verify the task ids are still valid before priming to resume
+        # Raises if any task ids are invalid
         all_requested_task_ids = list(existing_by_task_id.keys()) + new_task_ids
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
@@ -1292,7 +1290,7 @@ async def reset_to_in_progress_status(
         for task_id in new_task_ids:
             session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
 
-        # Delete all evaluation results for reset tasks (unlikely they exist)
+        # Delete all evaluation results for the tasks (unlikely they exist)
         if existing_rows:
             session.exec(
                 delete(EvaluationResult)

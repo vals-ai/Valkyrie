@@ -3,7 +3,8 @@ from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 import pytest
-from benchmark_service.schemas import FinalScoreResponse
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 
@@ -269,10 +270,7 @@ class TestBenchmarkUtils:
         )
         database_session.commit()
 
-        # Task id is provided but is not in the current dataset — benchmark service rejects it
-        from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
-        from benchmark_service.schemas import VerifyTaskIdsResponse
-
+        # Task id is provided as a force parameter but does not exist in dataset
         async def _verify_rejecting_task_5(*_args: Any, task_ids: list[str] | None, **_kwargs: Any) -> Any:
             if task_ids and "task_5" in task_ids:
                 raise BenchmarkServiceError("task_5 does not exist in the dataset")
