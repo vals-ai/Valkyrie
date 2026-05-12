@@ -757,9 +757,7 @@ async def process_benchmark(
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            task_rows: Sequence[tuple[str, Task]] = create_task_rows(
-                verified_task_ids, benchmark_row, session, org
-            )
+            task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session, org)
 
         task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
@@ -1292,9 +1290,7 @@ async def reset_to_in_progress_status(
             session.add(task)
 
         for task_id in new_task_ids:
-            session.add(
-                Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
-            )
+            session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
 
         # Delete all evaluation results for reset tasks (unlikely they exist)
         if existing_rows:

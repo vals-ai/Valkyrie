@@ -13,7 +13,6 @@ from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkSt
 from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
-    BenchmarkContext,
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
