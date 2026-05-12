@@ -437,7 +437,8 @@ class TrackerService:
             benchmark_id: Benchmark id
             retry: Whether to retry tasks with the status error
             concurrency: Optional new concurrency level to override original value
-            task_ids: List of task ids to force retry
+            task_ids: List of task ids to force retry. Task ids without an existing row
+                are created as fresh PENDING if valid in the current dataset.
             service_headers: Optional headers for benchmark service authentication
 
         Returns:

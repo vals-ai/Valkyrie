@@ -285,7 +285,7 @@ valkyrie run resume <id> --concurrency 20
 | Option | Description |
 | --- | --- |
 | `--concurrency` | Override concurrency level |
-| `--task-ids` | Comma-separated task IDs to resume/retry |
+| `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
 | `--task-ids-file` | Path to a text file with one task ID per line |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
 | `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
