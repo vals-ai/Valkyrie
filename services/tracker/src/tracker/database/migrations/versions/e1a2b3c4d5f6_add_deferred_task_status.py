@@ -1,7 +1,7 @@
 """Add DEFERRED task status
 
 Revision ID: e1a2b3c4d5f6
-Revises: d4e5f6a7b8c9
+Revises: 35f2d4a8c9b1
 Create Date: 2026-05-11 13:00:00.000000
 
 """
