@@ -248,6 +248,7 @@ class TrackerService:
         service_headers: dict[str, str] | None = None,
         webhook_secret_name: str | None = None,
         webhook_intervals: list[int] | None = None,
+        defer_rest: bool = False,
     ) -> Response:
         """
         Start a benchmark run on the tracker service.
@@ -282,6 +283,7 @@ class TrackerService:
                 service_headers=service_headers or {},
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,
+                defer_rest=defer_rest,
             )
 
             body = payload.model_dump()
@@ -429,6 +431,7 @@ class TrackerService:
         concurrency: int | None,
         task_ids: list[str],
         service_headers: dict[str, str] | None = None,
+        run_deferred: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -439,12 +442,15 @@ class TrackerService:
             concurrency: Optional new concurrency level to override original value
             task_ids: List of task ids to force retry
             service_headers: Optional headers for benchmark service authentication
+            run_deferred: Whether to promote all DEFERRED tasks in the run to PENDING
 
         Returns:
             RetryOrResumeBenchmarkResponse with status and message
         """
         try:
             params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
+            if run_deferred:
+                params["run_deferred"] = True
 
             # NOTE: 0 is not acceptable
             if concurrency:

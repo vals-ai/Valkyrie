@@ -647,24 +647,41 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
 
 
 def create_task_rows(
-    verified_task_ids: list[str], benchmark_row: Benchmark, session: Session, org: Org
+    verified_task_ids: list[str],
+    benchmark_row: Benchmark,
+    session: Session,
+    org: Org,
+    all_dataset_task_ids: list[str] | None = None,
 ) -> Sequence[tuple[str, Task]]:
     """
     Create task_rows that do not already exist in the database for the benchmark row.
 
+    Args:
+        verified_task_ids: Task ids to register as PENDING and run now.
+        all_dataset_task_ids: When provided, also register the remaining tasks in the
+            dataset (those not in verified_task_ids) as DEFERRED so they can be promoted
+            later via retry-or-resume. When None, only verified_task_ids are registered.
+
     NOTE: Only return runnable tasks to support resuming the benchmark.
     """
+    verified_set: set[str] = set(verified_task_ids)
+    # Preserve dataset order for any deferred tasks; verified ones are emitted first
+    # so runnable-task ordering matches the caller-supplied order.
+    all_task_ids = list(verified_task_ids)
+    if all_dataset_task_ids is not None:
+        all_task_ids += [tid for tid in all_dataset_task_ids if tid not in verified_set]
 
     # Find task ids that already exist so that we can filter them out
     existing_task_ids: Sequence[str] = session.exec(
-        select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(col(Task.task_id).in_(verified_task_ids))
+        select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(col(Task.task_id).in_(all_task_ids))
     ).all()
 
     # NOTE: Must maintain same order that was passed in
-    task_ids_to_create = [task_id for task_id in verified_task_ids if task_id not in existing_task_ids]
+    task_ids_to_create = [task_id for task_id in all_task_ids if task_id not in existing_task_ids]
 
     for task_id in task_ids_to_create:
-        task_row = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id)
+        status = TaskStatus.PENDING if task_id in verified_set else TaskStatus.DEFERRED
+        task_row = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=status)
         session.add(task_row)
 
     session.commit()
@@ -706,6 +723,7 @@ async def process_benchmark(
     start_benchmark_request_json: dict[str, Any],
     benchmark_id_str: str,
     verified_task_ids: list[str],
+    all_dataset_task_ids: list[str] | None = None,
 ) -> None:
     # Was serialized to make it compatible with the broker
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
@@ -756,7 +774,9 @@ async def process_benchmark(
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session, org)
+            task_rows: Sequence[tuple[str, Task]] = create_task_rows(
+                verified_task_ids, benchmark_row, session, org, all_dataset_task_ids=all_dataset_task_ids
+            )
 
         task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
@@ -1225,12 +1245,14 @@ async def reset_to_in_progress_status(
     retry_mode: RetryMode,
     rerun_task_ids: list[str],
     org: Org,
+    run_deferred: bool = False,
 ) -> list[str]:
     """
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
 
     Retry: we reset objects with an error status ontop of the stopped status
     Rerun Task IDs: even if task has been finished we restart it
+    Run Deferred: promote tasks in DEFERRED status (intentionally-not-run) to PENDING
 
     Benchmark - In progress status
     Tasks - Pending status, or Evaluating status when retrying durable eval state
@@ -1241,6 +1263,8 @@ async def reset_to_in_progress_status(
         retry_statuses = [TaskStatus.STOPPED]
         if retry:
             retry_statuses.append(TaskStatus.ERROR)
+        if run_deferred:
+            retry_statuses.append(TaskStatus.DEFERRED)
 
         filter_query = [
             col(Task.benchmark) == benchmark_row.id,

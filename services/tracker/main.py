@@ -219,10 +219,20 @@ async def start_benchmark(
     benchmark_id_var.set(str(benchmark_row.id))
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
+    all_dataset_task_ids: list[str] | None = None
     try:
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
         )
+
+        # If --defer-rest, fetch the full dataset task list so the benchmark also stages
+        # the unselected tasks as DEFERRED rows. They sit dormant until promoted via
+        # retry-or-resume (or named explicitly in --task-ids).
+        if request.defer_rest:
+            full_response = await benchmark_service.verify_task_ids(
+                task_ids=None, slice_str=None, dataset=request.dataset
+            )
+            all_dataset_task_ids = full_response.task_ids
 
         # Copy agent so edits to agents/<name>.zip during the run doesn't affect it
         await copy_agent_to_benchmark(
@@ -248,6 +258,7 @@ async def start_benchmark(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verify_response.task_ids,
+            all_dataset_task_ids=all_dataset_task_ids,
         )
     )
 
@@ -417,6 +428,7 @@ async def retry_or_resume_benchmark(
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
     concurrency: int | None = Query(default=None),
+    run_deferred: bool = Query(default=False),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
     session: Session = Depends(get_session),
@@ -434,6 +446,8 @@ async def retry_or_resume_benchmark(
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
         concurrency: Optional new concurrency level (overrides original value)
+        run_deferred: If true, promote all DEFERRED tasks in this benchmark to PENDING
+            so they get executed. DEFERRED tasks are otherwise untouched by retry/resume.
         task_ids: Optional list of specific task IDs to run
 
     Returns:
@@ -471,6 +485,7 @@ async def retry_or_resume_benchmark(
         retry_mode=retry_mode,
         rerun_task_ids=task_ids,
         org=org,
+        run_deferred=run_deferred,
     )
 
     # Ensure that credentials are included with the model dump

@@ -479,6 +479,13 @@ def auth_list() -> None:
     is_flag=True,
     help="Ignore custom benchmark services that have been configured. Provides opt-out for custom services.",
 )
+@click.option(
+    "--defer-rest",
+    is_flag=True,
+    help="Register every task in the dataset on the benchmark, but only run the ones in "
+    "--task-ids / --slice. The rest are marked DEFERRED and can be promoted later via "
+    "`valkyrie run resume --run-deferred` (or by naming them in --task-ids).",
+)
 def start(
     agent: str,
     model: str | None,
@@ -494,6 +501,7 @@ def start(
     headers: tuple[tuple[str, str]],
     intervals: tuple[int, ...],
     ignore_custom_services: bool,
+    defer_rest: bool,
 ):
     """
     Run an agent on a benchmark.
@@ -576,6 +584,7 @@ def start(
                 service_headers=service_headers or None,
                 webhook_secret_name=webhook_secret if webhook_intervals else None,
                 webhook_intervals=webhook_intervals,
+                defer_rest=defer_rest,
             )
 
             click.echo("\r\033[K", nl=False)
@@ -771,6 +780,14 @@ def stop(run_id: UUID, force: bool):
     default=False,
     help="Clear durable eval state and rerun generation.",
 )
+@click.option(
+    "--run-deferred",
+    is_flag=True,
+    default=False,
+    help="Promote all DEFERRED tasks in this run to PENDING so they get executed. Use "
+    "this to upgrade a `--defer-rest` run to full coverage. Specific deferred tasks can "
+    "also be promoted individually by naming them in --task-ids.",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -781,6 +798,7 @@ def resume(
     task_ids_file: Path | None,
     update_agent: bool,
     from_scratch: bool,
+    run_deferred: bool,
 ):
     """
     Resume a run by its run id.
@@ -826,6 +844,7 @@ def resume(
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
+                run_deferred=run_deferred,
             )
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))

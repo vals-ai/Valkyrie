@@ -55,6 +55,11 @@ class StartBenchmarkRequest(BaseModel):
     service_headers: dict[str, str] = {}
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
+    # When True, register every task in the dataset on the benchmark, but only mark the
+    # ones in `task_ids` (or selected by `slice_str`) as PENDING. The rest are created
+    # in DEFERRED status and can be promoted later via
+    # `retry-or-resume --run-deferred` (or by naming them in --task-ids).
+    defer_rest: bool = False
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:

@@ -52,6 +52,9 @@ class TaskStatus(str, Enum):
     STOPPED = "STOPPED"
     FINISHED = "FINISHED"
     ERROR = "ERROR"
+    # Task was registered with the benchmark but intentionally not queued for execution.
+    # Promoted to PENDING via retry-or-resume with --run-deferred or explicit --task-ids.
+    DEFERRED = "DEFERRED"
 
 
 class BenchmarkStatus(str, Enum):

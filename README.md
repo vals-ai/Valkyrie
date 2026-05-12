@@ -239,6 +239,7 @@ valkyrie run start \
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
 | `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
+| `--defer-rest` | Register every task in the dataset on the run, but only execute the ones in `--task-ids` / `--slice`. The remaining tasks are created in `DEFERRED` status and can be promoted later via `valkyrie run resume`. See [Deferred tasks](#deferred-tasks). |
 
 ### Monitor a run
 
@@ -285,10 +286,44 @@ valkyrie run resume <id> --concurrency 20
 | Option | Description |
 | --- | --- |
 | `--concurrency` | Override concurrency level |
-| `--task-ids` | Comma-separated task IDs to resume/retry |
+| `--task-ids` | Comma-separated task IDs to resume/retry. Also used to promote specific `DEFERRED` tasks. |
 | `--task-ids-file` | Path to a text file with one task ID per line |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
 | `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
+| `--run-deferred` | Promote every remaining `DEFERRED` task in the run to `PENDING` so it gets executed. See [Deferred tasks](#deferred-tasks). |
+
+### Deferred tasks
+
+`--defer-rest` lets you start a run that *registers* the full dataset on a single
+`benchmark_id` but only *executes* a subset of tasks up front. The unrun tasks live on
+the run in the `DEFERRED` status until you choose to promote them. This avoids the
+"run a subset now, run the full set later from scratch and waste compute on the subset
+tasks you already ran" pattern — a single run accumulates tasks over time.
+
+```bash
+# 1. Start a run that only executes a small subset; the rest are registered as DEFERRED.
+valkyrie run start \
+  --agent my_agent --benchmark my_bench --model my_model \
+  --task-ids "task_1,task_2,task_3" --defer-rest
+
+# 2. Retry/resume the executed subset as usual — DEFERRED tasks are untouched.
+valkyrie run resume <id> --retry
+
+# 3. Promote a single deferred task (handy for iterative testing).
+valkyrie run resume <id> --task-ids "task_4"
+
+# 4. Promote every remaining DEFERRED task at once to reach full coverage.
+valkyrie run resume <id> --run-deferred
+```
+
+Behavior:
+
+- A run with `DEFERRED` tasks still transitions to `FINISHED` once every non-deferred task
+  completes — `DEFERRED` is treated the same way as `ERROR` for the benchmark-level status.
+- Default `resume` / `retry` does **not** sweep `DEFERRED` tasks. They are only promoted
+  when explicitly named via `--task-ids` or when `--run-deferred` is passed.
+- Once promoted (`DEFERRED → PENDING → FINISHED`), a task is indistinguishable from one
+  that ran originally. Subsequent retry/resume treats it like any other task.
 
 ### List runs
 
