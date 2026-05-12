@@ -194,6 +194,56 @@ class TestFastapiServer:
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
 
+    async def test_start_benchmark_with_defer_rest_enqueues_full_dataset(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=10,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+            defer_rest=True,
+        )
+        verify_calls: list[tuple[list[str] | None, str | None, str | None]] = []
+        captured_kiq_kwargs: dict[str, Any] = {}
+
+        async def _mock_verify_task_ids(
+            *_args: Any,
+            task_ids: list[str] | None,
+            slice_str: str | None,
+            dataset: str | None = None,
+            **_kwargs: Any,
+        ) -> VerifyTaskIdsResponse:
+            verify_calls.append((task_ids, slice_str, dataset))
+            if task_ids is None and slice_str is None:
+                return VerifyTaskIdsResponse(task_ids=["task_0", "task_1", "task_2"])
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_kiq_kwargs.update(kwargs)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        assert response.json()["task_count"] == 1
+        assert verify_calls == [
+            (["task_0"], None, None),
+            (None, None, None),
+        ]
+        assert captured_kiq_kwargs["verified_task_ids"] == ["task_0"]
+        assert captured_kiq_kwargs["all_dataset_task_ids"] == ["task_0", "task_1", "task_2"]
+
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test fetch benchmark of the fastapi server.

@@ -13,6 +13,7 @@ from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkSt
 from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    BenchmarkContext,
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
@@ -337,6 +338,53 @@ class TestBenchmarkUtils:
         all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
+
+    def test_create_task_rows_with_deferred_tasks(
+        self, example_benchmark_object: Benchmark, database_session: Session
+    ):
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        verified_task_ids = ["task_0", "task_2"]
+        all_dataset_task_ids = ["task_0", "task_1", "task_2", "task_3"]
+
+        task_rows = create_task_rows(
+            verified_task_ids,
+            benchmark_row,
+            database_session,
+            self._test_org,
+            all_dataset_task_ids=all_dataset_task_ids,
+        )
+
+        assert [task_id for task_id, _task in task_rows] == verified_task_ids
+
+        all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        statuses_by_task_id = {task.task_id: task.status for task in all_tasks}
+        assert statuses_by_task_id == {
+            "task_0": TaskStatus.PENDING,
+            "task_1": TaskStatus.DEFERRED,
+            "task_2": TaskStatus.PENDING,
+            "task_3": TaskStatus.DEFERRED,
+        }
+
+        benchmark_details = BenchmarkContext(benchmark_row, database_session, self._test_org).benchmark_details
+        assert benchmark_details.total_tasks == len(verified_task_ids)
+        assert benchmark_details.task_breakdown[TaskStatus.DEFERRED] == 2
+        assert benchmark_row.create_benchmark_table_row(database_session).total_tasks == len(verified_task_ids)
+
+        # Calling again should be idempotent and still only return runnable tasks.
+        task_rows = create_task_rows(
+            verified_task_ids,
+            benchmark_row,
+            database_session,
+            self._test_org,
+            all_dataset_task_ids=all_dataset_task_ids,
+        )
+        assert [task_id for task_id, _task in task_rows] == verified_task_ids
+        assert len(database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()) == len(
+            all_dataset_task_ids
+        )
 
     def test_commit_task_error_spans_status_transition(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch

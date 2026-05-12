@@ -279,6 +279,71 @@ class TestStopAndResume:
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
 
+    @pytest.mark.parametrize(
+        ("run_deferred", "rerun_task_ids", "expected_pending", "expected_deferred"),
+        [
+            (False, [], {"task_0"}, {"task_1", "task_2"}),
+            (True, [], {"task_0", "task_1", "task_2"}, set()),
+            (False, ["task_1"], {"task_0", "task_1"}, {"task_2"}),
+        ],
+    )
+    async def test_reset_handles_deferred_tasks(
+        self,
+        run_deferred: bool,
+        rerun_task_ids: list[str],
+        expected_pending: set[str],
+        expected_deferred: set[str],
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        tasks = [
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.STOPPED),
+            Task(org_id=TEST_ORG_ID, task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.DEFERRED),
+            Task(org_id=TEST_ORG_ID, task_id="task_2", benchmark=benchmark_row.id, status=TaskStatus.DEFERRED),
+        ]
+        database_session.add(benchmark_row)
+        database_session.add_all(tasks)
+        database_session.commit()
+
+        verified_requests: list[set[str]] = []
+
+        async def _mock_request_verify_task_ids(
+            *_args: Any, task_ids: list[str], **_kwargs: Any
+        ) -> VerifyTaskIdsResponse:
+            verified_requests.append(set(task_ids))
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
+            retry=False,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=rerun_task_ids,
+            org=self._test_org,
+            run_deferred=run_deferred,
+        )
+
+        task_statuses = {
+            task.task_id: task.status
+            for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+
+        assert set(verified_task_ids) == expected_pending
+        assert verified_requests == [expected_pending]
+        assert {
+            task_id for task_id, status in task_statuses.items() if status == TaskStatus.PENDING
+        } == expected_pending
+        assert {
+            task_id for task_id, status in task_statuses.items() if status == TaskStatus.DEFERRED
+        } == expected_deferred
+
     async def test_process_task_resumes_evaluation_without_sandbox(
         self,
         contract: AgentContractRequest,
