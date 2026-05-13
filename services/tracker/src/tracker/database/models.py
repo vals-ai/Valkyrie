@@ -340,7 +340,7 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
 
 
 class TaskBreakdown(SQLModel, table=True):
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    id: UUID = Field(default_factory=uuid4, primary_key=True, exclude=True)
     sandbox_build_duration: float | None = Field(default=None)
     agent_run_duration: float | None = Field(default=None)
     evaluation_run_duration: float | None = Field(default=None)

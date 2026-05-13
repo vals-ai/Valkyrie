@@ -588,9 +588,9 @@ async def process_task(
 
                 with Session(bind=engine) as task_session:
                     task_session.add(task_breakdown)
-                    task_session.flush()
                     task_session.add(evaluation_result_row)
-                    task.task_breakdown = task_breakdown.id
+                    task_in_session = fetch_task_row(task_row.id, task_session, org)
+                    task_in_session.task_breakdown = task_breakdown.id
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
 
                     return {task_id: evaluation_result_row.result}
