@@ -40,6 +40,7 @@ from valkyrie.cli.utils import (
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
+    resolve_task_ids,
     resolve_webhook_config,
     stream_benchmark_status,
 )
@@ -418,10 +419,10 @@ def auth_list() -> None:
 )
 @click.option(
     "--task-ids-file",
-    type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=False),
+    type=str,
     required=False,
     default=None,
-    help="Path to a text file with one task ID per line",
+    help="Path or http(s) URL to a text file with one task ID per line",
 )
 @click.option(
     "--slice",
@@ -486,7 +487,7 @@ def start(
     concurrency: int,
     lambda_function: str | None,
     task_ids: str | None,
-    task_ids_file: Path | None,
+    task_ids_file: str | None,
     slice_str: str | None,
     dataset: str | None,
     kwargs: tuple[tuple[str, str]],
@@ -501,12 +502,7 @@ def start(
     Example:
         valkyrie run start --agent agents/claude_code --benchmark swebench
     """
-    if task_ids and task_ids_file:
-        raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
-
-    if task_ids_file:
-        lines = task_ids_file.read_text().splitlines()
-        task_ids = ",".join(line.strip() for line in lines if line.strip())
+    formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
     service_headers: dict[str, str] = {}
     auth_credential = TrackerService.get_benchmark_auth(benchmark)
@@ -518,13 +514,10 @@ def start(
     # Webhook notification setup (may print a warning before the boxes)
     webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
-    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids)
+    task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
+    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display)
 
     format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
-
-    formatted_task_ids: list[str] | None = None
-    if task_ids:
-        formatted_task_ids = task_ids.split(",")
 
     try:
         # Build agent config
@@ -640,13 +633,29 @@ def fetch(run_id: UUID, connect: bool):
     required=False,
     help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/run_id/<benchmark>.json",
 )
-def results(run_id: UUID, path: Path | None, s3: bool):
+@click.option(
+    "--task-ids",
+    type=str,
+    required=False,
+    default=None,
+    help="Comma-separated task IDs to score the subset over. Final score is recomputed over the subset.",
+)
+@click.option(
+    "--task-ids-file",
+    type=str,
+    required=False,
+    default=None,
+    help="Path or http(s) URL to a text file with one task ID per line",
+)
+def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, task_ids_file: str | None):
     """
     Retrieve the results of a run by its run id.
 
     Example:
         valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
+    subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
+
     click.echo(f"Retrieving results for run: {run_id}")
 
     try:
@@ -659,9 +668,17 @@ def results(run_id: UUID, path: Path | None, s3: bool):
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3)
+            results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3, task_ids=subset_task_ids)
 
             if isinstance(results_response, FinalViewResponse):
+                if subset_task_ids:
+                    scored = len(results_response.evaluation_results or {})
+                    click.echo(
+                        click.style(
+                            f"Scored over {scored} of {len(subset_task_ids)} subset task ids.",
+                            fg="yellow" if scored < len(subset_task_ids) else "green",
+                        )
+                    )
                 default_path: Path = Path(f"./{results_response.benchmark_name}.json")
 
                 download_final_view(path or default_path, results_response)
@@ -753,10 +770,10 @@ def stop(run_id: UUID, force: bool):
 )
 @click.option(
     "--task-ids-file",
-    type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=False),
+    type=str,
     required=False,
     default=None,
-    help="Path to a text file with one task ID per line",
+    help="Path or http(s) URL to a text file with one task ID per line",
 )
 @click.option(
     "--update-agent",
@@ -778,7 +795,7 @@ def resume(
     retry: bool,
     concurrency: int | None,
     task_ids: str | None,
-    task_ids_file: Path | None,
+    task_ids_file: str | None,
     update_agent: bool,
     from_scratch: bool,
 ):
@@ -788,12 +805,7 @@ def resume(
     Example:
         valkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
-    if task_ids and task_ids_file:
-        raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
-
-    if task_ids_file:
-        lines = task_ids_file.read_text().splitlines()
-        task_ids = ",".join(line.strip() for line in lines if line.strip())
+    retry_task_ids = resolve_task_ids(task_ids, task_ids_file) or []
 
     # NOTE: workaround for auto retrying tasks when using the retry command
     if ctx.info_name == "retry":
@@ -818,7 +830,6 @@ def resume(
                 asyncio.run(update_benchmark_agent_version(agent_name, str(run_id)))
                 click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
 
-            retry_task_ids = task_ids.split(",") if task_ids else []
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
@@ -954,7 +965,8 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
             click.echo(f"\r\033[KFetching agent outputs for run {run_id}...", nl=False)
 
             response = tracker.fetch_agent_outputs(
-                run_id, task_ids=[task.strip() for task in task_ids.split(",")] if task_ids else None
+                run_id,
+                task_ids=resolve_task_ids(task_ids),
             )
 
             download_agent_outputs(response, output_dir)

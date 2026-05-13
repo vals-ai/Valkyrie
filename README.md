@@ -233,7 +233,7 @@ valkyrie run start \
 | `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
 | `--lambda` | AWS Lambda function to invoke after the run completes |
 | `--task-ids` | Comma-separated task IDs to run |
-| `--task-ids-file` | Path to a text file with one task ID per line |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--slice` | Slice the benchmark dataset (`start:stop:step`) |
 | `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
@@ -258,7 +258,19 @@ valkyrie run results <id> --path ./results.json
 
 # Upload to S3
 valkyrie run results <id> --s3
+
+# Score over a task-id subset (recomputed via the benchmark service;
+# stored full results are unchanged)
+valkyrie run results <id> --task-ids task_1,task_2
+valkyrie run results <id> --task-ids-file https://example.com/subset.txt
 ```
+
+| Option | Description |
+| --- | --- |
+| `--path` | Local path to save results (default: `./<benchmark>.json`) |
+| `--s3` | Upload to S3 instead of downloading. With `--task-ids` / `--task-ids-file` the subset view overwrites the canonical S3 key — re-run without filters to restore |
+| `--task-ids` | Comma-separated task IDs to score the subset over (recomputes `final_score` over the filtered set) |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 
 ### Stop a run
 
@@ -286,7 +298,7 @@ valkyrie run resume <id> --concurrency 20
 | --- | --- |
 | `--concurrency` | Override concurrency level |
 | `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
-| `--task-ids-file` | Path to a text file with one task ID per line |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
 | `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
 

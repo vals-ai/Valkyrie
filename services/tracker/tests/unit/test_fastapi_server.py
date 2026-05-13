@@ -5,7 +5,7 @@ from uuid import UUID, uuid4
 
 import httpx
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import VerifyTaskIdsResponse
+from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -272,7 +272,9 @@ class TestFastapiServer:
         assert details.get("total_tasks") and details["total_tasks"] == 10
         assert details.get("finished_tasks") and details["finished_tasks"] == 6
 
-    async def test_retrieve_results(self, database_session: Session, example_benchmark_object: Benchmark):
+    async def test_retrieve_results(
+        self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
+    ):
         """
         Test the retrieve results endpoint of the fastapi server.
 
@@ -418,6 +420,26 @@ class TestFastapiServer:
 
         # If we did not get an error message, we return a default message
         assert response_json.get("task_errors").get("task_23") == "No error message was provided"
+
+        # Test case 9. task_ids subset filters evaluation_results and recomputes final_score
+        observed_headers: dict[str, str] = {}
+
+        async def _mock_final_score(client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
+            observed_headers.update(client._headers)
+            ids = list(kwargs["evaluation_results"].keys())
+            return FinalScoreResponse(tasks_evaluated=ids, final_score=float(len(ids)), metadata={})
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        response = client.get(
+            "/retrieve-results",
+            params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1"), ("task_ids", "task_3")],
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body["evaluation_results"]) == {"task_1", "task_3"}
+        assert body["final_evaluation"]["final_score"] == 2.0
+        assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
 
     async def test_benchmark_error_handling(
         self,
