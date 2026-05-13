@@ -56,6 +56,7 @@ from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
+    AverageTaskBreakdown,
     AWSCredentials,
     BenchmarkDetails,
     FetchBenchmarkResponse,
@@ -1018,6 +1019,35 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
     return evaluation_results
 
 
+def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: UUID) -> AverageTaskBreakdown | None:
+    """
+    Fetch the average task breakdown for a given benchmark.
+
+    Returns None if there are no task metrics available for the benchmark.
+    """
+    row = session.exec(
+        select(
+            func.avg(TaskBreakdown.sandbox_build_duration),
+            func.avg(TaskBreakdown.agent_run_duration),
+            func.avg(TaskBreakdown.evaluation_run_duration),
+            func.avg(TaskBreakdown.sandbox_run_duration),
+        )
+        .join(Task, col(Task.task_breakdown) == col(TaskBreakdown.id))
+        .where(Task.benchmark == benchmark_id)
+        .where(Task.org_id == org_id)
+    ).one()
+
+    if all(v is None for v in row):
+        return None
+
+    return AverageTaskBreakdown(
+        sandbox_build_duration=row[0],
+        agent_run_duration=row[1],
+        evaluation_run_duration=row[2],
+        sandbox_run_duration=row[3],
+    )
+
+
 def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_message: str) -> None:
     benchmark_row.status = BenchmarkStatus.ERROR
     benchmark_row.error_message = error_message
@@ -1435,6 +1465,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
         task_errors=benchmark_row.fetch_tasks_with_errors(session),
+        average_task_breakdown=fetch_average_task_breakdown(benchmark_row.id, session, org.id),
     )
 
     return final_view
