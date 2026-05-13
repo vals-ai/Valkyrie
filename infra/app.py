@@ -6,9 +6,12 @@ import aws_cdk as cdk
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from tracker_stack import TrackerStack
+from stage_tags import tag_with_deployment_stage
 from worker_stack import WorkerStack
 
 app = cdk.App()
+
+stage_name = app.node.try_get_context("stage") or "prod"
 
 env = cdk.Environment(
     account=os.getenv("CDK_DEFAULT_ACCOUNT"),
@@ -17,6 +20,7 @@ env = cdk.Environment(
 
 # Shared infrastructure (VPC, cluster, service discovery, Route53)
 shared = SharedStack(app, "SharedStack", env=env)
+tag_with_deployment_stage(shared, stage_name)
 
 # Tracker service (public-facing with ALB) + RDS database
 tracker = TrackerStack(
@@ -30,6 +34,7 @@ tracker = TrackerStack(
     redis_url=shared.redis_url,
     env=env,
 )
+tag_with_deployment_stage(tracker, stage_name)
 
 # Worker service (Taskiq worker) - deployed independently
 worker = WorkerStack(
@@ -44,6 +49,7 @@ worker = WorkerStack(
     tracker_service=tracker.tracker_fargate_service,
     env=env,
 )
+tag_with_deployment_stage(worker, stage_name)
 
 monitoring = MonitoringStack(
     app,
@@ -57,6 +63,7 @@ monitoring = MonitoringStack(
     redis_cluster=shared.redis_cluster,
     env=env,
 )
+tag_with_deployment_stage(monitoring, stage_name)
 
 # Deployment order
 tracker.add_dependency(shared)
