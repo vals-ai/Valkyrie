@@ -426,6 +426,7 @@ async def process_task(
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
+                resume_eval_start_time = time.perf_counter()
                 evaluation_result = await benchmark_service.resume_evaluation(
                     task_row.task_id,
                     eval_resume_state=task_row.eval_resume_state,
@@ -433,6 +434,7 @@ async def process_task(
                     on_eval_resume_state=on_eval_resume_state,
                     dataset=start_benchmark_request.dataset,
                 )
+                resume_eval_duration = time.perf_counter() - resume_eval_start_time
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
                     task=task_row.id,
@@ -443,6 +445,10 @@ async def process_task(
 
                 with Session(bind=engine) as task_session:
                     task_session.add(evaluation_result_row)
+                    task_in_session = fetch_task_row(task_row.id, task_session, org)
+                    if task_in_session.task_breakdown:
+                        existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                        existing_breakdown.evaluation_run_duration = resume_eval_duration
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
 
                     return {task_id: evaluation_result_row.result}
@@ -544,6 +550,9 @@ async def process_task(
                 task_breakdown.agent_run_duration = agent_run_time
 
                 with Session(bind=engine) as task_session:
+                    task_session.add(task_breakdown)
+                    task_in_session = fetch_task_row(task_row.id, task_session, org)
+                    task_in_session.task_breakdown = task_breakdown.id
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.EVALUATING)
 
                 # Evaluate the instance
@@ -585,10 +594,11 @@ async def process_task(
                 )
 
                 with Session(bind=engine) as task_session:
-                    task_session.add(task_breakdown)
                     task_session.add(evaluation_result_row)
                     task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    task_in_session.task_breakdown = task_breakdown.id
+                    existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                    existing_breakdown.evaluation_run_duration = task_breakdown.evaluation_run_duration
+                    existing_breakdown.sandbox_run_duration = task_breakdown.sandbox_run_duration
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
 
                     return {task_id: evaluation_result_row.result}
