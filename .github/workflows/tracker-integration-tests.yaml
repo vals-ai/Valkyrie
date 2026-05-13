@@ -2,6 +2,11 @@ name: Tracker integration tests
 on:
   pull_request:
     types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   tracker-integration-tests:
     runs-on: ubuntu-latest
@@ -59,6 +64,12 @@ jobs:
           uv venv --python 3.12
           uv sync --group dev
 
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-tests
+          aws-region: us-east-1
+
       - name: Run integration tests
         run: |
           cd services/tracker
@@ -67,6 +78,4 @@ jobs:
           TEST_AWS_S3_BUCKET: ${{ secrets.TEST_AWS_S3_BUCKET }}
           TEST_LOG_GROUP: ${{ secrets.TEST_LOG_GROUP }}
           TEST_DAYTONA_SECRET_NAME: ${{ secrets.TEST_DAYTONA_SECRET_NAME }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          AWS_DEFAULT_REGION: us-east-1

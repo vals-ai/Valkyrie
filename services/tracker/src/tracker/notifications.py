@@ -9,10 +9,10 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel
 
+from tracker.aws.secrets import fetch_aws_secret
 from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import SecretsError
 from tracker.logging import get_logger
-from tracker.secrets import fetch_aws_secret
 
 if TYPE_CHECKING:
     from tracker.database.models import Benchmark, Org
