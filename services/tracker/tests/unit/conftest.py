@@ -160,8 +160,11 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop(*_args: Any, **_kwargs: Any) -> None:
         pass
 
+    async def _noop_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        return None, 0.0
+
     monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _noop)
-    monkeypatch.setattr("tracker.utils.run_agent", _noop)
+    monkeypatch.setattr("tracker.utils.run_agent", _noop_run_agent)
 
 
 @pytest.fixture(autouse=True)
