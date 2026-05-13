@@ -479,7 +479,7 @@ async def process_task(
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
 
-        start_sandbox_build_time = time.perf_counter()  # Start sandbox build timer
+        start_sandbox_build_time = time.perf_counter()
         async with create_sandbox(
             daytona=benchmark_service.daytona_client,
             sandbox_name=task_row.alias,
@@ -489,10 +489,8 @@ async def process_task(
             resources=task_data.resources,
             creation_semaphore=creation_semaphore,
         ) as sandbox:
-            task_breakdown.sandbox_build_duration = (
-                time.perf_counter() - start_sandbox_build_time
-            )  # End sandbox build timer
-            start_sandbox_run_time = time.perf_counter()  # Start sandbox run timer
+            task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
+            start_sandbox_run_time = time.perf_counter()
 
             try:
                 with Session(bind=engine) as task_session:
@@ -549,7 +547,7 @@ async def process_task(
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.EVALUATING)
 
                 # Evaluate the instance
-                evaluation_start_time = time.perf_counter()  # Start evaluation timer
+                evaluation_start_time = time.perf_counter()
 
                 logger.info(
                     "task.evaluation.start",
