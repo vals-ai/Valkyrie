@@ -8,6 +8,7 @@ import httpx
 import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError
+from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from opentelemetry.propagate import inject
@@ -33,7 +34,7 @@ from tracker.aws.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
-from tracker.config import AUTH_REQUIRED, ENVIRONMENT
+from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_url
 from tracker.database.models import Benchmark, BenchmarkStatus, FinalEvaluation, Org, RetryMode
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
@@ -43,6 +44,7 @@ from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
     BenchmarkTableRow,
+    FetchBenchmarkTasksRequest,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
@@ -60,6 +62,7 @@ from tracker.utils import (
     BenchmarkContext,
     YieldingWriter,
     commit_benchmark_error,
+    create_benchmark_service_client,
     create_final_view,
     fetch_filtered_benchmark_rows,
     fetch_harness_config,
@@ -265,6 +268,35 @@ async def start_benchmark(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
         ),
     )
+
+
+@app.post("/fetch-benchmark-tasks")
+async def fetch_benchmark_tasks(
+    http_request: Request,
+    request: FetchBenchmarkTasksRequest,
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    _org: Org = Depends(get_current_org),
+) -> VerifyTaskIdsResponse:
+    """
+    Fetch all task ids for a benchmark dataset.
+    """
+    try:
+        benchmark_service = create_benchmark_service_client(
+            url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
+            daytona_secret_name=harness_config.daytona_secret_name,
+            aws=harness_config.aws,
+            service_headers=forward_tracker_api_key(request.service_headers, http_request.headers.get("x-api-key")),
+        )
+        return await benchmark_service.verify_task_ids(
+            task_ids=None,
+            slice_str=None,
+            dataset=request.dataset,
+        )
+    except (BenchmarkServiceError, httpx.HTTPError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch task ids from benchmark service '{request.benchmark_name}': {exc}",
+        ) from exc
 
 
 @app.get("/fetch-benchmark", response_model=None)

@@ -55,6 +55,26 @@ class TestFastapiServer:
 
         assert response.json() == {"status": "ok"}
 
+    async def test_fetch_benchmark_tasks(
+        self,
+        monkeypatch: MonkeyPatch,
+    ):
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_1", "task_2"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post(
+            "/fetch-benchmark-tasks",
+            json={
+                "benchmark_name": "swebench",
+                "dataset": "verified",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"task_ids": ["task_1", "task_2"]}
+
     async def test_start_benchmark(
         self,
         contract: AgentContractRequest,

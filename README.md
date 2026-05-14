@@ -292,6 +292,12 @@ valkyrie run retry <id>
 
 # Override concurrency on resume (works on retry)
 valkyrie run resume <id> --concurrency 20
+
+# Save every task ID in a benchmark dataset to a text file
+valkyrie benchmark tasks swebench --dataset default
+
+# Or choose the output path
+valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 ```
 
 | Option | Description |
