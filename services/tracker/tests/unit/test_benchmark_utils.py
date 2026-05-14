@@ -9,13 +9,23 @@ from sqlmodel import Session, col, func, select, update
 
 from tests.unit.test_fastapi_server import client
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkStatus,
+    EvaluationResult,
+    Org,
+    Task,
+    TaskStatus,
+)
 from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
+    fetch_final_score_inputs,
+    has_runnable_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
@@ -210,21 +220,20 @@ class TestBenchmarkUtils:
         Tests edge cases for resuming a benchmark
 
         Test Cases:
-            - Cannot resume a benchmark that is not in a stopped state
+            - Running benchmark retry with no error tasks is a no-op
             - Cannot resume a benchmark where all tasks have already finished
             - Errors are raised and returned to the client
             - Can recreate the same environment the benchmark was started in
             - Can force resume a task and validate the task ids passed in
         """
 
-        # Benchmark is not in a stopped state
+        # Running benchmark retry with no error tasks is a no-op
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
 
-        # failure code to resume the benchmark
         response: Response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
-        assert response.status_code == 400
+        assert response.status_code == 200
 
         # Set benchmark to stopped state but add only finished tasks
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -337,6 +346,53 @@ class TestBenchmarkUtils:
         all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
+
+        task_rows = create_task_rows(["task_1"], benchmark_row, database_session, self._test_org)
+        assert [task_id for task_id, _ in task_rows] == ["task_1"]
+
+    def test_fetch_final_score_inputs_waits_for_runnable_tasks(
+        self, example_benchmark_object: Benchmark, database_session: Session
+    ):
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        finished_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_finished",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        error_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_error",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+        )
+        pending_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_pending",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add_all([finished_task, error_task, pending_task])
+        database_session.commit()
+
+        database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"score": 1.0}))
+        database_session.commit()
+
+        assert has_runnable_tasks(database_session, benchmark_row, self._test_org)
+
+        pending_task.status = TaskStatus.ERROR
+        database_session.add(pending_task)
+        database_session.commit()
+
+        assert not has_runnable_tasks(database_session, benchmark_row, self._test_org)
+        assert fetch_final_score_inputs(database_session, benchmark_row, self._test_org) == {
+            "task_finished": {"score": 1.0},
+            "task_error": None,
+            "task_pending": None,
+        }
 
     def test_commit_task_error_spans_status_transition(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch

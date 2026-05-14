@@ -424,7 +424,7 @@ async def retry_or_resume_benchmark(
     org: Org = Depends(get_current_org),
 ) -> RetryOrResumeBenchmarkResponse:
     """
-    Retry or resume a benchmark run by its id, we only can retry or resume a benchmark if its not currently running.
+    Retry or resume a benchmark run by its id.
 
     Usage:
     curl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20
@@ -441,12 +441,16 @@ async def retry_or_resume_benchmark(
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
-
-    if benchmark_row.status in invalid_states:
+    if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
             status_code=400,
-            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is currently running.",
+            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
+        )
+
+    benchmark_is_running = benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+    if benchmark_is_running and not retry:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
         )
 
     effective_service_headers = forward_tracker_api_key(
@@ -454,13 +458,6 @@ async def retry_or_resume_benchmark(
         http_request.headers.get("x-api-key"),
     )
 
-    # NOTE: 0 is not acceptable
-    if concurrency:
-        benchmark_row.arguments.concurrency = concurrency
-        session.add(benchmark_row)
-        session.commit()
-
-    # Reset tasks and retry or resume benchmark
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
@@ -472,6 +469,17 @@ async def retry_or_resume_benchmark(
         rerun_task_ids=task_ids,
         org=org,
     )
+
+    if benchmark_is_running and not verified_task_ids:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
+        )
+
+    # NOTE: 0 is not acceptable
+    if concurrency:
+        benchmark_row.arguments.concurrency = concurrency
+        session.add(benchmark_row)
+        session.commit()
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(
