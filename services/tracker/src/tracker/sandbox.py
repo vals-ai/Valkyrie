@@ -65,7 +65,7 @@ logger = get_logger(__name__)
 
 bundle_path = PurePosixPath("/bundle")
 SNAPSHOT_IMAGE_PREFIX = "snapshot:"
-_SANDBOX_AUTOSTOP_INTERVAL_MINUTES = 24 * 60
+_SANDBOX_AUTOSTOP_INTERVAL_MINUTES = 10 * 60
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
