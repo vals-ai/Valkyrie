@@ -79,6 +79,7 @@ class WorkerStack(Stack):
             "BROKER_ENVIRONMENT": "production",
             "AWS_S3_BUCKET": bucket.bucket_name,
             "ENVIRONMENT": "production",
+            "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
         }
 
         db_env = {
