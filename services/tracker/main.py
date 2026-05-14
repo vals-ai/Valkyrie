@@ -287,11 +287,14 @@ async def fetch_benchmark_tasks(
             aws=harness_config.aws,
             service_headers=forward_tracker_api_key(request.service_headers, http_request.headers.get("x-api-key")),
         )
-        return await benchmark_service.verify_task_ids(
-            task_ids=None,
-            slice_str=None,
-            dataset=request.dataset,
-        )
+        try:
+            return await benchmark_service.verify_task_ids(
+                task_ids=None,
+                slice_str=None,
+                dataset=request.dataset,
+            )
+        finally:
+            await benchmark_service.close()
     except (BenchmarkServiceError, httpx.HTTPError) as exc:
         raise HTTPException(
             status_code=502,
