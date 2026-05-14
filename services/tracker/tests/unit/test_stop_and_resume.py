@@ -299,7 +299,7 @@ class TestStopAndResume:
             task_ids=existing_task_ids,
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
         database_session.add(benchmark_row)
