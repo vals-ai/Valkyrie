@@ -91,6 +91,7 @@ class TestSandboxOperations:
             region_name=aws_credentials.aws_default_region,
             aws_access_key_id=aws_credentials.aws_access_key_id,
             aws_secret_access_key=aws_credentials.aws_secret_access_key,
+            aws_session_token=aws_credentials.aws_session_token,
         )
         agent_key = get_contract_s3_key(contract_name)
         frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)

@@ -16,6 +16,7 @@ def _lambda_client(aws: AWSCredentials) -> Any:
         "lambda",
         aws_access_key_id=aws.aws_access_key_id,
         aws_secret_access_key=aws.aws_secret_access_key,
+        aws_session_token=aws.aws_session_token,
         region_name=aws.aws_default_region,
     )
 

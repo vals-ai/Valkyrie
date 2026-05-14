@@ -52,6 +52,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - AWS_REGION
+      - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:
         condition: service_healthy
@@ -81,6 +82,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - AWS_REGION
+      - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:
         condition: service_healthy

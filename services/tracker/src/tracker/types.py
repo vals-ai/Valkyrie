@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -32,6 +32,7 @@ class AWSCredentials(BaseModel, frozen=True):
     aws_access_key_id: str
     aws_secret_access_key: str
     aws_default_region: str
+    aws_session_token: str | None = None
 
 
 class HarnessConfig(BaseModel):
@@ -68,6 +69,13 @@ class StartBenchmarkRequest(BaseModel):
             aws=self.harness_config.aws,
             service_headers=self.service_headers,
         )
+
+
+class FetchBenchmarkTasksRequest(BaseModel):
+    benchmark_name: str
+    dataset: str | None = None
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict)
 
 
 class StartBenchmarkErrorResponse(BaseModel):

@@ -24,7 +24,7 @@ from daytona import (
     Resources,
     SandboxState,
 )
-from daytona.common.errors import DaytonaError
+from daytona.common.errors import DaytonaConnectionError, DaytonaError
 from daytona.handle.async_pty_handle import AsyncPtyHandle
 from opentelemetry import trace
 from tenacity import (
@@ -65,6 +65,7 @@ logger = get_logger(__name__)
 
 bundle_path = PurePosixPath("/bundle")
 SNAPSHOT_IMAGE_PREFIX = "snapshot:"
+_SANDBOX_AUTOSTOP_INTERVAL_MINUTES = 10 * 60
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -174,7 +175,7 @@ async def _create_sandbox(
 
         return await daytona.create(
             CreateSandboxFromSnapshotParams(
-                auto_stop_interval=0,
+                auto_stop_interval=_SANDBOX_AUTOSTOP_INTERVAL_MINUTES,
                 auto_delete_interval=0,
                 name=sandbox_name,
                 labels=labels,
@@ -186,10 +187,10 @@ async def _create_sandbox(
             timeout=360,
         )
 
-    # Create a new sandbox from scratch, if it stops we delete it within a minute
+    # Create a new sandbox from scratch.
     return await daytona.create(
         CreateSandboxFromImageParams(
-            auto_stop_interval=0,
+            auto_stop_interval=_SANDBOX_AUTOSTOP_INTERVAL_MINUTES,
             auto_delete_interval=0,
             name=sandbox_name,
             labels=labels,
@@ -526,6 +527,13 @@ async def _create_pty_session(
     return handle, salted_id
 
 
+@retry(
+    retry=retry_if_exception_type(DaytonaConnectionError),
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    before_sleep=daytona_retry_callback("valkyrie.sandbox.health_check", op="sandbox.health_check"),
+    reraise=True,
+)
 @logfire.instrument("sandbox.health_check", extract_args=False)
 async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
     """
@@ -542,6 +550,8 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
             incr("valkyrie.sandbox.unhealthy", tags={"state": str(sandbox.state)})
             raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
     except SandboxError:
+        raise
+    except DaytonaConnectionError:
         raise
     except Exception as e:
         if isinstance(e, DaytonaError):
