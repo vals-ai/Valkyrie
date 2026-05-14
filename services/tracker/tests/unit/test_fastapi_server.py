@@ -795,6 +795,41 @@ class TestFastapiServer:
         rows = response.json()["benchmarks"]
         assert any(r["started_by_email"] == "alice@vals.ai" for r in rows)
 
+    async def test_fetch_benchmarks_started_by_query_param_filters(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+    ):
+        """Regression: FastAPI's Depends(PydanticModel) doesn't bind list[str] from query params;
+        started_by must be declared as a separate Query() parameter on the endpoint."""
+        for email in ("alice@vals.ai", "bob@vals.ai", None):
+            database_session.add(
+                Benchmark(
+                    org_id=TEST_ORG_ID,
+                    name="swebench",
+                    arguments=BenchmarkArguments(contract=contract, concurrency=1),
+                    started_by_email=email,
+                    started_by_id=f"K-{email or 'none'}",
+                )
+            )
+        database_session.commit()
+
+        response = client.get("/fetch-benchmarks", params={"started_by": "alice@vals.ai", "limit": 10})
+        assert response.status_code == 200
+        rows = response.json()["benchmarks"]
+        assert len(rows) == 1
+        assert rows[0]["started_by_email"] == "alice@vals.ai"
+
+        # Repeated query params for multi-value filter
+        response = client.get(
+            "/fetch-benchmarks",
+            params=[("started_by", "alice@vals.ai"), ("started_by", "bob@vals.ai"), ("limit", "10")],
+        )
+        assert response.status_code == 200
+        rows = response.json()["benchmarks"]
+        assert len(rows) == 2
+        assert {r["started_by_email"] for r in rows} == {"alice@vals.ai", "bob@vals.ai"}
+
     async def test_fetch_benchmark_metadata_includes_started_by_email(
         self,
         contract: AgentContractRequest,

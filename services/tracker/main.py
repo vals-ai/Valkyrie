@@ -583,6 +583,7 @@ async def retry_or_resume_benchmark(
 @app.get("/fetch-benchmarks")
 async def fetch_benchmarks(
     request: FetchBenchmarksRequest = Depends(),
+    started_by: list[str] | None = Query(default=None),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> FetchBenchmarksResponse:
@@ -595,6 +596,10 @@ async def fetch_benchmarks(
     Returns:
         list[FetchBenchmarksResponse]
     """
+
+    # list[str] fields are not bound from query params by FastAPI's Depends(PydanticModel)
+    # — declare started_by separately and merge into the request.
+    request = request.model_copy(update={"started_by": started_by})
 
     benchmark_rows, total_count = fetch_filtered_benchmark_rows(request, session, org)
 
