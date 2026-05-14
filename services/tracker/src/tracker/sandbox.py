@@ -36,8 +36,9 @@ from tenacity import (
     wait_fixed,
 )
 
-from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
+from tracker.aws.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.database.models import AgentCausedExitReason, AgentContractRequest
+from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
 from tracker.exceptions import (
     AgentRunFailedError,
     InvalidSandboxConfigurationError,
@@ -57,7 +58,6 @@ from tracker.observability import (
     set_sandbox_context,
     tag_daytona_error,
 )
-from tracker.aws.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
@@ -157,13 +157,14 @@ async def _create_sandbox(
     """
     _set_sandbox_create_span_attributes(sandbox_name, image, resources)
 
-    # If the container already exists we reuse it
+    # If the container already exists and is healthy we reuse it
     try:
         sandbox = await daytona.get(sandbox_name)
 
-        await sandbox.wait_for_sandbox_start(timeout=0)
-
-        return sandbox
+        # Restart the sandbox creation process if it cannot be recovered
+        if sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED):
+            await sandbox.wait_for_sandbox_start(timeout=0)
+            return sandbox
     except DaytonaNotFoundError:
         pass
 
