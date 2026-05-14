@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from tracker.auth import (
     extract_api_key,
@@ -34,7 +34,7 @@ from tracker.aws.s3 import (
     s3_object_exists,
 )
 from tracker.config import AUTH_REQUIRED, ENVIRONMENT
-from tracker.database.models import Benchmark, BenchmarkStatus, FinalEvaluation, Org, RetryMode
+from tracker.database.models import Benchmark, BenchmarkStatus, FinalEvaluation, Org, RetryMode, Task
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
@@ -452,6 +452,7 @@ async def retry_or_resume_benchmark(
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
     concurrency: int | None = Query(default=None),
+    extend_to_dataset: bool = Query(default=False),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
     session: Session = Depends(get_session),
@@ -496,13 +497,31 @@ async def retry_or_resume_benchmark(
         session.add(benchmark_row)
         session.commit()
 
+    benchmark_service = benchmark_row.benchmark_service(
+        harness_config.daytona_secret_name, harness_config.aws, service_headers=effective_service_headers
+    )
+
+    if extend_to_dataset:
+        full = await benchmark_service.verify_task_ids(
+            task_ids=None, slice_str=None, dataset=benchmark_row.arguments.dataset
+        )
+        existing_task_ids = set(
+            session.exec(
+                select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(Task.org_id == org.id)
+            ).all()
+        )
+        missing = [tid for tid in full.task_ids if tid not in existing_task_ids]
+        task_ids = list(dict.fromkeys([*task_ids, *missing]))
+        logger.info(
+            f"extend_to_dataset: dataset has {len(full.task_ids)} tasks, "
+            f"{len(missing)} not yet on run — adding as PENDING"
+        )
+
     # Reset tasks and retry or resume benchmark
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(
-            harness_config.daytona_secret_name, harness_config.aws, service_headers=effective_service_headers
-        ),
+        benchmark_service=benchmark_service,
         retry=retry,
         retry_mode=retry_mode,
         rerun_task_ids=task_ids,

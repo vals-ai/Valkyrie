@@ -433,6 +433,7 @@ class TrackerService:
         concurrency: int | None,
         task_ids: list[str],
         service_headers: dict[str, str] | None = None,
+        extend_to_dataset: bool = False,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -444,6 +445,8 @@ class TrackerService:
             task_ids: List of task ids to force retry. Task ids without an existing row
                 are created as fresh PENDING if valid in the current dataset.
             service_headers: Optional headers for benchmark service authentication
+            extend_to_dataset: If True, ask the benchmark service for the full task list in
+                the run's dataset and lazy-spike any ids not already on the run.
 
         Returns:
             RetryOrResumeBenchmarkResponse with status and message
@@ -454,6 +457,9 @@ class TrackerService:
             # NOTE: 0 is not acceptable
             if concurrency:
                 params["concurrency"] = concurrency
+
+            if extend_to_dataset:
+                params["extend_to_dataset"] = True
 
             body: dict[str, Any] = {"task_ids": task_ids, "service_headers": service_headers or {}}
 

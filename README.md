@@ -292,6 +292,10 @@ valkyrie run retry <id>
 
 # Override concurrency on resume (works on retry)
 valkyrie run resume <id> --concurrency 20
+
+# Extend a subset run to cover the full current dataset (lazy-spikes any
+# dataset task ids not already on the run; existing finished tasks preserved)
+valkyrie run resume <id> --extend-to-dataset
 ```
 
 | Option | Description |
@@ -299,6 +303,7 @@ valkyrie run resume <id> --concurrency 20
 | `--concurrency` | Override concurrency level |
 | `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
+| `--extend-to-dataset` | Ask the benchmark service for the full task list in the run's dataset and lazy-spike any ids not already on the run. Already-finished tasks are preserved. |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
 | `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
 

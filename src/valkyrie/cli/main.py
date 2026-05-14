@@ -788,6 +788,12 @@ def stop(run_id: UUID, force: bool):
     default=False,
     help="Clear durable eval state and rerun generation.",
 )
+@click.option(
+    "--extend-to-dataset",
+    is_flag=True,
+    default=False,
+    help="Ask the benchmark service for the full task list in this run's dataset and lazy-spike any ids not already on the run. Useful for extending a curated-subset run to the full dataset without maintaining a parallel task-id list.",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -798,6 +804,7 @@ def resume(
     task_ids_file: str | None,
     update_agent: bool,
     from_scratch: bool,
+    extend_to_dataset: bool,
 ):
     """
     Resume a run by its run id.
@@ -837,6 +844,7 @@ def resume(
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
+                extend_to_dataset=extend_to_dataset,
             )
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))

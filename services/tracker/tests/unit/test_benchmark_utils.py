@@ -309,6 +309,52 @@ class TestBenchmarkUtils:
         assert len(task_rows) == 5
         assert all(task_row.status == TaskStatus.PENDING for task_row in task_rows)
 
+    async def test_resume_with_extend_to_dataset_spikes_missing_tasks(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """`extend_to_dataset=true` pulls the full task list from the benchmark service and
+        lazy-spikes any ids not yet on the run as PENDING. Existing FINISHED tasks are
+        preserved (not reset)."""
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        # Seed 2 of 5 dataset tasks as FINISHED on the run (a curated-subset run)
+        for i in range(2):
+            database_session.add(
+                Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+            )
+        database_session.commit()
+
+        dataset_task_ids = [f"task_{i}" for i in range(5)]
+
+        async def _mock_verify(*_args: Any, task_ids: list[str] | None, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            # task_ids=None means "list the whole dataset"
+            return VerifyTaskIdsResponse(task_ids=task_ids if task_ids else dataset_task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false&extend_to_dataset=true",
+            json={"task_ids": []},
+        )
+        assert response.status_code == 200
+
+        rows = {
+            row.task_id: row.status
+            for row in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+        # All 5 dataset tasks present; the 2 already-FINISHED preserved; the 3 missing added as PENDING
+        assert set(rows.keys()) == {f"task_{i}" for i in range(5)}
+        assert rows["task_0"] == TaskStatus.FINISHED
+        assert rows["task_1"] == TaskStatus.FINISHED
+        assert rows["task_2"] == TaskStatus.PENDING
+        assert rows["task_3"] == TaskStatus.PENDING
+        assert rows["task_4"] == TaskStatus.PENDING
+
     def test_create_task_rows(self, example_benchmark_object: Benchmark, database_session: Session):
         """
         Tests different scenarios for creating task rows
