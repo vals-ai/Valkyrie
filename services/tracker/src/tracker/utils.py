@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
-from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, DaytonaConfig, SandboxState
+from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from daytona.common.errors import DaytonaNotFoundError, DaytonaRateLimitError
 from fastapi import Request
 from opentelemetry import trace
@@ -102,18 +102,7 @@ def create_benchmark_service_client(
     headers = fetch_daytona_headers(daytona_secret_name, aws)
     if service_headers:
         headers.update(service_headers)
-    client = BenchmarkServiceClient(url=url, headers=headers)
-
-    client._daytona_client = AsyncDaytona(  # pyright: ignore[reportPrivateUsage]
-        config=DaytonaConfig(
-            api_key=headers["x-api-key"],
-            api_url=headers["x-api-url"],
-            target=headers["x-target"],
-            connection_pool_maxsize=None,
-        )
-    )
-
-    return client
+    return BenchmarkServiceClient(url=url, headers=headers)
 
 
 def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, org: Org) -> Benchmark:
