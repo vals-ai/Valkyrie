@@ -65,6 +65,7 @@ logger = get_logger(__name__)
 
 bundle_path = PurePosixPath("/bundle")
 SNAPSHOT_IMAGE_PREFIX = "snapshot:"
+_SANDBOX_AUTOSTOP_INTERVAL_MINUTES = 24 * 60
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -174,7 +175,7 @@ async def _create_sandbox(
 
         return await daytona.create(
             CreateSandboxFromSnapshotParams(
-                auto_stop_interval=0,
+                auto_stop_interval=_SANDBOX_AUTOSTOP_INTERVAL_MINUTES,
                 auto_delete_interval=0,
                 name=sandbox_name,
                 labels=labels,
@@ -186,10 +187,10 @@ async def _create_sandbox(
             timeout=360,
         )
 
-    # Create a new sandbox from scratch, if it stops we delete it within a minute
+    # Create a new sandbox from scratch.
     return await daytona.create(
         CreateSandboxFromImageParams(
-            auto_stop_interval=0,
+            auto_stop_interval=_SANDBOX_AUTOSTOP_INTERVAL_MINUTES,
             auto_delete_interval=0,
             name=sandbox_name,
             labels=labels,
