@@ -24,7 +24,7 @@ from daytona import (
     Resources,
     SandboxState,
 )
-from daytona.common.errors import DaytonaError
+from daytona.common.errors import DaytonaConnectionError, DaytonaError
 from daytona.handle.async_pty_handle import AsyncPtyHandle
 from opentelemetry import trace
 from tenacity import (
@@ -526,6 +526,13 @@ async def _create_pty_session(
     return handle, salted_id
 
 
+@retry(
+    retry=retry_if_exception_type(DaytonaConnectionError),
+    stop=stop_after_attempt(3),
+    wait=wait_fixed(2),
+    before_sleep=daytona_retry_callback("valkyrie.sandbox.health_check", op="sandbox.health_check"),
+    reraise=True,
+)
 @logfire.instrument("sandbox.health_check", extract_args=False)
 async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
     """
@@ -542,6 +549,8 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
             incr("valkyrie.sandbox.unhealthy", tags={"state": str(sandbox.state)})
             raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
     except SandboxError:
+        raise
+    except DaytonaConnectionError:
         raise
     except Exception as e:
         if isinstance(e, DaytonaError):
