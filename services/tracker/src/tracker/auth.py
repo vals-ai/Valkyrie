@@ -29,7 +29,8 @@ class RequestIdentity:
 
     In hosted mode `access_key_id` is always set. `email` and `name` are populated
     from Descope claims or the bound user profile when the caller requests it. In
-    self-hosted mode all three are None.
+    self-hosted mode all three are None. The access key id is persisted as
+    `Benchmark.started_by_id` to preserve the exact credential used to start the run.
     """
 
     org: Org
@@ -57,22 +58,6 @@ def _get_descope_claim(jwt_response: Mapping[str, object], claim_name: str) -> o
     return jwt_response.get(claim_name)
 
 
-def _get_descope_custom_claim(jwt_response: Mapping[str, object], claim_name: str) -> object:
-    claim = _get_descope_claim(jwt_response, claim_name)
-    if claim is not None:
-        return claim
-
-    for claim_source in (jwt_response, jwt_response.get(DESCOPE_SESSION_TOKEN_FIELD)):
-        if not isinstance(claim_source, Mapping):
-            continue
-
-        custom_claims = claim_source.get(DESCOPE_CUSTOM_CLAIMS_FIELD)
-        if isinstance(custom_claims, Mapping) and claim_name in custom_claims:
-            return custom_claims.get(claim_name)
-
-    return None
-
-
 def _normalize_optional_string(value: object, *, lowercase: bool = False) -> str | None:
     if not isinstance(value, str):
         return None
@@ -82,6 +67,30 @@ def _normalize_optional_string(value: object, *, lowercase: bool = False) -> str
         return None
 
     return normalized.lower() if lowercase else normalized
+
+
+def _get_descope_string_claim(
+    jwt_response: Mapping[str, object], claim_name: str, *, lowercase: bool = False
+) -> str | None:
+    return _normalize_optional_string(_get_descope_claim(jwt_response, claim_name), lowercase=lowercase)
+
+
+def _get_descope_custom_string_claim(
+    jwt_response: Mapping[str, object], claim_name: str, *, lowercase: bool = False
+) -> str | None:
+    claim = _get_descope_string_claim(jwt_response, claim_name, lowercase=lowercase)
+    if claim is not None:
+        return claim
+
+    for claim_source in (jwt_response, jwt_response.get(DESCOPE_SESSION_TOKEN_FIELD)):
+        if not isinstance(claim_source, Mapping):
+            continue
+
+        custom_claims = claim_source.get(DESCOPE_CUSTOM_CLAIMS_FIELD)
+        if isinstance(custom_claims, Mapping) and claim_name in custom_claims:
+            return _normalize_optional_string(custom_claims.get(claim_name), lowercase=lowercase)
+
+    return None
 
 
 def _load_descope_user_profile(user_id: str) -> tuple[str | None, str | None]:
@@ -147,17 +156,15 @@ def resolve_descope_identity(
             detail=f"Access key must be scoped to exactly one tenant, got {len(tenants)}",
         )
 
-    access_key_id = _normalize_optional_string(
-        jwt_response.get(DESCOPE_ACCESS_KEY_ID_FIELD)
-    ) or _normalize_optional_string(
-        _get_descope_claim(jwt_response, "sub"),
+    access_key_id = _get_descope_string_claim(jwt_response, DESCOPE_ACCESS_KEY_ID_FIELD) or _get_descope_string_claim(
+        jwt_response, "sub"
     )
     if not access_key_id:
         raise HTTPException(status_code=400, detail="Descope JWT missing access key id")
 
-    email = _normalize_optional_string(_get_descope_claim(jwt_response, "email"), lowercase=True)
-    name = _normalize_optional_string(_get_descope_claim(jwt_response, "name"))
-    user_id = _normalize_optional_string(_get_descope_custom_claim(jwt_response, DESCOPE_USER_ID_CLAIM))
+    email = _get_descope_string_claim(jwt_response, "email", lowercase=True)
+    name = _get_descope_string_claim(jwt_response, "name")
+    user_id = _get_descope_custom_string_claim(jwt_response, DESCOPE_USER_ID_CLAIM)
 
     if include_user_profile and email is None and user_id is not None:
         email, profile_name = _load_descope_user_profile(user_id)
