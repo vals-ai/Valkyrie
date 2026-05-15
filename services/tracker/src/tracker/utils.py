@@ -108,10 +108,10 @@ def create_benchmark_service_client(
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
-def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, starter: RequestIdentity) -> Benchmark:
+def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     return Benchmark(
-        org_id=starter.org.id,
+        org_id=run_starter.org.id,
         name=request.benchmark_name,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
@@ -124,8 +124,8 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, starter
             lambda_function=request.lambda_function,
             dataset=request.dataset,
         ),
-        started_by_id=starter.access_key_id,
-        started_by_email=starter.email,
+        started_by_id=run_starter.access_key_id,
+        started_by_email=run_starter.email,
     )
 
 

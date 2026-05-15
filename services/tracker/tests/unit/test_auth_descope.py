@@ -49,7 +49,7 @@ def descope_access_key_response(
     if name is not None:
         session_token["name"] = name
     if user_id is not None:
-        session_token["user_id"] = user_id
+        session_token["customClaims"] = {"user_id": user_id}
 
     return {
         "tenants": {tenant: {}},
@@ -81,11 +81,11 @@ def test_resolve_descope_identity_full_claims(mock_descope):
         name="Alice Smith",
     )
 
-    tenant, key_id, email, name = resolve_descope_identity("valid-key")
-    assert tenant == "test-tenant"
-    assert key_id == "K2abc"
-    assert email == "alice@vals.ai"
-    assert name == "Alice Smith"
+    identity = resolve_descope_identity("valid-key")
+    assert identity.tenant_name == "test-tenant"
+    assert identity.access_key_id == "K2abc"
+    assert identity.email == "alice@vals.ai"
+    assert identity.name == "Alice Smith"
     mock_descope.mgmt.user.load_by_user_id.assert_not_called()
 
 
@@ -98,49 +98,49 @@ def test_resolve_descope_identity_loads_user_profile_when_requested(mock_descope
         },
     }
 
-    tenant, key_id, email, name = resolve_descope_identity("valid-key", include_user_profile=True)
+    identity = resolve_descope_identity("valid-key", include_user_profile=True)
 
-    assert tenant == "test-tenant"
-    assert key_id == "K2abc"
-    assert email == "alice@vals.ai"
-    assert name == "Alice Smith"
+    assert identity.tenant_name == "test-tenant"
+    assert identity.access_key_id == "K2abc"
+    assert identity.email == "alice@vals.ai"
+    assert identity.name == "Alice Smith"
     mock_descope.mgmt.user.load_by_user_id.assert_called_once_with("U2abc")
 
 
 def test_resolve_descope_identity_skips_user_profile_lookup_by_default(mock_descope):
     mock_descope.exchange_access_key.return_value = descope_access_key_response(user_id="U2abc")
 
-    _tenant, key_id, email, name = resolve_descope_identity("valid-key")
+    identity = resolve_descope_identity("valid-key")
 
-    assert key_id == "K2abc"
-    assert email is None
-    assert name is None
+    assert identity.access_key_id == "K2abc"
+    assert identity.email is None
+    assert identity.name is None
     mock_descope.mgmt.user.load_by_user_id.assert_not_called()
 
 
 def test_resolve_descope_identity_missing_email_returns_none(mock_descope):
     mock_descope.exchange_access_key.return_value = descope_access_key_response()
 
-    _tenant, key_id, email, name = resolve_descope_identity("valid-key")
-    assert key_id == "K2abc"
-    assert email is None
-    assert name is None
+    identity = resolve_descope_identity("valid-key")
+    assert identity.access_key_id == "K2abc"
+    assert identity.email is None
+    assert identity.name is None
 
 
 def test_resolve_descope_identity_missing_name_returns_none(mock_descope):
     mock_descope.exchange_access_key.return_value = descope_access_key_response(email="alice@vals.ai")
 
-    _tenant, _key_id, email, name = resolve_descope_identity("valid-key")
-    assert email == "alice@vals.ai"
-    assert name is None
+    identity = resolve_descope_identity("valid-key")
+    assert identity.email == "alice@vals.ai"
+    assert identity.name is None
 
 
 def test_resolve_descope_identity_whitespace_only_email_treated_as_missing(mock_descope):
     """A whitespace-only email claim is treated identically to a missing one."""
     mock_descope.exchange_access_key.return_value = descope_access_key_response(email="   ")
 
-    _tenant, _key_id, email, _name = resolve_descope_identity("valid-key")
-    assert email is None
+    identity = resolve_descope_identity("valid-key")
+    assert identity.email is None
 
 
 def test_resolve_descope_identity_multiple_tenants_raises_400(mock_descope):

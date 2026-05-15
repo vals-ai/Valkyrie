@@ -39,6 +39,20 @@ class RequestIdentity:
     name: str | None
 
 
+@dataclass(frozen=True)
+class DescopeUserProfile:
+    email: str | None
+    name: str | None
+
+
+@dataclass(frozen=True)
+class DescopeIdentity:
+    tenant_name: str
+    access_key_id: str
+    email: str | None
+    name: str | None
+
+
 _cached_default_org: Org | None = None
 _descope_client: DescopeClient | None = (
     DescopeClient(
@@ -51,6 +65,7 @@ _descope_client: DescopeClient | None = (
 
 
 def _get_descope_claim(jwt_response: Mapping[str, object], claim_name: str) -> object:
+    """Read a claim from the exchange response or its nested session token."""
     session_token = jwt_response.get(DESCOPE_SESSION_TOKEN_FIELD)
     if isinstance(session_token, Mapping) and claim_name in session_token:
         return session_token.get(claim_name)
@@ -78,6 +93,7 @@ def _get_descope_string_claim(
 def _get_descope_custom_string_claim(
     jwt_response: Mapping[str, object], claim_name: str, *, lowercase: bool = False
 ) -> str | None:
+    """Read a string claim, including values nested under customClaims."""
     claim = _get_descope_string_claim(jwt_response, claim_name, lowercase=lowercase)
     if claim is not None:
         return claim
@@ -93,24 +109,25 @@ def _get_descope_custom_string_claim(
     return None
 
 
-def _load_descope_user_profile(user_id: str) -> tuple[str | None, str | None]:
+def _load_descope_user_profile(user_id: str) -> DescopeUserProfile:
+    """Load email/name from the Descope user record bound to an access key."""
     if not _descope_client:
-        return None, None
+        return DescopeUserProfile(email=None, name=None)
 
     try:
         user_response = _descope_client.mgmt.user.load_by_user_id(user_id)
     except Exception:
         logger.warning("Failed to load Descope user profile for user_id=%s", user_id, exc_info=True)
-        return None, None
+        return DescopeUserProfile(email=None, name=None)
 
     user = user_response.get("user")
     if not isinstance(user, Mapping):
         logger.warning("Descope user profile response did not include a user object for user_id=%s", user_id)
-        return None, None
+        return DescopeUserProfile(email=None, name=None)
 
     email = _normalize_optional_string(user.get("email"), lowercase=True)
-    name = _normalize_optional_string(user.get("name")) or _normalize_optional_string(user.get("displayName"))
-    return email, name
+    name = _normalize_optional_string(user.get("name") or user.get("displayName"))
+    return DescopeUserProfile(email=email, name=name)
 
 
 def get_default_org(session: Session) -> Org:
@@ -133,14 +150,16 @@ def extract_api_key(request: Request) -> str:
     return api_key
 
 
-def resolve_descope_identity(
-    api_key: str, *, include_user_profile: bool = False
-) -> tuple[str, str, str | None, str | None]:
-    """Validate an API key and return (tenant_name, access_key_id, email, name).
+def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False) -> DescopeIdentity:
+    """Validate an API key and return its Descope tenant and attribution identity.
 
     Lightweight callers use only the exchanged access-key JWT. Callers that need
     attribution can request the bound user profile, which adds one Descope
     management API lookup when the JWT carries user_id but no email.
+
+    Supported access-key response shape:
+        {"tenants": {"vals.ai": {}}, "keyId": "K2abc",
+         "sessionToken": {"sub": "K2abc", "customClaims": {"user_id": "U2abc"}}}
     """
     if not _descope_client:
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
@@ -167,10 +186,11 @@ def resolve_descope_identity(
     user_id = _get_descope_custom_string_claim(jwt_response, DESCOPE_USER_ID_CLAIM)
 
     if include_user_profile and email is None and user_id is not None:
-        email, profile_name = _load_descope_user_profile(user_id)
-        name = name or profile_name
+        profile = _load_descope_user_profile(user_id)
+        email = profile.email
+        name = name or profile.name
 
-    return tenants[0], access_key_id, email, name
+    return DescopeIdentity(tenant_name=tenants[0], access_key_id=access_key_id, email=email, name=name)
 
 
 def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
@@ -208,14 +228,14 @@ def get_current_starter(request: Request, session: Session = Depends(get_session
         return RequestIdentity(org=get_default_org(session), access_key_id=None, email=None, name=None)
 
     api_key = extract_api_key(request)
-    tenant_name, access_key_id, email, name = resolve_descope_identity(api_key, include_user_profile=True)
-    org = find_org_by_tenant(tenant_name, session)
+    identity = resolve_descope_identity(api_key, include_user_profile=True)
+    org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(
             status_code=404,
-            detail=f"Organization '{tenant_name}' not configured — run valk config init",
+            detail=f"Organization '{identity.tenant_name}' not configured — run valk config init",
         )
-    return RequestIdentity(org=org, access_key_id=access_key_id, email=email, name=name)
+    return RequestIdentity(org=org, access_key_id=identity.access_key_id, email=identity.email, name=identity.name)
 
 
 def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
@@ -224,11 +244,11 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
         return get_default_org(session)
 
     api_key = extract_api_key(request)
-    tenant_name, _access_key_id, _email, _name = resolve_descope_identity(api_key)
-    org = find_org_by_tenant(tenant_name, session)
+    identity = resolve_descope_identity(api_key)
+    org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(
             status_code=404,
-            detail=f"Organization '{tenant_name}' not configured — run valk config init",
+            detail=f"Organization '{identity.tenant_name}' not configured — run valk config init",
         )
     return org

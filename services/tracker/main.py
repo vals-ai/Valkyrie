@@ -160,18 +160,18 @@ def init_org(
         raise HTTPException(status_code=405, detail="Init is only available in hosted mode")
 
     api_key = extract_api_key(request)
-    tenant_name, _access_key_id, email, _name = resolve_descope_identity(api_key, include_user_profile=True)
+    identity = resolve_descope_identity(api_key, include_user_profile=True)
 
-    stmt = pg_insert(Org).values(name=tenant_name).on_conflict_do_nothing(index_elements=["name"])
+    stmt = pg_insert(Org).values(name=identity.tenant_name).on_conflict_do_nothing(index_elements=["name"])
     result = session.exec(stmt)
     created = result.rowcount > 0
     session.commit()
 
-    org = find_org_by_tenant(tenant_name, session)
+    org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(status_code=500, detail="Internal error during org creation")
 
-    return {"org_name": org.name, "created": created, "email_claim_missing": email is None}
+    return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
 @app.post("/start-benchmark")
@@ -179,7 +179,7 @@ async def start_benchmark(
     http_request: Request,
     request: StartBenchmarkRequest,
     session: Session = Depends(get_session),
-    starter: RequestIdentity = Depends(get_current_starter),
+    run_starter: RequestIdentity = Depends(get_current_starter),
 ) -> StartBenchmarkResponse:
     """
     Start a benchmark run with the uploaded contract.
@@ -207,12 +207,6 @@ async def start_benchmark(
     )
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
-    if starter.access_key_id is not None and starter.email is None:
-        logger.warning(
-            "Access key %s has no 'email' custom claim; run attribution for this run will be empty",
-            starter.access_key_id,
-        )
-
     benchmark_service = request.benchmark_service
 
     # Check service is running
@@ -225,10 +219,16 @@ async def start_benchmark(
         ) from exc
 
     # Create benchmark row inside of database to mark start of the benchmark
-    benchmark_row = start_benchmark_request_to_benchmark(request, starter)
+    benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))
+
+    if run_starter.access_key_id is not None and run_starter.email is None:
+        logger.warning(
+            "Access key %s resolved no user email; run attribution for this run will be empty",
+            run_starter.access_key_id,
+        )
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:

@@ -727,10 +727,12 @@ class TestFastapiServer:
         with caplog.at_level(logging.WARNING, logger="main"):
             response = client.post("/start-benchmark", json=request.model_dump())
         assert response.status_code == 200
+        benchmark_id = response.json()["benchmark_id"]
 
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "email" in r.message]
         assert len(warnings) == 1
         assert "K2abc" in warnings[0].message
+        assert warnings[0].benchmark_id == benchmark_id
 
     async def test_init_org_returns_email_claim_present(
         self,
@@ -797,7 +799,7 @@ class TestFastapiServer:
             "sessionToken": {
                 "sub": "K2abc",
                 "tenants": {"test-tenant": {}},
-                "user_id": "U2abc",
+                "customClaims": {"user_id": "U2abc"},
             },
         }
         mock_client.mgmt.user.load_by_user_id.return_value = {
