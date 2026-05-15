@@ -9,11 +9,7 @@ Local development guide for the Agentic Harness.
 
 ### Environment
 
-Add inside of `.env`
-
-```env
-TRACKER_SERVICE_URL=http://localhost:8000
-```
+The tracker URL is persisted in `~/.config/valkyrie/valkyrie.yaml` via `valkyrie config init` — choosing **self-hosted** prompts for it with `http://localhost:8000` as the suggested default. The `TRACKER_SERVICE_URL` env var still works as a one-off override and wins over the config field when set.
 
 ## Installation
 
@@ -67,6 +63,15 @@ valkyrie config init
 ```
 
 Without the env vars, the service runs in self-hosted mode (no auth, default org).
+
+If you've already run `config init` for both modes, switch between them without re-entering credentials:
+
+```bash
+valkyrie config mode hosted        # flip to hosted; uses the persisted api_key
+valkyrie config mode self-hosted   # flip to self-hosted; uses the persisted tracker_service_url
+```
+
+`valkyrie config init` is now additive — re-running it preserves credentials for the mode you didn't pick.
 
 ## Code Quality
 

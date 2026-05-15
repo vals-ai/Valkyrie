@@ -42,6 +42,8 @@ You can also set the API key manually:
 valkyrie config set api_key <your-descope-access-key>
 ```
 
+To switch between hosted and self-hosted without re-entering credentials, use `valkyrie config mode <hosted|self-hosted>`. Credentials for both modes are persisted in `~/.config/valkyrie/valkyrie.yaml` and only the `mode` field changes.
+
 ## Self-hosted mode
 
 Run your own infrastructure end-to-end, including your own tracker service deployment.
@@ -55,21 +57,18 @@ Run your own infrastructure end-to-end, including your own tracker service deplo
 
 ### Setup
 
-Set `TRACKER_SERVICE_URL` to point at your tracker instance:
-
-```bash
-export TRACKER_SERVICE_URL=https://your-tracker.example.com
-```
-
-Then run `config init` and choose **self-hosted**:
+Run `config init` and choose **self-hosted**:
 
 ```
 $ valkyrie config init
 Setup mode (hosted, self-hosted) [self-hosted]: self-hosted
+Tracker service URL [http://localhost:8000]: https://your-tracker.example.com
 AWS_ACCESS_KEY_ID: ...
 AWS_SECRET_ACCESS_KEY: ...
 ...
 ```
+
+The tracker URL is persisted in your config. The `TRACKER_SERVICE_URL` env var still works as a one-off override and wins over the config field when set.
 
 No API key or Descope authentication is used. All data belongs to a single default organization.
 

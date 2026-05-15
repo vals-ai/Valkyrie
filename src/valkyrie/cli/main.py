@@ -37,12 +37,16 @@ from valkyrie.cli.utils import (
     format_run_start_details,
     format_start_benchmark_response,
     format_table,
+    infer_mode,
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
     resolve_task_ids,
+    resolve_tracker_url,
     resolve_webhook_config,
+    save_config,
     stream_benchmark_status,
+    validate_mode_requirements,
 )
 from valkyrie.schemas import AgentConfig
 
@@ -108,19 +112,29 @@ def init() -> None:
     mode = click.prompt(
         "Setup mode",
         type=click.Choice(["hosted", "self-hosted"]),
-        default="self-hosted",
+        default=current_config.get("mode") or infer_mode(current_config),
     )
+    current_config["mode"] = mode
 
     if mode == "hosted":
-        api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")
+        api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt(
+            "API Key", default=current_config.get("api_key", ""), show_default=False
+        )
         current_config["api_key"] = api_key
 
         # Validate the key and create/confirm org (uses default tracker URL)
         try:
-            result = TrackerService.init_org(api_key)
+            result = TrackerService.init_org(
+                api_key,
+                base_url=resolve_tracker_url(current_config),
+            )
         except TrackerServiceError as e:
             raise click.ClickException(str(e))
         click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
+    else:
+        existing_url = current_config.get("tracker_service_url", "http://localhost:8000")
+        tracker_url = click.prompt("Tracker service URL", default=existing_url)
+        current_config["tracker_service_url"] = tracker_url
 
     # Both modes require AWS credentials
     collected_keys: dict[str, str] = {}
@@ -148,13 +162,7 @@ def init() -> None:
 
     current_config.update(collected_keys)
 
-    if mode != "hosted":
-        current_config.pop("api_key", None)
-
-    CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(current_config, f, default_flow_style=False)
+    save_config(current_config)
 
     click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
 
@@ -224,6 +232,33 @@ def config_remove(key: str) -> None:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"  {key} removed.", fg="green"))
+
+
+@config.command(name="mode")
+@click.argument("target_mode", type=click.Choice(["hosted", "self-hosted"]))
+def config_mode(target_mode: str) -> None:
+    """Switch active mode without re-entering credentials.
+
+    Validates that the target mode has its required fields (api_key for hosted,
+    tracker_service_url for self-hosted) and refuses with a remediation message if not.
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    validate_mode_requirements(config, target_mode)
+    config["mode"] = target_mode
+    save_config(config)
+
+    active_url = resolve_tracker_url(config)
+    click.echo(
+        click.style(
+            f"Switched to {target_mode} mode. Active tracker: {active_url}",
+            fg="green",
+        )
+    )
 
 
 @config.group()

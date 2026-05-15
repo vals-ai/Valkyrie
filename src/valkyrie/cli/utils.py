@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import shutil
 import tarfile
 import tempfile
@@ -36,6 +37,8 @@ T = TypeVar("T")
 
 class ConfigValue(str, Enum):
     API_KEY = "api_key"
+    MODE = "mode"
+    TRACKER_SERVICE_URL = "tracker_service_url"
     SLACK_WEBHOOK_SECRET = "webhook"
     AWS_ACCESS_KEY_ID = "AWS_ACCESS_KEY_ID"
     AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
@@ -152,6 +155,85 @@ def load_config() -> dict[str, str]:
         config = yaml.safe_load(f)
 
     return config
+
+
+HOSTED_TRACKER_URL_DEFAULT = "https://benchmark-tracker.vals.ai"
+
+
+def infer_mode(config: dict[str, Any]) -> str:
+    """Infer mode from a legacy config that lacks the `mode` field."""
+    return "hosted" if config.get("api_key") else "self-hosted"
+
+
+def save_config(config: dict[str, Any]) -> None:
+    """Persist the config to disk, backfilling `mode` if missing.
+
+    The caller's dict is not mutated; the backfill happens on a shallow copy.
+    """
+    to_write = config if "mode" in config else {**config, "mode": infer_mode(config)}
+    CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(to_write, f, default_flow_style=False)
+
+
+def resolve_tracker_url(config: dict[str, Any] | None = None) -> str:
+    """Resolve the active tracker URL.
+
+    Precedence:
+      1. ``TRACKER_SERVICE_URL`` env var (universal escape hatch).
+      2. Mode-scoped resolution:
+         - hosted: always the hosted-mode default URL.
+         - self-hosted: ``config["tracker_service_url"]``, else error.
+
+    The config field is reserved for self-hosted mode. In hosted mode it is ignored —
+    use the env var if you need a non-default hosted tracker (e.g., staging).
+
+    If ``config`` is ``None`` the function loads the on-disk config, returning the
+    hosted default when no config file exists yet (first-run behavior preserved).
+    """
+    env_url = os.environ.get("TRACKER_SERVICE_URL")
+    if env_url:
+        return env_url
+
+    resolved_config: dict[str, Any]
+    if config is None:
+        try:
+            with open(CONFIG_LOCATION) as f:
+                resolved_config = yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            return HOSTED_TRACKER_URL_DEFAULT
+    else:
+        resolved_config = config
+
+    mode = resolved_config.get("mode") or infer_mode(resolved_config)
+    if mode == "hosted":
+        return HOSTED_TRACKER_URL_DEFAULT
+
+    configured = resolved_config.get("tracker_service_url")
+    if configured:
+        return configured
+
+    raise click.ClickException(
+        "self-hosted mode requires `tracker_service_url` in config or "
+        "TRACKER_SERVICE_URL env var. Run `valkyrie config set tracker_service_url <url>`."
+    )
+
+
+def validate_mode_requirements(config: dict[str, Any], target_mode: str) -> None:
+    """Raise ClickException if ``config`` lacks the fields required for ``target_mode``."""
+    if target_mode == "hosted":
+        if not config.get("api_key"):
+            raise click.ClickException(
+                "hosted mode requires api_key. Run `valkyrie config init` or `valkyrie config set api_key <key>`."
+            )
+    elif target_mode == "self-hosted":
+        if not config.get("tracker_service_url"):
+            raise click.ClickException(
+                "self-hosted mode requires tracker_service_url in config. Run "
+                "`valkyrie config set tracker_service_url <url>`."
+            )
+    else:
+        raise click.ClickException(f"unknown mode: {target_mode}")
 
 
 class BenchmarkFormatter:

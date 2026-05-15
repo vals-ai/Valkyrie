@@ -1,9 +1,7 @@
 """Client for interacting with the tracker service."""
 
-import os
 import re
 from collections.abc import Generator
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -32,8 +30,6 @@ from valkyrie.cli.exceptions import TrackerServiceError
 
 load_dotenv()
 
-TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
-_CONFIG_LOCATION = Path("~/.config/valkyrie/valkyrie.yaml")
 _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -61,7 +57,7 @@ class TrackerService:
 
     def __init__(
         self,
-        base_url: str = TRACKER_URL,
+        base_url: str | None = None,
         timeout: int = 120,
     ):
         """
@@ -72,6 +68,13 @@ class TrackerService:
             timeout: Request timeout in seconds
         """
         self._config = self._load_config()
+        if base_url is None:
+            from valkyrie.cli.utils import resolve_tracker_url
+
+            # Pass loaded config when present so the resolver does not re-read disk;
+            # fall back to the no-arg form when the config file is absent so the
+            # resolver still applies its hosted-default behavior for that case.
+            base_url = resolve_tracker_url(self._config or None)
         self._api_key = self._config.get("api_key")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
@@ -93,11 +96,12 @@ class TrackerService:
     @staticmethod
     def _load_config() -> dict[str, Any]:
         """Load the valkyrie config file if it exists."""
-        config_path = _CONFIG_LOCATION.expanduser()
-        if not config_path.exists():
+        from valkyrie.cli.utils import CONFIG_LOCATION
+
+        if not CONFIG_LOCATION.exists():
             return {}
 
-        with open(config_path) as f:
+        with open(CONFIG_LOCATION) as f:
             return yaml.safe_load(f) or {}
 
     def _build_auth_headers(self) -> dict[str, str]:
@@ -118,11 +122,12 @@ class TrackerService:
         Returns:
             Custom URL if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
-        if not config_path.exists():
+        from valkyrie.cli.utils import CONFIG_LOCATION
+
+        if not CONFIG_LOCATION.exists():
             return None
 
-        with open(config_path) as f:
+        with open(CONFIG_LOCATION) as f:
             harness_config = yaml.safe_load(f) or {}
 
         services = harness_config.get("custom_benchmark_services") or {}
@@ -139,11 +144,12 @@ class TrackerService:
         Returns:
             Auth credential if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
-        if not config_path.exists():
+        from valkyrie.cli.utils import CONFIG_LOCATION
+
+        if not CONFIG_LOCATION.exists():
             return None
 
-        with open(config_path) as f:
+        with open(CONFIG_LOCATION) as f:
             harness_config = yaml.safe_load(f) or {}
 
         auth = harness_config.get("benchmark_auth") or {}
@@ -157,11 +163,12 @@ class TrackerService:
         Returns:
             Webhook secret name if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
-        if not config_path.exists():
+        from valkyrie.cli.utils import CONFIG_LOCATION
+
+        if not CONFIG_LOCATION.exists():
             return None
 
-        with open(config_path) as f:
+        with open(CONFIG_LOCATION) as f:
             harness_config = yaml.safe_load(f) or {}
 
         secret_name = harness_config.get("webhook")
@@ -170,12 +177,13 @@ class TrackerService:
     @staticmethod
     def parse_config_keys() -> dict[str, str]:
         """Parses expected config keys and handles edge cases"""
-        config_path: Path = _CONFIG_LOCATION.expanduser()
-        config_keys: dict[str, str] = {}
-        if not config_path.exists():
-            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `valkyrie config init`")
+        from valkyrie.cli.utils import CONFIG_LOCATION
 
-        with open(config_path) as f:
+        config_keys: dict[str, str] = {}
+        if not CONFIG_LOCATION.exists():
+            raise TrackerServiceError(f"Could not find the config at {CONFIG_LOCATION}, run `valkyrie config init`")
+
+        with open(CONFIG_LOCATION) as f:
             harness_config: dict[str, str] = yaml.safe_load(f) or {}
 
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
@@ -186,7 +194,7 @@ class TrackerService:
             )
 
         # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"webhook", "api_key"}
+        _SKIP_HEADER_KEYS = {"webhook", "api_key", "mode", "tracker_service_url"}
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():
@@ -234,8 +242,12 @@ class TrackerService:
             raise TrackerServiceError(f"Health check failed: {e}") from e
 
     @classmethod
-    def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
+    def init_org(cls, api_key: str, base_url: str | None = None) -> dict[str, str | bool]:
         """Validate a Descope API key and create/confirm the org. Does not require a full config."""
+        if base_url is None:
+            from valkyrie.cli.utils import resolve_tracker_url
+
+            base_url = resolve_tracker_url()
         try:
             with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
                 response = client.post(f"{base_url.rstrip('/')}/init")
