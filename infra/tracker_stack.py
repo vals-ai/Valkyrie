@@ -144,7 +144,7 @@ class TrackerStack(Stack):
             descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
                 self,
                 "DescopeManagementKeySecret",
-                "valkyrie/descope-management-key",
+                "devEvalInfraDescopeManagementKey",
             )
             descope_secrets["DESCOPE_MANAGEMENT_KEY"] = aws_ecs.Secret.from_secrets_manager(
                 descope_management_key_secret,
