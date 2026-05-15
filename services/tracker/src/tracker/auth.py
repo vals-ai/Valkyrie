@@ -9,7 +9,7 @@ from descope import AuthException, DescopeClient
 from fastapi import Depends, HTTPException, Request
 from sqlmodel import Session, select
 
-from tracker.config import AUTH_REQUIRED, DESCOPE_PROJECT_ID
+from tracker.config import AUTH_REQUIRED, DESCOPE_MANAGEMENT_KEY, DESCOPE_PROJECT_ID
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 from tracker.logging import get_logger
@@ -17,14 +17,18 @@ from tracker.logging import get_logger
 logger = get_logger(__name__)
 
 BENCHMARK_SERVICE_API_KEY_HEADER = "X-Descope-Api-Key"
+DESCOPE_ACCESS_KEY_ID_FIELD = "keyId"
+DESCOPE_CUSTOM_CLAIMS_FIELD = "customClaims"
+DESCOPE_SESSION_TOKEN_FIELD = "sessionToken"
+DESCOPE_USER_ID_CLAIM = "user_id"
 
 
 @dataclass(frozen=True)
 class RequestIdentity:
     """Identity that authenticated the current request.
 
-    In hosted mode `access_key_id` is always set; `email` and `name` are populated only
-    when the corresponding custom claims are present on the Descope access key. In
+    In hosted mode `access_key_id` is always set. `email` and `name` are populated
+    from Descope claims or the bound user profile when the caller requests it. In
     self-hosted mode all three are None.
     """
 
@@ -36,8 +40,68 @@ class RequestIdentity:
 
 _cached_default_org: Org | None = None
 _descope_client: DescopeClient | None = (
-    DescopeClient(project_id=DESCOPE_PROJECT_ID) if AUTH_REQUIRED and DESCOPE_PROJECT_ID else None
+    DescopeClient(
+        project_id=DESCOPE_PROJECT_ID,
+        management_key=DESCOPE_MANAGEMENT_KEY or None,
+    )
+    if AUTH_REQUIRED and DESCOPE_PROJECT_ID
+    else None
 )
+
+
+def _get_descope_claim(jwt_response: Mapping[str, object], claim_name: str) -> object:
+    session_token = jwt_response.get(DESCOPE_SESSION_TOKEN_FIELD)
+    if isinstance(session_token, Mapping) and claim_name in session_token:
+        return session_token.get(claim_name)
+
+    return jwt_response.get(claim_name)
+
+
+def _get_descope_custom_claim(jwt_response: Mapping[str, object], claim_name: str) -> object:
+    claim = _get_descope_claim(jwt_response, claim_name)
+    if claim is not None:
+        return claim
+
+    for claim_source in (jwt_response, jwt_response.get(DESCOPE_SESSION_TOKEN_FIELD)):
+        if not isinstance(claim_source, Mapping):
+            continue
+
+        custom_claims = claim_source.get(DESCOPE_CUSTOM_CLAIMS_FIELD)
+        if isinstance(custom_claims, Mapping) and claim_name in custom_claims:
+            return custom_claims.get(claim_name)
+
+    return None
+
+
+def _normalize_optional_string(value: object, *, lowercase: bool = False) -> str | None:
+    if not isinstance(value, str):
+        return None
+
+    normalized = value.strip()
+    if not normalized:
+        return None
+
+    return normalized.lower() if lowercase else normalized
+
+
+def _load_descope_user_profile(user_id: str) -> tuple[str | None, str | None]:
+    if not _descope_client:
+        return None, None
+
+    try:
+        user_response = _descope_client.mgmt.user.load_by_user_id(user_id)
+    except Exception:
+        logger.warning("Failed to load Descope user profile for user_id=%s", user_id, exc_info=True)
+        return None, None
+
+    user = user_response.get("user")
+    if not isinstance(user, Mapping):
+        logger.warning("Descope user profile response did not include a user object for user_id=%s", user_id)
+        return None, None
+
+    email = _normalize_optional_string(user.get("email"), lowercase=True)
+    name = _normalize_optional_string(user.get("name")) or _normalize_optional_string(user.get("displayName"))
+    return email, name
 
 
 def get_default_org(session: Session) -> Org:
@@ -60,13 +124,14 @@ def extract_api_key(request: Request) -> str:
     return api_key
 
 
-def resolve_descope_identity(api_key: str) -> tuple[str, str, str | None, str | None]:
+def resolve_descope_identity(
+    api_key: str, *, include_user_profile: bool = False
+) -> tuple[str, str, str | None, str | None]:
     """Validate an API key and return (tenant_name, access_key_id, email, name).
 
-    Pulls all four from the same JWT response — no extra Descope round-trips. Whitespace-only
-    email and name claims are normalized to None. Callers that care about a missing email
-    (e.g. the start-benchmark handler, where it means run attribution will be empty) should
-    log their own warning conditioned on the returned email.
+    Lightweight callers use only the exchanged access-key JWT. Callers that need
+    attribution can request the bound user profile, which adds one Descope
+    management API lookup when the JWT carries user_id but no email.
     """
     if not _descope_client:
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
@@ -82,14 +147,21 @@ def resolve_descope_identity(api_key: str) -> tuple[str, str, str | None, str | 
             detail=f"Access key must be scoped to exactly one tenant, got {len(tenants)}",
         )
 
-    access_key_id = jwt_response.get("sub")
+    access_key_id = _normalize_optional_string(
+        jwt_response.get(DESCOPE_ACCESS_KEY_ID_FIELD)
+    ) or _normalize_optional_string(
+        _get_descope_claim(jwt_response, "sub"),
+    )
     if not access_key_id:
-        raise HTTPException(status_code=400, detail="Descope JWT missing 'sub' claim")
+        raise HTTPException(status_code=400, detail="Descope JWT missing access key id")
 
-    raw_email = jwt_response.get("email")
-    email = raw_email.strip().lower() if isinstance(raw_email, str) and raw_email.strip() else None
-    raw_name = jwt_response.get("name")
-    name = raw_name.strip() if isinstance(raw_name, str) and raw_name.strip() else None
+    email = _normalize_optional_string(_get_descope_claim(jwt_response, "email"), lowercase=True)
+    name = _normalize_optional_string(_get_descope_claim(jwt_response, "name"))
+    user_id = _normalize_optional_string(_get_descope_custom_claim(jwt_response, DESCOPE_USER_ID_CLAIM))
+
+    if include_user_profile and email is None and user_id is not None:
+        email, profile_name = _load_descope_user_profile(user_id)
+        name = name or profile_name
 
     return tenants[0], access_key_id, email, name
 
@@ -129,7 +201,7 @@ def get_current_starter(request: Request, session: Session = Depends(get_session
         return RequestIdentity(org=get_default_org(session), access_key_id=None, email=None, name=None)
 
     api_key = extract_api_key(request)
-    tenant_name, access_key_id, email, name = resolve_descope_identity(api_key)
+    tenant_name, access_key_id, email, name = resolve_descope_identity(api_key, include_user_profile=True)
     org = find_org_by_tenant(tenant_name, session)
     if not org:
         raise HTTPException(
@@ -140,5 +212,16 @@ def get_current_starter(request: Request, session: Session = Depends(get_session
 
 
 def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
-    """FastAPI dependency that resolves the current org. Thin shim over get_current_starter."""
-    return get_current_starter(request, session).org
+    """FastAPI dependency that resolves the current org without loading user profile data."""
+    if not AUTH_REQUIRED:
+        return get_default_org(session)
+
+    api_key = extract_api_key(request)
+    tenant_name, _access_key_id, _email, _name = resolve_descope_identity(api_key)
+    org = find_org_by_tenant(tenant_name, session)
+    if not org:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Organization '{tenant_name}' not configured — run valk config init",
+        )
+    return org

@@ -743,9 +743,13 @@ class TestFastapiServer:
         mock_client = MagicMock(spec=DescopeClient)
         mock_client.exchange_access_key.return_value = {
             "tenants": {"test-tenant": {}},
-            "sub": "K2abc",
-            "email": "alice@vals.ai",
-            "name": "Alice",
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+                "email": "alice@vals.ai",
+                "name": "Alice",
+            },
         }
         monkeypatch.setattr("tracker.auth._descope_client", mock_client)
 
@@ -766,13 +770,48 @@ class TestFastapiServer:
         mock_client = MagicMock(spec=DescopeClient)
         mock_client.exchange_access_key.return_value = {
             "tenants": {"test-tenant": {}},
-            "sub": "K2abc",
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+            },
         }
         monkeypatch.setattr("tracker.auth._descope_client", mock_client)
 
         response = client.post("/init", headers={"X-Api-Key": "valid-key"})
         assert response.status_code == 200
         assert response.json()["email_claim_missing"] is True
+
+    async def test_init_org_uses_bound_user_email_when_email_claim_missing(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+    ):
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.AUTH_REQUIRED", True)
+
+        mock_client = MagicMock(spec=DescopeClient)
+        mock_client.exchange_access_key.return_value = {
+            "tenants": {"test-tenant": {}},
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+                "user_id": "U2abc",
+            },
+        }
+        mock_client.mgmt.user.load_by_user_id.return_value = {
+            "user": {
+                "email": "alice@vals.ai",
+                "displayName": "Alice",
+            },
+        }
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
+
+        response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert response.status_code == 200
+        assert response.json()["email_claim_missing"] is False
+        mock_client.mgmt.user.load_by_user_id.assert_called_once_with("U2abc")
 
     async def test_fetch_benchmarks_includes_started_by_email(
         self,

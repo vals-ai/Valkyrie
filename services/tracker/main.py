@@ -160,7 +160,7 @@ def init_org(
         raise HTTPException(status_code=405, detail="Init is only available in hosted mode")
 
     api_key = extract_api_key(request)
-    tenant_name, _access_key_id, email, _name = resolve_descope_identity(api_key)
+    tenant_name, _access_key_id, email, _name = resolve_descope_identity(api_key, include_user_profile=True)
 
     stmt = pg_insert(Org).values(name=tenant_name).on_conflict_do_nothing(index_elements=["name"])
     result = session.exec(stmt)
