@@ -69,7 +69,7 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
-RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+_RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -615,7 +615,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).in_(RUNNABLE_TASK_STATUSES))
+        .where(col(Task.status).in_(_RUNNABLE_TASK_STATUSES))
     ).one()
 
     # Tasks will be in a non-finished state if something interrupts them while they are running and the state errors here
@@ -687,7 +687,7 @@ def has_runnable_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> 
             select(Task.id)
             .where(Task.benchmark == benchmark_row.id)
             .where(Task.org_id == org.id)
-            .where(col(Task.status).in_(RUNNABLE_TASK_STATUSES))
+            .where(col(Task.status).in_(_RUNNABLE_TASK_STATUSES))
         ).first()
         is not None
     )
@@ -703,14 +703,14 @@ def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Or
 
     evaluation_results: dict[str, dict[str, Any] | None] = {}
     for task_id, status, result in task_rows:
-        if status == TaskStatus.FINISHED:
-            assert result is not None
-            evaluation_results[task_id] = result
-            continue
-        if status in [TaskStatus.ERROR, TaskStatus.STOPPED]:
-            evaluation_results[task_id] = None
-            continue
-        raise TrackerServiceError(f"Unexpected task status {status} while finalizing run {benchmark_row.id}")
+        match status:
+            case TaskStatus.FINISHED:
+                assert result is not None
+                evaluation_results[task_id] = result
+            case TaskStatus.ERROR | TaskStatus.STOPPED:
+                evaluation_results[task_id] = None
+            case _:
+                raise TrackerServiceError(f"Unexpected task status {status} while finalizing run {benchmark_row.id}")
 
     return evaluation_results
 
@@ -814,6 +814,7 @@ async def process_benchmark(
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
             if has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
@@ -1251,42 +1252,29 @@ async def reset_to_in_progress_status(
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
     try:
-        if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
-            filter_query = [
-                col(Task.benchmark) == benchmark_row.id,
-                col(Task.org_id) == org.id,
-                col(Task.status) == TaskStatus.ERROR,
-            ]
-            if rerun_task_ids:
-                filter_query.append(col(Task.task_id).in_(rerun_task_ids))
-        else:
-            retry_statuses = [TaskStatus.STOPPED]
-            if retry:
-                retry_statuses.append(TaskStatus.ERROR)
-
-            filter_query = [
-                col(Task.benchmark) == benchmark_row.id,
-                col(Task.org_id) == org.id,
-                or_(
-                    col(Task.status).in_(retry_statuses),
-                    col(Task.task_id).in_(rerun_task_ids),
-                ),
-            ]
-
-        existing_rows = session.exec(select(Task).where(*filter_query)).all()
+        existing_rows = session.exec(
+            select(Task)
+            .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
+            .order_by(asc(Task.started_at))
+        ).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
+
         if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+            missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_by_task_id]
+            if missing_task_ids:
+                raise TrackerServiceError(
+                    f"{', '.join(missing_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
+                )
             if rerun_task_ids:
-                existing_rows = [
-                    existing_by_task_id[task_id] for task_id in rerun_task_ids if task_id in existing_by_task_id
-                ]
-                missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_by_task_id]
-                if missing_task_ids:
-                    raise TrackerServiceError(
-                        f"{', '.join(missing_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
-                    )
+                existing_rows = [existing_by_task_id[task_id] for task_id in rerun_task_ids]
             new_task_ids = []
         else:
+            if rerun_task_ids:
+                implicit_rows = [task for task in existing_rows if task.task_id not in rerun_task_ids]
+                requested_rows = [
+                    existing_by_task_id[task_id] for task_id in rerun_task_ids if task_id in existing_by_task_id
+                ]
+                existing_rows = implicit_rows + requested_rows
             new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
 
         # Allow re-running the end of the benchmark without running any tasks
@@ -1300,6 +1288,7 @@ async def reset_to_in_progress_status(
             task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
         )
 
+        # Can already be in progress when retrying errored tasks while the run is ongoing.
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
             benchmark_row.status = BenchmarkStatus.IN_PROGRESS
             session.add(benchmark_row)
@@ -1336,6 +1325,25 @@ async def reset_to_in_progress_status(
         raise
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
+
+
+def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
+    filters = [
+        col(Task.benchmark) == benchmark_row.id,
+        col(Task.org_id) == org.id,
+    ]
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+        filters.append(col(Task.status) == TaskStatus.ERROR)
+        if rerun_task_ids:
+            filters.append(col(Task.task_id).in_(rerun_task_ids))
+        return filters
+
+    retry_statuses = [TaskStatus.STOPPED]
+    if retry:
+        retry_statuses.append(TaskStatus.ERROR)
+
+    filters.append(or_(col(Task.status).in_(retry_statuses), col(Task.task_id).in_(rerun_task_ids)))
+    return filters
 
 
 def fetch_filtered_benchmark_rows(

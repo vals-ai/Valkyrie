@@ -518,11 +518,13 @@ async def retry_or_resume_benchmark(
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
 
-    benchmark_is_running = benchmark_row.status == BenchmarkStatus.IN_PROGRESS
-    if benchmark_is_running and not retry:
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
+
+    if concurrency is not None and concurrency < 1:
+        raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
     effective_service_headers = forward_tracker_api_key(
         service_headers,
@@ -541,13 +543,12 @@ async def retry_or_resume_benchmark(
         org=org,
     )
 
-    if benchmark_is_running and not verified_task_ids:
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
 
-    # NOTE: 0 is not acceptable
-    if concurrency:
+    if concurrency is not None:
         benchmark_row.arguments.concurrency = concurrency
         session.add(benchmark_row)
         session.commit()
