@@ -118,7 +118,7 @@ def init() -> None:
 
     if mode == "hosted":
         api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt(
-            "API Key", default=current_config.get("api_key", ""), show_default=False
+            "API Key", default=current_config.get("api_key") or None, show_default=False
         )
         current_config["api_key"] = api_key
 
