@@ -387,6 +387,11 @@ async def retrieve_results(
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
         final_view.task_errors = _filter_task_map(final_view.task_errors)
 
+        # Missing/errored tasks are passed to the benchmark service as {task_id: None}.
+        scored_results = dict(final_view.evaluation_results or {})
+        for task_id in final_view.task_errors or {}:
+            scored_results.setdefault(task_id, None)
+
         effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
         benchmark_service = benchmark_row.benchmark_service(
             harness_config.daytona_secret_name,
@@ -395,7 +400,7 @@ async def retrieve_results(
         )
         try:
             resp = await benchmark_service.final_score(
-                evaluation_results=final_view.evaluation_results or {},
+                evaluation_results=scored_results,
                 dataset=benchmark_row.arguments.dataset,
             )
         finally:
