@@ -80,11 +80,21 @@ class TestPtyRetry:
 
         call_count = 0
 
-        async def _fails_first(*_args: Any, **_kwargs: Any) -> None:
+        async def _fails_first_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
                 raise error
+            return None, 0.0
+
+        async def _fails_first_other(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise error
+
+        async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            return None, 0.0
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             return RetrieveTaskResponse(
@@ -97,9 +107,12 @@ class TestPtyRetry:
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"status": "success", "score": 1.0}
 
+        is_run_agent_target = fail_target == "tracker.utils.run_agent"
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
-        monkeypatch.setattr(fail_target, _fails_first)
+        monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
+        if not is_run_agent_target:
+            monkeypatch.setattr("tracker.utils.run_agent", _mock_run_agent)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
@@ -165,9 +178,9 @@ class TestPtyRetry:
 
         run_agent_kwargs: dict[str, Any] = {}
 
-        async def _mock_run_agent(*_args: Any, **kwargs: Any) -> None:
+        async def _mock_run_agent(*_args: Any, **kwargs: Any) -> tuple[None, float]:
             run_agent_kwargs.update(kwargs)
-            return None
+            return None, 0.0
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"status": "success", "score": 1.0}

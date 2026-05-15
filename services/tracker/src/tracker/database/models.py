@@ -307,6 +307,7 @@ class Task(SQLModel, table=True):
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     benchmark: UUID = Field(foreign_key="benchmark.id")
+    task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 
     @computed_field
     @property
@@ -336,6 +337,14 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
     # If the status has changed and the new status is in a finished state, set the finished_at timestamp
     if status_changed and target.status in finished_states:
         target.finished_at = datetime.now(ZoneInfo("UTC"))
+
+
+class TaskBreakdown(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True, exclude=True)
+    sandbox_build_duration: float | None = Field(default=None)
+    agent_run_duration: float | None = Field(default=None)
+    evaluation_run_duration: float | None = Field(default=None)
+    sandbox_run_duration: float | None = Field(default=None)
 
 
 class EvaluationResult(SQLModel, table=True):

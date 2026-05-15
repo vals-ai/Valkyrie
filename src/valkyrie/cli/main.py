@@ -748,7 +748,7 @@ def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, tas
 
             if isinstance(results_response, FinalViewResponse):
                 if subset_task_ids:
-                    scored = len(results_response.evaluation_results or {})
+                    scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
                     click.echo(
                         click.style(
                             f"Scored over {scored} of {len(subset_task_ids)} subset task ids.",
