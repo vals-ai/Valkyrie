@@ -101,6 +101,13 @@ class FetchBenchmarkResponse(BaseModel):
     s3_bucket_url: str
 
 
+class AverageTaskBreakdown(BaseModel):
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+
+
 class FinalViewResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
@@ -111,6 +118,7 @@ class FinalViewResponse(BaseModel):
     benchmark_arguments: BenchmarkArguments
     tasks_stopped: int | None
     final_evaluation: FinalEvaluation | None
+    average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
 

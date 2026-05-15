@@ -18,6 +18,7 @@ from tracker.database.models import (
     EvaluationResult,
     Org,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.aws.s3 import copy_agent_to_benchmark
@@ -88,6 +89,14 @@ async def test_process_task(
     evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).first()
     assert evaluation is not None
     assert evaluation.result is not None
+
+    # Task breakdown is tracked while the task runs
+    database_session.refresh(task_row)
+    task_breakdown = database_session.get(TaskBreakdown, task_row.task_breakdown)
+    assert task_breakdown is not None
+    for attr in task_breakdown.__dict__:
+        if not attr.startswith("_"):
+            assert getattr(task_breakdown, attr) is not None
 
 
 async def test_process_benchmark(

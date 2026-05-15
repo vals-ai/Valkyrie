@@ -705,7 +705,7 @@ async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
-) -> AgentCausedExitReason | None:
+) -> tuple[AgentCausedExitReason | None, float]:
     """
     Execute a command inside a sandbox using a PTY session, reconnecting on errors
 
@@ -715,11 +715,14 @@ async def stream_command_output(
     Return:
         AgentCausedExitReason if the command terminated abnormally but recoverably
         (e.g., timeout or OS kill), None on clean exit.
+        float: The duration of the command that is executed.
     """
     pty_id = uuid.uuid4().hex
     session_id = f"{sandbox.id}:pty-{pty_id}"
     status_dir = "/tmp/.valkyrie"
     status_path = f"{status_dir}/{pty_id}.status"
+    start_ns_path = f"{status_dir}/{pty_id}.start_ns"
+    end_ns_path = f"{status_dir}/{pty_id}.end_ns"
     handle: AsyncPtyHandle | None = None
     last_output: deque[str] = deque(maxlen=50)
     _set_pty_span_attributes(sandbox, session_id)
@@ -745,8 +748,15 @@ async def stream_command_output(
         # Disable echo to suppress command line noise in the output
         await handle.send_input("stty -echo\n")
 
-        # Capture exit code in a status file
-        await handle.send_input(f"mkdir -p {status_dir} && {command}; echo $? > {status_path}; exit\n")
+        # Record timestamps inside the sandbox so duration excludes network latency and additional noise from requests in-between
+        await handle.send_input(
+            f"mkdir -p {status_dir}"
+            f" && date +%s%N > {start_ns_path}"
+            f" && {command}"
+            f"; echo $? > {status_path}"
+            f"; date +%s%N > {end_ns_path}"
+            f"; exit\n"
+        )
 
         # Wait for the PTY to finish running the agent, logging data returned
         await _wait_for_pty(sandbox, session_id, handle, on_data, on_output, status_path)
@@ -754,17 +764,22 @@ async def stream_command_output(
         # Verify sandbox is still alive before reading the status file
         await _check_sandbox_health(sandbox)
 
+        # Compute process duration
+        start_ns_result = await _exec(sandbox, f"cat {start_ns_path}")
+        end_ns_result = await _exec(sandbox, f"cat {end_ns_path}")
+        duration = (int(end_ns_result.result.strip()) - int(start_ns_result.result.strip())) / 1e9
+
         # Read the exit code of the process running the agent
         exit_code = await _read_exit_code(sandbox, status_path)
 
         # Timeout error has a special handle since its caused by the benchmark service
         # Exit codes are waterfalled
         if exit_code == _TIMEOUT_EXIT_CODE:
-            return AgentCausedExitReason.TIMEOUT
+            return AgentCausedExitReason.TIMEOUT, duration
 
         # OS killed the process
         if exit_code == _OS_KILL_EXIT_CODE:
-            return AgentCausedExitReason.OS_KILLED
+            return AgentCausedExitReason.OS_KILLED, duration
 
         # Failed error code handling (truncate error shown to the user)
         # Final log is shown to the user, ignore traceback since it provides no insight as to what actually happened in the sandbox
@@ -776,7 +791,7 @@ async def stream_command_output(
                 f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}"
             )
 
-        return None
+        return None, duration
 
     finally:
         # Disconnect form PTY, ignoring exception if raised
@@ -785,9 +800,9 @@ async def stream_command_output(
         # Kill the PTY session, ignoring exception if raised
         await _kill_pty_session(sandbox, session_id)
 
-        # Remove the status file, ignoring exception if raised
+        # Remove the status and timing files, ignoring exception if raised
         try:
-            await _exec(sandbox, f"rm -f {status_path}")
+            await _exec(sandbox, f"rm -f {status_path} {start_ns_path} {end_ns_path}")
         except Exception:
             pass
 
@@ -855,7 +870,7 @@ async def run_agent(
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
-) -> AgentCausedExitReason | None:
+) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
 
@@ -889,7 +904,7 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    exit_reason = await stream_command_output(
+    exit_reason, agent_run_time = await stream_command_output(
         sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
     )
 
@@ -917,4 +932,4 @@ async def run_agent(
             )
 
     # Return why the agent terminated abnormally, or None on clean exit
-    return exit_reason
+    return exit_reason, agent_run_time

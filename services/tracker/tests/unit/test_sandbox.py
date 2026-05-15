@@ -233,8 +233,8 @@ class TestAgentOutputTelemetry:
                 return ExecuteResponse(exit_code=0, result="")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> None:
-            return None
+        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            return None, 0.0
 
         async def fake_archive_and_upload_output(
             _sandbox: Any,
@@ -1107,6 +1107,11 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr(sandbox_module, "_wait_for_pty", _noop)
         monkeypatch.setattr(sandbox_module, "_check_sandbox_health", _noop)
         monkeypatch.setattr(sandbox_module, "_read_exit_code", _mock_read_exit_code)
+        monkeypatch.setattr(
+            sandbox_module,
+            "_exec",
+            AsyncMock(return_value=ExecuteResponse(exit_code=0, result="1000000000")),
+        )
 
         tagged: dict[str, str] = {}
 

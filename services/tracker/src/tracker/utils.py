@@ -21,8 +21,8 @@ from fastapi import Request
 from opentelemetry import trace
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
-from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from tenacity import retry as tenacity_retry
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from tracker._lambda import invoke_lambda
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group, write_benchmark_log_event
@@ -44,6 +44,7 @@ from tracker.database.models import (
     Org,
     RetryMode,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.database.scoping import scoped_select
@@ -55,6 +56,7 @@ from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
+    AverageTaskBreakdown,
     AWSCredentials,
     BenchmarkDetails,
     FetchBenchmarkResponse,
@@ -425,6 +427,7 @@ async def process_task(
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
+                resume_eval_start_time = time.perf_counter()
                 evaluation_result = await benchmark_service.resume_evaluation(
                     task_row.task_id,
                     eval_resume_state=task_row.eval_resume_state,
@@ -432,6 +435,7 @@ async def process_task(
                     on_eval_resume_state=on_eval_resume_state,
                     dataset=start_benchmark_request.dataset,
                 )
+                resume_eval_duration = time.perf_counter() - resume_eval_start_time
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
                     task=task_row.id,
@@ -442,6 +446,10 @@ async def process_task(
 
                 with Session(bind=engine) as task_session:
                     task_session.add(evaluation_result_row)
+                    task_in_session = fetch_task_row(task_row.id, task_session, org)
+                    if task_in_session.task_breakdown:
+                        existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                        existing_breakdown.evaluation_run_duration = resume_eval_duration
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
 
                     return {task_id: evaluation_result_row.result}
@@ -475,6 +483,10 @@ async def process_task(
             ),
         }
 
+        # We don't want to track the task until the sandbox is actually created.
+        task_breakdown = TaskBreakdown()
+
+        start_sandbox_build_time = time.perf_counter()
         async with create_sandbox(
             daytona=benchmark_service.daytona_client,
             sandbox_name=task_row.alias,
@@ -484,6 +496,9 @@ async def process_task(
             resources=task_data.resources,
             creation_semaphore=creation_semaphore,
         ) as sandbox:
+            task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
+            start_sandbox_run_time = time.perf_counter()
+
             try:
                 with Session(bind=engine) as task_session:
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.IN_PROGRESS)
@@ -509,7 +524,7 @@ async def process_task(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                exit_reason = await run_agent(
+                exit_reason, agent_run_time = await run_agent(
                     sandbox,
                     start_benchmark_request.contract,
                     task_data.problem_path,
@@ -533,11 +548,17 @@ async def process_task(
                     },
                 )
 
+                task_breakdown.agent_run_duration = agent_run_time
+
                 with Session(bind=engine) as task_session:
+                    task_session.add(task_breakdown)
+                    task_in_session = fetch_task_row(task_row.id, task_session, org)
+                    task_in_session.task_breakdown = task_breakdown.id
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.EVALUATING)
 
                 # Evaluate the instance
-                # NOTE: only really good for when we need to evaluate the container (for just evaluating a text response we can delegate before this)
+                evaluation_start_time = time.perf_counter()
+
                 logger.info(
                     "task.evaluation.start",
                     extra={
@@ -556,6 +577,10 @@ async def process_task(
                     dataset=start_benchmark_request.dataset,
                 )
 
+                task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
+
+                task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
+
                 # Force flush the logs, maybe redundant since we have the one in finally:
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
@@ -571,16 +596,21 @@ async def process_task(
 
                 with Session(bind=engine) as task_session:
                     task_session.add(evaluation_result_row)
+                    task_in_session = fetch_task_row(task_row.id, task_session, org)
+                    existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                    existing_breakdown.evaluation_run_duration = task_breakdown.evaluation_run_duration
+                    existing_breakdown.sandbox_run_duration = task_breakdown.sandbox_run_duration
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
 
                     return {task_id: evaluation_result_row.result}
-            except Exception as e:
+            except Exception:
                 with Session(bind=engine) as task_session:
                     task = fetch_task_row(task_row.id, task_session, org)
                     if task.status == TaskStatus.STOPPED:
                         return {task_id: None}
 
-                raise e from e
+                raise
+
     except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")
         raise
@@ -969,21 +999,53 @@ class BenchmarkContext:
 def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID) -> dict[str, dict[str, Any]]:
     """Select all evaluation results for a given benchmark"""
     statement = (
-        select(EvaluationResult, Task.task_id)
+        select(EvaluationResult, Task.task_id, TaskBreakdown)
         .join(Task, col(EvaluationResult.task) == col(Task.id))
+        .outerjoin(TaskBreakdown, col(Task.task_breakdown) == col(TaskBreakdown.id))
         .where(Task.benchmark == benchmark_id)
         .where(Task.org_id == org_id)
     )
     results = session.exec(statement).all()
 
     evaluation_results: dict[str, dict[str, Any]] = {}
-    for evaluation_result, task_id in results:
+    for evaluation_result, task_id, task_breakdown in results:
+        task_breakdown = cast(TaskBreakdown | None, task_breakdown)
         result_data = evaluation_result.result
-        # NOTE: We append this because its important for the user to know
         result_data["agent_caused_exit_reason"] = evaluation_result.agent_caused_exit_reason
+        if task_breakdown is not None:
+            result_data["task_breakdown"] = task_breakdown.model_dump()
         evaluation_results[task_id] = result_data
 
     return evaluation_results
+
+
+def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: UUID) -> AverageTaskBreakdown | None:
+    """
+    Fetch the average task breakdown for a given benchmark.
+
+    Returns None if there are no task metrics available for the benchmark.
+    """
+    row = session.exec(
+        select(
+            func.avg(TaskBreakdown.sandbox_build_duration),
+            func.avg(TaskBreakdown.agent_run_duration),
+            func.avg(TaskBreakdown.evaluation_run_duration),
+            func.avg(TaskBreakdown.sandbox_run_duration),
+        )
+        .join(Task, col(Task.task_breakdown) == col(TaskBreakdown.id))
+        .where(Task.benchmark == benchmark_id)
+        .where(Task.org_id == org_id)
+    ).one()
+
+    if all(v is None for v in row):
+        return None
+
+    return AverageTaskBreakdown(
+        sandbox_build_duration=row[0],
+        agent_run_duration=row[1],
+        evaluation_run_duration=row[2],
+        sandbox_run_duration=row[3],
+    )
 
 
 def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_message: str) -> None:
@@ -1403,6 +1465,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
         task_errors=benchmark_row.fetch_tasks_with_errors(session),
+        average_task_breakdown=fetch_average_task_breakdown(benchmark_row.id, session, org.id),
     )
 
     return final_view
