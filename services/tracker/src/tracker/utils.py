@@ -1277,7 +1277,9 @@ async def reset_to_in_progress_status(
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
         if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
             if rerun_task_ids:
-                existing_rows = [existing_by_task_id[task_id] for task_id in rerun_task_ids if task_id in existing_by_task_id]
+                existing_rows = [
+                    existing_by_task_id[task_id] for task_id in rerun_task_ids if task_id in existing_by_task_id
+                ]
                 missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_by_task_id]
                 if missing_task_ids:
                     raise TrackerServiceError(
