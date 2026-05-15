@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Buffer, Coroutine
 from datetime import datetime
 from enum import Enum
 from functools import cached_property
-from typing import Any, NamedTuple, Sequence
+from typing import Any, NamedTuple, Sequence, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -844,7 +844,6 @@ async def process_benchmark(
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
             if has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
@@ -860,6 +859,7 @@ async def process_benchmark(
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
             if has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
