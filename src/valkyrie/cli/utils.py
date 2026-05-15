@@ -488,12 +488,13 @@ def format_fetch_benchmarks_response(
                 ),
                 "Started / Finished": f"{short_local_time(benchmark.started_at)} / {short_local_time(benchmark.finished_at, include_date=False) if benchmark.finished_at else '-'}",
                 "Progress": f"{progress_percentage:.1f}%",
+                "Score": f"{benchmark.final_score:.1%}" if benchmark.final_score is not None else "-",
             }
         )
 
     format_table(
         rows,
-        ["ID", "Benchmark", "Agent", "Model", "Status", "Started / Finished", "Progress"],
+        ["ID", "Benchmark", "Agent", "Model", "Status", "Started / Finished", "Progress", "Score"],
         current_page,
         total_pages,
         fetch_benchmarks_response.total_count,

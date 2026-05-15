@@ -252,6 +252,12 @@ class Benchmark(SQLModel, table=True):
             .where(col(Task.status).in_([TaskStatus.FINISHED, TaskStatus.ERROR]))
         ).one()
 
+        final_evaluation = session.exec(
+            select(FinalEvaluation)
+            .where(col(FinalEvaluation.benchmark) == self.id)
+            .where(col(FinalEvaluation.org_id) == self.org_id)
+        ).first()
+
         return BenchmarkTableRow(
             id=self.id,
             name=self.name,
@@ -262,6 +268,7 @@ class Benchmark(SQLModel, table=True):
             status=self.status,
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,
+            final_score=final_evaluation.final_score if final_evaluation else None,
         )
 
 
