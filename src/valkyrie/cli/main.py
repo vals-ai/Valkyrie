@@ -38,6 +38,7 @@ from valkyrie.cli.utils import (
     format_start_benchmark_response,
     format_table,
     infer_mode,
+    mask_secrets,
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
@@ -270,6 +271,61 @@ def config_mode(target_mode: str) -> None:
             fg="green",
         )
     )
+
+
+@config.command(name="show")
+def config_show() -> None:
+    """Print the resolved active configuration with secrets masked."""
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    masked = mask_secrets(config)
+
+    env_url = os.environ.get("TRACKER_SERVICE_URL")
+    configured_url = config.get("tracker_service_url")
+    active_mode = config.get("mode") or infer_mode(config)
+
+    if env_url:
+        url_display = f"{env_url}  (from env)"
+    elif configured_url and active_mode == "self-hosted":
+        url_display = f"{configured_url}  (from config)"
+    else:
+        try:
+            url_display = f"{resolve_tracker_url(config)}  (mode default)"
+        except click.ClickException as e:
+            url_display = f"<unresolved: {e.message}>"
+
+    click.echo(f"mode:                  {active_mode}")
+    click.echo(f"tracker_service_url:   {url_display}")
+    if configured_url and active_mode == "hosted" and not env_url:
+        click.echo(
+            f"                       note: config has tracker_service_url={configured_url} — unused in hosted mode"
+        )
+    if config.get("api_key"):
+        suffix = "" if active_mode == "hosted" else "  -- inactive in this mode"
+        click.echo(f"api_key:               (set, masked){suffix}")
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+        if config.get(key):
+            click.echo(f"{key.lower():<22} (set, masked)")
+    for k, v in masked.items():
+        if k in {
+            "mode",
+            "tracker_service_url",
+            "api_key",
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+        }:
+            continue
+        if isinstance(v, dict):
+            click.echo(f"{k}:")
+            for sub_k, sub_v in v.items():
+                click.echo(f"  {sub_k}: {sub_v}")
+        else:
+            click.echo(f"{k}: {v}")
 
 
 @config.group()

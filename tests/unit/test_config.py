@@ -12,6 +12,7 @@ import yaml
 from valkyrie.cli.utils import (
     HOSTED_TRACKER_URL_DEFAULT,
     infer_mode,
+    mask_secrets,
     resolve_tracker_url,
     save_config,
     validate_mode_requirements,
@@ -251,3 +252,102 @@ def test_config_mode_self_hosted_without_url_errors(
     result = CliRunner().invoke(cli, ["config", "mode", "self-hosted"])
     assert result.exit_code != 0
     assert "tracker_service_url" in result.output
+
+
+# ---------- mask_secrets ----------
+
+
+def test_mask_secrets_replaces_known_secret_keys() -> None:
+    config = {
+        "mode": "hosted",
+        "api_key": "secret-1",
+        "AWS_ACCESS_KEY_ID": "AKIA-2",
+        "AWS_SECRET_ACCESS_KEY": "secret-3",
+        "AWS_SESSION_TOKEN": "secret-4",
+        "AWS_DEFAULT_REGION": "us-west-2",
+        "tracker_service_url": "https://example",
+        "benchmark_auth": {"swebench": "token-5"},
+    }
+    masked = mask_secrets(config)
+    assert masked["mode"] == "hosted"
+    assert masked["api_key"] == "(set, masked)"
+    assert masked["AWS_ACCESS_KEY_ID"] == "(set, masked)"
+    assert masked["AWS_SECRET_ACCESS_KEY"] == "(set, masked)"
+    assert masked["AWS_SESSION_TOKEN"] == "(set, masked)"
+    assert masked["AWS_DEFAULT_REGION"] == "us-west-2"
+    assert masked["tracker_service_url"] == "https://example"
+    assert masked["benchmark_auth"]["swebench"] == "(set, masked)"
+
+
+# ---------- config show CLI ----------
+
+
+def test_config_show_masks_secrets_and_labels_env_source(
+    fake_config_location: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from click.testing import CliRunner
+    from valkyrie.cli.main import cli
+
+    _write(
+        fake_config_location,
+        {
+            "mode": "hosted",
+            "api_key": "super-secret-key",
+            "AWS_ACCESS_KEY_ID": "AKIA-secret",
+            "AWS_SECRET_ACCESS_KEY": "shhh",
+            "AWS_DEFAULT_REGION": "us-west-2",
+            "tracker_service_url": "https://from-config",
+            "S3_BUCKET": "test-bucket",
+        },
+    )
+    monkeypatch.setattr("valkyrie.cli.main.CONFIG_LOCATION", fake_config_location)
+    monkeypatch.setenv("TRACKER_SERVICE_URL", "https://from-env")
+
+    result = CliRunner().invoke(cli, ["config", "show"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+
+    # secrets are masked
+    assert "super-secret-key" not in result.output
+    assert "AKIA-secret" not in result.output
+    assert "shhh" not in result.output
+    # non-secrets are shown
+    assert "us-west-2" in result.output
+    assert "test-bucket" in result.output
+    # env-var sourcing is surfaced
+    assert "https://from-env" in result.output
+    assert "from env" in result.output.lower() or "(from env" in result.output.lower()
+
+
+def test_config_show_warns_when_tracker_url_inactive_in_hosted_mode(
+    fake_config_location: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`config show` surfaces a stale tracker_service_url that hosted mode ignores."""
+    from click.testing import CliRunner
+
+    from valkyrie.cli.main import cli
+
+    _write(
+        fake_config_location,
+        {
+            "mode": "hosted",
+            "api_key": "k",
+            "tracker_service_url": "http://localhost:8000",  # stale self-hosted carry-over
+            "AWS_ACCESS_KEY_ID": "x",
+            "AWS_SECRET_ACCESS_KEY": "y",
+            "AWS_DEFAULT_REGION": "us-west-2",
+            "S3_BUCKET": "b",
+        },
+    )
+    monkeypatch.setattr("valkyrie.cli.main.CONFIG_LOCATION", fake_config_location)
+    monkeypatch.delenv("TRACKER_SERVICE_URL", raising=False)
+
+    result = CliRunner().invoke(cli, ["config", "show"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+
+    # Active URL is the hosted default, not the stale localhost.
+    assert HOSTED_TRACKER_URL_DEFAULT in result.output
+    # The hint surfaces the inactive field.
+    assert "unused in hosted mode" in result.output
+    assert "http://localhost:8000" in result.output

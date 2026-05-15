@@ -159,6 +159,13 @@ def load_config() -> dict[str, str]:
 
 HOSTED_TRACKER_URL_DEFAULT = "https://benchmark-tracker.vals.ai"
 
+_SECRET_KEYS: set[str] = {
+    "api_key",
+    "AWS_ACCESS_KEY_ID",
+    "AWS_SECRET_ACCESS_KEY",
+    "AWS_SESSION_TOKEN",
+}
+
 
 def infer_mode(config: dict[str, Any]) -> str:
     """Infer mode from a legacy config that lacks the `mode` field."""
@@ -234,6 +241,19 @@ def validate_mode_requirements(config: dict[str, Any], target_mode: str) -> None
             )
     else:
         raise click.ClickException(f"unknown mode: {target_mode}")
+
+
+def mask_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    """Return a shallow copy of ``config`` with secret values replaced by a placeholder."""
+    masked: dict[str, Any] = {}
+    for k, v in config.items():
+        if k in _SECRET_KEYS and v:
+            masked[k] = "(set, masked)"
+        elif k == "benchmark_auth" and isinstance(v, dict):
+            masked[k] = {sub_k: "(set, masked)" if sub_v else sub_v for sub_k, sub_v in v.items()}
+        else:
+            masked[k] = v
+    return masked
 
 
 class BenchmarkFormatter:
