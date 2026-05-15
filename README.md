@@ -113,6 +113,8 @@ valkyrie config service set external-service https://endpoint
 
 Creates or updates a benchmark service. This maps the benchmark name to the endpoint we can reach it at. This will override any service that we already provide.
 
+For local-tracker development, prefer `http://host.docker.internal:8001` over an ngrok tunnel. See [DEVELOPMENT.md](docs/DEVELOPMENT.md#smoke-testing-against-a-local-benchmark-service).
+
 ### List custom benchmark services
 
 ```bash

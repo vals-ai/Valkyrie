@@ -68,6 +68,23 @@ valkyrie config init
 
 Without the env vars, the service runs in self-hosted mode (no auth, default org).
 
+### Smoke-testing against a local benchmark service
+
+When iterating on Valkyrie or a benchmark service against a local tracker, no public ngrok tunnel is required — the tracker container reaches the host machine via `host.docker.internal`.
+
+```bash
+# Run the bench service on host port 8001:
+docker run -d -p 8001:8001 <bench-service-image>:latest
+
+# Point Valkyrie at it:
+valkyrie config service set <bench-name> http://host.docker.internal:8001
+
+# Run a small benchmark:
+valkyrie run start --slice :1 ...
+```
+
+The ngrok-based recipe is still required when a *deployed* tracker needs to reach a *local* bench service; see [create-benchmark-service tunnel setup](https://github.com/vals-ai/create-benchmark-service?tab=readme-ov-file#reverse-tunnel-setup).
+
 ## Code Quality
 
 ```bash

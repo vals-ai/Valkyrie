@@ -60,6 +60,8 @@ services:
         condition: service_healthy
     networks:
       - tracker-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   tracker:
     image: tracker-service
@@ -97,6 +99,8 @@ services:
       retries: 5
     networks:
       - tracker-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   postgres_data:
