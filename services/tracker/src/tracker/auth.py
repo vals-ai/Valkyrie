@@ -158,8 +158,14 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
     management API lookup when the JWT carries user_id but no email.
 
     Supported access-key response shape:
-        {"tenants": {"vals.ai": {}}, "keyId": "K2abc",
-         "sessionToken": {"sub": "K2abc", "customClaims": {"user_id": "U2abc"}}}
+        {
+            "tenants": {"vals.ai": {}},
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "customClaims": {"user_id": "U2abc"},
+            },
+        }
     """
     if not _descope_client:
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")

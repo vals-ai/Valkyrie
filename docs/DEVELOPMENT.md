@@ -56,7 +56,29 @@ valkyrie config init
 Start the tracker with auth enabled:
 
 ```bash
-AUTH_REQUIRED=true DESCOPE_PROJECT_ID=<your-project-id> make tracker-service
+AUTH_REQUIRED=true \
+DESCOPE_PROJECT_ID=<your-project-id> \
+DESCOPE_MANAGEMENT_KEY=<your-management-key> \
+make tracker-service
+```
+
+`DESCOPE_MANAGEMENT_KEY` is server-side tracker config. It lets the local tracker
+resolve the access key's bound user email through Descope's management API when
+testing hosted-mode run attribution.
+
+The tracker expects Descope access-key exchange responses to expose the bound user
+id through custom claims. For example:
+
+```json
+{
+  "keyId": "K2abc",
+  "sessionToken": {
+    "sub": "K2abc",
+    "customClaims": {
+      "user_id": "U2abc"
+    }
+  }
+}
 ```
 
 Then configure the CLI for hosted mode:
