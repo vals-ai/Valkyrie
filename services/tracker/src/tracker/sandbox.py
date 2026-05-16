@@ -600,7 +600,7 @@ async def _reconnect_and_wait_pty(
         raise SandboxError(f"PTY session {session_id} no longer exists (sandbox_state={sandbox.state})")
     except DaytonaError:
         # Toolbox unreachable — the sandbox may be destroying but the state API hasn't caught up yet.
-        # Do one fresh refresh to check; fail fast if dead, otherwise let the outer retry handle it.
+        # Do one fresh refresh to check
         await sandbox.refresh_data()
         if sandbox.state in _DEAD_SANDBOX_STATES:
             sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
@@ -619,7 +619,7 @@ async def _reconnect_and_wait_pty(
         except DaytonaConnectionError as e:
             if "not found" in str(e).lower():
                 # TOCTOU fallback: session existed at get_pty_session_info time but was
-                # deleted before connect. Refresh state and fail fast.
+                # deleted before connect.
                 await sandbox.refresh_data()
                 sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
                 sentry_sdk.set_tag("pty.disconnect_reason", "pty_session_killed")
