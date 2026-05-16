@@ -84,13 +84,26 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     """Delete sandbox if it is not already destroyed or being destroyed"""
     try:
         await sandbox.refresh_data()
-
-        if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
-            # Set auto-stop interval in-case we fail to delete the sandbox
-            await sandbox.set_autostop_interval(interval=1)
-            await daytona.delete(sandbox)
     except DaytonaNotFoundError:
-        # If we error here that means the sandbox has just been deleted before we could refresh the state
+        logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
+        return
+    except DaytonaError as e:
+        # If the sandbox was already mid-destruction the API may reject the
+        # refresh with a generic error.  Treat it the same as NotFound.
+        if sandbox.state in (SandboxState.DESTROYING, SandboxState.DESTROYED):
+            logger.warning(f"Sandbox `{sandbox.name}` is already {sandbox.state}, skipping delete")
+            return
+        tag_daytona_error(e, op="sandbox.delete")
+        raise
+
+    if sandbox.state in (SandboxState.DESTROYING, SandboxState.DESTROYED):
+        return
+
+    try:
+        # Set auto-stop interval in-case we fail to delete the sandbox
+        await sandbox.set_autostop_interval(interval=1)
+        await daytona.delete(sandbox)
+    except DaytonaNotFoundError:
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
     except DaytonaError as e:
         tag_daytona_error(e, op="sandbox.delete")
