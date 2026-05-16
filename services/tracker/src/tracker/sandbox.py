@@ -400,7 +400,7 @@ _pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)
 _pty_handshake_in_flight_count: int = 0
 
 # States that determine if the sandbox has been killed
-_DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
+_DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED, SandboxState.ERROR)
 
 
 def _set_pty_span_attributes(sandbox: AsyncSandbox, session_id: str) -> None:
