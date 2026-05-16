@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import base64
 import shlex
 import time
@@ -649,6 +650,19 @@ async def _wait_for_pty(
             raise SandboxError(f"PTY reconnect failed after {_PTY_RECONNECT_MAX_ATTEMPTS} attempts") from e
 
 
+async def _wait_for_status_file(sandbox: AsyncSandbox, status_path: str, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while True:
+        await _check_sandbox_health(sandbox)
+        if (await _exec(sandbox, f"test -e {status_path}")).exit_code == 0:
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        await asyncio.sleep(min(10, remaining))
+    raise SandboxError(f"Command did not write exit status within {timeout:.0f}s")
+
+
 async def _read_exit_code(sandbox: AsyncSandbox, status_path: str) -> int:
     """
     Read the command exit code from the status file (Important to determine reason for exiting)
@@ -705,6 +719,7 @@ async def stream_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
+    wait_timeout: float | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Execute a command inside a sandbox using a PTY session, reconnecting on errors
@@ -758,8 +773,22 @@ async def stream_command_output(
             f"; exit\n"
         )
 
-        # Wait for the PTY to finish running the agent, logging data returned
-        await _wait_for_pty(sandbox, session_id, handle, on_data, on_output, status_path)
+        wait_task = asyncio.create_task(_wait_for_pty(sandbox, session_id, handle, on_data, on_output, status_path))
+        status_task = (
+            asyncio.create_task(_wait_for_status_file(sandbox, status_path, wait_timeout)) if wait_timeout else None
+        )
+        waiters = {wait_task}
+        if status_task:
+            waiters.add(status_task)
+        done, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for task in done:
+            await task
+        if status_task and status_task in done and wait_task not in done:
+            on_output("[Debug]: command status file was written before PTY close; continuing\n")
 
         # Verify sandbox is still alive before reading the status file
         await _check_sandbox_health(sandbox)
@@ -905,7 +934,10 @@ async def run_agent(
 
     # Run the agent without including task directory dependencies
     exit_reason, agent_run_time = await stream_command_output(
-        sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
+        sandbox,
+        f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+        log_output,
+        wait_timeout=agent_timeout + 600 if agent_timeout is not None else None,
     )
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
