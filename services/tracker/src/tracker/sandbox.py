@@ -598,6 +598,17 @@ async def _reconnect_and_wait_pty(
         sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
         _log_pty_event("pty_session_killed", sandbox, session_id)
         raise SandboxError(f"PTY session {session_id} no longer exists (sandbox_state={sandbox.state})")
+    except DaytonaError:
+        # Toolbox unreachable — the sandbox may be destroying but the state API hasn't caught up yet.
+        # Do one fresh refresh to check; fail fast if dead, otherwise let the outer retry handle it.
+        await sandbox.refresh_data()
+        if sandbox.state in _DEAD_SANDBOX_STATES:
+            sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
+            sentry_sdk.set_tag("pty.disconnect_reason", "sandbox_killed")
+            raise SandboxError(
+                f"Sandbox {sandbox.name} destroyed during PTY reconnect (state={sandbox.state})"
+            )
+        raise
 
     # Log so the user can see we have seen a disconnection from the websocket (easier to pickup in logs)
     on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
