@@ -24,7 +24,7 @@ from daytona import (
     Resources,
     SandboxState,
 )
-from daytona.common.errors import DaytonaConnectionError, DaytonaError
+from daytona.common.errors import DaytonaConflictError, DaytonaConnectionError, DaytonaError
 from daytona.handle.async_pty_handle import AsyncPtyHandle
 from opentelemetry import trace
 from tenacity import (
@@ -593,8 +593,15 @@ async def _reconnect_and_wait_pty(
     _log_pty_event("reconnect_start", sandbox, session_id)
 
     # Reconnect to the PTY. Only the connect handshake is gated; handle.wait() runs ungated below.
-    async with _pty_handshake_slot("reconnect", session_id):
-        handle = await sandbox.process.connect_pty_session(session_id, on_data)
+    try:
+        async with _pty_handshake_slot("reconnect", session_id):
+            handle = await sandbox.process.connect_pty_session(session_id, on_data)
+    except (DaytonaConflictError, DaytonaNotFoundError) as e:
+        raise SandboxError(f"PTY session {session_id} no longer exists on sandbox {sandbox.name}") from e
+    except DaytonaConnectionError as e:
+        if "not found" in str(e).lower():
+            raise SandboxError(f"PTY session {session_id} no longer exists on sandbox {sandbox.name}") from e
+        raise
 
     # Wait until the command has finished running
     await handle.wait()
