@@ -1191,7 +1191,7 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
 
 @tenacity_retry(
     retry=retry_if_exception_type((DaytonaRateLimitError, DaytonaConnectionError)),
-    stop=stop_after_attempt(7),
+    stop=stop_after_attempt(5),
     wait=wait_daytona_rate_limit(non_rate_limit_wait=wait_fixed(2)),
     before_sleep=daytona_retry_callback("valkyrie.sandbox.list", op="sandbox.list"),
     reraise=True,
