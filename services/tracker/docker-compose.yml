@@ -52,6 +52,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - AWS_REGION
+      - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
       - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:
@@ -82,6 +83,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - AWS_REGION
+      - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
       - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:
