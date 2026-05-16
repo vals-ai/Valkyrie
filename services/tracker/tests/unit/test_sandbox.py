@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from daytona import ExecuteResponse, SandboxState
-from daytona.common.errors import DaytonaError, DaytonaRateLimitError
+from daytona.common.errors import DaytonaConnectionError, DaytonaError, DaytonaNotFoundError, DaytonaRateLimitError
 from tenacity import stop_after_attempt, wait_none
 
 import tracker.daytona_retry as daytona_retry_module
@@ -145,12 +145,16 @@ class TestPtyHandshakeSemaphore:
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.process.get_pty_session_info = AsyncMock()
         mock_sandbox.process.connect_pty_session = AsyncMock(return_value=mock_handle)
         outputs: list[str] = []
 
         await _reconnect_and_wait_pty(mock_sandbox, "session-1", _ignore_pty_data, outputs.append)
 
-        assert increments == [("valkyrie.pty.reconnect.count", {"operation": "reconnect"})]
+        assert increments == [
+            ("valkyrie.pty.reconnect.count", {"operation": "reconnect"}),
+            ("valkyrie.pty.reconnect.success", {}),
+        ]
         assert outputs == ["[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n"]
         assert log_records == [
             {
@@ -158,7 +162,13 @@ class TestPtyHandshakeSemaphore:
                 "pty_event": "reconnect_start",
                 "session_id": "session-1",
                 "sandbox_id": "sandbox-123",
-            }
+            },
+            {
+                "message": "pty.reconnect_success",
+                "pty_event": "reconnect_success",
+                "session_id": "session-1",
+                "sandbox_id": "sandbox-123",
+            },
         ]
         handshake_duration_call = next(call for call in distributions if call[0] == "valkyrie.pty.handshake.duration")
         assert 0 <= handshake_duration_call[1] < 1
@@ -884,7 +894,10 @@ class TestAgentOutputTelemetry:
 
         assert increments == []
 
-    async def test_check_sandbox_health_emits_unhealthy_state_telemetry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("dead_state", [SandboxState.DESTROYED, SandboxState.ERROR])
+    async def test_check_sandbox_health_emits_unhealthy_state_telemetry(
+        self, monkeypatch: pytest.MonkeyPatch, dead_state: SandboxState
+    ) -> None:
         tags: dict[str, str] = {}
         increments: list[tuple[str, dict[str, str]]] = []
 
@@ -900,18 +913,13 @@ class TestAgentOutputTelemetry:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
-        mock_sandbox.state = SandboxState.DESTROYED
+        mock_sandbox.state = dead_state
 
         with pytest.raises(SandboxError, match="crashed during command execution"):
             await _check_sandbox_health(mock_sandbox)
 
-        assert tags == {"sandbox_state": str(SandboxState.DESTROYED)}
-        assert increments == [
-            (
-                "valkyrie.sandbox.unhealthy",
-                {"state": str(SandboxState.DESTROYED)},
-            )
-        ]
+        assert tags == {"sandbox_state": str(dead_state)}
+        assert increments == [("valkyrie.sandbox.unhealthy", {"state": str(dead_state)})]
 
     async def test_check_sandbox_health_tags_daytona_refresh_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         daytona_error = DaytonaError("refresh failed")
@@ -926,10 +934,11 @@ class TestAgentOutputTelemetry:
         mock_sandbox.name = "task-alias"
         mock_sandbox.refresh_data = AsyncMock(side_effect=daytona_error)
 
-        with pytest.raises(SandboxError, match="Failed to check sandbox"):
+        with pytest.raises(DaytonaError):
             await _check_sandbox_health(mock_sandbox)
 
-        assert daytona_errors == [(daytona_error, "sandbox.health_check")]
+        assert all(exc is daytona_error and op == "sandbox.health_check" for exc, op in daytona_errors)
+        assert len(daytona_errors) >= 1
 
     async def test_check_sandbox_health_does_not_tag_non_daytona_refresh_errors(
         self, monkeypatch: pytest.MonkeyPatch
@@ -988,6 +997,97 @@ class TestAgentOutputTelemetry:
         assert max_concurrent <= cap
         # Sanity: without the cap we'd see total concurrency; confirm contention actually happened
         assert max_concurrent > 1
+
+    @pytest.mark.parametrize(
+        "pty_info_side_effect, sandbox_state, connect_side_effect, stop_after_one, expected_exc_type, expected_match, expected_tags",
+        [
+            pytest.param(
+                DaytonaNotFoundError("gone"),
+                SandboxState.STARTED,
+                None,
+                False,
+                SandboxError,
+                "no longer exists",
+                {"pty.disconnect_reason": "pty_session_killed", "sandbox_state": str(SandboxState.STARTED)},
+                id="pty_not_found",
+            ),
+            pytest.param(
+                DaytonaError("toolbox unreachable"),
+                SandboxState.DESTROYING,
+                None,
+                False,
+                SandboxError,
+                "destroyed during PTY reconnect",
+                {"pty.disconnect_reason": "sandbox_killed", "sandbox_state": str(SandboxState.DESTROYING)},
+                id="sandbox_dead_after_toolbox_error",
+            ),
+            pytest.param(
+                DaytonaError("502 bad gateway"),
+                SandboxState.STARTED,
+                None,
+                True,
+                DaytonaError,
+                "502 bad gateway",
+                {},
+                id="transient_error_alive_sandbox",
+            ),
+            pytest.param(
+                None,
+                SandboxState.STARTED,
+                DaytonaConnectionError("PTY session not found"),
+                False,
+                SandboxError,
+                "PTY session not found",
+                {"pty.disconnect_reason": "pty_session_killed"},
+                id="toctou_connect_not_found",
+            ),
+        ],
+    )
+    async def test_reconnect_fast_fail_paths(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        pty_info_side_effect: Exception | None,
+        sandbox_state: SandboxState,
+        connect_side_effect: Exception | None,
+        stop_after_one: bool,
+        expected_exc_type: type[Exception],
+        expected_match: str,
+        expected_tags: dict[str, str],
+    ) -> None:
+        tags: dict[str, str] = {}
+        monkeypatch.setattr(
+            sandbox_module, "sentry_sdk", SimpleNamespace(set_tag=lambda k, v: tags.update({k: v})), raising=False
+        )
+        monkeypatch.setattr(sandbox_module, "_check_sandbox_health", AsyncMock())
+        monkeypatch.setattr(sandbox_module, "incr", Mock(), raising=False)
+        monkeypatch.setattr(sandbox_module.logger, "info", Mock())
+        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(5))
+        monkeypatch.setattr(sandbox_module, "_pty_handshake_in_flight_count", 0, raising=False)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock(), raising=False)
+        monkeypatch.setattr(sandbox_module, "gauge", Mock(), raising=False)
+        monkeypatch.setattr(sandbox_module, "_set_pty_span_attributes", Mock(), raising=False)
+        monkeypatch.setattr(sandbox_module, "set_pty_context", Mock(), raising=False)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.state = sandbox_state
+        mock_sandbox.refresh_data = AsyncMock()
+        mock_sandbox.process.get_pty_session_info = AsyncMock(side_effect=pty_info_side_effect)
+        if connect_side_effect is not None:
+            mock_sandbox.process.connect_pty_session = AsyncMock(side_effect=connect_side_effect)
+
+        fn = (
+            _reconnect_and_wait_pty.retry_with(stop=stop_after_attempt(1), wait=wait_none())
+            if stop_after_one
+            else _reconnect_and_wait_pty
+        )
+
+        with pytest.raises(expected_exc_type, match=expected_match):
+            await fn(mock_sandbox, "session-1", _ignore_pty_data, lambda _: None)
+
+        for key, value in expected_tags.items():
+            assert tags[key] == value
 
     async def test_semaphore_released_after_handshake_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """

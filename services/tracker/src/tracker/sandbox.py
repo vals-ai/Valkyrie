@@ -605,9 +605,7 @@ async def _reconnect_and_wait_pty(
         if sandbox.state in _DEAD_SANDBOX_STATES:
             sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
             sentry_sdk.set_tag("pty.disconnect_reason", "sandbox_killed")
-            raise SandboxError(
-                f"Sandbox {sandbox.name} destroyed during PTY reconnect (state={sandbox.state})"
-            )
+            raise SandboxError(f"Sandbox {sandbox.name} destroyed during PTY reconnect (state={sandbox.state})")
         raise
 
     # Log so the user can see we have seen a disconnection from the websocket (easier to pickup in logs)
