@@ -546,6 +546,7 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
     try:
         await sandbox.refresh_data()
         _set_sandbox_span_attributes(sandbox)
+        set_sandbox_context(sandbox)
         if sandbox.state in _DEAD_SANDBOX_STATES:
             sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
             incr("valkyrie.sandbox.unhealthy", tags={"state": str(sandbox.state)})
@@ -558,6 +559,16 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
         if isinstance(e, DaytonaError):
             tag_daytona_error(e, op="sandbox.health_check")
         raise SandboxError(f"Failed to check sandbox {sandbox.name} health: {e}") from e
+
+
+async def _refresh_sandbox_state_for_sentry(sandbox: AsyncSandbox) -> None:
+    """Best-effort refresh of the sandbox state so Sentry events capture the actual state at failure time."""
+    try:
+        await sandbox.refresh_data()
+        set_sandbox_context(sandbox)
+        sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
+    except Exception:
+        pass
 
 
 @retry(
@@ -597,9 +608,12 @@ async def _reconnect_and_wait_pty(
         async with _pty_handshake_slot("reconnect", session_id):
             handle = await sandbox.process.connect_pty_session(session_id, on_data)
     except (DaytonaConflictError, DaytonaNotFoundError) as e:
+        # Refresh sandbox state so the Sentry event captures the actual state at failure time
+        await _refresh_sandbox_state_for_sentry(sandbox)
         raise SandboxError(f"PTY session {session_id} no longer exists on sandbox {sandbox.name}") from e
     except DaytonaConnectionError as e:
         if "not found" in str(e).lower():
+            await _refresh_sandbox_state_for_sentry(sandbox)
             raise SandboxError(f"PTY session {session_id} no longer exists on sandbox {sandbox.name}") from e
         raise
 
