@@ -716,10 +716,10 @@ async def fetch_missing_tasks(
     session: Session, benchmark_row: Benchmark, evaluation_results: dict[str, dict[str, Any] | None], org: Org
 ):
     remaining_task_results_query = cast(
-        Sequence[tuple[str, dict[str, Any]]],
+        Sequence[tuple[str, dict[str, Any] | None]],
         session.exec(
             select(Task.task_id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
-            .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task))
+            .outerjoin(EvaluationResult, col(Task.id) == col(EvaluationResult.task))
             .where(col(Task.benchmark) == benchmark_row.id)
             .where(col(Task.org_id) == org.id)
             .where(col(Task.task_id).notin_(list(evaluation_results.keys())))

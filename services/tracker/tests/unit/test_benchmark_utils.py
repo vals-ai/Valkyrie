@@ -10,13 +10,22 @@ from sqlmodel import Session, col, func, select, update
 
 from tests.unit.test_fastapi_server import client
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkStatus,
+    EvaluationResult,
+    Org,
+    Task,
+    TaskStatus,
+)
 from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
+    fetch_missing_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
@@ -346,6 +355,40 @@ class TestBenchmarkUtils:
         all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
+
+    async def test_fetch_missing_tasks_returns_none_for_errored_tasks(
+        self, example_benchmark_object: Benchmark, database_session: Session
+    ):
+        """Errored/stopped tasks have no EvaluationResult row; fetch_missing_tasks must still
+        return them as None so the benchmark service scores them against the denominator."""
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        finished_task = Task(
+            org_id=TEST_ORG_ID, task_id="task_finished", benchmark=benchmark_row.id, status=TaskStatus.FINISHED
+        )
+        errored_task = Task(
+            org_id=TEST_ORG_ID, task_id="task_errored", benchmark=benchmark_row.id, status=TaskStatus.ERROR,
+            error_message="boom",
+        )
+        stopped_task = Task(
+            org_id=TEST_ORG_ID, task_id="task_stopped", benchmark=benchmark_row.id, status=TaskStatus.STOPPED
+        )
+        database_session.add_all([finished_task, errored_task, stopped_task])
+        database_session.commit()
+
+        database_session.add(
+            EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"resolved": True})
+        )
+        database_session.commit()
+
+        remaining = await fetch_missing_tasks(database_session, benchmark_row, {}, self._test_org)
+
+        assert set(remaining.keys()) == {"task_finished", "task_errored", "task_stopped"}
+        assert remaining["task_finished"] == {"resolved": True}
+        assert remaining["task_errored"] is None
+        assert remaining["task_stopped"] is None
 
     def test_commit_task_error_spans_status_transition(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
