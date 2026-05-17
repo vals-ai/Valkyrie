@@ -171,6 +171,7 @@ class BenchmarkTableRow(BaseModel):
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
+    final_score: float | None = None
 
 
 class FetchBenchmarksResponse(BaseModel):
