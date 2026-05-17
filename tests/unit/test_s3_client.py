@@ -63,9 +63,7 @@ def patch_s3(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes], tracke
 
 
 @pytest.mark.asyncio
-async def test_download_s3_path_downloads_files_in_parallel(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_download_s3_path_downloads_files_in_parallel(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     tracker = ConcurrencyTracker()
     payloads = {
         "benchmarks/run-1/task-a/output.json": b"a",
@@ -85,9 +83,7 @@ async def test_download_s3_path_downloads_files_in_parallel(
 
 
 @pytest.mark.asyncio
-async def test_download_s3_path_handles_exact_file_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+async def test_download_s3_path_handles_exact_file_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     tracker = ConcurrencyTracker()
     payloads = {"benchmarks/run-1/results.json": b"results"}
 
