@@ -472,6 +472,9 @@ def format_fetch_benchmarks_response(
         click.echo(click.style("No runs found.", fg="yellow"))
         return
 
+    def format_score(score: float | None) -> str:
+        return f"{score:.1%}" if score is not None else "-"
+
     rows: list[dict[str, str]] = []
     for benchmark in benchmarks:
         _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
@@ -486,6 +489,7 @@ def format_fetch_benchmarks_response(
                     benchmark.status.value.replace("_", " ").title(),
                     fg=BenchmarkFormatter.STATUS_COLORS[benchmark.status.value],
                 ),
+                "Score": format_score(benchmark.final_score),
                 "Started / Finished": f"{short_local_time(benchmark.started_at)} / {short_local_time(benchmark.finished_at, include_date=False) if benchmark.finished_at else '-'}",
                 "Progress": f"{progress_percentage:.1f}%",
             }
@@ -493,7 +497,7 @@ def format_fetch_benchmarks_response(
 
     format_table(
         rows,
-        ["ID", "Benchmark", "Agent", "Model", "Status", "Started / Finished", "Progress"],
+        ["ID", "Benchmark", "Agent", "Model", "Status", "Score", "Started / Finished", "Progress"],
         current_page,
         total_pages,
         fetch_benchmarks_response.total_count,

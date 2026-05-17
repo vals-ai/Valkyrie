@@ -262,6 +262,7 @@ class Benchmark(SQLModel, table=True):
             status=self.status,
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,
+            final_score=self.final_evaluation.final_score if self.final_evaluation else None,
         )
 
 
