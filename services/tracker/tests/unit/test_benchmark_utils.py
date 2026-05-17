@@ -369,7 +369,10 @@ class TestBenchmarkUtils:
             org_id=TEST_ORG_ID, task_id="task_finished", benchmark=benchmark_row.id, status=TaskStatus.FINISHED
         )
         errored_task = Task(
-            org_id=TEST_ORG_ID, task_id="task_errored", benchmark=benchmark_row.id, status=TaskStatus.ERROR,
+            org_id=TEST_ORG_ID,
+            task_id="task_errored",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
             error_message="boom",
         )
         stopped_task = Task(
@@ -378,9 +381,7 @@ class TestBenchmarkUtils:
         database_session.add_all([finished_task, errored_task, stopped_task])
         database_session.commit()
 
-        database_session.add(
-            EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"resolved": True})
-        )
+        database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"resolved": True}))
         database_session.commit()
 
         remaining = await fetch_missing_tasks(database_session, benchmark_row, {}, self._test_org)
