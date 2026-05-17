@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 from types import TracebackType
+from typing import Any
 
 import pytest
 
@@ -26,33 +27,16 @@ class ConcurrencyTracker:
         self.max_active = 0
 
 
-class FakePaginator:
-    def __init__(self, keys: list[str]) -> None:
-        self._keys = keys
-
-    async def paginate(self, **_kwargs: object):
-        yield {"Contents": [{"Key": key} for key in self._keys]}
-
-
 class FakeS3Client:
     def __init__(self, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
         self._payloads = payloads
         self._tracker = tracker
 
-    def get_paginator(self, _name: str) -> FakePaginator:
-        return FakePaginator(list(self._payloads))
+    def client(self, _name: str) -> "FakeS3Client":
+        return self
 
-    async def get_object(self, *, Bucket: str, Key: str) -> dict[str, FakeBody]:
-        assert Bucket == "test-bucket"
-        return {"Body": FakeBody(self._payloads[Key], self._tracker)}
-
-
-class FakeS3ClientContext:
-    def __init__(self, client: FakeS3Client) -> None:
-        self._client = client
-
-    async def __aenter__(self) -> FakeS3Client:
-        return self._client
+    async def __aenter__(self) -> "FakeS3Client":
+        return self
 
     async def __aexit__(
         self,
@@ -62,13 +46,20 @@ class FakeS3ClientContext:
     ) -> None:
         return None
 
+    def get_paginator(self, _name: str) -> "FakeS3Client":
+        return self
 
-class FakeSession:
-    def __init__(self, client: FakeS3Client) -> None:
-        self._client = client
+    async def paginate(self, **_kwargs: object) -> Any:
+        yield {"Contents": [{"Key": key} for key in self._payloads]}
 
-    def client(self, _name: str) -> FakeS3ClientContext:
-        return FakeS3ClientContext(self._client)
+    async def get_object(self, *, Bucket: str, Key: str) -> dict[str, FakeBody]:
+        assert Bucket == "test-bucket"
+        return {"Body": FakeBody(self._payloads[Key], self._tracker)}
+
+
+def patch_s3(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
+    monkeypatch.setattr("valkyrie.cli.s3_client._fetch_bucket_name", lambda: "test-bucket")
+    monkeypatch.setattr("valkyrie.cli.s3_client.aioboto3.Session", lambda: FakeS3Client(payloads, tracker))
 
 
 @pytest.mark.asyncio
@@ -82,8 +73,7 @@ async def test_download_s3_path_downloads_files_in_parallel(
         "benchmarks/run-1/summary.json": b"summary",
     }
 
-    monkeypatch.setattr("valkyrie.cli.s3_client._fetch_bucket_name", lambda: "test-bucket")
-    monkeypatch.setattr("valkyrie.cli.s3_client.aioboto3.Session", lambda: FakeSession(FakeS3Client(payloads, tracker)))
+    patch_s3(monkeypatch, payloads, tracker)
 
     count = await download_s3_path("benchmarks/run-1", tmp_path)
 
@@ -101,8 +91,7 @@ async def test_download_s3_path_handles_exact_file_path(
     tracker = ConcurrencyTracker()
     payloads = {"benchmarks/run-1/results.json": b"results"}
 
-    monkeypatch.setattr("valkyrie.cli.s3_client._fetch_bucket_name", lambda: "test-bucket")
-    monkeypatch.setattr("valkyrie.cli.s3_client.aioboto3.Session", lambda: FakeSession(FakeS3Client(payloads, tracker)))
+    patch_s3(monkeypatch, payloads, tracker)
 
     count = await download_s3_path("benchmarks/run-1/results.json", tmp_path)
 
