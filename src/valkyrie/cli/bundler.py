@@ -17,7 +17,7 @@ import yaml
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError
 
 if TYPE_CHECKING:
-    from tracker.database.models import AgentContractRequest
+    from tracker_shared.models import AgentContractRequest
 
     from valkyrie.schemas import AgentConfig
 
@@ -140,7 +140,7 @@ def _parse_python_contract(contract_path: Path, agent_config: AgentConfig) -> Ag
 
 def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
     from pydantic import ValidationError as PydanticValidationError
-    from tracker.database.models import AgentContractRequest
+    from tracker_shared.models import AgentContractRequest
 
     from valkyrie.schemas import AgentContract
 

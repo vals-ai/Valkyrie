@@ -1,0 +1,180 @@
+"""Shared API request and response types used by the CLI and tracker service.
+
+These are lightweight copies of the types defined in tracker.types,
+containing only what the CLI needs without heavy backend dependencies.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import Enum
+from typing import Any
+from uuid import UUID
+
+from pydantic import BaseModel, Field
+
+from tracker_shared.models import (
+    AgentContractRequest,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    FinalEvaluation,
+    TaskStatus,
+)
+
+
+class AWSCredentials(BaseModel, frozen=True):
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    aws_default_region: str
+    aws_session_token: str | None = None
+
+
+class HarnessConfig(BaseModel):
+    aws: AWSCredentials
+    s3_bucket: str
+    log_group: str
+    log_retention_policy: int
+    daytona_secret_name: str
+
+
+class BenchmarkDetails(BaseModel):
+    status: BenchmarkStatus
+    started_at: datetime
+    total_tasks: int
+    finished_tasks: int
+    task_breakdown: dict[TaskStatus, int]
+
+
+class StartBenchmarkRequest(BaseModel):
+    contract: AgentContractRequest
+    benchmark_name: str
+    concurrency: int = 5
+    task_ids: list[str] | None = None
+    slice_str: str | None = None
+    lambda_function: str | None = None
+    dataset: str | None = None
+    harness_config: HarnessConfig
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = {}
+    webhook_secret_name: str | None = None
+    webhook_intervals: list[int] | None = None
+
+
+class StartBenchmarkResponse(BaseModel):
+    benchmark_name: str
+    agent_name: str
+    benchmark_id: UUID
+    concurrency: int
+    started_at: datetime
+    task_count: int
+    cloudwatch_url: str
+    s3_bucket_url: str
+
+
+class StartBenchmarkErrorResponse(BaseModel):
+    benchmark_id: UUID
+    error_message: str
+
+
+class FetchBenchmarkResponse(BaseModel):
+    benchmark_name: str
+    benchmark_id: UUID
+    details: BenchmarkDetails
+    s3_bucket_url: str
+
+
+class AverageTaskBreakdown(BaseModel):
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+
+
+class FinalViewResponse(BaseModel):
+    benchmark_id: UUID
+    benchmark_name: str
+    started_at: datetime
+    finished_at: datetime | None
+    status: BenchmarkStatus
+    error_message: str | None
+    benchmark_arguments: BenchmarkArguments
+    tasks_stopped: int | None
+    final_evaluation: FinalEvaluation | None
+    average_task_breakdown: AverageTaskBreakdown | None
+    evaluation_results: dict[str, dict[str, Any]] | None
+    task_errors: dict[str, str] | None
+
+
+class S3UploadResultsResponse(BaseModel):
+    s3_url: str
+    presigned_url: str
+    console_url: str
+
+
+RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
+
+
+class StatusResponse(BaseModel):
+    status: str
+
+
+class StopBenchmarkResponse(StatusResponse):
+    pass
+
+
+class RetryOrResumeBenchmarkResponse(StatusResponse):
+    pass
+
+
+class Order(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+class FetchBenchmarksRequest(BaseModel):
+    agent_name: str | None = None
+    benchmark_name: str | None = None
+    model: str | None = None
+    status: BenchmarkStatus | None = None
+    order_by: Order = Order.DESC
+
+    # Pagination
+    limit: int = 5
+    offset: int = 0
+
+
+class BenchmarkTableRow(BaseModel):
+    id: UUID
+    name: str
+    agent_name: str
+    model: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    status: BenchmarkStatus
+    total_tasks: int
+    finished_tasks: int
+    final_score: float | None = None
+
+
+class FetchBenchmarksResponse(BaseModel):
+    benchmarks: list[BenchmarkTableRow]
+    total_count: int
+
+
+class FetchBenchmarkMetadataResponse(BaseModel):
+    benchmark_id: UUID
+    benchmark_name: str
+    benchmark_arguments: BenchmarkArguments
+
+
+class FetchBenchmarkTasksRequest(BaseModel):
+    benchmark_name: str
+    dataset: str | None = None
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict)
+
+
+class VerifyTaskIdsResponse(BaseModel):
+    """Response containing verified task IDs that exist in your benchmark."""
+
+    task_ids: list[str] = Field(description="List of verified task IDs that exist in the benchmark")

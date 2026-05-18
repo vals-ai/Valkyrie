@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from tracker.database.models import RetryMode
+from tracker_shared.models import RetryMode
 
 from valkyrie.cli.tracker_service import TrackerService
 

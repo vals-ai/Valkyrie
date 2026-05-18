@@ -9,11 +9,10 @@ from uuid import UUID
 
 import httpx
 import yaml
-from benchmark_service.schemas import VerifyTaskIdsResponse
 from dotenv import load_dotenv
 from httpx._models import Response
-from tracker.database.models import AgentContractRequest, RetryMode
-from tracker.types import (
+from tracker_shared.models import AgentContractRequest, RetryMode
+from tracker_shared.types import (
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarkTasksRequest,
@@ -26,6 +25,7 @@ from tracker.types import (
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StopBenchmarkResponse,
+    VerifyTaskIdsResponse,
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError

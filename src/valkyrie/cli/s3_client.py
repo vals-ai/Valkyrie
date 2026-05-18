@@ -17,7 +17,7 @@ import click
 from botocore.exceptions import BotoCoreError, ClientError
 
 if TYPE_CHECKING:
-    from tracker.database.models import AgentContractRequest
+    from tracker_shared.models import AgentContractRequest
 
     from valkyrie.schemas import AgentConfig
 
@@ -37,7 +37,7 @@ def _handle_s3_error(message: str) -> Callable[[_F], _F]:
                 try:
                     return await func(*args, **kwargs)
                 except (ClientError, BotoCoreError) as e:
-                    from tracker.exceptions import S3Error
+                    from tracker_shared.exceptions import S3Error
 
                     raise S3Error(f"{message}: {e}") from e
 
@@ -49,7 +49,7 @@ def _handle_s3_error(message: str) -> Callable[[_F], _F]:
                 try:
                     return func(*args, **kwargs)
                 except (ClientError, BotoCoreError) as e:
-                    from tracker.exceptions import S3Error
+                    from tracker_shared.exceptions import S3Error
 
                     raise S3Error(f"{message}: {e}") from e
 
@@ -266,7 +266,7 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
                 Key=dest_key,
             )
         except ClientError as e:
-            from tracker.exceptions import S3Error
+            from tracker_shared.exceptions import S3Error
 
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
                 raise S3Error(f"Agent '{agent_name}.zip' not found in S3.") from e
@@ -290,7 +290,7 @@ async def remove_agent(agent_name: str):
             # Remove the agent if it exists
             await s3_client.delete_object(Bucket=bucket_name, Key=key)
         except ClientError as e:
-            from tracker.exceptions import S3Error
+            from tracker_shared.exceptions import S3Error
 
             if e.response["Error"]["Code"] == "404":
                 raise S3Error(f"Agent '{agent_name}' could not be found.")
@@ -337,7 +337,7 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
         except ClientError as e:
-            from tracker.exceptions import S3Error
+            from tracker_shared.exceptions import S3Error
 
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
                 raise S3Error(f"Agent '{agent_name}' not found in S3.")
@@ -387,7 +387,7 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
                 keys.append(cast(str, obj["Key"]))
 
         if not keys:
-            from tracker.exceptions import S3Error
+            from tracker_shared.exceptions import S3Error
 
             raise S3Error(f"No files found at '{s3_path}' in bucket '{bucket_name}'")
 
@@ -417,7 +417,7 @@ async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> Ag
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = await response["Body"].read()
         except ClientError as e:
-            from tracker.exceptions import S3Error
+            from tracker_shared.exceptions import S3Error
 
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
                 raise S3Error(f"Agent '{agent_name}' not found in S3.")

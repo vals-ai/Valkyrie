@@ -21,8 +21,8 @@ import yaml
 from httpx import Response
 
 if TYPE_CHECKING:
-    from tracker.database.models import TaskStatus
-    from tracker.types import (
+    from tracker_shared.models import TaskStatus
+    from tracker_shared.types import (
         FetchBenchmarkResponse,
         FetchBenchmarksResponse,
         FinalViewResponse,
@@ -189,7 +189,7 @@ class BenchmarkFormatter:
         Returns:
             Formatted string with colored task counts
         """
-        from tracker.database.models import TaskStatus
+        from tracker_shared.models import TaskStatus
 
         # Order we display statuses in
         status_order = [
@@ -412,7 +412,7 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
     try:
         for event in tracker.stream_benchmark(benchmark_id):
             if event.startswith("data:"):
-                from tracker.types import FetchBenchmarkResponse
+                from tracker_shared.types import FetchBenchmarkResponse
 
                 data_json = event[5:].strip()
                 if not data_json:
@@ -562,8 +562,8 @@ def paginate_benchmarks(
     offset = 0
 
     while True:
-        from tracker.database.models import BenchmarkStatus
-        from tracker.types import FetchBenchmarksRequest, Order
+        from tracker_shared.models import BenchmarkStatus
+        from tracker_shared.types import FetchBenchmarksRequest, Order
 
         request = FetchBenchmarksRequest(
             agent_name=agent_name,

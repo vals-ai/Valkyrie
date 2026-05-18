@@ -558,7 +558,7 @@ def start(
     Example:
         valkyrie run start --agent agents/claude_code --benchmark swebench
     """
-    from tracker.types import StartBenchmarkResponse
+    from tracker_shared.types import StartBenchmarkResponse
 
     from valkyrie.cli.bundler import get_contract
     from valkyrie.cli.s3_client import get_contract_from_s3, push_agent
@@ -727,7 +727,7 @@ def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, tas
     Example:
         valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
-    from tracker.types import FinalViewResponse, RetrieveResultsResponse
+    from tracker_shared.types import FinalViewResponse, RetrieveResultsResponse
 
     from valkyrie.cli.tracker_service import TrackerService
     from valkyrie.cli.utils import check_tracker_service_health, download_final_view, resolve_task_ids
@@ -886,8 +886,8 @@ def resume(
     Example:
         valkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
-    from tracker.database.models import RetryMode
-    from tracker.exceptions import S3Error
+    from tracker_shared.exceptions import S3Error
+    from tracker_shared.models import RetryMode
 
     from valkyrie.cli.s3_client import update_benchmark_agent_version
     from valkyrie.cli.tracker_service import TrackerService
@@ -1128,7 +1128,7 @@ def install(github_url: str, name: str | None):
         valkyrie agent install https://github.com/org/registry/tree/main/agents/codex
         valkyrie agent install https://github.com/org/registry/tree/main/agents/codex --name my-agent
     """
-    from tracker.exceptions import S3Error
+    from tracker_shared.exceptions import S3Error
 
     from valkyrie.cli.s3_client import install_agent
 
@@ -1157,7 +1157,7 @@ def push(agent_path: Path, name: str | None):
         valkyrie agent push ./agents/my-agent
         valkyrie agent push ./agents/my-agent --name my-agent
     """
-    from tracker.exceptions import S3Error
+    from tracker_shared.exceptions import S3Error
 
     from valkyrie.cli.s3_client import push_agent
 
@@ -1179,7 +1179,7 @@ def agent_remove(agent_name: str):
     Example:
         valkyrie agent remove my-agent
     """
-    from tracker.exceptions import S3Error
+    from tracker_shared.exceptions import S3Error
 
     from valkyrie.cli.s3_client import remove_agent
 
@@ -1212,7 +1212,7 @@ def download(agent_name: str, output_dir: Path | None):
     Example:
         valkyrie agent download my-agent
     """
-    from tracker.exceptions import S3Error
+    from tracker_shared.exceptions import S3Error
 
     from valkyrie.cli.s3_client import download_agent
 
@@ -1234,7 +1234,7 @@ def list_installed_agents():
     Example:
         valkyrie agent list
     """
-    from tracker.exceptions import S3Error
+    from tracker_shared.exceptions import S3Error
 
     from valkyrie.cli.s3_client import list_agents
     from valkyrie.cli.utils import paginate_agents

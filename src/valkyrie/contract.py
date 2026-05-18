@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from tracker.database.models import AgentContractRequest
+from tracker_shared.models import AgentContractRequest
 
 from valkyrie.schemas import AgentConfig
 
