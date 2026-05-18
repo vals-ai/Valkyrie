@@ -1319,14 +1319,17 @@ async def reset_to_in_progress_status(
         existing_rows = session.exec(select(Task).where(*filter_query)).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
 
-        # Filter against every row on the benchmark so skipped FINISHED rows don't trip
-        # the (benchmark, task_id) unique constraint.
-        known_task_ids: set[str] = set(
-            session.exec(
-                select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(Task.org_id == org.id)
-            ).all()
-        )
-        new_task_ids = [tid for tid in rerun_task_ids if tid not in known_task_ids]
+        existing_requested_task_ids: set[str] = set()
+        if rerun_task_ids:
+            existing_requested_task_ids = set(
+                session.exec(
+                    select(Task.task_id)
+                    .where(Task.benchmark == benchmark_row.id)
+                    .where(Task.org_id == org.id)
+                    .where(col(Task.task_id).in_(rerun_task_ids))
+                ).all()
+            )
+        new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_requested_task_ids]
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
