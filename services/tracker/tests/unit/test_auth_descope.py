@@ -2,9 +2,12 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from descope import AuthException
 from fastapi import HTTPException
+from requests.exceptions import ReadTimeout
 from sqlmodel import Session, SQLModel, create_engine
 
+from tracker.auth import find_org_by_tenant, resolve_descope_tenant
 from tracker.database.models import Org
 
 
@@ -32,8 +35,6 @@ def mock_descope():
 
 
 def test_valid_api_key_resolves_tenant(mock_descope):
-    from tracker.auth import resolve_descope_tenant
-
     mock_descope.exchange_access_key.return_value = {"tenants": {"test-tenant": {}}}
 
     tenant = resolve_descope_tenant("valid-key")
@@ -41,8 +42,6 @@ def test_valid_api_key_resolves_tenant(mock_descope):
 
 
 def test_valid_api_key_finds_org(mock_descope, session, test_org):
-    from tracker.auth import find_org_by_tenant, resolve_descope_tenant
-
     mock_descope.exchange_access_key.return_value = {"tenants": {"test-tenant": {}}}
 
     tenant = resolve_descope_tenant("valid-key")
@@ -52,9 +51,6 @@ def test_valid_api_key_finds_org(mock_descope, session, test_org):
 
 
 def test_invalid_api_key_raises_401(mock_descope):
-    from descope import AuthException
-    from tracker.auth import resolve_descope_tenant
-
     mock_descope.exchange_access_key.side_effect = AuthException(status_code=401, error_message="Invalid key")
 
     with pytest.raises(HTTPException) as exc_info:
@@ -63,8 +59,6 @@ def test_invalid_api_key_raises_401(mock_descope):
 
 
 def test_multiple_tenants_raises_400(mock_descope):
-    from tracker.auth import resolve_descope_tenant
-
     mock_descope.exchange_access_key.return_value = {"tenants": {"tenant-a": {}, "tenant-b": {}}}
 
     with pytest.raises(HTTPException) as exc_info:
@@ -73,7 +67,26 @@ def test_multiple_tenants_raises_400(mock_descope):
 
 
 def test_org_not_in_db_returns_none(mock_descope, session):
-    from tracker.auth import find_org_by_tenant
-
     org = find_org_by_tenant("nonexistent-org", session)
     assert org is None
+
+
+def test_read_timeout_retry_behavior(mock_descope):
+    # Succeeds on second attempt
+    mock_descope.exchange_access_key.side_effect = [
+        ReadTimeout("HTTPSConnectionPool(host='api.descope.com', port=443): Read timed out. (read timeout=60)"),
+        {"tenants": {"test-tenant": {}}},
+    ]
+    tenant = resolve_descope_tenant("some-key")
+    assert tenant == "test-tenant"
+    assert mock_descope.exchange_access_key.call_count == 2
+
+    # Exhausts all 3 attempts → 503
+    mock_descope.exchange_access_key.reset_mock()
+    mock_descope.exchange_access_key.side_effect = ReadTimeout(
+        "HTTPSConnectionPool(host='api.descope.com', port=443): Read timed out. (read timeout=60)"
+    )
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_descope_tenant("some-key")
+    assert exc_info.value.status_code == 503
+    assert mock_descope.exchange_access_key.call_count == 3
