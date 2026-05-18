@@ -131,10 +131,6 @@ def init() -> None:
         except TrackerServiceError as e:
             raise click.ClickException(str(e))
         click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
-    else:
-        existing_url = current_config.get("tracker_service_url", "http://localhost:8000")
-        tracker_url = click.prompt("Tracker service URL", default=existing_url)
-        current_config["tracker_service_url"] = tracker_url
 
         if result.get("email_claim_missing"):
             click.echo(
@@ -146,6 +142,10 @@ def init() -> None:
                     fg="yellow",
                 )
             )
+    else:
+        existing_url = current_config.get("tracker_service_url", "http://localhost:8000")
+        tracker_url = click.prompt("Tracker service URL", default=existing_url)
+        current_config["tracker_service_url"] = tracker_url
 
     # Both modes require AWS credentials
     collected_keys: dict[str, str] = {}
