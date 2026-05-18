@@ -14,15 +14,13 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
-from valkyrie.cli.utils import run_with_spinner
+from valkyrie.cli.utils import load_config, run_with_spinner
 from valkyrie.schemas import AgentConfig
 
 _S3_DOWNLOAD_CONCURRENCY = 8
 
 
 def _fetch_bucket_name() -> str:
-    from valkyrie.cli.utils import load_config
-
     config = load_config()
     bucket_name = config.get("S3_BUCKET")
     if not bucket_name:
@@ -33,8 +31,6 @@ def _fetch_bucket_name() -> str:
 
 def _s3_client():
     """Create an aioboto3 S3 client using credentials from the valkyrie config."""
-    from valkyrie.cli.utils import load_config
-
     config = load_config()
     session = aioboto3.Session(
         aws_access_key_id=config.get("AWS_ACCESS_KEY_ID"),
