@@ -1,34 +1,32 @@
 """Client for interacting with the tracker service."""
 
+from __future__ import annotations
+
 import os
 import re
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import httpx
 import yaml
-from benchmark_service.schemas import VerifyTaskIdsResponse
 from dotenv import load_dotenv
 from httpx._models import Response
-from tracker.database.models import AgentContractRequest, RetryMode
-from tracker.types import (
-    FetchBenchmarkMetadataResponse,
-    FetchBenchmarkResponse,
-    FetchBenchmarkTasksRequest,
-    FetchBenchmarksRequest,
-    FetchBenchmarksResponse,
-    FinalViewResponse,
-    HarnessConfig,
-    RetrieveResultsResponse,
-    RetryOrResumeBenchmarkResponse,
-    S3UploadResultsResponse,
-    StartBenchmarkRequest,
-    StopBenchmarkResponse,
-)
 
 from valkyrie.cli.exceptions import TrackerServiceError
+
+if TYPE_CHECKING:
+    from tracker.database.models import AgentContractRequest, RetryMode
+    from tracker.types import (
+        FetchBenchmarkMetadataResponse,
+        FetchBenchmarkResponse,
+        FetchBenchmarksRequest,
+        FetchBenchmarksResponse,
+        RetrieveResultsResponse,
+        RetryOrResumeBenchmarkResponse,
+        StopBenchmarkResponse,
+    )
 
 load_dotenv()
 
@@ -280,6 +278,8 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
+            from tracker.types import HarnessConfig, StartBenchmarkRequest
+
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -321,6 +321,8 @@ class TrackerService:
             if response.status_code != 200:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to fetch run: {details}")
+
+            from tracker.types import FetchBenchmarkResponse
 
             return FetchBenchmarkResponse.model_validate(response.json())
         except httpx.HTTPError as e:
@@ -383,6 +385,8 @@ class TrackerService:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to retrieve results: {details}")
 
+            from tracker.types import FinalViewResponse, S3UploadResultsResponse
+
             response_data = response.json()
             if not s3:
                 return FinalViewResponse.model_validate(response_data)
@@ -403,6 +407,9 @@ class TrackerService:
         Fetch all task ids for a benchmark dataset.
         """
         try:
+            from benchmark_service.schemas import VerifyTaskIdsResponse
+            from tracker.types import FetchBenchmarkTasksRequest
+
             payload = FetchBenchmarkTasksRequest(
                 benchmark_name=benchmark_name,
                 dataset=dataset,
@@ -463,6 +470,8 @@ class TrackerService:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to stop run: {details}")
 
+            from tracker.types import StopBenchmarkResponse
+
             return StopBenchmarkResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to stop run: {e}") from e
@@ -508,6 +517,8 @@ class TrackerService:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to start run: {details}")
 
+            from tracker.types import RetryOrResumeBenchmarkResponse
+
             return RetryOrResumeBenchmarkResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to start run: {e}") from e
@@ -529,6 +540,8 @@ class TrackerService:
             if response.status_code != 200:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to fetch runs: {details}")
+
+            from tracker.types import FetchBenchmarksResponse
 
             return FetchBenchmarksResponse.model_validate(response.json())
         except httpx.HTTPError as e:
@@ -573,6 +586,8 @@ class TrackerService:
             if response.status_code != 200:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to fetch run metadata: {details}")
+
+            from tracker.types import FetchBenchmarkMetadataResponse
 
             return FetchBenchmarkMetadataResponse.model_validate(response.json())
         except httpx.HTTPError as e:

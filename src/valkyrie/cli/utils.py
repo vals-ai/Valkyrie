@@ -1,5 +1,7 @@
 """Utility functions for the CLI."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import shutil
@@ -10,24 +12,24 @@ from collections.abc import Iterable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Coroutine, TypeVar
+from typing import TYPE_CHECKING, Any, Coroutine, TypeVar
 from urllib.parse import urlparse
 from uuid import UUID
 
 import click
 import yaml
 from httpx import Response
-from tracker.database.models import BenchmarkStatus, TaskStatus
-from tracker.types import (
-    FetchBenchmarkResponse,
-    FetchBenchmarksRequest,
-    FetchBenchmarksResponse,
-    FinalViewResponse,
-    Order,
-    StartBenchmarkResponse,
-)
 
-from valkyrie.cli.tracker_service import TrackerService
+if TYPE_CHECKING:
+    from tracker.database.models import TaskStatus
+    from tracker.types import (
+        FetchBenchmarkResponse,
+        FetchBenchmarksResponse,
+        FinalViewResponse,
+        StartBenchmarkResponse,
+    )
+
+    from valkyrie.cli.tracker_service import TrackerService
 
 CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
 
@@ -187,6 +189,7 @@ class BenchmarkFormatter:
         Returns:
             Formatted string with colored task counts
         """
+        from tracker.database.models import TaskStatus
 
         # Order we display statuses in
         status_order = [
@@ -409,6 +412,8 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
     try:
         for event in tracker.stream_benchmark(benchmark_id):
             if event.startswith("data:"):
+                from tracker.types import FetchBenchmarkResponse
+
                 data_json = event[5:].strip()
                 if not data_json:
                     continue
@@ -557,6 +562,9 @@ def paginate_benchmarks(
     offset = 0
 
     while True:
+        from tracker.database.models import BenchmarkStatus
+        from tracker.types import FetchBenchmarksRequest, Order
+
         request = FetchBenchmarksRequest(
             agent_name=agent_name,
             benchmark_name=benchmark_name,

@@ -8,43 +8,11 @@ from uuid import UUID
 
 import click
 import yaml
-from tracker.database.models import BenchmarkStatus, RetryMode
-from tracker.exceptions import S3Error
-from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
-from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.logging import configure_cli_logging
-from valkyrie.cli.s3_client import (
-    download_agent,
-    download_s3_path,
-    get_contract_from_s3,
-    install_agent,
-    list_agents,
-    push_agent,
-    remove_agent,
-    update_benchmark_agent_version,
-)
-from valkyrie.cli.tracker_service import TrackerService
-from valkyrie.cli.utils import (
-    CONFIG_LOCATION,
-    ConfigValue,
-    check_tracker_service_health,
-    download_agent_outputs,
-    download_final_view,
-    format_agent_start_details,
-    format_benchmark_status,
-    format_run_start_details,
-    format_start_benchmark_response,
-    format_table,
-    paginate_agents,
-    paginate_benchmarks,
-    paginate_services,
-    resolve_task_ids,
-    resolve_webhook_config,
-    stream_benchmark_status,
-)
-from valkyrie.schemas import AgentConfig
+
+CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
 
 
 @click.group()
@@ -96,6 +64,8 @@ def init() -> None:
     Initializes a config we can trust to have references to dependencies to run Valkyrie,
     this becomes our source of truth for secrets required to run Valkyrie
     """
+
+    from valkyrie.cli.tracker_service import TrackerService
 
     current_config: dict[str, Any] = {}
     if CONFIG_LOCATION.exists():
@@ -169,6 +139,8 @@ def set(key: str, value: str) -> None:
     Example: valkyrie config set AWS_DEFAULT_REGION us-west-2
     """
 
+    from valkyrie.cli.utils import ConfigValue
+
     if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -198,6 +170,7 @@ def config_remove(key: str) -> None:
 
     Example: valkyrie config remove AWS_DEFAULT_REGION
     """
+    from valkyrie.cli.utils import ConfigValue
 
     if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
@@ -298,6 +271,8 @@ def service_list() -> None:
         return
 
     # Create a table of all the services that the user has inside of their config
+    from valkyrie.cli.utils import paginate_services
+
     services_list = list(services.items())
     paginate_services(services_list)
 
@@ -373,6 +348,8 @@ def auth_list() -> None:
         click.echo(click.style("No benchmark auth credentials configured.", fg="yellow"))
         return
 
+    from valkyrie.cli.utils import format_table
+
     rows = [
         {"Benchmark": name, "Credential": credential[:4] + "***" if len(credential) > 4 else "***"}
         for name, credential in auth_credentials.items()
@@ -425,6 +402,9 @@ def tasks(
     """
     Save task IDs for a benchmark dataset.
     """
+    from valkyrie.cli.tracker_service import TrackerService
+    from valkyrie.cli.utils import check_tracker_service_health
+
     service_headers: dict[str, str] = {}
     auth_credential = TrackerService.get_benchmark_auth(benchmark_name)
     if auth_credential:
@@ -578,6 +558,21 @@ def start(
     Example:
         valkyrie run start --agent agents/claude_code --benchmark swebench
     """
+    from tracker.types import StartBenchmarkResponse
+
+    from valkyrie.cli.bundler import get_contract
+    from valkyrie.cli.s3_client import get_contract_from_s3, push_agent
+    from valkyrie.cli.tracker_service import TrackerService
+    from valkyrie.cli.utils import (
+        check_tracker_service_health,
+        format_agent_start_details,
+        format_run_start_details,
+        format_start_benchmark_response,
+        resolve_task_ids,
+        resolve_webhook_config,
+    )
+    from valkyrie.schemas import AgentConfig
+
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
     service_headers: dict[str, str] = {}
@@ -675,6 +670,8 @@ def fetch(run_id: UUID, connect: bool):
     Example:
         valkyrie run fetch 123e4567-e89b-12d3-a456-426614174000 --connect
     """
+    from valkyrie.cli.tracker_service import TrackerService
+    from valkyrie.cli.utils import check_tracker_service_health, format_benchmark_status, stream_benchmark_status
 
     try:
         with TrackerService() as tracker:
@@ -730,6 +727,11 @@ def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, tas
     Example:
         valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
+    from tracker.types import FinalViewResponse, RetrieveResultsResponse
+
+    from valkyrie.cli.tracker_service import TrackerService
+    from valkyrie.cli.utils import check_tracker_service_health, download_final_view, resolve_task_ids
+
     subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
     click.echo(f"Retrieving results for run: {run_id}")
@@ -787,6 +789,9 @@ def stop(run_id: UUID, force: bool):
     Example:
         valkyrie run stop 123e4567-e89b-12d3-a456-426614174000
     """
+    from valkyrie.cli.tracker_service import TrackerService
+    from valkyrie.cli.utils import check_tracker_service_health
+
     action = "Force stop" if force else "Stop"
     if not click.confirm(f"{action} run {run_id}?"):
         click.echo("Cancelled.")
@@ -881,6 +886,13 @@ def resume(
     Example:
         valkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
+    from tracker.database.models import RetryMode
+    from tracker.exceptions import S3Error
+
+    from valkyrie.cli.s3_client import update_benchmark_agent_version
+    from valkyrie.cli.tracker_service import TrackerService
+    from valkyrie.cli.utils import check_tracker_service_health, resolve_task_ids
+
     retry_task_ids = resolve_task_ids(task_ids, task_ids_file) or []
 
     # NOTE: workaround for auto retrying tasks when using the retry command
@@ -962,16 +974,16 @@ run.add_command(retry_command)
 )
 @click.option(
     "--status",
-    type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
+    type=click.Choice(["IN_PROGRESS", "STOPPING", "STOPPED", "FINISHED", "ERROR"], case_sensitive=False),
     required=False,
     default=None,
     help="Status of the benchmarks to fetch (e.g., in_progress, finished, error)",
 )
 @click.option(
     "--order-by",
-    type=click.Choice([option.value for option in Order], case_sensitive=False),
+    type=click.Choice(["asc", "desc"], case_sensitive=False),
     required=False,
-    default=Order.DESC.value,
+    default="desc",
     help="Order by the benchmarks to fetch (e.g., desc, asc)",
 )
 def list_benchmarks(
@@ -989,6 +1001,9 @@ def list_benchmarks(
     Example:
         valkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
     """
+    from valkyrie.cli.tracker_service import TrackerService
+    from valkyrie.cli.utils import check_tracker_service_health, paginate_benchmarks
+
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
@@ -1025,6 +1040,8 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
         valkyrie agent outputs 123e4567-e89b-12d3-a456-426614174000
         valkyrie agent outputs 123e4567-e89b-12d3-a456-426614174000 --task-ids astropy__astropy-7606,django__django-10880
     """
+    from valkyrie.cli.tracker_service import TrackerService
+    from valkyrie.cli.utils import check_tracker_service_health, download_agent_outputs, resolve_task_ids
 
     try:
         with TrackerService() as tracker:
@@ -1073,6 +1090,8 @@ def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
         valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9 astropy__astropy-7606
         valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9 swebench.json -o .
     """
+    from valkyrie.cli.s3_client import download_s3_path
+
     try:
         path = f"benchmarks/{benchmark_id}"
         if subpath:
@@ -1109,6 +1128,10 @@ def install(github_url: str, name: str | None):
         valkyrie agent install https://github.com/org/registry/tree/main/agents/codex
         valkyrie agent install https://github.com/org/registry/tree/main/agents/codex --name my-agent
     """
+    from tracker.exceptions import S3Error
+
+    from valkyrie.cli.s3_client import install_agent
+
     try:
         resolved_name = asyncio.run(install_agent(name, github_url))
         click.echo(click.style(f"✓ Agent '{resolved_name}' installed successfully!", fg="green", bold=True))
@@ -1134,6 +1157,10 @@ def push(agent_path: Path, name: str | None):
         valkyrie agent push ./agents/my-agent
         valkyrie agent push ./agents/my-agent --name my-agent
     """
+    from tracker.exceptions import S3Error
+
+    from valkyrie.cli.s3_client import push_agent
+
     try:
         agent_name = name or agent_path.stem
         asyncio.run(push_agent(agent_name, agent_path))
@@ -1152,6 +1179,10 @@ def agent_remove(agent_name: str):
     Example:
         valkyrie agent remove my-agent
     """
+    from tracker.exceptions import S3Error
+
+    from valkyrie.cli.s3_client import remove_agent
+
     try:
         if not click.confirm(f"Are you sure you want to remove agent '{agent_name}'?"):
             click.echo("Cancelled.")
@@ -1181,6 +1212,10 @@ def download(agent_name: str, output_dir: Path | None):
     Example:
         valkyrie agent download my-agent
     """
+    from tracker.exceptions import S3Error
+
+    from valkyrie.cli.s3_client import download_agent
+
     try:
         asyncio.run(download_agent(agent_name, output_dir))
         click.echo(click.style(f"✓ Agent '{agent_name}' downloaded successfully!", fg="green", bold=True))
@@ -1199,6 +1234,11 @@ def list_installed_agents():
     Example:
         valkyrie agent list
     """
+    from tracker.exceptions import S3Error
+
+    from valkyrie.cli.s3_client import list_agents
+    from valkyrie.cli.utils import paginate_agents
+
     try:
         agents = asyncio.run(list_agents())
 
