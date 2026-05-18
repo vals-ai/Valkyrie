@@ -17,6 +17,8 @@ from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_byt
 from valkyrie.cli.utils import run_with_spinner
 from valkyrie.schemas import AgentConfig
 
+_S3_DOWNLOAD_CONCURRENCY = 8
+
 
 def _fetch_bucket_name() -> str:
     from valkyrie.cli.utils import load_config
@@ -342,13 +344,17 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        for key in keys:
+        async def download_object(key: str) -> None:
             relative = key.removeprefix(prefix).lstrip("/")
             dest = output_dir / relative if relative else output_dir / Path(key).name
             dest.parent.mkdir(parents=True, exist_ok=True)
 
             response = await s3_client.get_object(Bucket=bucket_name, Key=key)
             dest.write_bytes(cast(bytes, await response["Body"].read()))
+
+        for start in range(0, len(keys), _S3_DOWNLOAD_CONCURRENCY):
+            batch = keys[start : start + _S3_DOWNLOAD_CONCURRENCY]
+            await asyncio.gather(*(download_object(key) for key in batch))
 
         return len(keys)
 

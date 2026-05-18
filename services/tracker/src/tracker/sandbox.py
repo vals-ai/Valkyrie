@@ -168,6 +168,9 @@ async def _create_sandbox(
             return sandbox
     except DaytonaNotFoundError:
         pass
+    except DaytonaError as e:
+        # Transient error (server disconnected, network blip, etc.) — fall through to create.
+        logger.warning("Failed to get sandbox %s, will create instead: %s", sandbox_name, e)
 
     if image.startswith(SNAPSHOT_IMAGE_PREFIX):
         snapshot_name = image[len(SNAPSHOT_IMAGE_PREFIX) :].strip()
@@ -397,7 +400,7 @@ _pty_handshake_semaphore: Semaphore = Semaphore(_PTY_HANDSHAKE_CAP)
 _pty_handshake_in_flight_count: int = 0
 
 # States that determine if the sandbox has been killed
-_DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED)
+_DEAD_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED, SandboxState.ERROR)
 
 
 def _set_pty_span_attributes(sandbox: AsyncSandbox, session_id: str) -> None:
@@ -529,7 +532,7 @@ async def _create_pty_session(
 
 
 @retry(
-    retry=retry_if_exception_type(DaytonaConnectionError),
+    retry=retry_if_exception_type(DaytonaError),
     stop=stop_after_attempt(3),
     wait=wait_fixed(2),
     before_sleep=daytona_retry_callback("valkyrie.sandbox.health_check", op="sandbox.health_check"),
@@ -552,11 +555,10 @@ async def _check_sandbox_health(sandbox: AsyncSandbox) -> None:
             raise SandboxError(f"Sandbox {sandbox.name} crashed during command execution (state: {sandbox.state})")
     except SandboxError:
         raise
-    except DaytonaConnectionError:
+    except DaytonaError as e:
+        tag_daytona_error(e, op="sandbox.health_check")
         raise
     except Exception as e:
-        if isinstance(e, DaytonaError):
-            tag_daytona_error(e, op="sandbox.health_check")
         raise SandboxError(f"Failed to check sandbox {sandbox.name} health: {e}") from e
 
 
@@ -588,16 +590,47 @@ async def _reconnect_and_wait_pty(
     # Check if the sandbox has been closed
     await _check_sandbox_health(sandbox)
 
+    # Check if the PTY session still exists before attempting the WebSocket handshake.
+    try:
+        await sandbox.process.get_pty_session_info(session_id)
+    except DaytonaNotFoundError:
+        sentry_sdk.set_tag("pty.disconnect_reason", "pty_session_killed")
+        sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
+        _log_pty_event("pty_session_killed", sandbox, session_id)
+        raise SandboxError(f"PTY session {session_id} no longer exists (sandbox_state={sandbox.state})")
+    except DaytonaError:
+        # Toolbox unreachable — the sandbox may be destroying but the state API hasn't caught up yet.
+        # Do one fresh refresh to check
+        await sandbox.refresh_data()
+        if sandbox.state in _DEAD_SANDBOX_STATES:
+            sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
+            sentry_sdk.set_tag("pty.disconnect_reason", "sandbox_killed")
+            raise SandboxError(f"Sandbox {sandbox.name} destroyed during PTY reconnect (state={sandbox.state})")
+        raise
+
     # Log so the user can see we have seen a disconnection from the websocket (easier to pickup in logs)
     on_output("[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n")
     _log_pty_event("reconnect_start", sandbox, session_id)
 
     # Reconnect to the PTY. Only the connect handshake is gated; handle.wait() runs ungated below.
     async with _pty_handshake_slot("reconnect", session_id):
-        handle = await sandbox.process.connect_pty_session(session_id, on_data)
+        try:
+            handle = await sandbox.process.connect_pty_session(session_id, on_data)
+        except DaytonaConnectionError as e:
+            if "not found" in str(e).lower():
+                # TOCTOU fallback: session existed at get_pty_session_info time but was
+                # deleted before connect.
+                await sandbox.refresh_data()
+                sentry_sdk.set_tag("sandbox_state", str(sandbox.state))
+                sentry_sdk.set_tag("pty.disconnect_reason", "pty_session_killed")
+                raise SandboxError(f"PTY session not found (sandbox_state={sandbox.state}): {e}") from e
+            raise
 
     # Wait until the command has finished running
     await handle.wait()
+
+    incr("valkyrie.pty.reconnect.success")
+    _log_pty_event("reconnect_success", sandbox, session_id)
 
 
 @logfire.instrument("pty.wait", extract_args=False)

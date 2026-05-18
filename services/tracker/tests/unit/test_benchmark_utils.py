@@ -378,13 +378,19 @@ class TestBenchmarkUtils:
             benchmark=benchmark_row.id,
             status=TaskStatus.ERROR,
         )
+        stopped_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_stopped",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.STOPPED,
+        )
         pending_task = Task(
             org_id=TEST_ORG_ID,
             task_id="task_pending",
             benchmark=benchmark_row.id,
             status=TaskStatus.PENDING,
         )
-        database_session.add_all([finished_task, error_task, pending_task])
+        database_session.add_all([finished_task, error_task, stopped_task, pending_task])
         database_session.commit()
 
         database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"score": 1.0}))
@@ -400,6 +406,7 @@ class TestBenchmarkUtils:
         assert fetch_final_score_inputs(database_session, benchmark_row, self._test_org) == {
             "task_finished": {"score": 1.0},
             "task_error": None,
+            "task_stopped": None,
             "task_pending": None,
         }
 
