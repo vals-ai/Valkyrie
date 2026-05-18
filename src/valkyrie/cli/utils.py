@@ -484,6 +484,7 @@ def format_fetch_benchmarks_response(
                 "ID": str(benchmark.id),
                 "Benchmark": benchmark.name,
                 "Agent": benchmark.agent_name,
+                "Started By": benchmark.started_by_email or "—",
                 "Model": benchmark.model or "-",
                 "Status": click.style(
                     benchmark.status.value.replace("_", " ").title(),
@@ -497,7 +498,7 @@ def format_fetch_benchmarks_response(
 
     format_table(
         rows,
-        ["ID", "Benchmark", "Agent", "Model", "Status", "Score", "Started / Finished", "Progress"],
+        ["ID", "Benchmark", "Agent", "Started By", "Model", "Status", "Score", "Started / Finished", "Progress"],
         current_page,
         total_pages,
         fetch_benchmarks_response.total_count,
@@ -506,7 +507,11 @@ def format_fetch_benchmarks_response(
 
 
 def format_no_benchmarks_found(
-    agent_name: str | None, benchmark_name: str | None, model: str | None, status: str | None
+    agent_name: str | None,
+    benchmark_name: str | None,
+    model: str | None,
+    status: str | None,
+    started_by: list[str] | None = None,
 ) -> None:
     """
     Handle the case where no runs are found matching the specified filters.
@@ -516,11 +521,12 @@ def format_no_benchmarks_found(
         benchmark_name: Benchmark name filter
         model: Model name filter
         status: Status filter
+        started_by: Optional list of starter emails filter
     """
     click.echo()
     click.echo(click.style("No runs found matching the specified filters.", fg="yellow"))
     click.echo()
-    if any([agent_name, benchmark_name, model, status]):
+    if any([agent_name, benchmark_name, model, status, started_by]):
         click.echo("Filters applied:")
         if agent_name:
             click.echo(f"  • Agent: {agent_name}")
@@ -530,6 +536,8 @@ def format_no_benchmarks_found(
             click.echo(f"  • Model: {model}")
         if status:
             click.echo(f"  • Status: {status}")
+        if started_by:
+            click.echo(f"  • Started By: {', '.join(started_by)}")
 
 
 def paginate_benchmarks(
@@ -540,6 +548,7 @@ def paginate_benchmarks(
     status: str | None,
     order_by: str,
     limit: int = 5,
+    started_by: list[str] | None = None,
 ) -> None:
     """
     Interactive paginated display of runs with vim-style navigation.
@@ -552,6 +561,7 @@ def paginate_benchmarks(
         status: Optional status filter
         order_by: Order (asc/desc)
         limit: Number of items per page
+        started_by: Optional list of starter emails to filter by
     """
     current_page = 1
     offset = 0
@@ -562,6 +572,7 @@ def paginate_benchmarks(
             benchmark_name=benchmark_name,
             model=model,
             status=BenchmarkStatus(status) if status else None,
+            started_by=started_by,
             order_by=Order(order_by),
             limit=limit,
             offset=offset,
@@ -574,7 +585,7 @@ def paginate_benchmarks(
         click.clear()
 
         if total_count == 0:
-            format_no_benchmarks_found(agent_name, benchmark_name, model, status)
+            format_no_benchmarks_found(agent_name, benchmark_name, model, status, started_by)
             break
 
         format_fetch_benchmarks_response(response, current_page, total_pages)
