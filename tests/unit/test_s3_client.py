@@ -59,7 +59,7 @@ class FakeS3Client:
 
 def patch_s3(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
     monkeypatch.setattr("valkyrie.cli.s3_client._fetch_bucket_name", lambda: "test-bucket")
-    monkeypatch.setattr("valkyrie.cli.s3_client.aioboto3.Session", lambda: FakeS3Client(payloads, tracker))
+    monkeypatch.setattr("valkyrie.cli.s3_client._s3_client", lambda: FakeS3Client(payloads, tracker))
 
 
 @pytest.mark.asyncio
