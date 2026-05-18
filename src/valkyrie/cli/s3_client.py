@@ -4,9 +4,11 @@ import asyncio
 import re
 import tempfile
 import zipfile
+from collections.abc import Callable
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import aioboto3
 import click
@@ -19,14 +21,15 @@ if TYPE_CHECKING:
 
 _S3_DOWNLOAD_CONCURRENCY = 8
 
+_F = TypeVar("_F", bound=Callable[..., Any])
 
-def _handle_s3_error(message: str):
+
+def _handle_s3_error(message: str) -> Callable[[_F], _F]:
     """Local version of tracker.aws.s3.handle_s3_error to avoid heavy tracker imports at module load."""
-    from functools import wraps
 
-    def decorator(func):
+    def decorator(func: _F) -> _F:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
                 return func(*args, **kwargs)
             except (ClientError, BotoCoreError) as e:
@@ -34,7 +37,7 @@ def _handle_s3_error(message: str):
 
                 raise S3Error(f"{message}: {e}") from e
 
-        return wrapper
+        return wrapper  # type: ignore[return-value]
 
     return decorator
 
