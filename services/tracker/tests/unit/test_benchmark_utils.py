@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Sequence
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -8,14 +9,15 @@ from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 
-from tests.unit.test_fastapi_server import client
 from tests.conftest import TEST_ORG_ID
+from tests.unit.test_fastapi_server import client
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    EvaluationResult,
     Org,
     Task,
     TaskStatus,
@@ -27,6 +29,7 @@ from tracker.utils import (
     create_task_rows,
     fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
+    fetch_missing_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
@@ -358,6 +361,41 @@ class TestBenchmarkUtils:
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
 
+    async def test_fetch_missing_tasks_returns_none_for_errored_tasks(
+        self, example_benchmark_object: Benchmark, database_session: Session
+    ):
+        """Errored/stopped tasks have no EvaluationResult row; fetch_missing_tasks must still
+        return them as None so the benchmark service scores them against the denominator."""
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        finished_task = Task(
+            org_id=TEST_ORG_ID, task_id="task_finished", benchmark=benchmark_row.id, status=TaskStatus.FINISHED
+        )
+        errored_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_errored",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+            error_message="boom",
+        )
+        stopped_task = Task(
+            org_id=TEST_ORG_ID, task_id="task_stopped", benchmark=benchmark_row.id, status=TaskStatus.STOPPED
+        )
+        database_session.add_all([finished_task, errored_task, stopped_task])
+        database_session.commit()
+
+        database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"resolved": True}))
+        database_session.commit()
+
+        remaining = await fetch_missing_tasks(database_session, benchmark_row, {}, self._test_org)
+
+        assert set(remaining.keys()) == {"task_finished", "task_errored", "task_stopped"}
+        assert remaining["task_finished"] == {"resolved": True}
+        assert remaining["task_errored"] is None
+        assert remaining["task_stopped"] is None
+
     def test_commit_task_error_spans_status_transition(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
     ):
@@ -592,8 +630,6 @@ def test_fetch_filtered_started_by_strips_whitespace(database_session: Session, 
 
 def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: Session, contract: AgentContractRequest):
     """Filter applies on top of scoped_select(Benchmark, org) — cross-org rows must not leak."""
-    from uuid import uuid4
-    from tracker.database.models import BenchmarkArguments
 
     other_org = Org(id=uuid4(), name="other-tenant")
     database_session.add(other_org)
