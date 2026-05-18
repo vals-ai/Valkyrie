@@ -16,6 +16,8 @@ import aioboto3
 import click
 from botocore.exceptions import BotoCoreError, ClientError
 
+from valkyrie.cli.utils import load_config
+
 if TYPE_CHECKING:
     from tracker_shared.models import AgentContractRequest
 
@@ -59,14 +61,23 @@ def _handle_s3_error(message: str) -> Callable[[_F], _F]:
 
 
 def _fetch_bucket_name() -> str:
-    from valkyrie.cli.utils import load_config
-
     config = load_config()
     bucket_name = config.get("S3_BUCKET")
     if not bucket_name:
         raise click.ClickException("S3_BUCKET key not found. Add it using 'valkyrie config set' first.")
 
     return bucket_name
+
+
+def _s3_client() -> aioboto3.Session.client:  # type: ignore[type-arg]
+    """Create an aioboto3 S3 client using credentials from the valkyrie config."""
+    config = load_config()
+    session = aioboto3.Session(
+        aws_access_key_id=config.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=config.get("AWS_SECRET_ACCESS_KEY"),
+        region_name=config.get("AWS_DEFAULT_REGION"),
+    )
+    return session.client("s3")
 
 
 async def _run_git_command(repo_path: Path | None, *args: str) -> None:
@@ -190,7 +201,7 @@ async def push_agent(agent_name: str | None, agent_path: Path):
         file_size = file_stream.tell()
         file_stream.seek(0)  # Seek back to start
 
-        async with aioboto3.Session().client("s3") as s3_client:
+        async with _s3_client() as s3_client:
             # Initiate multipart upload
             key = f"agents/{agent_name}.zip"
             now = datetime.now(timezone.utc).isoformat()
@@ -258,7 +269,7 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
     source_key = f"agents/{agent_name}.zip"
     dest_key = f"benchmarks/{benchmark_id}/{agent_name}.zip"
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         try:
             await s3_client.copy_object(
                 Bucket=bucket_name,
@@ -280,7 +291,7 @@ async def remove_agent(agent_name: str):
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         key = f"agents/{agent_name}.zip"
 
         try:
@@ -305,7 +316,7 @@ async def list_agents():
 
     click.echo(f"\r\033[KListing agents from bucket '{bucket_name}'...", nl=False)
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         response = await s3_client.list_objects_v2(
             Bucket=bucket_name,
             Prefix="agents/",
@@ -332,7 +343,7 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
     """Download an agent zip from S3, extract it, and show progress"""
     bucket_name = _fetch_bucket_name()
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         try:
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
@@ -379,7 +390,7 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
     bucket_name = _fetch_bucket_name()
     prefix = s3_path.rstrip("/") + "/" if not Path(s3_path).suffix else s3_path
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         paginator = s3_client.get_paginator("list_objects_v2")
         keys: list[str] = []
         async for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
@@ -412,7 +423,7 @@ async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> Ag
     """Download agent zip from S3 and extract contract.py into a temp dir, returning the contract request"""
     bucket_name = _fetch_bucket_name()
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         try:
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = await response["Body"].read()

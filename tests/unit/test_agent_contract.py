@@ -4,7 +4,7 @@ from typing import Any
 
 import pytest
 from pydantic import ValidationError
-from tracker.database.models import AgentContractRequest
+from tracker_shared.models import AgentContractRequest
 
 from valkyrie.cli.bundler import _parse_yaml_contract  # type: ignore
 from valkyrie.schemas import AgentConfig, AgentContract, Parameter

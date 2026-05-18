@@ -11,12 +11,13 @@ dependencies = [
   "python-dotenv",
   "tracker-shared",
   "aioboto3>=7.0.0",
+  "boto3>=1.42.20",
   "pyyaml>=6.0.3",
 ]
 
 [project.scripts]
-valkyrie = "valkyrie.cli.main:cli"
-valk = "valkyrie.cli.main:cli"
+valkyrie = "valkyrie.cli.entry:main"
+valk = "valkyrie.cli.entry:main"
 
 [dependency-groups]
 dev = [
