@@ -491,6 +491,7 @@ async def retry_or_resume_benchmark(
     http_request: Request,
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
+    retry_finished: bool = Query(default=False),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
@@ -508,6 +509,8 @@ async def retry_or_resume_benchmark(
     Args:
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
+        retry_finished: If true, force-rerun listed task_ids even if FINISHED (deletes prior
+            EvaluationResult). Default false leaves FINISHED tasks alone.
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
@@ -547,6 +550,7 @@ async def retry_or_resume_benchmark(
         retry_mode=retry_mode,
         rerun_task_ids=task_ids,
         org=org,
+        retry_finished=retry_finished,
     )
 
     # Ensure that credentials are included with the model dump

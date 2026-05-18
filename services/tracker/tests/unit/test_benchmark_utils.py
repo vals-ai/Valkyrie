@@ -304,10 +304,10 @@ class TestBenchmarkUtils:
 
         assert all(task_row.status == TaskStatus.FINISHED for task_row in task_rows)
 
-        # Try again with the correct task ids
+        # Try again with the correct task ids — retry_finished=true so FINISHED rows are reset.
 
         response = client.post(
-            f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
+            f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false&retry_finished=true",
             json={"task_ids": task_ids},
         )
         assert response.status_code == 200
@@ -355,6 +355,73 @@ class TestBenchmarkUtils:
         all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
+
+    def test_resume_skips_finished_tasks_by_default(
+        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Resume with --task-ids covering FINISHED tasks must leave them FINISHED by default;
+        only --retry-finished forces them back to PENDING (dropping prior EvaluationResults).
+        Also covers the spike case where the list contains new IDs alongside finished ones."""
+
+        async def _ok_verify(*_args: Any, task_ids: list[str] | None, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids or [])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _ok_verify)
+
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        # 1 STOPPED + 2 FINISHED on the benchmark
+        database_session.add_all(
+            [
+                Task(org_id=TEST_ORG_ID, task_id="t_stopped", benchmark=benchmark_row.id, status=TaskStatus.STOPPED),
+                Task(org_id=TEST_ORG_ID, task_id="t_done_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+                Task(org_id=TEST_ORG_ID, task_id="t_done_2", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            ]
+        )
+        database_session.commit()
+
+        # Default (no retry_finished): pass list covering both finished tasks plus a new id.
+        response: Response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",
+            json={"task_ids": ["t_done_1", "t_done_2", "t_new"]},
+        )
+        assert response.status_code == 200, response.text
+
+        rows_by_id = {
+            t.task_id: t
+            for t in database_session.exec(select(Task).where(col(Task.benchmark) == benchmark_row.id)).all()
+        }
+        assert rows_by_id["t_done_1"].status == TaskStatus.FINISHED
+        assert rows_by_id["t_done_2"].status == TaskStatus.FINISHED
+        assert rows_by_id["t_stopped"].status == TaskStatus.PENDING  # STOPPED always resets
+        assert rows_by_id["t_new"].status == TaskStatus.PENDING  # lazy-added
+        # No duplicate rows for the finished task_ids
+        finished_row_count = database_session.exec(
+            select(func.count(col(Task.id)))
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.task_id) == "t_done_1")
+        ).one()
+        assert finished_row_count == 1
+
+        # With retry_finished=true: FINISHED rows are reset.
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.commit()
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false&retry_finished=true",
+            json={"task_ids": ["t_done_1", "t_done_2"]},
+        )
+        assert response.status_code == 200, response.text
+
+        rows_by_id = {
+            t.task_id: t
+            for t in database_session.exec(select(Task).where(col(Task.benchmark) == benchmark_row.id)).all()
+        }
+        assert rows_by_id["t_done_1"].status == TaskStatus.PENDING
+        assert rows_by_id["t_done_2"].status == TaskStatus.PENDING
 
     async def test_fetch_missing_tasks_returns_none_for_errored_tasks(
         self, example_benchmark_object: Benchmark, database_session: Session

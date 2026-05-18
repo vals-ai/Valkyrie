@@ -864,6 +864,12 @@ def stop(run_id: UUID, force: bool):
     default=False,
     help="Clear durable eval state and rerun generation.",
 )
+@click.option(
+    "--retry-finished",
+    is_flag=True,
+    default=False,
+    help="Also rerun listed --task-ids that are already FINISHED (drops their prior EvaluationResult).",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -874,6 +880,7 @@ def resume(
     task_ids_file: str | None,
     update_agent: bool,
     from_scratch: bool,
+    retry_finished: bool,
 ):
     """
     Resume a run by its run id.
@@ -912,6 +919,7 @@ def resume(
                 RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
                 concurrency,
                 retry_task_ids,
+                retry_finished=retry_finished,
                 service_headers=service_headers,
             )
             action_label = "retried" if retry else "resumed"

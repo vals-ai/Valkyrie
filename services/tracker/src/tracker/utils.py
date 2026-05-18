@@ -20,7 +20,7 @@ from daytona.common.errors import DaytonaNotFoundError, DaytonaRateLimitError
 from fastapi import Request
 from opentelemetry import trace
 from sqlalchemy import JSON, type_coerce
-from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
+from sqlmodel import Session, and_, asc, case, col, delete, desc, func, or_, select, update
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
@@ -1289,13 +1289,16 @@ async def reset_to_in_progress_status(
     retry_mode: RetryMode,
     rerun_task_ids: list[str],
     org: Org,
+    retry_finished: bool = False,
 ) -> list[str]:
     """
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
 
     Retry: we reset objects with an error status ontop of the stopped status
-    Rerun Task IDs: even if task has been finished we restart it. If the task has no
-        row yet, a fresh PENDING row is created when valid in the current dataset.
+    Rerun Task IDs: a listed task_id is reset to PENDING unless it is already FINISHED.
+        Listed task_ids without a row yet get a fresh PENDING row when valid in the
+        current dataset. Pass retry_finished=True to also reset FINISHED tasks; their
+        prior EvaluationResult is deleted and they re-run from scratch.
 
     Benchmark - In progress status
     Tasks - Pending status, or Evaluating status when retrying durable eval state
@@ -1307,18 +1310,30 @@ async def reset_to_in_progress_status(
         if retry:
             retry_statuses.append(TaskStatus.ERROR)
 
+        rerun_id_clause = col(Task.task_id).in_(rerun_task_ids)
+        if not retry_finished:
+            rerun_id_clause = and_(rerun_id_clause, col(Task.status) != TaskStatus.FINISHED)
+
         filter_query = [
             col(Task.benchmark) == benchmark_row.id,
             col(Task.org_id) == org.id,
             or_(
                 col(Task.status).in_(retry_statuses),
-                col(Task.task_id).in_(rerun_task_ids),
+                rerun_id_clause,
             ),
         ]
 
         existing_rows = session.exec(select(Task).where(*filter_query)).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
-        new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
+
+        # Compute lazy-add candidates against every existing row on the benchmark, not just
+        # rows we're resetting — otherwise skipped FINISHED rows would get duplicated.
+        known_task_ids: set[str] = set(
+            session.exec(
+                select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(Task.org_id == org.id)
+            ).all()
+        )
+        new_task_ids = [tid for tid in rerun_task_ids if tid not in known_task_ids]
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:

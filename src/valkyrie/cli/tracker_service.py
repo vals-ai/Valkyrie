@@ -474,6 +474,7 @@ class TrackerService:
         retry_mode: RetryMode,
         concurrency: int | None,
         task_ids: list[str],
+        retry_finished: bool = False,
         service_headers: dict[str, str] | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """
@@ -484,14 +485,21 @@ class TrackerService:
             retry: Whether to retry tasks with the status error
             concurrency: Optional new concurrency level to override original value
             task_ids: List of task ids to force retry. Task ids without an existing row
-                are created as fresh PENDING if valid in the current dataset.
+                are created as fresh PENDING if valid in the current dataset. FINISHED
+                tasks in this list are skipped unless retry_finished is True.
+            retry_finished: When True, FINISHED tasks listed in task_ids are also reset
+                and their prior EvaluationResult is deleted.
             service_headers: Optional headers for benchmark service authentication
 
         Returns:
             RetryOrResumeBenchmarkResponse with status and message
         """
         try:
-            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
+            params: dict[str, Any] = {
+                "retry": retry,
+                "retry_mode": retry_mode.value,
+                "retry_finished": retry_finished,
+            }
 
             # NOTE: 0 is not acceptable
             if concurrency:
