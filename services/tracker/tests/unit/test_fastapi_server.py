@@ -1,18 +1,24 @@
 import json
+import logging
 from datetime import timezone
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
+
+import pytest
 
 import httpx
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
+from descope import DescopeClient
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session
 
 from main import app
 from tests.conftest import TEST_ORG_ID
+from tracker.auth import RequestIdentity, get_current_starter
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -20,6 +26,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     FinalEvaluation,
+    Org,
     Task,
     TaskStatus,
 )
@@ -620,3 +627,265 @@ class TestFastapiServer:
         # There is 1 finished benchmark
         assert response_json.get("total_count") == 1
         assert len(response_json.get("benchmarks")) == 1
+
+    async def test_start_benchmark_writes_started_by_columns(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        test_org = Org(id=TEST_ORG_ID, name="default")
+        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+            org=test_org,
+            access_key_id="K2abc",
+            email="alice@vals.ai",
+            name="Alice",
+        )
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        benchmark_id = UUID(response.json()["benchmark_id"])
+
+        benchmark_row = database_session.get(Benchmark, benchmark_id)
+        assert benchmark_row is not None
+        assert benchmark_row.started_by_id == "K2abc"
+        assert benchmark_row.started_by_email == "alice@vals.ai"
+
+    async def test_start_benchmark_self_hosted_writes_nulls(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        # The autouse override_starter fixture already returns a self-hosted identity.
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+        response = client.post("/start-benchmark", json=request.model_dump())
+        assert response.status_code == 200
+
+        benchmark_id = UUID(response.json()["benchmark_id"])
+        benchmark_row = database_session.get(Benchmark, benchmark_id)
+        assert benchmark_row is not None
+        assert benchmark_row.started_by_id is None
+        assert benchmark_row.started_by_email is None
+
+    async def test_start_benchmark_warns_when_email_claim_missing(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Hosted-mode start with an email-less access key emits a one-shot warning. Self-hosted
+        identity (access_key_id is None) must NOT warn — that's the bug fix for the warning
+        firing on every authenticated request."""
+        test_org = Org(id=TEST_ORG_ID, name="default")
+        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+            org=test_org,
+            access_key_id="K2abc",
+            email=None,
+            name=None,
+        )
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+        with caplog.at_level(logging.WARNING, logger="main"):
+            response = client.post("/start-benchmark", json=request.model_dump())
+        assert response.status_code == 200
+        benchmark_id = response.json()["benchmark_id"]
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "email" in r.message]
+        assert len(warnings) == 1
+        assert "K2abc" in warnings[0].message
+        assert warnings[0].benchmark_id == benchmark_id
+
+    async def test_init_org_returns_email_claim_present(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+    ):
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.AUTH_REQUIRED", True)
+
+        mock_client = MagicMock(spec=DescopeClient)
+        mock_client.exchange_access_key.return_value = {
+            "tenants": {"test-tenant": {}},
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+                "email": "alice@vals.ai",
+                "name": "Alice",
+            },
+        }
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
+
+        response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["email_claim_missing"] is False
+        assert body["org_name"] == "test-tenant"
+
+    async def test_init_org_returns_email_claim_missing(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+    ):
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.AUTH_REQUIRED", True)
+
+        mock_client = MagicMock(spec=DescopeClient)
+        mock_client.exchange_access_key.return_value = {
+            "tenants": {"test-tenant": {}},
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+            },
+        }
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
+
+        response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert response.status_code == 200
+        assert response.json()["email_claim_missing"] is True
+
+    async def test_init_org_uses_bound_user_email_when_email_claim_missing(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+    ):
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.AUTH_REQUIRED", True)
+
+        mock_client = MagicMock(spec=DescopeClient)
+        mock_client.exchange_access_key.return_value = {
+            "tenants": {"test-tenant": {}},
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+                "customClaims": {"user_id": "U2abc"},
+            },
+        }
+        mock_client.mgmt.user.load_by_user_id.return_value = {
+            "user": {
+                "email": "alice@vals.ai",
+                "displayName": "Alice",
+            },
+        }
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
+
+        response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert response.status_code == 200
+        assert response.json()["email_claim_missing"] is False
+        mock_client.mgmt.user.load_by_user_id.assert_called_once_with("U2abc")
+
+    async def test_fetch_benchmarks_includes_started_by_email(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+    ):
+        bench = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            started_by_email="alice@vals.ai",
+            started_by_id="K2abc",
+        )
+        database_session.add(bench)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmarks", params={"limit": 10, "offset": 0})
+        assert response.status_code == 200
+
+        rows = response.json()["benchmarks"]
+        assert any(r["started_by_email"] == "alice@vals.ai" for r in rows)
+
+    async def test_fetch_benchmarks_started_by_query_param_filters(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+    ):
+        """Regression: FastAPI's Depends(PydanticModel) doesn't bind list[str] from query params;
+        started_by must be declared as a separate Query() parameter on the endpoint."""
+        for email in ("alice@vals.ai", "bob@vals.ai", None):
+            database_session.add(
+                Benchmark(
+                    org_id=TEST_ORG_ID,
+                    name="swebench",
+                    arguments=BenchmarkArguments(contract=contract, concurrency=1),
+                    started_by_email=email,
+                    started_by_id=f"K-{email or 'none'}",
+                )
+            )
+        database_session.commit()
+
+        response = client.get("/fetch-benchmarks", params={"started_by": "alice@vals.ai", "limit": 10})
+        assert response.status_code == 200
+        rows = response.json()["benchmarks"]
+        assert len(rows) == 1
+        assert rows[0]["started_by_email"] == "alice@vals.ai"
+
+        # Repeated query params for multi-value filter
+        response = client.get(
+            "/fetch-benchmarks",
+            params=[("started_by", "alice@vals.ai"), ("started_by", "bob@vals.ai"), ("limit", "10")],
+        )
+        assert response.status_code == 200
+        rows = response.json()["benchmarks"]
+        assert len(rows) == 2
+        assert {r["started_by_email"] for r in rows} == {"alice@vals.ai", "bob@vals.ai"}
+
+    async def test_fetch_benchmark_metadata_includes_started_by_email(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+    ):
+        bench = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            started_by_email="alice@vals.ai",
+            started_by_id="K2abc",
+        )
+        database_session.add(bench)
+        database_session.commit()
+
+        response = client.get(f"/fetch-benchmark-metadata/{bench.id}")
+        assert response.status_code == 200
+        assert response.json()["started_by_email"] == "alice@vals.ai"

@@ -15,7 +15,8 @@ jobs:
     steps:
       - name: Skip automatic runs on PRs
         run: |
-          if [ "${{ github.run_attempt }}" = "1" ] && \
+          if [ "${{ github.base_ref }}" != "prod" ] && \
+             [ "${{ github.run_attempt }}" = "1" ] && \
              [ "${{ github.event_name }}" = "pull_request" ] && \
              [ "${{ github.event.action }}" != "closed" -o "${{ github.event.pull_request.merged }}" != "true" ]; then
             echo "Check must be run manually on PRs"

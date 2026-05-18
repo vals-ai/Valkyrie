@@ -139,6 +139,17 @@ class TrackerStack(Stack):
             "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
         }
 
+        descope_secrets: dict[str, aws_ecs.Secret] = {}
+        if os.environ.get("AUTH_REQUIRED", "false").lower() == "true":
+            descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "DescopeManagementKeySecret",
+                "devEvalInfraDescopeManagementKey",
+            )
+            descope_secrets["DESCOPE_MANAGEMENT_KEY"] = aws_ecs.Secret.from_secrets_manager(
+                descope_management_key_secret,
+            )
+
         # ── Tracker API service ──────────────────────────────────────────
 
         tracker_task_def = aws_ecs.FargateTaskDefinition(
@@ -173,6 +184,7 @@ class TrackerStack(Stack):
             secrets={
                 **db_secrets,
                 **sentry_secrets,
+                **descope_secrets,
             },
             command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(
