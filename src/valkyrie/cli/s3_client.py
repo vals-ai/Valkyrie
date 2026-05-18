@@ -20,22 +20,38 @@ if TYPE_CHECKING:
     from valkyrie.schemas import AgentConfig
 
 _S3_DOWNLOAD_CONCURRENCY = 8
-
-_F = TypeVar("_F", bound=Callable[..., Any])
-
-
-def _handle_s3_error(message: str) -> Callable[[_F], _F]:
+def _handle_s3_error(message: str):
     """Local version of tracker.aws.s3.handle_s3_error to avoid heavy tracker imports at module load."""
+    import asyncio
+    from functools import wraps
 
-    def decorator(func: _F) -> _F:
-        @wraps(func)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            try:
-                return func(*args, **kwargs)
-            except (ClientError, BotoCoreError) as e:
-                from tracker.exceptions import S3Error
+    def decorator(func):
+        if asyncio.iscoroutinefunction(func):
 
-                raise S3Error(f"{message}: {e}") from e
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                try:
+                    return await func(*args, **kwargs)
+                except (ClientError, BotoCoreError) as e:
+                    from tracker.exceptions import S3Error
+
+                    raise S3Error(f"{message}: {e}") from e
+
+            return async_wrapper
+        else:
+
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                try:
+                    return func(*args, **kwargs)
+                except (ClientError, BotoCoreError) as e:
+                    from tracker.exceptions import S3Error
+
+                    raise S3Error(f"{message}: {e}") from e
+
+            return wrapper
+
+    return decorator
 
         return wrapper  # type: ignore[return-value]
 
