@@ -9,6 +9,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from tests.conftest import TEST_ORG_ID
+from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.database.models import (
     AgentContractRequest,
@@ -45,7 +46,10 @@ def _create_benchmark(
         task_ids=_TASK_IDS,
         harness_config=harness_config,
     )
-    benchmark = start_benchmark_request_to_benchmark(request, Org(id=TEST_ORG_ID, name="default"))
+    benchmark = start_benchmark_request_to_benchmark(
+        request,
+        RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
+    )
     session.add(benchmark)
     session.commit()
     return benchmark, request
