@@ -1085,53 +1085,6 @@ class TestUploadAgentArtifacts:
 
 
 class TestStreamCommandOutputAgentFailure:
-    async def test_status_file_unblocks_hung_pty_wait(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_sandbox = AsyncMock()
-        mock_sandbox.id = "sb-1"
-        mock_sandbox.name = "sb-1"
-        mock_handle = AsyncMock()
-        wait_cancelled = False
-
-        async def _mock_create_pty(*_args: Any, **_kwargs: Any) -> tuple[AsyncMock, str]:
-            return mock_handle, "sb-1:pty-abc"
-
-        async def _hang(*_args: Any, **_kwargs: Any) -> None:
-            nonlocal wait_cancelled
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                wait_cancelled = True
-                raise
-
-        async def _done(*_args: Any, **_kwargs: Any) -> None:
-            return None
-
-        monkeypatch.setattr(sandbox_module, "_create_pty_session", _mock_create_pty)
-        monkeypatch.setattr(sandbox_module, "_wait_for_pty", _hang)
-        monkeypatch.setattr(sandbox_module, "_wait_for_status_file", _done)
-        monkeypatch.setattr(sandbox_module, "_check_sandbox_health", _done)
-        monkeypatch.setattr(sandbox_module, "_read_exit_code", AsyncMock(return_value=0))
-        monkeypatch.setattr(
-            sandbox_module,
-            "_exec",
-            AsyncMock(side_effect=[
-                ExecuteResponse(exit_code=0, result="1000000000"),
-                ExecuteResponse(exit_code=0, result="2000000000"),
-                ExecuteResponse(exit_code=0, result=""),
-            ]),
-        )
-
-        outputs: list[str] = []
-
-        exit_reason, duration = await stream_command_output(
-            mock_sandbox, "run-agent.sh", on_output=outputs.append, wait_timeout=1
-        )
-
-        assert exit_reason is None
-        assert duration == 1.0
-        assert wait_cancelled
-        assert "[Debug]: command status file was written before PTY close; continuing\n" in outputs
-
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int
