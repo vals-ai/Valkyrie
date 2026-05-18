@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -32,6 +32,7 @@ class AWSCredentials(BaseModel, frozen=True):
     aws_access_key_id: str
     aws_secret_access_key: str
     aws_default_region: str
+    aws_session_token: str | None = None
 
 
 class HarnessConfig(BaseModel):
@@ -70,6 +71,13 @@ class StartBenchmarkRequest(BaseModel):
         )
 
 
+class FetchBenchmarkTasksRequest(BaseModel):
+    benchmark_name: str
+    dataset: str | None = None
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict)
+
+
 class StartBenchmarkErrorResponse(BaseModel):
     benchmark_id: UUID
     error_message: str
@@ -93,6 +101,13 @@ class FetchBenchmarkResponse(BaseModel):
     s3_bucket_url: str
 
 
+class AverageTaskBreakdown(BaseModel):
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+
+
 class FinalViewResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
@@ -103,6 +118,7 @@ class FinalViewResponse(BaseModel):
     benchmark_arguments: BenchmarkArguments
     tasks_stopped: int | None
     final_evaluation: FinalEvaluation | None
+    average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
 
@@ -155,6 +171,7 @@ class BenchmarkTableRow(BaseModel):
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
+    final_score: float | None = None
 
 
 class FetchBenchmarksResponse(BaseModel):

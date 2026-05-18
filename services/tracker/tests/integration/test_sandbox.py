@@ -91,6 +91,7 @@ class TestSandboxOperations:
             region_name=aws_credentials.aws_default_region,
             aws_access_key_id=aws_credentials.aws_access_key_id,
             aws_secret_access_key=aws_credentials.aws_secret_access_key,
+            aws_session_token=aws_credentials.aws_session_token,
         )
         agent_key = get_contract_s3_key(contract_name)
         frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
@@ -231,7 +232,7 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "timeout 15 sleep 70"
 
-            command_timeout = await stream_command_output(sandbox, command, on_output=print)
+            command_timeout, _ = await stream_command_output(sandbox, command, on_output=print)
 
             assert command_timeout
 
@@ -240,7 +241,7 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "timeout 15 sleep 10"
 
-            command_timeout = await stream_command_output(sandbox, command, on_output=print)
+            command_timeout, _ = await stream_command_output(sandbox, command, on_output=print)
 
             assert not command_timeout
 
@@ -263,7 +264,7 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "echo 'STAGE_1' && sleep 1 && echo 'STAGE_2' && sleep 1 && echo 'STAGE_3'"
 
-            timed_out = await stream_command_output(sandbox, command, on_output=log_callback)
+            timed_out, _ = await stream_command_output(sandbox, command, on_output=log_callback)
 
             assert not timed_out
             output = "\n".join(logged_messages)

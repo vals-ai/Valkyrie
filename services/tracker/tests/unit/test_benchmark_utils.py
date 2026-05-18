@@ -3,18 +3,29 @@ from typing import Any, Sequence
 from zoneinfo import ZoneInfo
 
 import pytest
-from benchmark_service.schemas import FinalScoreResponse
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 
 from tests.unit.test_fastapi_server import client
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkStatus,
+    EvaluationResult,
+    Org,
+    Task,
+    TaskStatus,
+)
 from tracker.exceptions import TrackerServiceError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
+    fetch_missing_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
@@ -204,6 +215,7 @@ class TestBenchmarkUtils:
         example_benchmark_object: Benchmark,
         database_session: Session,
         harness_config: HarnessConfig,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         """
         Tests edge cases for resuming a benchmark
@@ -268,6 +280,13 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Task id is provided as a force parameter but does not exist in dataset
+        async def _verify_rejecting_task_5(*_args: Any, task_ids: list[str] | None, **_kwargs: Any) -> Any:
+            if task_ids and "task_5" in task_ids:
+                raise BenchmarkServiceError("task_5 does not exist in the dataset")
+            return VerifyTaskIdsResponse(task_ids=task_ids or [])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_rejecting_task_5)
+
         response = client.post(
             f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
             json={"task_ids": ["task_5"]},
@@ -336,6 +355,91 @@ class TestBenchmarkUtils:
         all_tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
+
+    async def test_fetch_missing_tasks_returns_none_for_errored_tasks(
+        self, example_benchmark_object: Benchmark, database_session: Session
+    ):
+        """Errored/stopped tasks have no EvaluationResult row; fetch_missing_tasks must still
+        return them as None so the benchmark service scores them against the denominator."""
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        finished_task = Task(
+            org_id=TEST_ORG_ID, task_id="task_finished", benchmark=benchmark_row.id, status=TaskStatus.FINISHED
+        )
+        errored_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_errored",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+            error_message="boom",
+        )
+        stopped_task = Task(
+            org_id=TEST_ORG_ID, task_id="task_stopped", benchmark=benchmark_row.id, status=TaskStatus.STOPPED
+        )
+        database_session.add_all([finished_task, errored_task, stopped_task])
+        database_session.commit()
+
+        database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"resolved": True}))
+        database_session.commit()
+
+        remaining = await fetch_missing_tasks(database_session, benchmark_row, {}, self._test_org)
+
+        assert set(remaining.keys()) == {"task_finished", "task_errored", "task_stopped"}
+        assert remaining["task_finished"] == {"resolved": True}
+        assert remaining["task_errored"] is None
+        assert remaining["task_stopped"] is None
+
+    def test_commit_task_error_spans_status_transition(
+        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
+    ):
+        log_records: list[dict[str, Any]] = []
+        span_records: list[dict[str, Any]] = []
+
+        def fake_info(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
+            log_records.append({"message": message, **(extra or {})})
+
+        class MockSpan:
+            def __init__(self, record: dict[str, Any]) -> None:
+                self._record = record
+
+            def __enter__(self) -> "MockSpan":
+                self._record["entered"] = True
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                self._record["exited"] = True
+
+        def fake_span(message: str, **attributes: Any) -> MockSpan:
+            record = {"message": message, **attributes}
+            span_records.append(record)
+            return MockSpan(record)
+
+        monkeypatch.setattr("tracker.utils.logger.info", fake_info)
+        monkeypatch.setattr("tracker.utils.logfire.span", fake_span)
+
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.IN_PROGRESS,
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        commit_task_error(task_row, database_session, "agent failed")
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
+        assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
+        assert transition_record["to_status"] == TaskStatus.ERROR.value
+        assert transition_record["task_id"] == "task_0"
+        assert transition_record["benchmark_id"] == str(example_benchmark_object.id)
+        assert transition_record["entered"] and transition_record["exited"]
+        assert transition_record["has_error_message"] is True
+        assert not any(record["message"].startswith("task.status_transition") for record in log_records)
 
     async def test_set_benchmark_final_status(self, example_benchmark_object: Benchmark, database_session: Session):
         """

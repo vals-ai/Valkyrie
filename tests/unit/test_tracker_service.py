@@ -12,7 +12,13 @@ class FakeClient:
         self.params: dict[str, object] | None = None
         self.json: dict[str, object] | None = None
 
-    def post(self, _url: str, *, params: dict[str, object], json: dict[str, object]) -> httpx.Response:
+    def post(
+        self,
+        _url: str,
+        *,
+        params: dict[str, object] | None = None,
+        json: dict[str, object],
+    ) -> httpx.Response:
         self.params = params
         self.json = json
         return httpx.Response(200, json={"status": "success"})

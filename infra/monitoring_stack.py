@@ -193,19 +193,19 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 5: DB connections high (> 80% of max for t4g.micro: ~83 connections)
-        # Max connections on t4g.micro is ~83 (LEAST(DBInstanceClassMemory/9531392, 5000))
-        # Set threshold to 65 (roughly 80% of 83)
+        # Alarm 5: DB connections high (> 80% of max for t4g.small: ~170 connections)
+        # Max connections on t4g.small is ~170 (LEAST(DBInstanceClassMemory/9531392, 5000))
+        # Set threshold to 135 (roughly 80% of 170)
         aws_cloudwatch.Alarm(
             self,
             "DbConnectionsHighAlarm",
             alarm_name="Valkyrie-DB-Connections-High",
-            alarm_description="RDS database connections >= 65 (~80% of t4g.micro max)",
+            alarm_description="RDS database connections >= 135 (~80% of t4g.small max)",
             metric=database.metric_database_connections(
                 period=cdk.Duration.minutes(1),
                 statistic="Maximum",
             ),
-            threshold=65,
+            threshold=135,
             evaluation_periods=5,
             datapoints_to_alarm=5,
             comparison_operator=aws_cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,

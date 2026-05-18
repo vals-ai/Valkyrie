@@ -8,6 +8,7 @@ import httpx
 import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError
+from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from opentelemetry.propagate import inject
@@ -33,8 +34,8 @@ from tracker.aws.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
-from tracker.config import AUTH_REQUIRED, ENVIRONMENT
-from tracker.database.models import Benchmark, BenchmarkStatus, Org, RetryMode
+from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_url
+from tracker.database.models import Benchmark, BenchmarkStatus, FinalEvaluation, Org, RetryMode
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
@@ -43,6 +44,7 @@ from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
     BenchmarkTableRow,
+    FetchBenchmarkTasksRequest,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
@@ -60,6 +62,7 @@ from tracker.utils import (
     BenchmarkContext,
     YieldingWriter,
     commit_benchmark_error,
+    create_benchmark_service_client,
     create_final_view,
     fetch_filtered_benchmark_rows,
     fetch_harness_config,
@@ -267,6 +270,38 @@ async def start_benchmark(
     )
 
 
+@app.post("/fetch-benchmark-tasks")
+async def fetch_benchmark_tasks(
+    http_request: Request,
+    request: FetchBenchmarkTasksRequest,
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    _org: Org = Depends(get_current_org),
+) -> VerifyTaskIdsResponse:
+    """
+    Fetch all task ids for a benchmark dataset.
+    """
+    try:
+        benchmark_service = create_benchmark_service_client(
+            url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
+            daytona_secret_name=harness_config.daytona_secret_name,
+            aws=harness_config.aws,
+            service_headers=forward_tracker_api_key(request.service_headers, http_request.headers.get("x-api-key")),
+        )
+        try:
+            return await benchmark_service.verify_task_ids(
+                task_ids=None,
+                slice_str=None,
+                dataset=request.dataset,
+            )
+        finally:
+            await benchmark_service.close()
+    except (BenchmarkServiceError, httpx.HTTPError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch task ids from benchmark service '{request.benchmark_name}': {exc}",
+        ) from exc
+
+
 @app.get("/fetch-benchmark", response_model=None)
 async def fetch_benchmark(
     benchmark_id: TrackedBenchmarkId,
@@ -318,24 +353,64 @@ async def fetch_benchmark(
 @app.get("/retrieve-results")
 async def retrieve_results(
     benchmark_id: TrackedBenchmarkId,
+    http_request: Request,
     s3: bool = Query(default=False),
+    task_ids: list[str] | None = Query(default=None),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
     """
-    Retrieve the results of a benchmark by its id.
+    Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is
+    filtered to that subset and the final score is recomputed over the subset; the persisted
+    FinalEvaluation / per-task rows are left untouched.
+
+    Note: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was
+    just computed (full or subset). The DB remains source of truth, so re-running without
+    task_ids re-uploads the canonical full view.
 
     Usage:
-    curl -X GET http://<endpoint>/retrieve-results/<benchmark_id>?s3=false
-
-    Returns:
-        RetrieveResultsResponse
+    curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
+    curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
     """
     benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
     assert_org(benchmark_row, org)
 
     final_view = create_final_view(benchmark_row, session, org)
+
+    if task_ids:
+        task_ids_set = set(task_ids)
+
+        def _filter_task_map(task_map):
+            return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
+
+        final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
+        final_view.task_errors = _filter_task_map(final_view.task_errors)
+
+        # Missing/errored tasks are passed to the benchmark service as {task_id: None}.
+        scored_results = dict(final_view.evaluation_results or {})
+        for task_id in final_view.task_errors or {}:
+            scored_results.setdefault(task_id, None)
+
+        effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
+        benchmark_service = benchmark_row.benchmark_service(
+            harness_config.daytona_secret_name,
+            harness_config.aws,
+            service_headers=effective_service_headers,
+        )
+        try:
+            resp = await benchmark_service.final_score(
+                evaluation_results=scored_results,
+                dataset=benchmark_row.arguments.dataset,
+            )
+        finally:
+            await benchmark_service.close()
+        final_view.final_evaluation = FinalEvaluation(
+            org_id=org.id,
+            benchmark=benchmark_row.id,
+            final_score=resp.final_score,
+            properties=resp.metadata,
+        )
 
     if s3:
         s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
@@ -434,7 +509,8 @@ async def retry_or_resume_benchmark(
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
         concurrency: Optional new concurrency level (overrides original value)
-        task_ids: Optional list of specific task IDs to run
+        task_ids: Optional list of specific task IDs to run. If a task id is not yet
+            registered but is valid in the current dataset, a fresh PENDING row is created.
 
     Returns:
         RetryOrResumeBenchmarkResponse

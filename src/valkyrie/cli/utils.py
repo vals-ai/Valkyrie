@@ -5,10 +5,13 @@ import json
 import shutil
 import tarfile
 import tempfile
+import urllib.request
+from collections.abc import Iterable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Coroutine, TypeVar
+from urllib.parse import urlparse
 from uuid import UUID
 
 import click
@@ -95,6 +98,38 @@ async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
             click.echo("\r\033[K", nl=False)
 
     return result
+
+
+def _clean_task_ids(task_ids: Iterable[str]) -> list[str]:
+    cleaned = [task_id.strip() for task_id in task_ids]
+    return list(dict.fromkeys(task_id for task_id in cleaned if task_id))
+
+
+def read_task_ids_source(source: str) -> list[str]:
+    """Read task IDs (one per line) from a local path or an http(s) URL."""
+    try:
+        if urlparse(source).scheme in {"http", "https"}:
+            with urllib.request.urlopen(source) as response:
+                content = response.read().decode("utf-8")
+        else:
+            content = Path(source).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise click.ClickException(f"Failed to read task ids from {source}: {exc}") from exc
+
+    task_ids = _clean_task_ids(content.splitlines())
+    if not task_ids:
+        raise click.ClickException(f"No task ids found in {source}")
+    return task_ids
+
+
+def resolve_task_ids(task_ids: str | None = None, task_ids_file: str | None = None) -> list[str] | None:
+    if task_ids and task_ids_file:
+        raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
+    if task_ids_file:
+        return read_task_ids_source(task_ids_file)
+    if task_ids:
+        return _clean_task_ids(task_ids.split(",")) or None
+    return None
 
 
 def local_time(dt: datetime) -> str:
@@ -437,6 +472,9 @@ def format_fetch_benchmarks_response(
         click.echo(click.style("No runs found.", fg="yellow"))
         return
 
+    def format_score(score: float | None) -> str:
+        return f"{score:.1%}" if score is not None else "-"
+
     rows: list[dict[str, str]] = []
     for benchmark in benchmarks:
         _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
@@ -451,6 +489,7 @@ def format_fetch_benchmarks_response(
                     benchmark.status.value.replace("_", " ").title(),
                     fg=BenchmarkFormatter.STATUS_COLORS[benchmark.status.value],
                 ),
+                "Score": format_score(benchmark.final_score),
                 "Started / Finished": f"{short_local_time(benchmark.started_at)} / {short_local_time(benchmark.finished_at, include_date=False) if benchmark.finished_at else '-'}",
                 "Progress": f"{progress_percentage:.1f}%",
             }
@@ -458,7 +497,7 @@ def format_fetch_benchmarks_response(
 
     format_table(
         rows,
-        ["ID", "Benchmark", "Agent", "Model", "Status", "Started / Finished", "Progress"],
+        ["ID", "Benchmark", "Agent", "Model", "Status", "Score", "Started / Finished", "Progress"],
         current_page,
         total_pages,
         fetch_benchmarks_response.total_count,
