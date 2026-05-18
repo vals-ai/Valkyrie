@@ -509,7 +509,7 @@ async def retry_or_resume_benchmark(
     Args:
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
-        retry_finished: If true, also reset FINISHED task_ids in the list (drops prior result).
+        retry_finished: With retry=true, also reset FINISHED task_ids in the list (drops prior result).
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. New ids are lazy-added as PENDING.
 
@@ -548,7 +548,7 @@ async def retry_or_resume_benchmark(
         retry_mode=retry_mode,
         rerun_task_ids=task_ids,
         org=org,
-        retry_finished=retry_finished,
+        include_finished_rerun_ids=retry and retry_finished,
     )
 
     # Ensure that credentials are included with the model dump

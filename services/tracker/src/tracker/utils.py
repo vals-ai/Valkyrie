@@ -1289,14 +1289,14 @@ async def reset_to_in_progress_status(
     retry_mode: RetryMode,
     rerun_task_ids: list[str],
     org: Org,
-    retry_finished: bool = False,
+    include_finished_rerun_ids: bool = False,
 ) -> list[str]:
     """
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
 
     Retry: reset ERROR tasks on top of STOPPED.
-    Rerun Task IDs: reset listed ids unless FINISHED (override with retry_finished=True);
-        lazy-add fresh PENDING rows for ids not yet on the benchmark.
+    Rerun Task IDs: reset listed ids unless include_finished_rerun_ids=True.
+        Lazy-add fresh PENDING rows for ids not yet on the benchmark.
     """
     try:
         retry_statuses = [TaskStatus.STOPPED]
@@ -1304,7 +1304,7 @@ async def reset_to_in_progress_status(
             retry_statuses.append(TaskStatus.ERROR)
 
         rerun_id_clause = col(Task.task_id).in_(rerun_task_ids)
-        if not retry_finished:
+        if not include_finished_rerun_ids:
             rerun_id_clause = and_(rerun_id_clause, col(Task.status) != TaskStatus.FINISHED)
 
         filter_query = [

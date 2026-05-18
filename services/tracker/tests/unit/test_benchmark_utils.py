@@ -304,10 +304,10 @@ class TestBenchmarkUtils:
 
         assert all(task_row.status == TaskStatus.FINISHED for task_row in task_rows)
 
-        # Try again with the correct task ids — retry_finished=true so FINISHED rows are reset.
+        # Try again with retry=true and the correct task ids so FINISHED rows are reset.
 
         response = client.post(
-            f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false&retry_finished=true",
+            f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=true&retry_finished=true",
             json={"task_ids": task_ids},
         )
         assert response.status_code == 200
@@ -360,7 +360,7 @@ class TestBenchmarkUtils:
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
     ):
         """Resume with --task-ids covering FINISHED tasks must leave them FINISHED by default;
-        only --retry-finished forces them back to PENDING (dropping prior EvaluationResults).
+        only retry with --retry-finished forces them back to PENDING (dropping prior EvaluationResults).
         Also covers the spike case where the list contains new IDs alongside finished ones."""
 
         async def _ok_verify(*_args: Any, task_ids: list[str] | None, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -406,12 +406,26 @@ class TestBenchmarkUtils:
         ).one()
         assert finished_row_count == 1
 
-        # With retry_finished=true: FINISHED rows are reset.
+        # retry_finished is ignored on the resume path.
         benchmark_row.status = BenchmarkStatus.STOPPED
         database_session.add(benchmark_row)
         database_session.commit()
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false&retry_finished=true",
+            json={"task_ids": ["t_done_1", "t_done_2"]},
+        )
+        assert response.status_code == 200, response.text
+
+        rows_by_id = {
+            t.task_id: t
+            for t in database_session.exec(select(Task).where(col(Task.benchmark) == benchmark_row.id)).all()
+        }
+        assert rows_by_id["t_done_1"].status == TaskStatus.FINISHED
+        assert rows_by_id["t_done_2"].status == TaskStatus.FINISHED
+
+        # With retry=true and retry_finished=true: FINISHED rows are reset.
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&retry_finished=true",
             json={"task_ids": ["t_done_1", "t_done_2"]},
         )
         assert response.status_code == 200, response.text

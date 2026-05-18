@@ -868,7 +868,7 @@ def stop(run_id: UUID, force: bool):
     "--retry-finished",
     is_flag=True,
     default=False,
-    help="Also rerun listed --task-ids that are already FINISHED (drops their prior EvaluationResult).",
+    help="When retrying, also rerun listed --task-ids that are already FINISHED (drops their prior EvaluationResult).",
 )
 @click.pass_context
 def resume(

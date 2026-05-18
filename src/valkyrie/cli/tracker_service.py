@@ -485,8 +485,8 @@ class TrackerService:
             retry: Whether to retry tasks with the status error
             concurrency: Optional new concurrency level to override original value
             task_ids: List of task ids to retry/lazy-add. FINISHED ids are skipped unless
-                retry_finished is True.
-            retry_finished: Also reset FINISHED ids in task_ids (drops prior EvaluationResult).
+                retry and retry_finished are both True.
+            retry_finished: When retrying, also reset FINISHED ids in task_ids (drops prior EvaluationResult).
             service_headers: Optional headers for benchmark service authentication
 
         Returns:
