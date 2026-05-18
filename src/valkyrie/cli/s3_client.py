@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 import tempfile
 import zipfile
@@ -9,6 +10,7 @@ from datetime import datetime, timezone
 from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+
 
 import aioboto3
 import click
@@ -20,16 +22,18 @@ if TYPE_CHECKING:
     from valkyrie.schemas import AgentConfig
 
 _S3_DOWNLOAD_CONCURRENCY = 8
-def _handle_s3_error(message: str):
-    """Local version of tracker.aws.s3.handle_s3_error to avoid heavy tracker imports at module load."""
-    import asyncio
-    from functools import wraps
 
-    def decorator(func):
-        if asyncio.iscoroutinefunction(func):
+_F = TypeVar("_F", bound=Callable[..., Any])
+
+
+def _handle_s3_error(message: str) -> Callable[[_F], _F]:
+    """Local version of tracker.aws.s3.handle_s3_error to avoid heavy tracker imports at module load."""
+
+    def decorator(func: _F) -> _F:
+        if inspect.iscoroutinefunction(func):
 
             @wraps(func)
-            async def async_wrapper(*args, **kwargs):
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 try:
                     return await func(*args, **kwargs)
                 except (ClientError, BotoCoreError) as e:
@@ -37,11 +41,11 @@ def _handle_s3_error(message: str):
 
                     raise S3Error(f"{message}: {e}") from e
 
-            return async_wrapper
+            return async_wrapper  # type: ignore[return-value]
         else:
 
             @wraps(func)
-            def wrapper(*args, **kwargs):
+            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                 try:
                     return func(*args, **kwargs)
                 except (ClientError, BotoCoreError) as e:
@@ -49,11 +53,7 @@ def _handle_s3_error(message: str):
 
                     raise S3Error(f"{message}: {e}") from e
 
-            return wrapper
-
-    return decorator
-
-        return wrapper  # type: ignore[return-value]
+            return sync_wrapper  # type: ignore[return-value]
 
     return decorator
 
