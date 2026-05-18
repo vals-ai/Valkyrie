@@ -55,5 +55,5 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     assert result.status == "success"
-    assert client.params == {"retry": True, "retry_mode": "from_scratch", "concurrency": 3}
+    assert client.params == {"retry": True, "retry_mode": "from_scratch", "retry_finished": False, "concurrency": 3}
     assert client.json == {"task_ids": ["task-1"], "service_headers": {}}
