@@ -16,18 +16,22 @@ load_dotenv()
 configure_logging()
 
 
-_BENCHMARK_SERVICE_NAMESPACE: str = "local"
-_BENCHMARK_SERVICE_PORT = 8001
+_CLOUDMAP_NAMESPACE: str = "local"
+_CLOUDMAP_PORT = 8001
+_BENCHMARK_SERVICE_BASE_URL: str | None = os.environ.get("BENCHMARK_SERVICE_BASE_URL")
 
 
 def create_benchmark_service_url(benchmark_name: str) -> str:
     """
-    Derive the benchmark service URL from the benchmark name and namespace
+    Derive the benchmark service URL from the benchmark name.
 
-    NOTE: If we are running this locally the namespace is blank
+    NOTE: If BENCHMARK_SERVICE_BASE_URL is set (e.g. benchmarks.vals.ai), use HTTPS subdomains.
+    Otherwise fall back to CloudMap internal DNS (only works inside the VPC).
     """
-    host = f"{benchmark_name}.{_BENCHMARK_SERVICE_NAMESPACE}"
-    return f"http://{host}:{_BENCHMARK_SERVICE_PORT}"
+    if _BENCHMARK_SERVICE_BASE_URL:
+        return f"https://{benchmark_name}.{_BENCHMARK_SERVICE_BASE_URL}"
+
+    return f"http://{benchmark_name}.{_CLOUDMAP_NAMESPACE}:{_CLOUDMAP_PORT}"
 
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
