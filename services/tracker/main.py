@@ -509,11 +509,9 @@ async def retry_or_resume_benchmark(
     Args:
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
-        retry_finished: If true, force-rerun listed task_ids even if FINISHED (deletes prior
-            EvaluationResult). Default false leaves FINISHED tasks alone.
+        retry_finished: If true, also reset FINISHED task_ids in the list (drops prior result).
         concurrency: Optional new concurrency level (overrides original value)
-        task_ids: Optional list of specific task IDs to run. If a task id is not yet
-            registered but is valid in the current dataset, a fresh PENDING row is created.
+        task_ids: Optional list of specific task IDs to run. New ids are lazy-added as PENDING.
 
     Returns:
         RetryOrResumeBenchmarkResponse

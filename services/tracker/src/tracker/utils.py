@@ -1294,16 +1294,9 @@ async def reset_to_in_progress_status(
     """
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
 
-    Retry: we reset objects with an error status ontop of the stopped status
-    Rerun Task IDs: a listed task_id is reset to PENDING unless it is already FINISHED.
-        Listed task_ids without a row yet get a fresh PENDING row when valid in the
-        current dataset. Pass retry_finished=True to also reset FINISHED tasks; their
-        prior EvaluationResult is deleted and they re-run from scratch.
-
-    Benchmark - In progress status
-    Tasks - Pending status, or Evaluating status when retrying durable eval state
-
-    NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
+    Retry: reset ERROR tasks on top of STOPPED.
+    Rerun Task IDs: reset listed ids unless FINISHED (override with retry_finished=True);
+        lazy-add fresh PENDING rows for ids not yet on the benchmark.
     """
     try:
         retry_statuses = [TaskStatus.STOPPED]
@@ -1326,8 +1319,8 @@ async def reset_to_in_progress_status(
         existing_rows = session.exec(select(Task).where(*filter_query)).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
 
-        # Compute lazy-add candidates against every existing row on the benchmark, not just
-        # rows we're resetting — otherwise skipped FINISHED rows would get duplicated.
+        # Filter against every row on the benchmark so skipped FINISHED rows don't trip
+        # the (benchmark, task_id) unique constraint.
         known_task_ids: set[str] = set(
             session.exec(
                 select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(Task.org_id == org.id)
