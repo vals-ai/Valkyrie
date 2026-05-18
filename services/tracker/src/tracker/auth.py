@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any
 
 from descope import AuthException, DescopeClient
 from fastapi import Depends, HTTPException, Request
+from requests.exceptions import ConnectionError as RequestsConnectionError
+from requests.exceptions import ReadTimeout
 from sqlmodel import Session, select
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from tracker.config import AUTH_REQUIRED, DESCOPE_PROJECT_ID
 from tracker.database.models import DEFAULT_ORG_NAME, Org
@@ -43,14 +47,27 @@ def extract_api_key(request: Request) -> str:
     return api_key
 
 
+@retry(
+    retry=retry_if_exception_type((ReadTimeout, RequestsConnectionError)),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
+    reraise=True,
+)
+def _exchange_access_key(api_key: str, descope_client: DescopeClient) -> dict[str, Any]:
+    """Call Descope with retries on transient network errors."""
+    return descope_client.exchange_access_key(api_key)
+
+
 def resolve_descope_tenant(api_key: str) -> str:
     """Validate an API key against Descope and return the tenant name (no DB lookup)."""
     if not _descope_client:
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
     try:
-        jwt_response = _descope_client.exchange_access_key(api_key)
+        jwt_response = _exchange_access_key(api_key, _descope_client)
     except AuthException as e:
         raise HTTPException(status_code=401, detail=f"Invalid API key: {e.error_message}") from e
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Auth service unavailable") from e
 
     tenants = list(jwt_response.get("tenants", {}).keys())
     if len(tenants) != 1:

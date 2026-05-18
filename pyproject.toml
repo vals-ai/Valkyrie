@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-valkyrie = "valkyrie.cli.main:cli"
-valk = "valkyrie.cli.main:cli"
+valkyrie = "valkyrie.cli.entry:main"
+valk = "valkyrie.cli.entry:main"
 
 [dependency-groups]
 dev = [
