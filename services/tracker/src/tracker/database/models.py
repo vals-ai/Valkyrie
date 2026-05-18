@@ -162,6 +162,8 @@ class Benchmark(SQLModel, table=True):
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
     )
+    started_by_id: str | None = Field(default=None)
+    started_by_email: str | None = Field(default=None, index=True)
     final_evaluation: Mapped[FinalEvaluation | None] = Relationship(
         sa_relationship_kwargs={"foreign_keys": "[FinalEvaluation.benchmark]"}
     )
@@ -224,6 +226,7 @@ class Benchmark(SQLModel, table=True):
             benchmark_id=self.id,
             benchmark_name=self.name,
             benchmark_arguments=self.arguments,
+            started_by_email=self.started_by_email,
         )
 
     def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
@@ -257,6 +260,7 @@ class Benchmark(SQLModel, table=True):
             name=self.name,
             agent_name=self.arguments.contract.name,
             model=self.arguments.contract.model,
+            started_by_email=self.started_by_email,
             started_at=self.started_at,
             finished_at=self.finished_at,
             status=self.status,

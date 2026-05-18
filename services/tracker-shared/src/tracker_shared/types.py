@@ -136,6 +136,7 @@ class FetchBenchmarksRequest(BaseModel):
     benchmark_name: str | None = None
     model: str | None = None
     status: BenchmarkStatus | None = None
+    started_by: list[str] | None = None
     order_by: Order = Order.DESC
 
     # Pagination
@@ -148,6 +149,7 @@ class BenchmarkTableRow(BaseModel):
     name: str
     agent_name: str
     model: str | None
+    started_by_email: str | None
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus
@@ -165,6 +167,7 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
+    started_by_email: str | None
 
 
 class FetchBenchmarkTasksRequest(BaseModel):

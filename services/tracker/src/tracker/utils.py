@@ -25,6 +25,7 @@ from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from tracker._lambda import invoke_lambda
+from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group, write_benchmark_log_event
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
@@ -107,10 +108,10 @@ def create_benchmark_service_client(
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
-def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, org: Org) -> Benchmark:
+def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     return Benchmark(
-        org_id=org.id,
+        org_id=run_starter.org.id,
         name=request.benchmark_name,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
@@ -123,6 +124,8 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, org: Or
             lambda_function=request.lambda_function,
             dataset=request.dataset,
         ),
+        started_by_id=run_starter.access_key_id,
+        started_by_email=run_starter.email,
     )
 
 
@@ -1398,6 +1401,11 @@ def fetch_filtered_benchmark_rows(
 
     if request.status:
         query = query.where(Benchmark.status == request.status)
+
+    if request.started_by:
+        normalized_emails = [s.strip().lower() for s in request.started_by if s and s.strip()]
+        if normalized_emails:
+            query = query.where(col(Benchmark.started_by_email).in_(normalized_emails))
 
     if request.order_by == Order.DESC:
         query = query.order_by(desc(Benchmark.started_at))

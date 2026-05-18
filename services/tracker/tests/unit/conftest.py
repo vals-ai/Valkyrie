@@ -16,7 +16,7 @@ from benchmark_service.schemas import (
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
-from tracker.auth import get_current_org
+from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
@@ -98,6 +98,22 @@ def override_org() -> None:
     """Override get_current_org to return a test org."""
     test_org = Org(id=TEST_ORG_ID, name="default")
     app.dependency_overrides[get_current_org] = lambda: test_org
+
+
+@pytest.fixture(autouse=True)
+def override_starter() -> None:
+    """Override get_current_starter to return a test identity.
+
+    Tests that need a different identity (e.g. hosted-mode with custom claims) can
+    monkeypatch app.dependency_overrides[get_current_starter] inside the test body.
+    """
+    test_org = Org(id=TEST_ORG_ID, name="default")
+    app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+        org=test_org,
+        access_key_id=None,
+        email=None,
+        name=None,
+    )
 
 
 @pytest.fixture(autouse=True)

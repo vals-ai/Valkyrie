@@ -17,11 +17,13 @@ from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
 from tracker.auth import (
+    RequestIdentity,
     extract_api_key,
     find_org_by_tenant,
     forward_tracker_api_key,
     get_current_org,
-    resolve_descope_tenant,
+    get_current_starter,
+    resolve_descope_identity,
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.s3 import (
@@ -158,17 +160,18 @@ def init_org(
         raise HTTPException(status_code=405, detail="Init is only available in hosted mode")
 
     api_key = extract_api_key(request)
-    tenant_name = resolve_descope_tenant(api_key)
+    identity = resolve_descope_identity(api_key, include_user_profile=True)
 
-    stmt = pg_insert(Org).values(name=tenant_name).on_conflict_do_nothing(index_elements=["name"])
+    stmt = pg_insert(Org).values(name=identity.tenant_name).on_conflict_do_nothing(index_elements=["name"])
     result = session.exec(stmt)
     created = result.rowcount > 0
     session.commit()
 
-    org = find_org_by_tenant(tenant_name, session)
+    org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(status_code=500, detail="Internal error during org creation")
-    return {"org_name": org.name, "created": created}
+
+    return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
 @app.post("/start-benchmark")
@@ -176,7 +179,7 @@ async def start_benchmark(
     http_request: Request,
     request: StartBenchmarkRequest,
     session: Session = Depends(get_session),
-    org: Org = Depends(get_current_org),
+    run_starter: RequestIdentity = Depends(get_current_starter),
 ) -> StartBenchmarkResponse:
     """
     Start a benchmark run with the uploaded contract.
@@ -216,10 +219,16 @@ async def start_benchmark(
         ) from exc
 
     # Create benchmark row inside of database to mark start of the benchmark
-    benchmark_row = start_benchmark_request_to_benchmark(request, org)
+    benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))
+
+    if run_starter.access_key_id is not None and run_starter.email is None:
+        logger.warning(
+            "Access key %s resolved no user email; run attribution for this run will be empty",
+            run_starter.access_key_id,
+        )
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
@@ -574,6 +583,7 @@ async def retry_or_resume_benchmark(
 @app.get("/fetch-benchmarks")
 async def fetch_benchmarks(
     request: FetchBenchmarksRequest = Depends(),
+    started_by: list[str] | None = Query(default=None),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> FetchBenchmarksResponse:
@@ -586,6 +596,10 @@ async def fetch_benchmarks(
     Returns:
         list[FetchBenchmarksResponse]
     """
+
+    # list[str] fields are not bound from query params by FastAPI's Depends(PydanticModel)
+    # — declare started_by separately and merge into the request.
+    request = request.model_copy(update={"started_by": started_by})
 
     benchmark_rows, total_count = fetch_filtered_benchmark_rows(request, session, org)
 

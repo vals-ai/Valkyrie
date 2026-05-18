@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 
 from main import app
 from tests.conftest import TEST_ORG_ID
+from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -42,6 +43,7 @@ client = TestClient(app)
 
 class TestStopAndResume:
     _test_org = Org(id=TEST_ORG_ID, name="default")
+    _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     async def test_stop_and_resume(
         self,
@@ -76,7 +78,7 @@ class TestStopAndResume:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -297,7 +299,7 @@ class TestStopAndResume:
             task_ids=existing_task_ids,
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
         database_session.add(benchmark_row)
@@ -381,7 +383,7 @@ class TestStopAndResume:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -449,7 +451,7 @@ class TestStopAndResume:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
         database_session.add(benchmark_row)
         database_session.commit()
 

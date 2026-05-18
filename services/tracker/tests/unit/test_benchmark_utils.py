@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Sequence
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -8,11 +9,13 @@ from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 
-from tests.unit.test_fastapi_server import client
 from tests.conftest import TEST_ORG_ID
+from tests.unit.test_fastapi_server import client
+from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
+    BenchmarkArguments,
     BenchmarkStatus,
     EvaluationResult,
     Org,
@@ -20,11 +23,12 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
+    fetch_filtered_benchmark_rows,
     fetch_missing_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
@@ -33,6 +37,7 @@ from tracker.utils import (
 
 class TestBenchmarkUtils:
     _test_org = Org(id=TEST_ORG_ID, name="default")
+    _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
@@ -264,7 +269,7 @@ class TestBenchmarkUtils:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_starter)
 
         recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
         assert recreated_start_benchmark_request == original_start_benchmark_request
@@ -498,3 +503,156 @@ class TestBenchmarkUtils:
         set_benchmark_final_status(benchmark_row, database_session, self._test_org)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED
+
+
+def test_benchmark_persists_started_by_columns(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+):
+    example_benchmark_object.started_by_id = "K2abc"
+    example_benchmark_object.started_by_email = "alice@vals.ai"
+    database_session.add(example_benchmark_object)
+    database_session.commit()
+
+    refetched = database_session.get(Benchmark, example_benchmark_object.id)
+    assert refetched is not None
+    assert refetched.started_by_id == "K2abc"
+    assert refetched.started_by_email == "alice@vals.ai"
+
+
+def test_benchmark_started_by_columns_default_none(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+):
+    database_session.add(example_benchmark_object)
+    database_session.commit()
+
+    refetched = database_session.get(Benchmark, example_benchmark_object.id)
+    assert refetched is not None
+    assert refetched.started_by_id is None
+    assert refetched.started_by_email is None
+
+
+def _make_benchmark(
+    session: Session,
+    contract: AgentContractRequest,
+    *,
+    started_by_email: str | None,
+    name: str = "swebench",
+) -> Benchmark:
+    bench = Benchmark(
+        org_id=TEST_ORG_ID,
+        name=name,
+        arguments=BenchmarkArguments(contract=contract, concurrency=1),
+        started_by_email=started_by_email,
+        started_by_id="K-" + (started_by_email or "none"),
+    )
+    session.add(bench)
+    session.commit()
+    return bench
+
+
+def test_fetch_filtered_started_by_single(database_session: Session, contract: AgentContractRequest):
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email=None)
+
+    rows, total = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
+        database_session,
+        org,
+    )
+    assert total == 1
+    assert [r.started_by_email for r in rows] == ["alice@vals.ai"]
+
+
+def test_fetch_filtered_started_by_multiple(database_session: Session, contract: AgentContractRequest):
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email="carol@vals.ai")
+
+    rows, total = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["alice@vals.ai", "bob@vals.ai"], limit=10),
+        database_session,
+        org,
+    )
+    assert total == 2
+    assert sorted(r.started_by_email for r in rows) == ["alice@vals.ai", "bob@vals.ai"]
+
+
+def test_fetch_filtered_started_by_case_insensitive(database_session: Session, contract: AgentContractRequest):
+    """Uppercase input matches the lower-cased rows in the DB."""
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+    rows, total = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["ALICE@VALS.AI"], limit=10),
+        database_session,
+        org,
+    )
+    assert total == 1
+    assert rows[0].started_by_email == "alice@vals.ai"
+
+
+def test_fetch_filtered_started_by_none_skips_filter(database_session: Session, contract: AgentContractRequest):
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email=None)
+
+    rows, total = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=None, limit=10),
+        database_session,
+        org,
+    )
+    assert total == 2
+
+
+def test_fetch_filtered_started_by_strips_whitespace(database_session: Session, contract: AgentContractRequest):
+    """Trailing whitespace on a filter email matches the clean DB row."""
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+    rows, total = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["  alice@vals.ai  "], limit=10),
+        database_session,
+        org,
+    )
+    assert total == 1
+    assert rows[0].started_by_email == "alice@vals.ai"
+
+
+def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: Session, contract: AgentContractRequest):
+    """Filter applies on top of scoped_select(Benchmark, org) — cross-org rows must not leak."""
+
+    other_org = Org(id=uuid4(), name="other-tenant")
+    database_session.add(other_org)
+    database_session.commit()
+
+    other_org_bench = Benchmark(
+        org_id=other_org.id,
+        name="swebench",
+        arguments=BenchmarkArguments(contract=contract, concurrency=1),
+        started_by_email="alice@vals.ai",
+        started_by_id="K-other",
+    )
+    database_session.add(other_org_bench)
+    database_session.commit()
+
+    default_org = database_session.get(Org, TEST_ORG_ID)
+    assert default_org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+    rows, total = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
+        database_session,
+        default_org,
+    )
+    assert total == 1
+    assert rows[0].org_id == TEST_ORG_ID
