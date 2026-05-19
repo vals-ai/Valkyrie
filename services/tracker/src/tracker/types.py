@@ -15,6 +15,7 @@ from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     FinalEvaluation,
     TaskStatus,
 )
@@ -26,6 +27,8 @@ class BenchmarkDetails(BaseModel):
     total_tasks: int
     finished_tasks: int
     task_breakdown: dict[TaskStatus, int]
+    docent_reading_status: DocentReadingStatus
+    docent_reading_url: str | None = None
 
 
 class AWSCredentials(BaseModel, frozen=True):
@@ -186,3 +189,11 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
     started_by_email: str | None
+
+
+class AnalyzeBenchmarkRequest(BaseModel):
+    no_cache: bool = False
+    # CLI resolves the analyzer Lambda from the agent's current pushed contract
+    # (handles YAML and Python contracts) and passes it here so the tracker
+    # doesn't have to parse arbitrary contract code.
+    lambda_function: str | None = None

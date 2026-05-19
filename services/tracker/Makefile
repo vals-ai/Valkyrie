@@ -50,7 +50,7 @@ clean:
 	@echo "Stopping services and removing images..."
 	@$(COMPOSE) down --rmi local
 logs:
-	@$(COMPOSE) logs -f tracker
+	@$(COMPOSE) logs -f tracker worker
 tracker-service: build run logs
 
 # --- Tests ---
