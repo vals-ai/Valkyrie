@@ -1,11 +1,12 @@
 from asyncio import Semaphore
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import Resources, RetrieveTaskResponse
+from benchmark_service import ImageSource, Resources
+from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
@@ -100,10 +101,10 @@ class TestPtyRetry:
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             return RetrieveTaskResponse(
-                docker_image="test-image:latest",
+                source=ImageSource(image="test-image:latest"),
                 problem_path="/tmp/problem.txt",
                 cwd="/testbed",
-                resources=Resources(vcpu=2, memory=4, disk=5),
+                resources=Resources(cpu=2, memory_gb=4, disk_gb=5),
             )
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -111,6 +112,7 @@ class TestPtyRetry:
 
         is_run_agent_target = fail_target == "tracker.utils.run_agent"
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
         if not is_run_agent_target:
@@ -169,10 +171,10 @@ class TestPtyRetry:
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             return RetrieveTaskResponse(
-                docker_image="test-image:latest",
+                source=ImageSource(image="test-image:latest"),
                 problem_path="/tmp/problem.txt",
                 cwd="/testbed",
-                resources=Resources(vcpu=2, memory=4, disk=5),
+                resources=Resources(cpu=2, memory_gb=4, disk_gb=5),
             )
 
         async def _mock_upload_agent_artifacts(*_args: Any, **_kwargs: Any) -> None:
@@ -215,6 +217,7 @@ class TestPtyRetry:
             return _MockSpan(record)
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.buffer_logs", Mock())
         monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _mock_upload_agent_artifacts)
         monkeypatch.setattr("tracker.utils.run_agent", _mock_run_agent)

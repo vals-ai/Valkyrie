@@ -1,6 +1,5 @@
 """Sandbox management utilities for the tracker service."""
 
-import base64
 import shlex
 import time
 import uuid
@@ -13,15 +12,22 @@ from typing import Any, AsyncGenerator
 
 import logfire
 import sentry_sdk
-from benchmark_service.schemas import Resources as TrackerResources
+from benchmark_service import (
+    ExecResult,
+    ImageSource,
+    Resources as TrackerResources,
+    Sandbox,
+    SandboxCreateRequest,
+    SandboxNotFoundError,
+    SandboxProvider,
+    SandboxSource,
+    SnapshotSource,
+)
+from benchmark_service.sandbox import DaytonaSandbox
+from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 from daytona import (
-    AsyncDaytona,
     AsyncSandbox,
-    CreateSandboxFromImageParams,
-    CreateSandboxFromSnapshotParams,
     DaytonaNotFoundError,
-    ExecuteResponse,
-    Resources,
     SandboxState,
 )
 from daytona.common.errors import DaytonaConnectionError, DaytonaError
@@ -64,8 +70,6 @@ logger = get_logger(__name__)
 
 
 bundle_path = PurePosixPath("/bundle")
-SNAPSHOT_IMAGE_PREFIX = "snapshot:"
-_SANDBOX_AUTOSTOP_INTERVAL_MINUTES = 10 * 60
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -74,23 +78,28 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
 
 
 @retry(
-    retry=retry_if_exception_type(DaytonaError),
+    retry=retry_if_exception_type((DaytonaError, ProviderSandboxError)),
     stop=stop_after_attempt(3),
     wait=wait_daytona_rate_limit(non_rate_limit_wait=wait_fixed(2)),
     before_sleep=daytona_retry_callback("valkyrie.sandbox.delete", op="sandbox.delete"),
     reraise=True,
 )
-async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
+async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
     """Delete sandbox if it is not already destroyed or being destroyed"""
     try:
-        await sandbox.refresh_data()
+        daytona_sandbox = _daytona_inner(sandbox)
+        if daytona_sandbox is not None:
+            await daytona_sandbox.refresh_data()
 
-        if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
+        if daytona_sandbox is None or daytona_sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
             # Set auto-stop interval in-case we fail to delete the sandbox
-            await sandbox.set_autostop_interval(interval=1)
-            await daytona.delete(sandbox)
+            if daytona_sandbox is not None:
+                await daytona_sandbox.set_autostop_interval(interval=1)
+            await provider.delete_sandbox(sandbox.id)
     except DaytonaNotFoundError:
         # If we error here that means the sandbox has just been deleted before we could refresh the state
+        logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
+    except SandboxNotFoundError:
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
     except DaytonaError as e:
         tag_daytona_error(e, op="sandbox.delete")
@@ -99,8 +108,17 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 
 
-def _metric_image_name(image: str) -> str:
-    if image.startswith(SNAPSHOT_IMAGE_PREFIX):
+def _source_name(source: SandboxSource) -> str:
+    match source:
+        case ImageSource(image=image):
+            return image
+        case SnapshotSource():
+            return "snapshot"
+
+
+def _metric_source_name(source: SandboxSource) -> str:
+    image = _source_name(source)
+    if image == "snapshot":
         return "snapshot"
 
     without_digest = image.split("@", maxsplit=1)[0]
@@ -114,18 +132,24 @@ def _metric_image_name(image: str) -> str:
 
 def _set_sandbox_create_span_attributes(
     sandbox_name: str,
-    image: str,
+    source: SandboxSource,
     resources: TrackerResources,
 ) -> None:
     span = trace.get_current_span()
     span.set_attribute("valkyrie.sandbox_name", sandbox_name)
-    span.set_attribute("valkyrie.image", image)
-    span.set_attribute("valkyrie.resources.vcpu", resources.vcpu)
-    span.set_attribute("valkyrie.resources.memory", resources.memory)
-    span.set_attribute("valkyrie.resources.disk", resources.disk)
+    span.set_attribute("valkyrie.image", _source_name(source))
+    span.set_attribute("valkyrie.resources.vcpu", resources.cpu)
+    span.set_attribute("valkyrie.resources.memory", resources.memory_gb)
+    span.set_attribute("valkyrie.resources.disk", resources.disk_gb)
 
 
-def _set_sandbox_span_attributes(sandbox: AsyncSandbox) -> None:
+def _daytona_inner(sandbox: Sandbox) -> AsyncSandbox | None:
+    if isinstance(sandbox, DaytonaSandbox):
+        return sandbox.inner
+    return None
+
+
+def _set_sandbox_span_attributes(sandbox: Sandbox | AsyncSandbox) -> None:
     span = trace.get_current_span()
     span.set_attribute("valkyrie.sandbox_id", sandbox.id)
     span.set_attribute("valkyrie.sandbox_name", sandbox.name)
@@ -143,91 +167,66 @@ def _set_sandbox_span_attributes(sandbox: AsyncSandbox) -> None:
 )
 @logfire.instrument("sandbox.create", extract_args=False)
 async def _create_sandbox(
-    daytona: AsyncDaytona,
+    provider: SandboxProvider,
     sandbox_name: str,
-    image: str,
+    source: SandboxSource,
     resources: TrackerResources,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
-) -> AsyncSandbox:
+) -> Sandbox:
     """
     Creates a sandbox and takes into account timeouts and retries.
 
     This retry only works in the following case:
     - Client times out while sandbox is being created
     """
-    _set_sandbox_create_span_attributes(sandbox_name, image, resources)
+    _set_sandbox_create_span_attributes(sandbox_name, source, resources)
 
     # If the container already exists and is healthy we reuse it
     try:
-        sandbox = await daytona.get(sandbox_name)
+        sandbox = await provider.get_sandbox(sandbox_name)
+        daytona_sandbox = _daytona_inner(sandbox)
 
         # Restart the sandbox creation process if it cannot be recovered
-        if sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED):
-            await sandbox.wait_for_sandbox_start(timeout=0)
+        if daytona_sandbox is None:
             return sandbox
-    except DaytonaNotFoundError:
+        if daytona_sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED):
+            await daytona_sandbox.wait_for_sandbox_start(timeout=0)
+            return sandbox
+    except (SandboxNotFoundError, DaytonaNotFoundError):
         pass
     except DaytonaError as e:
         # Transient error (server disconnected, network blip, etc.) — fall through to create.
         logger.warning("Failed to get sandbox %s, will create instead: %s", sandbox_name, e)
 
-    if image.startswith(SNAPSHOT_IMAGE_PREFIX):
-        snapshot_name = image[len(SNAPSHOT_IMAGE_PREFIX) :].strip()
-        if not snapshot_name:
-            raise InvalidSandboxConfigurationError("Snapshot-based sandbox requested without a snapshot name")
-
-        return await daytona.create(
-            CreateSandboxFromSnapshotParams(
-                auto_stop_interval=_SANDBOX_AUTOSTOP_INTERVAL_MINUTES,
-                auto_delete_interval=0,
-                name=sandbox_name,
-                labels=labels,
-                snapshot=snapshot_name,
-                language="python",
-                network_block_all=False,
-                env_vars=env_vars,
-            ),
-            timeout=360,
-        )
-
-    # Create a new sandbox from scratch.
-    return await daytona.create(
-        CreateSandboxFromImageParams(
-            auto_stop_interval=_SANDBOX_AUTOSTOP_INTERVAL_MINUTES,
-            auto_delete_interval=0,
+    return await provider.create_sandbox(
+        SandboxCreateRequest(
+            source=source,
+            resources=resources,
             name=sandbox_name,
-            labels=labels,
-            image=image,
-            network_block_all=False,
-            resources=Resources(
-                cpu=resources.vcpu,
-                memory=resources.memory,
-                disk=resources.disk,
-            ),
-            env_vars=env_vars,
-        ),
-        timeout=360,
+            labels=labels or {},
+            env_vars=env_vars or {},
+        )
     )
 
 
 @asynccontextmanager
 async def create_sandbox(
-    daytona: AsyncDaytona,
+    provider: SandboxProvider,
     sandbox_name: str,
-    image: str,
+    source: SandboxSource,
     resources: TrackerResources,
     creation_semaphore: Semaphore,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
-) -> AsyncGenerator[AsyncSandbox, Any]:
+) -> AsyncGenerator[Sandbox, Any]:
     """
     Yeild a sandbox to be used within a context manager.
 
     Args:
-        daytona: The daytona client
+        provider: The sandbox provider
         sandbox_name: The name of the sandbox
-        image: The image to use for the sandbox
+        source: The sandbox source image or snapshot
         resources: The resources to use for the sandbox
         labels: The labels to use for the sandbox
         env_vars: The environment variables to use for the sandbox
@@ -236,14 +235,15 @@ async def create_sandbox(
     Returns:
         A context manager that yields the sandbox
     """
-    logger.info(f"Creating sandbox {sandbox_name} with image {image}")
+    source_name = _source_name(source)
+    logger.info(f"Creating sandbox {sandbox_name} with source {source_name}")
 
     # If we run too many at once it can cause hanging issues
     # NOTE does not block how many context managers we can have open, just how many sandboxes we can create at once
     try:
         async with creation_semaphore:
             start = time.monotonic()
-            sandbox = await _create_sandbox(daytona, sandbox_name, image, resources, labels, env_vars)
+            sandbox = await _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
         if isinstance(e, DaytonaError):
@@ -253,9 +253,9 @@ async def create_sandbox(
     distribution(
         "valkyrie.sandbox.create.duration",
         time.monotonic() - start,
-        tags={"image": _metric_image_name(image)},
+        tags={"image": _metric_source_name(source)},
     )
-    set_sandbox_context(sandbox, image=image)
+    set_sandbox_context(sandbox, image=source_name)
 
     try:
         yield sandbox
@@ -263,7 +263,7 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        await delete_sandbox(sandbox, daytona)
+        await delete_sandbox(sandbox, provider)
 
 
 @retry(
@@ -273,7 +273,7 @@ async def create_sandbox(
     before_sleep=retry_callback("valkyrie.sandbox.upload"),
 )
 async def upload_agent_artifacts(
-    sandbox: AsyncSandbox,
+    sandbox: Sandbox,
     contract: AgentContractRequest,
     benchmark_id: str,
     aws: AWSCredentials,
@@ -339,7 +339,7 @@ async def upload_agent_artifacts(
 
     error_message: str = (
         f"Failed to upload contract {contract.name} to sandbox {sandbox.name}: "
-        f"Command failed with exit code {result.exit_code}: {result.result}"
+        f"Command failed with exit code {result.exit_code}: {result.stdout}"
     )
     if result.exit_code == 35:
         raise SSLConnectionError(error_message)
@@ -355,7 +355,7 @@ async def upload_agent_artifacts(
     before_sleep=retry_callback("valkyrie.sandbox.deps"),
 )
 async def install_agent_dependencies(
-    sandbox: AsyncSandbox,
+    sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
 ) -> None:
@@ -478,7 +478,7 @@ async def _pty_handshake_slot(operation: str, session_id: str) -> AsyncGenerator
     reraise=True,
 )
 @logfire.instrument("sandbox.exec", extract_args=False)
-async def _exec(sandbox: AsyncSandbox, command: str) -> ExecuteResponse:
+async def _exec(sandbox: Sandbox | AsyncSandbox, command: str) -> ExecResult:
     """
     Execute a command inside the sandbox with retries for transient network failures.
 
@@ -486,8 +486,20 @@ async def _exec(sandbox: AsyncSandbox, command: str) -> ExecuteResponse:
         DaytonaError: If all retry attempts are exhausted
     """
     _set_sandbox_span_attributes(sandbox)
+    if not isinstance(sandbox, AsyncSandbox):
+        daytona_sandbox = _daytona_inner(sandbox)
+        if daytona_sandbox is None:
+            try:
+                return await sandbox.exec(command)
+            except ProviderSandboxError as e:
+                raise SandboxError(str(e)) from e
+    else:
+        daytona_sandbox = sandbox
+
     try:
-        return await sandbox.process.exec(command)
+        result = await daytona_sandbox.process.exec(command)
+        assert result.exit_code is not None
+        return ExecResult(exit_code=result.exit_code, stdout=result.result or "")
     except DaytonaError as e:
         tag_daytona_error(e, op="sandbox.exec")
         raise
@@ -695,11 +707,11 @@ async def _read_exit_code(sandbox: AsyncSandbox, status_path: str) -> int:
 
         # If file does not exist or we have no content the command has not produced an exit code
         # That would suggest the sandbox was killed or something interrupted the program
-        if result.exit_code != 0 or not result.result.strip():
+        if result.exit_code != 0 or not result.stdout.strip():
             raise SandboxError(f"Failed to read exit status from {status_path}")
 
         # Should always be a integer
-        return int(result.result.strip())
+        return int(result.stdout.strip())
 
     except SandboxError:
         raise
@@ -734,7 +746,7 @@ async def _kill_pty_session(sandbox: AsyncSandbox, session_id: str | None) -> No
 
 
 @logfire.instrument("pty.stream_command_output", extract_args=False)
-async def stream_command_output(
+async def _stream_daytona_command_output(
     sandbox: AsyncSandbox,
     command: str,
     on_output: Callable[[str], None],
@@ -800,7 +812,7 @@ async def stream_command_output(
         # Compute process duration
         start_ns_result = await _exec(sandbox, f"cat {start_ns_path}")
         end_ns_result = await _exec(sandbox, f"cat {end_ns_path}")
-        duration = (int(end_ns_result.result.strip()) - int(start_ns_result.result.strip())) / 1e9
+        duration = (int(end_ns_result.stdout.strip()) - int(start_ns_result.stdout.strip())) / 1e9
 
         # Read the exit code of the process running the agent
         exit_code = await _read_exit_code(sandbox, status_path)
@@ -840,12 +852,51 @@ async def stream_command_output(
             pass
 
 
+async def _stream_generic_command_output(
+    sandbox: Sandbox,
+    command: str,
+    on_output: Callable[[str], None],
+) -> tuple[AgentCausedExitReason | None, float]:
+    output: deque[str] = deque(maxlen=50)
+    start = time.perf_counter()
+
+    def collect(data: str) -> None:
+        on_output(data)
+        output.append(data)
+
+    result = await sandbox.exec(command, on_output=collect)
+    duration = time.perf_counter() - start
+
+    if result.exit_code == _SUCCESS_EXIT_CODE:
+        return None, duration
+    if result.exit_code == _TIMEOUT_EXIT_CODE:
+        return AgentCausedExitReason.TIMEOUT, duration
+    if result.exit_code == _OS_KILL_EXIT_CODE:
+        return AgentCausedExitReason.OS_KILLED, duration
+
+    tail = "".join(output).strip().splitlines()
+    recent = "\n".join(tail[-10:]) if tail else "(no output)"
+    sentry_sdk.set_tag("agent_exit_code", str(result.exit_code))
+    raise AgentRunFailedError(f"Failed to run command {command}, exit code: {result.exit_code}\nLast output:\n{recent}")
+
+
+async def stream_command_output(
+    sandbox: Sandbox,
+    command: str,
+    on_output: Callable[[str], None],
+) -> tuple[AgentCausedExitReason | None, float]:
+    daytona_sandbox = _daytona_inner(sandbox)
+    if daytona_sandbox is not None:
+        return await _stream_daytona_command_output(daytona_sandbox, command, on_output)
+    return await _stream_generic_command_output(sandbox, command, on_output)
+
+
 @logfire.instrument(
     "agent_output.archive_and_upload",
     extract_args=("output_path", "agent_output_s3_key", "benchmark_id", "task_id"),
 )
 async def archive_and_upload_output(
-    sandbox: AsyncSandbox,
+    sandbox: Sandbox,
     output_path: str,
     agent_output_s3_key: str,
     aws: AWSCredentials,
@@ -863,11 +914,7 @@ async def archive_and_upload_output(
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
-        b64_result = await _exec(sandbox, f"base64 {shlex.quote(archive_path)}")
-        if b64_result.exit_code != 0:
-            raise SandboxError(f"Failed to read archive from {output_path}")
-
-        file_content = base64.b64decode(b64_result.result)
+        file_content = await sandbox.download_file(archive_path)
         await upload_to_s3(file_content, agent_output_s3_key, aws, s3_bucket)
 
         logger.info(
@@ -892,7 +939,7 @@ async def archive_and_upload_output(
 
 
 async def run_agent(
-    sandbox: AsyncSandbox,
+    sandbox: Sandbox,
     contract: AgentContractRequest,
     problem_path: str,
     task_id: str,

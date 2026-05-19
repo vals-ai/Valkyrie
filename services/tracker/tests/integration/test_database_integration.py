@@ -6,9 +6,9 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from benchmark_service import SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
-from daytona import AsyncDaytona
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, inspect, select
 
@@ -22,7 +22,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.sandbox import TrackerResources, create_sandbox
+from tracker.sandbox import create_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -214,21 +214,18 @@ class TestDatabaseIntegration:
         self,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
-        daytona_client: AsyncDaytona,
+        sandbox_provider: SandboxProvider,
         task_row: Task,
         task_data: RetrieveTaskResponse,
-        test_resources: TrackerResources,
         creation_semaphore: Semaphore,
     ) -> dict[str, str]:
-        docker_image: str = task_data.docker_image
-
         # Change the status of the task to evaluating before we start evaluation
         task_row.status = TaskStatus.EVALUATING
         database_session.add(task_row)
         database_session.flush()
 
         async with create_sandbox(
-            daytona_client, task_row.task_id, docker_image, test_resources, creation_semaphore
+            sandbox_provider, task_row.task_id, task_data.source, task_data.resources, creation_semaphore
         ) as sandbox:
             response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
             assert response.status == "ok"
@@ -242,9 +239,8 @@ class TestDatabaseIntegration:
         self,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
-        daytona_client: AsyncDaytona,
+        sandbox_provider: SandboxProvider,
         example_benchmark_object: Benchmark,
-        test_resources: TrackerResources,
         creation_semaphore: Semaphore,
     ):
         """
@@ -299,10 +295,9 @@ class TestDatabaseIntegration:
                         evaluation_result = await self._evaluate_instance(
                             database_session,
                             benchmark_service,
-                            daytona_client,
+                            sandbox_provider,
                             task_row,
                             task_data,
-                            test_resources,
                             creation_semaphore,
                         )
                         evaluation_result_row = await self._create_evaluation_result(

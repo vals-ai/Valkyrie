@@ -6,17 +6,17 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from daytona import ExecuteResponse, SandboxState
+from benchmark_service import ExecResult, ImageSource, Resources, SnapshotSource
+from daytona import SandboxState
 from daytona.common.errors import DaytonaConnectionError, DaytonaError, DaytonaNotFoundError, DaytonaRateLimitError
 from tenacity import stop_after_attempt, wait_none
 
 import tracker.daytona_retry as daytona_retry_module
 import tracker.observability.retry as retry_module
-import tracker.utils as utils_module
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import AgentRunFailedError, SSLConnectionError, SandboxError, SandboxSetupError
-from tracker.sandbox import create_sandbox, run_agent, stream_command_output, upload_agent_artifacts
+from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import AWSCredentials
 
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
@@ -28,7 +28,6 @@ _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencie
 _reconnect_and_wait_pty = getattr(sandbox_module, "_reconnect_and_wait_pty")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 _wait_for_pty = getattr(sandbox_module, "_wait_for_pty")
-_fetch_sandboxes = getattr(utils_module, "fetch_sandboxes")
 
 
 def _ignore_pty_data(_data: bytes) -> None:
@@ -238,9 +237,9 @@ class TestAgentOutputTelemetry:
         )
         archive_calls: list[str] = []
 
-        async def fake_exec(_sandbox: Any, command: str) -> ExecuteResponse:
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command.startswith("mkdir -p") or command.startswith("test -e"):
-                return ExecuteResponse(exit_code=0, result="")
+                return ExecResult(exit_code=0)
             raise AssertionError(f"unexpected command: {command}")
 
         async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
@@ -296,8 +295,8 @@ class TestAgentOutputTelemetry:
             "_exec",
             AsyncMock(
                 side_effect=[
-                    ExecuteResponse(exit_code=1, result=""),
-                    ExecuteResponse(exit_code=0, result=""),
+                    ExecResult(exit_code=1),
+                    ExecResult(exit_code=0),
                 ]
             ),
         )
@@ -334,7 +333,7 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(
             sandbox_module,
             "_exec",
-            AsyncMock(return_value=ExecuteResponse(exit_code=0, result="")),
+            AsyncMock(return_value=ExecResult(exit_code=0)),
         )
         reconnect = AsyncMock()
         monkeypatch.setattr(sandbox_module, "_reconnect_and_wait_pty", reconnect)
@@ -453,20 +452,6 @@ class TestAgentOutputTelemetry:
         wait_strategy = _reconnect_and_wait_pty.retry.wait
 
         assert wait_strategy(retry_state) == 8
-
-    async def test_fetch_sandboxes_does_not_retry_non_rate_limit_daytona_errors(self) -> None:
-        benchmark = Mock()
-        benchmark.name = "benchmark"
-        benchmark.id = "benchmark-id"
-        daytona_client = AsyncMock()
-        daytona_client.list = AsyncMock(side_effect=DaytonaError("transient"))
-
-        with pytest.raises(DaytonaError):
-            await _fetch_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
-                benchmark, daytona_client, 1
-            )
-
-        assert daytona_client.list.await_count == 1
 
     def test_daytona_retry_callback_emits_rate_limit_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []
@@ -661,14 +646,15 @@ class TestAgentOutputTelemetry:
         assert distributions == []
         assert log_records == []
 
-    def test_metric_image_name_drops_high_cardinality_tag_and_digest(self) -> None:
-        metric_image_name = getattr(sandbox_module, "_metric_image_name")
+    def test_metric_source_name_drops_high_cardinality_tag_and_digest(self) -> None:
+        metric_source_name = getattr(sandbox_module, "_metric_source_name")
 
-        assert metric_image_name("ghcr.io/vals/swebench:latest") == "ghcr.io/vals/swebench"
+        assert metric_source_name(ImageSource(image="ghcr.io/vals/swebench:latest")) == "ghcr.io/vals/swebench"
         assert (
-            metric_image_name("registry.local:5000/vals/swebench@sha256:abcdef") == "registry.local:5000/vals/swebench"
+            metric_source_name(ImageSource(image="registry.local:5000/vals/swebench@sha256:abcdef"))
+            == "registry.local:5000/vals/swebench"
         )
-        assert metric_image_name("snapshot:base-python") == "snapshot"
+        assert metric_source_name(SnapshotSource(snapshot="base-python")) == "snapshot"
 
     def test_sandbox_span_helpers_set_safe_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         span_attributes: dict[str, str | int] = {}
@@ -681,9 +667,9 @@ class TestAgentOutputTelemetry:
 
         create_span_attrs = getattr(sandbox_module, "_set_sandbox_create_span_attributes")
         sandbox_span_attrs = getattr(sandbox_module, "_set_sandbox_span_attributes")
-        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
 
-        create_span_attrs("task-alias", "ghcr.io/vals/swebench:latest", resources)
+        create_span_attrs("task-alias", ImageSource(image="ghcr.io/vals/swebench:latest"), resources)
 
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
@@ -708,21 +694,21 @@ class TestAgentOutputTelemetry:
     ) -> None:
         span_calls: list[tuple[str, str, int]] = []
 
-        def fake_create_span_attrs(sandbox_name: str, image: str, resources: Any) -> None:
-            span_calls.append((sandbox_name, image, resources.vcpu))
+        def fake_create_span_attrs(sandbox_name: str, source: Any, resources: Any) -> None:
+            span_calls.append((sandbox_name, source.image, resources.cpu))
 
         monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
 
         mock_sandbox = AsyncMock()
         mock_sandbox.wait_for_sandbox_start = AsyncMock()
-        daytona = AsyncMock()
-        daytona.get = AsyncMock(return_value=mock_sandbox)
+        provider = AsyncMock()
+        provider.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
-        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
         sandbox = await _create_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(
-            daytona,
+            provider,
             "task-alias",
-            "ghcr.io/vals/swebench:latest",
+            ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources,
         )
 
@@ -739,8 +725,11 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
 
         mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
-        mock_sandbox.refresh_data = AsyncMock(side_effect=daytona_error)
+        mock_inner = AsyncMock()
+        mock_inner.refresh_data = AsyncMock(side_effect=daytona_error)
+        monkeypatch.setattr(sandbox_module, "_daytona_inner", lambda _sandbox: mock_inner)
 
         with pytest.raises(DaytonaError):
             await _delete_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(mock_sandbox, AsyncMock())
@@ -758,7 +747,9 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "_set_sandbox_span_attributes", Mock(), raising=False)
 
         mock_sandbox = AsyncMock()
-        mock_sandbox.process.exec = AsyncMock(side_effect=daytona_error)
+        mock_inner = AsyncMock()
+        mock_inner.process.exec = AsyncMock(side_effect=daytona_error)
+        monkeypatch.setattr(sandbox_module, "_daytona_inner", lambda _sandbox: mock_inner)
 
         with pytest.raises(DaytonaError):
             await _exec.retry_with(stop=stop_after_attempt(1), wait=wait_none())(mock_sandbox, "echo hi")
@@ -795,11 +786,11 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "set_sandbox_context", fake_set_sandbox_context, raising=False)
         monkeypatch.setattr(sandbox_module.time, "monotonic", fake_monotonic)
 
-        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
         async with create_sandbox(
-            daytona=AsyncMock(),
+            provider=AsyncMock(),
             sandbox_name="task-alias",
-            image="ghcr.io/vals/swebench:latest",
+            source=ImageSource(image="ghcr.io/vals/swebench:latest"),
             resources=resources,
             creation_semaphore=asyncio.Semaphore(1),
         ) as sandbox:
@@ -832,12 +823,12 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
         monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
 
-        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
         with pytest.raises(DaytonaError):
             async with create_sandbox(
-                daytona=AsyncMock(),
+                provider=AsyncMock(),
                 sandbox_name="task-alias",
-                image="ghcr.io/vals/swebench:latest",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
                 resources=resources,
                 creation_semaphore=asyncio.Semaphore(1),
             ):
@@ -863,12 +854,12 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
         monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
 
-        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
         with pytest.raises(ValueError, match="bad config"):
             async with create_sandbox(
-                daytona=AsyncMock(),
+                provider=AsyncMock(),
                 sandbox_name="task-alias",
-                image="ghcr.io/vals/swebench:latest",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
                 resources=resources,
                 creation_semaphore=asyncio.Semaphore(1),
             ):
@@ -1163,7 +1154,7 @@ class TestUploadAgentArtifacts:
         monkeypatch.setattr(
             sandbox_module,
             "_exec",
-            AsyncMock(return_value=ExecuteResponse(exit_code=exit_code, result="error output")),
+            AsyncMock(return_value=ExecResult(exit_code=exit_code, stdout="error output")),
         )
         monkeypatch.setattr(
             "tracker.sandbox.create_presigned_url",
@@ -1210,7 +1201,7 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr(
             sandbox_module,
             "_exec",
-            AsyncMock(return_value=ExecuteResponse(exit_code=0, result="1000000000")),
+            AsyncMock(return_value=ExecResult(exit_code=0, stdout="1000000000")),
         )
 
         tagged: dict[str, str] = {}
@@ -1221,7 +1212,7 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr(sandbox_module.sentry_sdk, "set_tag", fake_set_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module._stream_daytona_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
 
         assert isinstance(exc_info.value, SandboxError)
         assert not isinstance(exc_info.value, SandboxSetupError)

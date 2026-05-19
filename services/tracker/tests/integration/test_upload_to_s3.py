@@ -1,11 +1,11 @@
 import asyncio
 
-from daytona import AsyncDaytona
+from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
 from tracker.database.models import Benchmark
 from tracker.aws.s3 import delete_from_s3, download_from_s3, get_agent_result_s3_key
-from tracker.sandbox import TrackerResources, archive_and_upload_output, create_sandbox
+from tracker.sandbox import archive_and_upload_output, create_sandbox
 from tracker.types import HarnessConfig
 
 
@@ -15,8 +15,8 @@ class TestUploadToS3:
         example_benchmark_object: Benchmark,
         test_image: str,
         random_sandbox_name: str,
-        test_resources: TrackerResources,
-        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        sandbox_provider: SandboxProvider,
         harness_config: HarnessConfig,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
@@ -27,13 +27,13 @@ class TestUploadToS3:
 
         try:
             async with create_sandbox(
-                daytona=daytona_client,
+                provider=sandbox_provider,
                 sandbox_name=random_sandbox_name,
-                image=test_image,
+                source=ImageSource(image=test_image),
                 resources=test_resources,
                 creation_semaphore=creation_semaphore,
             ) as sandbox:
-                await sandbox.process.exec(f"echo '{file_content}' > {file_path}")
+                await sandbox.exec(f"echo '{file_content}' > {file_path}")
 
                 await archive_and_upload_output(
                     sandbox, file_path, s3_key, harness_config.aws, harness_config.s3_bucket
@@ -50,11 +50,10 @@ class TestUploadToS3:
         self,
         example_benchmark_object: Benchmark,
         harness_config: HarnessConfig,
-        daytona_secret_name: str,
         test_image: str,
         random_sandbox_name: str,
-        test_resources: TrackerResources,
-        daytona_client: AsyncDaytona,
+        test_resources: Resources,
+        sandbox_provider: SandboxProvider,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """Test creating a tar.gz from a directory in sandbox and uploading to S3."""
@@ -63,17 +62,17 @@ class TestUploadToS3:
 
         try:
             async with create_sandbox(
-                daytona=daytona_client,
+                provider=sandbox_provider,
                 sandbox_name=random_sandbox_name,
-                image=test_image,
+                source=ImageSource(image=test_image),
                 resources=test_resources,
                 creation_semaphore=creation_semaphore,
             ) as sandbox:
-                await sandbox.process.exec(f"mkdir -p {dir_path}")
-                await sandbox.process.exec(f"echo 'file1 content' > {dir_path}/file1.txt")
-                await sandbox.process.exec(f"echo 'file2 content' > {dir_path}/file2.txt")
-                await sandbox.process.exec(f"mkdir -p {dir_path}/nested")
-                await sandbox.process.exec(f"echo 'nested content' > {dir_path}/nested/file3.txt")
+                await sandbox.exec(f"mkdir -p {dir_path}")
+                await sandbox.exec(f"echo 'file1 content' > {dir_path}/file1.txt")
+                await sandbox.exec(f"echo 'file2 content' > {dir_path}/file2.txt")
+                await sandbox.exec(f"mkdir -p {dir_path}/nested")
+                await sandbox.exec(f"echo 'nested content' > {dir_path}/nested/file3.txt")
 
                 await archive_and_upload_output(sandbox, dir_path, s3_key, harness_config.aws, harness_config.s3_bucket)
 
