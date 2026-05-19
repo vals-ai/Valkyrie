@@ -17,8 +17,9 @@ from uuid import UUID
 import click
 import yaml
 from httpx import Response
-from tracker.database.models import BenchmarkStatus, TaskStatus
+from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import (
+    BenchmarkDetails,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
@@ -253,11 +254,30 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(f"│ {'Run ID:':<12} {benchmark_response.benchmark_id}")
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
     click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
+    analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
+    if analysis_line is not None:
+        click.echo(f"│ {'Analysis:':<12} {analysis_line}")
     click.echo("├" + "─" * 79)
     click.echo(f"│ {progress_line}")
     if breakdown_text:
         click.echo(f"│ {breakdown_text}")
     click.echo("└" + "─" * 79)
+
+
+def _format_docent_analysis(details: BenchmarkDetails, run_id: UUID) -> str | None:
+    """Render the docent analysis row for `valk run fetch`.
+
+    Returns None for IDLE (no analysis run yet) so the caller can skip the row entirely.
+    """
+
+    status = details.docent_reading_status
+    if status == DocentReadingStatus.DONE and details.docent_reading_url:
+        return details.docent_reading_url
+    if status == DocentReadingStatus.RUNNING:
+        return "running..."
+    if status == DocentReadingStatus.ERROR:
+        return f"failed (re-run with `valk run analyze {run_id} --no-cache`)"
+    return None
 
 
 COLUMN_WIDTH = 14

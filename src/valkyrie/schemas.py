@@ -133,6 +133,17 @@ class AgentContract(BaseModel):
     ```
     """
 
+    ingest_lambda: str | None = None
+    """
+    Name of the AWS Lambda function that converts this agent's output shape
+    into a Docent `AgentRun` and uploads it (invoked by `valk run analyze`).
+    Each output shape needs its own analyzer Lambda. See docs/DOCENT.md.
+
+    ```yaml
+    ingest_lambda: analysis-model-library
+    ```
+    """
+
     defaults: dict[str, Parameter] = {}
     """
     Pre-defined parameters with configurable required/default behavior.
