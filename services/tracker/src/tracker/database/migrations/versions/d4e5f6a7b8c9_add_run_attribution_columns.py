@@ -1,7 +1,7 @@
 """add run attribution columns
 
 Revision ID: d4e5f6a7b8c9
-Revises: 35f2d4a8c9b1
+Revises: a92e64afa650
 Create Date: 2026-05-05 00:00:00.000000
 
 """
@@ -13,7 +13,7 @@ from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "d4e5f6a7b8c9"
-down_revision: Union[str, Sequence[str], None] = "35f2d4a8c9b1"
+down_revision: Union[str, Sequence[str], None] = "a92e64afa650"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
