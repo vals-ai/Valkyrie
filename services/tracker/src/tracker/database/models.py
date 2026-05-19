@@ -22,9 +22,11 @@ from sqlmodel import (
     select,
 )
 from tracker_shared.models import (
+    AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
+    RetryMode,
     TaskStatus,
 )
 
