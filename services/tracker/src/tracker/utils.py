@@ -24,7 +24,7 @@ from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, u
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from tracker._lambda import invoke_lambda
+from tracker._lambda import invoke_lambda, lambda_client
 from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group, write_benchmark_log_event
 from tracker.aws.s3 import (
@@ -40,6 +40,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     EvaluationResult,
     FinalEvaluation,
     Org,
@@ -747,6 +748,7 @@ async def process_benchmark(
     benchmark_id: UUID = UUID(benchmark_id_str)
     benchmark_service = start_benchmark_request.benchmark_service
     harness_config: HarnessConfig = start_benchmark_request.harness_config
+
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
     trace.get_current_span().set_attributes(
@@ -890,7 +892,7 @@ async def process_benchmark(
                 lambda_payload: dict[str, Any] = arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
 
-                invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
+                invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
 
     except Exception as e:
         logfire.exception("process_benchmark failed")
@@ -996,6 +998,8 @@ class BenchmarkContext:
             total_tasks=self._task_counts.total_tasks,
             finished_tasks=self._task_counts.finished_tasks,
             task_breakdown=self._task_breakdown,
+            docent_reading_status=self._benchmark_row.docent_reading_status,
+            docent_reading_url=self._benchmark_row.docent_reading_url,
         )
 
 
@@ -1082,6 +1086,13 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
         .values(status=TaskStatus.ERROR, error_message="Undetected exit of task")
     )
     session.commit()
+
+    # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
+    # helper uses try/finally so this only fires when the worker process was
+    # killed mid-invocation (no try/finally cleanup ran).
+    if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
+        benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
+        session.add(benchmark_row)
 
     # Force benchmark to ERROR so that the user knows they can retry any failed tasks
     commit_benchmark_error(

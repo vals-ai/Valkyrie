@@ -315,10 +315,20 @@ valkyrie run list \
   --agent-name claude_code \
   --benchmark-name swebench \
   --status IN_PROGRESS \
-  --order-by DESC
+  --order-by DESC \
+  --started-by alice@vals.ai,bob@vals.ai
 ```
 
-Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`. Supports paginated navigation ([h] previous, [l] next, [q] quit).
+| Option | Description |
+| --- | --- |
+| `--agent-name` | Filter by agent name |
+| `--benchmark-name` | Filter by benchmark name |
+| `--model` | Filter by model |
+| `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
+| `--order-by` | Order results (`desc` or `asc`) |
+| `--started-by` | Comma-separated list of starter emails (case-insensitive) |
+
+Supports paginated navigation ([h] previous, [l] next, [q] quit).
 
 ### Download agent outputs
 

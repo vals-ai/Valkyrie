@@ -1,7 +1,7 @@
 import logging
 import tarfile
 import traceback
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 import httpx
@@ -37,14 +37,18 @@ from tracker.aws.s3 import (
     s3_object_exists,
 )
 from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_url
-from tracker.database.models import Benchmark, BenchmarkStatus, FinalEvaluation, Org, RetryMode
+from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus, FinalEvaluation, Org, RetryMode
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
+from tracker.docent_analysis import (
+    analyze_event_stream,
+)
 from tracker.types import (
+    AnalyzeBenchmarkRequest,
     BenchmarkTableRow,
     FetchBenchmarkTasksRequest,
     FetchBenchmarkMetadataResponse,
@@ -356,6 +360,72 @@ async def fetch_benchmark(
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
+    )
+
+
+@app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
+async def analyze_benchmark(
+    benchmark_id: TrackedBenchmarkId,
+    body: AnalyzeBenchmarkRequest,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> dict[str, str] | StreamingResponse:
+    """
+    Invoke the Docent analyzer Lambda for a benchmark and stream progress over SSE.
+
+    Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
+    no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
+    """
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+
+    if benchmark_row.status != BenchmarkStatus.FINISHED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot analyze run {benchmark_id}: status is {benchmark_row.status.value} (must be FINISHED).",
+        )
+
+    if (
+        not body.no_cache
+        and benchmark_row.docent_reading_status == DocentReadingStatus.DONE
+        and benchmark_row.docent_reading_url
+    ):
+        return {
+            "status": "done",
+            "reading_plan_url": benchmark_row.docent_reading_url,
+        }
+
+    if not body.lambda_function:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No ingest_lambda provided for agent '{benchmark_row.arguments.contract.name}'. "
+                "The CLI normally resolves this from the agent's pushed contract — if you're "
+                "calling this endpoint directly, supply `lambda_function` in the request body."
+            ),
+        )
+
+    payload: dict[str, Any] = {
+        "benchmark_id": str(benchmark_id),
+        "benchmark_name": benchmark_row.name,
+        "s3_bucket": harness_config.s3_bucket,
+        "contract": {"name": benchmark_row.arguments.contract.name},
+    }
+
+    return StreamingResponse(
+        analyze_event_stream(
+            benchmark_row=benchmark_row,
+            session=session,
+            lambda_function=body.lambda_function,
+            payload=payload,
+            aws=harness_config.aws,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

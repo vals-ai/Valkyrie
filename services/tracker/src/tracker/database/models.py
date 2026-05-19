@@ -22,10 +22,9 @@ from sqlmodel import (
     select,
 )
 from tracker_shared.models import (
-    AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
-    RetryMode,
+    DocentReadingStatus,
     TaskStatus,
 )
 
@@ -128,6 +127,8 @@ class Benchmark(SQLModel, table=True):
     )
     started_by_id: str | None = Field(default=None)
     started_by_email: str | None = Field(default=None, index=True)
+    docent_reading_status: DocentReadingStatus = Field(default=DocentReadingStatus.IDLE)
+    docent_reading_url: str | None = Field(default=None)
     final_evaluation: Mapped[FinalEvaluation | None] = Relationship(
         sa_relationship_kwargs={"foreign_keys": "[FinalEvaluation.benchmark]"}
     )

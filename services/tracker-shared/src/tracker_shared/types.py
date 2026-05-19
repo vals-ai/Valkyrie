@@ -18,6 +18,7 @@ from tracker_shared.models import (
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     FinalEvaluation,
     TaskStatus,
 )
@@ -44,6 +45,8 @@ class BenchmarkDetails(BaseModel):
     total_tasks: int
     finished_tasks: int
     task_breakdown: dict[TaskStatus, int]
+    docent_reading_status: DocentReadingStatus
+    docent_reading_url: str | None = None
 
 
 class StartBenchmarkRequest(BaseModel):

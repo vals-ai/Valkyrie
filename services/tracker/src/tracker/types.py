@@ -78,7 +78,13 @@ class FinalViewResponse(BaseModel):
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
 
 
+class AnalyzeBenchmarkRequest(BaseModel):
+    no_cache: bool = False
+    lambda_function: str | None = None
+
+
 __all__ = [
+    "AnalyzeBenchmarkRequest",
     "AWSCredentials",
     "AverageTaskBreakdown",
     "BenchmarkDetails",

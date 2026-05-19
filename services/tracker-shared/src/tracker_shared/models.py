@@ -32,6 +32,13 @@ class BenchmarkStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class DocentReadingStatus(str, Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    ERROR = "ERROR"
+    DONE = "DONE"
+
+
 class RetryMode(str, Enum):
     AUTO = "auto"
     FROM_SCRATCH = "from_scratch"

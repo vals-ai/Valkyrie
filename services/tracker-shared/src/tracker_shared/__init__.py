@@ -9,6 +9,7 @@ from tracker_shared.models import (
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     FinalEvaluation,
     RetryMode,
     TaskStatus,
@@ -44,6 +45,7 @@ __all__ = [
     "handle_s3_error",
     # Enums
     "BenchmarkStatus",
+    "DocentReadingStatus",
     "Order",
     "RetryMode",
     "TaskStatus",
