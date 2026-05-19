@@ -2,9 +2,7 @@ import asyncio
 from asyncio import Semaphore
 
 import pytest
-from benchmark_service.schemas import Resources
-from daytona import AsyncDaytona
-from daytona.common.errors import DaytonaNotFoundError
+from benchmark_service import ImageSource, Resources, SandboxNotFoundError, SandboxProvider
 
 from tests.utils import random_task_id
 from tracker.sandbox import create_sandbox
@@ -13,7 +11,7 @@ from tracker.sandbox import create_sandbox
 class TestSandboxLifecycle:
     async def test_parallel_create_and_immediate_delete(
         self,
-        daytona_client: AsyncDaytona,
+        sandbox_provider: SandboxProvider,
         test_resources: Resources,
         test_image: str,
     ) -> None:
@@ -29,11 +27,11 @@ class TestSandboxLifecycle:
         names = [f"test-parallel-delete-{random_task_id()}" for _ in range(TASKS_TO_CREATE)]
 
         async def _create_and_delete(name: str) -> None:
-            async with create_sandbox(daytona_client, name, test_image, test_resources, semaphore):
+            async with create_sandbox(sandbox_provider, name, ImageSource(image=test_image), test_resources, semaphore):
                 await asyncio.sleep(2)
 
         await asyncio.gather(*[_create_and_delete(name) for name in names])
 
         for name in names:
-            with pytest.raises(DaytonaNotFoundError):
-                await daytona_client.get(name)
+            with pytest.raises(SandboxNotFoundError):
+                await sandbox_provider.get_sandbox(name)
