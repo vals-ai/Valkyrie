@@ -104,6 +104,8 @@ async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
     except DaytonaError as e:
         tag_daytona_error(e, op="sandbox.delete")
         raise
+    except ProviderSandboxError:
+        raise
     except Exception as e:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 

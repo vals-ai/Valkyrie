@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service import ExecResult, ImageSource, Resources, SnapshotSource
+from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 from daytona import SandboxState
 from daytona.common.errors import DaytonaConnectionError, DaytonaError, DaytonaNotFoundError, DaytonaRateLimitError
 from tenacity import stop_after_attempt, wait_none
@@ -735,6 +736,19 @@ class TestAgentOutputTelemetry:
             await _delete_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(mock_sandbox, AsyncMock())
 
         assert daytona_errors == [(daytona_error, "sandbox.delete")]
+
+    async def test_delete_sandbox_retries_provider_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        monkeypatch.setattr(sandbox_module, "_daytona_inner", lambda _sandbox: None)
+
+        provider = AsyncMock()
+        provider.delete_sandbox = AsyncMock(side_effect=[ProviderSandboxError("state change"), None])
+
+        await _delete_sandbox.retry_with(stop=stop_after_attempt(2), wait=wait_none())(mock_sandbox, provider)
+
+        assert provider.delete_sandbox.await_count == 2
 
     async def test_exec_tags_daytona_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         daytona_error = DaytonaError("exec failed")
