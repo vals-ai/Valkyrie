@@ -19,17 +19,18 @@ from uuid import UUID
 import click
 import yaml
 from httpx import Response
+from tracker_shared.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
+from tracker_shared.types import (
+    BenchmarkDetails,
+    FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    FetchBenchmarksResponse,
+    FinalViewResponse,
+    Order,
+    StartBenchmarkResponse,
+)
 
 if TYPE_CHECKING:
-    from tracker_shared.models import TaskStatus
-    from tracker_shared.types import (
-        BenchmarkDetails,
-        FetchBenchmarkResponse,
-        FetchBenchmarksResponse,
-        FinalViewResponse,
-        StartBenchmarkResponse,
-    )
-
     from valkyrie.cli.tracker_service import TrackerService
 
 CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
@@ -190,8 +191,6 @@ class BenchmarkFormatter:
         Returns:
             Formatted string with colored task counts
         """
-        from tracker_shared.models import TaskStatus
-
         # Order we display statuses in
         status_order = [
             TaskStatus.PENDING,
@@ -272,8 +271,6 @@ def _format_docent_analysis(details: BenchmarkDetails, run_id: UUID) -> str | No
 
     Returns None for IDLE (no analysis run yet) so the caller can skip the row entirely.
     """
-    from tracker_shared.models import DocentReadingStatus
-
     status = details.docent_reading_status
     if status == DocentReadingStatus.DONE and details.docent_reading_url:
         return details.docent_reading_url
@@ -433,8 +430,6 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
     try:
         for event in tracker.stream_benchmark(benchmark_id):
             if event.startswith("data:"):
-                from tracker_shared.types import FetchBenchmarkResponse
-
                 data_json = event[5:].strip()
                 if not data_json:
                     continue
@@ -593,9 +588,6 @@ def paginate_benchmarks(
     offset = 0
 
     while True:
-        from tracker_shared.models import BenchmarkStatus
-        from tracker_shared.types import FetchBenchmarksRequest, Order
-
         request = FetchBenchmarksRequest(
             agent_name=agent_name,
             benchmark_name=benchmark_name,

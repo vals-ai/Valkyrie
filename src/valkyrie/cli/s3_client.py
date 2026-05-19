@@ -10,18 +10,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
-import aioboto3
 import click
 import yaml
-from botocore.exceptions import ClientError
 from tracker_shared.exceptions import S3Error, handle_s3_error
+from tracker_shared.models import AgentContractRequest
 
-from valkyrie.cli.utils import load_config
+from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
+from valkyrie.cli.utils import load_config, run_with_spinner
+from valkyrie.schemas import AgentConfig
 
 if TYPE_CHECKING:
-    from tracker_shared.models import AgentContractRequest
-
-    from valkyrie.schemas import AgentConfig
+    import aioboto3
+    from botocore.exceptions import ClientError
 
 _S3_DOWNLOAD_CONCURRENCY = 8
 
@@ -35,10 +35,19 @@ def _fetch_bucket_name() -> str:
     return bucket_name
 
 
+def _boto_imports() -> tuple[type[aioboto3.Session], type[ClientError]]:
+    """Lazily import aioboto3 and botocore to keep module import fast."""
+    import aioboto3
+    from botocore.exceptions import ClientError
+
+    return aioboto3.Session, ClientError  # type: ignore[return-value]
+
+
 def _s3_client() -> aioboto3.Session.client:  # type: ignore[type-arg]
     """Create an aioboto3 S3 client using credentials from the valkyrie config."""
+    Session, _ = _boto_imports()
     config = load_config()
-    session = aioboto3.Session(
+    session = Session(
         aws_access_key_id=config.get("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=config.get("AWS_SECRET_ACCESS_KEY"),
         region_name=config.get("AWS_DEFAULT_REGION"),
@@ -133,8 +142,6 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
             await _run_git_command(temp_path, "submodule", "update", "--init", "--recursive")
 
         # Clone with a loading spinner
-        from valkyrie.cli.utils import run_with_spinner
-
         await run_with_spinner(clone_repo(), f"Installing agent from {github_url}")
 
         # Push the agent to S3 after its installed
@@ -152,8 +159,6 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
 @handle_s3_error(message="Failed to push agent to S3")
 async def push_agent(agent_name: str | None, agent_path: Path):
     """Zip and push an agent to S3 at agents/{agent_name}.zip"""
-    from valkyrie.cli.bundler import get_agent_zip_stream
-
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
 
@@ -231,6 +236,7 @@ async def push_agent(agent_name: str | None, agent_path: Path):
 
 async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
+    _, ClientError = _boto_imports()
     bucket_name = _fetch_bucket_name()
     source_key = f"agents/{agent_name}.zip"
     dest_key = f"benchmarks/{benchmark_id}/{agent_name}.zip"
@@ -243,8 +249,6 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
                 Key=dest_key,
             )
         except ClientError as e:
-            from tracker_shared.exceptions import S3Error
-
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
                 raise S3Error(f"Agent '{agent_name}.zip' not found in S3.") from e
             raise S3Error(f"Failed to copy agent '{agent_name}' in S3: {e}") from e
@@ -253,6 +257,7 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
 @handle_s3_error(message="Failed to remove agent from S3")
 async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""
+    _, ClientError = _boto_imports()
 
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
@@ -267,8 +272,6 @@ async def remove_agent(agent_name: str):
             # Remove the agent if it exists
             await s3_client.delete_object(Bucket=bucket_name, Key=key)
         except ClientError as e:
-            from tracker_shared.exceptions import S3Error
-
             if e.response["Error"]["Code"] == "404":
                 raise S3Error(f"Agent '{agent_name}' could not be found.")
             raise
@@ -307,6 +310,7 @@ async def list_agents():
 @handle_s3_error(message="Failed to download agent from S3")
 async def download_agent(agent_name: str, output_dir: Path | None) -> None:
     """Download an agent zip from S3, extract it, and show progress"""
+    _, ClientError = _boto_imports()
     bucket_name = _fetch_bucket_name()
 
     async with _s3_client() as s3_client:
@@ -314,8 +318,6 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
         except ClientError as e:
-            from tracker_shared.exceptions import S3Error
-
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
                 raise S3Error(f"Agent '{agent_name}' not found in S3.")
             raise
@@ -364,8 +366,6 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
                 keys.append(cast(str, obj["Key"]))
 
         if not keys:
-            from tracker_shared.exceptions import S3Error
-
             raise S3Error(f"No files found at '{s3_path}' in bucket '{bucket_name}'")
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -396,9 +396,10 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
     empty ``AgentConfig`` and reads the ``ingest_lambda`` property without invoking
     ``run_cmd`` (which would require model validation).
     """
+    Session, ClientError = _boto_imports()
     bucket_name = _fetch_bucket_name()
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with Session().client("s3") as s3_client:
         try:
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
@@ -438,6 +439,7 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
 
 async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:
     """Download agent zip from S3 and extract contract.py into a temp dir, returning the contract request"""
+    _, ClientError = _boto_imports()
     bucket_name = _fetch_bucket_name()
 
     async with _s3_client() as s3_client:
@@ -445,12 +447,8 @@ async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> Ag
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = await response["Body"].read()
         except ClientError as e:
-            from tracker_shared.exceptions import S3Error
-
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
                 raise S3Error(f"Agent '{agent_name}' not found in S3.")
             raise
-
-    from valkyrie.cli.bundler import get_contract_from_zip_bytes
 
     return get_contract_from_zip_bytes(agent_name, zip_bytes, agent_config)  # type: ignore

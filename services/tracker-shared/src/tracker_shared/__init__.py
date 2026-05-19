@@ -2,76 +2,10 @@
 
 This lightweight package avoids pulling in heavy backend dependencies
 (SQLAlchemy, FastAPI, Daytona, logfire, boto3, etc.) so the CLI starts fast.
+
+Import from submodules directly for best performance::
+
+    from tracker_shared.models import TaskStatus
+    from tracker_shared.types import BenchmarkDetails
+    from tracker_shared.exceptions import S3Error
 """
-
-from tracker_shared.exceptions import S3Error, TrackerServiceError, handle_s3_error
-from tracker_shared.models import (
-    AgentContractRequest,
-    BenchmarkArguments,
-    BenchmarkStatus,
-    DocentReadingStatus,
-    FinalEvaluation,
-    RetryMode,
-    TaskStatus,
-)
-from tracker_shared.types import (
-    AWSCredentials,
-    AverageTaskBreakdown,
-    BenchmarkDetails,
-    BenchmarkTableRow,
-    FetchBenchmarkMetadataResponse,
-    FetchBenchmarkResponse,
-    FetchBenchmarksRequest,
-    FetchBenchmarksResponse,
-    FetchBenchmarkTasksRequest,
-    FinalViewResponse,
-    HarnessConfig,
-    Order,
-    RetrieveResultsResponse,
-    RetryOrResumeBenchmarkResponse,
-    S3UploadResultsResponse,
-    StartBenchmarkErrorResponse,
-    StartBenchmarkRequest,
-    StartBenchmarkResponse,
-    StatusResponse,
-    StopBenchmarkResponse,
-    VerifyTaskIdsResponse,
-)
-
-__all__ = [
-    # Exceptions & error handling
-    "S3Error",
-    "TrackerServiceError",
-    "handle_s3_error",
-    # Enums
-    "BenchmarkStatus",
-    "DocentReadingStatus",
-    "Order",
-    "RetryMode",
-    "TaskStatus",
-    # Models from database
-    "AgentContractRequest",
-    "BenchmarkArguments",
-    "FinalEvaluation",
-    # API types
-    "AWSCredentials",
-    "AverageTaskBreakdown",
-    "BenchmarkDetails",
-    "BenchmarkTableRow",
-    "FetchBenchmarkMetadataResponse",
-    "FetchBenchmarkResponse",
-    "FetchBenchmarkTasksRequest",
-    "FetchBenchmarksRequest",
-    "FetchBenchmarksResponse",
-    "FinalViewResponse",
-    "HarnessConfig",
-    "RetrieveResultsResponse",
-    "RetryOrResumeBenchmarkResponse",
-    "S3UploadResultsResponse",
-    "StartBenchmarkErrorResponse",
-    "StartBenchmarkRequest",
-    "StartBenchmarkResponse",
-    "StatusResponse",
-    "StopBenchmarkResponse",
-    "VerifyTaskIdsResponse",
-]

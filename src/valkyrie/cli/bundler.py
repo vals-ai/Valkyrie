@@ -10,16 +10,15 @@ import tempfile
 import zipfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO, Generator
+from typing import BinaryIO, Generator
 
 import yaml
+from pydantic import ValidationError as PydanticValidationError
+from tracker_shared.models import AgentContractRequest
 
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError
-
-if TYPE_CHECKING:
-    from tracker_shared.models import AgentContractRequest
-
-    from valkyrie.schemas import AgentConfig
+from valkyrie.contract import BaseAgentContract
+from valkyrie.schemas import AgentConfig, AgentContract
 
 
 def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
@@ -120,8 +119,6 @@ def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config:
 
 
 def _parse_python_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
-    from valkyrie.contract import BaseAgentContract
-
     spec = importlib.util.spec_from_file_location("contract", contract_path)
 
     if not spec or not spec.loader:
@@ -139,11 +136,6 @@ def _parse_python_contract(contract_path: Path, agent_config: AgentConfig) -> Ag
 
 
 def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
-    from pydantic import ValidationError as PydanticValidationError
-    from tracker_shared.models import AgentContractRequest
-
-    from valkyrie.schemas import AgentContract
-
     try:
         with open(contract_path, "r") as f:
             contract_dict = yaml.safe_load(f)
