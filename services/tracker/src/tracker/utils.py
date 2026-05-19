@@ -24,7 +24,8 @@ from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, u
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from tracker._lambda import invoke_lambda
+from tracker._lambda import invoke_lambda, lambda_client
+from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group, write_benchmark_log_event
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
@@ -39,6 +40,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     EvaluationResult,
     FinalEvaluation,
     Org,
@@ -108,10 +110,10 @@ def create_benchmark_service_client(
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
-def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, org: Org) -> Benchmark:
+def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     return Benchmark(
-        org_id=org.id,
+        org_id=run_starter.org.id,
         name=request.benchmark_name,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
@@ -124,6 +126,8 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, org: Or
             lambda_function=request.lambda_function,
             dataset=request.dataset,
         ),
+        started_by_id=run_starter.access_key_id,
+        started_by_email=run_starter.email,
     )
 
 
@@ -724,25 +728,17 @@ def has_runnable_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> 
 
 
 def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:
-    task_rows = session.exec(
-        select(Task.task_id, Task.status, EvaluationResult.result)
-        .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task), isouter=True)
-        .where(Task.benchmark == benchmark_row.id)
-        .where(Task.org_id == org.id)
-    ).all()
+    task_rows = cast(
+        Sequence[tuple[str, dict[str, Any] | None]],
+        session.exec(
+            select(Task.task_id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
+            .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task), isouter=True)
+            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.org_id == org.id)
+        ).all(),
+    )
 
-    evaluation_results: dict[str, dict[str, Any] | None] = {}
-    for task_id, status, result in task_rows:
-        match status:
-            case TaskStatus.FINISHED:
-                assert result is not None
-                evaluation_results[task_id] = result
-            case TaskStatus.ERROR | TaskStatus.STOPPED:
-                evaluation_results[task_id] = None
-            case _:
-                raise TrackerServiceError(f"Unexpected task status {status} while finalizing run {benchmark_row.id}")
-
-    return evaluation_results
+    return dict(task_rows)
 
 
 @broker.task
@@ -757,6 +753,7 @@ async def process_benchmark(
     benchmark_id: UUID = UUID(benchmark_id_str)
     benchmark_service = start_benchmark_request.benchmark_service
     harness_config: HarnessConfig = start_benchmark_request.harness_config
+
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
     trace.get_current_span().set_attributes(
@@ -897,7 +894,7 @@ async def process_benchmark(
                 lambda_payload: dict[str, Any] = arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
 
-                invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
+                invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
 
     except Exception as e:
         logfire.exception("process_benchmark failed")
@@ -1004,6 +1001,8 @@ class BenchmarkContext:
             total_tasks=self._task_counts.total_tasks,
             finished_tasks=self._task_counts.finished_tasks,
             task_breakdown=self._task_breakdown,
+            docent_reading_status=self._benchmark_row.docent_reading_status,
+            docent_reading_url=self._benchmark_row.docent_reading_url,
         )
 
 
@@ -1090,6 +1089,13 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
         .values(status=TaskStatus.ERROR, error_message="Undetected exit of task")
     )
     session.commit()
+
+    # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
+    # helper uses try/finally so this only fires when the worker process was
+    # killed mid-invocation (no try/finally cleanup ran).
+    if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
+        benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
+        session.add(benchmark_row)
 
     # Force benchmark to ERROR so that the user knows they can retry any failed tasks
     commit_benchmark_error(
@@ -1327,16 +1333,8 @@ async def reset_to_in_progress_status(
                 raise TrackerServiceError(
                     f"{', '.join(missing_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
                 )
-            if rerun_task_ids:
-                existing_rows = [existing_by_task_id[task_id] for task_id in rerun_task_ids]
             new_task_ids = []
         else:
-            if rerun_task_ids:
-                implicit_rows = [task for task in existing_rows if task.task_id not in rerun_task_ids]
-                requested_rows = [
-                    existing_by_task_id[task_id] for task_id in rerun_task_ids if task_id in existing_by_task_id
-                ]
-                existing_rows = implicit_rows + requested_rows
             new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
 
         # Allow re-running the end of the benchmark without running any tasks
@@ -1390,6 +1388,10 @@ async def reset_to_in_progress_status(
 
 
 def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
+    """Select retryable rows.
+
+    Active retries on in-progress runs are limited to ERROR tasks. Finished tasks must wait until the run is terminal.
+    """
     filters = [
         col(Task.benchmark) == benchmark_row.id,
         col(Task.org_id) == org.id,
@@ -1437,6 +1439,11 @@ def fetch_filtered_benchmark_rows(
 
     if request.status:
         query = query.where(Benchmark.status == request.status)
+
+    if request.started_by:
+        normalized_emails = [s.strip().lower() for s in request.started_by if s and s.strip()]
+        if normalized_emails:
+            query = query.where(col(Benchmark.started_by_email).in_(normalized_emails))
 
     if request.order_by == Order.DESC:
         query = query.order_by(desc(Benchmark.started_at))
