@@ -11,7 +11,7 @@ from uuid import UUID
 import httpx
 import yaml
 from dotenv import load_dotenv
-from httpx._models import Response
+from httpx import Response
 from tracker_shared.models import AgentContractRequest, RetryMode
 from tracker_shared.types import (
     FetchBenchmarkMetadataResponse,
