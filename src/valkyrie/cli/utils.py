@@ -473,7 +473,7 @@ def format_fetch_benchmarks_response(
         return
 
     def format_score(score: float | None) -> str:
-        return f"{score:.1%}" if score is not None else "-"
+        return f"{score:.1f}%" if score is not None else "-"
 
     rows: list[dict[str, str]] = []
     for benchmark in benchmarks:
