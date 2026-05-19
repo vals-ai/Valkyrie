@@ -1839,6 +1839,7 @@ dependencies = [
     { name = "taskiq" },
     { name = "taskiq-redis" },
     { name = "tenacity" },
+    { name = "tracker-shared" },
 ]
 
 [package.dev-dependencies]
@@ -1874,6 +1875,7 @@ requires-dist = [
     { name = "taskiq", specifier = ">=0.12.1" },
     { name = "taskiq-redis", specifier = ">=1.2.2" },
     { name = "tenacity", specifier = ">=9.0.0" },
+    { name = "tracker-shared", editable = "../tracker-shared" },
 ]
 
 [package.metadata.requires-dev]
@@ -1887,6 +1889,17 @@ dev = [
     { name = "ruff" },
     { name = "testcontainers", extras = ["postgres"], specifier = ">=4.10.0" },
 ]
+
+[[package]]
+name = "tracker-shared"
+version = "0.1.0"
+source = { editable = "../tracker-shared" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.0.0" }]
 
 [[package]]
 name = "typer"
