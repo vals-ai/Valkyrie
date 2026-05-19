@@ -1,7 +1,8 @@
-"""Shared API request and response types used by the CLI and tracker service.
+"""Shared API request and response types — the canonical source of truth.
 
-These are lightweight copies of the types defined in tracker.types,
-containing only what the CLI needs without heavy backend dependencies.
+Both the CLI and the tracker service import from here. The tracker service
+re-exports these from tracker.types for backward compatibility and extends
+StartBenchmarkRequest with tracker-specific behaviour.
 """
 
 from __future__ import annotations

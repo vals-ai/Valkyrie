@@ -4,7 +4,7 @@ This lightweight package avoids pulling in heavy backend dependencies
 (SQLAlchemy, FastAPI, Daytona, logfire, boto3, etc.) so the CLI starts fast.
 """
 
-from tracker_shared.exceptions import S3Error, TrackerServiceError
+from tracker_shared.exceptions import S3Error, TrackerServiceError, handle_s3_error
 from tracker_shared.models import (
     AgentContractRequest,
     BenchmarkArguments,
@@ -38,9 +38,10 @@ from tracker_shared.types import (
 )
 
 __all__ = [
-    # Exceptions
+    # Exceptions & error handling
     "S3Error",
     "TrackerServiceError",
+    "handle_s3_error",
     # Enums
     "BenchmarkStatus",
     "Order",

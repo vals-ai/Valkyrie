@@ -1,7 +1,7 @@
 """S3 upload utilities for the tracker service."""
 
 import asyncio
-from functools import lru_cache, wraps
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
 import boto3
@@ -9,8 +9,7 @@ import logfire
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from botocore.response import StreamingBody
-
-from tracker.exceptions import S3Error
+from tracker_shared.exceptions import S3Error, handle_s3_error
 
 if TYPE_CHECKING:
     from tracker.types import AWSCredentials
@@ -45,20 +44,6 @@ def get_benchmark_contract_s3_key(benchmark_id: str, contract_name: str) -> str:
 def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -> str:
     """Get the S3 key for an agent output archive."""
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/{output_name}"
-
-
-def handle_s3_error(message: str):
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            try:
-                return func(*args, **kwargs)
-            except (ClientError, BotoCoreError) as e:
-                raise S3Error(f"{message}: {e}") from e
-
-        return wrapper
-
-    return decorator
 
 
 @logfire.instrument("upload_to_s3", extract_args=("s3_key", "s3_bucket"))

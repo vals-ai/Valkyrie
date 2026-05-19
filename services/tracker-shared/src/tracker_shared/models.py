@@ -1,8 +1,8 @@
-"""Shared database models (Pydantic-only versions) used by the CLI and tracker service.
+"""Shared models and enums — the canonical source of truth.
 
-These are lightweight copies of the models defined in tracker.database.models,
-containing only the fields and enums needed by the CLI. The tracker service
-re-exports these from its own models module for backward compatibility.
+Both the CLI and the tracker service import from here. The tracker service
+re-exports these from tracker.database.models for backward compatibility
+and extends some types with SQLModel/database-specific behaviour.
 """
 
 from __future__ import annotations
@@ -58,10 +58,11 @@ class BenchmarkArguments(BaseModel):
 
 
 class FinalEvaluation(BaseModel):
-    """Pydantic-only version of the FinalEvaluation model for CLI use.
+    """Pydantic model for API serialisation/deserialisation.
 
-    The tracker service defines this as an SQLModel table; this lightweight
-    copy is used only for deserialising API responses.
+    The tracker service defines a separate SQLModel FinalEvaluation table
+    for database operations; this Pydantic version is the canonical shape
+    for API responses consumed by both the CLI and the tracker's response types.
     """
 
     id: UUID

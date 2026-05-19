@@ -1,20 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import re
 import tempfile
 import zipfile
-from collections.abc import Callable
 from datetime import datetime, timezone
-from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar, cast
-
+from typing import TYPE_CHECKING, cast
 
 import aioboto3
 import click
-from botocore.exceptions import BotoCoreError, ClientError
+from botocore.exceptions import ClientError
+from tracker_shared.exceptions import handle_s3_error
 
 from valkyrie.cli.utils import load_config
 
@@ -24,40 +21,6 @@ if TYPE_CHECKING:
     from valkyrie.schemas import AgentConfig
 
 _S3_DOWNLOAD_CONCURRENCY = 8
-
-_F = TypeVar("_F", bound=Callable[..., Any])
-
-
-def _handle_s3_error(message: str) -> Callable[[_F], _F]:
-    """Local version of tracker.aws.s3.handle_s3_error to avoid heavy tracker imports at module load."""
-
-    def decorator(func: _F) -> _F:
-        if inspect.iscoroutinefunction(func):
-
-            @wraps(func)
-            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-                try:
-                    return await func(*args, **kwargs)
-                except (ClientError, BotoCoreError) as e:
-                    from tracker_shared.exceptions import S3Error
-
-                    raise S3Error(f"{message}: {e}") from e
-
-            return async_wrapper  # type: ignore[return-value]
-        else:
-
-            @wraps(func)
-            def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-                try:
-                    return func(*args, **kwargs)
-                except (ClientError, BotoCoreError) as e:
-                    from tracker_shared.exceptions import S3Error
-
-                    raise S3Error(f"{message}: {e}") from e
-
-            return sync_wrapper  # type: ignore[return-value]
-
-    return decorator
 
 
 def _fetch_bucket_name() -> str:
@@ -183,7 +146,7 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
     return resolved_name
 
 
-@_handle_s3_error(message="Failed to push agent to S3")
+@handle_s3_error(message="Failed to push agent to S3")
 async def push_agent(agent_name: str | None, agent_path: Path):
     """Zip and push an agent to S3 at agents/{agent_name}.zip"""
     from valkyrie.cli.bundler import get_agent_zip_stream
@@ -284,7 +247,7 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
             raise S3Error(f"Failed to copy agent '{agent_name}' in S3: {e}") from e
 
 
-@_handle_s3_error(message="Failed to remove agent from S3")
+@handle_s3_error(message="Failed to remove agent from S3")
 async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""
 
@@ -338,7 +301,7 @@ async def list_agents():
         return agents
 
 
-@_handle_s3_error(message="Failed to download agent from S3")
+@handle_s3_error(message="Failed to download agent from S3")
 async def download_agent(agent_name: str, output_dir: Path | None) -> None:
     """Download an agent zip from S3, extract it, and show progress"""
     bucket_name = _fetch_bucket_name()
@@ -384,7 +347,7 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
         tmp_path.unlink()
 
 
-@_handle_s3_error(message="Failed to download from S3")
+@handle_s3_error(message="Failed to download from S3")
 async def download_s3_path(s3_path: str, output_dir: Path) -> int:
     """Download all objects under an S3 path prefix into output_dir. Returns count of files downloaded."""
     bucket_name = _fetch_bucket_name()

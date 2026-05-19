@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, computed_field, field_serializer
+from pydantic import computed_field, field_serializer
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -20,6 +20,11 @@ from sqlmodel import (
     col,
     func,
     select,
+)
+from tracker_shared.models import (
+    BenchmarkArguments,
+    BenchmarkStatus,
+    TaskStatus,
 )
 
 from tracker.database.utils import has_field_changed
@@ -44,54 +49,11 @@ class Org(SQLModel, table=True):
     name: str = Field(unique=True, index=True)
 
 
-class TaskStatus(str, Enum):
-    PENDING = "PENDING"
-    BUILDING = "BUILDING"
-    IN_PROGRESS = "IN_PROGRESS"
-    EVALUATING = "EVALUATING"
-    STOPPED = "STOPPED"
-    FINISHED = "FINISHED"
-    ERROR = "ERROR"
-
-
-class BenchmarkStatus(str, Enum):
-    IN_PROGRESS = "IN_PROGRESS"
-    STOPPING = "STOPPING"
-    STOPPED = "STOPPED"
-    FINISHED = "FINISHED"
-    ERROR = "ERROR"
-
-
 class AgentCausedExitReason(str, Enum):
     """Exit reasons caused by the agent that continue to evaluation"""
 
     TIMEOUT = "TIMEOUT"
     OS_KILLED = "OS_KILLED"
-
-
-class RetryMode(str, Enum):
-    AUTO = "auto"
-    FROM_SCRATCH = "from_scratch"
-
-
-class AgentContractRequest(BaseModel):
-    name: str
-    model: str | None = None
-    install_cmd: str
-    run_cmd: str
-    final_output: str | None = None
-    secrets: dict[str, str] = {}
-
-
-class BenchmarkArguments(BaseModel):
-    model_config = {"extra": "forbid"}
-
-    contract: AgentContractRequest
-    concurrency: int
-    task_ids: list[str] | None = None
-    slice_str: str | None = None
-    lambda_function: str | None = None
-    dataset: str | None = None
 
 
 class FinalEvaluation(SQLModel, table=True):

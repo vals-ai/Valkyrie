@@ -1,10 +1,25 @@
-"""Custom exceptions for the tracker service."""
+"""Custom exceptions for the tracker service.
 
+Base exceptions (TrackerServiceError, S3Error) are defined in tracker_shared
+and re-exported here for backward compatibility. Tracker-specific exceptions
+extend the shared base.
+"""
 
-class TrackerServiceError(Exception):
-    """Base exception for all tracker service errors."""
+from tracker_shared.exceptions import S3Error, TrackerServiceError
 
-    pass
+__all__ = [
+    "TrackerServiceError",
+    "S3Error",
+    "SandboxError",
+    "InvalidSandboxConfigurationError",
+    "AgentRunFailedError",
+    "SandboxSetupError",
+    "PtyCreationError",
+    "SSLConnectionError",
+    "CloudWatchError",
+    "LambdaError",
+    "SecretsError",
+]
 
 
 class SandboxError(TrackerServiceError):
@@ -36,13 +51,6 @@ class PtyCreationError(SandboxSetupError):
 
 class SSLConnectionError(SandboxSetupError):
     """Exception raised when a sandbox command fails due to an SSL/TLS connection error (curl exit code 35)."""
-
-
-class S3Error(TrackerServiceError):
-    """Exception raised for S3 storage operation errors."""
-
-    def __str__(self) -> str:
-        return "S3 error: " + super().__str__()
 
 
 class CloudWatchError(TrackerServiceError):
