@@ -252,6 +252,8 @@ async def start_benchmark(
             request.harness_config.aws,
             request.harness_config.s3_bucket,
         )
+    except BenchmarkServiceUnauthenticatedError:
+        raise
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
         commit_benchmark_error(benchmark_row, session, error_message)
