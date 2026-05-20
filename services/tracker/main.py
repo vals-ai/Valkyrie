@@ -421,8 +421,7 @@ async def analyze_benchmark(
 
     return StreamingResponse(
         analyze_event_stream(
-            benchmark_row=benchmark_row,
-            session=session,
+            benchmark_id=benchmark_row.id,
             lambda_function=body.lambda_function,
             payload=payload,
             aws=harness_config.aws,
@@ -585,7 +584,7 @@ async def retry_or_resume_benchmark(
     org: Org = Depends(get_current_org),
 ) -> RetryOrResumeBenchmarkResponse:
     """
-    Retry or resume a benchmark run by its id, we only can retry or resume a benchmark if its not currently running.
+    Retry or resume a benchmark run by its id.
 
     Usage:
     curl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20
@@ -603,26 +602,25 @@ async def retry_or_resume_benchmark(
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
-
-    if benchmark_row.status in invalid_states:
+    if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
             status_code=400,
-            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is currently running.",
+            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
+        )
+
+    if concurrency is not None and concurrency < 1:
+        raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
     effective_service_headers = forward_tracker_api_key(
         service_headers,
         http_request.headers.get("x-api-key"),
     )
 
-    # NOTE: 0 is not acceptable
-    if concurrency:
-        benchmark_row.arguments.concurrency = concurrency
-        session.add(benchmark_row)
-        session.commit()
-
-    # Reset tasks and retry or resume benchmark
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
@@ -634,6 +632,16 @@ async def retry_or_resume_benchmark(
         rerun_task_ids=task_ids,
         org=org,
     )
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
+        )
+
+    if concurrency is not None:
+        benchmark_row.arguments.concurrency = concurrency
+        session.add(benchmark_row)
+        session.commit()
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(

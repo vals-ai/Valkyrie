@@ -89,6 +89,15 @@ class TestStopAndResume:
         for task_id in finished_task_ids:
             task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
             database_session.add(task_row)
+            database_session.flush()
+            database_session.add(
+                EvaluationResult(
+                    org_id=TEST_ORG_ID,
+                    task=task_row.id,
+                    instance_id=f"existing-{task_id}",
+                    result={"status": "success", "score": 1.0},
+                )
+            )
 
         for task_id in pending_task_ids:
             task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
@@ -541,6 +550,209 @@ class TestStopAndResume:
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+
+    async def test_running_retry_noops_without_error_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.PENDING)
+        )
+        database_session.commit()
+
+        def _unexpected_kicker() -> None:
+            raise AssertionError("running retry without error tasks should not enqueue work")
+
+        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+
+    async def test_running_resume_noops(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_error", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        )
+        database_session.commit()
+
+        async def _unexpected_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise AssertionError("running resume should not verify retry tasks")
+
+        def _unexpected_kicker() -> None:
+            raise AssertionError("running resume should not enqueue work")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _unexpected_verify_task_ids)
+        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+
+        task_row = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
+        assert task_row.status == TaskStatus.ERROR
+
+    async def test_running_retry_only_resets_error_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                Task(org_id=TEST_ORG_ID, task_id="task_error", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+                Task(org_id=TEST_ORG_ID, task_id="task_pending", benchmark=benchmark_row.id, status=TaskStatus.PENDING),
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="task_finished",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.FINISHED,
+                ),
+            ]
+        )
+        database_session.commit()
+
+        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_error"])
+
+        captured_task_ids: list[str] = []
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_task_ids.extend(kwargs["verified_task_ids"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        assert response.status_code == 200
+        assert captured_task_ids == ["task_error"]
+
+        task_statuses = {
+            task.task_id: task.status
+            for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+        assert task_statuses == {
+            "task_error": TaskStatus.PENDING,
+            "task_pending": TaskStatus.PENDING,
+            "task_finished": TaskStatus.FINISHED,
+        }
+
+    async def test_running_retry_repairs_error_and_later_finalizes_same_run(
+        self,
+        contract: AgentContractRequest,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        process_benchmark_env: None,
+        harness_config: HarnessConfig,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.arguments.task_ids = ["task_retry", "task_original"]
+        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                Task(org_id=TEST_ORG_ID, task_id="task_retry", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+                Task(
+                    org_id=TEST_ORG_ID, task_id="task_original", benchmark=benchmark_row.id, status=TaskStatus.PENDING
+                ),
+            ]
+        )
+        database_session.commit()
+
+        async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        captured_retry_task_ids: list[str] = []
+        final_score_inputs: list[dict[str, Any]] = []
+        sandbox_count = 0
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_retry_task_ids.extend(kwargs["verified_task_ids"])
+
+        @asynccontextmanager
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
+            nonlocal sandbox_count
+            sandbox_count += 1
+            mock_sandbox = AsyncMock()
+            mock_sandbox.id = f"mock-sandbox-id-{sandbox_count}"
+            yield mock_sandbox
+
+        async def _mock_final_score(*_args: Any, evaluation_results: dict[str, Any], **_kwargs: Any):
+            final_score_inputs.append(evaluation_results)
+            return FinalScoreResponse(
+                tasks_evaluated=list(evaluation_results),
+                final_score=1.0,
+                metadata={"tasks_evaluated": list(evaluation_results)},
+            )
+
+        request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=2,
+            task_ids=["task_retry", "task_original"],
+            harness_config=harness_config,
+        )
+
+        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        assert response.status_code == 200
+        assert captured_retry_task_ids == ["task_retry"]
+
+        await process_benchmark(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=captured_retry_task_ids,
+        )
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.final_evaluation is None
+        assert final_score_inputs == []
+
+        await process_benchmark(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=["task_original"],
+        )
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
+        assert final_score_inputs
+        assert set(final_score_inputs[-1]) == {"task_retry", "task_original"}
+        assert benchmark_row.final_evaluation is not None
 
     async def test_task_monitor_cancels_waiting_stopped_task(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch

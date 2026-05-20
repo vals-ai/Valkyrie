@@ -11,12 +11,14 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 from typing import Any
+from uuid import UUID
 
 from botocore.config import Config
-from sqlmodel import Session as _Session
+from sqlmodel import Session
 
 from tracker._lambda import invoke_lambda, lambda_client
 from tracker.database.models import Benchmark, DocentReadingStatus
+from tracker.database.session import engine
 from tracker.types import AWSCredentials
 
 # Analyzer Lambdas can run up to 15 min (AWS Lambda's ceiling); retries
@@ -28,40 +30,45 @@ _ANALYZER_CONFIG = Config(read_timeout=905, retries={"max_attempts": 1})
 
 def invoke_analyzer(
     *,
-    benchmark: Benchmark,
-    session: _Session,
+    benchmark_id: UUID,
     lambda_function: str,
     payload: dict[str, Any],
     aws: AWSCredentials,
 ) -> dict[str, Any]:
     """Invoke an analyzer Lambda and persist status/URL onto the Benchmark row.
 
-    try/finally guarantees status is always set before returning, so no row is
-    left at RUNNING on failure.
+    Opens its own SQLAlchemy Session so it can safely run inside
+    ``asyncio.to_thread`` (Sessions are not thread-safe, so we never share one
+    across the event loop / worker thread boundary). try/finally guarantees
+    status is always set before returning, so no row is left at RUNNING.
     """
-    benchmark.docent_reading_status = DocentReadingStatus.RUNNING
-    session.add(benchmark)
-    session.commit()
+    with Session(engine, expire_on_commit=False) as session:
+        benchmark = session.get(Benchmark, benchmark_id)
+        if benchmark is None:
+            raise ValueError(f"benchmark {benchmark_id} not found")
 
-    try:
-        result = invoke_lambda(lambda_client(aws, _ANALYZER_CONFIG), lambda_function, payload)
-        reading_plan_url = result.get("reading_plan_url")
-        if reading_plan_url:
-            benchmark.docent_reading_url = str(reading_plan_url)
-        benchmark.docent_reading_status = DocentReadingStatus.DONE
-        return result
-    except Exception:
-        benchmark.docent_reading_status = DocentReadingStatus.ERROR
-        raise
-    finally:
+        benchmark.docent_reading_status = DocentReadingStatus.RUNNING
         session.add(benchmark)
         session.commit()
+
+        try:
+            result = invoke_lambda(lambda_client(aws, _ANALYZER_CONFIG), lambda_function, payload)
+            reading_plan_url = result.get("reading_plan_url")
+            if reading_plan_url:
+                benchmark.docent_reading_url = str(reading_plan_url)
+            benchmark.docent_reading_status = DocentReadingStatus.DONE
+            return result
+        except Exception:
+            benchmark.docent_reading_status = DocentReadingStatus.ERROR
+            raise
+        finally:
+            session.add(benchmark)
+            session.commit()
 
 
 async def analyze_event_stream(
     *,
-    benchmark_row: Benchmark,
-    session: _Session,
+    benchmark_id: UUID,
     lambda_function: str,
     payload: dict[str, Any],
     aws: AWSCredentials,
@@ -72,8 +79,7 @@ async def analyze_event_stream(
     invoke_task = asyncio.create_task(
         asyncio.to_thread(
             invoke_analyzer,
-            benchmark=benchmark_row,
-            session=session,
+            benchmark_id=benchmark_id,
             lambda_function=lambda_function,
             payload=payload,
             aws=aws,
