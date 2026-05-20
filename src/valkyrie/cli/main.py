@@ -663,7 +663,14 @@ def start(
             click.echo("\r\033[K", nl=False)
             if response.status_code != 200:
                 click.echo(click.style("Run failed to start!", fg="red", bold=True))
-                click.echo(response.text)
+                detail = str(response.json().get("detail", response.text))
+                match response.status_code:
+                    case 401 | 403:
+                        click.echo(click.style("Authentication error: ", fg="yellow", bold=True) + detail)
+                    case 502:
+                        click.echo(click.style("Benchmark service error: ", fg="yellow", bold=True) + detail)
+                    case _:
+                        click.echo(detail)
                 return
 
             format_start_benchmark_response(StartBenchmarkResponse.model_validate(response.json()))

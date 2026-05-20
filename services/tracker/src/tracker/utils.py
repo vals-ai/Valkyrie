@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 import logfire
 import sentry_sdk
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from daytona.common.errors import DaytonaNotFoundError, DaytonaRateLimitError
 from fastapi import Request
@@ -894,6 +894,13 @@ async def process_benchmark(
 
                 invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
 
+    except BenchmarkServiceUnauthenticatedError as e:
+        logfire.warn("process_benchmark failed due to benchmark service auth error")
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            error_message = f"{str(e)}\n{traceback.format_exc()}"
+            logger.warning(error_message)
+            commit_benchmark_error(benchmark_row, session, error_message)
     except Exception as e:
         logfire.exception("process_benchmark failed")
         sentry_sdk.capture_exception(e)

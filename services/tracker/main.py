@@ -7,7 +7,7 @@ from uuid import UUID
 import httpx
 import logfire
 import sentry_sdk
-from benchmark_service.client import BenchmarkServiceError
+from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -40,21 +40,21 @@ from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_
 from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus, FinalEvaluation, Org, RetryMode
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
+from tracker.docent_analysis import (
+    analyze_event_stream,
+)
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
-from tracker.docent_analysis import (
-    analyze_event_stream,
-)
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     BenchmarkTableRow,
-    FetchBenchmarkTasksRequest,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FetchBenchmarkTasksRequest,
     HarnessConfig,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
@@ -123,6 +123,11 @@ async def tracker_service_error_handler(_request: Request, exc: TrackerServiceEr
     logger.error(exc, exc_info=True)
     sentry_sdk.capture_exception(exc)
     raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.exception_handler(BenchmarkServiceUnauthenticatedError)
+async def benchmark_service_unauth_error_handler(_request: Request, exc: BenchmarkServiceUnauthenticatedError):
+    raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.exception_handler(BenchmarkServiceError)
@@ -247,6 +252,8 @@ async def start_benchmark(
             request.harness_config.aws,
             request.harness_config.s3_bucket,
         )
+    except BenchmarkServiceUnauthenticatedError:
+        raise
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
         commit_benchmark_error(benchmark_row, session, error_message)
