@@ -174,6 +174,7 @@ class TestForceStop:
         aws_credentials: AWSCredentials,
         daytona_secret_name: str,
         harness_config: HarnessConfig,
+        service_headers: dict[str, str],
     ) -> None:
         """
         Test end to end with a benchmark service -- Starting a slice of tasks and force stopping them
@@ -194,7 +195,7 @@ class TestForceStop:
 
         client = TestClient(app)
 
-        benchmark_service = example_benchmark_object.benchmark_service(daytona_secret_name, aws_credentials)
+        benchmark_service = example_benchmark_object.benchmark_service(daytona_secret_name, aws_credentials, service_headers=service_headers)
 
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=example_benchmark_object.arguments.task_ids, slice_str=example_benchmark_object.arguments.slice_str
@@ -204,7 +205,7 @@ class TestForceStop:
         benchmark_task = asyncio.create_task(
             process_benchmark(
                 start_benchmark_request_json=example_benchmark_object.start_benchmark_request(
-                    harness_config
+                    harness_config, service_headers=service_headers
                 ).model_dump(),
                 benchmark_id_str=str(example_benchmark_object.id),
                 verified_task_ids=verify_response.task_ids,

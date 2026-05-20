@@ -127,6 +127,12 @@ def harness_config(daytona_secret_name: str, aws_credentials: AWSCredentials) ->
     )
 
 
+@pytest.fixture(scope="session")
+def service_headers() -> dict[str, str]:
+    auth_key = os.getenv("BENCHMARK_SERVICE_AUTH_KEY")
+    return {"x-descope-api-key": auth_key} if auth_key else {}
+
+
 @pytest.fixture
 def creation_semaphore() -> Semaphore:
     return Semaphore(10)
@@ -134,10 +140,13 @@ def creation_semaphore() -> Semaphore:
 
 @pytest.fixture(scope="function")
 async def benchmark_service(
-    daytona_secret_name: str, aws_credentials: AWSCredentials
+    daytona_secret_name: str, aws_credentials: AWSCredentials, service_headers: dict[str, str]
 ) -> AsyncGenerator[BenchmarkServiceClient, None]:
     service = create_benchmark_service_client(
-        url=create_benchmark_service_url("swebench"), daytona_secret_name=daytona_secret_name, aws=aws_credentials
+        url=create_benchmark_service_url("swebench"),
+        daytona_secret_name=daytona_secret_name,
+        aws=aws_credentials,
+        service_headers=service_headers,
     )
 
     try:
