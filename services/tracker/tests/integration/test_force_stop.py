@@ -3,12 +3,13 @@ import asyncio
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import Resources as TrackerResources
+from daytona import SandboxState
 from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
 from main import app
-from tests.utils import random_task_id
 from tests.conftest import TEST_ORG_ID
+from tests.utils import random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
@@ -162,7 +163,12 @@ class TestForceStop:
 
         # Ensure that there are no more sandboxes left running
         sandboxes = await fetch_sandboxes(example_benchmark_object, daytona_client, 1)
-        assert len(sandboxes.items) == 0
+        active = [
+            sandbox
+            for sandbox in sandboxes.items
+            if sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED)
+        ]
+        assert len(active) == 0
 
         await daytona_client.close()
 
@@ -195,7 +201,9 @@ class TestForceStop:
 
         client = TestClient(app)
 
-        benchmark_service = example_benchmark_object.benchmark_service(daytona_secret_name, aws_credentials, service_headers=service_headers)
+        benchmark_service = example_benchmark_object.benchmark_service(
+            daytona_secret_name, aws_credentials, service_headers=service_headers
+        )
 
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=example_benchmark_object.arguments.task_ids, slice_str=example_benchmark_object.arguments.slice_str
@@ -262,6 +270,11 @@ class TestForceStop:
 
         # Try to fetch the sandboxes and see if any of them are still running
         sandboxes = await fetch_sandboxes(example_benchmark_object, daytona_client, 1)
-        assert len(sandboxes.items) == 0
+        active = [
+            sandbox
+            for sandbox in sandboxes.items
+            if sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED)
+        ]
+        assert len(active) == 0
 
         await daytona_client.close()
