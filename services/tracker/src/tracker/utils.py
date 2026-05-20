@@ -1560,8 +1560,11 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
             daytona_secret_name=flat["daytona_secret_name"],
         )
     except KeyError as e:
-        header_name = f"X-Harness-{e.args[0].replace('_', '-').title()}"
+        config_key = e.args[0].upper()
         raise HTTPException(
             status_code=400,
-            detail=f"Missing required harness header: {header_name}",
+            detail=(
+                f"Missing required config value: '{config_key}'. "
+                "Run `valk config init` to initialize or `valk config set` to update your Valkyrie config."
+            ),
         ) from e

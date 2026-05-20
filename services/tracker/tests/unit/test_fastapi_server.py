@@ -965,7 +965,7 @@ class TestFastapiServer:
         try:
             response = client.get("/fetch-benchmark", params={"benchmark_id": str(uuid4())})
             assert response.status_code == 400
-            assert "Missing required harness header" in response.json()["detail"]
+            assert "Missing required config value" in response.json()["detail"]
         finally:
             app.dependency_overrides[fetch_harness_config] = lambda: HarnessConfig(
                 aws=AWSCredentials(
