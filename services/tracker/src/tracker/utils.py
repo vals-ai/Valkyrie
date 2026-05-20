@@ -625,14 +625,11 @@ async def process_task(
         log_output(f"\n[ERROR] {e}")
         raise
     except ConnectionClosedError:
-        now = time.monotonic()
-        if last_message_monotonic is not None:
-            seconds_ago = int(now - last_message_monotonic)
-            elapsed = f"last message received {seconds_ago}s ago"
-        else:
-            seconds_since_start = int(now - task_start_monotonic)
-            elapsed = f"{seconds_since_start}s since task started with no messages received"
-        error_message = f"Benchmark service has not sent a message, causing the connection to disconnect: {elapsed}"
+        seconds = int(time.monotonic() - (last_message_monotonic or task_start_monotonic))
+        error_message = (
+            f"Benchmark service has not sent a message, causing the connection to disconnect: "
+            f"last message received {seconds}s ago"
+        )
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
