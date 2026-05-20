@@ -65,7 +65,9 @@ async def test_process_task(
     service_headers: dict[str, str],
 ):
     """Single task runs through the full pipeline and finishes with an evaluation result."""
-    benchmark, request = _create_benchmark(contract, harness_config, database_session, service_headers, _TASK_IDS=[_TASK_ID])
+    benchmark, request = _create_benchmark(
+        contract, harness_config, database_session, service_headers, _TASK_IDS=[_TASK_ID]
+    )
 
     task_row = Task(org_id=TEST_ORG_ID, task_id=_TASK_ID, benchmark=benchmark.id)
     database_session.add(task_row)
@@ -113,7 +115,9 @@ async def test_process_benchmark(
     service_headers: dict[str, str],
 ):
     """Multiple tasks run concurrently, all finish, final score is calculated."""
-    benchmark, request = _create_benchmark(contract, harness_config, database_session, service_headers, _TASK_IDS=_TASK_IDS)
+    benchmark, request = _create_benchmark(
+        contract, harness_config, database_session, service_headers, _TASK_IDS=_TASK_IDS
+    )
 
     await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS)
 
@@ -141,7 +145,9 @@ async def test_process_benchmark_error(
     service_headers: dict[str, str],
 ):
     """Benchmark-level error (e.g. database failure) sets benchmark status to ERROR."""
-    benchmark, request = _create_benchmark(contract, harness_config, database_session, service_headers, _TASK_IDS=[_TASK_ID])
+    benchmark, request = _create_benchmark(
+        contract, harness_config, database_session, service_headers, _TASK_IDS=[_TASK_ID]
+    )
 
     original_commit = Session.commit
     commit_count = {"n": 0}
@@ -172,7 +178,9 @@ async def test_process_task_error(
     failing_task = "astropy__astropy-13033"
     _TASK_IDS = [_TASK_ID, failing_task]
 
-    benchmark, request = _create_benchmark(contract, harness_config, database_session, service_headers, _TASK_IDS=_TASK_IDS)
+    benchmark, request = _create_benchmark(
+        contract, harness_config, database_session, service_headers, _TASK_IDS=_TASK_IDS
+    )
 
     original_setup_task = BenchmarkServiceClient.setup_task
 
