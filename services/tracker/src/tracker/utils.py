@@ -435,6 +435,7 @@ async def process_task(
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
                 resume_eval_start_time = time.perf_counter()
+                # Reset timer to keep last message from benchmark service received accurate
                 last_log_time = time.monotonic()
                 evaluation_result = await benchmark_service.resume_evaluation(
                     task_row.task_id,
@@ -520,6 +521,7 @@ async def process_task(
                     harness_config.s3_bucket,
                 )
 
+                # Reset timer to keep last message from benchmark service received accurate
                 last_log_time = time.monotonic()
                 _ = await benchmark_service.setup_task(
                     task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
@@ -578,6 +580,7 @@ async def process_task(
                     },
                 )
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
+                # Reset timer to keep last message from benchmark service received accurate
                 last_log_time = time.monotonic()
                 evaluation_result = await benchmark_service.evaluate_instance(
                     task_row.task_id,
