@@ -18,7 +18,6 @@ from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceErr
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from daytona.common.errors import DaytonaNotFoundError, DaytonaRateLimitError
 from fastapi import HTTPException, Request
-from pydantic import ValidationError
 from opentelemetry import trace
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
@@ -1548,19 +1547,21 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
     }
 
     try:
-        return HarnessConfig.model_validate(
-            {
-                "aws": {
-                    "aws_access_key_id": flat.get("aws_access_key_id"),
-                    "aws_secret_access_key": flat.get("aws_secret_access_key"),
-                    "aws_default_region": flat.get("aws_default_region"),
-                    "aws_session_token": flat.get("aws_session_token"),
-                },
-                "s3_bucket": flat.get("s3_bucket"),
-                "log_group": flat.get("log_group"),
-                "log_retention_policy": flat.get("log_retention_policy"),
-                "daytona_secret_name": flat.get("daytona_secret_name"),
-            }
+        return HarnessConfig(
+            aws=AWSCredentials(
+                aws_access_key_id=flat["aws_access_key_id"],
+                aws_secret_access_key=flat["aws_secret_access_key"],
+                aws_default_region=flat["aws_default_region"],
+                aws_session_token=flat.get("aws_session_token"),
+            ),
+            s3_bucket=flat["s3_bucket"],
+            log_group=flat["log_group"],
+            log_retention_policy=int(flat["log_retention_policy"]),
+            daytona_secret_name=flat["daytona_secret_name"],
         )
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=e.errors()) from e
+    except KeyError as e:
+        header_name = f"X-Harness-{e.args[0].replace('_', '-').title()}"
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required harness header: {header_name}",
+        ) from e
