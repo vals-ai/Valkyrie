@@ -17,7 +17,7 @@ import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from daytona.common.errors import DaytonaNotFoundError, DaytonaRateLimitError
-from fastapi import Request
+from fastapi import HTTPException, Request
 from opentelemetry import trace
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
@@ -1545,6 +1545,24 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
     flat = {
         key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
     }
+
+    required_keys = [
+        "aws_access_key_id",
+        "aws_secret_access_key",
+        "aws_default_region",
+        "s3_bucket",
+        "log_group",
+        "log_retention_policy",
+        "daytona_secret_name",
+    ]
+    missing = [key for key in required_keys if key not in flat]
+    if missing:
+        missing_headers = [f"X-Harness-{key.replace('_', '-').title()}" for key in missing]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Missing required harness headers: {', '.join(missing_headers)}",
+        )
+
     return HarnessConfig(
         aws=AWSCredentials(
             aws_access_key_id=flat["aws_access_key_id"],
