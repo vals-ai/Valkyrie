@@ -11,17 +11,19 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from tracker_shared.models import AgentContractRequest, DocentReadingStatus, TaskStatus
 from tracker_shared.types import (
+    AWSCredentials,
     AverageTaskBreakdown,
+    BenchmarkDetails,
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarkTasksRequest,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    HarnessConfig,
     Order,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -31,6 +33,7 @@ from tracker_shared.types import (
     StopBenchmarkResponse,
     VerifyTaskIdsResponse,
 )
+from tracker_shared.types import StartBenchmarkRequest as _StartBenchmarkRequestBase
 
 from tracker.database.models import BenchmarkArguments, BenchmarkStatus, FinalEvaluation
 
@@ -38,44 +41,8 @@ if TYPE_CHECKING:
     from benchmark_service.client import BenchmarkServiceClient
 
 
-class BenchmarkDetails(BaseModel):
-    status: BenchmarkStatus
-    started_at: datetime
-    total_tasks: int
-    finished_tasks: int
-    task_breakdown: dict[TaskStatus, int]
-    docent_reading_status: DocentReadingStatus
-    docent_reading_url: str | None = None
-
-
-class AWSCredentials(BaseModel, frozen=True):
-    aws_access_key_id: str
-    aws_secret_access_key: str = Field(repr=False)
-    aws_default_region: str
-    aws_session_token: str | None = Field(default=None, repr=False)
-
-
-class HarnessConfig(BaseModel):
-    aws: AWSCredentials
-    s3_bucket: str
-    log_group: str
-    log_retention_policy: int
-    daytona_secret_name: str
-
-
-class StartBenchmarkRequest(BaseModel):
-    contract: AgentContractRequest
-    benchmark_name: str
-    concurrency: int = 5
-    task_ids: list[str] | None = None
-    slice_str: str | None = None
-    lambda_function: str | None = None
-    dataset: str | None = None
-    harness_config: HarnessConfig
-    custom_benchmark_service: str | None = None
-    service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
-    webhook_secret_name: str | None = None
-    webhook_intervals: list[int] | None = None
+class StartBenchmarkRequest(_StartBenchmarkRequestBase):
+    """Tracker-specific extension that adds the benchmark_service property."""
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
