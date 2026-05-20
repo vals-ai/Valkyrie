@@ -409,13 +409,14 @@ async def process_task(
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     last_log_time: float = time.monotonic()
-    last_message_datetime: datetime | None = None
+    task_start_monotonic: float = time.monotonic()
+    last_message_monotonic: float | None = None
 
     # Collects the logs and dumps them when the queue is full
     def log_output(data: str) -> None:
-        nonlocal last_log_time, last_message_datetime
+        nonlocal last_log_time, last_message_monotonic
         last_log_time = time.monotonic()
-        last_message_datetime = datetime.now(ZoneInfo("UTC"))
+        last_message_monotonic = last_log_time
         log_queue.put_nowait(data)
         buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
 
@@ -624,10 +625,14 @@ async def process_task(
         log_output(f"\n[ERROR] {e}")
         raise
     except ConnectionClosedError:
-        last_time = last_message_datetime.isoformat() if last_message_datetime else "never"
-        error_message = (
-            f"Benchmark service has not sent a message, causing the connection to disconnect: time={last_time}"
-        )
+        now = time.monotonic()
+        if last_message_monotonic is not None:
+            seconds_ago = int(now - last_message_monotonic)
+            elapsed = f"last message received {seconds_ago}s ago"
+        else:
+            seconds_since_start = int(now - task_start_monotonic)
+            elapsed = f"{seconds_since_start}s since task started with no messages received"
+        error_message = f"Benchmark service has not sent a message, causing the connection to disconnect: {elapsed}"
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
