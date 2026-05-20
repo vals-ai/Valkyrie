@@ -409,13 +409,11 @@ async def process_task(
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     last_log_time: float = time.monotonic()
-    last_message_monotonic: float = time.monotonic()
 
     # Collects the logs and dumps them when the queue is full
     def log_output(data: str) -> None:
-        nonlocal last_log_time, last_message_monotonic
+        nonlocal last_log_time
         last_log_time = time.monotonic()
-        last_message_monotonic = last_log_time
         log_queue.put_nowait(data)
         buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
 
@@ -437,7 +435,7 @@ async def process_task(
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
                 resume_eval_start_time = time.perf_counter()
-                last_message_monotonic = time.monotonic()
+                last_log_time = time.monotonic()
                 evaluation_result = await benchmark_service.resume_evaluation(
                     task_row.task_id,
                     eval_resume_state=task_row.eval_resume_state,
@@ -522,7 +520,7 @@ async def process_task(
                     harness_config.s3_bucket,
                 )
 
-                last_message_monotonic = time.monotonic()
+                last_log_time = time.monotonic()
                 _ = await benchmark_service.setup_task(
                     task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
@@ -580,7 +578,7 @@ async def process_task(
                     },
                 )
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
-                last_message_monotonic = time.monotonic()
+                last_log_time = time.monotonic()
                 evaluation_result = await benchmark_service.evaluate_instance(
                     task_row.task_id,
                     sandbox.id,
@@ -627,7 +625,7 @@ async def process_task(
         log_output(f"\n[ERROR] {e}")
         raise
     except ConnectionClosedError:
-        seconds = int(time.monotonic() - last_message_monotonic)
+        seconds = int(time.monotonic() - last_log_time)
         error_message = (
             f"Benchmark service has not sent a message, causing the connection to disconnect: "
             f"last message received {seconds}s ago"

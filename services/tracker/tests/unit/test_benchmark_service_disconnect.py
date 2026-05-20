@@ -61,8 +61,7 @@ class TestBenchmarkServiceDisconnect:
             )
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            # Simulate the benchmark service disconnecting after messages were received.
-            # Wind back last_message_monotonic by 10s to simulate a 10s gap.
+            # Simulate the benchmark service disconnecting 10s after last_log_time was reset.
             monkeypatch.setattr(time, "monotonic", lambda: real_monotonic() + 10)
             raise ConnectionClosedError(None, None)
 
