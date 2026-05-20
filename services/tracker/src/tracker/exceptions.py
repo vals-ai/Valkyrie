@@ -1,7 +1,5 @@
 """Custom exceptions for the tracker service."""
 
-from benchmark_service.client import BenchmarkServiceError
-
 
 class TrackerServiceError(Exception):
     """Base exception for all tracker service errors."""
@@ -66,7 +64,3 @@ class SecretsError(TrackerServiceError):
 
     def __str__(self) -> str:
         return "Secret error: " + super().__str__()
-
-
-class BenchmarkServiceDisconnectError(BenchmarkServiceError):
-    """Benchmark service websocket disconnected due to inactivity."""
