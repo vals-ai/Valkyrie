@@ -38,6 +38,7 @@ dev = [
     "pytest-alembic>=0.12.1",
     "testcontainers[postgres]>=4.10.0",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]

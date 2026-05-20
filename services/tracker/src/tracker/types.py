@@ -33,9 +33,9 @@ class BenchmarkDetails(BaseModel):
 
 class AWSCredentials(BaseModel, frozen=True):
     aws_access_key_id: str
-    aws_secret_access_key: str
+    aws_secret_access_key: str = Field(repr=False)
     aws_default_region: str
-    aws_session_token: str | None = None
+    aws_session_token: str | None = Field(default=None, repr=False)
 
 
 class HarnessConfig(BaseModel):
@@ -56,7 +56,7 @@ class StartBenchmarkRequest(BaseModel):
     dataset: str | None = None
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
-    service_headers: dict[str, str] = {}
+    service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
 
