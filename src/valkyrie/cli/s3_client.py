@@ -384,7 +384,7 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
     """
     bucket_name = _fetch_bucket_name()
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         try:
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = cast(bytes, await response["Body"].read())

@@ -421,8 +421,7 @@ async def analyze_benchmark(
 
     return StreamingResponse(
         analyze_event_stream(
-            benchmark_row=benchmark_row,
-            session=session,
+            benchmark_id=benchmark_row.id,
             lambda_function=body.lambda_function,
             payload=payload,
             aws=harness_config.aws,
