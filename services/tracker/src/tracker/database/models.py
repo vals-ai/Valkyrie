@@ -44,6 +44,14 @@ class Org(SQLModel, table=True):
     name: str = Field(unique=True, index=True)
 
 
+class User(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    org_id: UUID = Field(foreign_key="org.id", index=True)
+    email: str = Field(index=True)
+    descope_user_id: str = Field(unique=True, index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+
+
 class TaskStatus(str, Enum):
     PENDING = "PENDING"
     BUILDING = "BUILDING"
