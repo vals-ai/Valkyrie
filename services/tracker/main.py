@@ -43,7 +43,7 @@ from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
-from tracker.exceptions import TrackerServiceError
+from tracker.exceptions import BenchmarkServiceDisconnect, TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
@@ -127,6 +127,12 @@ async def tracker_service_error_handler(_request: Request, exc: TrackerServiceEr
 
 @app.exception_handler(BenchmarkServiceUnauthenticatedError)
 async def benchmark_service_unauth_error_handler(_request: Request, exc: BenchmarkServiceUnauthenticatedError):
+    raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.exception_handler(BenchmarkServiceDisconnect)
+async def benchmark_service_disconnect_handler(_request: Request, exc: BenchmarkServiceDisconnect):
+    logger.warning(str(exc))
     raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 

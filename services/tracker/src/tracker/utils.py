@@ -52,6 +52,8 @@ from tracker.database.models import (
 from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
 from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
+from websockets.exceptions import ConnectionClosedError
+
 from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -407,11 +409,13 @@ async def process_task(
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     last_log_time: float = time.monotonic()
+    last_message_datetime: datetime | None = None
 
     # Collects the logs and dumps them when the queue is full
     def log_output(data: str) -> None:
-        nonlocal last_log_time
+        nonlocal last_log_time, last_message_datetime
         last_log_time = time.monotonic()
+        last_message_datetime = datetime.now(ZoneInfo("UTC"))
         log_queue.put_nowait(data)
         buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
 
@@ -619,6 +623,19 @@ async def process_task(
     except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")
         raise
+    except ConnectionClosedError:
+        last_time = last_message_datetime.isoformat() if last_message_datetime else "never"
+        error_message = (
+            f"Benchmark service has not sent a message, causing the connection to disconnect: time={last_time}"
+        )
+        logger.warning(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
     except Exception as e:
         logfire.exception("process_task failed")
         error_message = str(e)

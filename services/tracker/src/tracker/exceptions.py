@@ -1,5 +1,7 @@
 """Custom exceptions for the tracker service."""
 
+from benchmark_service.client import BenchmarkServiceError
+
 
 class TrackerServiceError(Exception):
     """Base exception for all tracker service errors."""
@@ -64,3 +66,12 @@ class SecretsError(TrackerServiceError):
 
     def __str__(self) -> str:
         return "Secret error: " + super().__str__()
+
+
+class BenchmarkServiceDisconnect(BenchmarkServiceError):
+    """Raised when the benchmark service websocket disconnects due to inactivity.
+
+    This is caused by the benchmark service not sending messages within the
+    keepalive window, not by a tracker issue. Handled separately so Sentry
+    does not treat it as an unhandled error.
+    """
