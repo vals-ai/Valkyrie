@@ -542,14 +542,17 @@ class TestStopAndResume:
         monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
 
         response = client.post(
-            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?concurrency=20",
             json={"task_ids": [], "service_headers": {}},
             headers={"X-Api-Key": "tracker-api-key"},
         )
 
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
+        assert captured_request_json["concurrency"] == 20
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.arguments.concurrency == 20
 
     async def test_running_retry_noops_without_error_tasks(
         self,

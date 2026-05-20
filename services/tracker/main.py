@@ -639,7 +639,7 @@ async def retry_or_resume_benchmark(
         )
 
     if concurrency is not None:
-        benchmark_row.arguments.concurrency = concurrency
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
         session.add(benchmark_row)
         session.commit()
 
