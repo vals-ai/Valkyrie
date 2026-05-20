@@ -30,12 +30,14 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import (
+    AWSCredentials,
     BenchmarkTableRow,
     FetchBenchmarksRequest,
     FinalViewResponse,
     HarnessConfig,
     StartBenchmarkRequest,
 )
+from tracker.utils import fetch_harness_config
 
 client = TestClient(app)
 
@@ -956,3 +958,23 @@ class TestFastapiServer:
 
         # None of the three cases should have reached Sentry
         assert captured == []
+
+    def test_fetch_benchmark_returns_400_when_harness_headers_missing(self):
+        """Missing X-Harness-* headers should return 400, not 500 KeyError."""
+        app.dependency_overrides.pop(fetch_harness_config)
+        try:
+            response = client.get("/fetch-benchmark", params={"benchmark_id": str(uuid4())})
+            assert response.status_code == 400
+            assert "Missing required config value" in response.json()["detail"]
+        finally:
+            app.dependency_overrides[fetch_harness_config] = lambda: HarnessConfig(
+                aws=AWSCredentials(
+                    aws_access_key_id="test-aws-access-key-id",
+                    aws_secret_access_key="test-aws-secret-access-key",
+                    aws_default_region="test-aws-default-region",
+                ),
+                s3_bucket="test-bucket",
+                log_group="test-log-group",
+                log_retention_policy=30,
+                daytona_secret_name="test-daytona-secret",
+            )
