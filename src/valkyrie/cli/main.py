@@ -663,7 +663,7 @@ def start(
             click.echo("\r\033[K", nl=False)
             if response.status_code != 200:
                 click.echo(click.style("Run failed to start!", fg="red", bold=True))
-                detail = response.json()["detail"]
+                detail = str(response.json().get("detail", response.text))
                 match response.status_code:
                     case 401 | 403:
                         click.echo(click.style("Authentication error: ", fg="yellow", bold=True) + detail)
