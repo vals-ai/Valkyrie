@@ -54,7 +54,7 @@ TEST_LOG_GROUP=                 # CloudWatch log group (e.g. valkyrie-test-log-g
 TEST_DAYTONA_SECRET_NAME=       # AWS Secrets Manager secret containing Daytona API key (e.g. AgenticHarnessSecrets)
 
 # Benchmark service
-BENCHMARK_SERVICE_BASE_URL=benchmarks.vals.ai
+BENCHMARK_SERVICE_BASE_URL=     # Use the domain of the benchmark service
 BENCHMARK_SERVICE_AUTH_KEY=     # Access key for authenticating with a benchmark service
 ```
 
