@@ -59,7 +59,7 @@ test-unit: venv-check
 test-alembic: venv-check
 	$(PYTEST) --test-alembic -m alembic
 test-integration: venv-check env-check
-	$(PYTEST) tests/integration
+	$(PYTEST) tests/integration -n auto
 
 # --- Migrations ---
 migrate-gen: venv-check
