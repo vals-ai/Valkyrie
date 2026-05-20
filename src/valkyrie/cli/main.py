@@ -10,8 +10,8 @@ from uuid import UUID
 import click
 import yaml
 from tracker_shared.exceptions import S3Error
-from tracker_shared.models import RetryMode
-from tracker_shared.types import FinalViewResponse, RetrieveResultsResponse, StartBenchmarkResponse
+from tracker_shared.models import BenchmarkStatus, RetryMode
+from tracker_shared.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
 from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
@@ -29,6 +29,7 @@ from valkyrie.cli.s3_client import (
 )
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import (
+    CONFIG_LOCATION,
     ConfigValue,
     check_tracker_service_health,
     download_agent_outputs,
@@ -46,8 +47,6 @@ from valkyrie.cli.utils import (
     stream_benchmark_status,
 )
 from valkyrie.schemas import AgentConfig
-
-CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
 
 
 @click.group()
@@ -1065,16 +1064,16 @@ run.add_command(retry_command)
 )
 @click.option(
     "--status",
-    type=click.Choice(["IN_PROGRESS", "STOPPING", "STOPPED", "FINISHED", "ERROR"], case_sensitive=False),
+    type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
     required=False,
     default=None,
     help="Status of the benchmarks to fetch (e.g., in_progress, finished, error)",
 )
 @click.option(
     "--order-by",
-    type=click.Choice(["asc", "desc"], case_sensitive=False),
+    type=click.Choice([option.value for option in Order], case_sensitive=False),
     required=False,
-    default="desc",
+    default=Order.DESC.value,
     help="Order by the benchmarks to fetch (e.g., desc, asc)",
 )
 @click.option(
