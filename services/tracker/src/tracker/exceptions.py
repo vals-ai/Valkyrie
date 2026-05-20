@@ -68,7 +68,7 @@ class SecretsError(TrackerServiceError):
         return "Secret error: " + super().__str__()
 
 
-class BenchmarkServiceDisconnect(BenchmarkServiceError):
+class BenchmarkServiceDisconnectError(BenchmarkServiceError):
     """Raised when the benchmark service websocket disconnects due to inactivity.
 
     This is caused by the benchmark service not sending messages within the
