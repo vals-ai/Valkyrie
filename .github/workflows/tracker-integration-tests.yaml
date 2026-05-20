@@ -25,32 +25,6 @@ jobs:
 
       - uses: actions/checkout@v4
 
-      - name: Checkout SWEBench Benchmark Service
-        uses: actions/checkout@v4
-        with:
-          repository: vals-ai/SWEBenchBenchmarkService
-          token: ${{ secrets.GH_PAT }}
-          path: SWEBenchBenchmarkService
-
-      - name: Build and start SWEBench Benchmark Service
-        run: |
-          cd SWEBenchBenchmarkService
-          make docker-build
-          docker run -d -p 8001:8001 benchmark-service:latest
-
-      - name: Wait for Benchmark Service to be ready
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:8001/health > /dev/null 2>&1; then
-              echo "Benchmark service is ready"
-              exit 0
-            fi
-            echo "Waiting for benchmark service... ($i/30)"
-            sleep 2
-          done
-          echo "Benchmark service failed to start"
-          exit 1
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -76,9 +50,11 @@ jobs:
       - name: Run integration tests
         run: |
           cd services/tracker
-          uv run pytest tests/integration
+          uv run pytest tests/integration -n auto
         env:
           TEST_AWS_S3_BUCKET: ${{ secrets.TEST_AWS_S3_BUCKET }}
           TEST_LOG_GROUP: ${{ secrets.TEST_LOG_GROUP }}
           TEST_DAYTONA_SECRET_NAME: ${{ secrets.TEST_DAYTONA_SECRET_NAME }}
+          BENCHMARK_SERVICE_BASE_URL: ${{ secrets.BENCHMARK_SERVICE_BASE_URL }}
+          BENCHMARK_SERVICE_AUTH_KEY: ${{ secrets.BENCHMARK_SERVICE_AUTH_KEY }}
           AWS_DEFAULT_REGION: us-east-1

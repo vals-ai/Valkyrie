@@ -35,6 +35,7 @@ def _create_benchmark(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
     session: Session,
+    service_headers: dict[str, str],
     _TASK_IDS: list[str] | None = None,
     concurrency: int = 5,
 ) -> tuple[Benchmark, StartBenchmarkRequest]:
@@ -45,6 +46,7 @@ def _create_benchmark(
         concurrency=concurrency,
         task_ids=_TASK_IDS,
         harness_config=harness_config,
+        service_headers=service_headers,
     )
     benchmark = start_benchmark_request_to_benchmark(
         request,
@@ -60,9 +62,12 @@ async def test_process_task(
     database_session: Session,
     benchmark_service: BenchmarkServiceClient,
     harness_config: HarnessConfig,
+    service_headers: dict[str, str],
 ):
     """Single task runs through the full pipeline and finishes with an evaluation result."""
-    benchmark, request = _create_benchmark(contract, harness_config, database_session, _TASK_IDS=[_TASK_ID])
+    benchmark, request = _create_benchmark(
+        contract, harness_config, database_session, service_headers, _TASK_IDS=[_TASK_ID]
+    )
 
     task_row = Task(org_id=TEST_ORG_ID, task_id=_TASK_ID, benchmark=benchmark.id)
     database_session.add(task_row)
@@ -107,9 +112,12 @@ async def test_process_benchmark(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
+    service_headers: dict[str, str],
 ):
     """Multiple tasks run concurrently, all finish, final score is calculated."""
-    benchmark, request = _create_benchmark(contract, harness_config, database_session, _TASK_IDS=_TASK_IDS)
+    benchmark, request = _create_benchmark(
+        contract, harness_config, database_session, service_headers, _TASK_IDS=_TASK_IDS
+    )
 
     await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS)
 
@@ -134,9 +142,12 @@ async def test_process_benchmark_error(
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: MonkeyPatch,
+    service_headers: dict[str, str],
 ):
     """Benchmark-level error (e.g. database failure) sets benchmark status to ERROR."""
-    benchmark, request = _create_benchmark(contract, harness_config, database_session, _TASK_IDS=[_TASK_ID])
+    benchmark, request = _create_benchmark(
+        contract, harness_config, database_session, service_headers, _TASK_IDS=[_TASK_ID]
+    )
 
     original_commit = Session.commit
     commit_count = {"n": 0}
@@ -161,12 +172,15 @@ async def test_process_task_error(
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: MonkeyPatch,
+    service_headers: dict[str, str],
 ):
     """One task errors during setup while the other succeeds — benchmark still finishes."""
     failing_task = "astropy__astropy-13033"
     _TASK_IDS = [_TASK_ID, failing_task]
 
-    benchmark, request = _create_benchmark(contract, harness_config, database_session, _TASK_IDS=_TASK_IDS)
+    benchmark, request = _create_benchmark(
+        contract, harness_config, database_session, service_headers, _TASK_IDS=_TASK_IDS
+    )
 
     original_setup_task = BenchmarkServiceClient.setup_task
 
@@ -208,6 +222,7 @@ async def test_concurrent_benchmarks_same_task(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
+    service_headers: dict[str, str],
 ):
     """Same task ID can run across two separate benchmarks concurrently without conflicts."""
     benchmarks: list[Benchmark] = []
@@ -225,7 +240,7 @@ async def test_concurrent_benchmarks_same_task(
     await gather(
         *[
             process_benchmark(
-                benchmark.start_benchmark_request(harness_config).model_dump(),
+                benchmark.start_benchmark_request(harness_config, service_headers=service_headers).model_dump(),
                 str(benchmark.id),
                 [_TASK_ID],
             )
