@@ -69,9 +69,4 @@ class SecretsError(TrackerServiceError):
 
 
 class BenchmarkServiceDisconnectError(BenchmarkServiceError):
-    """Raised when the benchmark service websocket disconnects due to inactivity.
-
-    This is caused by the benchmark service not sending messages within the
-    keepalive window, not by a tracker issue. Handled separately so Sentry
-    does not treat it as an unhandled error.
-    """
+    """Benchmark service websocket disconnected due to inactivity."""
