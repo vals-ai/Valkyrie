@@ -362,4 +362,9 @@ class OrgConfig(SQLModel, table=True):
     log_group: str | None = Field(default=None)
     log_retention_policy: str | None = Field(default=None)
     webhook: str | None = Field(default=None)
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+    updated_at: datetime = Field(
+        default_factory=lambda: datetime.now(ZoneInfo("UTC")),
+        sa_column_kwargs={
+            "onupdate": lambda: datetime.now(ZoneInfo("UTC")),
+        },
+    )
