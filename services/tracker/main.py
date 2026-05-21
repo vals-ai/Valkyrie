@@ -15,6 +15,7 @@ from sqlmodel import Session
 
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.org_config import router as org_config_router
+from tracker.api.single_benchmark import router as single_benchmark_router
 from tracker.api.users import router as users_router
 from tracker.auth import (
     extract_api_key,
@@ -93,6 +94,7 @@ app.add_middleware(RequestContextMiddleware)
 
 app.include_router(benchmarks_status_router)
 app.include_router(org_config_router)
+app.include_router(single_benchmark_router)
 app.include_router(users_router)
 
 
