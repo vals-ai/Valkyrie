@@ -655,10 +655,7 @@ async def process_task(
 
         return {task_id: None}
     except InvalidStatus as e:
-        error_message = (
-            f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code}). "
-            f"The service may be down or the endpoint may not exist."
-        )
+        error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
