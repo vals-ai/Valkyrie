@@ -52,7 +52,8 @@ from tracker.database.models import (
 from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
 from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
-from websockets.exceptions import ConnectionClosedError
+from pydantic import ValidationError
+from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
@@ -73,9 +74,31 @@ from tracker.types import (
 
 logger = get_logger(__name__)
 
+_MAX_ERROR_MESSAGE_LENGTH: int = 500
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+
+
+def _sanitize_benchmark_service_error(message: str) -> str:
+    """Strip HTML content and truncate long benchmark service error messages."""
+    lower = message.lower()
+    if "<html" in lower or "<!doctype" in lower:
+        html_start = len(message)
+        for tag in ["<html", "<!doctype", "<!DOCTYPE"]:
+            idx = message.find(tag)
+            if idx != -1 and idx < html_start:
+                html_start = idx
+        prefix = message[:html_start].rstrip()
+        if prefix:
+            message = prefix + " (HTML error page omitted)"
+        else:
+            message = "Benchmark service returned an HTML error page instead of a valid response"
+
+    if len(message) > _MAX_ERROR_MESSAGE_LENGTH:
+        message = message[:_MAX_ERROR_MESSAGE_LENGTH] + "..."
+
+    return message
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -641,6 +664,48 @@ async def process_task(
             commit_task_error(task, task_session, error_message)
 
         return {task_id: None}
+    except ValidationError as e:
+        field_names = ", ".join(".".join(str(loc) for loc in err["loc"]) for err in e.errors())
+        error_message = (
+            f"Benchmark service returned an incompatible task response. Missing or invalid fields: {field_names}"
+        )
+        logfire.exception("process_task failed")
+        logger.error(error_message, exc_info=True)
+        sentry_sdk.capture_exception(e)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
+    except InvalidStatus as e:
+        error_message = (
+            f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code}). "
+            f"The service may be down or the endpoint may not exist."
+        )
+        logfire.exception("process_task failed")
+        logger.error(error_message, exc_info=True)
+        sentry_sdk.capture_exception(e)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
+    except BenchmarkServiceError as e:
+        error_message = _sanitize_benchmark_service_error(str(e))
+        logfire.exception("process_task failed")
+        logger.error(error_message, exc_info=True)
+        sentry_sdk.capture_exception(e)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
     except Exception as e:
         logfire.exception("process_task failed")
         error_message = str(e)
@@ -924,6 +989,13 @@ async def process_benchmark(
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             logger.warning(error_message)
+            commit_benchmark_error(benchmark_row, session, error_message)
+    except BenchmarkServiceError as e:
+        logfire.exception("process_benchmark failed")
+        sentry_sdk.capture_exception(e)
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            error_message = _sanitize_benchmark_service_error(str(e))
             commit_benchmark_error(benchmark_row, session, error_message)
     except Exception as e:
         logfire.exception("process_benchmark failed")
