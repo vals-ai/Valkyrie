@@ -173,10 +173,19 @@ class BenchmarkTableRow(BaseModel):
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
+    # Per-TaskStatus counts: {"PENDING": 1, "IN_PROGRESS": 2, "FINISHED": 4, ...}.
+    # Absent keys mean zero; sum equals total_tasks.
+    task_state_counts: dict[str, int] = {}
     run_by_email: str | None = None
 
-    @field_serializer("started_at", "finished_at")
-    def _serialize_dts(self, value: datetime | None) -> str | None:
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None  # started_at is non-nullable
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
         return _serialize_utc(value)
 
 
@@ -225,6 +234,8 @@ class BenchmarkStatusEntry(BaseModel):
     finished_at: datetime | None
     total_tasks: int
     finished_tasks: int
+    # Per-TaskStatus counts; same shape as BenchmarkTableRow.task_state_counts.
+    task_state_counts: dict[str, int] = {}
 
     @field_serializer("finished_at")
     def _serialize_dt(self, value: datetime | None) -> str | None:

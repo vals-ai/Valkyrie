@@ -243,18 +243,9 @@ class Benchmark(SQLModel, table=True):
         """
         from tracker.types import BenchmarkTableRow
 
-        total_tasks: int = session.exec(
-            select(func.count(col(Task.task_id)))
-            .where(col(Task.benchmark) == self.id)
-            .where(col(Task.org_id) == self.org_id)
-        ).one()
-
-        finished_tasks: int = session.exec(
-            select(func.count(col(Task.task_id)))
-            .where(col(Task.benchmark) == self.id)
-            .where(col(Task.org_id) == self.org_id)
-            .where(col(Task.status).in_([TaskStatus.FINISHED, TaskStatus.ERROR]))
-        ).one()
+        task_state_counts = self.fetch_task_state_counts(session)
+        total_tasks = sum(task_state_counts.values())
+        finished_tasks = task_state_counts.get(TaskStatus.FINISHED, 0) + task_state_counts.get(TaskStatus.ERROR, 0)
 
         run_by_email: str | None = None
         if self.run_by_id is not None:
@@ -271,8 +262,19 @@ class Benchmark(SQLModel, table=True):
             status=self.status,
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,
+            task_state_counts={k.value: v for k, v in task_state_counts.items()},
             run_by_email=run_by_email,
         )
+
+    def fetch_task_state_counts(self, session: Session) -> dict[TaskStatus, int]:
+        """Count this benchmark's tasks grouped by TaskStatus."""
+        rows = session.exec(
+            select(col(Task.status), func.count(col(Task.task_id)))
+            .where(col(Task.benchmark) == self.id)
+            .where(col(Task.org_id) == self.org_id)
+            .group_by(col(Task.status))
+        ).all()
+        return {status: count for status, count in rows}
 
 
 @event.listens_for(Benchmark, "before_insert")

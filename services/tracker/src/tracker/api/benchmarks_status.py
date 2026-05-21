@@ -4,10 +4,10 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session, col, select
 
 from tracker.auth import get_current_user_and_org
-from tracker.database.models import Benchmark, Org, Task, TaskStatus, User
+from tracker.database.models import Benchmark, Org, TaskStatus, User
 from tracker.database.session import get_session
 from tracker.types import BenchmarkStatusEntry, BenchmarkStatusResponse
 
@@ -42,17 +42,9 @@ def get_benchmarks_status(
 
     entries: list[BenchmarkStatusEntry] = []
     for b in benchmarks:
-        total = session.exec(
-            select(func.count(col(Task.task_id)))
-            .where(col(Task.benchmark) == b.id)
-            .where(col(Task.org_id) == b.org_id)
-        ).one()
-        finished = session.exec(
-            select(func.count(col(Task.task_id)))
-            .where(col(Task.benchmark) == b.id)
-            .where(col(Task.org_id) == b.org_id)
-            .where(col(Task.status).in_([TaskStatus.FINISHED, TaskStatus.ERROR]))
-        ).one()
+        state_counts = b.fetch_task_state_counts(session)
+        total = sum(state_counts.values())
+        finished = state_counts.get(TaskStatus.FINISHED, 0) + state_counts.get(TaskStatus.ERROR, 0)
         entries.append(
             BenchmarkStatusEntry(
                 id=b.id,
@@ -60,6 +52,7 @@ def get_benchmarks_status(
                 finished_at=b.finished_at,
                 total_tasks=total,
                 finished_tasks=finished,
+                task_state_counts={k.value: v for k, v in state_counts.items()},
             )
         )
 
