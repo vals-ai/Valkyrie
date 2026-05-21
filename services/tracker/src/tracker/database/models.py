@@ -347,3 +347,18 @@ class EvaluationResult(SQLModel, table=True):
     instance_id: str = Field(unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+
+
+class OrgConfig(SQLModel, table=True):
+    __tablename__ = "org_config"  # type: ignore[assignment]
+
+    org_id: UUID = Field(foreign_key="org.id", primary_key=True)
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    aws_default_region: str
+    s3_bucket: str
+    daytona_secret_name: str
+    log_group: str | None = Field(default=None)
+    log_retention_policy: str | None = Field(default=None)
+    webhook: str | None = Field(default=None)
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
