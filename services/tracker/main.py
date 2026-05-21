@@ -191,7 +191,7 @@ async def start_benchmark(
     http_request: Request,
     request: StartBenchmarkRequest,
     session: Session = Depends(get_session),
-    org: Org = Depends(get_current_org),
+    user_and_org: tuple[User | None, Org] = Depends(get_current_user_and_org),
 ) -> StartBenchmarkResponse:
     """
     Start a benchmark run with the uploaded contract.
@@ -209,6 +209,7 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
+    user, org = user_and_org
     request = request.model_copy(
         update={
             "service_headers": forward_tracker_api_key(
@@ -226,6 +227,7 @@ async def start_benchmark(
 
     # Create benchmark row inside of database to mark start of the benchmark
     benchmark_row = start_benchmark_request_to_benchmark(request, org)
+    benchmark_row.run_by_id = user.id if user else None
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))
