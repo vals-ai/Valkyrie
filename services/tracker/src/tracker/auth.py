@@ -9,7 +9,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlmodel import Session, select
 
 from tracker.config import AUTH_REQUIRED, DESCOPE_PROJECT_ID
-from tracker.database.models import DEFAULT_ORG_NAME, Org
+from tracker.database.models import DEFAULT_ORG_NAME, Org, User
 from tracker.database.session import get_session
 from tracker.logging import get_logger
 
@@ -64,6 +64,30 @@ def resolve_descope_tenant(api_key: str) -> str:
 def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
     """Look up an org by Descope tenant name. Returns None if not found."""
     return session.exec(select(Org).where(Org.name == tenant_name)).first()
+
+
+def get_or_create_user(
+    session: Session,
+    *,
+    descope_user_id: str,
+    email: str,
+    org: Org,
+) -> User:
+    """Idempotent lookup-or-insert keyed on descope_user_id. Updates email if changed."""
+    existing = session.exec(select(User).where(User.descope_user_id == descope_user_id)).first()
+    if existing is not None:
+        if existing.email != email:
+            existing.email = email
+            session.add(existing)
+            session.commit()
+            session.refresh(existing)
+        return existing
+
+    user = User(org_id=org.id, email=email, descope_user_id=descope_user_id)
+    session.add(user)
+    session.commit()
+    session.refresh(user)
+    return user
 
 
 def forward_tracker_api_key(
