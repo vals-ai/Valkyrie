@@ -15,7 +15,7 @@ from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import process_benchmark, process_task, start_benchmark_request_to_benchmark
+from tracker.utils import fetch_benchmark_row, process_benchmark, process_task, start_benchmark_request_to_benchmark
 
 
 class TestBenchmarkServiceDisconnect:
@@ -212,8 +212,6 @@ class TestBenchmarkServiceDisconnect:
             benchmark_id_str=str(benchmark_id),
             verified_task_ids=["task_0"],
         )
-
-        from tracker.utils import fetch_benchmark_row
 
         with Session(bind=database_session.bind) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, self._test_org)
