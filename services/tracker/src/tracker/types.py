@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
+
+if TYPE_CHECKING:
+    from tracker.database.models import OrgConfig
 
 from benchmark_service.client import BenchmarkServiceClient
 from pydantic import BaseModel
@@ -166,3 +169,56 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
+
+
+MASKED_SECRET = "********"
+
+
+class OrgConfigResponse(BaseModel):
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    aws_default_region: str
+    s3_bucket: str
+    daytona_secret_name: str
+    log_group: str | None = None
+    log_retention_policy: str | None = None
+    webhook: str | None = None
+
+    @classmethod
+    def from_org_config(cls, config: OrgConfig) -> OrgConfigResponse:
+        return cls(
+            aws_access_key_id=config.aws_access_key_id,
+            aws_secret_access_key=MASKED_SECRET,
+            aws_default_region=config.aws_default_region,
+            s3_bucket=config.s3_bucket,
+            daytona_secret_name=MASKED_SECRET,
+            log_group=config.log_group,
+            log_retention_policy=config.log_retention_policy,
+            webhook=MASKED_SECRET if config.webhook is not None else None,
+        )
+
+
+class OrgConfigUpdate(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    aws_default_region: str
+    s3_bucket: str
+    daytona_secret_name: str
+    log_group: str | None = None
+    log_retention_policy: str | None = None
+    webhook: str | None = None
+
+    def apply_to(self, config: OrgConfig) -> None:
+        config.aws_access_key_id = self.aws_access_key_id
+        if self.aws_secret_access_key != MASKED_SECRET:
+            config.aws_secret_access_key = self.aws_secret_access_key
+        config.aws_default_region = self.aws_default_region
+        config.s3_bucket = self.s3_bucket
+        if self.daytona_secret_name != MASKED_SECRET:
+            config.daytona_secret_name = self.daytona_secret_name
+        config.log_group = self.log_group
+        config.log_retention_policy = self.log_retention_policy
+        if self.webhook != MASKED_SECRET:
+            config.webhook = self.webhook
