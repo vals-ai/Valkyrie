@@ -18,11 +18,12 @@ from tracker.auth import (
     find_org_by_tenant,
     forward_tracker_api_key,
     get_current_org,
+    get_current_user_and_org,
     resolve_descope_tenant,
 )
 from tracker.cloudwatch import get_cloudwatch_url
 from tracker.config import AUTH_REQUIRED, CORS_ALLOWED_ORIGINS
-from tracker.database.models import Benchmark, BenchmarkStatus, Org
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, User
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
@@ -140,6 +141,19 @@ def health_check() -> dict[str, str]:
     if not check_database_connection():
         raise HTTPException(status_code=503, detail="Database is not accessible")
     return {"status": "ok"}
+
+
+@app.get("/whoami")
+def whoami(
+    user_and_org: tuple[User | None, Org] = Depends(get_current_user_and_org),
+) -> dict[str, str | None]:
+    user, org = user_and_org
+    return {
+        "org_id": str(org.id),
+        "org_name": org.name,
+        "user_id": str(user.id) if user else None,
+        "email": user.email if user else None,
+    }
 
 
 @app.post("/init")
