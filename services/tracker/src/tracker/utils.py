@@ -647,9 +647,6 @@ async def process_task(
         error_message = (
             f"Benchmark service returned an incompatible task response. Missing or invalid fields: {field_names}"
         )
-        logfire.exception("process_task failed")
-        logger.error(error_message, exc_info=True)
-        sentry_sdk.capture_exception(e)
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
@@ -662,9 +659,6 @@ async def process_task(
             f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code}). "
             f"The service may be down or the endpoint may not exist."
         )
-        logfire.exception("process_task failed")
-        logger.error(error_message, exc_info=True)
-        sentry_sdk.capture_exception(e)
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
@@ -674,9 +668,6 @@ async def process_task(
         return {task_id: None}
     except BenchmarkServiceError as e:
         error_message = str(e)
-        logfire.exception("process_task failed")
-        logger.error(error_message, exc_info=True)
-        sentry_sdk.capture_exception(e)
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
@@ -969,8 +960,6 @@ async def process_benchmark(
             logger.warning(error_message)
             commit_benchmark_error(benchmark_row, session, error_message)
     except BenchmarkServiceError as e:
-        logfire.exception("process_benchmark failed")
-        sentry_sdk.capture_exception(e)
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             error_message = str(e)
