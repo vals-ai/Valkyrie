@@ -74,31 +74,9 @@ from tracker.types import (
 
 logger = get_logger(__name__)
 
-_MAX_ERROR_MESSAGE_LENGTH: int = 500
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
-
-
-def _sanitize_benchmark_service_error(message: str) -> str:
-    """Strip HTML content and truncate long benchmark service error messages."""
-    lower = message.lower()
-    if "<html" in lower or "<!doctype" in lower:
-        html_start = len(message)
-        for tag in ["<html", "<!doctype", "<!DOCTYPE"]:
-            idx = message.find(tag)
-            if idx != -1 and idx < html_start:
-                html_start = idx
-        prefix = message[:html_start].rstrip()
-        if prefix:
-            message = prefix + " (HTML error page omitted)"
-        else:
-            message = "Benchmark service returned an HTML error page instead of a valid response"
-
-    if len(message) > _MAX_ERROR_MESSAGE_LENGTH:
-        message = message[:_MAX_ERROR_MESSAGE_LENGTH] + "..."
-
-    return message
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -695,7 +673,7 @@ async def process_task(
 
         return {task_id: None}
     except BenchmarkServiceError as e:
-        error_message = _sanitize_benchmark_service_error(str(e))
+        error_message = str(e)
         logfire.exception("process_task failed")
         logger.error(error_message, exc_info=True)
         sentry_sdk.capture_exception(e)
@@ -995,7 +973,7 @@ async def process_benchmark(
         sentry_sdk.capture_exception(e)
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            error_message = _sanitize_benchmark_service_error(str(e))
+            error_message = str(e)
             commit_benchmark_error(benchmark_row, session, error_message)
     except Exception as e:
         logfire.exception("process_benchmark failed")
