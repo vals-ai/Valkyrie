@@ -157,6 +157,7 @@ class Benchmark(SQLModel, table=True):
     status: BenchmarkStatus = Field(
         default=BenchmarkStatus.IN_PROGRESS
     )  # TODO: Automatically set to finished when all tasks are in a finished state or error state
+    run_by_id: UUID | None = Field(default=None, foreign_key="user.id", index=True)
 
     error_message: str | None = Field(default=None)
     webhook_secret_name: str | None = Field(default=None)
