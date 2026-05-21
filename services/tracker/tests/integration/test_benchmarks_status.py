@@ -77,7 +77,7 @@ def test_status_returns_requested_ids(client, database_session):
     database_session.commit()
 
     resp = client.get(
-        f"/benchmarks/status?ids={a.id}&ids={b.id}",
+        f"/benchmarks/status?ids={a.id},{b.id}",
         headers={"Authorization": "Bearer fake"},
     )
     assert resp.status_code == 200, resp.text
@@ -93,7 +93,7 @@ def test_status_ignores_foreign_ids(client, database_session):
     foreign = uuid4()
 
     resp = client.get(
-        f"/benchmarks/status?ids={bench.id}&ids={foreign}",
+        f"/benchmarks/status?ids={bench.id},{foreign}",
         headers={"Authorization": "Bearer fake"},
     )
     data = resp.json()

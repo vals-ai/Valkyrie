@@ -16,18 +16,28 @@ router = APIRouter()
 
 @router.get("/benchmarks/status", response_model=BenchmarkStatusResponse)
 def get_benchmarks_status(
-    ids: list[UUID] = Query(default_factory=list),
+    ids: str = Query(default="", description="Comma-separated benchmark UUIDs"),
     user_and_org: tuple[User | None, Org] = Depends(get_current_user_and_org),
     session: Session = Depends(get_session),
 ) -> BenchmarkStatusResponse:
     _, org = user_and_org
-    if not ids:
+    parsed_ids: list[UUID] = []
+    for raw in ids.split(","):
+        token = raw.strip()
+        if not token:
+            continue
+        try:
+            parsed_ids.append(UUID(token))
+        except ValueError:
+            continue
+
+    if not parsed_ids:
         return BenchmarkStatusResponse(entries=[])
 
     benchmarks = session.exec(
         select(Benchmark)
         .where(Benchmark.org_id == org.id)
-        .where(col(Benchmark.id).in_(ids))
+        .where(col(Benchmark.id).in_(parsed_ids))
     ).all()
 
     entries: list[BenchmarkStatusEntry] = []
