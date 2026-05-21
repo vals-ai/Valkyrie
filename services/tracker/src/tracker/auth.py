@@ -110,6 +110,92 @@ def forward_tracker_api_key(
     return forwarded_headers
 
 
+def _extract_bearer_token(request: Request) -> str | None:
+    auth = request.headers.get("authorization")
+    if not auth:
+        return None
+    parts = auth.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1]
+
+
+def resolve_bearer_session(jwt: str, session: Session) -> tuple[User, Org]:
+    """Validate a Descope session JWT and resolve the (user, org) pair."""
+    if not _descope_client:
+        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
+
+    try:
+        jwt_response = _descope_client.validate_session(jwt)
+    except AuthException as e:
+        raise HTTPException(status_code=401, detail=f"Invalid session: {e.error_message}") from e
+
+    tenants = list(jwt_response.get("tenants", {}).keys())
+    if not tenants:
+        raise HTTPException(status_code=400, detail="Session token has no tenant")
+    # Platform enforces single-tenancy per user (see master plan decision #15); take the first.
+    tenant_name = tenants[0]
+
+    org = find_org_by_tenant(tenant_name, session)
+    if not org:
+        raise HTTPException(status_code=404, detail=f"Organization '{tenant_name}' not configured")
+
+    descope_user_id = jwt_response.get("userId") or jwt_response.get("user_id")
+    email = jwt_response.get("email") or ""
+    if not descope_user_id:
+        raise HTTPException(status_code=400, detail="Session token missing userId")
+
+    user = get_or_create_user(session, descope_user_id=descope_user_id, email=email, org=org)
+    return user, org
+
+
+def get_current_user_and_org(request: Request, session: Session = Depends(get_session)) -> tuple[User | None, Org]:
+    """Dispatch table for the two supported auth header conventions.
+
+    - Authorization: Bearer <session_jwt> -> validate_session -> (User, Org)
+    - x-api-key: <access_key>             -> exchange_access_key -> (User|None, Org)
+
+    Self-hosted mode (AUTH_REQUIRED=false) short-circuits to the default org with no user.
+    """
+    if not AUTH_REQUIRED:
+        return None, get_default_org(session)
+
+    bearer = _extract_bearer_token(request)
+    api_key = request.headers.get("x-api-key")
+
+    if bearer and api_key:
+        raise HTTPException(status_code=401, detail="Send Authorization OR x-api-key, not both")
+    if not bearer and not api_key:
+        raise HTTPException(status_code=401, detail="Missing Authorization or x-api-key header")
+
+    if bearer:
+        return resolve_bearer_session(bearer, session)
+
+    # x-api-key path — reuse existing validation, then lift user_id if present
+    if api_key is None:
+        raise HTTPException(status_code=401, detail="Missing x-api-key header")
+    if not _descope_client:
+        raise RuntimeError("Descope client not initialized")
+    try:
+        jwt_response = _descope_client.exchange_access_key(api_key)
+    except AuthException as e:
+        raise HTTPException(status_code=401, detail=f"Invalid API key: {e.error_message}") from e
+
+    tenants = list(jwt_response.get("tenants", {}).keys())
+    if len(tenants) != 1:
+        raise HTTPException(status_code=400, detail="Access key must be scoped to exactly one tenant")
+    org = find_org_by_tenant(tenants[0], session)
+    if not org:
+        raise HTTPException(status_code=404, detail=f"Organization '{tenants[0]}' not configured")
+
+    descope_user_id = jwt_response.get("user_id") or jwt_response.get("userId")
+    email = jwt_response.get("email") or ""
+    user: User | None = None
+    if descope_user_id:
+        user = get_or_create_user(session, descope_user_id=descope_user_id, email=email, org=org)
+    return user, org
+
+
 def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
     """FastAPI dependency that resolves the current org.
 
