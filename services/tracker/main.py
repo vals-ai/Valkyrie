@@ -7,6 +7,7 @@ from uuid import UUID
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
@@ -20,7 +21,7 @@ from tracker.auth import (
     resolve_descope_tenant,
 )
 from tracker.cloudwatch import get_cloudwatch_url
-from tracker.config import AUTH_REQUIRED
+from tracker.config import AUTH_REQUIRED, CORS_ALLOWED_ORIGINS
 from tracker.database.models import Benchmark, BenchmarkStatus, Org
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
@@ -76,6 +77,13 @@ logger = get_logger(__name__)
 
 app = FastAPI()
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["Authorization", "x-api-key", "Content-Type"],
+)
 
 app.add_middleware(RequestContextMiddleware)
 

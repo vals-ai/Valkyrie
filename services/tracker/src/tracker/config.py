@@ -74,3 +74,16 @@ async def _init_worker_sentry(*_args: object, **_kwargs: object) -> None:  # pyr
 # Auth settings
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")
+
+
+def _parse_cors_origins() -> list[str]:
+    raw = os.environ.get("CORS_ALLOWED_ORIGINS", "")
+    origins = [o.strip() for o in raw.split(",") if o.strip()]
+    if any(o == "*" for o in origins):
+        raise ValueError(
+            "CORS_ALLOWED_ORIGINS must not contain wildcard '*' — credentialed CORS requires explicit origins"
+        )
+    return origins
+
+
+CORS_ALLOWED_ORIGINS: list[str] = _parse_cors_origins()
