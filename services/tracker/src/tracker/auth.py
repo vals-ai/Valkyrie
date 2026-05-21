@@ -76,7 +76,9 @@ def get_or_create_user(
     """Idempotent lookup-or-insert keyed on descope_user_id. Updates email if changed."""
     existing = session.exec(select(User).where(User.descope_user_id == descope_user_id)).first()
     if existing is not None:
-        if existing.email != email:
+        # Only update email if the new value is non-empty; access-key auth
+        # doesn't carry email, so we never overwrite a real address with "".
+        if email and existing.email != email:
             existing.email = email
             session.add(existing)
             session.commit()
