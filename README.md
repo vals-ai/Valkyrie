@@ -1,5 +1,6 @@
 # Valkyrie
 
+[![Paper](https://img.shields.io/badge/Paper-alphaXiv-B31B1B)](https://www.alphaxiv.org/abs/valkyrie)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vals-ai/Valkyrie)
 [![Test Coverage](https://codecov.io/gh/vals-ai/Valkyrie/branch/dev/graph/badge.svg)](https://codecov.io/gh/vals-ai/Valkyrie)
 [![Doc Coverage](https://vals-ai.github.io/Valkyrie/docstr-coverage.svg)](https://github.com/vals-ai/Valkyrie)
@@ -365,3 +366,24 @@ valkyrie agent output <id> [subpath] [-o ./output-dir]
 | Infrastructure (AWS CDK) | [INFRASTRUCTURE.md](infra/README.md) |
 | Sandbox secrets | [PROVIDER.md](docs/PROVIDER.md) |
 | Contribute benchmark services | [Create benchmark service](https://github.com/vals-ai/create-benchmark-service) |
+
+## Citation
+
+If you use Valkyrie in your research, please cite our paper:
+
+```bibtex
+@inproceedings{forzano2026valkyrie,
+  author    = {Forzano, Jarett and Almatov, Omar and Nashold, Langston and Ravi, Nikil and Kassian, Orestes},
+  title     = {Valkyrie: A Microservice-Based Framework for Scalable Evaluation of AI Agents},
+  booktitle = {Proceedings of the 1st ACM Conference on Agentic and AI Systems},
+  series    = {CAIS '26},
+  year      = {2026},
+  month     = {may},
+  address   = {San Jose, CA, USA},
+  publisher = {ACM},
+  location  = {New York, NY, USA},
+  numpages  = {5},
+  doi       = {10.1145/3786335.3813231},
+  url       = {https://doi.org/10.1145/3786335.3813231}
+}
+```
