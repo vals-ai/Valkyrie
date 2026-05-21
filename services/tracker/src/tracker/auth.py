@@ -188,8 +188,19 @@ def get_current_user_and_org(request: Request, session: Session = Depends(get_se
     if not org:
         raise HTTPException(status_code=404, detail=f"Organization '{tenants[0]}' not configured")
 
-    descope_user_id = jwt_response.get("user_id") or jwt_response.get("userId")
-    email = jwt_response.get("email") or ""
+    # Custom claims live inside sessionToken for exchange_access_key responses.
+    session_token = jwt_response.get("sessionToken") or {}
+    descope_user_id = (
+        session_token.get("user_id")
+        or session_token.get("userId")
+        or jwt_response.get("user_id")
+        or jwt_response.get("userId")
+    )
+    email = (
+        session_token.get("email")
+        or jwt_response.get("email")
+        or ""
+    )
     user: User | None = None
     if descope_user_id:
         user = get_or_create_user(session, descope_user_id=descope_user_id, email=email, org=org)
