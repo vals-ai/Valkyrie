@@ -141,11 +141,7 @@ def resolve_bearer_session(jwt: str, session: Session) -> tuple[User, Org]:
         raise HTTPException(status_code=404, detail=f"Organization '{tenant_name}' not configured")
 
     descope_user_id = jwt_response.get("userId") or jwt_response.get("user_id")
-    email = (
-        jwt_response.get("email")
-        or jwt_response.get("user", {}).get("email")
-        or ""
-    )
+    email = jwt_response.get("email") or jwt_response.get("user", {}).get("email") or ""
     if not descope_user_id:
         raise HTTPException(status_code=400, detail="Session token missing userId")
 
@@ -203,18 +199,9 @@ def get_current_user_and_org(request: Request, session: Session = Depends(get_se
 def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
     """FastAPI dependency that resolves the current org.
 
-    Self-hosted (AUTH_REQUIRED=false): returns default org.
-    Hosted (AUTH_REQUIRED=true): validates Descope API key and resolves org.
+    Accepts both ``Authorization: Bearer <session_jwt>`` (web UI) and
+    ``x-api-key: <access_key>`` (CLI/CI). Delegates to ``get_current_user_and_org``
+    so all endpoints get dual-auth without per-handler changes.
     """
-    if not AUTH_REQUIRED:
-        return get_default_org(session)
-
-    api_key = extract_api_key(request)
-    tenant_name = resolve_descope_tenant(api_key)
-    org = find_org_by_tenant(tenant_name, session)
-    if not org:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Organization '{tenant_name}' not configured — run valk config init",
-        )
+    _, org = get_current_user_and_org(request, session)
     return org
