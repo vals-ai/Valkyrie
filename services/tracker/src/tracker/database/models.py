@@ -256,6 +256,11 @@ class Benchmark(SQLModel, table=True):
             .where(col(Task.status).in_([TaskStatus.FINISHED, TaskStatus.ERROR]))
         ).one()
 
+        run_by_email: str | None = None
+        if self.run_by_id is not None:
+            user_obj = session.get(User, self.run_by_id)
+            run_by_email = user_obj.email if user_obj else None
+
         return BenchmarkTableRow(
             id=self.id,
             name=self.name,
@@ -266,6 +271,7 @@ class Benchmark(SQLModel, table=True):
             status=self.status,
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,
+            run_by_email=run_by_email,
         )
 
 

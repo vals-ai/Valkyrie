@@ -141,10 +141,14 @@ class FetchBenchmarksRequest(BaseModel):
     benchmark_name: str | None = None
     model: str | None = None
     status: BenchmarkStatus | None = None
+    run_by_user_id: UUID | None = None
+    started_after: datetime | None = None
+    started_before: datetime | None = None
     order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
 
-    # Pagination
-    limit: int = 5
+    # Pagination — cursor preferred, offset/limit kept for backward compat
+    cursor: str | None = None
+    limit: int = 50
     offset: int = 0
 
 
@@ -158,11 +162,13 @@ class BenchmarkTableRow(BaseModel):
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
+    run_by_email: str | None = None
 
 
 class FetchBenchmarksResponse(BaseModel):
     benchmarks: list[BenchmarkTableRow]
-    total_count: int
+    total_count: int | None = None
+    next_cursor: str | None = None
 
 
 class FetchBenchmarkMetadataResponse(BaseModel):

@@ -529,11 +529,9 @@ class TestFastapiServer:
         assert response.status_code == 200
         response_json = response.json()
 
-        # There are 6 total benchmarks
+        # There are 6 total benchmarks (default limit is 50, so all are returned)
         assert response_json.get("total_count") == 6
-
-        # Limit will always be 5
-        assert len(response_json.get("benchmarks")) == 5
+        assert len(response_json.get("benchmarks")) == 6
 
         # Change benchmark status to finished and search again
         unique_benchmark.status = BenchmarkStatus.FINISHED

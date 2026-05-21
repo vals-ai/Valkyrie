@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -18,7 +19,7 @@ from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceErr
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from daytona.common.errors import DaytonaNotFoundError
 from fastapi import Request
-from sqlalchemy import JSON, type_coerce
+from sqlalchemy import JSON, literal, tuple_, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 from tenacity import before_sleep_log, retry_if_exception_type, stop_after_attempt, wait_fixed
 from tenacity import retry as tenacity_retry
@@ -1175,20 +1176,40 @@ async def reset_to_in_progress_status(
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
 
 
+def encode_cursor(started_at: datetime, row_id: UUID) -> str:
+    """Encode a keyset pagination cursor from a started_at timestamp and row id."""
+    payload = json.dumps({"started_at": started_at.isoformat(), "id": str(row_id)})
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
+    """Decode a keyset pagination cursor into a started_at timestamp and row id."""
+    padded = cursor + "=" * (-len(cursor) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    return datetime.fromisoformat(payload["started_at"]), UUID(payload["id"])
+
+
 def fetch_filtered_benchmark_rows(
     request: FetchBenchmarksRequest, session: Session, org: Org
-) -> tuple[Sequence[Benchmark], int]:
+) -> tuple[Sequence[Benchmark], int | None, str | None]:
     """
     Creates a query to fetch benchmark rows from the database based on the fetch benchmark request.
+
+    When request.cursor is a non-empty string, uses keyset pagination (tuple comparison on
+    started_at, id) and returns next_cursor. total_count is None in this path.
+
+    When request.cursor is None or empty, uses legacy offset/limit pagination and returns
+    total_count. next_cursor is None in this path.
 
     Args:
         request: FetchBenchmarksRequest
 
     Returns:
-        tuple[Sequence[Benchmark], int]
-        Sequence of benchmark rows and total count of benchmark rows
+        tuple[Sequence[Benchmark], int | None, str | None]
+        Sequence of benchmark rows, optional total count, optional next cursor
 
     """
+
     query = scoped_select(Benchmark, org)
 
     arguments_json = type_coerce(col(Benchmark.arguments), JSON)
@@ -1205,21 +1226,59 @@ def fetch_filtered_benchmark_rows(
     if request.status:
         query = query.where(Benchmark.status == request.status)
 
-    if request.order_by == Order.DESC:
-        query = query.order_by(desc(Benchmark.started_at))
-    else:
-        query = query.order_by(asc(Benchmark.started_at))
+    if request.run_by_user_id is not None:
+        query = query.where(Benchmark.run_by_id == request.run_by_user_id)
 
+    if request.started_after is not None:
+        query = query.where(Benchmark.started_at > request.started_after)
+
+    if request.started_before is not None:
+        query = query.where(Benchmark.started_at < request.started_before)
+
+    if request.order_by == Order.DESC:
+        query = query.order_by(desc(Benchmark.started_at), desc(Benchmark.id))
+    else:
+        query = query.order_by(asc(Benchmark.started_at), asc(Benchmark.id))
+
+    # Keyset cursor path — skip offset/limit and total_count computation.
+    # cursor="" means first page of keyset mode; non-empty cursor means subsequent page.
+    if request.cursor is not None:
+        if request.cursor:
+            cursor_started_at, cursor_id = decode_cursor(request.cursor)
+
+            if request.order_by == Order.DESC:
+                query = query.where(
+                    tuple_(col(Benchmark.started_at), col(Benchmark.id))
+                    < tuple_(literal(cursor_started_at), literal(str(cursor_id)))
+                )
+            else:
+                query = query.where(
+                    tuple_(col(Benchmark.started_at), col(Benchmark.id))
+                    > tuple_(literal(cursor_started_at), literal(str(cursor_id)))
+                )
+
+        # Fetch one extra row to detect whether there is a next page
+        query = query.limit(request.limit + 1)
+        benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
+
+        next_cursor: str | None = None
+        if len(benchmark_rows) > request.limit:
+            benchmark_rows = benchmark_rows[: request.limit]
+            last_row = benchmark_rows[-1]
+            next_cursor = encode_cursor(last_row.started_at, last_row.id)
+
+        return benchmark_rows, None, next_cursor
+
+    # Legacy offset/limit path — compute total_count for backward compat
     total_count = session.exec(select(func.count()).select_from(query.subquery())).one()
 
     if not total_count:
-        return [], 0
+        return [], 0, None
 
     query = query.limit(request.limit).offset(request.offset)
+    benchmark_rows = session.exec(query).all()
 
-    benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
-
-    return benchmark_rows, total_count
+    return benchmark_rows, total_count, None
 
 
 class YieldingWriter(io.RawIOBase):

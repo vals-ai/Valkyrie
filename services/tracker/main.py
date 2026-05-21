@@ -523,7 +523,7 @@ async def fetch_benchmarks(
         list[FetchBenchmarksResponse]
     """
 
-    benchmark_rows, total_count = fetch_filtered_benchmark_rows(request, session, org)
+    benchmark_rows, total_count, next_cursor = fetch_filtered_benchmark_rows(request, session, org)
 
     benchmark_table_rows: list[BenchmarkTableRow] = [
         benchmark_row.create_benchmark_table_row(session) for benchmark_row in benchmark_rows
@@ -532,6 +532,7 @@ async def fetch_benchmarks(
     return FetchBenchmarksResponse(
         benchmarks=benchmark_table_rows,
         total_count=total_count,
+        next_cursor=next_cursor,
     )
 
 
