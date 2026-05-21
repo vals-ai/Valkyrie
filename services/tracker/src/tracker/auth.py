@@ -141,7 +141,11 @@ def resolve_bearer_session(jwt: str, session: Session) -> tuple[User, Org]:
         raise HTTPException(status_code=404, detail=f"Organization '{tenant_name}' not configured")
 
     descope_user_id = jwt_response.get("userId") or jwt_response.get("user_id")
-    email = jwt_response.get("email") or ""
+    email = (
+        jwt_response.get("email")
+        or jwt_response.get("user", {}).get("email")
+        or ""
+    )
     if not descope_user_id:
         raise HTTPException(status_code=400, detail="Session token missing userId")
 
