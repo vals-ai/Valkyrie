@@ -11,7 +11,18 @@ if TYPE_CHECKING:
     from tracker.database.models import OrgConfig
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel
+from datetime import timezone
+
+from pydantic import BaseModel, field_serializer
+
+
+def _serialize_utc(value: datetime | None) -> str | None:
+    """Tag naive datetimes as UTC so JS clients parse them as UTC, not local."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -164,6 +175,10 @@ class BenchmarkTableRow(BaseModel):
     finished_tasks: int
     run_by_email: str | None = None
 
+    @field_serializer("started_at", "finished_at")
+    def _serialize_dts(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
 
 class FetchBenchmarksResponse(BaseModel):
     benchmarks: list[BenchmarkTableRow]
@@ -210,6 +225,10 @@ class BenchmarkStatusEntry(BaseModel):
     finished_at: datetime | None
     total_tasks: int
     finished_tasks: int
+
+    @field_serializer("finished_at")
+    def _serialize_dt(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
 
 
 class BenchmarkStatusResponse(BaseModel):
