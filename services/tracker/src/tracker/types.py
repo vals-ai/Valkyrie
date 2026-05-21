@@ -246,6 +246,57 @@ class BenchmarkStatusResponse(BaseModel):
     entries: list[BenchmarkStatusEntry]
 
 
+class SingleBenchmarkResponse(BaseModel):
+    """Single-run view: BenchmarkTableRow fields plus optional final_score."""
+
+    id: UUID
+    name: str
+    agent_name: str
+    model: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    status: BenchmarkStatus
+    total_tasks: int
+    finished_tasks: int
+    task_state_counts: dict[str, int] = {}
+    run_by_email: str | None = None
+    final_score: float | None = None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class TaskSummary(BaseModel):
+    id: UUID
+    task_id: str
+    status: TaskStatus
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None = None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class TasksResponse(BaseModel):
+    tasks: list[TaskSummary]
+    total_count: int
+
+
 class OrgConfigUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 

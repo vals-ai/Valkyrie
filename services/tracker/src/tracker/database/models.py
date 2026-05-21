@@ -276,6 +276,15 @@ class Benchmark(SQLModel, table=True):
         ).all()
         return {status: count for status, count in rows}
 
+    def fetch_final_score(self, session: Session) -> float | None:
+        """Return the FinalEvaluation.final_score for this benchmark, or None if no row exists."""
+        row = session.exec(
+            select(FinalEvaluation.final_score)
+            .where(col(FinalEvaluation.benchmark) == self.id)
+            .where(col(FinalEvaluation.org_id) == self.org_id)
+        ).first()
+        return row if row is not None else None
+
 
 @event.listens_for(Benchmark, "before_insert")
 @event.listens_for(Benchmark, "before_update")
