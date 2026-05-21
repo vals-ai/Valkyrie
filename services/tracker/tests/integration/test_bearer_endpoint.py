@@ -3,10 +3,12 @@
 Uses a mocked Descope client; otherwise hits the full app stack.
 """
 import importlib
+from collections.abc import Generator
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session
 
 from tracker.types import AWSCredentials, HarnessConfig
 
@@ -28,17 +30,29 @@ def harness_config() -> HarnessConfig:
 
 
 @pytest.fixture
-def client(monkeypatch):
+def client(monkeypatch, database_session: Session):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
 
     import tracker.config as config_mod
+
     importlib.reload(config_mod)
     import tracker.auth as auth_mod
+
     importlib.reload(auth_mod)
     import main as main_mod
+
     importlib.reload(main_mod)
+
+    from tracker.database.session import get_session as get_session_dep
+
+    def get_test_session() -> Generator[Session, None, None]:
+        yield database_session
+
+    main_mod.app.dependency_overrides[get_session_dep] = get_test_session
+
+    monkeypatch.setattr("tracker.database.session.engine", database_session.bind)
 
     with patch.object(auth_mod, "_descope_client") as mock_client:
         mock_client.validate_session.return_value = {
@@ -47,6 +61,8 @@ def client(monkeypatch):
             "email": "alice@example.com",
         }
         yield TestClient(main_mod.app)
+
+    main_mod.app.dependency_overrides.clear()
 
 
 def test_whoami_with_bearer_returns_user(client):
