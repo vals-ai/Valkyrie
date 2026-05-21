@@ -204,6 +204,18 @@ class OrgConfigResponse(BaseModel):
         )
 
 
+class BenchmarkStatusEntry(BaseModel):
+    id: UUID
+    status: BenchmarkStatus
+    finished_at: datetime | None
+    total_tasks: int
+    finished_tasks: int
+
+
+class BenchmarkStatusResponse(BaseModel):
+    entries: list[BenchmarkStatusEntry]
+
+
 class OrgConfigUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 
