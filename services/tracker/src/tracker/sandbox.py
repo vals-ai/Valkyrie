@@ -39,7 +39,6 @@ from tenacity import (
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
-    wait_exponential,
     wait_fixed,
 )
 
@@ -48,7 +47,6 @@ from tracker.database.models import AgentCausedExitReason, AgentContractRequest
 from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
 from tracker.exceptions import (
     AgentRunFailedError,
-    InvalidSandboxConfigurationError,
     PtyCreationError,
     SandboxError,
     SandboxSetupError,
@@ -80,33 +78,12 @@ def get_contract_path(contract_name: str) -> PurePosixPath:
     return bundle_path / contract_name
 
 
-@retry(
-    retry=retry_if_exception_type((DaytonaError, ProviderSandboxError)),
-    stop=stop_after_attempt(3),
-    wait=wait_daytona_rate_limit(non_rate_limit_wait=wait_fixed(2)),
-    before_sleep=daytona_retry_callback("valkyrie.sandbox.delete", op="sandbox.delete"),
-    reraise=True,
-)
 async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
-    """Delete sandbox if it is not already destroyed or being destroyed"""
+    """Delete sandbox through its provider."""
     try:
-        daytona_sandbox = _daytona_inner(sandbox)
-        if daytona_sandbox is not None:
-            await daytona_sandbox.refresh_data()
-
-        if daytona_sandbox is None or daytona_sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
-            # Set auto-stop interval in-case we fail to delete the sandbox
-            if daytona_sandbox is not None:
-                await daytona_sandbox.set_autostop_interval(interval=1)
-            await provider.delete_sandbox(sandbox.id)
-    except DaytonaNotFoundError:
-        # If we error here that means the sandbox has just been deleted before we could refresh the state
-        logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
+        await provider.delete_sandbox(sandbox.id)
     except SandboxNotFoundError:
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
-    except DaytonaError as e:
-        tag_daytona_error(e, op="sandbox.delete")
-        raise
     except ProviderSandboxError:
         raise
     except Exception as e:
@@ -163,13 +140,6 @@ def _set_sandbox_span_attributes(sandbox: Sandbox | AsyncSandbox) -> None:
         span.set_attribute("valkyrie.sandbox_state", str(state))
 
 
-@retry(
-    retry=retry_if_not_exception_type(InvalidSandboxConfigurationError),
-    stop=stop_after_attempt(3),
-    wait=wait_daytona_rate_limit(non_rate_limit_wait=wait_exponential(multiplier=1, min=5, max=30)),
-    before_sleep=daytona_retry_callback("valkyrie.sandbox.create", op="sandbox.create"),
-    reraise=True,
-)
 @logfire.instrument("sandbox.create", extract_args=False)
 async def _create_sandbox(
     provider: SandboxProvider,
@@ -179,31 +149,8 @@ async def _create_sandbox(
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
 ) -> Sandbox:
-    """
-    Creates a sandbox and takes into account timeouts and retries.
-
-    This retry only works in the following case:
-    - Client times out while sandbox is being created
-    """
+    """Create a sandbox through its provider."""
     _set_sandbox_create_span_attributes(sandbox_name, source, resources)
-
-    # If the container already exists and is healthy we reuse it
-    try:
-        sandbox = await provider.get_sandbox(sandbox_name)
-        daytona_sandbox = _daytona_inner(sandbox)
-
-        # Restart the sandbox creation process if it cannot be recovered
-        if daytona_sandbox is None:
-            return sandbox
-        if daytona_sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED):
-            await daytona_sandbox.wait_for_sandbox_start(timeout=0)
-            return sandbox
-    except (SandboxNotFoundError, DaytonaNotFoundError):
-        pass
-    except DaytonaError as e:
-        # Transient error (server disconnected, network blip, etc.) — fall through to create.
-        logger.warning("Failed to get sandbox %s, will create instead: %s", sandbox_name, e)
-
     return await provider.create_sandbox(
         SandboxCreateRequest(
             source=source,

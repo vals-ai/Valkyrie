@@ -361,20 +361,14 @@ class TestAgentOutputTelemetry:
         assert callable(reconnect_before_sleep)
 
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
-        create_before_sleep = _create_sandbox.retry.before_sleep
         exec_before_sleep = _exec.retry.before_sleep
-        delete_before_sleep = _delete_sandbox.retry.before_sleep
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
         deps_before_sleep = _install_agent_dependencies.retry.before_sleep
 
-        assert create_before_sleep is not None
         assert exec_before_sleep is not None
-        assert delete_before_sleep is not None
         assert upload_before_sleep is not None
         assert deps_before_sleep is not None
-        assert callable(create_before_sleep)
         assert callable(exec_before_sleep)
-        assert callable(delete_before_sleep)
         assert callable(upload_before_sleep)
         assert callable(deps_before_sleep)
 
@@ -384,7 +378,7 @@ class TestAgentOutputTelemetry:
             "rate limited",
             headers={"Retry-After-Sandbox-Create": "7"},
         )
-        wait_strategy = _create_sandbox.retry.wait
+        wait_strategy = _exec.retry.wait
 
         assert wait_strategy(retry_state) == 7
 
@@ -394,7 +388,7 @@ class TestAgentOutputTelemetry:
             "rate limited",
             headers={"Retry-After": "3"},
         )
-        wait_strategy = _create_sandbox.retry.wait
+        wait_strategy = _exec.retry.wait
 
         assert wait_strategy(retry_state) == 3
 
@@ -404,7 +398,7 @@ class TestAgentOutputTelemetry:
             "rate limited",
             headers={"Retry-After-Custom-Throttler": "4"},
         )
-        wait_strategy = _create_sandbox.retry.wait
+        wait_strategy = _exec.retry.wait
 
         assert wait_strategy(retry_state) == 4
 
@@ -414,7 +408,7 @@ class TestAgentOutputTelemetry:
             "rate limited",
             headers={"retry-after-sandbox-create": "120"},
         )
-        wait_strategy = _create_sandbox.retry.wait
+        wait_strategy = _exec.retry.wait
 
         assert wait_strategy(retry_state) == 120
 
@@ -425,14 +419,12 @@ class TestAgentOutputTelemetry:
         retry_state = Mock()
         retry_state.attempt_number = 2
         retry_state.outcome.exception.return_value = DaytonaRateLimitError("rate limited", headers=headers)
-        wait_strategy = _create_sandbox.retry.wait
+        wait_strategy = _exec.retry.wait
 
         assert wait_strategy(retry_state) == 2
 
     def test_daytona_retry_wait_preserves_non_rate_limit_waits(self) -> None:
         cases = [
-            (_delete_sandbox.retry.wait, 4, 2),
-            (_create_sandbox.retry.wait, 2, 5),
             (_exec.retry.wait, 4, 2),
             (_create_pty_session.retry.wait, 4, 2),
             (_reconnect_and_wait_pty.retry.wait, 4, 1),
@@ -489,8 +481,7 @@ class TestAgentOutputTelemetry:
                 "X-RateLimit-Reset-Sandbox-Create": "7",
             },
         )
-        callback = _create_sandbox.retry.before_sleep
-        assert callback is not None
+        callback = daytona_retry_module.daytona_retry_callback("valkyrie.sandbox.create", op="sandbox.create")
 
         callback(state)
 
@@ -546,8 +537,7 @@ class TestAgentOutputTelemetry:
             "rate limited",
             headers={"X-RateLimit-Remaining-Sandbox-Lifecycle": "0"},
         )
-        callback = _create_sandbox.retry.before_sleep
-        assert callback is not None
+        callback = daytona_retry_module.daytona_retry_callback("valkyrie.sandbox.create", op="sandbox.create")
 
         callback(state)
 
@@ -593,8 +583,7 @@ class TestAgentOutputTelemetry:
                 "X-RateLimit-Remaining-Custom-Tenant": "0",
             },
         )
-        callback = _create_sandbox.retry.before_sleep
-        assert callback is not None
+        callback = daytona_retry_module.daytona_retry_callback("valkyrie.sandbox.create", op="sandbox.create")
 
         callback(state)
 
@@ -638,8 +627,7 @@ class TestAgentOutputTelemetry:
         state.idle_for = 0
         state.next_action.sleep = 2
         state.outcome.exception.return_value = DaytonaError("transient")
-        callback = _create_sandbox.retry.before_sleep
-        assert callback is not None
+        callback = daytona_retry_module.daytona_retry_callback("valkyrie.sandbox.create", op="sandbox.create")
 
         callback(state)
 
@@ -690,9 +678,7 @@ class TestAgentOutputTelemetry:
             "valkyrie.sandbox_state": str(SandboxState.STARTED),
         }
 
-    async def test_create_sandbox_sets_create_span_attributes_for_existing_sandbox(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_create_sandbox_passes_request_to_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
         span_calls: list[tuple[str, str, int]] = []
 
         def fake_create_span_attrs(sandbox_name: str, source: Any, resources: Any) -> None:
@@ -701,12 +687,11 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
 
         mock_sandbox = AsyncMock()
-        mock_sandbox.wait_for_sandbox_start = AsyncMock()
         provider = AsyncMock()
-        provider.get_sandbox = AsyncMock(return_value=mock_sandbox)
+        provider.create_sandbox = AsyncMock(return_value=mock_sandbox)
 
         resources = Resources(vcpu=2, memory=4, disk=5)
-        sandbox = await _create_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(
+        sandbox = await _create_sandbox(
             provider,
             "task-alias",
             ImageSource(image="ghcr.io/vals/swebench:latest"),
@@ -715,40 +700,24 @@ class TestAgentOutputTelemetry:
 
         assert sandbox is mock_sandbox
         assert span_calls == [("task-alias", "ghcr.io/vals/swebench:latest", 2)]
+        request = provider.create_sandbox.await_args.args[0]
+        assert request.name == "task-alias"
+        assert request.resources == resources
+        assert request.auto_stop_interval == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
+        assert request.create_timeout == sandbox_module.SANDBOX_CREATE_TIMEOUT
 
-    async def test_delete_sandbox_tags_daytona_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        daytona_error = DaytonaError("delete failed")
-        daytona_errors: list[tuple[Exception, str]] = []
-
-        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
-            daytona_errors.append((exc, op))
-
-        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
-
+    async def test_delete_sandbox_raises_provider_errors(self) -> None:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
-        mock_inner = AsyncMock()
-        mock_inner.refresh_data = AsyncMock(side_effect=daytona_error)
-        monkeypatch.setattr(sandbox_module, "_daytona_inner", lambda _sandbox: mock_inner)
-
-        with pytest.raises(DaytonaError):
-            await _delete_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(mock_sandbox, AsyncMock())
-
-        assert daytona_errors == [(daytona_error, "sandbox.delete")]
-
-    async def test_delete_sandbox_retries_provider_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_sandbox = AsyncMock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-        monkeypatch.setattr(sandbox_module, "_daytona_inner", lambda _sandbox: None)
 
         provider = AsyncMock()
-        provider.delete_sandbox = AsyncMock(side_effect=[ProviderSandboxError("state change"), None])
+        provider.delete_sandbox = AsyncMock(side_effect=ProviderSandboxError("state change"))
 
-        await _delete_sandbox.retry_with(stop=stop_after_attempt(2), wait=wait_none())(mock_sandbox, provider)
+        with pytest.raises(ProviderSandboxError, match="state change"):
+            await _delete_sandbox(mock_sandbox, provider)
 
-        assert provider.delete_sandbox.await_count == 2
+        provider.delete_sandbox.assert_awaited_once_with("sandbox-123")
 
     async def test_exec_tags_daytona_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         daytona_error = DaytonaError("exec failed")
