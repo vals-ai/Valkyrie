@@ -79,6 +79,12 @@ class BaseAgentContract(ABC):
         return {}
 
     @property
+    def ingest_lambda(self) -> str | None:
+        """Analyzer Lambda invoked by ``valk run analyze`` to ingest this agent's
+        output. Override to opt in. See docs/DOCENT.md."""
+        return None
+
+    @property
     @abstractmethod
     def final_output(self) -> Path | None:
         """

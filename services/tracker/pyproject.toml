@@ -25,7 +25,7 @@ dependencies = [
     "tenacity>=9.0.0",
     "sentry-sdk[fastapi]==2.58.0",
     "python-json-logger>=3.2.1",
-    "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@d1eb2b56712cfc44bfb778b8c2c5233bf95acd50",
+    "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@e39612cd8ef6f86a83d4d81eb6d2f2bc3d29abdb",
 ]
 
 [dependency-groups]
@@ -38,6 +38,7 @@ dev = [
     "pytest-alembic>=0.12.1",
     "testcontainers[postgres]>=4.10.0",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]

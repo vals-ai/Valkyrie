@@ -1,4 +1,6 @@
 import asyncio
+import importlib.util
+import io
 import re
 import tempfile
 import zipfile
@@ -8,6 +10,7 @@ from typing import cast
 
 import aioboto3
 import click
+import yaml
 from botocore.exceptions import ClientError
 from tracker import handle_s3_error
 from tracker.database.models import AgentContractRequest
@@ -366,6 +369,57 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
             await asyncio.gather(*(download_object(key) for key in batch))
 
         return len(keys)
+
+
+async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
+    """Read just the ``ingest_lambda`` field from the currently-pushed agent contract.
+
+    Resolves to the latest pushed version, ignoring whatever snapshot is stored on a
+    benchmark run. This lets ``valk run analyze`` work on past runs after their
+    contract is updated to declare an analyzer Lambda.
+
+    Supports YAML contracts directly; for Python contracts, instantiates with an
+    empty ``AgentConfig`` and reads the ``ingest_lambda`` property without invoking
+    ``run_cmd`` (which would require model validation).
+    """
+    bucket_name = _fetch_bucket_name()
+
+    async with _s3_client() as s3_client:
+        try:
+            response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
+            zip_bytes: bytes = cast(bytes, await response["Body"].read())
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                raise S3Error(f"Agent '{agent_name}' not found in S3.")
+            raise
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = zf.namelist()
+
+            for ext in (".yaml", ".yml"):
+                member = f"{agent_name}/contract{ext}"
+                if member in names:
+                    zf.extract(member, tmp_path)
+                    with open(tmp_path / member, "r") as f:
+                        return cast(dict[str, object], yaml.safe_load(f) or {}).get("ingest_lambda")  # type: ignore[return-value]
+
+            # TODO: remove this branch when we migrate off of Python contracts.
+            py_member = f"{agent_name}/contract.py"
+            if py_member in names:
+                zf.extractall(tmp_path)
+                contract_path = tmp_path / py_member
+                spec = importlib.util.spec_from_file_location("contract", contract_path)
+                if not spec or not spec.loader:
+                    return None
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                contract_cls = module.contract
+                return contract_cls(AgentConfig()).ingest_lambda
+
+    return None
 
 
 async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:

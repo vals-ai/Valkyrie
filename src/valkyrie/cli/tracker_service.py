@@ -1,8 +1,9 @@
 """Client for interacting with the tracker service."""
 
+import json
 import os
 import re
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -325,6 +326,49 @@ class TrackerService:
             return FetchBenchmarkResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run: {e}") from e
+
+    def analyze_benchmark(
+        self,
+        benchmark_id: UUID,
+        *,
+        no_cache: bool,
+        lambda_function: str | None,
+    ) -> Iterator[tuple[str, dict[str, Any]]]:
+        """Trigger Docent analysis. Yields ``(event_name, data)`` SSE events
+        (``started``, ``heartbeat``, ``done``, ``error``) until terminal."""
+        url = f"{self._base_url}/analyze-benchmark/{benchmark_id}"
+        body = {"no_cache": no_cache, "lambda_function": lambda_function}
+
+        try:
+            with self._client.stream("POST", url, json=body, timeout=None) as response:
+                if response.status_code != 200:
+                    response.read()
+                    details = _response_error_detail(response)
+                    raise TrackerServiceError(f"analyze-benchmark failed: {details}")
+
+                # Cached short-circuit returns a single JSON body; fresh
+                # invocations return SSE. Normalize both to a ("done", payload)
+                # yield for the caller's event loop.
+                content_type = response.headers.get("content-type", "")
+                if "text/event-stream" not in content_type:
+                    payload = json.loads(response.read())
+                    yield ("done", payload)
+                    return
+
+                event_name = ""
+                for raw_line in response.iter_lines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    if line.startswith("event: "):
+                        event_name = line.removeprefix("event: ").strip()
+                    elif line.startswith("data: "):
+                        data = json.loads(line.removeprefix("data: "))
+                        yield (event_name, data)
+                        if event_name in ("done", "error"):
+                            return
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"analyze-benchmark failed: {e}") from e
 
     def stream_benchmark(self, benchmark_id: UUID) -> Generator[str, None, None]:
         """

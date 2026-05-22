@@ -1,13 +1,13 @@
 import logging
 import tarfile
 import traceback
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
 import httpx
 import logfire
 import sentry_sdk
-from benchmark_service.client import BenchmarkServiceError
+from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -37,20 +37,24 @@ from tracker.aws.s3 import (
     s3_object_exists,
 )
 from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_url
-from tracker.database.models import Benchmark, BenchmarkStatus, FinalEvaluation, Org, RetryMode
+from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus, FinalEvaluation, Org, RetryMode
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
+from tracker.docent_analysis import (
+    analyze_event_stream,
+)
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
+    AnalyzeBenchmarkRequest,
     BenchmarkTableRow,
-    FetchBenchmarkTasksRequest,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FetchBenchmarkTasksRequest,
     HarnessConfig,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
@@ -119,6 +123,11 @@ async def tracker_service_error_handler(_request: Request, exc: TrackerServiceEr
     logger.error(exc, exc_info=True)
     sentry_sdk.capture_exception(exc)
     raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.exception_handler(BenchmarkServiceUnauthenticatedError)
+async def benchmark_service_unauth_error_handler(_request: Request, exc: BenchmarkServiceUnauthenticatedError):
+    raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.exception_handler(BenchmarkServiceError)
@@ -243,6 +252,8 @@ async def start_benchmark(
             request.harness_config.aws,
             request.harness_config.s3_bucket,
         )
+    except BenchmarkServiceUnauthenticatedError:
+        raise
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
         commit_benchmark_error(benchmark_row, session, error_message)
@@ -356,6 +367,71 @@ async def fetch_benchmark(
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
+    )
+
+
+@app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
+async def analyze_benchmark(
+    benchmark_id: TrackedBenchmarkId,
+    body: AnalyzeBenchmarkRequest,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> dict[str, str] | StreamingResponse:
+    """
+    Invoke the Docent analyzer Lambda for a benchmark and stream progress over SSE.
+
+    Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
+    no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
+    """
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+
+    if benchmark_row.status != BenchmarkStatus.FINISHED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot analyze run {benchmark_id}: status is {benchmark_row.status.value} (must be FINISHED).",
+        )
+
+    if (
+        not body.no_cache
+        and benchmark_row.docent_reading_status == DocentReadingStatus.DONE
+        and benchmark_row.docent_reading_url
+    ):
+        return {
+            "status": "done",
+            "reading_plan_url": benchmark_row.docent_reading_url,
+        }
+
+    if not body.lambda_function:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No ingest_lambda provided for agent '{benchmark_row.arguments.contract.name}'. "
+                "The CLI normally resolves this from the agent's pushed contract — if you're "
+                "calling this endpoint directly, supply `lambda_function` in the request body."
+            ),
+        )
+
+    payload: dict[str, Any] = {
+        "benchmark_id": str(benchmark_id),
+        "benchmark_name": benchmark_row.name,
+        "s3_bucket": harness_config.s3_bucket,
+        "contract": {"name": benchmark_row.arguments.contract.name},
+    }
+
+    return StreamingResponse(
+        analyze_event_stream(
+            benchmark_id=benchmark_row.id,
+            lambda_function=body.lambda_function,
+            payload=payload,
+            aws=harness_config.aws,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 
@@ -508,7 +584,7 @@ async def retry_or_resume_benchmark(
     org: Org = Depends(get_current_org),
 ) -> RetryOrResumeBenchmarkResponse:
     """
-    Retry or resume a benchmark run by its id, we only can retry or resume a benchmark if its not currently running.
+    Retry or resume a benchmark run by its id.
 
     Usage:
     curl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20
@@ -526,26 +602,25 @@ async def retry_or_resume_benchmark(
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
-
-    if benchmark_row.status in invalid_states:
+    if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
             status_code=400,
-            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is currently running.",
+            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
+        )
+
+    if concurrency is not None and concurrency < 1:
+        raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
     effective_service_headers = forward_tracker_api_key(
         service_headers,
         http_request.headers.get("x-api-key"),
     )
 
-    # NOTE: 0 is not acceptable
-    if concurrency:
-        benchmark_row.arguments.concurrency = concurrency
-        session.add(benchmark_row)
-        session.commit()
-
-    # Reset tasks and retry or resume benchmark
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
@@ -557,6 +632,16 @@ async def retry_or_resume_benchmark(
         rerun_task_ids=task_ids,
         org=org,
     )
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
+        )
+
+    if concurrency is not None:
+        benchmark_row.arguments.concurrency = concurrency
+        session.add(benchmark_row)
+        session.commit()
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(

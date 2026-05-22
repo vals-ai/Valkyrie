@@ -16,18 +16,19 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service import Sandbox, SandboxNotFoundError, SandboxProvider, SandboxQuery
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.sandbox import DaytonaSandbox
 from daytona import SandboxState
 from daytona.common.errors import DaytonaNotFoundError
-from fastapi import Request
+from fastapi import HTTPException, Request
 from opentelemetry import trace
+from pydantic import ValidationError
 from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from tracker._lambda import invoke_lambda
+from tracker._lambda import invoke_lambda, lambda_client
 from tracker.auth import RequestIdentity
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group, write_benchmark_log_event
 from tracker.aws.s3 import (
@@ -43,6 +44,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     EvaluationResult,
     FinalEvaluation,
     Org,
@@ -53,6 +55,8 @@ from tracker.database.models import (
 )
 from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
+from websockets.exceptions import ConnectionClosedError, InvalidStatus
+
 from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -74,6 +78,7 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
+_RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -434,6 +439,8 @@ async def process_task(
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
                 resume_eval_start_time = time.perf_counter()
+                # Reset timer to keep the last received message from the benchmarks service accurate
+                last_log_time = time.monotonic()
                 evaluation_result = await benchmark_service.resume_evaluation(
                     task_row.task_id,
                     eval_resume_state=task_row.eval_resume_state,
@@ -520,6 +527,8 @@ async def process_task(
                     harness_config.s3_bucket,
                 )
 
+                # Reset timer to keep the last received message from the benchmarks service accurate
+                last_log_time = time.monotonic()
                 _ = await benchmark_service.setup_task(
                     task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
                 )
@@ -577,6 +586,8 @@ async def process_task(
                     },
                 )
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
+                # Reset timer to keep the last received message from the benchmarks service accurate
+                last_log_time = time.monotonic()
                 evaluation_result = await benchmark_service.evaluate_instance(
                     task_row.task_id,
                     sandbox.id,
@@ -623,6 +634,50 @@ async def process_task(
     except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")
         raise
+    except ConnectionClosedError:
+        seconds = int(time.monotonic() - last_log_time)
+        error_message = (
+            f"Benchmark service has not sent a message, causing the connection to disconnect: "
+            f"last message received {seconds}s ago"
+        )
+        logger.warning(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
+    except ValidationError as e:
+        field_names = ", ".join(".".join(str(loc) for loc in err["loc"]) for err in e.errors())
+        error_message = (
+            f"Benchmark service returned an incompatible task response. Missing or invalid fields: {field_names}"
+        )
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
+    except InvalidStatus as e:
+        error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
+    except BenchmarkServiceError as e:
+        error_message = str(e)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
     except Exception as e:
         logfire.exception("process_task failed")
         error_message = str(e)
@@ -655,11 +710,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
         select(func.count(col(Task.id)))
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.org_id) == org.id)
-        .where(
-            col(Task.status).in_(
-                [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
-            )
-        )
+        .where(col(Task.status).in_(_RUNNABLE_TASK_STATUSES))
     ).one()
 
     # Tasks will be in a non-finished state if something interrupts them while they are running and the state errors here
@@ -713,34 +764,42 @@ def create_task_rows(
     session.commit()
     session.expire_all()
 
-    runnable_statuses = [TaskStatus.PENDING, TaskStatus.EVALUATING]
-    task_rows: Sequence[tuple[str, Task]] = session.exec(
+    task_rows = session.exec(
         select(Task.task_id, Task)
         .where(Task.benchmark == benchmark_row.id)
-        .where(col(Task.status).in_(runnable_statuses))
+        .where(Task.org_id == org.id)
+        .where(col(Task.task_id).in_(verified_task_ids))
+        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.EVALUATING]))
     ).all()
 
-    return task_rows
+    task_rows_by_id: dict[str, Task] = {task_id: task_row for task_id, task_row in task_rows}
+    return [(task_id, task_rows_by_id[task_id]) for task_id in verified_task_ids if task_id in task_rows_by_id]
 
 
-async def fetch_missing_tasks(
-    session: Session, benchmark_row: Benchmark, evaluation_results: dict[str, dict[str, Any] | None], org: Org
-):
-    remaining_task_results_query = cast(
+def has_runnable_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> bool:
+    return (
+        session.exec(
+            select(Task.id)
+            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.org_id == org.id)
+            .where(col(Task.status).in_(_RUNNABLE_TASK_STATUSES))
+        ).first()
+        is not None
+    )
+
+
+def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:
+    task_rows = cast(
         Sequence[tuple[str, dict[str, Any] | None]],
         session.exec(
             select(Task.task_id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
-            .outerjoin(EvaluationResult, col(Task.id) == col(EvaluationResult.task))
-            .where(col(Task.benchmark) == benchmark_row.id)
-            .where(col(Task.org_id) == org.id)
-            .where(col(Task.task_id).notin_(list(evaluation_results.keys())))
+            .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task), isouter=True)
+            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.org_id == org.id)
         ).all(),
     )
 
-    remaining_task_results: dict[str, dict[str, Any] | None] = {
-        task_id: evaluation_result for task_id, evaluation_result in remaining_task_results_query
-    }
-    return remaining_task_results
+    return dict(task_rows)
 
 
 @broker.task
@@ -755,6 +814,7 @@ async def process_benchmark(
     benchmark_id: UUID = UUID(benchmark_id_str)
     benchmark_service = start_benchmark_request.benchmark_service
     harness_config: HarnessConfig = start_benchmark_request.harness_config
+
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
     trace.get_current_span().set_attributes(
@@ -782,6 +842,7 @@ async def process_benchmark(
             raise TrackerServiceError(f"Run with id {benchmark_id} not found")
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
+    finalization_deferred = False
     try:
         # Copy the agent into the benchmarks S3 folder
         await copy_agent_to_benchmark(
@@ -835,27 +896,16 @@ async def process_benchmark(
 
         semaphore = Semaphore(start_benchmark_request.concurrency)
 
-        evaluation_result_rows: list[dict[str, dict[str, Any] | None]] = await gather(
-            *[tracked_tasks[task_id].run(semaphore, task_row) for task_id, task_row in task_rows]
-        )
+        await gather(*[tracked_tasks[task_id].run(semaphore, task_row) for task_id, task_row in task_rows])
 
         await monitor_task
 
-        evaluation_results: dict[str, dict[str, Any] | None] = {}
-        if any(result_dict for result_dict in evaluation_result_rows):
-            # NOTE: Tasks with errors will still need to be included inside of the final score calculation to ensure that they are accounted for
-            evaluation_results = {
-                task_id: evaluation_result
-                for result_dict in evaluation_result_rows
-                for task_id, evaluation_result in result_dict.items()
-            }
-
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            # Fetch remaining tasks (in case this benchmark was resumed)
-            remaining_task_results = await fetch_missing_tasks(session, benchmark_row, evaluation_results, org)
-
-        evaluation_results.update(remaining_task_results)
+            if has_runnable_tasks(session, benchmark_row, org):
+                finalization_deferred = True
+                return
+            evaluation_results = fetch_final_score_inputs(session, benchmark_row, org)
 
         if not evaluation_results:
             raise TrackerServiceError("No tasks were completed successfully")
@@ -864,6 +914,13 @@ async def process_benchmark(
         final_score_response = await benchmark_service.final_score(
             evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
         )
+
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
+            if has_runnable_tasks(session, benchmark_row, org):
+                finalization_deferred = True
+                return
 
         # Create the final evaluation row and add it to the database
         final_evaluation_row = FinalEvaluation(
@@ -898,8 +955,20 @@ async def process_benchmark(
                 lambda_payload: dict[str, Any] = arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
 
-                invoke_lambda(arguments.lambda_function, lambda_payload, harness_config.aws)
+                invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
 
+    except BenchmarkServiceUnauthenticatedError as e:
+        logfire.warn("process_benchmark failed due to benchmark service auth error")
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            error_message = f"{str(e)}\n{traceback.format_exc()}"
+            logger.warning(error_message)
+            commit_benchmark_error(benchmark_row, session, error_message)
+    except BenchmarkServiceError as e:
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            error_message = str(e)
+            commit_benchmark_error(benchmark_row, session, error_message)
     except Exception as e:
         logfire.exception("process_benchmark failed")
         sentry_sdk.capture_exception(e)
@@ -908,11 +977,12 @@ async def process_benchmark(
             error_message = f"{str(e)}\n{traceback.format_exc()}"
             commit_benchmark_error(benchmark_row, session, error_message)
     finally:
-        with Session(bind=engine) as session:
-            # Handle any misalignments between the benchmark status and tasks
-            catch_errors_during_cleanup(benchmark_id, session, org)
+        if not finalization_deferred:
+            with Session(bind=engine) as session:
+                # Handle any misalignments between the benchmark status and tasks
+                catch_errors_during_cleanup(benchmark_id, session, org)
 
-        if notifier:
+        if notifier and not finalization_deferred:
             try:
                 with Session(bind=engine) as session:
                     benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
@@ -1004,6 +1074,8 @@ class BenchmarkContext:
             total_tasks=self._task_counts.total_tasks,
             finished_tasks=self._task_counts.finished_tasks,
             task_breakdown=self._task_breakdown,
+            docent_reading_status=self._benchmark_row.docent_reading_status,
+            docent_reading_url=self._benchmark_row.docent_reading_url,
         )
 
 
@@ -1090,6 +1162,13 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
         .values(status=TaskStatus.ERROR, error_message="Undetected exit of task")
     )
     session.commit()
+
+    # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
+    # helper uses try/finally so this only fires when the worker process was
+    # killed mid-invocation (no try/finally cleanup ran).
+    if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
+        benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
+        session.add(benchmark_row)
 
     # Force benchmark to ERROR so that the user knows they can retry any failed tasks
     commit_benchmark_error(
@@ -1295,22 +1374,22 @@ async def reset_to_in_progress_status(
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
     try:
-        retry_statuses = [TaskStatus.STOPPED]
-        if retry:
-            retry_statuses.append(TaskStatus.ERROR)
-
-        filter_query = [
-            col(Task.benchmark) == benchmark_row.id,
-            col(Task.org_id) == org.id,
-            or_(
-                col(Task.status).in_(retry_statuses),
-                col(Task.task_id).in_(rerun_task_ids),
-            ),
-        ]
-
-        existing_rows = session.exec(select(Task).where(*filter_query)).all()
+        existing_rows = session.exec(
+            select(Task)
+            .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
+            .order_by(asc(Task.started_at))
+        ).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
-        new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
+
+        if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+            missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_by_task_id]
+            if missing_task_ids:
+                raise TrackerServiceError(
+                    f"{', '.join(missing_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
+                )
+            new_task_ids = []
+        else:
+            new_task_ids = [tid for tid in rerun_task_ids if tid not in existing_by_task_id]
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
@@ -1318,15 +1397,16 @@ async def reset_to_in_progress_status(
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
-        all_requested_task_ids = list(existing_by_task_id.keys()) + new_task_ids
+        all_requested_task_ids = [task.task_id for task in existing_rows] + new_task_ids
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
         )
 
-        # Set the benchmark status to in progress to flag resuming the benchmark
-        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        session.add(benchmark_row)
-        session.commit()
+        # Can already be in progress when retrying errored tasks while the run is ongoing.
+        if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+            benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+            session.add(benchmark_row)
+            session.commit()
 
         for task in existing_rows:
             task.status = (
@@ -1359,6 +1439,29 @@ async def reset_to_in_progress_status(
         raise
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
+
+
+def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
+    """Select retryable rows.
+
+    Active retries on in-progress runs are limited to ERROR tasks. Finished tasks must wait until the run is terminal.
+    """
+    filters = [
+        col(Task.benchmark) == benchmark_row.id,
+        col(Task.org_id) == org.id,
+    ]
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+        filters.append(col(Task.status) == TaskStatus.ERROR)
+        if rerun_task_ids:
+            filters.append(col(Task.task_id).in_(rerun_task_ids))
+        return filters
+
+    retry_statuses = [TaskStatus.STOPPED]
+    if retry:
+        retry_statuses.append(TaskStatus.ERROR)
+
+    filters.append(or_(col(Task.status).in_(retry_statuses), col(Task.task_id).in_(rerun_task_ids)))
+    return filters
 
 
 def fetch_filtered_benchmark_rows(
@@ -1489,15 +1592,26 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
     flat = {
         key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
     }
-    return HarnessConfig(
-        aws=AWSCredentials(
-            aws_access_key_id=flat["aws_access_key_id"],
-            aws_secret_access_key=flat["aws_secret_access_key"],
-            aws_default_region=flat["aws_default_region"],
-            aws_session_token=flat.get("aws_session_token"),
-        ),
-        s3_bucket=flat["s3_bucket"],
-        log_group=flat["log_group"],
-        log_retention_policy=int(flat["log_retention_policy"]),
-        daytona_secret_name=flat["daytona_secret_name"],
-    )
+
+    try:
+        return HarnessConfig(
+            aws=AWSCredentials(
+                aws_access_key_id=flat["aws_access_key_id"],
+                aws_secret_access_key=flat["aws_secret_access_key"],
+                aws_default_region=flat["aws_default_region"],
+                aws_session_token=flat.get("aws_session_token"),
+            ),
+            s3_bucket=flat["s3_bucket"],
+            log_group=flat["log_group"],
+            log_retention_policy=int(flat["log_retention_policy"]),
+            daytona_secret_name=flat["daytona_secret_name"],
+        )
+    except KeyError as e:
+        config_key = e.args[0].upper()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Missing required config value: '{config_key}'. "
+                "Run `valk config init` to initialize or `valk config set` to update your Valkyrie config."
+            ),
+        ) from e

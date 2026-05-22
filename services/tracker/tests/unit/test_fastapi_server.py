@@ -5,10 +5,9 @@ from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
-import pytest
-
 import httpx
-from benchmark_service.client import BenchmarkServiceClient
+import pytest
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
 from descope import DescopeClient
@@ -31,12 +30,14 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import (
+    AWSCredentials,
     BenchmarkTableRow,
     FetchBenchmarksRequest,
     FinalViewResponse,
     HarnessConfig,
     StartBenchmarkRequest,
 )
+from tracker.utils import fetch_harness_config
 
 client = TestClient(app)
 
@@ -889,3 +890,91 @@ class TestFastapiServer:
         response = client.get(f"/fetch-benchmark-metadata/{bench.id}")
         assert response.status_code == 200
         assert response.json()["started_by_email"] == "alice@vals.ai"
+
+    async def test_benchmark_service_unauthenticated_error_returns(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        """
+        Test that BenchmarkServiceUnauthenticatedError returns 502 without capturing to Sentry.
+
+        Test Cases:
+            - /start-benchmark returns 502 when benchmark service returns 401
+            - /fetch-benchmark-tasks returns 502 when benchmark service returns 401
+            - /retry-or-resume-benchmark returns 502 when benchmark service returns 401
+            - None of the above cases capture the exception to Sentry
+        """
+        captured: list[Exception] = []
+        monkeypatch.setattr("sentry_sdk.capture_exception", lambda exc: captured.append(exc))  # type: ignore
+
+        async def _raise_unauth(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise BenchmarkServiceUnauthenticatedError("401 Unauthorized")
+
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+
+        # Case 1: /start-benchmark
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _raise_unauth)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+
+        response = no_raise_client.post("/start-benchmark", json=request.model_dump())
+        assert response.status_code == 502
+
+        # Case 2: /fetch-benchmark-tasks
+        response = no_raise_client.post(
+            "/fetch-benchmark-tasks",
+            json={"benchmark_name": "swebench"},
+        )
+        assert response.status_code == 502
+
+        # Case 3: /retry-or-resume-benchmark — needs at least one task so verify_task_ids is reached
+        benchmark = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            status=BenchmarkStatus.ERROR,
+            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+        )
+        database_session.add(benchmark)
+        database_session.commit()
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark.id, status=TaskStatus.ERROR)
+        )
+        database_session.commit()
+
+        response = no_raise_client.post(
+            f"/retry-or-resume-benchmark/{benchmark.id}",
+            json={"task_ids": [], "service_headers": {}},
+            params={"retry": "true"},
+        )
+        assert response.status_code == 502
+
+        # None of the three cases should have reached Sentry
+        assert captured == []
+
+    def test_fetch_benchmark_returns_400_when_harness_headers_missing(self):
+        """Missing X-Harness-* headers should return 400, not 500 KeyError."""
+        app.dependency_overrides.pop(fetch_harness_config)
+        try:
+            response = client.get("/fetch-benchmark", params={"benchmark_id": str(uuid4())})
+            assert response.status_code == 400
+            assert "Missing required config value" in response.json()["detail"]
+        finally:
+            app.dependency_overrides[fetch_harness_config] = lambda: HarnessConfig(
+                aws=AWSCredentials(
+                    aws_access_key_id="test-aws-access-key-id",
+                    aws_secret_access_key="test-aws-secret-access-key",
+                    aws_default_region="test-aws-default-region",
+                ),
+                s3_bucket="test-bucket",
+                log_group="test-log-group",
+                log_retention_policy=30,
+                daytona_secret_name="test-daytona-secret",
+            )

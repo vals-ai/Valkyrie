@@ -29,7 +29,7 @@ make clean    # Stop and remove images
 make logs     # Tail container logs
 ```
 
-No `.env` file is required for local development
+No `.env` file is required for local development (Docker Compose reads AWS credentials from your shell environment).
 
 ## Tests
 
@@ -37,6 +37,25 @@ No `.env` file is required for local development
 make test-unit          # Unit tests + Alembic migration tests
 make test-alembic       # Alembic migration tests only
 make test-integration   # Integration tests
+```
+
+Integration tests run against live AWS infrastructure and the public benchmark service. They require a `.env` file at `services/tracker/.env`:
+
+```env
+# AWS — used to fetch Daytona credentials from Secrets Manager and write to S3/CloudWatch
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_DEFAULT_REGION=us-east-1
+AWS_SESSION_TOKEN=              # Optional, required when using temporary credentials
+
+# Test infrastructure
+TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts (e.g. agentic-harness)
+TEST_LOG_GROUP=                 # CloudWatch log group (e.g. valkyrie-test-log-group)
+TEST_DAYTONA_SECRET_NAME=       # AWS Secrets Manager secret containing Daytona API key (e.g. AgenticHarnessSecrets)
+
+# Benchmark service
+BENCHMARK_SERVICE_BASE_URL=     # Use the domain of the benchmark service
+BENCHMARK_SERVICE_AUTH_KEY=     # Access key for authenticating with a benchmark service
 ```
 
 ## Migrations
