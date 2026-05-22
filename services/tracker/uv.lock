@@ -328,8 +328,8 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.3.1.dev4+ge39612cd8"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=e39612cd8ef6f86a83d4d81eb6d2f2bc3d29abdb#e39612cd8ef6f86a83d4d81eb6d2f2bc3d29abdb" }
+version = "0.3.1.dev5+gb6109e93c"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=b6109e93cb0fce49f826dd78bb39cbb44e5684da#b6109e93cb0fce49f826dd78bb39cbb44e5684da" }
 dependencies = [
     { name = "cachetools" },
     { name = "click" },
@@ -1879,7 +1879,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=e39612cd8ef6f86a83d4d81eb6d2f2bc3d29abdb" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=b6109e93cb0fce49f826dd78bb39cbb44e5684da" },
     { name = "daytona", specifier = "==0.176.1a1" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },

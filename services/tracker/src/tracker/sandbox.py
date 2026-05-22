@@ -24,6 +24,7 @@ from benchmark_service import (
     SnapshotSource,
 )
 from benchmark_service.sandbox import DaytonaSandbox
+from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 from daytona import (
     AsyncSandbox,
@@ -70,6 +71,8 @@ logger = get_logger(__name__)
 
 
 bundle_path = PurePosixPath("/bundle")
+SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
+SANDBOX_CREATE_TIMEOUT = 360
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -140,9 +143,9 @@ def _set_sandbox_create_span_attributes(
     span = trace.get_current_span()
     span.set_attribute("valkyrie.sandbox_name", sandbox_name)
     span.set_attribute("valkyrie.image", _source_name(source))
-    span.set_attribute("valkyrie.resources.vcpu", resources.cpu)
-    span.set_attribute("valkyrie.resources.memory", resources.memory_gb)
-    span.set_attribute("valkyrie.resources.disk", resources.disk_gb)
+    span.set_attribute("valkyrie.resources.vcpu", resources.vcpu)
+    span.set_attribute("valkyrie.resources.memory", resources.memory)
+    span.set_attribute("valkyrie.resources.disk", resources.disk)
 
 
 def _daytona_inner(sandbox: Sandbox) -> AsyncSandbox | None:
@@ -208,6 +211,8 @@ async def _create_sandbox(
             name=sandbox_name,
             labels=labels or {},
             env_vars=env_vars or {},
+            auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
+            create_timeout=SANDBOX_CREATE_TIMEOUT,
         )
     )
 
@@ -501,7 +506,7 @@ async def _exec(sandbox: Sandbox | AsyncSandbox, command: str) -> ExecResult:
     try:
         result = await daytona_sandbox.process.exec(command)
         assert result.exit_code is not None
-        return ExecResult(exit_code=result.exit_code, stdout=result.result or "")
+        return ExecResult(exit_code=result.exit_code, output=result.result)
     except DaytonaError as e:
         tag_daytona_error(e, op="sandbox.exec")
         raise
@@ -862,24 +867,25 @@ async def _stream_generic_command_output(
     output: deque[str] = deque(maxlen=50)
     start = time.perf_counter()
 
-    def collect(data: str) -> None:
-        on_output(data)
-        output.append(data)
+    try:
+        async for data in sandbox.command(command):
+            on_output(data)
+            output.append(data)
+        return None, time.perf_counter() - start
+    except ProviderSandboxCommandError as e:
+        exit_code = e.exit_code
 
-    result = await sandbox.exec(command, on_output=collect)
     duration = time.perf_counter() - start
 
-    if result.exit_code == _SUCCESS_EXIT_CODE:
-        return None, duration
-    if result.exit_code == _TIMEOUT_EXIT_CODE:
+    if exit_code == _TIMEOUT_EXIT_CODE:
         return AgentCausedExitReason.TIMEOUT, duration
-    if result.exit_code == _OS_KILL_EXIT_CODE:
+    if exit_code == _OS_KILL_EXIT_CODE:
         return AgentCausedExitReason.OS_KILLED, duration
 
     tail = "".join(output).strip().splitlines()
     recent = "\n".join(tail[-10:]) if tail else "(no output)"
-    sentry_sdk.set_tag("agent_exit_code", str(result.exit_code))
-    raise AgentRunFailedError(f"Failed to run command {command}, exit code: {result.exit_code}\nLast output:\n{recent}")
+    sentry_sdk.set_tag("agent_exit_code", str(exit_code))
+    raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
 
 
 async def stream_command_output(

@@ -668,7 +668,7 @@ class TestAgentOutputTelemetry:
 
         create_span_attrs = getattr(sandbox_module, "_set_sandbox_create_span_attributes")
         sandbox_span_attrs = getattr(sandbox_module, "_set_sandbox_span_attributes")
-        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
+        resources = Resources(vcpu=2, memory=4, disk=5)
 
         create_span_attrs("task-alias", ImageSource(image="ghcr.io/vals/swebench:latest"), resources)
 
@@ -696,7 +696,7 @@ class TestAgentOutputTelemetry:
         span_calls: list[tuple[str, str, int]] = []
 
         def fake_create_span_attrs(sandbox_name: str, source: Any, resources: Any) -> None:
-            span_calls.append((sandbox_name, source.image, resources.cpu))
+            span_calls.append((sandbox_name, source.image, resources.vcpu))
 
         monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
 
@@ -705,7 +705,7 @@ class TestAgentOutputTelemetry:
         provider = AsyncMock()
         provider.get_sandbox = AsyncMock(return_value=mock_sandbox)
 
-        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
+        resources = Resources(vcpu=2, memory=4, disk=5)
         sandbox = await _create_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(
             provider,
             "task-alias",
@@ -800,7 +800,7 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "set_sandbox_context", fake_set_sandbox_context, raising=False)
         monkeypatch.setattr(sandbox_module.time, "monotonic", fake_monotonic)
 
-        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
+        resources = Resources(vcpu=2, memory=4, disk=5)
         async with create_sandbox(
             provider=AsyncMock(),
             sandbox_name="task-alias",
@@ -837,7 +837,7 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
         monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
 
-        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
+        resources = Resources(vcpu=2, memory=4, disk=5)
         with pytest.raises(DaytonaError):
             async with create_sandbox(
                 provider=AsyncMock(),
@@ -868,7 +868,7 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
         monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
 
-        resources = Resources(cpu=2, memory_gb=4, disk_gb=5)
+        resources = Resources(vcpu=2, memory=4, disk=5)
         with pytest.raises(ValueError, match="bad config"):
             async with create_sandbox(
                 provider=AsyncMock(),
@@ -1168,7 +1168,7 @@ class TestUploadAgentArtifacts:
         monkeypatch.setattr(
             sandbox_module,
             "_exec",
-            AsyncMock(return_value=ExecResult(exit_code=exit_code, stdout="error output")),
+            AsyncMock(return_value=ExecResult(exit_code=exit_code, output="error output")),
         )
         monkeypatch.setattr(
             "tracker.sandbox.create_presigned_url",
@@ -1215,7 +1215,7 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr(
             sandbox_module,
             "_exec",
-            AsyncMock(return_value=ExecResult(exit_code=0, stdout="1000000000")),
+            AsyncMock(return_value=ExecResult(exit_code=0, output="1000000000")),
         )
 
         tagged: dict[str, str] = {}

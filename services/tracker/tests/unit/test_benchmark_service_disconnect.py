@@ -113,7 +113,7 @@ class TestBenchmarkServiceDisconnect:
 
         async def _mock_retrieve_task_invalid(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             return RetrieveTaskResponse.model_validate(
-                {"source": {"type": "image"}, "resources": {"vcpu_gb": 4, "memory_gb": 4, "disk_gb": 10}}
+                {"source": {"type": "image"}, "resources": {"vcpu_gb": 4, "memory": 4, "disk": 10}}
             )
 
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_invalid)
@@ -127,7 +127,7 @@ class TestBenchmarkServiceDisconnect:
         assert task_row.error_message is not None
         assert "Missing or invalid fields" in task_row.error_message
         assert "source.image.image" in task_row.error_message
-        assert "resources.cpu" in task_row.error_message
+        assert "resources.vcpu" in task_row.error_message
 
     async def test_invalid_status_produces_human_readable_message(
         self,

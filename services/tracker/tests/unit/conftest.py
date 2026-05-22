@@ -211,7 +211,7 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
             source=ImageSource(image="test-image:latest"),
             problem_path="/tmp/problem_statement.txt",
             cwd="/testbed",
-            resources=Resources(cpu=2, memory_gb=4, disk_gb=5),
+            resources=Resources(vcpu=2, memory=4, disk=5),
         )
 
     async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:

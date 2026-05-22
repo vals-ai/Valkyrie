@@ -104,7 +104,7 @@ class TestPtyRetry:
                 source=ImageSource(image="test-image:latest"),
                 problem_path="/tmp/problem.txt",
                 cwd="/testbed",
-                resources=Resources(cpu=2, memory_gb=4, disk_gb=5),
+                resources=Resources(vcpu=2, memory=4, disk=5),
             )
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -174,7 +174,7 @@ class TestPtyRetry:
                 source=ImageSource(image="test-image:latest"),
                 problem_path="/tmp/problem.txt",
                 cwd="/testbed",
-                resources=Resources(cpu=2, memory_gb=4, disk_gb=5),
+                resources=Resources(vcpu=2, memory=4, disk=5),
             )
 
         async def _mock_upload_agent_artifacts(*_args: Any, **_kwargs: Any) -> None:

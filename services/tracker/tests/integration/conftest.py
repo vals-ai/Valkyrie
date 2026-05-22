@@ -171,4 +171,4 @@ def test_image():
 
 @pytest.fixture
 def test_resources():
-    return Resources(cpu=1, memory_gb=2, disk_gb=5)
+    return Resources(vcpu=1, memory=2, disk=5)
