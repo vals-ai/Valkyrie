@@ -145,3 +145,59 @@ def test_unauth_returns_401(client):
     bogus = uuid4()
     assert client.get(f"/benchmarks/{bogus}").status_code == 401
     assert client.get(f"/benchmarks/{bogus}/tasks").status_code == 401
+
+
+def test_get_benchmark_tasks_filters_by_task_id_search(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__astropy-12907", status=TaskStatus.FINISHED))
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="django__django-11400", status=TaskStatus.FINISHED))
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__astropy-13033", status=TaskStatus.ERROR))
+    database_session.commit()
+
+    # substring match (case-insensitive)
+    resp = client.get(
+        f"/benchmarks/{b.id}/tasks?task_id_search=astropy",
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["total_count"] == 2
+    ids = sorted(t["task_id"] for t in data["tasks"])
+    assert ids == ["astropy__astropy-12907", "astropy__astropy-13033"]
+
+
+def test_get_benchmark_tasks_search_case_insensitive(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="DJANGO__django-1", status=TaskStatus.PENDING))
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__1", status=TaskStatus.PENDING))
+    database_session.commit()
+
+    resp = client.get(
+        f"/benchmarks/{b.id}/tasks?task_id_search=django",
+        headers={"Authorization": "Bearer fake"},
+    )
+    data = resp.json()
+    assert data["total_count"] == 1
+    assert data["tasks"][0]["task_id"] == "DJANGO__django-1"
+
+
+def test_get_benchmark_tasks_search_combines_with_status(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__12907", status=TaskStatus.FINISHED))
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__13033", status=TaskStatus.ERROR))
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="django__11400", status=TaskStatus.ERROR))
+    database_session.commit()
+
+    resp = client.get(
+        f"/benchmarks/{b.id}/tasks?task_id_search=astropy&status=ERROR",
+        headers={"Authorization": "Bearer fake"},
+    )
+    data = resp.json()
+    assert data["total_count"] == 1
+    assert data["tasks"][0]["task_id"] == "astropy__13033"

@@ -67,6 +67,7 @@ def get_single_benchmark(
 def get_benchmark_tasks(
     benchmark_id: UUID,
     status: TaskStatus | None = None,
+    task_id_search: str | None = None,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     user_and_org: tuple[User | None, Org] = Depends(get_current_user_and_org),
@@ -81,6 +82,9 @@ def get_benchmark_tasks(
     ]
     if status is not None:
         base_filters.append(col(Task.status) == status)
+
+    if task_id_search:
+        base_filters.append(col(Task.task_id).ilike(f"%{task_id_search}%"))
 
     rows = session.exec(
         select(Task)
