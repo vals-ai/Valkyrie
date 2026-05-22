@@ -297,6 +297,17 @@ class TasksResponse(BaseModel):
     total_count: int
 
 
+class LogEvent(BaseModel):
+    timestamp: int  # ms since epoch
+    message: str
+    log_stream: str
+
+
+class LogsResponse(BaseModel):
+    events: list[LogEvent]
+    next_token: str | None = None
+
+
 class OrgConfigUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 

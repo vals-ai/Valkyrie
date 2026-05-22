@@ -1,6 +1,7 @@
 import time
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
+from uuid import UUID
 
 import boto3
 from botocore.config import Config
@@ -130,3 +131,47 @@ def cloudwatch_stream(stream_key: str, message: str, aws: "AWSCredentials", log_
         )
     except (ClientError, BotoCoreError) as e:
         raise CloudWatchError(f"Failed to put log event: {e}") from e
+
+
+@handle_cloudwatch_error(message="Failed to fetch log events")
+def filter_log_events(
+    benchmark_id: UUID,
+    aws: "AWSCredentials",
+    log_group: str,
+    limit: int = 200,
+    next_token: str | None = None,
+    start_time_ms: int | None = None,
+) -> dict[str, object]:
+    """Fetch interleaved log events across all streams in this benchmark's log group.
+
+    Returns:
+        {"events": list[{timestamp, message, log_stream}], "next_token": str | None}
+    """
+    client = _cloudwatch_client(aws)
+    group_name = f"{log_group}/{benchmark_id}"
+
+    params: dict[str, object] = {
+        "logGroupName": group_name,
+        "limit": limit,
+        "interleaved": True,
+    }
+    if next_token:
+        params["nextToken"] = next_token
+    if start_time_ms is not None:
+        params["startTime"] = start_time_ms
+
+    try:
+        resp = client.filter_log_events(**params)
+    except client.exceptions.ResourceNotFoundException:
+        # Log group not yet created (run hasn't emitted anything)
+        return {"events": [], "next_token": None}
+
+    events = [
+        {
+            "timestamp": e["timestamp"],  # ms since epoch
+            "message": e["message"],
+            "log_stream": e.get("logStreamName", ""),
+        }
+        for e in resp.get("events", [])
+    ]
+    return {"events": events, "next_token": resp.get("nextToken")}
