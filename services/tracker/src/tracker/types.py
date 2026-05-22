@@ -332,3 +332,39 @@ class OrgConfigUpdate(BaseModel):
         config.log_retention_policy = self.log_retention_policy
         if self.webhook != MASKED_SECRET:
             config.webhook = self.webhook
+
+
+class SingleTaskResponse(BaseModel):
+    id: UUID
+    task_id: str
+    status: TaskStatus
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None
+    evaluation_result: dict[str, Any] | None
+    agent_caused_exit_reason: str | None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class FileEntry(BaseModel):
+    key: str
+    size: int
+    last_modified: str | None
+
+
+class FilesResponse(BaseModel):
+    files: list[FileEntry]
+
+
+class PresignedUrlResponse(BaseModel):
+    url: str
+    expires_in: int  # seconds
