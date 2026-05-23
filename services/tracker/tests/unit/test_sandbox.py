@@ -1,15 +1,14 @@
 import asyncio
 from collections import deque
 from collections.abc import Mapping
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service import ExecResult, ImageSource, Resources, SnapshotSource
+from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
-from daytona import SandboxState
-from daytona.common.errors import DaytonaConnectionError, DaytonaError, DaytonaNotFoundError, DaytonaRateLimitError
+from daytona.common.errors import DaytonaError, DaytonaRateLimitError
 from tenacity import stop_after_attempt, wait_none
 
 import tracker.daytona_retry as daytona_retry_module
@@ -21,207 +20,10 @@ from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import AWSCredentials
 
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
-_create_pty_session = getattr(sandbox_module, "_create_pty_session")
-_check_sandbox_health = getattr(sandbox_module, "_check_sandbox_health")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
-_reconnect_and_wait_pty = getattr(sandbox_module, "_reconnect_and_wait_pty")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
-_wait_for_pty = getattr(sandbox_module, "_wait_for_pty")
-
-
-def _ignore_pty_data(_data: bytes) -> None:
-    pass
-
-
-class TestPtyHandshakeSemaphore:
-    async def test_create_pty_session_emits_handshake_metrics_structured_log_and_span_attrs(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        cap = 5
-        monkeypatch.setattr(sandbox_module, "_PTY_HANDSHAKE_CAP", cap)
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(cap))
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_in_flight_count", 0, raising=False)
-        monkeypatch.setattr(sandbox_module.uuid, "uuid4", lambda: SimpleNamespace(hex="abcdef123456"))
-
-        distributions: list[tuple[str, float, dict[str, str]]] = []
-        gauges: list[tuple[str, float, dict[str, str]]] = []
-        log_records: list[dict[str, Any]] = []
-        span_calls: list[tuple[str, str, str]] = []
-        pty_context_calls: list[str] = []
-
-        def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
-            distributions.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
-
-        def fake_gauge(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
-            gauges.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
-
-        def fake_info(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
-            log_records.append({"message": message, **(extra or {})})
-
-        def fake_set_span_attrs(sandbox: Any, session_id: str) -> None:
-            span_calls.append((sandbox.id, sandbox.name, session_id))
-
-        def fake_set_pty_context(*, session_id: str, attempt: int | None = None) -> None:
-            pty_context_calls.append(session_id)
-
-        monkeypatch.setattr(sandbox_module, "distribution", fake_distribution, raising=False)
-        monkeypatch.setattr(sandbox_module, "gauge", fake_gauge, raising=False)
-        monkeypatch.setattr(sandbox_module.logger, "info", fake_info)
-        monkeypatch.setattr(sandbox_module, "_set_pty_span_attributes", fake_set_span_attrs, raising=False)
-        monkeypatch.setattr(sandbox_module, "set_pty_context", fake_set_pty_context, raising=False)
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-        mock_handle = Mock()
-        mock_sandbox.process.create_pty_session = AsyncMock(return_value=mock_handle)
-        debug_output: list[bytes] = []
-
-        handle, salted_id = await _create_pty_session(mock_sandbox, "session-1", debug_output.append)
-
-        assert handle is mock_handle
-        assert salted_id == "session-1-abcdef12"
-        assert debug_output == [b"[Debug]: Creating PTY session with the following id session-1-abcdef12\n"]
-        wait_duration_call = next(call for call in distributions if call[0] == "valkyrie.pty.handshake.wait_duration")
-        assert 0 <= wait_duration_call[1] < 1
-        assert wait_duration_call[2] == {"operation": "create"}
-        assert [call for call in gauges if call[0] == "valkyrie.pty.handshake.in_flight"] == [
-            ("valkyrie.pty.handshake.in_flight", 1, {"operation": "create"}),
-            ("valkyrie.pty.handshake.in_flight", 0, {"operation": "create"}),
-        ]
-        assert log_records == [
-            {
-                "message": "pty.create",
-                "pty_event": "create",
-                "session_id": "session-1-abcdef12",
-                "sandbox_id": "sandbox-123",
-            }
-        ]
-        assert span_calls == [("sandbox-123", "task-alias", "session-1-abcdef12")]
-        assert pty_context_calls == ["session-1-abcdef12"]
-
-    async def test_reconnect_emits_counter_metrics_structured_log_and_span_attrs(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(5))
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_in_flight_count", 0, raising=False)
-
-        increments: list[tuple[str, dict[str, str]]] = []
-        distributions: list[tuple[str, float, dict[str, str]]] = []
-        gauges: list[tuple[str, float, dict[str, str]]] = []
-        log_records: list[dict[str, Any]] = []
-        span_calls: list[tuple[str, str, str]] = []
-        pty_context_calls: list[str] = []
-
-        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
-            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
-
-        def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
-            distributions.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
-
-        def fake_gauge(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
-            gauges.append((name, value, {str(k): str(v) for k, v in (tags or {}).items()}))
-
-        def fake_info(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
-            log_records.append({"message": message, **(extra or {})})
-
-        def fake_set_span_attrs(sandbox: Any, session_id: str) -> None:
-            span_calls.append((sandbox.id, sandbox.name, session_id))
-
-        def fake_set_pty_context(*, session_id: str, attempt: int | None = None) -> None:
-            pty_context_calls.append(session_id)
-
-        monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
-        monkeypatch.setattr(sandbox_module, "distribution", fake_distribution, raising=False)
-        monkeypatch.setattr(sandbox_module, "gauge", fake_gauge, raising=False)
-        monkeypatch.setattr(sandbox_module.logger, "info", fake_info)
-        monkeypatch.setattr(sandbox_module, "_set_pty_span_attributes", fake_set_span_attrs, raising=False)
-        monkeypatch.setattr(sandbox_module, "set_pty_context", fake_set_pty_context, raising=False)
-        monkeypatch.setattr(sandbox_module, "_check_sandbox_health", AsyncMock())
-
-        mock_handle = AsyncMock()
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-        mock_sandbox.process.get_pty_session_info = AsyncMock()
-        mock_sandbox.process.connect_pty_session = AsyncMock(return_value=mock_handle)
-        outputs: list[str] = []
-
-        await _reconnect_and_wait_pty(mock_sandbox, "session-1", _ignore_pty_data, outputs.append)
-
-        assert increments == [
-            ("valkyrie.pty.reconnect.count", {"operation": "reconnect"}),
-            ("valkyrie.pty.reconnect.success", {}),
-        ]
-        assert outputs == ["[Debug]: Disconnected from websocket, creating a new reader and reconnecting\n"]
-        assert log_records == [
-            {
-                "message": "pty.reconnect_start",
-                "pty_event": "reconnect_start",
-                "session_id": "session-1",
-                "sandbox_id": "sandbox-123",
-            },
-            {
-                "message": "pty.reconnect_success",
-                "pty_event": "reconnect_success",
-                "session_id": "session-1",
-                "sandbox_id": "sandbox-123",
-            },
-        ]
-        handshake_duration_call = next(call for call in distributions if call[0] == "valkyrie.pty.handshake.duration")
-        assert 0 <= handshake_duration_call[1] < 1
-        assert handshake_duration_call[2] == {"operation": "reconnect"}
-        assert [call for call in gauges if call[0] == "valkyrie.pty.handshake.in_flight"] == [
-            ("valkyrie.pty.handshake.in_flight", 1, {"operation": "reconnect"}),
-            ("valkyrie.pty.handshake.in_flight", 0, {"operation": "reconnect"}),
-        ]
-        assert span_calls == [("sandbox-123", "task-alias", "session-1")]
-        assert pty_context_calls == ["session-1"]
-
-    async def test_handshake_slot_warns_when_handshake_is_slow(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(5))
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_in_flight_count", 0, raising=False)
-        monkeypatch.setattr(sandbox_module, "_PTY_HANDSHAKE_SLOW_LOG_THRESHOLD", -1)
-        monkeypatch.setattr(sandbox_module, "distribution", Mock(), raising=False)
-        monkeypatch.setattr(sandbox_module, "gauge", Mock(), raising=False)
-
-        warnings: list[str] = []
-
-        def fake_warning(message: str) -> None:
-            warnings.append(message)
-
-        monkeypatch.setattr(sandbox_module.logger, "warning", fake_warning)
-
-        pty_handshake_slot = getattr(sandbox_module, "_pty_handshake_slot")
-        async with pty_handshake_slot("create", "session-1"):
-            pass
-
-        assert warnings
-        assert warnings[0].startswith("PTY handshake slow: create session=session-1 duration=")
-
-    def test_set_pty_span_attributes_sets_safe_span_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        span_attributes: dict[str, str] = {}
-
-        class FakeSpan:
-            def set_attribute(self, key: str, value: str) -> None:
-                span_attributes[key] = value
-
-        monkeypatch.setattr(sandbox_module.trace, "get_current_span", lambda: FakeSpan())
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-
-        set_pty_span_attributes = getattr(sandbox_module, "_set_pty_span_attributes")
-        set_pty_span_attributes(mock_sandbox, "session-1")
-
-        assert span_attributes == {
-            "valkyrie.sandbox_id": "sandbox-123",
-            "valkyrie.sandbox_name": "task-alias",
-            "valkyrie.pty_session_id": "session-1",
-        }
 
 
 class TestAgentOutputTelemetry:
@@ -280,85 +82,6 @@ class TestAgentOutputTelemetry:
         )
 
         assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
-
-    async def test_wait_for_pty_emits_structured_logs_for_clean_disconnect_and_missing_status(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        log_records: list[dict[str, Any]] = []
-
-        def fake_info(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
-            log_records.append({"message": message, **(extra or {})})
-
-        monkeypatch.setattr(sandbox_module.logger, "info", fake_info)
-        monkeypatch.setattr(sandbox_module, "_check_sandbox_health", AsyncMock())
-        monkeypatch.setattr(
-            sandbox_module,
-            "_exec",
-            AsyncMock(
-                side_effect=[
-                    ExecResult(exit_code=1),
-                    ExecResult(exit_code=0),
-                ]
-            ),
-        )
-        reconnect = AsyncMock()
-        monkeypatch.setattr(sandbox_module, "_reconnect_and_wait_pty", reconnect)
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        handle = AsyncMock()
-        outputs: list[str] = []
-
-        await _wait_for_pty(mock_sandbox, "session-1", handle, _ignore_pty_data, outputs.append, "/tmp/status")
-
-        assert outputs == [
-            "[Debug]: PTY has been disconnected, handler has stopped polling\n",
-            "[Debug]: PTY closed but status file not written yet, reconnecting\n",
-        ]
-        assert [record["pty_event"] for record in log_records] == [
-            "stream_disconnect",
-            "reconnect_status_missing",
-        ]
-        assert reconnect.await_count == 1
-
-    async def test_wait_for_pty_emits_structured_log_for_disconnect_error(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        log_records: list[dict[str, Any]] = []
-
-        def fake_info(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
-            log_records.append({"message": message, **(extra or {})})
-
-        monkeypatch.setattr(sandbox_module.logger, "info", fake_info)
-        monkeypatch.setattr(sandbox_module, "_check_sandbox_health", AsyncMock())
-        monkeypatch.setattr(
-            sandbox_module,
-            "_exec",
-            AsyncMock(return_value=ExecResult(exit_code=0)),
-        )
-        reconnect = AsyncMock()
-        monkeypatch.setattr(sandbox_module, "_reconnect_and_wait_pty", reconnect)
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        handle = AsyncMock()
-        handle.wait = AsyncMock(side_effect=RuntimeError("websocket closed"))
-        outputs: list[str] = []
-
-        await _wait_for_pty(mock_sandbox, "session-1", handle, _ignore_pty_data, outputs.append, "/tmp/status")
-
-        assert outputs == ["[Debug]: PTY stream has been disconnected (Attempting reconnection): websocket closed\n"]
-        assert [record["pty_event"] for record in log_records] == ["stream_disconnect_with_error"]
-        assert reconnect.await_count == 1
-
-    def test_pty_retry_decorators_use_observability_retry_callbacks(self) -> None:
-        create_before_sleep = _create_pty_session.retry.before_sleep
-        reconnect_before_sleep = _reconnect_and_wait_pty.retry.before_sleep
-
-        assert create_before_sleep is not None
-        assert reconnect_before_sleep is not None
-        assert callable(create_before_sleep)
-        assert callable(reconnect_before_sleep)
 
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         exec_before_sleep = _exec.retry.before_sleep
@@ -424,27 +147,11 @@ class TestAgentOutputTelemetry:
         assert wait_strategy(retry_state) == 2
 
     def test_daytona_retry_wait_preserves_non_rate_limit_waits(self) -> None:
-        cases = [
-            (_exec.retry.wait, 4, 2),
-            (_create_pty_session.retry.wait, 4, 2),
-            (_reconnect_and_wait_pty.retry.wait, 4, 1),
-        ]
-
-        for wait_strategy, attempt_number, expected_seconds in cases:
-            retry_state = Mock()
-            retry_state.attempt_number = attempt_number
-            retry_state.outcome.exception.return_value = DaytonaError("transient")
-
-            assert wait_strategy(retry_state) == expected_seconds
-
-    @pytest.mark.parametrize("headers", [{}, {"Retry-After-Sandbox-Lifecycle": "bad"}])
-    def test_pty_reconnect_retry_wait_uses_exponential_fallback_for_rate_limits(self, headers: dict[str, str]) -> None:
         retry_state = Mock()
         retry_state.attempt_number = 4
-        retry_state.outcome.exception.return_value = DaytonaRateLimitError("rate limited", headers=headers)
-        wait_strategy = _reconnect_and_wait_pty.retry.wait
+        retry_state.outcome.exception.return_value = DaytonaError("transient")
 
-        assert wait_strategy(retry_state) == 8
+        assert _exec.retry.wait(retry_state) == 2
 
     def test_daytona_retry_callback_emits_rate_limit_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []
@@ -665,7 +372,7 @@ class TestAgentOutputTelemetry:
         mock_sandbox.name = "task-alias"
         sandbox_span_attrs(mock_sandbox)
 
-        mock_sandbox.state = SandboxState.STARTED
+        mock_sandbox.state = "started"
         sandbox_span_attrs(mock_sandbox)
 
         assert span_attributes == {
@@ -675,7 +382,7 @@ class TestAgentOutputTelemetry:
             "valkyrie.resources.memory": 4,
             "valkyrie.resources.disk": 5,
             "valkyrie.sandbox_id": "sandbox-123",
-            "valkyrie.sandbox_state": str(SandboxState.STARTED),
+            "valkyrie.sandbox_state": "started",
         }
 
     async def test_create_sandbox_passes_request_to_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -851,261 +558,6 @@ class TestAgentOutputTelemetry:
         assert increments == [("valkyrie.sandbox.create.errors", {"error_class": "ValueError"})]
         assert daytona_errors == []
 
-    async def test_check_sandbox_health_allows_running_sandboxes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        increments: list[tuple[str, dict[str, str]]] = []
-
-        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
-            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
-
-        monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
-
-        mock_sandbox = AsyncMock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-        mock_sandbox.state = SandboxState.STARTED
-
-        await _check_sandbox_health(mock_sandbox)
-
-        assert increments == []
-
-    @pytest.mark.parametrize("dead_state", [SandboxState.DESTROYED, SandboxState.ERROR])
-    async def test_check_sandbox_health_emits_unhealthy_state_telemetry(
-        self, monkeypatch: pytest.MonkeyPatch, dead_state: SandboxState
-    ) -> None:
-        tags: dict[str, str] = {}
-        increments: list[tuple[str, dict[str, str]]] = []
-
-        def fake_set_tag(key: str, value: str) -> None:
-            tags[key] = value
-
-        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
-            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
-
-        monkeypatch.setattr(sandbox_module, "sentry_sdk", SimpleNamespace(set_tag=fake_set_tag), raising=False)
-        monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
-
-        mock_sandbox = AsyncMock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-        mock_sandbox.state = dead_state
-
-        with pytest.raises(SandboxError, match="crashed during command execution"):
-            await _check_sandbox_health(mock_sandbox)
-
-        assert tags == {"sandbox_state": str(dead_state)}
-        assert increments == [("valkyrie.sandbox.unhealthy", {"state": str(dead_state)})]
-
-    async def test_check_sandbox_health_tags_daytona_refresh_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        daytona_error = DaytonaError("refresh failed")
-        daytona_errors: list[tuple[Exception, str]] = []
-
-        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
-            daytona_errors.append((exc, op))
-
-        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
-
-        mock_sandbox = AsyncMock()
-        mock_sandbox.name = "task-alias"
-        mock_sandbox.refresh_data = AsyncMock(side_effect=daytona_error)
-
-        with pytest.raises(DaytonaError):
-            await _check_sandbox_health(mock_sandbox)
-
-        assert all(exc is daytona_error and op == "sandbox.health_check" for exc, op in daytona_errors)
-        assert len(daytona_errors) >= 1
-
-    async def test_check_sandbox_health_does_not_tag_non_daytona_refresh_errors(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        daytona_errors: list[tuple[Exception, str]] = []
-
-        def fake_tag_daytona_error(exc: Exception, *, op: str) -> None:
-            daytona_errors.append((exc, op))
-
-        monkeypatch.setattr(sandbox_module, "tag_daytona_error", fake_tag_daytona_error, raising=False)
-
-        mock_sandbox = AsyncMock()
-        mock_sandbox.name = "task-alias"
-        mock_sandbox.refresh_data = AsyncMock(side_effect=RuntimeError("refresh failed"))
-
-        with pytest.raises(SandboxError, match="Failed to check sandbox"):
-            await _check_sandbox_health(mock_sandbox)
-
-        assert daytona_errors == []
-
-    async def test_semaphore_caps_concurrent_handshakes(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """
-        Concurrent _create_pty_session calls never exceed the cap on in-flight
-        sandbox.process.create_pty_session calls.
-
-        Regression guard: if someone removes the `async with _pty_handshake_slot(...)`
-        wrapper around the handshake call, concurrency becomes unbounded.
-        """
-        cap = 5
-        total = 25
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(cap))
-
-        concurrent = 0
-        max_concurrent = 0
-
-        async def fake_create_pty_session(*_args: Any, **_kwargs: Any) -> Mock:
-            nonlocal concurrent, max_concurrent
-
-            concurrent += 1
-            max_concurrent = max(max_concurrent, concurrent)
-
-            # Hold long enough for other tasks to pile up behind the gate
-            await asyncio.sleep(0.05)
-
-            concurrent -= 1
-            return Mock()
-
-        mock_sandbox = Mock()
-        mock_sandbox.process.create_pty_session = fake_create_pty_session
-
-        results = await asyncio.gather(
-            *[_create_pty_session(mock_sandbox, f"session-{i}", _ignore_pty_data) for i in range(total)]
-        )
-
-        assert len(results) == total
-        assert max_concurrent <= cap
-        # Sanity: without the cap we'd see total concurrency; confirm contention actually happened
-        assert max_concurrent > 1
-
-    @pytest.mark.parametrize(
-        "pty_info_side_effect, sandbox_state, connect_side_effect, stop_after_one, expected_exc_type, expected_match, expected_tags",
-        [
-            pytest.param(
-                DaytonaNotFoundError("gone"),
-                SandboxState.STARTED,
-                None,
-                False,
-                SandboxError,
-                "no longer exists",
-                {"pty.disconnect_reason": "pty_session_killed", "sandbox_state": str(SandboxState.STARTED)},
-                id="pty_not_found",
-            ),
-            pytest.param(
-                DaytonaError("toolbox unreachable"),
-                SandboxState.DESTROYING,
-                None,
-                False,
-                SandboxError,
-                "destroyed during PTY reconnect",
-                {"pty.disconnect_reason": "sandbox_killed", "sandbox_state": str(SandboxState.DESTROYING)},
-                id="sandbox_dead_after_toolbox_error",
-            ),
-            pytest.param(
-                DaytonaError("502 bad gateway"),
-                SandboxState.STARTED,
-                None,
-                True,
-                DaytonaError,
-                "502 bad gateway",
-                {},
-                id="transient_error_alive_sandbox",
-            ),
-            pytest.param(
-                None,
-                SandboxState.STARTED,
-                DaytonaConnectionError("PTY session not found"),
-                False,
-                SandboxError,
-                "PTY session not found",
-                {"pty.disconnect_reason": "pty_session_killed"},
-                id="toctou_connect_not_found",
-            ),
-        ],
-    )
-    async def test_reconnect_fast_fail_paths(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        pty_info_side_effect: Exception | None,
-        sandbox_state: SandboxState,
-        connect_side_effect: Exception | None,
-        stop_after_one: bool,
-        expected_exc_type: type[Exception],
-        expected_match: str,
-        expected_tags: dict[str, str],
-    ) -> None:
-        tags: dict[str, str] = {}
-        monkeypatch.setattr(
-            sandbox_module, "sentry_sdk", SimpleNamespace(set_tag=lambda k, v: tags.update({k: v})), raising=False
-        )
-        monkeypatch.setattr(sandbox_module, "_check_sandbox_health", AsyncMock())
-        monkeypatch.setattr(sandbox_module, "incr", Mock(), raising=False)
-        monkeypatch.setattr(sandbox_module.logger, "info", Mock())
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(5))
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_in_flight_count", 0, raising=False)
-        monkeypatch.setattr(sandbox_module, "distribution", Mock(), raising=False)
-        monkeypatch.setattr(sandbox_module, "gauge", Mock(), raising=False)
-        monkeypatch.setattr(sandbox_module, "_set_pty_span_attributes", Mock(), raising=False)
-        monkeypatch.setattr(sandbox_module, "set_pty_context", Mock(), raising=False)
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-        mock_sandbox.state = sandbox_state
-        mock_sandbox.refresh_data = AsyncMock()
-        mock_sandbox.process.get_pty_session_info = AsyncMock(side_effect=pty_info_side_effect)
-        if connect_side_effect is not None:
-            mock_sandbox.process.connect_pty_session = AsyncMock(side_effect=connect_side_effect)
-
-        fn = (
-            _reconnect_and_wait_pty.retry_with(stop=stop_after_attempt(1), wait=wait_none())
-            if stop_after_one
-            else _reconnect_and_wait_pty
-        )
-
-        with pytest.raises(expected_exc_type, match=expected_match):
-            await fn(mock_sandbox, "session-1", _ignore_pty_data, lambda _: None)
-
-        for key, value in expected_tags.items():
-            assert tags[key] == value
-
-    async def test_semaphore_released_after_handshake_returns(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """
-        The semaphore slot is released as soon as the handshake call returns, before the
-        caller does anything else with the handle (handle.wait, send_input, etc.).
-
-        Regression guard: if someone widens the `async with _pty_handshake_slot(...)` scope
-        — e.g. wraps code after create_pty_session returns, or wraps the whole caller flow
-        around handle.wait() — a second concurrent handshake would block until the first
-        task finishes its session lifetime. With cap=1 and a simulated long-running
-        post-handshake step, that regression turns this test into a timeout.
-        """
-        cap = 1
-        monkeypatch.setattr(sandbox_module, "_pty_handshake_semaphore", asyncio.Semaphore(cap))
-
-        async def fake_create_pty_session(*_args: Any, **_kwargs: Any) -> Mock:
-            return Mock()
-
-        mock_sandbox = Mock()
-        mock_sandbox.process.create_pty_session = fake_create_pty_session
-
-        events: list[str] = []
-
-        async def task_holding_handle() -> None:
-            await _create_pty_session(mock_sandbox, "s1", _ignore_pty_data)
-            events.append("a:handshake_done")
-
-            # Simulate a long-running handle.wait() AFTER the handshake.
-            # The slot must already be released, otherwise the other task can't acquire.
-            await asyncio.sleep(0.2)
-            events.append("a:post_handshake_done")
-
-        async def task_needing_slot() -> None:
-            # Tiny delay so task A acquires the slot first
-            await asyncio.sleep(0.01)
-            await _create_pty_session(mock_sandbox, "s2", _ignore_pty_data)
-            events.append("b:handshake_done")
-
-        await asyncio.wait_for(asyncio.gather(task_holding_handle(), task_needing_slot()), timeout=1.0)
-
-        # Task B's handshake must complete BEFORE task A's post-handshake work finishes.
-        # That ordering is only reachable if the slot was released at handshake exit.
-        assert events.index("b:handshake_done") < events.index("a:post_handshake_done")
-
 
 class TestUploadAgentArtifacts:
     @pytest.mark.parametrize(
@@ -1163,31 +615,13 @@ class TestStreamCommandOutputAgentFailure:
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int
     ) -> None:
-        mock_sandbox = AsyncMock()
-        mock_sandbox.id = "sb-1"
-        mock_sandbox.name = "sb-1"
-        mock_handle = AsyncMock()
-
-        async def _mock_create_pty(*_args: Any, **_kwargs: Any) -> tuple[AsyncMock, str]:
-            return mock_handle, "sb-1:pty-abc"
-
-        async def _noop(*_args: Any, **_kwargs: Any) -> None:
-            return None
-
-        async def _mock_read_exit_code(*_args: Any, **_kwargs: Any) -> int:
-            return exit_code
-
-        monkeypatch.setattr(sandbox_module, "_create_pty_session", _mock_create_pty)
-        monkeypatch.setattr(sandbox_module, "_wait_for_pty", _noop)
-        monkeypatch.setattr(sandbox_module, "_check_sandbox_health", _noop)
-        monkeypatch.setattr(sandbox_module, "_read_exit_code", _mock_read_exit_code)
-        monkeypatch.setattr(
-            sandbox_module,
-            "_exec",
-            AsyncMock(return_value=ExecResult(exit_code=0, output="1000000000")),
-        )
+        async def command(_command: str) -> Any:
+            yield "last line\n"
+            raise ProviderSandboxCommandError(exit_code)
 
         tagged: dict[str, str] = {}
+        mock_sandbox = Mock()
+        mock_sandbox.command = command
 
         def fake_set_tag(key: str, value: object) -> None:
             tagged[key] = str(value)
@@ -1195,9 +629,10 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr(sandbox_module.sentry_sdk, "set_tag", fake_set_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module._stream_daytona_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
 
         assert isinstance(exc_info.value, SandboxError)
         assert not isinstance(exc_info.value, SandboxSetupError)
         assert f"exit code: {exit_code}" in str(exc_info.value)
+        assert "last line" in str(exc_info.value)
         assert tagged == {"agent_exit_code": str(exit_code)}
