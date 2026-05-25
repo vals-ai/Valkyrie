@@ -122,6 +122,15 @@ class AgentContract(BaseModel):
     ```
     """
 
+    metrics_output: Path | None = None
+    """
+    Path from the root of the sandbox to a JSON metrics file produced by the agent.
+
+    ```yaml
+    metrics_output: /artifacts/metrics.json
+    ```
+    """
+
     secrets: dict[str, str] = {}
     """
     Secrets for the agent

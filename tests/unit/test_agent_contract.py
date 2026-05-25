@@ -319,12 +319,12 @@ class TestParseYamlContract:
         with pytest.raises(ValueError, match="is required but was not provided"):
             _parse_yaml_contract(path, AgentConfig())
 
-    def test_secrets_and_final_output_passed_through(self, tmp_path: Path) -> None:
+    def test_outputs_and_secrets_passed_through(self, tmp_path: Path) -> None:
         """
-        Validates that secrets and final_output from YAML are carried to the request.
+        Validates that output paths and secrets from YAML are carried to the request.
 
         Test Cases:
-        - YAML defines API_KEY secret and /artifacts final_output, both appear on the request
+        - YAML defines output paths and API_KEY secret, all appear on the request
         """
         path = self._write_yaml(
             tmp_path,
@@ -333,6 +333,7 @@ class TestParseYamlContract:
             install_cmd: bash setup.sh
             run_cmd: "agent --task {problem_statement_path}"
             final_output: /artifacts
+            metrics_output: /artifacts/metrics.json
             secrets:
               API_KEY: MySecretName
         """,
@@ -341,6 +342,7 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert result.final_output == "/artifacts"
+        assert result.metrics_output == "/artifacts/metrics.json"
         assert result.secrets == {"API_KEY": "MySecretName"}
 
     def test_model_from_agent_config(self, tmp_path: Path) -> None:

@@ -225,6 +225,39 @@ class TestPtyHandshakeSemaphore:
 
 
 class TestAgentOutputTelemetry:
+    async def test_read_agent_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sandbox_module,
+            "_exec",
+            AsyncMock(return_value=ExecuteResponse(exit_code=0, result='{"cost": {"total": 1.25}}')),
+        )
+
+        result = await sandbox_module.read_agent_metrics(Mock(), "/logs/metrics.json")
+
+        assert result == {"cost": {"total": 1.25}}
+
+    async def test_read_agent_metrics_missing_file(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sandbox_module,
+            "_exec",
+            AsyncMock(return_value=ExecuteResponse(exit_code=1, result="")),
+        )
+
+        result = await sandbox_module.read_agent_metrics(Mock(), "/logs/metrics.json")
+
+        assert result is None
+
+    async def test_read_agent_metrics_malformed_json(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(
+            sandbox_module,
+            "_exec",
+            AsyncMock(return_value=ExecuteResponse(exit_code=0, result="{")),
+        )
+
+        result = await sandbox_module.read_agent_metrics(Mock(), "/logs/metrics.json")
+
+        assert result is None
+
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,
         monkeypatch: pytest.MonkeyPatch,

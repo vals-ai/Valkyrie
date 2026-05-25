@@ -96,6 +96,11 @@ class BaseAgentContract(ABC):
         """
         ...
 
+    @property
+    def metrics_output(self) -> Path | None:
+        """Path to a JSON metrics file produced by the agent."""
+        return None
+
     def to_request(self) -> AgentContractRequest:
         """
         Convert the contract to a request object for the tracker service.
@@ -113,5 +118,6 @@ class BaseAgentContract(ABC):
             ),
             install_cmd=self.install_cmd,
             final_output=str(self.final_output) if self.final_output else None,
+            metrics_output=str(self.metrics_output) if self.metrics_output else None,
             secrets=self.secrets,
         )

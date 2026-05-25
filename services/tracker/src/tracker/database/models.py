@@ -87,6 +87,7 @@ class AgentContractRequest(BaseModel):
     install_cmd: str
     run_cmd: str
     final_output: str | None = None
+    metrics_output: str | None = None
     secrets: dict[str, str] = {}
 
 
