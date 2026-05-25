@@ -11,9 +11,11 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 from websockets.http11 import Response
 
+import tracker.utils as utils_module
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.exceptions import OutputArtifactError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_benchmark_row, process_benchmark, process_task, start_benchmark_request_to_benchmark
 
@@ -156,6 +158,33 @@ class TestBenchmarkServiceDisconnect:
         assert "rejected the WebSocket connection" in task_row.error_message
         assert "404" in task_row.error_message
 
+    async def test_output_artifact_error_marks_task_error_without_generic_exception(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        process_benchmark_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+            contract, database_session, harness_config
+        )
+
+        async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            raise OutputArtifactError("Required output artifact missing: /logs/result.json")
+
+        monkeypatch.setattr(utils_module, "run_agent", _mock_run_agent)
+
+        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+        assert result == {"task_0": None}
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        assert task_row.error_message is not None
+        assert "Output artifact error" in task_row.error_message
+        assert "Required output artifact missing" in task_row.error_message
+
     async def test_benchmark_service_error_produces_human_readable_message(
         self,
         contract: AgentContractRequest,
@@ -194,7 +223,7 @@ class TestBenchmarkServiceDisconnect:
         harness_config: HarnessConfig,
     ) -> None:
         """VALKYRIE-1Z: BenchmarkServiceError from final_score is caught at the benchmark level."""
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, _task_row, benchmark_id = self._create_task_env(
             contract, database_session, harness_config
         )
 
