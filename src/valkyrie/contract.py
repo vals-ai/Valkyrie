@@ -96,6 +96,11 @@ class BaseAgentContract(ABC):
         """
         ...
 
+    @property
+    def output_artifacts(self) -> list[str]:
+        """Relative /tmp/valkyrie paths uploaded directly to the task S3 folder."""
+        return []
+
     def to_request(self) -> AgentContractRequest:
         """
         Convert the contract to a request object for the tracker service.
@@ -113,5 +118,6 @@ class BaseAgentContract(ABC):
             ),
             install_cmd=self.install_cmd,
             final_output=str(self.final_output) if self.final_output else None,
+            output_artifacts=self.output_artifacts,
             secrets=self.secrets,
         )

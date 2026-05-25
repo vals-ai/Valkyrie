@@ -36,8 +36,8 @@ from tenacity import (
     wait_fixed,
 )
 
-from tracker.aws.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
-from tracker.database.models import AgentCausedExitReason, AgentContractRequest
+from tracker.aws.s3 import create_presigned_url, get_agent_result_s3_key, get_benchmark_contract_s3_key, upload_to_s3
+from tracker.database.models import AgentCausedExitReason, AgentContractRequest, MAX_OUTPUT_ARTIFACT_BYTES
 from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
 from tracker.exceptions import (
     AgentRunFailedError,
@@ -891,6 +891,122 @@ async def archive_and_upload_output(
             pass
 
 
+OUTPUT_ARTIFACTS_SANDBOX_ROOT = PurePosixPath("/tmp/valkyrie")
+OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+MODEL_LIBRARY_CONFIG_ARTIFACT = "full_result/config.json"
+MODEL_LIBRARY_RESULT_ARTIFACT = "full_result/result.json"
+MODEL_LIBRARY_OUTPUT_ARTIFACTS = {
+    MODEL_LIBRARY_CONFIG_ARTIFACT,
+    MODEL_LIBRARY_RESULT_ARTIFACT,
+}
+
+
+async def _model_library_artifact_paths(sandbox: AsyncSandbox, final_output: str) -> dict[str, str]:
+    find_command = f"find {shlex.quote(final_output)} -type f -path '*/turns/init/config.json' | sort | head -n 1"
+    config_result = await _exec(sandbox, find_command)
+    config_path = config_result.result.strip()
+    if config_result.exit_code != _SUCCESS_EXIT_CODE or not config_path:
+        raise SandboxError(f"Required model-library config artifact missing under {final_output}")
+
+    result_path = str(PurePosixPath(config_path).parent.parent.parent / "result.json")
+    result_exists = await _exec(sandbox, f"test -f {shlex.quote(result_path)}")
+    if result_exists.exit_code != _SUCCESS_EXIT_CODE:
+        raise SandboxError(f"Required model-library result artifact missing: {result_path}")
+
+    return {
+        MODEL_LIBRARY_CONFIG_ARTIFACT: config_path,
+        MODEL_LIBRARY_RESULT_ARTIFACT: result_path,
+    }
+
+
+async def _resolve_output_artifact_sandbox_path(
+    sandbox: AsyncSandbox,
+    artifact_path: str,
+    final_output: str | None,
+    model_library_paths: dict[str, str],
+) -> str:
+    sandbox_path = str(OUTPUT_ARTIFACTS_SANDBOX_ROOT / artifact_path)
+    quoted_path = shlex.quote(sandbox_path)
+    exists = await _exec(sandbox, f"test -f {quoted_path}")
+    if exists.exit_code == _SUCCESS_EXIT_CODE:
+        return sandbox_path
+
+    if artifact_path in model_library_paths:
+        return model_library_paths[artifact_path]
+
+    if final_output is not None and artifact_path in MODEL_LIBRARY_OUTPUT_ARTIFACTS:
+        raise SandboxError(
+            f"Required output artifact missing: {sandbox_path} or model-library source under {final_output}"
+        )
+
+    raise SandboxError(f"Required output artifact missing: {sandbox_path}")
+
+
+async def upload_output_artifacts(
+    sandbox: AsyncSandbox,
+    artifacts: list[str],
+    benchmark_id: str,
+    task_id: str,
+    aws: AWSCredentials,
+    s3_bucket: str,
+    final_output: str | None = None,
+) -> None:
+    """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
+    total_bytes = 0
+    model_library_paths: dict[str, str] = {}
+    if final_output is not None and any(artifact_path in MODEL_LIBRARY_OUTPUT_ARTIFACTS for artifact_path in artifacts):
+        model_library_paths = await _model_library_artifact_paths(sandbox, final_output)
+
+    for artifact_path in artifacts:
+        sandbox_path = await _resolve_output_artifact_sandbox_path(
+            sandbox, artifact_path, final_output, model_library_paths
+        )
+        quoted_path = shlex.quote(sandbox_path)
+
+        size_result = await _exec(sandbox, f"stat -c%s {quoted_path}")
+        if size_result.exit_code != _SUCCESS_EXIT_CODE:
+            raise SandboxError(f"Failed to stat output artifact: {sandbox_path}")
+
+        try:
+            artifact_bytes = int(size_result.result.strip())
+        except ValueError as e:
+            raise SandboxError(
+                f"Failed to parse output artifact size for {sandbox_path}: {size_result.result!r}"
+            ) from e
+
+        if artifact_bytes > MAX_OUTPUT_ARTIFACT_BYTES:
+            raise SandboxError(
+                f"Output artifact {sandbox_path} is too large: {artifact_bytes} bytes > {MAX_OUTPUT_ARTIFACT_BYTES} bytes"
+            )
+
+        total_bytes += artifact_bytes
+        if total_bytes > OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES:
+            raise SandboxError(
+                f"Output artifacts are too large: {total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
+            )
+
+        b64_result = await _exec(sandbox, f"base64 {quoted_path}")
+        if b64_result.exit_code != _SUCCESS_EXIT_CODE:
+            raise SandboxError(f"Failed to read output artifact: {sandbox_path}")
+
+        s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
+        file_content = base64.b64decode(b64_result.result)
+        await upload_to_s3(file_content, s3_key, aws, s3_bucket)
+
+        logger.info(
+            "output_artifact.upload.complete",
+            extra={
+                "sandbox_id": sandbox.id,
+                "sandbox_name": sandbox.name,
+                "sandbox_path": sandbox_path,
+                "s3_key": s3_key,
+                "benchmark_id": benchmark_id,
+                "task_id": task_id,
+                "artifact_bytes": artifact_bytes,
+            },
+        )
+
+
 async def run_agent(
     sandbox: AsyncSandbox,
     contract: AgentContractRequest,
@@ -963,6 +1079,19 @@ async def run_agent(
                 benchmark_id=benchmark_id,
                 task_id=task_id,
             )
+
+    if contract.output_artifacts:
+        if benchmark_id is None:
+            raise SandboxError("benchmark_id is required to upload output artifacts")
+        await upload_output_artifacts(
+            sandbox,
+            contract.output_artifacts,
+            benchmark_id,
+            task_id,
+            aws,
+            s3_bucket,
+            final_output=contract.final_output,
+        )
 
     # Return why the agent terminated abnormally, or None on clean exit
     return exit_reason, agent_run_time

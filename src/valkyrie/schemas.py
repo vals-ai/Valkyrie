@@ -122,6 +122,17 @@ class AgentContract(BaseModel):
     ```
     """
 
+    output_artifacts: list[str] = []
+    """
+    Relative /tmp/valkyrie paths to upload directly into the task's S3 folder.
+    Keep them outside final_output if they should not be duplicated in the archive.
+
+    ```yaml
+    output_artifacts:
+      - full_result/turns.jsonl
+    ```
+    """
+
     secrets: dict[str, str] = {}
     """
     Secrets for the agent

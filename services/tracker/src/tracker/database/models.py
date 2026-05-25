@@ -1,10 +1,11 @@
 from datetime import datetime
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, computed_field, field_serializer
+from pydantic import BaseModel, computed_field, field_serializer, field_validator
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -81,13 +82,37 @@ class RetryMode(str, Enum):
     FROM_SCRATCH = "from_scratch"
 
 
+MAX_OUTPUT_ARTIFACT_BYTES = 50 * 1024 * 1024
+MAX_OUTPUT_ARTIFACT_COUNT = 10
+
+
 class AgentContractRequest(BaseModel):
     name: str
     model: str | None = None
     install_cmd: str
     run_cmd: str
     final_output: str | None = None
+    output_artifacts: list[str] = []
     secrets: dict[str, str] = {}
+
+    @field_validator("output_artifacts")
+    @classmethod
+    def validate_output_artifacts(cls, value: list[str]) -> list[str]:
+        if len(value) > MAX_OUTPUT_ARTIFACT_COUNT:
+            raise ValueError(f"output_artifacts cannot contain more than {MAX_OUTPUT_ARTIFACT_COUNT} entries")
+
+        normalized_artifacts: list[str] = []
+        for artifact_path in value:
+            path = PurePosixPath(artifact_path)
+            if path.is_absolute():
+                raise ValueError("output_artifacts must be relative paths")
+            if not path.parts or ".." in path.parts or "." in path.parts:
+                raise ValueError("output_artifacts cannot contain empty, '.', or '..' path parts")
+            if len(path.parts) < 2 or path.parts[0] != "full_result":
+                raise ValueError("output_artifacts must be under the full_result/ prefix")
+            normalized_artifacts.append(str(path))
+
+        return normalized_artifacts
 
 
 class BenchmarkArguments(BaseModel):

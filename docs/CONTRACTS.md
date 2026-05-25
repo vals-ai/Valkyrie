@@ -22,6 +22,10 @@ run_cmd: >-
 
 final_output: /logs/my_agent
 
+output_artifacts:
+  - full_result/run_config.json
+  - full_result/turns.jsonl
+
 secrets:
   ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
 
@@ -102,10 +106,10 @@ install_cmd: "bash setup.sh"
 
 Shell command to run the agent on a task. Must contain the `{problem_statement_path}` placeholder. Placeholders are substituted at runtime:
 
-| Placeholder | Substituted with |
-|-------------|------------------|
+| Placeholder                | Substituted with                                                 |
+| -------------------------- | ---------------------------------------------------------------- |
 | `{problem_statement_path}` | Path to the problem statement file in the sandbox **(required)** |
-| `{task_id}` | The task identifier (e.g. `astropy__astropy-12907`) |
+| `{task_id}`                | The task identifier (e.g. `astropy__astropy-12907`)              |
 
 ```yaml
 run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
@@ -119,6 +123,44 @@ Absolute path to the final output to collect. The artifact found here will be co
 
 ```yaml
 final_output: /logs/my_agent
+```
+
+### `output_artifacts: list`
+
+Small files to upload directly from the sandbox into the task's S3 folder so they can be read without downloading `agent_output.tar.gz`. Files may still remain inside `final_output`; direct sidecars intentionally duplicate selected files for cheap Lambda/parser reads while preserving the full debug archive.
+
+Canonical producers can write files under `/tmp/valkyrie`:
+
+```yaml
+output_artifacts:
+  - full_result/run_config.json
+  - full_result/turns.jsonl
+```
+
+Model-library agents can instead declare their existing files; if they are not present under `/tmp/valkyrie`, the tracker resolves them from `final_output`:
+
+```yaml
+output_artifacts:
+  - full_result/config.json # resolved from <final_output>/*/turns/init/config.json
+  - full_result/result.json # resolved from <final_output>/*/result.json, excluding turns/*
+```
+
+Guardrails:
+
+- Artifact paths are relative to `/tmp/valkyrie` in the sandbox unless they are one of the supported model-library sidecars resolved from `final_output`.
+- Artifact paths must be under `full_result/`.
+- Each declared artifact is required. Missing files or unresolved model-library sources fail the task clearly.
+- Individual files cannot exceed 50 MiB.
+- At most 10 output artifacts can be declared.
+- The total uploaded sidecar bytes per task cannot exceed 50 MiB.
+
+For the examples above, task `task_0` in run `run_id` uploads to matching task-scoped keys such as:
+
+```text
+benchmarks/run_id/task_0/full_result/run_config.json
+benchmarks/run_id/task_0/full_result/turns.jsonl
+benchmarks/run_id/task_0/full_result/config.json
+benchmarks/run_id/task_0/full_result/result.json
 ```
 
 ### `secrets: dict`
@@ -159,15 +201,16 @@ kwargs:
 
 Each kwarg supports these fields:
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `type` | yes | One of: `str`, `int`, `float`, `bool`, `dict` |
-| `required` | yes | Whether the user must provide this value |
-| `default` | no | Default value when the user doesn't provide one |
-| `description` | no | Human-readable description |
-| `choices` | no | List of valid values (enforced at validation time) |
+| Field         | Required | Description                                        |
+| ------------- | -------- | -------------------------------------------------- |
+| `type`        | yes      | One of: `str`, `int`, `float`, `bool`, `dict`      |
+| `required`    | yes      | Whether the user must provide this value           |
+| `default`     | no       | Default value when the user doesn't provide one    |
+| `description` | no       | Human-readable description                         |
+| `choices`     | no       | List of valid values (enforced at validation time) |
 
 Kwargs are resolved at parse time:
+
 - **Defaults** are applied for any kwarg the user doesn't provide
 - **CLI overrides** (`-k`) replace defaults when provided
 - **Required kwargs** without a value raise a validation error

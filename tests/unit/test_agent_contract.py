@@ -214,6 +214,53 @@ class TestFormatRunCmd:
         assert result == "agent --task {problem_statement_path} --temp 0.5 --id {task_id}"
 
 
+class TestOutputArtifactValidation:
+    def test_rejects_path_outside_full_result_prefix(self) -> None:
+        with pytest.raises(ValidationError, match="full_result"):
+            AgentContractRequest(
+                name="test-agent",
+                install_cmd="true",
+                run_cmd="echo {problem_statement_path}",
+                output_artifacts=["other/result.json"],
+            )
+
+    def test_rejects_bare_full_result_path(self) -> None:
+        with pytest.raises(ValidationError, match="full_result"):
+            AgentContractRequest(
+                name="test-agent",
+                install_cmd="true",
+                run_cmd="echo {problem_statement_path}",
+                output_artifacts=["full_result"],
+            )
+
+    def test_rejects_path_traversal(self) -> None:
+        with pytest.raises(ValidationError, match="output_artifacts"):
+            AgentContractRequest(
+                name="test-agent",
+                install_cmd="true",
+                run_cmd="echo {problem_statement_path}",
+                output_artifacts=["full_result/../secret.json"],
+            )
+
+    def test_rejects_absolute_path(self) -> None:
+        with pytest.raises(ValidationError, match="relative"):
+            AgentContractRequest(
+                name="test-agent",
+                install_cmd="true",
+                run_cmd="echo {problem_statement_path}",
+                output_artifacts=["/tmp/full_result/result.json"],
+            )
+
+    def test_rejects_too_many_output_artifacts(self) -> None:
+        with pytest.raises(ValidationError, match="output_artifacts"):
+            AgentContractRequest(
+                name="test-agent",
+                install_cmd="true",
+                run_cmd="echo {problem_statement_path}",
+                output_artifacts=["full_result/result.json"] * 11,
+            )
+
+
 class TestRunCmdValidation:
     def test_missing_problem_statement_path_raises(self) -> None:
         """
@@ -319,12 +366,12 @@ class TestParseYamlContract:
         with pytest.raises(ValueError, match="is required but was not provided"):
             _parse_yaml_contract(path, AgentConfig())
 
-    def test_secrets_and_final_output_passed_through(self, tmp_path: Path) -> None:
+    def test_secrets_final_output_and_output_artifacts_passed_through(self, tmp_path: Path) -> None:
         """
-        Validates that secrets and final_output from YAML are carried to the request.
+        Validates that secrets, final_output, and output_artifacts from YAML are carried to the request.
 
         Test Cases:
-        - YAML defines API_KEY secret and /artifacts final_output, both appear on the request
+        - YAML defines API_KEY secret, /artifacts final_output, and one direct output artifact
         """
         path = self._write_yaml(
             tmp_path,
@@ -333,6 +380,8 @@ class TestParseYamlContract:
             install_cmd: bash setup.sh
             run_cmd: "agent --task {problem_statement_path}"
             final_output: /artifacts
+            output_artifacts:
+              - full_result/turns.jsonl
             secrets:
               API_KEY: MySecretName
         """,
@@ -341,6 +390,7 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert result.final_output == "/artifacts"
+        assert result.output_artifacts == ["full_result/turns.jsonl"]
         assert result.secrets == {"API_KEY": "MySecretName"}
 
     def test_model_from_agent_config(self, tmp_path: Path) -> None:
