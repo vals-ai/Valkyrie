@@ -23,25 +23,18 @@ from benchmark_service import (
     SandboxSource,
     SnapshotSource,
 )
-from benchmark_service.sandbox import DaytonaSandbox
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
-from daytona import (
-    AsyncSandbox,
-)
-from daytona.common.errors import DaytonaError
 from opentelemetry import trace
 from tenacity import (
     retry,
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
-    wait_fixed,
 )
 
 from tracker.aws.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.database.models import AgentCausedExitReason, AgentContractRequest
-from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
 from tracker.exceptions import (
     AgentRunFailedError,
     SandboxError,
@@ -55,7 +48,6 @@ from tracker.observability import (
     incr,
     retry_callback,
     set_sandbox_context,
-    tag_daytona_error,
 )
 from tracker.types import AWSCredentials
 
@@ -119,13 +111,7 @@ def _set_sandbox_create_span_attributes(
     span.set_attribute("valkyrie.resources.disk", resources.disk)
 
 
-def _daytona_inner(sandbox: Sandbox) -> AsyncSandbox | None:
-    if isinstance(sandbox, DaytonaSandbox):
-        return sandbox.inner
-    return None
-
-
-def _set_sandbox_span_attributes(sandbox: Sandbox | AsyncSandbox) -> None:
+def _set_sandbox_span_attributes(sandbox: Sandbox) -> None:
     span = trace.get_current_span()
     span.set_attribute("valkyrie.sandbox_id", sandbox.id)
     span.set_attribute("valkyrie.sandbox_name", sandbox.name)
@@ -194,8 +180,6 @@ async def create_sandbox(
             sandbox = await _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
-        if isinstance(e, DaytonaError):
-            tag_daytona_error(e, op="sandbox.create")
         raise
 
     distribution(
@@ -325,45 +309,16 @@ async def install_agent_dependencies(
 _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
-
-# Process exec retry settings
-_EXEC_MAX_ATTEMPTS: int = 3
-_EXEC_DELAY_SECONDS: float = 2.0
+_STATUS_DIR = "/tmp/.valkyrie"
 
 
-@retry(
-    retry=retry_if_exception_type(DaytonaError),
-    stop=stop_after_attempt(_EXEC_MAX_ATTEMPTS),
-    wait=wait_daytona_rate_limit(non_rate_limit_wait=wait_fixed(_EXEC_DELAY_SECONDS)),
-    before_sleep=daytona_retry_callback("valkyrie.sandbox.exec", op="sandbox.exec"),
-    reraise=True,
-)
 @logfire.instrument("sandbox.exec", extract_args=False)
-async def _exec(sandbox: Sandbox | AsyncSandbox, command: str) -> ExecResult:
-    """
-    Execute a command inside the sandbox with retries for transient network failures.
-
-    Raises:
-        DaytonaError: If all retry attempts are exhausted
-    """
+async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
     _set_sandbox_span_attributes(sandbox)
-    if not isinstance(sandbox, AsyncSandbox):
-        daytona_sandbox = _daytona_inner(sandbox)
-        if daytona_sandbox is None:
-            try:
-                return await sandbox.exec(command)
-            except ProviderSandboxError as e:
-                raise SandboxError(str(e)) from e
-    else:
-        daytona_sandbox = sandbox
-
     try:
-        result = await daytona_sandbox.process.exec(command)
-        assert result.exit_code is not None
-        return ExecResult(exit_code=result.exit_code, output=result.result)
-    except DaytonaError as e:
-        tag_daytona_error(e, op="sandbox.exec")
-        raise
+        return await sandbox.exec(command)
+    except ProviderSandboxError as e:
+        raise SandboxError(str(e)) from e
 
 
 async def _stream_provider_command_output(
@@ -372,17 +327,31 @@ async def _stream_provider_command_output(
     on_output: Callable[[str], None],
 ) -> tuple[AgentCausedExitReason | None, float]:
     output: deque[str] = deque(maxlen=50)
-    start = time.perf_counter()
+    run_id = uuid.uuid4().hex
+    start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
+    end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
+    timed_command = (
+        f"mkdir -p {shlex.quote(_STATUS_DIR)}"
+        f" && date +%s%N > {shlex.quote(start_ns_path)}"
+        f"; {command}"
+        f"; exit_code=$?"
+        f"; date +%s%N > {shlex.quote(end_ns_path)}"
+        f'; sh -c "exit $exit_code"'
+    )
 
     try:
-        async for data in sandbox.command(command):
+        async for data in sandbox.stream_command(timed_command):
             on_output(data)
             output.append(data)
-        return None, time.perf_counter() - start
+        start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
+        end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
+        return None, (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
     except ProviderSandboxCommandError as e:
         exit_code = e.exit_code
 
-    duration = time.perf_counter() - start
+    start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
+    end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
+    duration = (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
 
     if exit_code == _TIMEOUT_EXIT_CODE:
         return AgentCausedExitReason.TIMEOUT, duration

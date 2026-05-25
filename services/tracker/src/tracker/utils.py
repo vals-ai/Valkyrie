@@ -17,9 +17,6 @@ import logfire
 import sentry_sdk
 from benchmark_service import Sandbox, SandboxNotFoundError, SandboxProvider, SandboxQuery
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
-from benchmark_service.sandbox import DaytonaSandbox
-from daytona import SandboxState
-from daytona.common.errors import DaytonaNotFoundError
 from fastapi import HTTPException, Request
 from opentelemetry import trace
 from pydantic import ValidationError
@@ -617,7 +614,8 @@ async def process_task(
                     task_session.add(evaluation_result_row)
                     task_in_session = fetch_task_row(task_row.id, task_session, org)
                     existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                    assert existing_breakdown is not None
+                    if existing_breakdown is None:
+                        raise TrackerServiceError(f"Missing task breakdown for task {task_row.id}")
                     existing_breakdown.evaluation_run_duration = task_breakdown.evaluation_run_duration
                     existing_breakdown.sandbox_run_duration = task_breakdown.sandbox_run_duration
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
@@ -1265,15 +1263,9 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
 
 async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> str | None:
     try:
-        # Wait for the sandbox to be in a valid deletion state
-        if isinstance(sandbox, DaytonaSandbox):
-            await sandbox.inner.wait_for_sandbox_start(timeout=0)
-
-        # Delete the sandbox
         await delete_sandbox(sandbox, provider)
-
         return None
-    except (DaytonaNotFoundError, SandboxNotFoundError):
+    except SandboxNotFoundError:
         logger.warning(f"Sandbox `{sandbox.name}` has already been terminated")
         return None
     except Exception as e:
@@ -1286,8 +1278,6 @@ async def sandbox_generator(benchmark_row: Benchmark, provider: SandboxProvider)
     """
     query = SandboxQuery(labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)})
     async for sandbox in provider.list_sandboxes(query):
-        if sandbox.state in [str(SandboxState.DESTROYING), str(SandboxState.DESTROYED)]:
-            continue
         yield sandbox
 
 
@@ -1318,15 +1308,9 @@ async def force_stop_sandboxes(
     # Iterate through each running sandbox and stop it, collecting error messages
     results: dict[str, str | None] = {}
     try:
-        while True:
-            stopped_any = False
-            async for sandbox in sandbox_generator(benchmark_row, provider):
-                stopped_any = True
-                result = await stop_sandbox(sandbox, provider)
-
-                results[sandbox.name] = result
-            if not stopped_any:
-                break
+        async for sandbox in sandbox_generator(benchmark_row, provider):
+            result = await stop_sandbox(sandbox, provider)
+            results[sandbox.name] = result
     finally:
         await benchmark_service.close()
 
