@@ -643,7 +643,11 @@ async def retry_or_resume_benchmark(
 
     if not verified_task_ids:
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
-            invoke_benchmark_lambda(benchmark_row, harness_config)
+            try:
+                invoke_benchmark_lambda(benchmark_row, harness_config)
+            except Exception as e:
+                logger.warning("Post-run Lambda invocation failed during retry/resume: %s", e)
+                raise HTTPException(status_code=502, detail=f"Post-run Lambda invocation failed: {e}") from e
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )

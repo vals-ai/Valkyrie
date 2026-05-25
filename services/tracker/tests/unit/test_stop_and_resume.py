@@ -736,6 +736,32 @@ class TestStopAndResume:
         assert payload["benchmark_id"] == str(benchmark_row.id)
         assert payload["lambda_function"] == "late-export-lambda"
 
+    async def test_retry_complete_run_reports_lambda_failure(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        benchmark_row.arguments.lambda_function = "missing-export-lambda"
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+        )
+        database_session.commit()
+
+        def _mock_invoke_lambda(_client: Any, function_name: str, _payload: dict[str, Any]) -> dict[str, int]:
+            raise RuntimeError(f"{function_name} not found")
+
+        monkeypatch.setattr("tracker.utils.lambda_client", lambda _aws: object())
+        monkeypatch.setattr("tracker.utils.invoke_lambda", _mock_invoke_lambda)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        assert response.status_code == 502
+        assert response.json() == {"detail": "Post-run Lambda invocation failed: missing-export-lambda not found"}
+
     async def test_running_retry_repairs_error_and_later_finalizes_same_run(
         self,
         contract: AgentContractRequest,
