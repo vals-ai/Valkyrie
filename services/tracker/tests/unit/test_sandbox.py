@@ -15,7 +15,13 @@ import tracker.observability.retry as retry_module
 import tracker.utils as utils_module
 from tracker import sandbox as sandbox_module
 from tracker.database.models import AgentContractRequest, OutputArtifact
-from tracker.exceptions import AgentRunFailedError, SSLConnectionError, SandboxError, SandboxSetupError
+from tracker.exceptions import (
+    AgentRunFailedError,
+    OutputArtifactError,
+    SSLConnectionError,
+    SandboxError,
+    SandboxSetupError,
+)
 from tracker.sandbox import (
     create_sandbox,
     run_agent,
@@ -375,7 +381,7 @@ class TestOutputArtifacts:
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
 
-        with pytest.raises(SandboxError, match="Required output artifact missing"):
+        with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
     async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(
@@ -396,7 +402,7 @@ class TestOutputArtifacts:
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
         monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
 
-        with pytest.raises(SandboxError, match="too large"):
+        with pytest.raises(OutputArtifactError, match="too large"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
         upload_mock.assert_not_awaited()

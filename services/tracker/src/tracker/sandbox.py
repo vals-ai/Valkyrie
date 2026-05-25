@@ -47,6 +47,7 @@ from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limi
 from tracker.exceptions import (
     AgentRunFailedError,
     InvalidSandboxConfigurationError,
+    OutputArtifactError,
     PtyCreationError,
     SandboxError,
     SandboxSetupError,
@@ -923,7 +924,7 @@ def _find_root_for_glob(source: str) -> str:
     first_glob_index = min(glob_indices)
     root = source[:first_glob_index].rsplit("/", 1)[0]
     if not root or root == "/":
-        raise SandboxError(f"Output artifact glob source must include a non-root directory prefix: {source}")
+        raise OutputArtifactError(f"Output artifact glob source must include a non-root directory prefix: {source}")
     return root
 
 
@@ -943,7 +944,7 @@ async def _resolve_output_artifact_sandbox_path(
         if exists.exit_code == _SUCCESS_EXIT_CODE:
             return source
 
-    raise SandboxError(f"Required output artifact missing: {source}")
+    raise OutputArtifactError(f"Required output artifact missing: {source}")
 
 
 async def upload_output_artifacts(
@@ -967,29 +968,29 @@ async def upload_output_artifacts(
 
         size_result = await _exec(sandbox, f"stat -c%s {quoted_path}")
         if size_result.exit_code != _SUCCESS_EXIT_CODE:
-            raise SandboxError(f"Failed to stat output artifact: {sandbox_path}")
+            raise OutputArtifactError(f"Failed to stat output artifact: {sandbox_path}")
 
         try:
             artifact_bytes = int(size_result.result.strip())
         except ValueError as e:
-            raise SandboxError(
+            raise OutputArtifactError(
                 f"Failed to parse output artifact size for {sandbox_path}: {size_result.result!r}"
             ) from e
 
         if artifact_bytes > MAX_OUTPUT_ARTIFACT_BYTES:
-            raise SandboxError(
+            raise OutputArtifactError(
                 f"Output artifact {sandbox_path} is too large: {artifact_bytes} bytes > {MAX_OUTPUT_ARTIFACT_BYTES} bytes"
             )
 
         total_bytes += artifact_bytes
         if total_bytes > OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES:
-            raise SandboxError(
+            raise OutputArtifactError(
                 f"Output artifacts are too large: {total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
             )
 
         b64_result = await _exec(sandbox, f"base64 {quoted_path}")
         if b64_result.exit_code != _SUCCESS_EXIT_CODE:
-            raise SandboxError(f"Failed to read output artifact: {sandbox_path}")
+            raise OutputArtifactError(f"Failed to read output artifact: {sandbox_path}")
 
         s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
         file_content = base64.b64decode(b64_result.result)

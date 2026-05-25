@@ -55,7 +55,7 @@ from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limi
 from pydantic import ValidationError
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.exceptions import SandboxSetupError, TrackerServiceError
+from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
@@ -630,6 +630,16 @@ async def process_task(
     except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")
         raise
+    except OutputArtifactError as e:
+        error_message = str(e)
+        logger.warning(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
     except ConnectionClosedError:
         seconds = int(time.monotonic() - last_log_time)
         error_message = (
