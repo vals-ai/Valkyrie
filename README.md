@@ -291,6 +291,9 @@ valkyrie run resume <id>
 # Retry errored tasks
 valkyrie run retry <id>
 
+# Attach or re-run the post-run Lambda, including after all tasks completed
+valkyrie run retry <id> --lambda my-post-benchmark-handler
+
 # Override concurrency on resume (works on retry)
 valkyrie run resume <id> --concurrency 20
 
@@ -308,6 +311,7 @@ valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
 | `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
+| `--lambda` | Attach a post-run Lambda for resumed/retried finalization. If there are no runnable tasks, the Lambda is invoked immediately. |
 
 ### List runs
 

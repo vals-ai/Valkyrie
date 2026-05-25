@@ -113,6 +113,17 @@ def create_benchmark_service_client(
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
+def invoke_benchmark_lambda(benchmark_row: Benchmark, harness_config: HarnessConfig) -> None:
+    arguments = benchmark_row.arguments
+    if not arguments.lambda_function:
+        return
+
+    lambda_payload: dict[str, Any] = arguments.model_dump()
+    lambda_payload["benchmark_id"] = str(benchmark_row.id)
+
+    invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
+
+
 def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     return Benchmark(
@@ -939,15 +950,7 @@ async def process_benchmark(
 
             await upload_final_view(benchmark_row, final_view, harness_config)
 
-            # If the user has chosen to invoke a lambda function at the end of the benchmark
-            # We run it but do not let a failure affect the benchmark status
-            arguments = benchmark_row.arguments
-            if arguments.lambda_function:
-                # Expose the benchmark arguments and the benchmark id inside of the lambda
-                lambda_payload: dict[str, Any] = arguments.model_dump()
-                lambda_payload["benchmark_id"] = str(benchmark_id)
-
-                invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
+            invoke_benchmark_lambda(benchmark_row, harness_config)
 
     except BenchmarkServiceUnauthenticatedError as e:
         logfire.warn("process_benchmark failed due to benchmark service auth error")

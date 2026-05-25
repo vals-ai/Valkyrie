@@ -659,6 +659,83 @@ class TestStopAndResume:
             "task_finished": TaskStatus.FINISHED,
         }
 
+    async def test_retry_complete_run_invokes_lambda_without_enqueuing_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        benchmark_row.arguments.lambda_function = "export-lambda"
+        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+                Task(org_id=TEST_ORG_ID, task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.FINISHED),
+            ]
+        )
+        database_session.commit()
+
+        def _unexpected_kicker() -> None:
+            raise AssertionError("retrying a complete run should not enqueue task work")
+
+        lambda_calls: list[tuple[str, dict[str, Any]]] = []
+
+        def _mock_invoke_lambda(_client: Any, function_name: str, payload: dict[str, Any]) -> dict[str, int]:
+            lambda_calls.append((function_name, payload))
+            return {"statusCode": 200}
+
+        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+        monkeypatch.setattr("tracker.utils.lambda_client", lambda _aws: object())
+        monkeypatch.setattr("tracker.utils.invoke_lambda", _mock_invoke_lambda)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+        assert len(lambda_calls) == 1
+        function_name, payload = lambda_calls[0]
+        assert function_name == "export-lambda"
+        assert payload["benchmark_id"] == str(benchmark_row.id)
+        assert payload["lambda_function"] == "export-lambda"
+
+    async def test_retry_can_attach_lambda_to_complete_run(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.FINISHED)
+        )
+        database_session.commit()
+
+        lambda_calls: list[tuple[str, dict[str, Any]]] = []
+
+        def _mock_invoke_lambda(_client: Any, function_name: str, payload: dict[str, Any]) -> dict[str, int]:
+            lambda_calls.append((function_name, payload))
+            return {"statusCode": 200}
+
+        monkeypatch.setattr("tracker.utils.lambda_client", lambda _aws: object())
+        monkeypatch.setattr("tracker.utils.invoke_lambda", _mock_invoke_lambda)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+            json={"task_ids": [], "lambda_function": "late-export-lambda"},
+        )
+
+        assert response.status_code == 200
+        assert benchmark_row.arguments.lambda_function == "late-export-lambda"
+        assert len(lambda_calls) == 1
+        function_name, payload = lambda_calls[0]
+        assert function_name == "late-export-lambda"
+        assert payload["benchmark_id"] == str(benchmark_row.id)
+        assert payload["lambda_function"] == "late-export-lambda"
+
     async def test_running_retry_repairs_error_and_later_finalizes_same_run(
         self,
         contract: AgentContractRequest,

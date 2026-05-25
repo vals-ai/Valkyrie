@@ -11,6 +11,14 @@ valkyrie run start \
 
 The lambda is invoked once after all tasks finish and results are uploaded. If the lambda fails (uncaught exception or `statusCode >= 400`), the run will be marked as `ERROR`.
 
+If you forgot `--lambda` when starting the run, attach it with `run retry`:
+
+```bash
+valkyrie run retry <run_id> --lambda my-post-benchmark-handler
+```
+
+When the run has no errored or stopped tasks left to execute, retry does not enqueue task work and invokes the lambda immediately.
+
 ## Payload
 
 The tracker invokes your lambda with the full `BenchmarkArguments` plus the `benchmark_id`:

@@ -968,6 +968,14 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
     default=False,
     help="Clear durable eval state and rerun generation.",
 )
+@click.option(
+    "--lambda",
+    "lambda_function",
+    type=str,
+    default=None,
+    required=False,
+    help="Lambda function to invoke after retry/resume finalization.",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -978,6 +986,7 @@ def resume(
     task_ids_file: str | None,
     update_agent: bool,
     from_scratch: bool,
+    lambda_function: str | None,
 ):
     """
     Resume a run by its run id.
@@ -1010,6 +1019,9 @@ def resume(
                 asyncio.run(update_benchmark_agent_version(agent_name, str(run_id)))
                 click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
 
+            if lambda_function:
+                click.echo(f"Attaching lambda for finalization: {lambda_function}")
+
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
@@ -1017,6 +1029,7 @@ def resume(
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
+                lambda_function=lambda_function,
             )
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))

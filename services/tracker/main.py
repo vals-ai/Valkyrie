@@ -74,6 +74,7 @@ from tracker.utils import (
     fetch_harness_config,
     force_stop_sandboxes,
     initiate_stop_benchmark,
+    invoke_benchmark_lambda,
     process_benchmark,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
@@ -579,6 +580,7 @@ async def retry_or_resume_benchmark(
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
+    lambda_function: str | None = Body(default=None),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -596,6 +598,7 @@ async def retry_or_resume_benchmark(
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
+        lambda_function: Optional lambda function to attach before retry/resume finalization.
 
     Returns:
         RetryOrResumeBenchmarkResponse
@@ -616,6 +619,11 @@ async def retry_or_resume_benchmark(
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
+    if lambda_function:
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": lambda_function})
+        session.add(benchmark_row)
+        session.commit()
+
     effective_service_headers = forward_tracker_api_key(
         service_headers,
         http_request.headers.get("x-api-key"),
@@ -633,7 +641,9 @@ async def retry_or_resume_benchmark(
         org=org,
     )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+    if not verified_task_ids:
+        if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+            invoke_benchmark_lambda(benchmark_row, harness_config)
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
