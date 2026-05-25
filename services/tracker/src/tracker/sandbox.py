@@ -1,6 +1,7 @@
 """Sandbox management utilities for the tracker service."""
 
 import base64
+import json
 import shlex
 import time
 import uuid
@@ -889,6 +890,20 @@ async def archive_and_upload_output(
             await _exec(sandbox, f"rm -f {shlex.quote(archive_path)}")
         except Exception:
             pass
+
+
+async def read_agent_metrics(sandbox: AsyncSandbox, metrics_output: str | None) -> dict[str, Any] | None:
+    if metrics_output is None:
+        return None
+
+    result = await _exec(sandbox, f"cat {shlex.quote(metrics_output)}")
+    if result.exit_code != _SUCCESS_EXIT_CODE:
+        return None
+
+    try:
+        return json.loads(result.result)
+    except json.JSONDecodeError:
+        return None
 
 
 async def run_agent(
