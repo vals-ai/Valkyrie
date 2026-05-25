@@ -14,7 +14,7 @@ import tracker.daytona_retry as daytona_retry_module
 import tracker.observability.retry as retry_module
 import tracker.utils as utils_module
 from tracker import sandbox as sandbox_module
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, OutputArtifact
 from tracker.exceptions import AgentRunFailedError, SSLConnectionError, SandboxError, SandboxSetupError
 from tracker.sandbox import (
     create_sandbox,
@@ -282,18 +282,14 @@ class TestOutputArtifacts:
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecuteResponse:
-            if command == "find /logs -type f -path '*/turns/init/config.json' | sort | head -n 1":
+            if command == "find /logs -type f -path '/logs/*/turns/init/config.json' | sort | head -n 1":
                 return ExecuteResponse(exit_code=0, result="/logs/task/turns/init/config.json\n")
-            if command == "test -f /logs/task/result.json":
-                return ExecuteResponse(exit_code=0, result="")
-            if command == "test -f /tmp/valkyrie/full_result/config.json":
-                return ExecuteResponse(exit_code=1, result="")
             if command == "stat -c%s /logs/task/turns/init/config.json":
                 return ExecuteResponse(exit_code=0, result="11")
             if command == "base64 /logs/task/turns/init/config.json":
                 return ExecuteResponse(exit_code=0, result="eyJsbG0iOnt9fQo=")
-            if command == "test -f /tmp/valkyrie/full_result/result.json":
-                return ExecuteResponse(exit_code=1, result="")
+            if command == "find /logs -type f -path '/logs/*/result.json' | sort | head -n 1":
+                return ExecuteResponse(exit_code=0, result="/logs/task/result.json\n")
             if command == "stat -c%s /logs/task/result.json":
                 return ExecuteResponse(exit_code=0, result="13")
             if command == "base64 /logs/task/result.json":
@@ -312,7 +308,10 @@ class TestOutputArtifacts:
 
         await upload_output_artifacts(
             mock_sandbox,
-            ["full_result/config.json", "full_result/result.json"],
+            [
+                OutputArtifact(path="full_result/config.json", source="/logs/*/turns/init/config.json"),
+                OutputArtifact(path="full_result/result.json", source="/logs/*/result.json"),
+            ],
             "benchmark-123",
             "task_0",
             harness_config.aws,
@@ -333,12 +332,8 @@ class TestOutputArtifacts:
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecuteResponse:
-            if command == "find /logs -type f -path '*/turns/init/config.json' | sort | head -n 1":
-                return ExecuteResponse(exit_code=0, result="/logs/model-library-run/turns/init/config.json\n")
             if command == "test -f /logs/model-library-run/result.json":
                 return ExecuteResponse(exit_code=0, result="")
-            if command == "test -f /tmp/valkyrie/full_result/result.json":
-                return ExecuteResponse(exit_code=1, result="")
             if command == "stat -c%s /logs/model-library-run/result.json":
                 return ExecuteResponse(exit_code=0, result="13")
             if command == "base64 /logs/model-library-run/result.json":
@@ -357,7 +352,7 @@ class TestOutputArtifacts:
 
         await upload_output_artifacts(
             mock_sandbox,
-            ["full_result/result.json"],
+            [OutputArtifact(path="full_result/result.json", source="/logs/model-library-run/result.json")],
             "benchmark-123",
             "task_0",
             harness_config.aws,

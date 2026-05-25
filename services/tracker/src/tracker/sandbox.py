@@ -37,7 +37,12 @@ from tenacity import (
 )
 
 from tracker.aws.s3 import create_presigned_url, get_agent_result_s3_key, get_benchmark_contract_s3_key, upload_to_s3
-from tracker.database.models import AgentCausedExitReason, AgentContractRequest, MAX_OUTPUT_ARTIFACT_BYTES
+from tracker.database.models import (
+    AgentCausedExitReason,
+    AgentContractRequest,
+    MAX_OUTPUT_ARTIFACT_BYTES,
+    OutputArtifactSpec,
+)
 from tracker.daytona_retry import daytona_retry_callback, wait_daytona_rate_limit
 from tracker.exceptions import (
     AgentRunFailedError,
@@ -893,58 +898,57 @@ async def archive_and_upload_output(
 
 OUTPUT_ARTIFACTS_SANDBOX_ROOT = PurePosixPath("/tmp/valkyrie")
 OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = 50 * 1024 * 1024
-MODEL_LIBRARY_CONFIG_ARTIFACT = "full_result/config.json"
-MODEL_LIBRARY_RESULT_ARTIFACT = "full_result/result.json"
-MODEL_LIBRARY_OUTPUT_ARTIFACTS = {
-    MODEL_LIBRARY_CONFIG_ARTIFACT,
-    MODEL_LIBRARY_RESULT_ARTIFACT,
-}
 
 
-async def _model_library_artifact_paths(sandbox: AsyncSandbox, final_output: str) -> dict[str, str]:
-    find_command = f"find {shlex.quote(final_output)} -type f -path '*/turns/init/config.json' | sort | head -n 1"
-    config_result = await _exec(sandbox, find_command)
-    config_path = config_result.result.strip()
-    if config_result.exit_code != _SUCCESS_EXIT_CODE or not config_path:
-        raise SandboxError(f"Required model-library config artifact missing under {final_output}")
+def _output_artifact_path(artifact: OutputArtifactSpec) -> str:
+    return artifact if isinstance(artifact, str) else artifact.path
 
-    result_path = str(PurePosixPath(config_path).parent.parent.parent / "result.json")
-    result_exists = await _exec(sandbox, f"test -f {shlex.quote(result_path)}")
-    if result_exists.exit_code != _SUCCESS_EXIT_CODE:
-        raise SandboxError(f"Required model-library result artifact missing: {result_path}")
 
-    return {
-        MODEL_LIBRARY_CONFIG_ARTIFACT: config_path,
-        MODEL_LIBRARY_RESULT_ARTIFACT: result_path,
-    }
+def _output_artifact_source(artifact: OutputArtifactSpec) -> str:
+    artifact_path = _output_artifact_path(artifact)
+    source = artifact.source if not isinstance(artifact, str) else None
+    return source or str(OUTPUT_ARTIFACTS_SANDBOX_ROOT / artifact_path)
+
+
+def _format_output_artifact_source(source: str, task_id: str) -> str:
+    return source.replace("{task_id}", task_id)
+
+
+def _has_glob(source: str) -> bool:
+    return any(char in source for char in "*?[")
+
+
+def _find_root_for_glob(source: str) -> str:
+    glob_indices = [source.find(char) for char in "*?[" if source.find(char) != -1]
+    first_glob_index = min(glob_indices)
+    root = source[:first_glob_index].rsplit("/", 1)[0]
+    if not root or root == "/":
+        raise SandboxError(f"Output artifact glob source must include a non-root directory prefix: {source}")
+    return root
 
 
 async def _resolve_output_artifact_sandbox_path(
-    sandbox: AsyncSandbox,
-    artifact_path: str,
-    final_output: str | None,
-    model_library_paths: dict[str, str],
+    sandbox: AsyncSandbox, artifact: OutputArtifactSpec, task_id: str
 ) -> str:
-    sandbox_path = str(OUTPUT_ARTIFACTS_SANDBOX_ROOT / artifact_path)
-    quoted_path = shlex.quote(sandbox_path)
-    exists = await _exec(sandbox, f"test -f {quoted_path}")
-    if exists.exit_code == _SUCCESS_EXIT_CODE:
-        return sandbox_path
+    source = _format_output_artifact_source(_output_artifact_source(artifact), task_id)
+    if _has_glob(source):
+        find_root = _find_root_for_glob(source)
+        find_command = f"find {shlex.quote(find_root)} -type f -path {shlex.quote(source)} | sort | head -n 1"
+        source_result = await _exec(sandbox, find_command)
+        source_path = source_result.result.strip()
+        if source_result.exit_code == _SUCCESS_EXIT_CODE and source_path:
+            return source_path
+    else:
+        exists = await _exec(sandbox, f"test -f {shlex.quote(source)}")
+        if exists.exit_code == _SUCCESS_EXIT_CODE:
+            return source
 
-    if artifact_path in model_library_paths:
-        return model_library_paths[artifact_path]
-
-    if final_output is not None and artifact_path in MODEL_LIBRARY_OUTPUT_ARTIFACTS:
-        raise SandboxError(
-            f"Required output artifact missing: {sandbox_path} or model-library source under {final_output}"
-        )
-
-    raise SandboxError(f"Required output artifact missing: {sandbox_path}")
+    raise SandboxError(f"Required output artifact missing: {source}")
 
 
 async def upload_output_artifacts(
     sandbox: AsyncSandbox,
-    artifacts: list[str],
+    artifacts: list[OutputArtifactSpec],
     benchmark_id: str,
     task_id: str,
     aws: AWSCredentials,
@@ -952,15 +956,13 @@ async def upload_output_artifacts(
     final_output: str | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
+    # Retained temporarily for call-site compatibility; artifact sources are fully contract-declared.
+    _ = final_output
     total_bytes = 0
-    model_library_paths: dict[str, str] = {}
-    if final_output is not None and any(artifact_path in MODEL_LIBRARY_OUTPUT_ARTIFACTS for artifact_path in artifacts):
-        model_library_paths = await _model_library_artifact_paths(sandbox, final_output)
 
-    for artifact_path in artifacts:
-        sandbox_path = await _resolve_output_artifact_sandbox_path(
-            sandbox, artifact_path, final_output, model_library_paths
-        )
+    for artifact in artifacts:
+        artifact_path = _output_artifact_path(artifact)
+        sandbox_path = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
         quoted_path = shlex.quote(sandbox_path)
 
         size_result = await _exec(sandbox, f"stat -c%s {quoted_path}")

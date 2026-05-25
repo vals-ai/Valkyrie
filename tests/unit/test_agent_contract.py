@@ -1,10 +1,10 @@
 from pathlib import Path
 from textwrap import dedent
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, OutputArtifact
 
 from valkyrie.cli.bundler import _parse_yaml_contract  # type: ignore
 from valkyrie.schemas import AgentConfig, AgentContract, Parameter
@@ -260,6 +260,32 @@ class TestOutputArtifactValidation:
                 output_artifacts=["full_result/result.json"] * 11,
             )
 
+    def test_rejects_relative_source_path(self) -> None:
+        with pytest.raises(ValidationError, match="absolute sandbox paths"):
+            OutputArtifact(path="full_result/result.json", source="logs/result.json")
+
+    def test_rejects_root_glob_source_path(self) -> None:
+        with pytest.raises(ValidationError, match="non-root directory prefix"):
+            OutputArtifact(path="full_result/result.json", source="/*.json")
+
+    def test_accepts_explicit_source_and_destination(self) -> None:
+        request = AgentContractRequest(
+            name="test-agent",
+            install_cmd="true",
+            run_cmd="echo {problem_statement_path}",
+            output_artifacts=[
+                OutputArtifact(
+                    path="full_result/result.json",
+                    source="/logs/{task_id}/result.json",
+                )
+            ],
+        )
+
+        artifact = request.output_artifacts[0]
+        assert not isinstance(artifact, str)
+        assert artifact.path == "full_result/result.json"
+        assert artifact.source == "/logs/{task_id}/result.json"
+
 
 class TestRunCmdValidation:
     def test_missing_problem_statement_path_raises(self) -> None:
@@ -382,6 +408,8 @@ class TestParseYamlContract:
             final_output: /artifacts
             output_artifacts:
               - full_result/turns.jsonl
+              - path: full_result/result.json
+                source: /logs/{task_id}/result.json
             secrets:
               API_KEY: MySecretName
         """,
@@ -390,7 +418,10 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert result.final_output == "/artifacts"
-        assert result.output_artifacts == ["full_result/turns.jsonl"]
+        assert result.output_artifacts[0] == "full_result/turns.jsonl"
+        artifact = cast(OutputArtifact, result.output_artifacts[1])
+        assert artifact.path == "full_result/result.json"
+        assert artifact.source == "/logs/{task_id}/result.json"
         assert result.secrets == {"API_KEY": "MySecretName"}
 
     def test_model_from_agent_config(self, tmp_path: Path) -> None:

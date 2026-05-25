@@ -129,6 +129,8 @@ final_output: /logs/my_agent
 
 Small files to upload directly from the sandbox into the task's S3 folder so they can be read without downloading `agent_output.tar.gz`. Files may still remain inside `final_output`; direct sidecars intentionally duplicate selected files for cheap Lambda/parser reads while preserving the full debug archive.
 
+String entries are shorthand: tracker reads `/tmp/valkyrie/<path>` and uploads to `<path>`.
+
 Canonical producers can write files under `/tmp/valkyrie`:
 
 ```yaml
@@ -137,19 +139,22 @@ output_artifacts:
   - full_result/turns.jsonl
 ```
 
-Model-library agents can instead declare their existing files; if they are not present under `/tmp/valkyrie`, the tracker resolves them from `final_output`:
+Object entries specify an explicit sandbox source and upload destination. Sources may include `{task_id}` and shell-style glob patterns resolved inside the sandbox:
 
 ```yaml
 output_artifacts:
-  - full_result/config.json # resolved from <final_output>/*/turns/init/config.json
-  - full_result/result.json # resolved from <final_output>/*/result.json, excluding turns/*
+  - path: full_result/config.json
+    source: /logs/{task_id}/turns/init/config.json
+  - path: full_result/result.json
+    source: /logs/{task_id}/result.json
 ```
 
 Guardrails:
 
-- Artifact paths are relative to `/tmp/valkyrie` in the sandbox unless they are one of the supported model-library sidecars resolved from `final_output`.
+- Artifact destination paths are relative task S3 paths. String entries use the same path under `/tmp/valkyrie`; object entries use their explicit `source`.
+- Object `source` paths must be absolute sandbox paths. Glob sources must include a non-root directory prefix such as `/logs` or `/app/results/...`.
 - Artifact paths must be under `full_result/`.
-- Each declared artifact is required. Missing files or unresolved model-library sources fail the task clearly.
+- Each declared artifact is required. Missing files or unresolved glob sources fail the task clearly.
 - Individual files cannot exceed 50 MiB.
 - At most 10 output artifacts can be declared.
 - The total uploaded sidecar bytes per task cannot exceed 50 MiB.
