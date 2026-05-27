@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
@@ -29,10 +29,11 @@ from tracker.auth import (
     get_current_org,
     get_current_user_and_org,
     resolve_descope_tenant,
+    resolve_registry_auth_headers,
 )
 from tracker.cloudwatch import get_cloudwatch_url
 from tracker.config import AUTH_REQUIRED, CORS_ALLOWED_ORIGINS
-from tracker.database.models import Benchmark, BenchmarkStatus, Org, User
+from tracker.database.models import Benchmark, BenchmarkStatus, Org, OrgConfig, User
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.exceptions import TrackerServiceError
@@ -48,6 +49,7 @@ from tracker.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
+from tracker.secrets import fetch_aws_secret
 from tracker.sentry import init_sentry
 from tracker.types import (
     BenchmarkTableRow,
@@ -230,6 +232,20 @@ async def start_benchmark(
             )
         }
     )
+
+    # Resolve auth headers from the org's benchmark-services registry
+    org_cfg = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
+    if org_cfg is not None and request.custom_benchmark_service:
+
+        def _resolve_secret(name: str) -> str:
+            secret = fetch_aws_secret(name, request.harness_config.aws)
+            return str(secret) if not isinstance(secret, dict) else str(next(iter(secret.values())))
+
+        registry_headers = resolve_registry_auth_headers(request.custom_benchmark_service, org_cfg, _resolve_secret)
+        if registry_headers:
+            merged = {**request.service_headers, **registry_headers}
+            request = request.model_copy(update={"service_headers": merged})
+
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service

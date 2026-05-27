@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections.abc
 from collections.abc import Mapping
 
 from descope import AuthException, DescopeClient
@@ -198,11 +199,7 @@ def get_current_user_and_org(request: Request, session: Session = Depends(get_se
         or jwt_response.get("user_id")
         or jwt_response.get("userId")
     )
-    email = (
-        session_token.get("email")
-        or jwt_response.get("email")
-        or ""
-    )
+    email = session_token.get("email") or jwt_response.get("email") or ""
     user: User | None = None
     if descope_user_id:
         user = get_or_create_user(session, descope_user_id=descope_user_id, email=email, org=org)
@@ -218,3 +215,31 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
     """
     _, org = get_current_user_and_org(request, session)
     return org
+
+
+def resolve_registry_auth_headers(
+    custom_benchmark_service: str | None,
+    org_config: object,
+    secret_resolver: collections.abc.Callable[[str], str],
+) -> dict[str, str]:
+    """Look up auth header for a benchmark service URL in OrgConfig.benchmark_services.
+
+    Returns {<auth_header_name>: <resolved_secret>} if the URL matches an entry
+    with both auth_header_name and auth_secret_name set. Returns {} otherwise.
+    """
+    if not custom_benchmark_service:
+        return {}
+
+    benchmark_services: list[dict[str, object]] | None = getattr(org_config, "benchmark_services", None)
+    if not benchmark_services:
+        return {}
+
+    for entry in benchmark_services:
+        if entry.get("url") == custom_benchmark_service:
+            secret_name = entry.get("auth_secret_name")
+            header_name = entry.get("auth_header_name")
+            if not secret_name or not header_name:
+                return {}
+            return {str(header_name): secret_resolver(str(secret_name))}
+
+    return {}
