@@ -379,6 +379,10 @@ class OrgConfig(SQLModel, table=True):
     log_group: str | None = Field(default=None)
     log_retention_policy: str | None = Field(default=None)
     webhook: str | None = Field(default=None)
+    benchmark_services: list[dict[str, Any]] = Field(
+        default_factory=list,
+        sa_column=Column(JSON, nullable=False, server_default="[]"),
+    )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(ZoneInfo("UTC")),
         sa_column_kwargs={
