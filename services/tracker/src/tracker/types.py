@@ -204,6 +204,13 @@ class FetchBenchmarkMetadataResponse(BaseModel):
 MASKED_SECRET = "********"
 
 
+class BenchmarkServiceEntry(BaseModel):
+    name: str
+    url: str
+    auth_header_name: str | None = None
+    auth_secret_name: str | None = None
+
+
 class OrgConfigResponse(BaseModel):
     aws_access_key_id: str
     aws_secret_access_key: str
@@ -213,6 +220,7 @@ class OrgConfigResponse(BaseModel):
     log_group: str | None = None
     log_retention_policy: str | None = None
     webhook: str | None = None
+    benchmark_services: list[BenchmarkServiceEntry] = []
 
     @classmethod
     def from_org_config(cls, config: OrgConfig) -> OrgConfigResponse:
@@ -225,6 +233,9 @@ class OrgConfigResponse(BaseModel):
             log_group=config.log_group,
             log_retention_policy=config.log_retention_policy,
             webhook=MASKED_SECRET if config.webhook is not None else None,
+            benchmark_services=[
+                BenchmarkServiceEntry(**s) for s in (config.benchmark_services or [])
+            ],
         )
 
 
@@ -319,6 +330,7 @@ class OrgConfigUpdate(BaseModel):
     log_group: str | None = None
     log_retention_policy: str | None = None
     webhook: str | None = None
+    benchmark_services: list[BenchmarkServiceEntry] = []
 
     def apply_to(self, config: OrgConfig) -> None:
         config.aws_access_key_id = self.aws_access_key_id
@@ -332,6 +344,7 @@ class OrgConfigUpdate(BaseModel):
         config.log_retention_policy = self.log_retention_policy
         if self.webhook != MASKED_SECRET:
             config.webhook = self.webhook
+        config.benchmark_services = [s.model_dump() for s in self.benchmark_services]
 
 
 class SingleTaskResponse(BaseModel):

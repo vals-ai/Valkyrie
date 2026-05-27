@@ -24,8 +24,11 @@ def test_response_masks_secrets():
 def test_response_webhook_none_stays_none():
     config = OrgConfig(
         org_id=TEST_ORG_ID,
-        aws_access_key_id="A", aws_secret_access_key="s",
-        aws_default_region="us-east-2", s3_bucket="b", daytona_secret_name="d",
+        aws_access_key_id="A",
+        aws_secret_access_key="s",
+        aws_default_region="us-east-2",
+        s3_bucket="b",
+        daytona_secret_name="d",
         webhook=None,
     )
     response = OrgConfigResponse.from_org_config(config)
@@ -35,8 +38,11 @@ def test_response_webhook_none_stays_none():
 def test_update_apply_replaces_non_secret_fields():
     config = OrgConfig(
         org_id=TEST_ORG_ID,
-        aws_access_key_id="OLD", aws_secret_access_key="old-secret",
-        aws_default_region="us-east-1", s3_bucket="old", daytona_secret_name="old-dt",
+        aws_access_key_id="OLD",
+        aws_secret_access_key="old-secret",
+        aws_default_region="us-east-1",
+        s3_bucket="old",
+        daytona_secret_name="old-dt",
     )
     update = OrgConfigUpdate(
         aws_access_key_id="NEW",
@@ -56,8 +62,11 @@ def test_update_apply_replaces_non_secret_fields():
 def test_update_masked_sentinel_preserves_secret():
     config = OrgConfig(
         org_id=TEST_ORG_ID,
-        aws_access_key_id="A", aws_secret_access_key="real-secret",
-        aws_default_region="us-east-2", s3_bucket="b", daytona_secret_name="real-daytona",
+        aws_access_key_id="A",
+        aws_secret_access_key="real-secret",
+        aws_default_region="us-east-2",
+        s3_bucket="b",
+        daytona_secret_name="real-daytona",
         webhook="real-webhook",
     )
     update = OrgConfigUpdate(
@@ -77,8 +86,11 @@ def test_update_masked_sentinel_preserves_secret():
 def test_update_explicit_none_clears_optional_secret():
     config = OrgConfig(
         org_id=TEST_ORG_ID,
-        aws_access_key_id="A", aws_secret_access_key="s",
-        aws_default_region="us-east-2", s3_bucket="b", daytona_secret_name="d",
+        aws_access_key_id="A",
+        aws_secret_access_key="s",
+        aws_default_region="us-east-2",
+        s3_bucket="b",
+        daytona_secret_name="d",
         webhook="existing",
     )
     update = OrgConfigUpdate(
@@ -91,3 +103,55 @@ def test_update_explicit_none_clears_optional_secret():
     )
     update.apply_to(config)
     assert config.webhook is None
+
+
+def test_org_config_response_includes_benchmark_services():
+    from tracker.types import BenchmarkServiceEntry, OrgConfigResponse
+
+    config = OrgConfig(
+        org_id=TEST_ORG_ID,
+        aws_access_key_id="A",
+        aws_secret_access_key="s",
+        aws_default_region="us-east-2",
+        s3_bucket="b",
+        daytona_secret_name="d",
+        benchmark_services=[
+            {"name": "swebench", "url": "http://x:8001", "auth_header_name": None, "auth_secret_name": None},
+        ],
+    )
+    response = OrgConfigResponse.from_org_config(config)
+    assert len(response.benchmark_services) == 1
+    assert response.benchmark_services[0].name == "swebench"
+
+
+def test_org_config_update_applies_benchmark_services():
+    from tracker.types import BenchmarkServiceEntry, OrgConfigUpdate
+
+    config = OrgConfig(
+        org_id=TEST_ORG_ID,
+        aws_access_key_id="A",
+        aws_secret_access_key="s",
+        aws_default_region="us-east-2",
+        s3_bucket="b",
+        daytona_secret_name="d",
+        benchmark_services=[],
+    )
+    update = OrgConfigUpdate(
+        aws_access_key_id="A",
+        aws_secret_access_key=MASKED_SECRET,
+        aws_default_region="us-east-2",
+        s3_bucket="b",
+        daytona_secret_name=MASKED_SECRET,
+        benchmark_services=[
+            BenchmarkServiceEntry(
+                name="swebench",
+                url="http://x:8001",
+                auth_header_name="X-Descope-Api-Key",
+                auth_secret_name="prodSwebenchKey",
+            ),
+        ],
+    )
+    update.apply_to(config)
+    assert len(config.benchmark_services) == 1
+    assert config.benchmark_services[0]["name"] == "swebench"
+    assert config.benchmark_services[0]["auth_header_name"] == "X-Descope-Api-Key"
