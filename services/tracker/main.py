@@ -13,6 +13,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
+from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
@@ -95,6 +96,7 @@ app.add_middleware(
 
 app.add_middleware(RequestContextMiddleware)
 
+app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)
 app.include_router(filter_options_router)
 app.include_router(logs_router)

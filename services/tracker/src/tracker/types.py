@@ -211,6 +211,18 @@ class BenchmarkServiceEntry(BaseModel):
     auth_secret_name: str | None = None
 
 
+class BenchmarkServiceHealth(BaseModel):
+    name: str
+    url: str
+    healthy: bool
+    latency_ms: int | None
+    error: str | None = None
+
+
+class BenchmarkServicesResponse(BaseModel):
+    services: list[BenchmarkServiceHealth]
+
+
 class OrgConfigResponse(BaseModel):
     aws_access_key_id: str
     aws_secret_access_key: str
