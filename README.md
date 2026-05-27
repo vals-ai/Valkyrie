@@ -387,3 +387,5 @@ If you use Valkyrie in your research, please cite our paper:
   url       = {https://doi.org/10.1145/3786335.3813231}
 }
 ```
+
+<!-- Declarative environment verification: 2026-05-27 -->
