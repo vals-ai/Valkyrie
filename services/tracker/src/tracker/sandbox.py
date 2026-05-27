@@ -115,9 +115,7 @@ def _set_sandbox_span_attributes(sandbox: Sandbox) -> None:
     span = trace.get_current_span()
     span.set_attribute("valkyrie.sandbox_id", sandbox.id)
     span.set_attribute("valkyrie.sandbox_name", sandbox.name)
-    state = getattr(sandbox, "state", None)
-    if state is not None:
-        span.set_attribute("valkyrie.sandbox_state", str(state))
+    span.set_attribute("valkyrie.sandbox_state", sandbox.state)
 
 
 @logfire.instrument("sandbox.create", extract_args=False)
@@ -321,7 +319,7 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
         raise SandboxError(str(e)) from e
 
 
-async def _stream_provider_command_output(
+async def stream_command_output(
     sandbox: Sandbox,
     command: str,
     on_output: Callable[[str], None],
@@ -340,7 +338,7 @@ async def _stream_provider_command_output(
     )
 
     try:
-        async for data in sandbox.stream_command(timed_command):
+        async for data in sandbox.command(timed_command):
             on_output(data)
             output.append(data)
         start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
@@ -362,14 +360,6 @@ async def _stream_provider_command_output(
     recent = "\n".join(tail[-10:]) if tail else "(no output)"
     sentry_sdk.set_tag("agent_exit_code", str(exit_code))
     raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
-
-
-async def stream_command_output(
-    sandbox: Sandbox,
-    command: str,
-    on_output: Callable[[str], None],
-) -> tuple[AgentCausedExitReason | None, float]:
-    return await _stream_provider_command_output(sandbox, command, on_output)
 
 
 @logfire.instrument(

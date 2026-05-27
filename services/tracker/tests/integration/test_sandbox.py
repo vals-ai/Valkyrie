@@ -8,7 +8,6 @@ from typing import AsyncGenerator
 import boto3
 import pytest
 from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundError, SandboxProvider
-from benchmark_service.sandbox import DaytonaSandbox
 
 from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
@@ -299,63 +298,6 @@ class TestSandboxOperations:
             assert "STAGE_1" in output
             assert "STAGE_2" in output
             assert "STAGE_3" in output
-
-    async def test_pty_reconnect_with_connect_pty_session(
-        self,
-        sandbox_provider: SandboxProvider,
-        test_resources: Resources,
-        test_image: str,
-        random_sandbox_name: str,
-        creation_semaphore: asyncio.Semaphore,
-    ) -> None:
-        """Test that connect_pty_session can reconnect to a running PTY and receive output."""
-
-        async with create_sandbox(
-            sandbox_provider,
-            random_sandbox_name,
-            ImageSource(image=test_image),
-            test_resources,
-            creation_semaphore,
-        ) as sandbox:
-            assert isinstance(sandbox, DaytonaSandbox)
-            daytona_sandbox = sandbox.inner
-            session_id = f"{daytona_sandbox.id}:pty-reconnect-test"
-            before_messages: list[str] = []
-            after_messages: list[str] = []
-
-            def before_callback(data: bytes) -> None:
-                before_messages.append(data.decode("utf-8", errors="replace"))
-
-            def after_callback(data: bytes) -> None:
-                after_messages.append(data.decode("utf-8", errors="replace"))
-
-            # Create PTY session and start a long-running command
-            handle = await daytona_sandbox.process.create_pty_session(
-                id=session_id,
-                on_data=before_callback,
-                envs={"TERM": "dumb"},
-            )
-            await handle.send_input("stty -echo\n")
-            await handle.send_input("echo 'BEFORE_DISCONNECT' && sleep 3 && echo 'AFTER_RECONNECT' && sleep 1; exit\n")
-
-            # Wait for initial output, then disconnect
-            await asyncio.sleep(2)
-            await handle.disconnect()
-
-            # Reconnect to the same PTY session with a new callback
-            handle2 = await daytona_sandbox.process.connect_pty_session(session_id, after_callback)
-            await handle2.wait()
-            await handle2.disconnect()
-
-            # BEFORE_DISCONNECT was captured by the first handle
-            assert any("BEFORE_DISCONNECT" in msg for msg in before_messages)
-            # AFTER_RECONNECT was captured by the second handle after reconnect
-            assert any("AFTER_RECONNECT" in msg for msg in after_messages)
-
-            try:
-                await daytona_sandbox.process.kill_pty_session(session_id)
-            except Exception:
-                pass
 
     async def test_stream_command_raises_on_sandbox_crash(
         self,

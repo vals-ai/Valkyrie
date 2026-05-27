@@ -105,7 +105,7 @@ class TestAgentOutputTelemetry:
             def set_attribute(self, key: str, value: str | int) -> None:
                 span_attributes[key] = value
 
-        monkeypatch.setattr(sandbox_module.trace, "get_current_span", lambda: FakeSpan())
+        monkeypatch.setattr("tracker.sandbox.trace.get_current_span", lambda: FakeSpan())
 
         create_span_attrs = getattr(sandbox_module, "_set_sandbox_create_span_attributes")
         sandbox_span_attrs = getattr(sandbox_module, "_set_sandbox_span_attributes")
@@ -116,8 +116,6 @@ class TestAgentOutputTelemetry:
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
-        sandbox_span_attrs(mock_sandbox)
-
         mock_sandbox.state = "started"
         sandbox_span_attrs(mock_sandbox)
 
@@ -209,7 +207,7 @@ class TestAgentOutputTelemetry:
         monkeypatch.setattr(sandbox_module, "delete_sandbox", AsyncMock())
         monkeypatch.setattr(sandbox_module, "distribution", fake_distribution, raising=False)
         monkeypatch.setattr(sandbox_module, "set_sandbox_context", fake_set_sandbox_context, raising=False)
-        monkeypatch.setattr(sandbox_module.time, "monotonic", fake_monotonic)
+        monkeypatch.setattr("tracker.sandbox.time.monotonic", fake_monotonic)
 
         resources = Resources(vcpu=2, memory=4, disk=5)
         async with create_sandbox(
@@ -255,31 +253,6 @@ class TestAgentOutputTelemetry:
                 pass
 
         assert increments == [("valkyrie.sandbox.create.errors", {"error_class": "RuntimeError"})]
-
-    async def test_create_sandbox_does_not_tag_non_daytona_create_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        increments: list[tuple[str, dict[str, str]]] = []
-
-        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
-            raise ValueError("bad config")
-
-        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
-            increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
-
-        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
-        monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
-
-        resources = Resources(vcpu=2, memory=4, disk=5)
-        with pytest.raises(ValueError, match="bad config"):
-            async with create_sandbox(
-                provider=AsyncMock(),
-                sandbox_name="task-alias",
-                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
-                resources=resources,
-                creation_semaphore=asyncio.Semaphore(1),
-            ):
-                pass
-
-        assert increments == [("valkyrie.sandbox.create.errors", {"error_class": "ValueError"})]
 
 
 class TestUploadAgentArtifacts:
@@ -346,7 +319,7 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "test-sandbox"
-        mock_sandbox.stream_command = stream_command
+        mock_sandbox.command = stream_command
         mock_sandbox.exec = AsyncMock(
             side_effect=[
                 ExecResult(exit_code=0, output="1000000000"),
@@ -357,7 +330,7 @@ class TestStreamCommandOutputAgentFailure:
         def fake_set_tag(key: str, value: object) -> None:
             tagged[key] = str(value)
 
-        monkeypatch.setattr(sandbox_module.sentry_sdk, "set_tag", fake_set_tag)
+        monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", fake_set_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
             await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)

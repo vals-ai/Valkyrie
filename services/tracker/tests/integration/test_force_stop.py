@@ -3,7 +3,6 @@ import asyncio
 import pytest
 from benchmark_service import ImageSource, Resources, SandboxProvider, SandboxQuery
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.sandbox import DaytonaSandbox
 from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
@@ -134,9 +133,8 @@ class TestForceStop:
                 creation_semaphore=creation_semaphore,
                 labels=labels,
             ) as sandbox:
-                # NOTE: Must wait until sandboxes have been started
-                assert isinstance(sandbox, DaytonaSandbox)
-                await sandbox.inner.wait_for_sandbox_start(timeout=0)
+                result = await sandbox.exec("true")
+                assert result.exit_code == 0
 
         # Create 12 tasks that are in progress and evaluating
         tasks: list[Task] = []
