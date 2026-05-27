@@ -1,14 +1,22 @@
 """GET /agents — list agents from S3 under the org's bucket."""
+
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from tracker.auth import get_current_user_and_org
 from tracker.database.models import Org, OrgConfig, User
 from tracker.database.session import get_session
-from tracker.s3 import list_s3_agent_names
+from tracker.s3 import create_presigned_url, list_s3_agent_names, s3_object_exists
 from tracker.types import AgentEntry, AgentsResponse, AWSCredentials
+
+
+class AgentDownloadURLResponse(BaseModel):
+    name: str
+    download_url: str
+    expires_in: int
 
 router = APIRouter()
 
@@ -38,3 +46,28 @@ def list_agents(
             for r in rows
         ]
     )
+
+
+@router.get("/agents/{name}/download-url", response_model=AgentDownloadURLResponse)
+def get_agent_download_url(
+    name: str,
+    user_and_org: tuple[User | None, Org] = Depends(get_current_user_and_org),
+    session: Session = Depends(get_session),
+) -> AgentDownloadURLResponse:
+    _, org = user_and_org
+    cfg = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
+    if cfg is None:
+        raise HTTPException(status_code=404, detail="Org config not set")
+
+    aws = AWSCredentials(
+        aws_access_key_id=cfg.aws_access_key_id,
+        aws_secret_access_key=cfg.aws_secret_access_key,
+        aws_default_region=cfg.aws_default_region,
+    )
+    key = f"agents/{name}.zip"
+    if not s3_object_exists(key, aws=aws, s3_bucket=cfg.s3_bucket):
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
+
+    expires_in = 300
+    url = create_presigned_url(key, aws=aws, s3_bucket=cfg.s3_bucket, expiration=expires_in)
+    return AgentDownloadURLResponse(name=name, download_url=url, expires_in=expires_in)
