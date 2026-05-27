@@ -296,9 +296,7 @@ def create_benchmark_url(benchmark_id: str, region: str, s3_bucket: str) -> str:
 
 
 @handle_s3_error(message="Failed to list objects with metadata from S3")
-def list_s3_objects_detailed(
-    prefix: str, aws: "AWSCredentials", s3_bucket: str
-) -> list[dict[str, object]]:
+def list_s3_objects_detailed(prefix: str, aws: "AWSCredentials", s3_bucket: str) -> list[dict[str, object]]:
     """Like list_s3_objects but returns key + size + last_modified per object."""
     client = _s3_client(aws)
     paginator = client.get_paginator("list_objects_v2")
@@ -310,32 +308,43 @@ def list_s3_objects_detailed(
                 {
                     "key": obj["Key"],
                     "size": int(obj["Size"]),
-                    "last_modified": obj["LastModified"].isoformat()
-                    if obj.get("LastModified")
-                    else None,
+                    "last_modified": obj["LastModified"].isoformat() if obj.get("LastModified") else None,
                 }
             )
     return out
 
 
 def list_s3_agent_names(aws: "AWSCredentials", s3_bucket: str) -> list[dict[str, object]]:
-    """List agent folder names under `agents/` prefix using Delimiter='/'."""
+    """List agents under `agents/` prefix.
+
+    Accepts both layouts:
+      * subfolders — `agents/<name>/...`
+      * zipped bundles — `agents/<name>.zip`
+    """
     client = _s3_client(aws)
     paginator = client.get_paginator("list_objects_v2")
-    out: list[dict[str, object]] = []
+    seen: dict[str, str | None] = {}
     for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/", Delimiter="/"):
         for cp in page.get("CommonPrefixes", []):
             full = cp["Prefix"]
-            name = full[len("agents/"):].rstrip("/")
-            if name:
-                out.append({"name": name, "last_modified": None})
-    return out
+            name = full[len("agents/") :].rstrip("/")
+            if name and name not in seen:
+                seen[name] = None
+        for obj in page.get("Contents", []):
+            key = obj["Key"]
+            tail = key[len("agents/") :]
+            if not tail or tail.startswith(".") or not tail.endswith(".zip"):
+                continue
+            name = tail[: -len(".zip")]
+            if not name or name in seen:
+                continue
+            last_modified = obj.get("LastModified")
+            seen[name] = last_modified.isoformat() if last_modified else None
+    return [{"name": n, "last_modified": lm} for n, lm in seen.items()]
 
 
 @handle_s3_error(message="Failed to generate presigned GET URL")
-def generate_presigned_get_url(
-    key: str, aws: "AWSCredentials", s3_bucket: str, ttl_seconds: int = 300
-) -> str:
+def generate_presigned_get_url(key: str, aws: "AWSCredentials", s3_bucket: str, ttl_seconds: int = 300) -> str:
     """Return a presigned URL (default 5 min TTL) for downloading an S3 object."""
     client = _s3_client(aws)
     presigned_url: str = client.generate_presigned_url(
