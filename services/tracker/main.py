@@ -235,6 +235,30 @@ async def start_benchmark(
 
     # Resolve auth headers from the org's benchmark-services registry
     org_cfg = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
+
+    # Backfill harness_config from OrgConfig when the caller (e.g. web UI) sends placeholders.
+    if org_cfg is not None:
+        hc = request.harness_config
+        aws_missing = not (hc.aws.aws_access_key_id and hc.aws.aws_secret_access_key and hc.aws.aws_default_region)
+        if aws_missing or not hc.s3_bucket:
+            patched = hc.model_copy(
+                update={
+                    "aws": hc.aws.model_copy(
+                        update={
+                            "aws_access_key_id": hc.aws.aws_access_key_id or (org_cfg.aws_access_key_id or ""),
+                            "aws_secret_access_key": hc.aws.aws_secret_access_key
+                            or (org_cfg.aws_secret_access_key or ""),
+                            "aws_default_region": hc.aws.aws_default_region or (org_cfg.aws_default_region or ""),
+                        }
+                    ),
+                    "s3_bucket": hc.s3_bucket or (org_cfg.s3_bucket or ""),
+                    "log_group": hc.log_group or (org_cfg.log_group or ""),
+                    "log_retention_policy": hc.log_retention_policy or int(org_cfg.log_retention_policy or 30),
+                    "daytona_secret_name": hc.daytona_secret_name or (org_cfg.daytona_secret_name or ""),
+                }
+            )
+            request = request.model_copy(update={"harness_config": patched})
+
     if org_cfg is not None and request.custom_benchmark_service:
 
         def _resolve_secret(name: str) -> str:
