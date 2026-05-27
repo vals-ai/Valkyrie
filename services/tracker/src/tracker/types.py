@@ -393,3 +393,12 @@ class FilesResponse(BaseModel):
 class PresignedUrlResponse(BaseModel):
     url: str
     expires_in: int  # seconds
+
+
+class AgentEntry(BaseModel):
+    name: str
+    last_modified: str | None = None
+
+
+class AgentsResponse(BaseModel):
+    agents: list[AgentEntry]

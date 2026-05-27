@@ -318,6 +318,20 @@ def list_s3_objects_detailed(
     return out
 
 
+def list_s3_agent_names(aws: "AWSCredentials", s3_bucket: str) -> list[dict[str, object]]:
+    """List agent folder names under `agents/` prefix using Delimiter='/'."""
+    client = _s3_client(aws)
+    paginator = client.get_paginator("list_objects_v2")
+    out: list[dict[str, object]] = []
+    for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/", Delimiter="/"):
+        for cp in page.get("CommonPrefixes", []):
+            full = cp["Prefix"]
+            name = full[len("agents/"):].rstrip("/")
+            if name:
+                out.append({"name": name, "last_modified": None})
+    return out
+
+
 @handle_s3_error(message="Failed to generate presigned GET URL")
 def generate_presigned_get_url(
     key: str, aws: "AWSCredentials", s3_bucket: str, ttl_seconds: int = 300
