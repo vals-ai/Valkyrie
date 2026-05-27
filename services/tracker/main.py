@@ -14,6 +14,7 @@ from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
 from tracker.api.benchmarks_status import router as benchmarks_status_router
+from tracker.api.filter_options import router as filter_options_router
 from tracker.api.logs import router as logs_router
 from tracker.api.org_config import router as org_config_router
 from tracker.api.single_benchmark import router as single_benchmark_router
@@ -95,6 +96,7 @@ app.add_middleware(
 app.add_middleware(RequestContextMiddleware)
 
 app.include_router(benchmarks_status_router)
+app.include_router(filter_options_router)
 app.include_router(logs_router)
 app.include_router(org_config_router)
 app.include_router(single_benchmark_router)
