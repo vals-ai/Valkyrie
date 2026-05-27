@@ -84,6 +84,7 @@ class AgentContractRequest(BaseModel):
     run_cmd: str
     final_output: str | None = None
     secrets: dict[str, str] = {}
+    kwargs: dict[str, str] = {}
 
 
 class BenchmarkArguments(BaseModel):

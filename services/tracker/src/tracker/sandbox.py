@@ -690,6 +690,9 @@ async def run_agent(
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
+    for kwarg_key, kwarg_value in contract.kwargs.items():
+        run_cmd = run_cmd.replace(f"{{{kwarg_key}}}", kwarg_value)
+
     # Apply timeout if specified
     if agent_timeout is not None:
         run_cmd = f"timeout {agent_timeout} {run_cmd}"
