@@ -2,20 +2,17 @@
 
 import logging
 import os
-from typing import Any
+from typing import Any, cast
 
-import daytona
 import sentry_sdk
-from daytona.common.errors import DaytonaRateLimitError
 from opentelemetry.trace import get_current_span
 from sentry_sdk.consts import INSTRUMENTER
 from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.otlp import OTLPIntegration
-from sentry_sdk.types import Event, Hint
+from sentry_sdk.types import Event, Hint, Log
 
 from tracker.exceptions import PtyCreationError, SSLConnectionError, SandboxError
 from tracker.logging.context import get_context_tags
-from tracker.observability.metrics import incr
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +47,8 @@ def _apply_current_otel_trace_context(telemetry: dict[str, Any]) -> None:
     telemetry["span_id"] = f"{span_context.span_id:016x}"
 
 
-def _before_send_log(log: dict[str, Any], _hint: Hint) -> dict[str, Any] | None:
-    _apply_current_otel_trace_context(log)
+def _before_send_log(log: Log, _hint: Hint) -> Log | None:
+    _apply_current_otel_trace_context(cast(dict[str, Any], log))
     return log
 
 
@@ -99,7 +96,6 @@ def init_sentry(service_name: str, environment: str) -> None:
                 ),
             ],
         )
-        sentry_sdk.set_tag("daytona.sdk_version", getattr(daytona, "__version__", "unknown"))
     except Exception as e:
         # A malformed SENTRY_DSN or invalid integration shouldn't crash service startup.
         logger.warning("Failed to initialize Sentry: %s: %s", type(e).__name__, e)
@@ -133,17 +129,3 @@ def set_pty_context(*, session_id: str, attempt: int | None = None) -> None:
             sentry_sdk.set_tag("pty_attempt", str(attempt))
     except Exception as e:
         logger.warning("set_pty_context failed: %s: %s", type(e).__name__, e)
-
-
-def tag_daytona_error(exc: Exception, *, op: str) -> None:
-    """Tag the active Sentry scope and emit a low-cardinality Daytona error metric."""
-    error_class = type(exc).__name__
-    try:
-        sentry_sdk.set_tag("daytona.op", op)
-        sentry_sdk.set_tag("error_class", error_class)
-    except Exception as e:
-        logger.warning("tag_daytona_error failed: %s: %s", type(e).__name__, e)
-
-    incr("valkyrie.daytona.error", tags={"op": op, "error_class": error_class})
-    if isinstance(exc, DaytonaRateLimitError):
-        incr("valkyrie.daytona.rate_limit.error", tags={"op": op})
