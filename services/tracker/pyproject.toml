@@ -11,6 +11,7 @@ dependencies = [
     "boto3-stubs[s3]",
     "moto[s3]",
     "fastapi[standard]>=0.135.3",
+    "starlette>=1.0.1",
     "daytona==0.176.1a1",
     "sqlmodel>=0.0.38",
     "psycopg2-binary>=2.9.11",
