@@ -1279,9 +1279,7 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
     before_sleep=daytona_retry_callback("valkyrie.sandbox.list", op="sandbox.list"),
     reraise=True,
 )
-async def fetch_sandboxes(
-    benchmark_row: Benchmark, daytona_client: AsyncDaytona
-) -> AsyncGenerator[AsyncSandbox, None]:
+async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
     async for sandbox in daytona_client.list(
         ListSandboxesQuery(
             labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
