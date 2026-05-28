@@ -462,7 +462,10 @@ class TestAgentOutputTelemetry:
         daytona_client.list.side_effect = DaytonaError("transient")
 
         with pytest.raises(DaytonaError):
-            await _fetch_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(benchmark, daytona_client)
+            async for _ in _fetch_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
+                benchmark, daytona_client
+            ):
+                pass
 
         assert daytona_client.list.call_count == 1
 

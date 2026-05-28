@@ -1279,8 +1279,9 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
     before_sleep=daytona_retry_callback("valkyrie.sandbox.list", op="sandbox.list"),
     reraise=True,
 )
-async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> list[AsyncSandbox]:
-    sandboxes: list[AsyncSandbox] = []
+async def fetch_sandboxes(
+    benchmark_row: Benchmark, daytona_client: AsyncDaytona
+) -> AsyncGenerator[AsyncSandbox, None]:
     async for sandbox in daytona_client.list(
         ListSandboxesQuery(
             labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
@@ -1288,19 +1289,7 @@ async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona
         )
     ):
         if sandbox.state not in _DELETED_DAYTONA_SANDBOX_STATES:
-            sandboxes.append(sandbox)
-
-    return sandboxes
-
-
-async def sandbox_generator(
-    benchmark_row: Benchmark, daytona_client: AsyncDaytona
-) -> AsyncGenerator[AsyncSandbox, None]:
-    """
-    Generator that yields all live sandboxes for a given benchmark.
-    """
-    for sandbox in await fetch_sandboxes(benchmark_row, daytona_client):
-        yield sandbox
+            yield sandbox
 
 
 async def force_stop_sandboxes(
@@ -1329,7 +1318,7 @@ async def force_stop_sandboxes(
 
         # Iterate through each running sandbox and stop it, collecting error messages
         results: dict[str, str | None] = {}
-        async for sandbox in sandbox_generator(benchmark_row, daytona_client):
+        async for sandbox in fetch_sandboxes(benchmark_row, daytona_client):
             result = await stop_sandbox(sandbox, daytona_client)
 
             results[sandbox.name] = result

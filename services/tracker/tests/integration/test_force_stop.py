@@ -161,7 +161,7 @@ class TestForceStop:
         await created_sandboxes
 
         # Ensure that there are no more sandboxes left running
-        active = await fetch_sandboxes(example_benchmark_object, daytona_client)
+        active = [sandbox async for sandbox in fetch_sandboxes(example_benchmark_object, daytona_client)]
         assert len(active) == 0
 
         await daytona_client.close()
@@ -263,7 +263,7 @@ class TestForceStop:
         daytona_client = benchmark_service.daytona_client
 
         # Try to fetch the sandboxes and see if any of them are still running
-        active = await fetch_sandboxes(example_benchmark_object, daytona_client)
+        active = [sandbox async for sandbox in fetch_sandboxes(example_benchmark_object, daytona_client)]
         assert len(active) == 0
 
         await daytona_client.close()
