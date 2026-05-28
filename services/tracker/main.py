@@ -242,6 +242,14 @@ async def start_benchmark(
         update={"harness_config": _backfill_harness_config_from_org_config(request.harness_config, org_cfg)}
     )
 
+    if request.custom_benchmark_service:
+        allowed_urls = {s.get("url") for s in (org_cfg.benchmark_services or []) if org_cfg} if org_cfg else set()
+        if request.custom_benchmark_service not in allowed_urls:
+            raise HTTPException(
+                status_code=400,
+                detail=f"custom_benchmark_service '{request.custom_benchmark_service}' is not in the org's benchmark services registry",
+            )
+
     if org_cfg is not None and request.custom_benchmark_service:
 
         def _resolve_secret(name: str) -> str:

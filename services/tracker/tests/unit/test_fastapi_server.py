@@ -19,11 +19,13 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     FinalEvaluation,
+    OrgConfig,
     Task,
     TaskStatus,
 )
 from tracker.types import (
     BenchmarkTableRow,
+    BenchmarkServiceEntry,
     FetchBenchmarksRequest,
     FinalViewResponse,
     HarnessConfig,
@@ -550,3 +552,60 @@ class TestFastapiServer:
         # There is 1 finished benchmark
         assert response_json.get("total_count") == 1
         assert len(response_json.get("benchmarks")) == 1
+
+    async def test_start_benchmark_rejects_unregistered_custom_service(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        """POST /start-benchmark with a custom_benchmark_service not in the org registry returns 400."""
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=5,
+            task_ids=None,
+            harness_config=harness_config,
+            custom_benchmark_service="http://attacker.example.com/evil",
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 400
+        assert "not in the org's benchmark services registry" in response.json()["detail"]
+
+    async def test_start_benchmark_allows_registered_custom_service(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        """POST /start-benchmark with a custom_benchmark_service in the org registry proceeds past validation."""
+        allowed_url = "http://internal-swebench.example.com:8001"
+        org_cfg = OrgConfig(
+            org_id=TEST_ORG_ID,
+            aws_access_key_id="A",
+            aws_secret_access_key="s",
+            aws_default_region="us-east-1",
+            s3_bucket="b",
+            daytona_secret_name="d",
+            benchmark_services=[
+                BenchmarkServiceEntry(name="swebench", url=allowed_url).model_dump(),
+            ],
+        )
+        database_session.add(org_cfg)
+        database_session.commit()
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=5,
+            task_ids=None,
+            harness_config=harness_config,
+            custom_benchmark_service=allowed_url,
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        # Passes the allowlist check — proceeds to benchmark start (200)
+        assert response.status_code == 200
