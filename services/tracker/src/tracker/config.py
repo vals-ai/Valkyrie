@@ -72,7 +72,13 @@ async def _init_worker_sentry(*_args: object, **_kwargs: object) -> None:  # pyr
 
 
 # Auth settings
-AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
+_auth_required_raw = os.environ.get("AUTH_REQUIRED")
+if _auth_required_raw is None:
+    raise RuntimeError(
+        "AUTH_REQUIRED env var must be set explicitly to 'true' or 'false'. "
+        "Refusing to start with an implicit default."
+    )
+AUTH_REQUIRED = _auth_required_raw.lower() == "true"
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")
 
 

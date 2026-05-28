@@ -8,7 +8,7 @@ from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, Ve
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
-from tracker.auth import get_current_org
+from tracker.auth import get_current_org, get_current_user_and_org
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
@@ -18,6 +18,8 @@ from tracker.utils import fetch_harness_config
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
 os.environ.setdefault("AWS_ACCESS_KEY_ID", "test")
 os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
+# config.py requires AUTH_REQUIRED to be set explicitly — no implicit default
+os.environ.setdefault("AUTH_REQUIRED", "false")
 
 # Needs to be after the environment variable setup
 from main import app
@@ -87,9 +89,10 @@ def override_database_session(database_session: Session) -> None:
 
 @pytest.fixture(autouse=True)
 def override_org() -> None:
-    """Override get_current_org to return a test org."""
+    """Override get_current_org and get_current_user_and_org to return a test org."""
     test_org = Org(id=TEST_ORG_ID, name="default")
     app.dependency_overrides[get_current_org] = lambda: test_org
+    app.dependency_overrides[get_current_user_and_org] = lambda: (None, test_org)
 
 
 @pytest.fixture(autouse=True)

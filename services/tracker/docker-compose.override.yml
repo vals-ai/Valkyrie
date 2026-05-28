@@ -1,0 +1,15 @@
+services:
+  postgres:
+    ports: !override
+      - "5433:5432"
+
+  redis:
+    ports: !override
+      - "6380:6379"
+
+  tracker:
+    ports: !override
+      - "8002:8000"
+    environment:
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-true}
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS:-http://localhost:5173}
