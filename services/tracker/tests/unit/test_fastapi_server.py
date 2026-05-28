@@ -669,7 +669,7 @@ class TestFastapiServer:
         assert response.status_code == 200
         response_json = response.json()
         assert response_json["total_count"] == 2
-        assert {row["dataset"] for row in response_json["benchmarks"]} == {None, "default"}
+        assert {row["dataset"] for row in response_json["benchmarks"]} == {"default"}
 
     async def test_start_benchmark_writes_started_by_columns(
         self,

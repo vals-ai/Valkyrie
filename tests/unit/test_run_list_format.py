@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from click.testing import CliRunner
 from tracker.database.models import BenchmarkStatus
-from tracker.types import BenchmarkTableRow, FetchBenchmarksResponse
+from tracker.types import BenchmarkTableRow, FetchBenchmarksRequest, FetchBenchmarksResponse
 
 from valkyrie.cli.main import cli
 from valkyrie.cli.utils import format_fetch_benchmarks_response
@@ -41,7 +41,6 @@ def test_format_fetch_benchmarks_response_shows_dataset(capsys):
                 total_tasks=1,
                 finished_tasks=0,
                 final_score=None,
-                dataset=None,
             ),
         ],
     )
@@ -55,7 +54,7 @@ def test_format_fetch_benchmarks_response_shows_dataset(capsys):
 
 
 def test_run_list_accepts_dataset_filter(monkeypatch: pytest.MonkeyPatch):
-    captured: dict[str, object] = {}
+    captured: dict[str, FetchBenchmarksRequest] = {}
 
     class FakeTrackerService:
         def __enter__(self) -> "FakeTrackerService":
@@ -64,34 +63,14 @@ def test_run_list_accepts_dataset_filter(monkeypatch: pytest.MonkeyPatch):
         def __exit__(self, *_args: object) -> None:
             pass
 
-    def fake_paginate_benchmarks(
-        _tracker: FakeTrackerService,
-        agent_name: str | None,
-        benchmark_name: str | None,
-        model: str | None,
-        dataset: str | None,
-        status: str | None,
-        order_by: str,
-        *,
-        started_by: list[str] | None = None,
-    ) -> None:
-        captured.update(
-            {
-                "agent_name": agent_name,
-                "benchmark_name": benchmark_name,
-                "model": model,
-                "dataset": dataset,
-                "status": status,
-                "order_by": order_by,
-                "started_by": started_by,
-            }
-        )
+        def fetch_benchmarks(self, request: FetchBenchmarksRequest) -> FetchBenchmarksResponse:
+            captured["request"] = request
+            return FetchBenchmarksResponse(total_count=0, benchmarks=[])
 
     monkeypatch.setattr("valkyrie.cli.main.TrackerService", FakeTrackerService)
     monkeypatch.setattr("valkyrie.cli.main.check_tracker_service_health", lambda _tracker: True)
-    monkeypatch.setattr("valkyrie.cli.main.paginate_benchmarks", fake_paginate_benchmarks)
 
     result = CliRunner().invoke(cli, ["run", "list", "--dataset", "terminal-bench-2.1"])
 
     assert result.exit_code == 0
-    assert captured["dataset"] == "terminal-bench-2.1"
+    assert captured["request"].dataset == "terminal-bench-2.1"

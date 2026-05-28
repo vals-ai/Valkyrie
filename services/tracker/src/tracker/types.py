@@ -171,7 +171,7 @@ class BenchmarkTableRow(BaseModel):
     name: str
     agent_name: str
     model: str | None
-    dataset: str | None = None
+    dataset: str = "default"
     started_by_email: str | None
     started_at: datetime
     finished_at: datetime | None
