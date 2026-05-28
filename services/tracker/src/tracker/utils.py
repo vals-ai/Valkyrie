@@ -77,25 +77,7 @@ logger = get_logger(__name__)
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
-_LIVE_DAYTONA_SANDBOX_STATES = [
-    SandboxState.CREATING,
-    SandboxState.RESTORING,
-    SandboxState.STARTED,
-    SandboxState.STOPPED,
-    SandboxState.STARTING,
-    SandboxState.STOPPING,
-    SandboxState.ERROR,
-    SandboxState.BUILD_FAILED,
-    SandboxState.PENDING_BUILD,
-    SandboxState.BUILDING_SNAPSHOT,
-    SandboxState.UNKNOWN,
-    SandboxState.PULLING_SNAPSHOT,
-    SandboxState.ARCHIVED,
-    SandboxState.ARCHIVING,
-    SandboxState.RESIZING,
-    SandboxState.SNAPSHOTTING,
-    SandboxState.FORKING,
-]
+_DELETED_DAYTONA_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED)
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -1303,10 +1285,10 @@ async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona
         ListSandboxesQuery(
             labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
             limit=10,
-            states=_LIVE_DAYTONA_SANDBOX_STATES,
         )
     ):
-        sandboxes.append(sandbox)
+        if sandbox.state not in _DELETED_DAYTONA_SANDBOX_STATES:
+            sandboxes.append(sandbox)
 
     return sandboxes
 
