@@ -184,16 +184,17 @@ def get_task_artifacts(
     session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
     _, org = user_and_org
-    _load_task_or_404(benchmark_id, task_id, org, session)
+    _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
     config = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
     cloudwatch_url: str | None = None
-    if config is not None and config.log_group and config.aws_default_region:
+    if config is not None and config.log_group and config.aws_default_region and task.started_at is not None:
+        stream_suffix = f"{int(task.started_at.timestamp() * 1_000_000):x}"
         cloudwatch_url = get_cloudwatch_url(
             benchmark_id=str(benchmark_id),
             region=config.aws_default_region,
             log_group=config.log_group,
-            task_id=task_id,
+            task_id=f"{task_id}_{stream_suffix}",
         )
 
     aws, bucket = _load_aws_or_none(org, session)
