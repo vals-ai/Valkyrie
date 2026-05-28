@@ -38,7 +38,7 @@ from tenacity import (
 from tracker.database.models import AgentCausedExitReason, AgentContractRequest
 from tracker.exceptions import InvalidSandboxConfigurationError, PtyCreationError, SandboxError
 from tracker.logging import get_logger
-from tracker.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
+from tracker.s3 import generate_presigned_get_url, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
@@ -216,7 +216,7 @@ async def upload_agent_artifacts(
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
-    presigned_url = create_presigned_url(contract_s3_key, aws, s3_bucket)
+    presigned_url = generate_presigned_get_url(contract_s3_key, aws, s3_bucket, ttl_seconds=86400)
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
     contract_dir = shlex.quote(str(bundle_path / contract.name))

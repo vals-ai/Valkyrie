@@ -235,32 +235,6 @@ def list_s3_objects(prefix: str, aws: "AWSCredentials", s3_bucket: str) -> list[
     return object_keys
 
 
-@handle_s3_error(message="Failed to create presigned URL")
-def create_presigned_url(s3_key: str, aws: "AWSCredentials", s3_bucket: str, expiration: int = 86400) -> str:
-    """
-    Create a presigned URL for an S3 object.
-
-    Args:
-        s3_key: S3 object key (path in bucket)
-        aws: AWS credentials for authentication
-        s3_bucket: S3 bucket name
-        expiration: URL expiration time in seconds (default: 1 day)
-
-    Returns:
-        Presigned URL as a string
-
-    Raises:
-        S3Error: If presigned URL creation fails
-    """
-    client = _s3_client(aws)
-    presigned_url: str = client.generate_presigned_url(
-        "get_object",
-        Params={"Bucket": s3_bucket, "Key": s3_key},
-        ExpiresIn=expiration,
-    )
-
-    return presigned_url
-
 
 @handle_s3_error(message="Failed to create console URL")
 def create_console_url(s3_key: str, region: str, s3_bucket: str) -> str:
