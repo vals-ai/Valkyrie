@@ -269,6 +269,7 @@ class Benchmark(SQLModel, table=True):
             name=self.name,
             agent_name=self.arguments.contract.name,
             model=self.arguments.contract.model,
+            dataset=self.arguments.dataset,
             started_by_email=self.started_by_email,
             started_at=self.started_at,
             finished_at=self.finished_at,

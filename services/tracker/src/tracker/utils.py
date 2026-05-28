@@ -1502,6 +1502,13 @@ def fetch_filtered_benchmark_rows(
     if request.model:
         query = query.where(arguments_json["contract"]["model"].as_string() == request.model)
 
+    if request.dataset:
+        dataset_value = arguments_json["dataset"].as_string()
+        if request.dataset == "default":
+            query = query.where(or_(dataset_value == "default", dataset_value.is_(None)))
+        else:
+            query = query.where(dataset_value == request.dataset)
+
     if request.benchmark_name:
         query = query.where(Benchmark.name == request.benchmark_name)
 
