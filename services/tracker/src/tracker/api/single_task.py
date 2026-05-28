@@ -188,13 +188,12 @@ def get_task_artifacts(
 
     config = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
     cloudwatch_url: str | None = None
-    if config is not None and config.log_group and config.aws_default_region and task.started_at is not None:
-        stream_suffix = f"{int(task.started_at.timestamp() * 1_000_000):x}"
+    if config is not None and config.log_group and config.aws_default_region:
         cloudwatch_url = get_cloudwatch_url(
             benchmark_id=str(benchmark_id),
             region=config.aws_default_region,
             log_group=config.log_group,
-            task_id=f"{task_id}_{stream_suffix}",
+            task_id=task.alias,
         )
 
     aws, bucket = _load_aws_or_none(org, session)
