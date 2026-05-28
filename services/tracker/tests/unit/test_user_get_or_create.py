@@ -1,10 +1,13 @@
+from unittest.mock import patch
 from uuid import UUID
 
+import pytest
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import get_or_create_user
-from tracker.database.models import Org
+from tracker.database.models import Org, User
 
 
 def _org(session: Session) -> Org:
@@ -42,3 +45,33 @@ def test_get_or_create_preserves_email_when_new_value_empty(database_session: Se
     second = get_or_create_user(database_session, descope_user_id="U_keepemail", email="", org=org)
     assert first.id == second.id
     assert second.email == "real@x.com"
+
+
+def test_get_or_create_handles_race_condition(database_session: Session) -> None:
+    """IntegrityError on concurrent insert is handled by re-fetching the existing row."""
+    org = _org(database_session)
+
+    # Pre-create the user so it already exists when commit() raises IntegrityError
+    pre_existing = User(org_id=org.id, email="race@x.com", descope_user_id="U_race")
+    database_session.add(pre_existing)
+    database_session.commit()
+    database_session.refresh(pre_existing)
+
+    original_commit = database_session.commit
+
+    call_count = 0
+
+    def _commit_that_raises_once() -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Simulate another worker winning the race
+            database_session.rollback()
+            raise IntegrityError("duplicate key", params=None, orig=Exception("unique constraint"))
+        return original_commit()
+
+    with patch.object(database_session, "commit", side_effect=_commit_that_raises_once):
+        result = get_or_create_user(database_session, descope_user_id="U_race", email="race@x.com", org=org)
+
+    assert result.id == pre_existing.id
+    assert result.descope_user_id == "U_race"

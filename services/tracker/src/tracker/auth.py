@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 
 from descope import AuthException, DescopeClient
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
 from tracker.config import AUTH_REQUIRED, DESCOPE_PROJECT_ID
@@ -87,9 +88,17 @@ def get_or_create_user(
 
     user = User(org_id=org.id, email=email, descope_user_id=descope_user_id)
     session.add(user)
-    session.commit()
-    session.refresh(user)
-    return user
+    try:
+        session.commit()
+        session.refresh(user)
+        return user
+    except IntegrityError:
+        session.rollback()
+        # Another worker won the race — re-fetch.
+        existing = session.exec(select(User).where(User.descope_user_id == descope_user_id)).first()
+        if existing is None:
+            raise  # Truly unexpected
+        return existing
 
 
 def forward_tracker_api_key(
