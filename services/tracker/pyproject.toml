@@ -12,6 +12,7 @@ dependencies = [
     "moto[s3]",
     "fastapi[standard]>=0.135.3",
     "daytona>=0.180.0",
+    "starlette>=1.0.1",
     "sqlmodel>=0.0.38",
     "psycopg2-binary>=2.9.11",
     "httpx>=0.28.1",
