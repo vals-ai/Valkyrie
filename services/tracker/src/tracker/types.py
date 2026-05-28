@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 from benchmark_service.client import BenchmarkServiceClient
 
-from pydantic import BaseModel, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 
 
 def _serialize_utc(value: datetime | None) -> str | None:
@@ -167,8 +167,8 @@ class FetchBenchmarksRequest(BaseModel):
 
     # Pagination — cursor preferred, offset/limit kept for backward compat
     cursor: str | None = None
-    limit: int = 50
-    offset: int = 0
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
 
 
 class BenchmarkTableRow(BaseModel):
