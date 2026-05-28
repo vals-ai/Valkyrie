@@ -24,6 +24,7 @@ def _serialize_utc(value: datetime | None) -> str | None:
         value = value.replace(tzinfo=timezone.utc)
     return value.isoformat()
 
+
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
@@ -177,6 +178,7 @@ class BenchmarkTableRow(BaseModel):
     # Absent keys mean zero; sum equals total_tasks.
     task_state_counts: dict[str, int] = {}
     run_by_email: str | None = None
+    final_score: float | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -245,9 +247,7 @@ class OrgConfigResponse(BaseModel):
             log_group=config.log_group,
             log_retention_policy=config.log_retention_policy,
             webhook=MASKED_SECRET if config.webhook is not None else None,
-            benchmark_services=[
-                BenchmarkServiceEntry(**s) for s in (config.benchmark_services or [])
-            ],
+            benchmark_services=[BenchmarkServiceEntry(**s) for s in (config.benchmark_services or [])],
         )
 
 
