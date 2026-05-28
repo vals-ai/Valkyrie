@@ -12,7 +12,9 @@ if TYPE_CHECKING:
 
 from benchmark_service.client import BenchmarkServiceClient
 
-from pydantic import BaseModel, Field, field_serializer
+from urllib.parse import urlparse
+
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 
 def _serialize_utc(value: datetime | None) -> str | None:
@@ -350,6 +352,15 @@ class OrgConfigUpdate(BaseModel):
     log_retention_policy: str | None = None
     webhook: str | None = None
     benchmark_services: list[BenchmarkServiceEntry] = []
+
+    @field_validator("webhook")
+    @classmethod
+    def _validate_webhook_scheme(cls, value: str | None) -> str | None:
+        if value is not None and value != MASKED_SECRET:
+            parsed = urlparse(value)
+            if parsed.scheme != "https":
+                raise ValueError("webhook URL must use https://")
+        return value
 
     def apply_to(self, config: OrgConfig) -> None:
         config.aws_access_key_id = self.aws_access_key_id
