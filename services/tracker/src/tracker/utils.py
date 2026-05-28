@@ -78,6 +78,7 @@ _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 _DELETED_DAYTONA_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED)
+_DAYTONA_LIST_PAGE_SIZE = 100
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -1283,7 +1284,7 @@ async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona
     async for sandbox in daytona_client.list(
         ListSandboxesQuery(
             labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
-            limit=10,
+            limit=_DAYTONA_LIST_PAGE_SIZE,
         )
     ):
         if sandbox.state not in _DELETED_DAYTONA_SANDBOX_STATES:
@@ -1316,7 +1317,8 @@ async def force_stop_sandboxes(
 
         # Iterate through each running sandbox and stop it, collecting error messages
         results: dict[str, str | None] = {}
-        async for sandbox in fetch_sandboxes(benchmark_row, daytona_client):
+        sandboxes = [sandbox async for sandbox in fetch_sandboxes(benchmark_row, daytona_client)]
+        for sandbox in sandboxes:
             result = await stop_sandbox(sandbox, daytona_client)
 
             results[sandbox.name] = result
