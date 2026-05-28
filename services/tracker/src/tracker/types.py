@@ -248,7 +248,7 @@ class OrgConfigResponse(BaseModel):
     @classmethod
     def from_org_config(cls, config: OrgConfig) -> OrgConfigResponse:
         return cls(
-            aws_access_key_id=MASKED_SECRET,
+            aws_access_key_id=config.aws_access_key_id,
             aws_secret_access_key=MASKED_SECRET,
             aws_default_region=config.aws_default_region,
             s3_bucket=config.s3_bucket,
@@ -363,8 +363,7 @@ class OrgConfigUpdate(BaseModel):
         return value
 
     def apply_to(self, config: OrgConfig) -> None:
-        if self.aws_access_key_id != MASKED_SECRET:
-            config.aws_access_key_id = self.aws_access_key_id
+        config.aws_access_key_id = self.aws_access_key_id
         if self.aws_secret_access_key != MASKED_SECRET:
             config.aws_secret_access_key = self.aws_secret_access_key
         config.aws_default_region = self.aws_default_region

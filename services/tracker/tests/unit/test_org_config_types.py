@@ -17,7 +17,7 @@ def test_response_masks_secrets():
     assert response.aws_secret_access_key == MASKED_SECRET
     assert response.daytona_secret_name == MASKED_SECRET
     assert response.webhook == MASKED_SECRET
-    assert response.aws_access_key_id == MASKED_SECRET
+    assert response.aws_access_key_id == "AKIA"
     assert response.s3_bucket == "b"
 
 
@@ -57,26 +57,6 @@ def test_update_apply_replaces_non_secret_fields():
     assert config.aws_default_region == "us-east-2"
     assert config.s3_bucket == "new"
     assert config.daytona_secret_name == "new-dt"
-
-
-def test_update_masked_access_key_id_preserves_value():
-    config = OrgConfig(
-        org_id=TEST_ORG_ID,
-        aws_access_key_id="AKIAORIGINAL",
-        aws_secret_access_key="s",
-        aws_default_region="us-east-2",
-        s3_bucket="b",
-        daytona_secret_name="d",
-    )
-    update = OrgConfigUpdate(
-        aws_access_key_id=MASKED_SECRET,
-        aws_secret_access_key=MASKED_SECRET,
-        aws_default_region="us-east-2",
-        s3_bucket="b",
-        daytona_secret_name=MASKED_SECRET,
-    )
-    update.apply_to(config)
-    assert config.aws_access_key_id == "AKIAORIGINAL"
 
 
 def test_update_masked_sentinel_preserves_secret():
