@@ -36,7 +36,6 @@ def test_observability_package_reexports_app_api() -> None:
         "gauge",
         "incr",
         "retry_callback",
-        "set_pty_context",
         "set_sandbox_context",
     ):
         assert callable(getattr(observability, name))
@@ -206,54 +205,6 @@ def test_set_sandbox_context_failures_are_logged_without_propagating(monkeypatch
     observability.set_sandbox_context(SimpleNamespace(id="sandbox-123", name="bench-task-1"))
 
     assert warnings[0][0] == "set_sandbox_context failed: %s: %s"
-    assert warnings[0][1][:1] == ("RuntimeError",)
-    assert str(warnings[0][1][1]) == "scope closed"
-
-
-def test_set_pty_context_sets_session_and_attempt_tags(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    tags: dict[str, str] = {}
-
-    def fake_set_tag(key: str, value: str) -> None:
-        tags[key] = value
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", fake_set_tag)
-
-    observability.set_pty_context(session_id="sandbox:pty-123", attempt=3)
-
-    assert tags == {
-        "pty_session_id": "sandbox:pty-123",
-        "pty_attempt": "3",
-    }
-
-
-def test_set_pty_context_omits_attempt_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    tags: dict[str, str] = {}
-
-    def fake_set_tag(key: str, value: str) -> None:
-        tags[key] = value
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", fake_set_tag)
-
-    observability.set_pty_context(session_id="sandbox:pty-123")
-
-    assert tags == {"pty_session_id": "sandbox:pty-123"}
-
-
-def test_set_pty_context_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    warnings: list[tuple[str, tuple[object, ...]]] = []
-
-    def fake_warning(message: str, *args: object) -> None:
-        warnings.append((message, args))
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock(side_effect=RuntimeError("scope closed")))
-    monkeypatch.setattr(observability.logger, "warning", fake_warning)
-
-    observability.set_pty_context(session_id="sandbox:pty-123")
-
-    assert warnings[0][0] == "set_pty_context failed: %s: %s"
     assert warnings[0][1][:1] == ("RuntimeError",)
     assert str(warnings[0][1][1]) == "scope closed"
 

@@ -9,7 +9,7 @@ from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint, Log
 
 import tracker.observability.sentry as sentry_module
-from tracker.exceptions import PtyCreationError, SSLConnectionError, SandboxError
+from tracker.exceptions import SSLConnectionError, SandboxError
 
 
 BeforeSend = Callable[[Event, Hint], Event | None]
@@ -22,22 +22,6 @@ def _before_send() -> BeforeSend:
 
 def _before_send_log() -> BeforeSendLog:
     return cast(BeforeSendLog, getattr(sentry_module, "_before_send_log"))
-
-
-def test_before_send_fingerprints_pty_creation_errors() -> None:
-    exc = PtyCreationError("Failed to create PTY session after 5 attempts: sandbox abc")
-    event = _before_send()({}, {"exc_info": (type(exc), exc, None)})
-
-    assert event is not None
-    assert event.get("fingerprint") == ["{{ default }}", "PtyCreationError"]
-
-
-def test_before_send_fingerprints_pty_reconnect_sandbox_errors() -> None:
-    exc = SandboxError("PTY reconnect failed after 10 attempts for sandbox abc")
-    event = _before_send()({}, {"exc_info": (type(exc), exc, None)})
-
-    assert event is not None
-    assert event.get("fingerprint") == ["{{ default }}", "pty_reconnect_failed"]
 
 
 def test_before_send_fingerprints_ssl_connection_errors() -> None:

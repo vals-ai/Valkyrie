@@ -1,6 +1,6 @@
 from asyncio import Semaphore
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -12,7 +12,7 @@ from sqlmodel import Session
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
-from tracker.exceptions import PtyCreationError, SandboxSetupError
+from tracker.exceptions import SandboxSetupError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import process_task, start_benchmark_request_to_benchmark
 
@@ -22,7 +22,7 @@ class TestPtyRetry:
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     def test_process_task_retry_decorator_uses_observability_retry_callback(self) -> None:
-        before_sleep = process_task.retry.before_sleep
+        before_sleep = cast(Any, process_task).retry.before_sleep
 
         assert before_sleep is not None
         assert callable(before_sleep)
@@ -30,7 +30,7 @@ class TestPtyRetry:
     @pytest.mark.parametrize(
         "fail_target,error",
         [
-            ("tracker.utils.run_agent", PtyCreationError("Failed to create PTY session after 5 attempts")),
+            ("tracker.utils.run_agent", SandboxSetupError("Failed to create command stream")),
             ("tracker.utils.upload_agent_artifacts", SandboxSetupError("Command failed with exit code 35")),
         ],
     )
@@ -48,7 +48,7 @@ class TestPtyRetry:
         process_task should delete the sandbox, create a fresh one, and complete successfully.
 
         Test Cases:
-            - SandboxSetupError subclass is raised on the first attempt (PtyCreationError or SandboxSetupError)
+            - SandboxSetupError is raised on the first attempt
             - process_task retries with a new sandbox
             - Task ends in FINISHED state after the retry succeeds
             - The sandbox context manager is entered twice (one per attempt)

@@ -11,7 +11,7 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.integrations.otlp import OTLPIntegration
 from sentry_sdk.types import Event, Hint, Log
 
-from tracker.exceptions import PtyCreationError, SSLConnectionError, SandboxError
+from tracker.exceptions import SSLConnectionError
 from tracker.logging.context import get_context_tags
 
 logger = logging.getLogger(__name__)
@@ -25,11 +25,7 @@ def _before_send(
     exc_info = hint.get("exc_info")
     if exc_info:
         exc = exc_info[1]
-        if isinstance(exc, PtyCreationError):
-            event["fingerprint"] = ["{{ default }}", "PtyCreationError"]
-        elif isinstance(exc, SandboxError) and "PTY reconnect failed" in str(exc):
-            event["fingerprint"] = ["{{ default }}", "pty_reconnect_failed"]
-        elif isinstance(exc, SSLConnectionError):
+        if isinstance(exc, SSLConnectionError):
             event["fingerprint"] = ["{{ default }}", "SSLConnectionError"]
 
     tags = event.setdefault("tags", {})
@@ -119,13 +115,3 @@ def set_sandbox_context(sandbox: Any, *, image: str | None = None) -> None:
         sentry_sdk.set_context("sandbox", context)
     except Exception as e:
         logger.warning("set_sandbox_context failed: %s: %s", type(e).__name__, e)
-
-
-def set_pty_context(*, session_id: str, attempt: int | None = None) -> None:
-    """Attach PTY identifiers to Sentry tags, not metric attributes."""
-    try:
-        sentry_sdk.set_tag("pty_session_id", session_id)
-        if attempt is not None:
-            sentry_sdk.set_tag("pty_attempt", str(attempt))
-    except Exception as e:
-        logger.warning("set_pty_context failed: %s: %s", type(e).__name__, e)
