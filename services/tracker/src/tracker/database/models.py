@@ -155,9 +155,7 @@ class Benchmark(SQLModel, table=True):
     name: str
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
-    status: BenchmarkStatus = Field(
-        default=BenchmarkStatus.IN_PROGRESS
-    )  # TODO: Automatically set to finished when all tasks are in a finished state or error state
+    status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     run_by_id: UUID | None = Field(default=None, foreign_key="user.id", index=True)
 
     error_message: str | None = Field(default=None)

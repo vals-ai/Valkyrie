@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from tracker.database.models import OrgConfig
 
 from benchmark_service.client import BenchmarkServiceClient
-from datetime import timezone
 
 from pydantic import BaseModel, field_serializer
 

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import collections.abc
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from descope import AuthException, DescopeClient
 from fastapi import Depends, HTTPException, Request
@@ -220,7 +219,7 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
 def resolve_registry_auth_headers(
     custom_benchmark_service: str | None,
     org_config: object,
-    secret_resolver: collections.abc.Callable[[str], str],
+    secret_resolver: Callable[[str], str],
 ) -> dict[str, str]:
     """Look up auth header for a benchmark service URL in OrgConfig.benchmark_services.
 
