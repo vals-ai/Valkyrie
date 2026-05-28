@@ -18,7 +18,7 @@ import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
 from daytona.common.errors import DaytonaNotFoundError
-from fastapi import Request
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy import JSON, literal, tuple_, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 from tenacity import before_sleep_log, retry_if_exception_type, stop_after_attempt, wait_fixed
@@ -27,6 +27,7 @@ from tenacity import retry as tenacity_retry
 from tracker._lambda import invoke_lambda
 from tracker.cloudwatch import cloudwatch_stream, create_benchmark_group
 from tracker.config import broker
+from tracker.auth import get_current_user_and_org
 from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
@@ -34,11 +35,13 @@ from tracker.database.models import (
     EvaluationResult,
     FinalEvaluation,
     Org,
+    OrgConfig,
     Task,
     TaskStatus,
+    User,
 )
 from tracker.database.scoping import scoped_select
-from tracker.database.session import engine
+from tracker.database.session import engine, get_session
 from tracker.exceptions import PtyCreationError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -1350,20 +1353,40 @@ async def upload_final_view(
     return s3_key
 
 
-def fetch_harness_config(request: Request) -> HarnessConfig:
-    """Constructs HarnessConfig from X-Harness-* request headers."""
+def fetch_harness_config(
+    request: Request,
+    session: Session = Depends(get_session),
+    user_and_org: tuple[User | None, Org] = Depends(get_current_user_and_org),
+) -> HarnessConfig:
+    """Constructs HarnessConfig from X-Harness-* request headers.
+
+    Falls back to the caller's OrgConfig (so web-UI requests without those headers
+    still resolve a usable config).
+    """
     prefix = "x-harness-"
     flat = {
         key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
     }
+
+    _, org = user_and_org
+    cfg = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
+
+    def pick(header_key: str, fallback: str | None) -> str:
+        value = flat.get(header_key)
+        if value:
+            return value
+        if fallback:
+            return fallback
+        raise HTTPException(status_code=400, detail=f"Missing harness config field '{header_key}' and no OrgConfig fallback")
+
     return HarnessConfig(
         aws=AWSCredentials(
-            aws_access_key_id=flat["aws_access_key_id"],
-            aws_secret_access_key=flat["aws_secret_access_key"],
-            aws_default_region=flat["aws_default_region"],
+            aws_access_key_id=pick("aws_access_key_id", cfg.aws_access_key_id if cfg else None),
+            aws_secret_access_key=pick("aws_secret_access_key", cfg.aws_secret_access_key if cfg else None),
+            aws_default_region=pick("aws_default_region", cfg.aws_default_region if cfg else None),
         ),
-        s3_bucket=flat["s3_bucket"],
-        log_group=flat["log_group"],
-        log_retention_policy=int(flat["log_retention_policy"]),
-        daytona_secret_name=flat["daytona_secret_name"],
+        s3_bucket=pick("s3_bucket", cfg.s3_bucket if cfg else None),
+        log_group=flat.get("log_group") or (cfg.log_group if cfg else "") or "",
+        log_retention_policy=int(flat.get("log_retention_policy") or (cfg.log_retention_policy if cfg else 30) or 30),
+        daytona_secret_name=flat.get("daytona_secret_name") or (cfg.daytona_secret_name if cfg else "") or "",
     )
