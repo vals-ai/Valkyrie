@@ -346,9 +346,8 @@ async def process_task(
             return {task_id: None}
 
     # Setup logging infrastructure before try block so it's always available
-    # Suffix is required to version control streams, never delete between retires
-    stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
-    stream_key: str = f"{benchmark_id}:{task_id}_{stream_suffix}"
+    # Suffix is required to version control streams, never delete between retries
+    stream_key: str = f"{benchmark_id}:{task_row.alias}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     last_log_time: float = time.monotonic()
@@ -1351,6 +1350,37 @@ async def upload_final_view(
     )
 
     return s3_key
+
+
+def _backfill_harness_config_from_org_config(hc: HarnessConfig, org_cfg: OrgConfig | None) -> HarnessConfig:
+    """Backfill empty HarnessConfig fields from OrgConfig.
+
+    Used when the caller (e.g. web UI) sends placeholder values and the real
+    credentials should come from the organisation's stored configuration.
+    """
+    if org_cfg is None:
+        return hc
+
+    aws_missing = not (hc.aws.aws_access_key_id and hc.aws.aws_secret_access_key and hc.aws.aws_default_region)
+
+    if not aws_missing and hc.s3_bucket:
+        return hc
+
+    return hc.model_copy(
+        update={
+            "aws": hc.aws.model_copy(
+                update={
+                    "aws_access_key_id": hc.aws.aws_access_key_id or (org_cfg.aws_access_key_id or ""),
+                    "aws_secret_access_key": hc.aws.aws_secret_access_key or (org_cfg.aws_secret_access_key or ""),
+                    "aws_default_region": hc.aws.aws_default_region or (org_cfg.aws_default_region or ""),
+                }
+            ),
+            "s3_bucket": hc.s3_bucket or (org_cfg.s3_bucket or ""),
+            "log_group": hc.log_group or (org_cfg.log_group or ""),
+            "log_retention_policy": hc.log_retention_policy or int(org_cfg.log_retention_policy or 30),
+            "daytona_secret_name": hc.daytona_secret_name or (org_cfg.daytona_secret_name or ""),
+        }
+    )
 
 
 def fetch_harness_config(

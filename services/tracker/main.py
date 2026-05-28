@@ -44,8 +44,8 @@ from tracker.s3 import (
     copy_agent_to_benchmark,
     create_benchmark_url,
     create_console_url,
-    create_presigned_url,
     download_from_s3_stream,
+    generate_presigned_get_url,
     list_s3_objects,
     s3_object_exists,
 )
@@ -69,6 +69,7 @@ from tracker.types import (
 from tracker.utils import (
     BenchmarkContext,
     YieldingWriter,
+    _backfill_harness_config_from_org_config,
     commit_benchmark_error,
     create_final_view,
     fetch_filtered_benchmark_rows,
@@ -237,27 +238,9 @@ async def start_benchmark(
     org_cfg = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
 
     # Backfill harness_config from OrgConfig when the caller (e.g. web UI) sends placeholders.
-    if org_cfg is not None:
-        hc = request.harness_config
-        aws_missing = not (hc.aws.aws_access_key_id and hc.aws.aws_secret_access_key and hc.aws.aws_default_region)
-        if aws_missing or not hc.s3_bucket:
-            patched = hc.model_copy(
-                update={
-                    "aws": hc.aws.model_copy(
-                        update={
-                            "aws_access_key_id": hc.aws.aws_access_key_id or (org_cfg.aws_access_key_id or ""),
-                            "aws_secret_access_key": hc.aws.aws_secret_access_key
-                            or (org_cfg.aws_secret_access_key or ""),
-                            "aws_default_region": hc.aws.aws_default_region or (org_cfg.aws_default_region or ""),
-                        }
-                    ),
-                    "s3_bucket": hc.s3_bucket or (org_cfg.s3_bucket or ""),
-                    "log_group": hc.log_group or (org_cfg.log_group or ""),
-                    "log_retention_policy": hc.log_retention_policy or int(org_cfg.log_retention_policy or 30),
-                    "daytona_secret_name": hc.daytona_secret_name or (org_cfg.daytona_secret_name or ""),
-                }
-            )
-            request = request.model_copy(update={"harness_config": patched})
+    request = request.model_copy(
+        update={"harness_config": _backfill_harness_config_from_org_config(request.harness_config, org_cfg)}
+    )
 
     if org_cfg is not None and request.custom_benchmark_service:
 
@@ -409,7 +392,7 @@ async def retrieve_results(
         s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
 
         https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"
-        presigned_url = create_presigned_url(s3_key, harness_config.aws, harness_config.s3_bucket)
+        presigned_url = generate_presigned_get_url(s3_key, harness_config.aws, harness_config.s3_bucket, ttl_seconds=86400)
         console_url = create_console_url(s3_key, harness_config.aws.aws_default_region, harness_config.s3_bucket)
 
         return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)
