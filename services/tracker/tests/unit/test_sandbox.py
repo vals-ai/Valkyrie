@@ -1,6 +1,6 @@
 import asyncio
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -29,10 +29,16 @@ _reconnect_and_wait_pty = getattr(sandbox_module, "_reconnect_and_wait_pty")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 _wait_for_pty = getattr(sandbox_module, "_wait_for_pty")
 _fetch_sandboxes = getattr(utils_module, "fetch_sandboxes")
+_list_sandboxes = getattr(utils_module, "_list_sandboxes")  # pyright: ignore[reportPrivateUsage]
 
 
 def _ignore_pty_data(_data: bytes) -> None:
     pass
+
+
+async def _async_iter(items: list[Any]) -> AsyncGenerator[Any, None]:
+    for item in items:
+        yield item
 
 
 class TestPtyHandshakeSemaphore:
@@ -462,12 +468,36 @@ class TestAgentOutputTelemetry:
         daytona_client.list.side_effect = DaytonaError("transient")
 
         with pytest.raises(DaytonaError):
-            async for _ in _fetch_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
-                benchmark, daytona_client
-            ):
-                pass
+            await _list_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(benchmark, daytona_client)
 
         assert daytona_client.list.call_count == 1
+
+    async def test_fetch_sandboxes_retries_rate_limit_daytona_errors(self) -> None:
+        benchmark = Mock()
+        benchmark.name = "benchmark"
+        benchmark.id = "benchmark-id"
+        active_sandbox = Mock(state=SandboxState.STARTED)
+        deleted_sandbox = Mock(state=SandboxState.DESTROYED)
+        daytona_client = Mock()
+        daytona_client.list.side_effect = [
+            DaytonaRateLimitError("rate limited"),
+            _async_iter([active_sandbox, deleted_sandbox]),
+        ]
+
+        async def test_list_sandboxes(benchmark_arg: Any, daytona_client_arg: Any) -> list[Any]:
+            return await _list_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
+                benchmark_arg, daytona_client_arg
+            )
+
+        original_list_sandboxes = utils_module._list_sandboxes  # pyright: ignore[reportPrivateUsage]
+        try:
+            utils_module._list_sandboxes = test_list_sandboxes  # pyright: ignore[reportPrivateUsage]
+            sandboxes = [sandbox async for sandbox in _fetch_sandboxes(benchmark, daytona_client)]
+        finally:
+            utils_module._list_sandboxes = original_list_sandboxes  # pyright: ignore[reportPrivateUsage]
+
+        assert sandboxes == [active_sandbox]
+        assert daytona_client.list.call_count == 2
 
     def test_daytona_retry_callback_emits_rate_limit_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []

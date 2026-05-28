@@ -1280,13 +1280,21 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
     before_sleep=daytona_retry_callback("valkyrie.sandbox.list", op="sandbox.list"),
     reraise=True,
 )
-async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
-    async for sandbox in daytona_client.list(
-        ListSandboxesQuery(
-            labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
-            limit=_DAYTONA_LIST_PAGE_SIZE,
+async def _list_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> Sequence[AsyncSandbox]:
+    return [
+        sandbox
+        async for sandbox in daytona_client.list(
+            ListSandboxesQuery(
+                labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
+                limit=_DAYTONA_LIST_PAGE_SIZE,
+            )
         )
-    ):
+    ]
+
+
+async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
+    sandboxes = await _list_sandboxes(benchmark_row, daytona_client)
+    for sandbox in sandboxes:
         if sandbox.state not in _DELETED_DAYTONA_SANDBOX_STATES:
             yield sandbox
 
