@@ -95,7 +95,6 @@ _LIVE_DAYTONA_SANDBOX_STATES = [
     SandboxState.RESIZING,
     SandboxState.SNAPSHOTTING,
     SandboxState.FORKING,
-    SandboxState.UNKNOWN_DEFAULT_OPEN_API,
 ]
 
 
