@@ -23,6 +23,7 @@ from aws_cdk.aws_ecr_assets import Platform
 from constants import (
     POSTGRES_DB,
     WORKER_CPU,
+    WORKER_LOG_GROUP_NAME,
     WORKER_MAX_TASKS,
     WORKER_MEMORY,
     WORKER_MIN_TASKS,
@@ -117,6 +118,7 @@ class WorkerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "WorkerLogGroup",
+                    log_group_name=WORKER_LOG_GROUP_NAME,
                     retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),

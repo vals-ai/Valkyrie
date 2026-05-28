@@ -17,6 +17,7 @@ ALLOWED_IPS: list[tuple[str, str]] = [
 NAMESPACE = "local"
 
 # Tracker Service
+TRACKER_LOG_GROUP_NAME = "/valkyrie/tracker"
 TRACKER_CPU = 1024
 TRACKER_MEMORY = 2048
 TRACKER_DOMAIN = "benchmark-tracker.vals.ai"
@@ -40,6 +41,7 @@ POSTGRES_PORT = 5432
 ELASTICACHE_NODE_TYPE = "cache.t4g.micro"
 
 # Worker Service
+WORKER_LOG_GROUP_NAME = "/valkyrie/worker"
 WORKER_CPU = 4096
 WORKER_MEMORY = 8192
 WORKER_MIN_TASKS = 2
