@@ -47,6 +47,14 @@ class AWSCredentials(BaseModel, frozen=True):
     aws_secret_access_key: str
     aws_default_region: str
 
+    @classmethod
+    def from_org_config(cls, cfg: "OrgConfig") -> "AWSCredentials":
+        return cls(
+            aws_access_key_id=cfg.aws_access_key_id,
+            aws_secret_access_key=cfg.aws_secret_access_key,
+            aws_default_region=cfg.aws_default_region,
+        )
+
 
 class HarnessConfig(BaseModel):
     aws: AWSCredentials
@@ -401,3 +409,15 @@ class AgentEntry(BaseModel):
 
 class AgentsResponse(BaseModel):
     agents: list[AgentEntry]
+
+
+class AgentDownloadURLResponse(BaseModel):
+    name: str
+    download_url: str
+    expires_in: int
+
+
+class TaskArtifactsResponse(BaseModel):
+    cloudwatch_url: str | None
+    agent_output_url: str | None
+    agent_output_expires_in: int | None

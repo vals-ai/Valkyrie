@@ -5,7 +5,6 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 from sqlmodel import Session, select
 
 from tracker.auth import get_current_user_and_org
@@ -31,13 +30,8 @@ from tracker.types import (
     FilesResponse,
     PresignedUrlResponse,
     SingleTaskResponse,
+    TaskArtifactsResponse,
 )
-
-
-class TaskArtifactsResponse(BaseModel):
-    cloudwatch_url: str | None
-    agent_output_url: str | None
-    agent_output_expires_in: int | None
 
 router = APIRouter()
 
@@ -64,19 +58,15 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
-def _load_aws_or_none(org: Org, session: Session) -> tuple[AWSCredentials | None, str | None]:
+def _load_aws_or_none(org: Org, session: Session) -> tuple[AWSCredentials | None, str | None, OrgConfig | None]:
     config = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
 
     if config is None:
-        return None, None
+        return None, None, None
 
-    aws = AWSCredentials(
-        aws_access_key_id=config.aws_access_key_id,
-        aws_secret_access_key=config.aws_secret_access_key,
-        aws_default_region=config.aws_default_region,
-    )
+    aws = AWSCredentials.from_org_config(config)
 
-    return aws, config.s3_bucket
+    return aws, config.s3_bucket, config
 
 
 @router.get(
@@ -123,7 +113,7 @@ def list_task_files(
     _, org = user_and_org
     _load_task_or_404(benchmark_id, task_id, org, session)
 
-    aws, bucket = _load_aws_or_none(org, session)
+    aws, bucket, _ = _load_aws_or_none(org, session)
 
     if aws is None or bucket is None:
         return FilesResponse(files=[])
@@ -162,7 +152,7 @@ def get_file_presigned_url(
     if ".." in key or not key.startswith(prefix):
         raise HTTPException(status_code=400, detail="Key is outside task's prefix")
 
-    aws, bucket = _load_aws_or_none(org, session)
+    aws, bucket, _ = _load_aws_or_none(org, session)
 
     if aws is None or bucket is None:
         raise HTTPException(status_code=400, detail="Org has no S3 configuration")
@@ -186,7 +176,8 @@ def get_task_artifacts(
     _, org = user_and_org
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
-    config = session.exec(select(OrgConfig).where(OrgConfig.org_id == org.id)).first()
+    aws, bucket, config = _load_aws_or_none(org, session)
+
     cloudwatch_url: str | None = None
     if config is not None and config.log_group and config.aws_default_region:
         cloudwatch_url = get_cloudwatch_url(
@@ -196,7 +187,6 @@ def get_task_artifacts(
             task_id=task.alias,
         )
 
-    aws, bucket = _load_aws_or_none(org, session)
     agent_output_url: str | None = None
     ttl_seconds: int | None = None
     if aws is not None and bucket is not None:
