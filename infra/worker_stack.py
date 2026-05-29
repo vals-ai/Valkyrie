@@ -78,8 +78,12 @@ class WorkerStack(Stack):
         shared_env = {
             "BROKER_ENVIRONMENT": "production",
             "AWS_S3_BUCKET": bucket.bucket_name,
+            "AWS_DEFAULT_REGION": self.region,
             "ENVIRONMENT": "production",
+            "DAYTONA_SECRET_NAME": os.environ.get("DAYTONA_SECRET_NAME", ""),
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+            "LOG_GROUP": os.environ.get("LOG_GROUP", "benchmarks"),
+            "LOG_RETENTION_POLICY": os.environ.get("LOG_RETENTION_POLICY", "365"),
         }
 
         db_env = {
@@ -107,6 +111,24 @@ class WorkerStack(Stack):
             cpu=WORKER_CPU,
             memory_limit_mib=WORKER_MEMORY,
             runtime_platform=_ARM64_PLATFORM,
+        )
+        bucket.grant_read_write(worker_task_def.task_role)
+        worker_task_def.task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=[
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "logs:PutRetentionPolicy",
+                ],
+                resources=["*"],
+            )
+        )
+        worker_task_def.task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=["*"],
+            )
         )
 
         worker_task_def.add_container(

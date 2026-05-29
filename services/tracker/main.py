@@ -70,6 +70,7 @@ from tracker.utils import (
     commit_benchmark_error,
     create_benchmark_service_client,
     create_final_view,
+    deployed_harness_config,
     fetch_filtered_benchmark_rows,
     fetch_harness_config,
     force_stop_sandboxes,
@@ -208,12 +209,16 @@ async def start_benchmark(
     """
     request = request.model_copy(
         update={
+            "harness_config": request.harness_config or deployed_harness_config(),
             "service_headers": forward_tracker_api_key(
                 request.service_headers,
                 http_request.headers.get("x-api-key"),
-            )
+            ),
         }
     )
+    if request.harness_config is None:
+        raise HTTPException(status_code=400, detail="Missing harness config")
+    harness_config = request.harness_config
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
@@ -249,8 +254,8 @@ async def start_benchmark(
         await copy_agent_to_benchmark(
             str(benchmark_row.id),
             request.contract.name,
-            request.harness_config.aws,
-            request.harness_config.s3_bucket,
+            harness_config.aws,
+            harness_config.s3_bucket,
         )
     except BenchmarkServiceUnauthenticatedError:
         raise
@@ -282,10 +287,10 @@ async def start_benchmark(
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
         cloudwatch_url=get_benchmark_log_url(
-            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group
+            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.log_group
         ),
         s3_bucket_url=create_benchmark_url(
-            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
+            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
     )
 

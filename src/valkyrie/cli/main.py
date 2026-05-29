@@ -114,55 +114,39 @@ def init() -> None:
     )
 
     if mode == "hosted":
-        api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")
-        current_config["api_key"] = api_key
-
-        # Validate the key and create/confirm org (uses default tracker URL)
-        try:
-            result = TrackerService.init_org(api_key)
-        except TrackerServiceError as e:
-            raise click.ClickException(str(e))
-        click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
-
-        if result.get("email_claim_missing"):
-            click.echo(
-                click.style(
-                    "⚠  This access key is missing the 'email' custom claim. "
-                    "Run attribution for runs you start will be empty.\n"
-                    "   Ask your Vals admin to add an 'email' (and optionally 'name') "
-                    "custom claim to this key.",
-                    fg="yellow",
-                )
-            )
-
-    # Both modes require AWS credentials
-    collected_keys: dict[str, str] = {}
-    for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
-        sourced = current_config.get(key) or os.environ.get(key)
-        if sourced:
-            click.echo(f"  {key}: sourced from {'environment' if not current_config.get(key) else 'existing config'}")
-            collected_keys[key] = sourced
-            continue
-
-        if not default:
-            value = click.prompt(
-                f"  {key} (required, Enter to cancel)",
-                default="",
-                show_default=False,
-            )
-
-            if not value.strip():
-                click.echo(click.style(f"\n  {key} is required. Aborting.", fg="red"))
-                raise click.Abort()
-        else:
-            value = click.prompt(f"  {key}", default=str(default))
-
-        collected_keys[key] = value
-
-    current_config.update(collected_keys)
-
-    if mode != "hosted":
         current_config.pop("api_key", None)
+
+    if mode == "self-hosted":
+        collected_keys: dict[str, str] = {}
+        for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
+            sourced = current_config.get(key) or os.environ.get(key)
+            if sourced:
+                click.echo(
+                    f"  {key}: sourced from {'environment' if not current_config.get(key) else 'existing config'}"
+                )
+                collected_keys[key] = sourced
+                continue
+
+            if not default:
+                value = click.prompt(
+                    f"  {key} (required, Enter to cancel)",
+                    default="",
+                    show_default=False,
+                )
+
+                if not value.strip():
+                    click.echo(click.style(f"\n  {key} is required. Aborting.", fg="red"))
+                    raise click.Abort()
+            else:
+                value = click.prompt(f"  {key}", default=str(default))
+
+            collected_keys[key] = value
+
+        current_config.update(collected_keys)
+        current_config.pop("api_key", None)
+    else:
+        for key in _REQUIRED_ENVIRONMENT_VARIABLES:
+            current_config.pop(key, None)
 
     CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
 

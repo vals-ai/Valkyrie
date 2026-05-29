@@ -151,6 +151,56 @@ class TestFastapiServer:
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
+    async def test_start_benchmark_uses_deployed_harness_config_when_request_omits_credentials(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+    ):
+        """Hosted start requests should use tracker deploy-time credentials.
+
+        Test cases:
+            - Request without harness_config starts successfully
+            - Worker payload receives the deployed harness_config
+        """
+        deployed_config = HarnessConfig(
+            aws=AWSCredentials(
+                aws_access_key_id="deployed-access-key",
+                aws_secret_access_key="deployed-secret-key",
+                aws_default_region="us-west-2",
+            ),
+            s3_bucket="deployed-bucket",
+            log_group="deployed-log-group",
+            log_retention_policy=14,
+            daytona_secret_name="deployed-daytona-secret",
+        )
+        captured_request_json: dict[str, Any] = {}
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_request_json.update(kwargs["start_benchmark_request_json"])
+
+        monkeypatch.setattr("main.deployed_harness_config", lambda: deployed_config)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        request = {
+            "contract": contract.model_dump(),
+            "benchmark_name": "swebench",
+            "concurrency": 10,
+            "task_ids": None,
+        }
+        response = client.post("/start-benchmark", json=request)
+
+        assert response.status_code == 200
+        assert captured_request_json["harness_config"]["s3_bucket"] == "deployed-bucket"
+        assert captured_request_json["harness_config"]["daytona_secret_name"] == "deployed-daytona-secret"
+
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
         self,
         contract: AgentContractRequest,
@@ -959,13 +1009,18 @@ class TestFastapiServer:
         # None of the three cases should have reached Sentry
         assert captured == []
 
-    def test_fetch_benchmark_returns_400_when_harness_headers_missing(self):
-        """Missing X-Harness-* headers should return 400, not 500 KeyError."""
+    def test_fetch_benchmark_returns_400_when_headers_and_deploy_config_missing(self):
+        """Missing client and deploy-time config should return 400, not 500.
+
+        Test cases:
+            - No X-Harness headers falls back to deploy-time config
+            - Missing deploy-time values return a readable 400 response
+        """
         app.dependency_overrides.pop(fetch_harness_config)
         try:
             response = client.get("/fetch-benchmark", params={"benchmark_id": str(uuid4())})
             assert response.status_code == 400
-            assert "Missing required config value" in response.json()["detail"]
+            assert "Missing required deploy-time config value" in response.json()["detail"]
         finally:
             app.dependency_overrides[fetch_harness_config] = lambda: HarnessConfig(
                 aws=AWSCredentials(

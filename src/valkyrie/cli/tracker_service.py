@@ -73,7 +73,6 @@ class TrackerService:
             timeout: Request timeout in seconds
         """
         self._config = self._load_config()
-        self._api_key = self._config.get("api_key")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._config_values = self.parse_config_keys()
@@ -102,11 +101,8 @@ class TrackerService:
             return yaml.safe_load(f) or {}
 
     def _build_auth_headers(self) -> dict[str, str]:
-        """Build request headers. Hosted mode adds X-Api-Key alongside X-Harness-* headers."""
-        headers = self._build_harness_headers()
-        if self._api_key:
-            headers["X-Api-Key"] = self._api_key
-        return headers
+        """Build request headers from self-hosted harness config."""
+        return self._build_harness_headers()
 
     @staticmethod
     def get_benchmark_service_url(benchmark_name: str) -> str | None:
@@ -168,33 +164,31 @@ class TrackerService:
         secret_name = harness_config.get("webhook")
         return secret_name if secret_name else None
 
-    @staticmethod
-    def parse_config_keys() -> dict[str, str]:
+    def parse_config_keys(self) -> dict[str, str]:
         """Parses expected config keys and handles edge cases"""
-        config_path: Path = _CONFIG_LOCATION.expanduser()
         config_keys: dict[str, str] = {}
-        if not config_path.exists():
-            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `valkyrie config init`")
-
-        with open(config_path) as f:
-            harness_config: dict[str, str] = yaml.safe_load(f) or {}
-
-        missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
-        if missing:
-            raise TrackerServiceError(
-                f"Missing required config keys: {', '.join(sorted(missing))}. "
-                "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
-            )
+        if not self._config:
+            return config_keys
 
         # Keys that are managed separately and should not be sent as harness headers
         _SKIP_HEADER_KEYS = {"webhook", "api_key"}
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
-        for key, value in harness_config.items():
+        for key, value in self._config.items():
             if isinstance(value, dict) or key in _SKIP_HEADER_KEYS:
                 continue
 
             config_keys[key] = str(value)
+
+        if not config_keys:
+            return config_keys
+
+        missing = _REQUIRED_CONFIG_KEYS - config_keys.keys()
+        if missing:
+            raise TrackerServiceError(
+                f"Missing required config keys: {', '.join(sorted(missing))}. "
+                "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
+            )
 
         return config_keys
 
@@ -289,7 +283,9 @@ class TrackerService:
                 slice_str=slice_str,
                 lambda_function=lambda_function,
                 dataset=dataset,
-                harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
+                harness_config=HarnessConfig.model_validate(self._build_harness_config_payload())
+                if self._config_values
+                else None,
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
                 if not ignore_custom_services
                 else None,
@@ -298,7 +294,7 @@ class TrackerService:
                 webhook_intervals=webhook_intervals,
             )
 
-            body = payload.model_dump()
+            body = payload.model_dump(exclude_none=True)
 
             response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
 

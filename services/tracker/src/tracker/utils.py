@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import os
 import time
 import traceback
 from asyncio import Semaphore, gather
@@ -804,8 +805,10 @@ async def process_benchmark(
     # Was serialized to make it compatible with the broker
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
-    benchmark_service = start_benchmark_request.benchmark_service
+    if start_benchmark_request.harness_config is None:
+        raise TrackerServiceError("harness_config is required to process a benchmark")
     harness_config: HarnessConfig = start_benchmark_request.harness_config
+    benchmark_service = start_benchmark_request.benchmark_service
 
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
@@ -1601,11 +1604,13 @@ async def upload_final_view(
 
 
 def fetch_harness_config(request: Request) -> HarnessConfig:
-    """Constructs HarnessConfig from X-Harness-* request headers."""
+    """Construct HarnessConfig from headers, falling back to deploy-time env."""
     prefix = "x-harness-"
     flat = {
         key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
     }
+    if not flat:
+        return deployed_harness_config()
 
     try:
         return HarnessConfig(
@@ -1629,3 +1634,42 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
                 "Run `valk config init` to initialize or `valk config set` to update your Valkyrie config."
             ),
         ) from e
+
+
+def deployed_harness_config() -> HarnessConfig:
+    """Build HarnessConfig from tracker service environment variables."""
+    values = {
+        "AWS_ACCESS_KEY_ID": os.environ.get("AWS_ACCESS_KEY_ID"),
+        "AWS_SECRET_ACCESS_KEY": os.environ.get("AWS_SECRET_ACCESS_KEY"),
+        "AWS_DEFAULT_REGION": os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION"),
+        "S3_BUCKET": os.environ.get("S3_BUCKET") or os.environ.get("AWS_S3_BUCKET"),
+        "DAYTONA_SECRET_NAME": os.environ.get("DAYTONA_SECRET_NAME"),
+        "LOG_GROUP": os.environ.get("LOG_GROUP", "benchmarks"),
+        "LOG_RETENTION_POLICY": os.environ.get("LOG_RETENTION_POLICY", "365"),
+    }
+    missing = [
+        key
+        for key, value in values.items()
+        if value is None and key not in {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Missing required deploy-time config value: '{missing[0]}'. "
+                "Set tracker service environment variables before accepting hosted requests."
+            ),
+        )
+
+    return HarnessConfig(
+        aws=AWSCredentials(
+            aws_access_key_id=values["AWS_ACCESS_KEY_ID"] or "",
+            aws_secret_access_key=values["AWS_SECRET_ACCESS_KEY"] or "",
+            aws_default_region=values["AWS_DEFAULT_REGION"] or "",
+            aws_session_token=os.environ.get("AWS_SESSION_TOKEN"),
+        ),
+        s3_bucket=values["S3_BUCKET"] or "",
+        log_group=values["LOG_GROUP"] or "",
+        log_retention_policy=int(values["LOG_RETENTION_POLICY"] or "365"),
+        daytona_secret_name=values["DAYTONA_SECRET_NAME"] or "",
+    )

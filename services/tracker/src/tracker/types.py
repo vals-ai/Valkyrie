@@ -54,7 +54,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
-    harness_config: HarnessConfig
+    harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
     webhook_secret_name: str | None = None
@@ -65,6 +65,8 @@ class StartBenchmarkRequest(BaseModel):
         from tracker.utils import create_benchmark_service_client
 
         # Prioritize user defined benchmark service over hosted one
+        if self.harness_config is None:
+            raise ValueError("harness_config is required to create a benchmark service client")
         benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
         return create_benchmark_service_client(
             url=benchmark_service_url,

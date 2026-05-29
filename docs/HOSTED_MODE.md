@@ -1,17 +1,14 @@
 # Hosted vs Self-Hosted Mode
 
-Valkyrie supports two operational modes. Both require your own AWS credentials — hosted mode adds Descope-based authentication for multi-tenant data isolation.
+Valkyrie supports two operational modes. Hosted mode uses Vals-managed tracker credentials injected at deploy time; self-hosted mode uses the credentials in your local Valkyrie config.
 
 ## Hosted mode
 
-Use Vals-hosted compute infrastructure with your own AWS storage. Data is isolated per organization via Descope API key authentication.
+Use Vals-hosted compute infrastructure without client authentication.
 
 ### Prerequisites
 
-- Descope API key (provided by Vals)
-- AWS account with the [required permissions](#required-aws-permissions)
-- S3 bucket for storing benchmark artifacts and agents
-- API key for sandbox provider (Daytona). [Setup docs](PROVIDER.md)
+- Hosted tracker URL, if you are not using the default tracker.
 
 ### Setup
 
@@ -19,28 +16,14 @@ Use Vals-hosted compute infrastructure with your own AWS storage. Data is isolat
 valkyrie config init
 ```
 
-Choose **hosted** when prompted. You'll be asked for:
-1. Your Descope API key — validates against the tracker and creates your organization
-2. AWS credentials — same as self-hosted (you supply your own S3, CloudWatch, Daytona)
+Choose **hosted** when prompted. No client credentials are required.
 
 ```
 $ valkyrie config init
 Setup mode (hosted, self-hosted) [self-hosted]: hosted
-API Key: <your-descope-access-key>
-Organization 'your-org' configured successfully.
-
-AWS_ACCESS_KEY_ID: ...
-AWS_SECRET_ACCESS_KEY: ...
-...
 ```
 
-Your API key is sent with every request to authenticate and scope data to your organization. AWS credentials are sent via `X-Harness-*` headers.
-
-You can also set the API key manually:
-
-```bash
-valkyrie config set api_key <your-descope-access-key>
-```
+The CLI does not send `X-Api-Key` or `X-Harness-*` headers in unauthenticated hosted mode. AWS, S3, CloudWatch, and Daytona settings are resolved by the hosted tracker service.
 
 ## Self-hosted mode
 
@@ -73,9 +56,23 @@ AWS_SECRET_ACCESS_KEY: ...
 
 No API key or Descope authentication is used. All data belongs to a single default organization.
 
+### Deploy-time tracker configuration
+
+The tracker service resolves hosted credentials from its environment when a request does not include `X-Harness-*` headers:
+
+```env
+AWS_DEFAULT_REGION=us-east-1
+AWS_S3_BUCKET=agentic-harness
+DAYTONA_SECRET_NAME=AgenticHarnessSecrets
+LOG_GROUP=benchmarks
+LOG_RETENTION_POLICY=365
+```
+
+When running on AWS, the tracker and worker can use their task role for S3, CloudWatch Logs, Lambda, and Secrets Manager instead of static `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` values.
+
 ## Required AWS permissions
 
-Your AWS credentials must have the following permissions:
+Self-hosted credentials or the deployed tracker task role must have the following permissions:
 
 | Service | Permissions | Used for |
 |---------|------------|----------|
