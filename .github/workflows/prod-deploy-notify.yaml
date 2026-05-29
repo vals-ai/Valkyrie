@@ -1,0 +1,120 @@
+name: Prod Deploy Slack Notification
+
+on:
+  workflow_run:
+    workflows: ["Deploy to AWS", "Auto Tag Release"]
+    types: [completed]
+    branches: [prod]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  notify:
+    # Only proceed when the triggering workflow succeeded
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check all prod workflows passed
+        uses: actions/github-script@v7
+        id: check
+        with:
+          script: |
+            const sha = context.payload.workflow_run.head_sha;
+            const required = ['Deploy to AWS', 'Auto Tag Release'];
+
+            const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: sha,
+              per_page: 50,
+            });
+
+            let deployUrl = '';
+            for (const name of required) {
+              const run = data.workflow_runs.find(r => r.name === name);
+              if (!run || run.status !== 'completed' || run.conclusion !== 'success') {
+                console.log(`⏳ ${name}: status=${run?.status ?? 'not found'}, conclusion=${run?.conclusion ?? 'N/A'}`);
+                return;
+              }
+              if (name === 'Deploy to AWS') {
+                deployUrl = run.html_url;
+              }
+            }
+
+            console.log('All required workflows passed');
+            core.setOutput('all_passed', 'true');
+            core.setOutput('deploy_url', deployUrl);
+
+      - name: Checkout
+        if: steps.check.outputs.all_passed == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: prod
+
+      - name: Build and send Slack notification
+        if: steps.check.outputs.all_passed == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_DEPLOY_WEBHOOK_URL }}
+          DEPLOY_URL: ${{ steps.check.outputs.deploy_url }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::warning::SLACK_DEPLOY_WEBHOOK_URL secret not set — skipping notification"
+            exit 0
+          fi
+
+          CURRENT_TAG=$(git describe --tags --abbrev=0 HEAD)
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || echo "")
+
+          if [ -n "$PREVIOUS_TAG" ]; then
+            CHANGES=$(git log --no-merges --pretty=format:"• %s" "${PREVIOUS_TAG}..${CURRENT_TAG}" | head -30)
+            DIFF_LABEL="Changes since ${PREVIOUS_TAG}"
+          else
+            CHANGES=$(git log --no-merges --pretty=format:"• %s" -20 "${CURRENT_TAG}")
+            DIFF_LABEL="Recent changes"
+          fi
+
+          # Make PR references clickable in Slack
+          CHANGES=$(echo "$CHANGES" | sed "s|(#\([0-9]*\))|(<${REPO_URL}/pull/\1|#\1>)|g")
+
+          RELEASE_URL="${REPO_URL}/releases/tag/${CURRENT_TAG}"
+
+          jq -n \
+            --arg tag "$CURRENT_TAG" \
+            --arg label "$DIFF_LABEL" \
+            --arg changes "$CHANGES" \
+            --arg deploy_url "$DEPLOY_URL" \
+            --arg release_url "$RELEASE_URL" \
+            '{
+              text: ("Valkyrie " + $tag + " deployed to prod"),
+              blocks: [
+                {
+                  type: "header",
+                  text: { type: "plain_text", text: ("Valkyrie " + $tag + " deployed to prod"), emoji: true }
+                },
+                {
+                  type: "section",
+                  text: {
+                    type: "mrkdwn",
+                    text: ("*" + $label + ":*\n" + $changes)
+                  }
+                },
+                {
+                  type: "context",
+                  elements: [
+                    {
+                      type: "mrkdwn",
+                      text: ("<" + $deploy_url + "|Deploy Run> · <" + $release_url + "|Release>")
+                    }
+                  ]
+                }
+              ]
+            }' > /tmp/slack-payload.json
+
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d @/tmp/slack-payload.json \
+            "$SLACK_WEBHOOK_URL"
