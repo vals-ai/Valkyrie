@@ -73,61 +73,69 @@ jobs:
 
           CURRENT_TAG=$(git describe --tags --abbrev=0 HEAD)
           PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || echo "")
+          RELEASE_URL="${SERVER_URL}/${REPO}/releases/tag/${CURRENT_TAG}"
 
           # Reuse GitHub's auto-generated release notes (identical content to a published release).
           if [ -n "$PREVIOUS_TAG" ]; then
-            NOTES=$(gh api "repos/${REPO}/releases/generate-notes" \
+            RAW_NOTES=$(gh api "repos/${REPO}/releases/generate-notes" \
               -f tag_name="$CURRENT_TAG" -f previous_tag_name="$PREVIOUS_TAG" --jq '.body')
             LABEL="Changes since ${PREVIOUS_TAG}"
           else
-            NOTES=$(gh api "repos/${REPO}/releases/generate-notes" \
+            RAW_NOTES=$(gh api "repos/${REPO}/releases/generate-notes" \
               -f tag_name="$CURRENT_TAG" --jq '.body')
             LABEL="Release notes"
           fi
 
           # GitHub markdown -> Slack mrkdwn: "## Heading" -> "*Heading*", "**bold**" -> "*bold*",
-          # "* item" -> "• item", "in <pull-url>" -> "(<pull-url|#NN>)" (@ delimiter keeps the mrkdwn pipe).
-          NOTES=$(printf '%s\n' "$NOTES" \
-            | sed -E 's/^## (.*)$/*\1*/' \
-            | sed -E 's/\*\*([^*]+)\*\*/*\1*/g' \
-            | sed -E 's/^\* /• /' \
-            | sed -E "s@ in (https://github.com/[^ ]+/pull/([0-9]+))@ (<\1|#\2>)@g")
+          # "* item" -> "• item", PR/compare URLs -> short <url|#NN> / <url|range> links
+          # (@ delimiter keeps the literal pipe the mrkdwn link syntax needs).
+          to_mrkdwn() {
+            sed -E 's/^## (.*)$/*\1*/' \
+              | sed -E 's/\*\*([^*]+)\*\*/*\1*/g' \
+              | sed -E 's/^\* /• /' \
+              | sed -E "s@ in (https://github.com/[^ ]+/pull/([0-9]+))@ (<\1|#\2>)@g" \
+              | sed -E "s@(https://github.com/[^ ]+/compare/([^ ]+))@<\1|\2>@g"
+          }
 
-          RELEASE_URL="${SERVER_URL}/${REPO}/releases/tag/${CURRENT_TAG}"
+          # Split the "Full Changelog" footer onto its own block from the change list.
+          FULL_CHANGELOG=$(printf '%s\n' "$RAW_NOTES" | grep -iE '^\*\*Full Changelog\*\*' | to_mrkdwn || true)
+          CHANGE_LIST=$(printf '%s\n' "$RAW_NOTES" | sed -E '/^\*\*Full Changelog\*\*/d' | to_mrkdwn)
 
-          # Slack section text caps at 3000 chars; trim and point at the full notes.
-          if [ "${#NOTES}" -gt 2800 ]; then
-            NOTES="${NOTES:0:2800}"$'\n'"…(truncated — see <${RELEASE_URL}|full release notes>)"
+          # Slack section text caps at 3000 chars; trim the change list and link the rest.
+          if [ "${#CHANGE_LIST}" -gt 2800 ]; then
+            CHANGE_LIST="${CHANGE_LIST:0:2800}"$'\n'"…(truncated — see <${RELEASE_URL}|full release notes>)"
           fi
 
+          # Pre-build each block's text so the message structure below stays readable.
+          HEADER_TEXT="🚀 Valkyrie ${CURRENT_TAG} deployed to prod"
+          CHANGES_TEXT="*${LABEL}*"$'\n'"${CHANGE_LIST}"
+          CLI_TEXT="🔄 *Update your CLI*"$'\n'"\`uv tool install git+https://github.com/vals-ai/Valkyrie@prod\`"
+          CONTEXT_TEXT="<${DEPLOY_URL}|Deploy run> · <${RELEASE_URL}|Release>"
+
           jq -n \
-            --arg tag "$CURRENT_TAG" \
-            --arg label "$LABEL" \
-            --arg notes "$NOTES" \
-            --arg deploy_url "$DEPLOY_URL" \
-            --arg release_url "$RELEASE_URL" \
+            --arg header_text "$HEADER_TEXT" \
+            --arg changes_text "$CHANGES_TEXT" \
+            --arg changelog_text "$FULL_CHANGELOG" \
+            --arg cli_text "$CLI_TEXT" \
+            --arg context_text "$CONTEXT_TEXT" \
             '{
-              text: ("Valkyrie " + $tag + " deployed to prod"),
-              blocks: [
-                {
-                  type: "header",
-                  text: { type: "plain_text", text: ("🚀 Valkyrie " + $tag + " deployed to prod"), emoji: true }
-                },
-                {
-                  type: "section",
-                  text: { type: "mrkdwn", text: ("*" + $label + "*\n" + $notes) }
-                },
-                {
-                  type: "section",
-                  text: { type: "mrkdwn", text: "🔄 *Update your CLI*\n`uv tool install git+https://github.com/vals-ai/Valkyrie@prod`" }
-                },
-                {
-                  type: "context",
-                  elements: [
-                    { type: "mrkdwn", text: ("<" + $deploy_url + "|Deploy run> · <" + $release_url + "|Release>") }
-                  ]
-                }
-              ]
+              text: $header_text,
+              blocks: (
+                [
+                  { type: "header",  text: { type: "plain_text", text: $header_text, emoji: true } },
+                  { type: "divider" },
+                  { type: "section", text: { type: "mrkdwn", text: $changes_text } }
+                ]
+                + (if $changelog_text != "" then
+                    [ { type: "divider" },
+                      { type: "section", text: { type: "mrkdwn", text: $changelog_text } } ]
+                   else [] end)
+                + [
+                  { type: "divider" },
+                  { type: "section", text: { type: "mrkdwn", text: $cli_text } },
+                  { type: "context", elements: [ { type: "mrkdwn", text: $context_text } ] }
+                ]
+              )
             }' > /tmp/slack-payload.json
 
           curl -fsS -X POST -H 'Content-Type: application/json' \
