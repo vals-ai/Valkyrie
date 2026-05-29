@@ -1,8 +1,14 @@
 """CLI views/commands for Valkyrie."""
 
+from __future__ import annotations
+
 import asyncio
+import builtins
+import curses
 import os
 import sys
+import time
+from collections.abc import MutableSet
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -706,6 +712,401 @@ def fetch(run_id: UUID, connect: bool):
             else:
                 response = tracker.fetch_benchmark(run_id)
                 format_benchmark_status(response)
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
+
+
+def _print_log_events(events: list[dict[str, Any]], seen_events: MutableSet[tuple[str, int, str]]) -> None:
+    for event in events:
+        message = str(event.get("message", ""))
+        key = (
+            str(event.get("log_stream_name", "")),
+            int(event.get("timestamp", 0)),
+            message,
+        )
+        if key in seen_events:
+            continue
+        seen_events.add(key)
+        click.echo(message, nl=False)
+        if not message.endswith("\n"):
+            click.echo()
+
+
+def _follow_task_logs(
+    tracker: TrackerService,
+    run_id: UUID,
+    task_id: str,
+    *,
+    follow: bool,
+    interval: float,
+    limit: int,
+) -> None:
+    next_token: str | None = None
+    seen_events: MutableSet[tuple[str, int, str]] = builtins.set()
+    while True:
+        response = tracker.fetch_benchmark_logs(run_id, task_id=task_id, next_token=next_token, limit=limit)
+        next_token = response.get("next_token")
+        _print_log_events(response.get("events", []), seen_events)
+
+        if not follow:
+            return
+        time.sleep(interval)
+
+
+def _list_log_tasks(run_id: UUID, tasks: list[dict[str, Any]]) -> None:
+    if not tasks:
+        click.echo(click.style("No tasks have logs yet. Waiting for tasks to reach IN_PROGRESS.", fg="yellow"))
+        return
+
+    rows = [{"Task ID": task["task_id"], "Status": task["status"]} for task in tasks]
+    format_table(rows, ["Task ID", "Status"], item_name="task")
+    first_task_id = str(tasks[0]["task_id"])
+    click.echo()
+    click.echo(f"View logs: valkyrie run logs {run_id} --task-id {first_task_id} --follow")
+
+
+def _stdin_is_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _draw_task_picker(stdscr: Any, tasks: list[dict[str, Any]], selected: int) -> None:
+    height, width = stdscr.getmaxyx()
+    status_width = 12
+    status_col = 2
+    task_col = status_col + status_width + 2
+    stdscr.erase()
+    stdscr.addnstr(0, 0, "Run Logs", width - 1)
+    stdscr.addnstr(1, 0, "Only tasks with logs are shown. Pending/building tasks are hidden.", width - 1)
+    stdscr.addnstr(3, status_col, "Status", status_width)
+    stdscr.addnstr(3, task_col, "Task ID", max(width - task_col - 1, 1))
+    max_rows = max(height - 6, 1)
+    offset = max(0, selected - max_rows + 1)
+    for row_index, task in enumerate(tasks[offset : offset + max_rows], start=4):
+        actual_index = offset + row_index - 4
+        marker = ">" if actual_index == selected else " "
+        stdscr.addnstr(row_index, 0, marker, 1)
+        stdscr.addnstr(row_index, status_col, str(task["status"]), status_width)
+        stdscr.addnstr(row_index, task_col, str(task["task_id"]), max(width - task_col - 1, 1))
+    stdscr.addnstr(
+        max(height - 1, 0),
+        0,
+        "Enter: open logs   Esc: exit   Up/Down or j/k: move   Mouse wheel: scroll logs",
+        width - 1,
+    )
+    stdscr.refresh()
+
+
+def _log_scroll_offset_after_mouse(
+    scroll_offset: int,
+    *,
+    line_count: int,
+    view_height: int,
+    button_state: int,
+) -> int:
+    max_scroll = max(line_count - view_height, 0)
+    if button_state & getattr(curses, "BUTTON4_PRESSED", 0):
+        return min(scroll_offset + 3, max_scroll)
+    if button_state & getattr(curses, "BUTTON5_PRESSED", 0) or button_state & getattr(curses, "BUTTON4_RELEASED", 0):
+        return max(scroll_offset - 3, 0)
+    return scroll_offset
+
+
+def _log_scroll_offset_after_keyboard(
+    scroll_offset: int,
+    *,
+    line_count: int,
+    view_height: int,
+    delta: int,
+) -> int:
+    max_scroll = max(line_count - view_height, 0)
+    return min(max(scroll_offset + delta, 0), max_scroll)
+
+
+def _log_scroll_offset_after_curses_mouse(scroll_offset: int, *, line_count: int, view_height: int) -> int:
+    try:
+        _mouse_id, _x, _y, _z, button_state = curses.getmouse()
+    except curses.error:
+        return scroll_offset
+    return _log_scroll_offset_after_mouse(
+        scroll_offset,
+        line_count=line_count,
+        view_height=view_height,
+        button_state=button_state,
+    )
+
+
+def _log_scroll_offset_after_escape_sequence(
+    sequence: str,
+    scroll_offset: int,
+    *,
+    line_count: int,
+    view_height: int,
+) -> int:
+    max_scroll = max(line_count - view_height, 0)
+    if sequence.startswith("[M") and len(sequence) >= 3:
+        button = ord(sequence[2]) - 32
+        if button & 64 and button & 3 == 0:
+            return min(scroll_offset + 3, max_scroll)
+        if button & 64 and button & 3 == 1:
+            return max(scroll_offset - 3, 0)
+        return scroll_offset
+
+    if not sequence.startswith("[<"):
+        return scroll_offset
+    try:
+        button = int(sequence[2:].split(";", maxsplit=1)[0])
+    except ValueError:
+        return scroll_offset
+
+    if button & 64 and button & 3 == 0:
+        return min(scroll_offset + 3, max_scroll)
+    if button & 64 and button & 3 == 1:
+        return max(scroll_offset - 3, 0)
+    return scroll_offset
+
+
+def _mouse_reporting_sequence(*, enabled: bool) -> str:
+    suffix = "h" if enabled else "l"
+    return f"\x1b[?1000{suffix}\x1b[?1006{suffix}"
+
+
+def _set_mouse_reporting(*, enabled: bool) -> None:
+    sys.stdout.write(_mouse_reporting_sequence(enabled=enabled))
+    sys.stdout.flush()
+
+
+def _read_escape_sequence(stdscr: Any) -> str | None:
+    stdscr.timeout(25)
+    chars: list[str] = []
+    while len(chars) < 32:
+        next_key = stdscr.getch()
+        if next_key == -1:
+            break
+        if 0 <= next_key <= 255:
+            chars.append(chr(next_key))
+            continue
+        break
+    stdscr.timeout(100)
+    if not chars:
+        return None
+    return "".join(chars)
+
+
+def _escape_key_should_exit(stdscr: Any) -> bool:
+    return _read_escape_sequence(stdscr) is None
+
+
+def _log_scroll_offset_after_escape_key(
+    stdscr: Any,
+    scroll_offset: int,
+    *,
+    line_count: int,
+    view_height: int,
+) -> int | None:
+    sequence = _read_escape_sequence(stdscr)
+    if sequence is None:
+        return None
+    return _log_scroll_offset_after_escape_sequence(
+        sequence,
+        scroll_offset,
+        line_count=line_count,
+        view_height=view_height,
+    )
+
+
+def _draw_log_view(stdscr: Any, task_id: str, lines: list[str], *, scroll_offset: int = 0) -> None:
+    height, width = stdscr.getmaxyx()
+    stdscr.erase()
+    stdscr.addnstr(
+        0,
+        0,
+        f"Logs for {task_id}. Up/Down scroll. End follows latest. Esc returns to task list.",
+        width - 1,
+    )
+    view_height = max(height - 2, 1)
+    max_scroll = max(len(lines) - view_height, 0)
+    scroll_offset = min(max(scroll_offset, 0), max_scroll)
+    end = len(lines) - scroll_offset
+    start = max(end - view_height, 0)
+    visible_lines = lines[start:end]
+    for row_index, line in enumerate(visible_lines, start=2):
+        stdscr.addnstr(row_index, 0, line, width - 1)
+    stdscr.refresh()
+
+
+def _interactive_log_view(
+    stdscr: Any,
+    tracker: TrackerService,
+    run_id: UUID,
+    tasks: list[dict[str, Any]],
+    *,
+    interval: float,
+    limit: int,
+) -> None:
+    curses.curs_set(0)
+    curses.mousemask(getattr(curses, "ALL_MOUSE_EVENTS", 0))
+    _set_mouse_reporting(enabled=True)
+    selected = 0
+    try:
+        while True:
+            _draw_task_picker(stdscr, tasks, selected)
+            key = stdscr.getch()
+            if key == 27 and _escape_key_should_exit(stdscr):
+                return
+            if key in {curses.KEY_UP, ord("k")}:
+                selected = max(0, selected - 1)
+                continue
+            if key in {curses.KEY_DOWN, ord("j")}:
+                selected = min(len(tasks) - 1, selected + 1)
+                continue
+            if key not in {curses.KEY_ENTER, 10, 13}:
+                continue
+
+            task_id = str(tasks[selected]["task_id"])
+            next_token: str | None = None
+            seen_events: MutableSet[tuple[str, int, str]] = builtins.set()
+            lines: list[str] = []
+            scroll_offset = 0
+            next_poll_at = 0.0
+            stdscr.nodelay(True)
+            stdscr.timeout(100)
+            try:
+                while True:
+                    now = time.monotonic()
+                    if now >= next_poll_at:
+                        response = tracker.fetch_benchmark_logs(
+                            run_id, task_id=task_id, next_token=next_token, limit=limit
+                        )
+                        next_token = response.get("next_token")
+                        for event in response.get("events", []):
+                            message = str(event.get("message", "")).rstrip("\n")
+                            event_key = (
+                                str(event.get("log_stream_name", "")),
+                                int(event.get("timestamp", 0)),
+                                message,
+                            )
+                            if event_key in seen_events:
+                                continue
+                            seen_events.add(event_key)
+                            lines.extend(message.splitlines() or [""])
+                        next_poll_at = now + interval
+
+                    _draw_log_view(stdscr, task_id, lines, scroll_offset=scroll_offset)
+                    key = stdscr.getch()
+                    if key == 27:
+                        next_scroll_offset = _log_scroll_offset_after_escape_key(
+                            stdscr,
+                            scroll_offset,
+                            line_count=len(lines),
+                            view_height=max(stdscr.getmaxyx()[0] - 2, 1),
+                        )
+                        if next_scroll_offset is None:
+                            raise KeyboardInterrupt
+                        scroll_offset = next_scroll_offset
+                        continue
+                    if key in {curses.KEY_UP, ord("k")}:
+                        scroll_offset = _log_scroll_offset_after_keyboard(
+                            scroll_offset,
+                            line_count=len(lines),
+                            view_height=max(stdscr.getmaxyx()[0] - 2, 1),
+                            delta=1,
+                        )
+                        continue
+                    if key in {curses.KEY_DOWN, ord("j")}:
+                        scroll_offset = _log_scroll_offset_after_keyboard(
+                            scroll_offset,
+                            line_count=len(lines),
+                            view_height=max(stdscr.getmaxyx()[0] - 2, 1),
+                            delta=-1,
+                        )
+                        continue
+                    if key in {curses.KEY_PPAGE}:
+                        scroll_offset = _log_scroll_offset_after_keyboard(
+                            scroll_offset,
+                            line_count=len(lines),
+                            view_height=max(stdscr.getmaxyx()[0] - 2, 1),
+                            delta=max(stdscr.getmaxyx()[0] - 2, 1),
+                        )
+                        continue
+                    if key in {curses.KEY_NPAGE, curses.KEY_END}:
+                        scroll_offset = 0
+                        continue
+                    if key == curses.KEY_MOUSE:
+                        scroll_offset = _log_scroll_offset_after_curses_mouse(
+                            scroll_offset,
+                            line_count=len(lines),
+                            view_height=max(stdscr.getmaxyx()[0] - 2, 1),
+                        )
+            except KeyboardInterrupt:
+                stdscr.nodelay(False)
+                stdscr.timeout(-1)
+    finally:
+        _set_mouse_reporting(enabled=False)
+
+
+@run.command(
+    name="logs",
+    help="Fetch or follow run logs. \n\nExample:\nvalkyrie run logs 123e4567-e89b-12d3-a456-426614174000",
+)
+@click.argument("run_id", type=UUID)
+@click.option(
+    "--task-id",
+    type=str,
+    default=None,
+    required=False,
+    help="Task ID to fetch logs for. Omit to choose from the run task list.",
+)
+@click.option(
+    "--follow",
+    is_flag=True,
+    default=False,
+    help="Poll for new logs until interrupted.",
+)
+@click.option(
+    "--interval",
+    type=float,
+    default=2.0,
+    show_default=True,
+    help="Seconds between log polls when using --follow or interactive mode.",
+)
+@click.option(
+    "--limit",
+    type=int,
+    default=200,
+    show_default=True,
+    help="Maximum CloudWatch log events to fetch per poll.",
+)
+def logs(run_id: UUID, task_id: str | None, follow: bool, interval: float, limit: int):
+    """Fetch, follow, or interactively browse CloudWatch-backed logs for a run."""
+    try:
+        with TrackerService() as tracker:
+            if not check_tracker_service_health(tracker):
+                return
+
+            if task_id is not None:
+                _follow_task_logs(tracker, run_id, task_id, follow=follow, interval=interval, limit=limit)
+                return
+
+            response = tracker.fetch_benchmark_logs(run_id)
+            tasks = response.get("tasks", [])
+            if not tasks:
+                click.echo(click.style("No tasks have logs yet. Waiting for tasks to reach IN_PROGRESS.", fg="yellow"))
+                return
+
+            if _stdin_is_interactive():
+                curses.wrapper(
+                    _interactive_log_view,
+                    tracker,
+                    run_id,
+                    tasks,
+                    interval=interval,
+                    limit=limit,
+                )
+                return
+
+            _list_log_tasks(run_id, tasks)
+    except KeyboardInterrupt:
+        click.echo()
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 

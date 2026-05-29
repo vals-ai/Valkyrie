@@ -621,3 +621,39 @@ class TrackerService:
             return FetchBenchmarkMetadataResponse.model_validate(response.json())
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run metadata: {e}") from e
+
+    def fetch_benchmark_logs(
+        self,
+        benchmark_id: UUID,
+        *,
+        task_id: str | None = None,
+        next_token: str | None = None,
+        limit: int = 200,
+    ) -> dict[str, Any]:
+        """
+        Fetch available task IDs or CloudWatch log events for a benchmark run.
+
+        Args:
+            benchmark_id: Benchmark id
+            task_id: Optional task id to fetch logs for
+            next_token: Optional pagination token from the previous response
+            limit: Maximum events to fetch
+
+        Returns:
+            Response JSON from the tracker log polling endpoint
+        """
+        try:
+            params: dict[str, Any] = {"limit": limit}
+            if task_id is not None:
+                params["task_id"] = task_id
+            if next_token is not None:
+                params["next_token"] = next_token
+
+            response = self._client.get(f"{self._base_url}/fetch-benchmark-logs/{benchmark_id}", params=params)
+            if response.status_code != 200:
+                details = _response_error_detail(response)
+                raise TrackerServiceError(f"Failed to fetch run logs: {details}")
+
+            return dict(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to fetch run logs: {e}") from e

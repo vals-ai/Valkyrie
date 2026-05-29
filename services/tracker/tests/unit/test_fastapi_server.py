@@ -83,6 +83,99 @@ class TestFastapiServer:
         assert response.status_code == 200
         assert response.json() == {"task_ids": ["task_1", "task_2"]}
 
+    def test_fetch_benchmark_logs_lists_only_tasks_with_logs_when_task_id_is_omitted(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ):
+        """The log endpoint should expose only tasks expected to have logs.
+
+        Test Cases:
+            - Omitting task_id hides PENDING and BUILDING tasks
+            - IN_PROGRESS and later task states are returned for the picker
+        """
+        benchmark = example_benchmark_object
+        database_session.add(benchmark)
+        database_session.commit()
+        database_session.add_all(
+            [
+                Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark.id, status=TaskStatus.PENDING),
+                Task(org_id=TEST_ORG_ID, task_id="task_1", benchmark=benchmark.id, status=TaskStatus.BUILDING),
+                Task(org_id=TEST_ORG_ID, task_id="task_2", benchmark=benchmark.id, status=TaskStatus.IN_PROGRESS),
+                Task(org_id=TEST_ORG_ID, task_id="task_3", benchmark=benchmark.id, status=TaskStatus.EVALUATING),
+                Task(org_id=TEST_ORG_ID, task_id="task_4", benchmark=benchmark.id, status=TaskStatus.ERROR),
+            ]
+        )
+        database_session.commit()
+
+        response = client.get(f"/fetch-benchmark-logs/{benchmark.id}")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "benchmark_id": str(benchmark.id),
+            "tasks": [
+                {"task_id": "task_2", "status": "IN_PROGRESS"},
+                {"task_id": "task_3", "status": "EVALUATING"},
+                {"task_id": "task_4", "status": "ERROR"},
+            ],
+        }
+
+    def test_fetch_benchmark_logs_polls_cloudwatch_for_selected_task(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ):
+        """Selecting a task should return a CloudWatch page and next token.
+
+        Test Cases:
+            - task_id is validated against tasks on the benchmark
+            - next_token and limit are passed through for polling
+        """
+        benchmark = example_benchmark_object
+        database_session.add(benchmark)
+        database_session.commit()
+        database_session.add(Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark.id))
+        database_session.commit()
+        observed: dict[str, Any] = {}
+
+        def _mock_fetch_benchmark_log_events(**kwargs: Any) -> dict[str, Any]:
+            observed.update(kwargs)
+            return {
+                "events": [
+                    {
+                        "timestamp": 123,
+                        "message": "hello\n",
+                        "log_stream_name": "task_0_abc",
+                    }
+                ],
+                "next_token": "next-token",
+            }
+
+        monkeypatch.setattr("main.fetch_benchmark_log_events", _mock_fetch_benchmark_log_events)
+
+        response = client.get(
+            f"/fetch-benchmark-logs/{benchmark.id}",
+            params={"task_id": "task_0", "next_token": "token", "limit": 25},
+        )
+
+        assert response.status_code == 200
+        assert observed == {
+            "benchmark_id": str(benchmark.id),
+            "aws": harness_config.aws,
+            "log_group": harness_config.log_group,
+            "task_id": "task_0",
+            "next_token": "token",
+            "limit": 25,
+        }
+        assert response.json() == {
+            "benchmark_id": str(benchmark.id),
+            "task_id": "task_0",
+            "events": [{"timestamp": 123, "message": "hello\n", "log_stream_name": "task_0_abc"}],
+            "next_token": "next-token",
+        }
+
     async def test_start_benchmark(
         self,
         contract: AgentContractRequest,

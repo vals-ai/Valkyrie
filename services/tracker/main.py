@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from tracker.auth import (
     RequestIdentity,
@@ -25,7 +25,7 @@ from tracker.auth import (
     get_current_starter,
     resolve_descope_identity,
 )
-from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.cloudwatch_logs import fetch_benchmark_log_events, get_benchmark_log_url
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
@@ -37,7 +37,16 @@ from tracker.aws.s3 import (
     s3_object_exists,
 )
 from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_url
-from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus, FinalEvaluation, Org, RetryMode
+from tracker.database.models import (
+    Benchmark,
+    BenchmarkStatus,
+    DocentReadingStatus,
+    FinalEvaluation,
+    Org,
+    RetryMode,
+    Task,
+    TaskStatus,
+)
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
@@ -87,6 +96,13 @@ configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 logger = get_logger(__name__)
 
 app = FastAPI()
+LOG_VIEWABLE_TASK_STATUSES = {
+    TaskStatus.IN_PROGRESS,
+    TaskStatus.EVALUATING,
+    TaskStatus.STOPPED,
+    TaskStatus.FINISHED,
+    TaskStatus.ERROR,
+}
 
 logfire.instrument_fastapi(app, excluded_urls="/health$")
 
@@ -716,6 +732,50 @@ async def fetch_benchmark_metadata(
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
     return benchmark_row.benchmark_metadata
+
+
+@app.get("/fetch-benchmark-logs/{benchmark_id}")
+async def fetch_benchmark_logs(
+    benchmark_id: TrackedBenchmarkId,
+    task_id: str | None = Query(default=None),
+    next_token: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> dict[str, Any]:
+    """Poll CloudWatch logs for a run, or list task IDs when task_id is omitted."""
+    get_scoped(Benchmark, benchmark_id, session, org)
+
+    task_statement = (
+        select(Task).where(Task.benchmark == benchmark_id).where(Task.org_id == org.id).order_by(Task.task_id)
+    )
+    task_rows = session.exec(task_statement).all()
+    log_viewable_task_rows = [task for task in task_rows if task.status in LOG_VIEWABLE_TASK_STATUSES]
+
+    if task_id is None:
+        return {
+            "benchmark_id": str(benchmark_id),
+            "tasks": [{"task_id": task.task_id, "status": task.status.value} for task in log_viewable_task_rows],
+        }
+
+    if task_id not in {task.task_id for task in task_rows}:
+        raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found for run '{benchmark_id}'")
+
+    result = fetch_benchmark_log_events(
+        benchmark_id=str(benchmark_id),
+        aws=harness_config.aws,
+        log_group=harness_config.log_group,
+        task_id=task_id,
+        next_token=next_token,
+        limit=limit,
+    )
+    return {
+        "benchmark_id": str(benchmark_id),
+        "task_id": task_id,
+        "events": result["events"],
+        "next_token": result["next_token"],
+    }
 
 
 @app.get("/fetch-agent-outputs/{benchmark_id}")

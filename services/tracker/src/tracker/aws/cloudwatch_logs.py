@@ -20,8 +20,8 @@ def _cloudwatch_client(aws: "AWSCredentials") -> Any:
     """Cloudwatch client cached to share instances."""
     return boto3.client(  # pyright: ignore[reportUnknownMemberType]
         "logs",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
+        aws_access_key_id=aws.aws_access_key_id or None,
+        aws_secret_access_key=aws.aws_secret_access_key or None,
         aws_session_token=aws.aws_session_token,
         region_name=aws.aws_default_region,
         config=Config(max_pool_connections=200),
@@ -135,3 +135,35 @@ def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSCredential
         )
     except (ClientError, BotoCoreError) as e:
         raise CloudWatchError(f"Failed to put log event: {e}") from e
+
+
+@handle_cloudwatch_error(message="Failed to fetch benchmark logs")
+def fetch_benchmark_log_events(
+    *,
+    benchmark_id: str,
+    aws: "AWSCredentials",
+    log_group: str,
+    task_id: str,
+    next_token: str | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """Fetch a page of CloudWatch log events for one benchmark task."""
+    client = _cloudwatch_client(aws)
+    params: dict[str, Any] = {
+        "logGroupName": f"{log_group}/{benchmark_id}",
+        "logStreamNamePrefix": f"{task_id}_",
+        "limit": limit,
+    }
+    if next_token:
+        params["nextToken"] = next_token
+
+    response: dict[str, Any] = client.filter_log_events(**params)  # pyright: ignore[reportUnknownMemberType]
+    events = [
+        {
+            "timestamp": event["timestamp"],
+            "message": event["message"],
+            "log_stream_name": event["logStreamName"],
+        }
+        for event in response.get("events", [])
+    ]
+    return {"events": events, "next_token": response.get("nextToken")}
