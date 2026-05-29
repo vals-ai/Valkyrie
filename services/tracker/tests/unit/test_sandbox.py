@@ -458,15 +458,16 @@ class TestAgentOutputTelemetry:
         benchmark = Mock()
         benchmark.name = "benchmark"
         benchmark.id = "benchmark-id"
-        daytona_client = AsyncMock()
-        daytona_client.list = AsyncMock(side_effect=DaytonaError("transient"))
+        daytona_client = Mock()
+        daytona_client.list.side_effect = DaytonaError("transient")
 
         with pytest.raises(DaytonaError):
-            await _fetch_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
-                benchmark, daytona_client, 1
-            )
+            async for _ in _fetch_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
+                benchmark, daytona_client
+            ):
+                pass
 
-        assert daytona_client.list.await_count == 1
+        assert daytona_client.list.call_count == 1
 
     def test_daytona_retry_callback_emits_rate_limit_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []

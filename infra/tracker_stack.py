@@ -34,6 +34,7 @@ from constants import (
     RDS_INSTANCE_CLASS,
     TRACKER_CPU,
     TRACKER_DOMAIN,
+    TRACKER_LOG_GROUP_NAME,
     TRACKER_MAX_TASKS,
     TRACKER_MEMORY,
     TRACKER_MIN_TASKS,
@@ -168,6 +169,7 @@ class TrackerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "TrackerLogGroup",
+                    log_group_name=TRACKER_LOG_GROUP_NAME,
                     retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),

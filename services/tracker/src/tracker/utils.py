@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
-from daytona import AsyncDaytona, AsyncPaginatedSandboxes, AsyncSandbox, SandboxState
+from daytona import AsyncDaytona, AsyncSandbox, ListSandboxesQuery, SandboxState
 from daytona.common.errors import DaytonaNotFoundError, DaytonaRateLimitError
 from fastapi import HTTPException, Request
 from opentelemetry import trace
@@ -77,6 +77,8 @@ logger = get_logger(__name__)
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+_DELETED_DAYTONA_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED)
+_DAYTONA_LIST_PAGE_SIZE = 100
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -1278,37 +1280,15 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
     before_sleep=daytona_retry_callback("valkyrie.sandbox.list", op="sandbox.list"),
     reraise=True,
 )
-async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona, page: int) -> AsyncPaginatedSandboxes:
-    return await daytona_client.list(
-        labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)}, limit=10, page=page
-    )
-
-
-async def sandbox_generator(
-    benchmark_row: Benchmark, daytona_client: AsyncDaytona
-) -> AsyncGenerator[AsyncSandbox, None]:
-    """
-    Generator that yields all sandboxes for a given benchmark in paginated chunks of 10.
-
-    NOTE: At the time of this implementation there are several things weird with the dayyona api
-        1. If you delete the sandboxes in the list, the next page should be the first page (repopulated)
-        2. Final state is not DESTROYED, but rather DESTROYING
-        3. The total_pages count is not updated as you delete sandboxes
-    """
-
-    paginated_sandboxes: AsyncPaginatedSandboxes = await fetch_sandboxes(benchmark_row, daytona_client, 1)
-
-    total_pages = paginated_sandboxes.total_pages
-    while (paginated_sandboxes.page <= total_pages) and paginated_sandboxes.items:
-        sandboxes = paginated_sandboxes.items
-        for sandbox in sandboxes:
-            if sandbox.state in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
-                continue
-
+async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
+    async for sandbox in daytona_client.list(
+        ListSandboxesQuery(
+            labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
+            limit=_DAYTONA_LIST_PAGE_SIZE,
+        )
+    ):
+        if sandbox.state not in _DELETED_DAYTONA_SANDBOX_STATES:
             yield sandbox
-
-        # NOTE: Since we deleted the first 10 the first page will be populated with the next 10 sandboxes
-        paginated_sandboxes = await fetch_sandboxes(benchmark_row, daytona_client, int(paginated_sandboxes.page))
 
 
 async def force_stop_sandboxes(
@@ -1337,7 +1317,8 @@ async def force_stop_sandboxes(
 
         # Iterate through each running sandbox and stop it, collecting error messages
         results: dict[str, str | None] = {}
-        async for sandbox in sandbox_generator(benchmark_row, daytona_client):
+        sandboxes = [sandbox async for sandbox in fetch_sandboxes(benchmark_row, daytona_client)]
+        for sandbox in sandboxes:
             result = await stop_sandbox(sandbox, daytona_client)
 
             results[sandbox.name] = result

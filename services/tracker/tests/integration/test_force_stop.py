@@ -3,7 +3,6 @@ import asyncio
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import Resources as TrackerResources
-from daytona import SandboxState
 from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
@@ -162,12 +161,7 @@ class TestForceStop:
         await created_sandboxes
 
         # Ensure that there are no more sandboxes left running
-        sandboxes = await fetch_sandboxes(example_benchmark_object, daytona_client, 1)
-        active = [
-            sandbox
-            for sandbox in sandboxes.items
-            if sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED)
-        ]
+        active = [sandbox async for sandbox in fetch_sandboxes(example_benchmark_object, daytona_client)]
         assert len(active) == 0
 
         await daytona_client.close()
@@ -269,12 +263,7 @@ class TestForceStop:
         daytona_client = benchmark_service.daytona_client
 
         # Try to fetch the sandboxes and see if any of them are still running
-        sandboxes = await fetch_sandboxes(example_benchmark_object, daytona_client, 1)
-        active = [
-            sandbox
-            for sandbox in sandboxes.items
-            if sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED)
-        ]
+        active = [sandbox async for sandbox in fetch_sandboxes(example_benchmark_object, daytona_client)]
         assert len(active) == 0
 
         await daytona_client.close()

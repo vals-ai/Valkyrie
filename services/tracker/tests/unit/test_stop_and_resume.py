@@ -41,6 +41,11 @@ from tracker.utils import (
 client = TestClient(app)
 
 
+async def _empty_async_iter():
+    if False:
+        yield None
+
+
 class TestStopAndResume:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
@@ -827,7 +832,7 @@ class TestStopAndResume:
 
         # Mock daytona client since its not required
         mock_daytona = AsyncMock()
-        mock_daytona.list = AsyncMock(return_value=AsyncMock(items=[], total_pages=0, page=1))
+        mock_daytona.list = Mock(return_value=_empty_async_iter())
         monkeypatch.setattr(
             Benchmark,
             "benchmark_service",
