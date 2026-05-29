@@ -1274,14 +1274,10 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
 
 
 async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
-    """Stream the benchmark's still-active sandboxes via cursor pagination.
+    """Stream the benchmark's still-active sandboxes.
 
-    The SDK's ``list`` is itself a cursor-paginating async iterator, so this transparently
-    walks every page. Deliberately undecorated: tenacity's ``@retry`` is a no-op on an async
-    generator (it would only wrap generator *construction*, while the network calls — and any
-    ``DaytonaRateLimitError`` — happen lazily during consumer iteration, outside the retry
-    scope). Callers that need rate-limit retries must drive iteration from inside a retried
-    coroutine; see ``_stop_active_sandboxes``.
+    Not retry-decorated: @retry is a no-op on an async generator (it wraps only construction,
+    not iteration). Rate-limit retries belong on a consuming coroutine; see _stop_active_sandboxes.
     """
     async for sandbox in daytona_client.list(
         ListSandboxesQuery(
@@ -1308,13 +1304,9 @@ async def _stop_active_sandboxes(
 ) -> None:
     """Stop each active sandbox as the cursor yields it, recording per-sandbox outcomes.
 
-    Stopping during iteration (rather than after materializing the full list) keeps the
-    cursor pass live, so sandboxes that appear ahead of the cursor mid-operation are still
-    swept up. This is a plain coroutine — not an async generator — which is what lets the
-    ``@tenacity_retry`` above actually retry: a ``DaytonaRateLimitError`` raised mid-stream
-    restarts the whole pass. ``attempted`` (mutated in place, so it survives retries) keys on
-    sandbox id to skip anything already handled, making the restart idempotent and cheap and
-    guaranteeing termination even if a sandbox repeatedly fails to delete.
+    A plain coroutine so @retry works: a rate limit mid-stream restarts the pass. `attempted`
+    (kept across retries) skips already-handled sandboxes, keeping restarts idempotent and
+    terminating even if a sandbox repeatedly fails to delete.
     """
     async for sandbox in fetch_sandboxes(benchmark_row, daytona_client):
         if sandbox.id in attempted:
