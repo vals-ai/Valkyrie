@@ -247,15 +247,15 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
     ) -> None:
-        artifact = "full_result/turns.jsonl"
+        artifact = "artifacts/turns.jsonl"
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecuteResponse:
-            if command == "test -f /tmp/valkyrie/full_result/turns.jsonl":
+            if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
                 return ExecuteResponse(exit_code=0, result="")
-            if command == "stat -c%s /tmp/valkyrie/full_result/turns.jsonl":
+            if command == "stat -c%s /tmp/valkyrie/artifacts/turns.jsonl":
                 return ExecuteResponse(exit_code=0, result="12")
-            if command == "base64 /tmp/valkyrie/full_result/turns.jsonl":
+            if command == "base64 /tmp/valkyrie/artifacts/turns.jsonl":
                 return ExecuteResponse(exit_code=0, result="eyJ0dXJuIjoxfQo=")
             raise AssertionError(f"unexpected command: {command}")
 
@@ -278,7 +278,7 @@ class TestOutputArtifacts:
             harness_config.s3_bucket,
         )
 
-        assert uploaded == [(b'{"turn":1}\n', "benchmarks/benchmark-123/task_0/full_result/turns.jsonl")]
+        assert uploaded == [(b'{"turn":1}\n', "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
 
     async def test_upload_output_artifacts_can_upload_explicit_glob_sources(
         self,
@@ -315,8 +315,8 @@ class TestOutputArtifacts:
         await upload_output_artifacts(
             mock_sandbox,
             [
-                OutputArtifact(path="full_result/config.json", source="/logs/*/turns/init/config.json"),
-                OutputArtifact(path="full_result/result.json", source="/logs/*/result.json"),
+                OutputArtifact(path="artifacts/config.json", source="/logs/*/turns/init/config.json"),
+                OutputArtifact(path="artifacts/result.json", source="/logs/*/result.json"),
             ],
             "benchmark-123",
             "task_0",
@@ -325,8 +325,8 @@ class TestOutputArtifacts:
         )
 
         assert uploaded == [
-            (b'{"llm":{}}\n', "benchmarks/benchmark-123/task_0/full_result/config.json"),
-            (b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/full_result/result.json"),
+            (b'{"llm":{}}\n', "benchmarks/benchmark-123/task_0/artifacts/config.json"),
+            (b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/artifacts/result.json"),
         ]
 
     async def test_upload_output_artifacts_uses_result_paired_with_model_library_config(
@@ -357,24 +357,24 @@ class TestOutputArtifacts:
 
         await upload_output_artifacts(
             mock_sandbox,
-            [OutputArtifact(path="full_result/result.json", source="/logs/model-library-run/result.json")],
+            [OutputArtifact(path="artifacts/result.json", source="/logs/model-library-run/result.json")],
             "benchmark-123",
             "task_0",
             harness_config.aws,
             harness_config.s3_bucket,
         )
 
-        assert uploaded == [(b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/full_result/result.json")]
+        assert uploaded == [(b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/artifacts/result.json")]
 
     async def test_upload_output_artifacts_fails_when_declared_file_is_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
     ) -> None:
-        artifact = "full_result/missing.json"
+        artifact = "artifacts/missing.json"
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecuteResponse:
-            assert command == "test -f /tmp/valkyrie/full_result/missing.json"
+            assert command == "test -f /tmp/valkyrie/artifacts/missing.json"
             return ExecuteResponse(exit_code=1, result="")
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -387,12 +387,12 @@ class TestOutputArtifacts:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
     ) -> None:
-        artifact = "full_result/large.json"
+        artifact = "artifacts/large.json"
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecuteResponse:
-            if command == "test -f /tmp/valkyrie/full_result/large.json":
+            if command == "test -f /tmp/valkyrie/artifacts/large.json":
                 return ExecuteResponse(exit_code=0, result="")
-            if command == "stat -c%s /tmp/valkyrie/full_result/large.json":
+            if command == "stat -c%s /tmp/valkyrie/artifacts/large.json":
                 return ExecuteResponse(exit_code=0, result=str(sandbox_module.MAX_OUTPUT_ARTIFACT_BYTES + 1))
             raise AssertionError(f"unexpected command: {command}")
 
@@ -417,7 +417,7 @@ class TestAgentOutputTelemetry:
             install_cmd="",
             run_cmd="echo done",
             final_output="/logs",
-            output_artifacts=["full_result/result.json"],
+            output_artifacts=["artifacts/result.json"],
         )
         artifact_calls: list[str] = []
 
@@ -459,7 +459,7 @@ class TestAgentOutputTelemetry:
             benchmark_id="benchmark-123",
         )
 
-        assert artifact_calls == ["benchmark-123:task_0:full_result/result.json"]
+        assert artifact_calls == ["benchmark-123:task_0:artifacts/result.json"]
 
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,

@@ -135,10 +135,12 @@ class AgentContract(BaseModel):
 
     ```yaml
     output_artifacts:
-      - full_result/turns.jsonl
-      - path: full_result/result.json
+      - artifacts/summary.json
+      - path: artifacts/result.json
         source: /logs/{task_id}/result.json
     ```
+    Valkyrie does not require a specific destination prefix. Vals benchmark ingestion conventionally uses
+    `vals_format/config.json` and `vals_format/result.json`.
     """
 
     secrets: dict[str, str] = {}

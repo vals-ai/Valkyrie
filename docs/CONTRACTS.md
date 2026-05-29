@@ -23,8 +23,8 @@ run_cmd: >-
 final_output: /logs/my_agent
 
 output_artifacts:
-  - full_result/run_config.json
-  - full_result/turns.jsonl
+  - artifacts/summary.json
+  - artifacts/turns.jsonl
 
 secrets:
   ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
@@ -135,19 +135,21 @@ Producers can write files under `/tmp/valkyrie`:
 
 ```yaml
 output_artifacts:
-  - full_result/run_config.json
-  - full_result/turns.jsonl
+  - artifacts/summary.json
+  - artifacts/turns.jsonl
 ```
 
 Object entries specify an explicit sandbox source and upload destination. Sources may include `{task_id}` and shell-style glob patterns resolved inside the sandbox:
 
 ```yaml
 output_artifacts:
-  - path: full_result/config.json
+  - path: artifacts/config.json
     source: /logs/{task_id}/turns/init/config.json
-  - path: full_result/result.json
+  - path: artifacts/result.json
     source: /logs/{task_id}/result.json
 ```
+
+Valkyrie does not require a specific destination prefix. For Vals benchmark result ingestion, use the project convention `vals_format/config.json` and `vals_format/result.json`.
 
 Guardrails:
 
@@ -161,10 +163,10 @@ Guardrails:
 For the examples above, task `task_0` in run `run_id` uploads to matching task-scoped keys such as:
 
 ```text
-benchmarks/run_id/task_0/full_result/run_config.json
-benchmarks/run_id/task_0/full_result/turns.jsonl
-benchmarks/run_id/task_0/full_result/config.json
-benchmarks/run_id/task_0/full_result/result.json
+benchmarks/run_id/task_0/artifacts/summary.json
+benchmarks/run_id/task_0/artifacts/turns.jsonl
+benchmarks/run_id/task_0/artifacts/config.json
+benchmarks/run_id/task_0/artifacts/result.json
 ```
 
 ### `secrets: dict`

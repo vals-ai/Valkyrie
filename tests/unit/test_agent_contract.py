@@ -215,7 +215,7 @@ class TestFormatRunCmd:
 
 
 class TestOutputArtifactValidation:
-    def test_accepts_relative_destination_outside_full_result_prefix(self) -> None:
+    def test_accepts_relative_destination_path(self) -> None:
         request = AgentContractRequest(
             name="test-agent",
             install_cmd="true",
@@ -241,7 +241,7 @@ class TestOutputArtifactValidation:
                 name="test-agent",
                 install_cmd="true",
                 run_cmd="echo {problem_statement_path}",
-                output_artifacts=["full_result/../secret.json"],
+                output_artifacts=["artifacts/../secret.json"],
             )
 
     def test_rejects_absolute_path(self) -> None:
@@ -250,7 +250,7 @@ class TestOutputArtifactValidation:
                 name="test-agent",
                 install_cmd="true",
                 run_cmd="echo {problem_statement_path}",
-                output_artifacts=["/tmp/full_result/result.json"],
+                output_artifacts=["/tmp/artifacts/result.json"],
             )
 
     def test_rejects_too_many_output_artifacts(self) -> None:
@@ -259,21 +259,21 @@ class TestOutputArtifactValidation:
                 name="test-agent",
                 install_cmd="true",
                 run_cmd="echo {problem_statement_path}",
-                output_artifacts=["full_result/result.json"] * 11,
+                output_artifacts=["artifacts/result.json"] * 11,
             )
 
     def test_empty_source_is_treated_as_default_source(self) -> None:
-        artifact = OutputArtifact(path="full_result/result.json", source="")
+        artifact = OutputArtifact(path="artifacts/result.json", source="")
 
         assert artifact.source is None
 
     def test_rejects_relative_source_path(self) -> None:
         with pytest.raises(ValidationError, match="absolute sandbox paths"):
-            OutputArtifact(path="full_result/result.json", source="logs/result.json")
+            OutputArtifact(path="artifacts/result.json", source="logs/result.json")
 
     def test_rejects_root_glob_source_path(self) -> None:
         with pytest.raises(ValidationError, match="non-root directory prefix"):
-            OutputArtifact(path="full_result/result.json", source="/*.json")
+            OutputArtifact(path="artifacts/result.json", source="/*.json")
 
     def test_accepts_explicit_source_and_destination(self) -> None:
         request = AgentContractRequest(
@@ -282,7 +282,7 @@ class TestOutputArtifactValidation:
             run_cmd="echo {problem_statement_path}",
             output_artifacts=[
                 OutputArtifact(
-                    path="full_result/result.json",
+                    path="artifacts/result.json",
                     source="/logs/{task_id}/result.json",
                 )
             ],
@@ -290,7 +290,7 @@ class TestOutputArtifactValidation:
 
         artifact = request.output_artifacts[0]
         assert not isinstance(artifact, str)
-        assert artifact.path == "full_result/result.json"
+        assert artifact.path == "artifacts/result.json"
         assert artifact.source == "/logs/{task_id}/result.json"
 
 
@@ -414,8 +414,8 @@ class TestParseYamlContract:
             run_cmd: "agent --task {problem_statement_path}"
             final_output: /artifacts
             output_artifacts:
-              - full_result/turns.jsonl
-              - path: full_result/result.json
+              - artifacts/turns.jsonl
+              - path: artifacts/result.json
                 source: /logs/{task_id}/result.json
             secrets:
               API_KEY: MySecretName
@@ -425,9 +425,9 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert result.final_output == "/artifacts"
-        assert result.output_artifacts[0] == "full_result/turns.jsonl"
+        assert result.output_artifacts[0] == "artifacts/turns.jsonl"
         artifact = cast(OutputArtifact, result.output_artifacts[1])
-        assert artifact.path == "full_result/result.json"
+        assert artifact.path == "artifacts/result.json"
         assert artifact.source == "/logs/{task_id}/result.json"
         assert result.secrets == {"API_KEY": "MySecretName"}
 
