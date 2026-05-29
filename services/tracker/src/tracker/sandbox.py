@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import base64
 import shlex
 import time
@@ -24,7 +25,7 @@ from daytona import (
     Resources,
     SandboxState,
 )
-from daytona.common.errors import DaytonaConnectionError, DaytonaError
+from daytona.common.errors import DaytonaConflictError, DaytonaConnectionError, DaytonaError
 from daytona.handle.async_pty_handle import AsyncPtyHandle
 from opentelemetry import trace
 from tenacity import (
@@ -66,6 +67,10 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 SNAPSHOT_IMAGE_PREFIX = "snapshot:"
 _SANDBOX_AUTOSTOP_INTERVAL_MINUTES = 10 * 60
+_SANDBOX_DELETE_WAIT_TIMEOUT_SECONDS = 360.0
+_SANDBOX_DELETE_WAIT_INITIAL_INTERVAL_SECONDS = 1.0
+_SANDBOX_DELETE_WAIT_MAX_INTERVAL_SECONDS = 10.0
+_DELETED_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED)
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -85,7 +90,7 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     try:
         await sandbox.refresh_data()
 
-        if sandbox.state not in [SandboxState.DESTROYING, SandboxState.DESTROYED]:
+        if sandbox.state not in _DELETED_SANDBOX_STATES:
             # Set auto-stop interval in-case we fail to delete the sandbox
             await sandbox.set_autostop_interval(interval=1)
             await daytona.delete(sandbox)
@@ -97,6 +102,36 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
         raise
     except Exception as e:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+
+
+async def _wait_for_sandbox_delete(daytona: AsyncDaytona, sandbox_name: str) -> None:
+    start = time.monotonic()
+    interval = _SANDBOX_DELETE_WAIT_INITIAL_INTERVAL_SECONDS
+
+    while True:
+        try:
+            sandbox = await daytona.get(sandbox_name)
+        except DaytonaNotFoundError:
+            return
+
+        elapsed_seconds = time.monotonic() - start
+        if elapsed_seconds >= _SANDBOX_DELETE_WAIT_TIMEOUT_SECONDS:
+            raise DaytonaError(
+                f"Timed out waiting for sandbox `{sandbox_name}` to be deleted; current state: {sandbox.state}"
+            )
+
+        logger.info(
+            "sandbox.delete.wait",
+            extra={
+                "sandbox_id": sandbox.id,
+                "sandbox_name": sandbox.name,
+                "sandbox_state": str(sandbox.state),
+                "elapsed_seconds": elapsed_seconds,
+                "sleep_seconds": interval,
+            },
+        )
+        await asyncio.sleep(interval)
+        interval = min(interval * 2, _SANDBOX_DELETE_WAIT_MAX_INTERVAL_SECONDS)
 
 
 def _metric_image_name(image: str) -> str:
@@ -161,17 +196,33 @@ async def _create_sandbox(
     # If the container already exists and is healthy we reuse it
     try:
         sandbox = await daytona.get(sandbox_name)
-
-        # Restart the sandbox creation process if it cannot be recovered
-        if sandbox.state not in (SandboxState.DESTROYING, SandboxState.DESTROYED, SandboxState.STOPPED):
-            await sandbox.wait_for_sandbox_start(timeout=0)
-            return sandbox
     except DaytonaNotFoundError:
         pass
     except DaytonaError as e:
         # Transient error (server disconnected, network blip, etc.) — fall through to create.
         logger.warning("Failed to get sandbox %s, will create instead: %s", sandbox_name, e)
+    else:
+        if sandbox.state in _DELETED_SANDBOX_STATES:
+            await _wait_for_sandbox_delete(daytona, sandbox_name)
+        elif sandbox.state != SandboxState.STOPPED:
+            await sandbox.wait_for_sandbox_start(timeout=0)
+            return sandbox
 
+    try:
+        return await _create_new_sandbox(daytona, sandbox_name, image, resources, labels, env_vars)
+    except DaytonaConflictError:
+        await _wait_for_sandbox_delete(daytona, sandbox_name)
+        raise
+
+
+async def _create_new_sandbox(
+    daytona: AsyncDaytona,
+    sandbox_name: str,
+    image: str,
+    resources: TrackerResources,
+    labels: dict[str, str] | None = None,
+    env_vars: dict[str, str] | None = None,
+) -> AsyncSandbox:
     if image.startswith(SNAPSHOT_IMAGE_PREFIX):
         snapshot_name = image[len(SNAPSHOT_IMAGE_PREFIX) :].strip()
         if not snapshot_name:
