@@ -307,6 +307,37 @@ class TestUploadAgentArtifacts:
 
 
 class TestStreamCommandOutputAgentFailure:
+    async def test_stream_command_output_removes_timing_files(self) -> None:
+        async def stream_command(_command: str) -> Any:
+            yield "done\n"
+
+        exec_commands: list[str] = []
+
+        async def exec_command(command: str) -> ExecResult:
+            exec_commands.append(command)
+            if command.startswith("cat ") and command.endswith(".start_ns"):
+                return ExecResult(exit_code=0, output="1000000000")
+            if command.startswith("cat ") and command.endswith(".end_ns"):
+                return ExecResult(exit_code=0, output="3000000000")
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.state = "started"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        exit_reason, duration = await sandbox_module.stream_command_output(
+            mock_sandbox, "run-agent.sh", on_output=lambda _: None
+        )
+
+        assert exit_reason is None
+        assert duration == 2
+        assert exec_commands[-1].startswith("rm -f ")
+        assert ".start_ns" in exec_commands[-1]
+        assert ".end_ns" in exec_commands[-1]
+
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int

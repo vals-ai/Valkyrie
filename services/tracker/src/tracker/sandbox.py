@@ -337,29 +337,35 @@ async def stream_command_output(
         f'; sh -c "exit $exit_code"'
     )
 
+    exit_code = _SUCCESS_EXIT_CODE
     try:
-        async for data in sandbox.command(timed_command):
-            on_output(data)
-            output.append(data)
+        try:
+            async for data in sandbox.command(timed_command):
+                on_output(data)
+                output.append(data)
+        except ProviderSandboxCommandError as e:
+            exit_code = e.exit_code
+
         start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
         end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
-        return None, (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
-    except ProviderSandboxCommandError as e:
-        exit_code = e.exit_code
+        duration = (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
 
-    start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
-    end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
-    duration = (int(end_ns.strip()) - int(start_ns.strip())) / 1e9
+        if exit_code == _SUCCESS_EXIT_CODE:
+            return None, duration
+        if exit_code == _TIMEOUT_EXIT_CODE:
+            return AgentCausedExitReason.TIMEOUT, duration
+        if exit_code == _OS_KILL_EXIT_CODE:
+            return AgentCausedExitReason.OS_KILLED, duration
 
-    if exit_code == _TIMEOUT_EXIT_CODE:
-        return AgentCausedExitReason.TIMEOUT, duration
-    if exit_code == _OS_KILL_EXIT_CODE:
-        return AgentCausedExitReason.OS_KILLED, duration
-
-    tail = "".join(output).strip().splitlines()
-    recent = "\n".join(tail[-10:]) if tail else "(no output)"
-    sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-    raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
+        tail = "".join(output).strip().splitlines()
+        recent = "\n".join(tail[-10:]) if tail else "(no output)"
+        sentry_sdk.set_tag("agent_exit_code", str(exit_code))
+        raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
+    finally:
+        try:
+            await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
+        except Exception:
+            pass
 
 
 @logfire.instrument(
