@@ -215,23 +215,25 @@ class TestFormatRunCmd:
 
 
 class TestOutputArtifactValidation:
-    def test_rejects_path_outside_full_result_prefix(self) -> None:
-        with pytest.raises(ValidationError, match="full_result"):
-            AgentContractRequest(
-                name="test-agent",
-                install_cmd="true",
-                run_cmd="echo {problem_statement_path}",
-                output_artifacts=["other/result.json"],
-            )
+    def test_accepts_relative_destination_outside_full_result_prefix(self) -> None:
+        request = AgentContractRequest(
+            name="test-agent",
+            install_cmd="true",
+            run_cmd="echo {problem_statement_path}",
+            output_artifacts=["metrics/result.json"],
+        )
 
-    def test_rejects_bare_full_result_path(self) -> None:
-        with pytest.raises(ValidationError, match="full_result"):
-            AgentContractRequest(
-                name="test-agent",
-                install_cmd="true",
-                run_cmd="echo {problem_statement_path}",
-                output_artifacts=["full_result"],
-            )
+        assert request.output_artifacts == ["metrics/result.json"]
+
+    def test_accepts_single_component_relative_destination(self) -> None:
+        request = AgentContractRequest(
+            name="test-agent",
+            install_cmd="true",
+            run_cmd="echo {problem_statement_path}",
+            output_artifacts=["result.json"],
+        )
+
+        assert request.output_artifacts == ["result.json"]
 
     def test_rejects_path_traversal(self) -> None:
         with pytest.raises(ValidationError, match="output_artifacts"):
@@ -259,6 +261,11 @@ class TestOutputArtifactValidation:
                 run_cmd="echo {problem_statement_path}",
                 output_artifacts=["full_result/result.json"] * 11,
             )
+
+    def test_empty_source_is_treated_as_default_source(self) -> None:
+        artifact = OutputArtifact(path="full_result/result.json", source="")
+
+        assert artifact.source is None
 
     def test_rejects_relative_source_path(self) -> None:
         with pytest.raises(ValidationError, match="absolute sandbox paths"):

@@ -954,11 +954,8 @@ async def upload_output_artifacts(
     task_id: str,
     aws: AWSCredentials,
     s3_bucket: str,
-    final_output: str | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
-    # Retained temporarily for call-site compatibility; artifact sources are fully contract-declared.
-    _ = final_output
     total_bytes = 0
 
     for artifact in artifacts:
@@ -1093,7 +1090,6 @@ async def run_agent(
             task_id,
             aws,
             s3_bucket,
-            final_output=contract.final_output,
         )
 
     # Return why the agent terminated abnormally, or None on clean exit

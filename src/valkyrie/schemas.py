@@ -1,10 +1,14 @@
 from enum import Enum
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, create_model, field_validator
+from tracker.database.models import OutputArtifact, OutputArtifactSpec
 
 from valkyrie.cli.exceptions import ContractValidationError
+
+
+__all__ = ["OutputArtifact", "OutputArtifactSpec"]
 
 
 class Defaults(str, Enum):
@@ -86,41 +90,6 @@ class Parameter(BaseModel):
       description: "Sampling temperature"
     ```
     """
-
-
-def _source_has_glob(source: str) -> bool:
-    return any(char in source for char in "*?[")
-
-
-def _source_glob_root(source: str) -> str:
-    glob_indices = [source.find(char) for char in "*?[" if source.find(char) != -1]
-    first_glob_index = min(glob_indices)
-    root = source[:first_glob_index].rsplit("/", 1)[0]
-    return root or "/"
-
-
-class OutputArtifact(BaseModel):
-    path: str
-    source: str | None = None
-
-    @field_validator("source")
-    @classmethod
-    def validate_source(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        if not value.startswith("/"):
-            raise ValueError("output_artifacts source paths must be absolute sandbox paths")
-
-        path = PurePosixPath(value)
-        if not path.parts or ".." in path.parts or "." in path.parts:
-            raise ValueError("output_artifacts source paths cannot contain empty, '.', or '..' path parts")
-        if _source_has_glob(value) and _source_glob_root(value) == "/":
-            raise ValueError("output_artifacts glob sources must include a non-root directory prefix")
-
-        return value
-
-
-OutputArtifactSpec = str | OutputArtifact
 
 
 class AgentContract(BaseModel):

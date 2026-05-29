@@ -127,11 +127,11 @@ final_output: /logs/my_agent
 
 ### `output_artifacts: list`
 
-Small files to upload directly from the sandbox into the task's S3 folder so they can be read without downloading `agent_output.tar.gz`. Files may still remain inside `final_output`; direct sidecars intentionally duplicate selected files for cheap Lambda/parser reads while preserving the full debug archive.
+Small files to upload directly from the sandbox into the task's S3 folder without adding them to `agent_output.tar.gz`. Use this for parser/evaluation inputs that need cheap direct reads.
 
 String entries are shorthand: tracker reads `/tmp/valkyrie/<path>` and uploads to `<path>`.
 
-Canonical producers can write files under `/tmp/valkyrie`:
+Producers can write files under `/tmp/valkyrie`:
 
 ```yaml
 output_artifacts:
@@ -151,9 +151,8 @@ output_artifacts:
 
 Guardrails:
 
-- Artifact destination paths are relative task S3 paths. String entries use the same path under `/tmp/valkyrie`; object entries use their explicit `source`.
+- Artifact destination paths are relative to the task's S3 prefix. String entries use the same path under `/tmp/valkyrie`; object entries use their explicit `source`.
 - Object `source` paths must be absolute sandbox paths. Glob sources must include a non-root directory prefix such as `/logs` or `/app/results/...`.
-- Artifact paths must be under `full_result/`.
 - Each declared artifact is required. Missing files or unresolved glob sources fail the task clearly.
 - Individual files cannot exceed 50 MiB.
 - At most 10 output artifacts can be declared.

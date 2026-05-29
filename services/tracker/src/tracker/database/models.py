@@ -104,7 +104,7 @@ class OutputArtifact(BaseModel):
     @field_validator("source")
     @classmethod
     def validate_source(cls, value: str | None) -> str | None:
-        if value is None:
+        if not value:
             return None
         if not value.startswith("/"):
             raise ValueError("output_artifacts source paths must be absolute sandbox paths")
@@ -144,8 +144,6 @@ class AgentContractRequest(BaseModel):
                 raise ValueError("output_artifacts paths must be relative paths")
             if not path.parts or ".." in path.parts or "." in path.parts:
                 raise ValueError("output_artifacts paths cannot contain empty, '.', or '..' path parts")
-            if len(path.parts) < 2 or path.parts[0] != "full_result":
-                raise ValueError("output_artifacts paths must be under the full_result/ prefix")
             if isinstance(artifact, str):
                 normalized_artifacts.append(str(path))
             else:

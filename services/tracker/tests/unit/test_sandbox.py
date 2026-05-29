@@ -280,7 +280,7 @@ class TestOutputArtifacts:
 
         assert uploaded == [(b'{"turn":1}\n', "benchmarks/benchmark-123/task_0/full_result/turns.jsonl")]
 
-    async def test_upload_output_artifacts_can_upload_model_library_files_from_final_output(
+    async def test_upload_output_artifacts_can_upload_explicit_glob_sources(
         self,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
@@ -322,7 +322,6 @@ class TestOutputArtifacts:
             "task_0",
             harness_config.aws,
             harness_config.s3_bucket,
-            final_output="/logs",
         )
 
         assert uploaded == [
@@ -363,7 +362,6 @@ class TestOutputArtifacts:
             "task_0",
             harness_config.aws,
             harness_config.s3_bucket,
-            final_output="/logs",
         )
 
         assert uploaded == [(b'{"turns":[]}\n', "benchmarks/benchmark-123/task_0/full_result/result.json")]
@@ -438,9 +436,8 @@ class TestAgentOutputTelemetry:
             task_id: str,
             _aws: Any,
             _s3_bucket: str,
-            final_output: str | None = None,
         ) -> None:
-            artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}:{final_output}")
+            artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
         monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
@@ -462,7 +459,7 @@ class TestAgentOutputTelemetry:
             benchmark_id="benchmark-123",
         )
 
-        assert artifact_calls == ["benchmark-123:task_0:full_result/result.json:/logs"]
+        assert artifact_calls == ["benchmark-123:task_0:full_result/result.json"]
 
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,
