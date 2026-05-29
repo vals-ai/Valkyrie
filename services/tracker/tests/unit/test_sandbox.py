@@ -28,11 +28,16 @@ _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencie
 _reconnect_and_wait_pty = getattr(sandbox_module, "_reconnect_and_wait_pty")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 _wait_for_pty = getattr(sandbox_module, "_wait_for_pty")
-_fetch_sandboxes = getattr(utils_module, "fetch_sandboxes")
+_stop_active_sandboxes = getattr(utils_module, "_stop_active_sandboxes")  # pyright: ignore[reportPrivateUsage]
 
 
 def _ignore_pty_data(_data: bytes) -> None:
     pass
+
+
+async def _async_iter(items: list[Any]) -> Any:
+    for item in items:
+        yield item
 
 
 class TestPtyHandshakeSemaphore:
@@ -454,7 +459,7 @@ class TestAgentOutputTelemetry:
 
         assert wait_strategy(retry_state) == 8
 
-    async def test_fetch_sandboxes_does_not_retry_non_rate_limit_daytona_errors(self) -> None:
+    async def test_stop_active_sandboxes_does_not_retry_non_rate_limit_daytona_errors(self) -> None:
         benchmark = Mock()
         benchmark.name = "benchmark"
         benchmark.id = "benchmark-id"
@@ -462,12 +467,74 @@ class TestAgentOutputTelemetry:
         daytona_client.list.side_effect = DaytonaError("transient")
 
         with pytest.raises(DaytonaError):
-            async for _ in _fetch_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
-                benchmark, daytona_client
-            ):
-                pass
+            await _stop_active_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
+                benchmark, daytona_client, {}, set()
+            )
 
         assert daytona_client.list.call_count == 1
+
+    async def test_stop_active_sandboxes_retries_rate_limit_daytona_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        benchmark = Mock()
+        benchmark.name = "benchmark"
+        benchmark.id = "benchmark-id"
+        active = Mock(id="s1", state=SandboxState.STARTED)
+        active.name = "sandbox-1"
+        deleted = Mock(id="s2", state=SandboxState.DESTROYED)
+        deleted.name = "sandbox-2"
+        daytona_client = Mock()
+        daytona_client.list.side_effect = [
+            DaytonaRateLimitError("rate limited"),
+            _async_iter([active, deleted]),
+        ]
+
+        stopped: list[Any] = []
+
+        async def fake_stop_sandbox(sandbox: Any, _client: Any) -> None:
+            stopped.append(sandbox)
+            return None
+
+        monkeypatch.setattr(utils_module, "stop_sandbox", fake_stop_sandbox)
+
+        results: dict[str, str | None] = {}
+        attempted: set[str] = set()
+        await _stop_active_sandboxes.retry_with(stop=stop_after_attempt(3), wait=wait_none())(
+            benchmark, daytona_client, results, attempted
+        )
+
+        # The rate-limited first attempt is retried; the second pass stops only the active sandbox.
+        assert daytona_client.list.call_count == 2
+        assert stopped == [active]
+        assert results == {"sandbox-1": None}
+
+    async def test_stop_active_sandboxes_skips_already_attempted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        benchmark = Mock()
+        benchmark.name = "benchmark"
+        benchmark.id = "benchmark-id"
+        first = Mock(id="s1", state=SandboxState.STARTED)
+        first.name = "sandbox-1"
+        second = Mock(id="s2", state=SandboxState.STARTED)
+        second.name = "sandbox-2"
+        daytona_client = Mock()
+        daytona_client.list.return_value = _async_iter([first, second])
+
+        stopped: list[Any] = []
+
+        async def fake_stop_sandbox(sandbox: Any, _client: Any) -> None:
+            stopped.append(sandbox)
+            return None
+
+        monkeypatch.setattr(utils_module, "stop_sandbox", fake_stop_sandbox)
+
+        attempted: set[str] = {"s1"}  # s1 already handled (e.g. before a rate-limit restart)
+        results: dict[str, str | None] = {}
+        await _stop_active_sandboxes(benchmark, daytona_client, results, attempted)
+
+        # s1 is skipped because it is already in `attempted`; only s2 is stopped.
+        assert stopped == [second]
+        assert attempted == {"s1", "s2"}
+        assert results == {"sandbox-2": None}
 
     def test_daytona_retry_callback_emits_rate_limit_metrics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         increments: list[tuple[str, dict[str, str]]] = []
