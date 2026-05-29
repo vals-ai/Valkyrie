@@ -1304,9 +1304,8 @@ async def _stop_active_sandboxes(
 ) -> None:
     """Stop each active sandbox as the cursor yields it, recording per-sandbox outcomes.
 
-    A plain coroutine so @retry works: a rate limit mid-stream restarts the pass. `attempted`
-    (kept across retries) skips already-handled sandboxes, keeping restarts idempotent and
-    terminating even if a sandbox repeatedly fails to delete.
+    `attempted` (kept across retries) skips already-handled sandboxes, so a rate-limit retry
+    restarts the pass without re-stopping anything or looping forever on an undeletable sandbox.
     """
     async for sandbox in fetch_sandboxes(benchmark_row, daytona_client):
         if sandbox.id in attempted:
