@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from daytona import ExecuteResponse, SandboxState
-from daytona.common.errors import DaytonaConnectionError, DaytonaError, DaytonaNotFoundError, DaytonaRateLimitError
+from daytona.common.errors import (
+    DaytonaConflictError,
+    DaytonaConnectionError,
+    DaytonaError,
+    DaytonaNotFoundError,
+    DaytonaRateLimitError,
+)
 from tenacity import stop_after_attempt, wait_none
 
 import tracker.daytona_retry as daytona_retry_module
@@ -20,6 +26,7 @@ from tracker.sandbox import create_sandbox, run_agent, stream_command_output, up
 from tracker.types import AWSCredentials
 
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
+_wait_for_sandbox_delete = sandbox_module._wait_for_sandbox_delete  # pyright: ignore[reportPrivateUsage]
 _create_pty_session = getattr(sandbox_module, "_create_pty_session")
 _check_sandbox_health = getattr(sandbox_module, "_check_sandbox_health")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
@@ -796,6 +803,103 @@ class TestAgentOutputTelemetry:
 
         assert sandbox is mock_sandbox
         assert span_calls == [("task-alias", "ghcr.io/vals/swebench:latest", 2)]
+
+    async def test_create_sandbox_waits_for_deleting_sandbox_before_create(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        existing_sandbox = SimpleNamespace(id="old-sandbox-id", name="task-alias", state=SandboxState.DESTROYING)
+        created_sandbox = SimpleNamespace(id="new-sandbox-id", name="task-alias", state=SandboxState.STARTED)
+        events: list[str] = []
+
+        async def fake_wait_for_sandbox_delete(daytona: AsyncMock, sandbox_name: str) -> None:
+            assert sandbox_name == "task-alias"
+            events.append("wait")
+
+        async def fake_create_new_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+            events.append("create")
+            return created_sandbox
+
+        monkeypatch.setattr(sandbox_module, "_wait_for_sandbox_delete", fake_wait_for_sandbox_delete)
+        monkeypatch.setattr(sandbox_module, "_create_new_sandbox", fake_create_new_sandbox)
+
+        daytona = AsyncMock()
+        daytona.get = AsyncMock(return_value=existing_sandbox)
+
+        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        sandbox = await _create_sandbox.retry_with(stop=stop_after_attempt(1), wait=wait_none())(
+            daytona,
+            "task-alias",
+            "ghcr.io/vals/swebench:latest",
+            resources,
+        )
+
+        assert sandbox is created_sandbox
+        assert events == ["wait", "create"]
+
+    async def test_create_sandbox_waits_after_conflict_before_retry(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        created_sandbox = SimpleNamespace(id="new-sandbox-id", name="task-alias", state=SandboxState.STARTED)
+        events: list[str] = []
+
+        async def fake_wait_for_sandbox_delete(daytona: AsyncMock, sandbox_name: str) -> None:
+            assert sandbox_name == "task-alias"
+            events.append("wait")
+
+        async def fake_create_new_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+            events.append("create")
+            if events.count("create") == 1:
+                raise DaytonaConflictError("Sandbox with name task-alias already exists")
+            return created_sandbox
+
+        monkeypatch.setattr(sandbox_module, "_wait_for_sandbox_delete", fake_wait_for_sandbox_delete)
+        monkeypatch.setattr(sandbox_module, "_create_new_sandbox", fake_create_new_sandbox)
+
+        daytona = AsyncMock()
+        daytona.get = AsyncMock(side_effect=DaytonaNotFoundError("missing"))
+
+        resources = sandbox_module.TrackerResources(vcpu=2, memory=4, disk=5)
+        sandbox = await _create_sandbox.retry_with(stop=stop_after_attempt(2), wait=wait_none())(
+            daytona,
+            "task-alias",
+            "ghcr.io/vals/swebench:latest",
+            resources,
+        )
+
+        assert sandbox is created_sandbox
+        assert events == ["create", "wait", "create"]
+
+    async def test_wait_for_sandbox_delete_polls_until_not_found(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        existing_sandbox = SimpleNamespace(id="old-sandbox-id", name="task-alias", state=SandboxState.DESTROYING)
+        sleep_calls: list[float] = []
+
+        async def fake_sleep(seconds: float) -> None:
+            sleep_calls.append(seconds)
+
+        monkeypatch.setattr(sandbox_module.asyncio, "sleep", fake_sleep)
+
+        daytona = AsyncMock()
+        daytona.get = AsyncMock(side_effect=[existing_sandbox, DaytonaNotFoundError("missing")])
+
+        await _wait_for_sandbox_delete(daytona, "task-alias")
+
+        assert daytona.get.await_count == 2
+        assert sleep_calls == [1.0]
+
+    async def test_wait_for_sandbox_delete_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        existing_sandbox = SimpleNamespace(id="old-sandbox-id", name="task-alias", state=SandboxState.DESTROYING)
+        monotonic_values: deque[float] = deque([0.0, 361.0])
+
+        def fake_monotonic() -> float:
+            if monotonic_values:
+                return monotonic_values.popleft()
+            return 361.0
+
+        monkeypatch.setattr(sandbox_module.time, "monotonic", fake_monotonic)
+
+        daytona = AsyncMock()
+        daytona.get = AsyncMock(return_value=existing_sandbox)
+
+        with pytest.raises(DaytonaError, match="Timed out waiting for sandbox `task-alias` to be deleted"):
+            await _wait_for_sandbox_delete(daytona, "task-alias")
 
     async def test_delete_sandbox_tags_daytona_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
         daytona_error = DaytonaError("delete failed")
