@@ -107,9 +107,9 @@ jobs:
           fi
 
           # Pre-build each block's text so the message structure below stays readable.
-          HEADER_TEXT="🚀 Valkyrie ${CURRENT_TAG} deployed to prod"
+          HEADER_TEXT=":wing: Valkyrie ${CURRENT_TAG} deployed to prod"
           CHANGES_TEXT="*${LABEL}*"$'\n'"${CHANGE_LIST}"
-          CLI_TEXT="🔄 *Update your CLI*"$'\n'"\`uv tool install git+https://github.com/vals-ai/Valkyrie@prod\`"
+          CLI_TEXT="🔄 *Remember to update your CLI:*"$'\n'"\`uv tool install git+https://github.com/vals-ai/Valkyrie@prod\`"
           CONTEXT_TEXT="<${DEPLOY_URL}|Deploy run> · <${RELEASE_URL}|Release>"
 
           jq -n \
@@ -127,8 +127,7 @@ jobs:
                   { type: "section", text: { type: "mrkdwn", text: $changes_text } }
                 ]
                 + (if $changelog_text != "" then
-                    [ { type: "divider" },
-                      { type: "section", text: { type: "mrkdwn", text: $changelog_text } } ]
+                    [ { type: "section", text: { type: "mrkdwn", text: $changelog_text } } ]
                    else [] end)
                 + [
                   { type: "divider" },
