@@ -1273,6 +1273,26 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
         return f"{str(e)}: {traceback.format_exc()}"
 
 
+async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
+    """Stream the benchmark's still-active sandboxes via cursor pagination.
+
+    The SDK's ``list`` is itself a cursor-paginating async iterator, so this transparently
+    walks every page. Deliberately undecorated: tenacity's ``@retry`` is a no-op on an async
+    generator (it would only wrap generator *construction*, while the network calls — and any
+    ``DaytonaRateLimitError`` — happen lazily during consumer iteration, outside the retry
+    scope). Callers that need rate-limit retries must drive iteration from inside a retried
+    coroutine; see ``_stop_active_sandboxes``.
+    """
+    async for sandbox in daytona_client.list(
+        ListSandboxesQuery(
+            labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
+            limit=_DAYTONA_LIST_PAGE_SIZE,
+        )
+    ):
+        if sandbox.state not in _DELETED_DAYTONA_SANDBOX_STATES:
+            yield sandbox
+
+
 @tenacity_retry(
     retry=retry_if_exception_type(DaytonaRateLimitError),
     stop=stop_after_attempt(5),
@@ -1280,23 +1300,27 @@ async def stop_sandbox(sandbox: AsyncSandbox, daytona_client: AsyncDaytona) -> s
     before_sleep=daytona_retry_callback("valkyrie.sandbox.list", op="sandbox.list"),
     reraise=True,
 )
-async def _list_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> Sequence[AsyncSandbox]:
-    return [
-        sandbox
-        async for sandbox in daytona_client.list(
-            ListSandboxesQuery(
-                labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)},
-                limit=_DAYTONA_LIST_PAGE_SIZE,
-            )
-        )
-    ]
+async def _stop_active_sandboxes(
+    benchmark_row: Benchmark,
+    daytona_client: AsyncDaytona,
+    results: dict[str, str | None],
+    attempted: set[str],
+) -> None:
+    """Stop each active sandbox as the cursor yields it, recording per-sandbox outcomes.
 
-
-async def fetch_sandboxes(benchmark_row: Benchmark, daytona_client: AsyncDaytona) -> AsyncGenerator[AsyncSandbox, None]:
-    sandboxes = await _list_sandboxes(benchmark_row, daytona_client)
-    for sandbox in sandboxes:
-        if sandbox.state not in _DELETED_DAYTONA_SANDBOX_STATES:
-            yield sandbox
+    Stopping during iteration (rather than after materializing the full list) keeps the
+    cursor pass live, so sandboxes that appear ahead of the cursor mid-operation are still
+    swept up. This is a plain coroutine — not an async generator — which is what lets the
+    ``@tenacity_retry`` above actually retry: a ``DaytonaRateLimitError`` raised mid-stream
+    restarts the whole pass. ``attempted`` (mutated in place, so it survives retries) keys on
+    sandbox id to skip anything already handled, making the restart idempotent and cheap and
+    guaranteeing termination even if a sandbox repeatedly fails to delete.
+    """
+    async for sandbox in fetch_sandboxes(benchmark_row, daytona_client):
+        if sandbox.id in attempted:
+            continue
+        attempted.add(sandbox.id)
+        results[sandbox.name] = await stop_sandbox(sandbox, daytona_client)
 
 
 async def force_stop_sandboxes(
@@ -1323,13 +1347,11 @@ async def force_stop_sandboxes(
 
         session.commit()
 
-        # Iterate through each running sandbox and stop it, collecting error messages
+        # Stream the running sandboxes and stop each as it is yielded, collecting error messages.
+        # The retried coroutine streams + deletes in one pass; `attempted` dedupes across retries.
         results: dict[str, str | None] = {}
-        sandboxes = [sandbox async for sandbox in fetch_sandboxes(benchmark_row, daytona_client)]
-        for sandbox in sandboxes:
-            result = await stop_sandbox(sandbox, daytona_client)
-
-            results[sandbox.name] = result
+        attempted: set[str] = set()
+        await _stop_active_sandboxes(benchmark_row, daytona_client, results, attempted)
 
         error_message: str = "\n".join(
             f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
