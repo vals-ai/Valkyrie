@@ -29,10 +29,13 @@ from daytona.common.errors import DaytonaConflictError, DaytonaConnectionError, 
 from daytona.handle.async_pty_handle import AsyncPtyHandle
 from opentelemetry import trace
 from tenacity import (
+    AsyncRetrying,
+    RetryError,
     retry,
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
+    stop_after_delay,
     wait_exponential,
     wait_fixed,
 )
@@ -68,7 +71,6 @@ bundle_path = PurePosixPath("/bundle")
 SNAPSHOT_IMAGE_PREFIX = "snapshot:"
 _SANDBOX_AUTOSTOP_INTERVAL_MINUTES = 10 * 60
 _SANDBOX_DELETE_WAIT_TIMEOUT_SECONDS = 360.0
-_SANDBOX_DELETE_WAIT_INITIAL_INTERVAL_SECONDS = 1.0
 _SANDBOX_DELETE_WAIT_MAX_INTERVAL_SECONDS = 10.0
 _DELETED_SANDBOX_STATES = (SandboxState.DESTROYING, SandboxState.DESTROYED)
 
@@ -89,7 +91,6 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
     """Delete sandbox if it is not already destroyed or being destroyed"""
     try:
         await sandbox.refresh_data()
-
         if sandbox.state not in _DELETED_SANDBOX_STATES:
             # Set auto-stop interval in-case we fail to delete the sandbox
             await sandbox.set_autostop_interval(interval=1)
@@ -104,34 +105,49 @@ async def delete_sandbox(sandbox: AsyncSandbox, daytona: AsyncDaytona) -> None:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
 
 
+class SandboxStillExistsError(DaytonaError):
+    def __init__(self, sandbox: AsyncSandbox) -> None:
+        self.sandbox = sandbox
+        super().__init__(f"Sandbox `{sandbox.name}` still exists")
+
+
+async def _raise_if_sandbox_exists(daytona: AsyncDaytona, sandbox_name: str, start: float) -> None:
+    sandbox = await daytona.get(sandbox_name)
+    logger.info(
+        "sandbox.delete.wait",
+        extra={
+            "sandbox_id": sandbox.id,
+            "sandbox_name": sandbox.name,
+            "sandbox_state": str(sandbox.state),
+            "elapsed_seconds": time.monotonic() - start,
+        },
+    )
+    raise SandboxStillExistsError(sandbox)
+
+
+def _sandbox_delete_wait_retryer() -> AsyncRetrying:
+    return AsyncRetrying(
+        sleep=asyncio.sleep,
+        retry=retry_if_exception_type(SandboxStillExistsError),
+        stop=stop_after_delay(_SANDBOX_DELETE_WAIT_TIMEOUT_SECONDS),
+        wait=wait_exponential(multiplier=1, min=1, max=_SANDBOX_DELETE_WAIT_MAX_INTERVAL_SECONDS),
+        before_sleep=daytona_retry_callback("valkyrie.sandbox.delete_wait", op="sandbox.delete_wait"),
+    )
+
 async def _wait_for_sandbox_delete(daytona: AsyncDaytona, sandbox_name: str) -> None:
     start = time.monotonic()
-    interval = _SANDBOX_DELETE_WAIT_INITIAL_INTERVAL_SECONDS
+    try:
+        await _sandbox_delete_wait_retryer()(_raise_if_sandbox_exists, daytona, sandbox_name, start)
+    except DaytonaNotFoundError:
+        return
+    except RetryError as e:
+        last_exception = e.last_attempt.exception()
+        if not isinstance(last_exception, SandboxStillExistsError):
+            raise
 
-    while True:
-        try:
-            sandbox = await daytona.get(sandbox_name)
-        except DaytonaNotFoundError:
-            return
-
-        elapsed_seconds = time.monotonic() - start
-        if elapsed_seconds >= _SANDBOX_DELETE_WAIT_TIMEOUT_SECONDS:
-            raise DaytonaError(
-                f"Timed out waiting for sandbox `{sandbox_name}` to be deleted; current state: {sandbox.state}"
-            )
-
-        logger.info(
-            "sandbox.delete.wait",
-            extra={
-                "sandbox_id": sandbox.id,
-                "sandbox_name": sandbox.name,
-                "sandbox_state": str(sandbox.state),
-                "elapsed_seconds": elapsed_seconds,
-                "sleep_seconds": interval,
-            },
-        )
-        await asyncio.sleep(interval)
-        interval = min(interval * 2, _SANDBOX_DELETE_WAIT_MAX_INTERVAL_SECONDS)
+        raise DaytonaError(
+            f"Timed out waiting for sandbox `{sandbox_name}` to be deleted; current state: {last_exception.sandbox.state}"
+        ) from e
 
 
 def _metric_image_name(image: str) -> str:
