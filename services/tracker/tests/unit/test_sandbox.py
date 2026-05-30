@@ -886,18 +886,16 @@ class TestAgentOutputTelemetry:
 
     async def test_wait_for_sandbox_delete_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
         existing_sandbox = SimpleNamespace(id="old-sandbox-id", name="task-alias", state=SandboxState.DESTROYING)
-        monotonic_values: deque[float] = deque([0.0, 361.0])
-
-        def fake_monotonic() -> float:
-            if monotonic_values:
-                return monotonic_values.popleft()
-            return 361.0
-
-        monkeypatch.setattr(sandbox_module.time, "monotonic", fake_monotonic)
 
         daytona = AsyncMock()
         daytona.get = AsyncMock(return_value=existing_sandbox)
 
+        original_retryer = sandbox_module._sandbox_delete_wait_retryer  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(
+            sandbox_module,
+            "_sandbox_delete_wait_retryer",
+            lambda: original_retryer().copy(stop=stop_after_attempt(1), wait=wait_none()),
+        )
         with pytest.raises(DaytonaError, match="Timed out waiting for sandbox `task-alias` to be deleted"):
             await _wait_for_sandbox_delete(daytona, "task-alias")
 
