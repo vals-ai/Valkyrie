@@ -134,6 +134,7 @@ def _sandbox_delete_wait_retryer() -> AsyncRetrying:
         before_sleep=daytona_retry_callback("valkyrie.sandbox.delete_wait", op="sandbox.delete_wait"),
     )
 
+
 async def _wait_for_sandbox_delete(daytona: AsyncDaytona, sandbox_name: str) -> None:
     start = time.monotonic()
     try:
