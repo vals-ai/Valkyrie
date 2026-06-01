@@ -4,6 +4,7 @@ import importlib.util
 import io
 import os
 import shutil
+import sys
 import tempfile
 import zipfile
 from contextlib import contextmanager
@@ -106,7 +107,10 @@ def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config:
                 for ext in (".yaml", ".yml", ".py"):
                     contract_member = f"{agent_name}/contract{ext}"
                     if contract_member in names:
-                        zf.extract(contract_member, tmp_path)
+                        if ext == ".py":
+                            zf.extractall(tmp_path)
+                        else:
+                            zf.extract(contract_member, tmp_path)
                         return get_contract(tmp_path / contract_member, agent_config)
 
             raise BundlerError(f"No contract file found in zip for agent '{agent_name}'")
@@ -124,7 +128,12 @@ def _parse_python_contract(contract_path: Path, agent_config: AgentConfig) -> Ag
 
     module = importlib.util.module_from_spec(spec)
 
-    spec.loader.exec_module(module)
+    contract_dir = str(contract_path.parent)
+    sys.path.insert(0, contract_dir)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(contract_dir)
 
     Contract: type[BaseAgentContract] = module.contract
 

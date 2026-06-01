@@ -1,3 +1,5 @@
+import io
+import zipfile
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, cast
@@ -6,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 from tracker.database.models import AgentContractRequest, OutputArtifact
 
-from valkyrie.cli.bundler import _parse_yaml_contract  # type: ignore
+from valkyrie.cli.bundler import _parse_yaml_contract, get_contract, get_contract_from_zip_bytes  # type: ignore
 from valkyrie.schemas import AgentConfig, AgentContract, Parameter
 
 
@@ -17,6 +19,92 @@ def _make_contract(**overrides: Any) -> AgentContract:
         "run_cmd": "agent --task {problem_statement_path}",
     }
     return AgentContract(**{**defaults, **overrides})
+
+
+def test_python_contract_can_import_bundled_helper(tmp_path: Path) -> None:
+    contract_path = tmp_path / "contract.py"
+    contract_path.write_text(
+        dedent(
+            """
+            from pathlib import Path
+            from valkyrie.contract import BaseAgentContract
+            from helper import SHARED_SECRETS
+
+
+            class TestContract(BaseAgentContract):
+                @property
+                def name(self) -> str:
+                    return "test_agent"
+
+                @property
+                def install_cmd(self) -> str:
+                    return "true"
+
+                @property
+                def secrets(self) -> dict[str, str]:
+                    return SHARED_SECRETS
+
+                @property
+                def final_output(self) -> Path | None:
+                    return None
+
+                def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, object]) -> str:
+                    return f"agent {problem_statement_path}"
+
+
+            contract = TestContract
+            """
+        )
+    )
+    (tmp_path / "helper.py").write_text('SHARED_SECRETS = {"OPENAI_API_KEY": "SharedSecret"}')
+
+    contract = get_contract(contract_path, AgentConfig())
+
+    assert contract.secrets == {"OPENAI_API_KEY": "SharedSecret"}
+
+
+def test_python_contract_from_zip_can_import_bundled_helper() -> None:
+    zip_stream = io.BytesIO()
+    with zipfile.ZipFile(zip_stream, "w") as zf:
+        zf.writestr(
+            "agent/contract.py",
+            dedent(
+                """
+                from pathlib import Path
+                from valkyrie.contract import BaseAgentContract
+                from helper import SHARED_SECRETS
+
+
+                class TestContract(BaseAgentContract):
+                    @property
+                    def name(self) -> str:
+                        return "test_agent"
+
+                    @property
+                    def install_cmd(self) -> str:
+                        return "true"
+
+                    @property
+                    def secrets(self) -> dict[str, str]:
+                        return SHARED_SECRETS
+
+                    @property
+                    def final_output(self) -> Path | None:
+                        return None
+
+                    def run_cmd(self, problem_statement_path: str, task_id: str, kwargs: dict[str, object]) -> str:
+                        return f"agent {problem_statement_path}"
+
+
+                contract = TestContract
+                """
+            ),
+        )
+        zf.writestr("agent/helper.py", 'SHARED_SECRETS = {"OPENAI_API_KEY": "SharedSecret"}')
+
+    contract = get_contract_from_zip_bytes("agent", zip_stream.getvalue(), AgentConfig())
+
+    assert contract.secrets == {"OPENAI_API_KEY": "SharedSecret"}
 
 
 class TestValidateKwargs:

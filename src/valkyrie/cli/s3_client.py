@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import io
 import re
+import sys
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -415,7 +416,12 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
                 if not spec or not spec.loader:
                     return None
                 module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+                contract_dir = str(contract_path.parent)
+                sys.path.insert(0, contract_dir)
+                try:
+                    spec.loader.exec_module(module)
+                finally:
+                    sys.path.remove(contract_dir)
                 contract_cls = module.contract
                 return contract_cls(AgentConfig()).ingest_lambda
 
