@@ -48,7 +48,13 @@ from tracker.aws.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
-from tracker.config import AUTH_REQUIRED, CORS_ALLOWED_ORIGINS, ENVIRONMENT, create_benchmark_service_url
+from tracker.config import (
+    AUTH_REQUIRED,
+    CORS_ALLOWED_ORIGINS,
+    ENVIRONMENT,
+    assert_auth_required_set,
+    create_benchmark_service_url,
+)
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -108,6 +114,11 @@ configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
+
+# Refuse to boot the service with an implicit AUTH_REQUIRED default — the CLI
+# tolerates the missing var (it only imports tracker.types for shared schemas),
+# but the FastAPI service must not.
+assert_auth_required_set()
 
 app = FastAPI()
 

@@ -77,16 +77,28 @@ broker = (
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
+    # Worker is a tracker entrypoint, so refuse to boot with an implicit
+    # AUTH_REQUIRED default (mirrors the FastAPI app's startup check).
+    assert_auth_required_set()
     configure_observability("valkyrie-worker", environment=ENVIRONMENT)
 
 
-# Auth settings
+# Auth settings — value is parsed lazily; tracker entrypoints call
+# `assert_auth_required_set()` at startup to refuse to boot with an implicit
+# default. Importing this module never raises (so the CLI, which transitively
+# imports tracker.types for shared schemas, doesn't crash for end users).
 _auth_required_raw = os.environ.get("AUTH_REQUIRED")
-if _auth_required_raw is None:
-    raise RuntimeError(
-        "AUTH_REQUIRED env var must be set explicitly to 'true' or 'false'. Refusing to start with an implicit default."
-    )
-AUTH_REQUIRED = _auth_required_raw.lower() == "true"
+AUTH_REQUIRED = (_auth_required_raw or "").lower() == "true"
+
+
+def assert_auth_required_set() -> None:
+    """Refuse to boot the tracker service with an implicit AUTH_REQUIRED default."""
+    if _auth_required_raw is None:
+        raise RuntimeError(
+            "AUTH_REQUIRED env var must be set explicitly to 'true' or 'false'. Refusing to start with an implicit default."
+        )
+
+
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")
 DESCOPE_MANAGEMENT_KEY = os.environ.get("DESCOPE_MANAGEMENT_KEY", "")
 
