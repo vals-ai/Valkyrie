@@ -453,9 +453,7 @@ def _find_root_for_glob(source: str) -> str:
     return root
 
 
-async def _resolve_output_artifact_sandbox_path(
-    sandbox: Sandbox, artifact: OutputArtifactSpec, task_id: str
-) -> str:
+async def _resolve_output_artifact_sandbox_path(sandbox: Sandbox, artifact: OutputArtifactSpec, task_id: str) -> str:
     source = _format_output_artifact_source(_output_artifact_source(artifact), task_id)
     if _has_glob(source):
         find_root = _find_root_for_glob(source)
