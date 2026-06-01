@@ -1,7 +1,6 @@
 from unittest.mock import patch
 from uuid import UUID
 
-import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 
