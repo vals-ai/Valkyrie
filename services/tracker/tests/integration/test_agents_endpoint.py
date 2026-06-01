@@ -32,9 +32,15 @@ def client(monkeypatch, database_session: Session):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
-    import tracker.config as config_mod; importlib.reload(config_mod)
-    import tracker.auth as auth_mod; importlib.reload(auth_mod)
-    import main as main_mod; importlib.reload(main_mod)
+    import tracker.config as config_mod
+
+    importlib.reload(config_mod)
+    import tracker.auth as auth_mod
+
+    importlib.reload(auth_mod)
+    import main as main_mod
+
+    importlib.reload(main_mod)
     from tracker.database.session import get_session as get_session_dep
 
     def get_test_session() -> Generator[Session, None, None]:
@@ -55,8 +61,10 @@ def client(monkeypatch, database_session: Session):
 def _make_org_config(session: Session) -> None:
     cfg = OrgConfig(
         org_id=TEST_ORG_ID,
-        aws_access_key_id="AKIA", aws_secret_access_key="s",
-        aws_default_region="us-east-1", s3_bucket="agentic-harness",
+        aws_access_key_id="AKIA",
+        aws_secret_access_key="s",
+        aws_default_region="us-east-1",
+        s3_bucket="agentic-harness",
         daytona_secret_name="d",
     )
     session.add(cfg)
@@ -67,10 +75,12 @@ def test_agents_returns_list(client, database_session, monkeypatch):
     _make_org_config(database_session)
     monkeypatch.setattr(
         "tracker.api.agents.list_s3_agent_names",
-        MagicMock(return_value=[
-            {"name": "claude_code", "last_modified": None},
-            {"name": "mini_sweagent", "last_modified": None},
-        ]),
+        MagicMock(
+            return_value=[
+                {"name": "claude_code", "last_modified": None},
+                {"name": "mini_sweagent", "last_modified": None},
+            ]
+        ),
     )
 
     resp = client.get("/agents", headers={"Authorization": "Bearer fake"})

@@ -1,4 +1,5 @@
 """GET /users — list users in the current org."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -25,7 +26,4 @@ def list_users(
 ) -> list[UserSummary]:
     _, org = user_and_org
     users = session.exec(select(User).where(User.org_id == org.id).order_by(User.email)).all()
-    return [
-        UserSummary(id=str(u.id), descope_user_id=u.descope_user_id, email=u.email)
-        for u in users
-    ]
+    return [UserSummary(id=str(u.id), descope_user_id=u.descope_user_id, email=u.email) for u in users]

@@ -1,4 +1,5 @@
 """GET /benchmarks/filter-options — distinct values for filter dropdowns."""
+
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
@@ -25,20 +26,12 @@ def get_filter_options(
     _, org = user_and_org
 
     benchmark_names = sorted(
-        set(
-            session.exec(
-                select(Benchmark.name)
-                .where(Benchmark.org_id == org.id)
-                .distinct()
-            ).all()
-        )
+        set(session.exec(select(Benchmark.name).where(Benchmark.org_id == org.id).distinct()).all())
     )
 
     # Agent name lives in arguments.contract.name — extract via JSON path.
     # We iterate Python-side since SQLite (test) and Postgres differ on JSON path syntax.
-    rows = session.exec(
-        select(Benchmark.arguments).where(Benchmark.org_id == org.id)
-    ).all()
+    rows = session.exec(select(Benchmark.arguments).where(Benchmark.org_id == org.id)).all()
     agent_names = sorted({r.contract.name for r in rows if r and r.contract.name})
 
     return FilterOptionsResponse(

@@ -41,9 +41,15 @@ def client(monkeypatch, database_session: Session):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
-    import tracker.config as config_mod; importlib.reload(config_mod)
-    import tracker.auth as auth_mod; importlib.reload(auth_mod)
-    import main as main_mod; importlib.reload(main_mod)
+    import tracker.config as config_mod
+
+    importlib.reload(config_mod)
+    import tracker.auth as auth_mod
+
+    importlib.reload(auth_mod)
+    import main as main_mod
+
+    importlib.reload(main_mod)
     from tracker.database.session import get_session as get_session_dep
 
     def get_test_session() -> Generator[Session, None, None]:
@@ -128,7 +134,9 @@ def test_get_benchmark_tasks_filters_by_status(client, database_session):
     database_session.add(b)
     database_session.commit()
     database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="ok", status=TaskStatus.FINISHED))
-    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="err", status=TaskStatus.ERROR, error_message="boom"))
+    database_session.add(
+        Task(org_id=b.org_id, benchmark=b.id, task_id="err", status=TaskStatus.ERROR, error_message="boom")
+    )
     database_session.commit()
 
     resp = client.get(
@@ -151,9 +159,15 @@ def test_get_benchmark_tasks_filters_by_task_id_search(client, database_session)
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
-    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__astropy-12907", status=TaskStatus.FINISHED))
-    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="django__django-11400", status=TaskStatus.FINISHED))
-    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__astropy-13033", status=TaskStatus.ERROR))
+    database_session.add(
+        Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__astropy-12907", status=TaskStatus.FINISHED)
+    )
+    database_session.add(
+        Task(org_id=b.org_id, benchmark=b.id, task_id="django__django-11400", status=TaskStatus.FINISHED)
+    )
+    database_session.add(
+        Task(org_id=b.org_id, benchmark=b.id, task_id="astropy__astropy-13033", status=TaskStatus.ERROR)
+    )
     database_session.commit()
 
     # substring match (case-insensitive)

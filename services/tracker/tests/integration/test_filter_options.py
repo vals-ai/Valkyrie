@@ -37,9 +37,15 @@ def client(monkeypatch, database_session: Session):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
-    import tracker.config as config_mod; importlib.reload(config_mod)
-    import tracker.auth as auth_mod; importlib.reload(auth_mod)
-    import main as main_mod; importlib.reload(main_mod)
+    import tracker.config as config_mod
+
+    importlib.reload(config_mod)
+    import tracker.auth as auth_mod
+
+    importlib.reload(auth_mod)
+    import main as main_mod
+
+    importlib.reload(main_mod)
     from tracker.database.session import get_session as get_session_dep
 
     def get_test_session() -> Generator[Session, None, None]:

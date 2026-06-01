@@ -1,4 +1,5 @@
 """GET /benchmark-services — list configured benchmark services with health pings."""
+
 from __future__ import annotations
 
 import asyncio
@@ -64,9 +65,7 @@ async def list_benchmark_services(
     if cached and (now - cached[0]) < _CACHE_TTL_S:
         return BenchmarkServicesResponse(services=cached[1])
 
-    ping_results = await asyncio.gather(
-        *[_ping_service(s["name"], s["url"]) for s in services]
-    )
+    ping_results = await asyncio.gather(*[_ping_service(s["name"], s["url"]) for s in services])
     health_entries = [BenchmarkServiceHealth(**r) for r in ping_results]
     _health_cache[cache_key] = (now, health_entries)
 

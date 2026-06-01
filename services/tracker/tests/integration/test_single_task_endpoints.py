@@ -1,7 +1,6 @@
 import importlib
 from collections.abc import Generator
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,9 +41,15 @@ def client(monkeypatch, database_session: Session):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
-    import tracker.config as config_mod; importlib.reload(config_mod)
-    import tracker.auth as auth_mod; importlib.reload(auth_mod)
-    import main as main_mod; importlib.reload(main_mod)
+    import tracker.config as config_mod
+
+    importlib.reload(config_mod)
+    import tracker.auth as auth_mod
+
+    importlib.reload(auth_mod)
+    import main as main_mod
+
+    importlib.reload(main_mod)
     from tracker.database.session import get_session as get_session_dep
 
     def get_test_session() -> Generator[Session, None, None]:
@@ -130,10 +135,20 @@ def test_get_single_task_404_unknown(client, database_session):
 def test_list_task_files(client, database_session, monkeypatch):
     b, t = _make_bench_with_task(database_session)
     _make_org_config(database_session)
-    mock_list = MagicMock(return_value=[
-        {"key": f"benchmarks/{b.id}/{t.task_id}/trajectory.json", "size": 1024, "last_modified": "2026-05-21T00:00:00+00:00"},
-        {"key": f"benchmarks/{b.id}/{t.task_id}/agent.log", "size": 5000, "last_modified": "2026-05-21T00:01:00+00:00"},
-    ])
+    mock_list = MagicMock(
+        return_value=[
+            {
+                "key": f"benchmarks/{b.id}/{t.task_id}/trajectory.json",
+                "size": 1024,
+                "last_modified": "2026-05-21T00:00:00+00:00",
+            },
+            {
+                "key": f"benchmarks/{b.id}/{t.task_id}/agent.log",
+                "size": 5000,
+                "last_modified": "2026-05-21T00:01:00+00:00",
+            },
+        ]
+    )
     monkeypatch.setattr("tracker.api.single_task.list_s3_objects_detailed", mock_list)
 
     resp = client.get(
@@ -197,6 +212,4 @@ def test_unauthenticated_returns_401(client, database_session):
     b, t = _make_bench_with_task(database_session)
     assert client.get(f"/benchmarks/{b.id}/tasks/{t.task_id}").status_code == 401
     assert client.get(f"/benchmarks/{b.id}/tasks/{t.task_id}/files").status_code == 401
-    assert client.get(
-        f"/benchmarks/{b.id}/tasks/{t.task_id}/files/url?key=x"
-    ).status_code == 401
+    assert client.get(f"/benchmarks/{b.id}/tasks/{t.task_id}/files/url?key=x").status_code == 401

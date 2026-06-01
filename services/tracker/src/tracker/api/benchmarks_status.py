@@ -1,4 +1,5 @@
 """GET /benchmarks/status — lightweight polling for live status updates."""
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -35,9 +36,7 @@ def get_benchmarks_status(
         return BenchmarkStatusResponse(entries=[])
 
     benchmarks = session.exec(
-        select(Benchmark)
-        .where(Benchmark.org_id == org.id)
-        .where(col(Benchmark.id).in_(parsed_ids))
+        select(Benchmark).where(Benchmark.org_id == org.id).where(col(Benchmark.id).in_(parsed_ids))
     ).all()
 
     entries: list[BenchmarkStatusEntry] = []

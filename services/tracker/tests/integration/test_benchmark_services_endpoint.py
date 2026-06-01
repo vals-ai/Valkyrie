@@ -38,9 +38,15 @@ def client(monkeypatch, database_session: Session):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
-    import tracker.config as config_mod; importlib.reload(config_mod)
-    import tracker.auth as auth_mod; importlib.reload(auth_mod)
-    import main as main_mod; importlib.reload(main_mod)
+    import tracker.config as config_mod
+
+    importlib.reload(config_mod)
+    import tracker.auth as auth_mod
+
+    importlib.reload(auth_mod)
+    import main as main_mod
+
+    importlib.reload(main_mod)
     from tracker.database.session import get_session as get_session_dep
 
     def get_test_session() -> Generator[Session, None, None]:
@@ -61,8 +67,11 @@ def client(monkeypatch, database_session: Session):
 def _make_cfg(session: Session, services: list[dict]) -> None:
     cfg = OrgConfig(
         org_id=TEST_ORG_ID,
-        aws_access_key_id="A", aws_secret_access_key="s",
-        aws_default_region="us-east-2", s3_bucket="b", daytona_secret_name="d",
+        aws_access_key_id="A",
+        aws_secret_access_key="s",
+        aws_default_region="us-east-2",
+        s3_bucket="b",
+        daytona_secret_name="d",
         benchmark_services=services,
     )
     session.add(cfg)
@@ -70,10 +79,13 @@ def _make_cfg(session: Session, services: list[dict]) -> None:
 
 
 def test_benchmark_services_returns_pings(client, database_session, monkeypatch):
-    _make_cfg(database_session, [
-        {"name": "swebench", "url": "http://up:8001", "auth_header_name": None, "auth_secret_name": None},
-        {"name": "fab", "url": "http://down:8002", "auth_header_name": None, "auth_secret_name": None},
-    ])
+    _make_cfg(
+        database_session,
+        [
+            {"name": "swebench", "url": "http://up:8001", "auth_header_name": None, "auth_secret_name": None},
+            {"name": "fab", "url": "http://down:8002", "auth_header_name": None, "auth_secret_name": None},
+        ],
+    )
 
     async def fake_ping(name: str, url: str):
         if name == "swebench":
@@ -82,6 +94,7 @@ def test_benchmark_services_returns_pings(client, database_session, monkeypatch)
 
     # Also clear the in-memory cache between tests
     import tracker.api.benchmark_services as bs
+
     bs._health_cache.clear()
     monkeypatch.setattr(bs, "_ping_service", AsyncMock(side_effect=fake_ping))
 
@@ -95,6 +108,7 @@ def test_benchmark_services_returns_pings(client, database_session, monkeypatch)
 
 def test_benchmark_services_empty_when_no_config(client, monkeypatch):
     import tracker.api.benchmark_services as bs
+
     bs._health_cache.clear()
     monkeypatch.setattr(bs, "_ping_service", AsyncMock())
 

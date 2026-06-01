@@ -2,6 +2,7 @@
 
 Uses a mocked Descope client; otherwise hits the full app stack.
 """
+
 import importlib
 from collections.abc import Generator
 from unittest.mock import patch

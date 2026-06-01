@@ -1,4 +1,5 @@
 """Single-run detail endpoints."""
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -20,9 +21,7 @@ router = APIRouter()
 
 def _load_benchmark_or_404(benchmark_id: UUID, org: Org, session: Session) -> Benchmark:
     bench = session.exec(
-        select(Benchmark)
-        .where(Benchmark.id == benchmark_id)
-        .where(Benchmark.org_id == org.id)
+        select(Benchmark).where(Benchmark.id == benchmark_id).where(Benchmark.org_id == org.id)
     ).first()
     if bench is None:
         raise HTTPException(status_code=404, detail="Benchmark not found")
@@ -87,15 +86,9 @@ def get_benchmark_tasks(
         base_filters.append(col(Task.task_id).ilike(f"%{task_id_search}%"))
 
     rows = session.exec(
-        select(Task)
-        .where(*base_filters)
-        .order_by(col(Task.started_at).desc())
-        .limit(limit)
-        .offset(offset)
+        select(Task).where(*base_filters).order_by(col(Task.started_at).desc()).limit(limit).offset(offset)
     ).all()
-    total = session.exec(
-        select(func.count(col(Task.id))).where(*base_filters)
-    ).one()
+    total = session.exec(select(func.count(col(Task.id))).where(*base_filters)).one()
 
     return TasksResponse(
         tasks=[

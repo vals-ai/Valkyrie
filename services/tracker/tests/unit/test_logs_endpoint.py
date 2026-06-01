@@ -22,9 +22,15 @@ def client(monkeypatch, database_session: Session):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
     monkeypatch.setenv("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
-    import tracker.config as config_mod; importlib.reload(config_mod)
-    import tracker.auth as auth_mod; importlib.reload(auth_mod)
-    import main as main_mod; importlib.reload(main_mod)
+    import tracker.config as config_mod
+
+    importlib.reload(config_mod)
+    import tracker.auth as auth_mod
+
+    importlib.reload(auth_mod)
+    import main as main_mod
+
+    importlib.reload(main_mod)
     from tracker.database.session import get_session as get_session_dep
 
     def get_test_session() -> Generator[Session, None, None]:
@@ -76,13 +82,15 @@ def test_logs_returns_events(client, database_session, monkeypatch):
     b = _make_bench(database_session)
     _make_org_config(database_session)
 
-    mock_filter = MagicMock(return_value={
-        "events": [
-            {"timestamp": 1, "message": "hello", "log_stream": "s1"},
-            {"timestamp": 2, "message": "world", "log_stream": "s1"},
-        ],
-        "next_token": None,
-    })
+    mock_filter = MagicMock(
+        return_value={
+            "events": [
+                {"timestamp": 1, "message": "hello", "log_stream": "s1"},
+                {"timestamp": 2, "message": "world", "log_stream": "s1"},
+            ],
+            "next_token": None,
+        }
+    )
     monkeypatch.setattr("tracker.api.logs.filter_log_events", mock_filter)
 
     resp = client.get(
