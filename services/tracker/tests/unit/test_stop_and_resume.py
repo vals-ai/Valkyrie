@@ -830,12 +830,14 @@ class TestStopAndResume:
         database_session.commit()
 
         monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils._SANDBOX_FORCE_STOP_SETTLE_SECONDS", 0)
 
         # Set benchmark status to STOPPING
         await initiate_stop_benchmark(benchmark_row, database_session, force=True, org=self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
-        async def _empty_list_sandboxes(*_args: Any, **_kwargs: Any):
+        async def _empty_list_sandboxes(query: Any):
+            assert query.page_size == 100
             if False:
                 yield None
 

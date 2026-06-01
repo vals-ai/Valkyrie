@@ -458,6 +458,45 @@ class TestAgentOutputTelemetry:
         ]
         assert context_calls == [("sandbox-123", "ghcr.io/vals/swebench:latest")]
 
+    async def test_create_sandbox_deletes_if_cancelled_during_create(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        create_started = asyncio.Event()
+        create_finished = asyncio.Event()
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+            create_started.set()
+            await create_finished.wait()
+            return mock_sandbox
+
+        provider = AsyncMock()
+        delete_mock = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", delete_mock)
+
+        async def use_sandbox() -> None:
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                raise AssertionError("cancelled create should not yield")
+
+        task = asyncio.create_task(use_sandbox())
+        await create_started.wait()
+
+        task.cancel()
+        await asyncio.sleep(0)
+        create_finished.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        delete_mock.assert_awaited_once_with(mock_sandbox, provider)
+
     async def test_create_sandbox_emits_error_metric(self, monkeypatch: pytest.MonkeyPatch) -> None:
         create_error = RuntimeError("create failed")
         increments: list[tuple[str, dict[str, str]]] = []
@@ -567,6 +606,23 @@ class TestStreamCommandOutputAgentFailure:
         assert exec_commands[-1].startswith("rm -f ")
         assert ".start_ns" in exec_commands[-1]
         assert ".end_ns" in exec_commands[-1]
+
+    async def test_provider_sandbox_error_is_translated(self) -> None:
+        async def stream_command(_command: str) -> Any:
+            raise ProviderSandboxError("sandbox crashed during command execution")
+            yield
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.state = "destroying"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = AsyncMock(return_value=ExecResult(exit_code=0))
+
+        with pytest.raises(SandboxError, match="sandbox crashed during command execution") as exc_info:
+            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+
+        assert isinstance(exc_info.value.__cause__, ProviderSandboxError)
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(

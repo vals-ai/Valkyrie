@@ -75,6 +75,9 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
+_SANDBOX_LIST_PAGE_SIZE: int = 100
+_SANDBOX_FORCE_STOP_MAX_PASSES: int = 5
+_SANDBOX_FORCE_STOP_SETTLE_SECONDS: float = 1.0
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
@@ -1286,7 +1289,9 @@ async def sandbox_generator(benchmark_row: Benchmark, provider: SandboxProvider)
     """
     Generator that yields all sandboxes for a given benchmark.
     """
-    query = SandboxQuery(labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)})
+    query = SandboxQuery(
+        labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)}, page_size=_SANDBOX_LIST_PAGE_SIZE
+    )
     async for sandbox in provider.list_sandboxes(query):
         yield sandbox
 
@@ -1315,12 +1320,21 @@ async def force_stop_sandboxes(
 
     session.commit()
 
-    # Iterate through each running sandbox and stop it, collecting error messages
+    # Daytona list/delete is eventually consistent; keep the cleanup open briefly
+    # so in-flight creates and deletes settle before the caller continues.
     results: dict[str, str | None] = {}
     try:
-        async for sandbox in sandbox_generator(benchmark_row, provider):
-            result = await stop_sandbox(sandbox, provider)
-            results[sandbox.name] = result
+        for _ in range(_SANDBOX_FORCE_STOP_MAX_PASSES):
+            found_sandbox = False
+            async for sandbox in sandbox_generator(benchmark_row, provider):
+                found_sandbox = True
+                result = await stop_sandbox(sandbox, provider)
+                results[sandbox.name] = result
+
+            if not found_sandbox:
+                break
+
+            await asyncio.sleep(_SANDBOX_FORCE_STOP_SETTLE_SECONDS)
     finally:
         await benchmark_service.close()
 

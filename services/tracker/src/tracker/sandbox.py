@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import base64
 import shlex
 import time
@@ -7,7 +8,7 @@ import uuid
 from asyncio import Semaphore
 from collections import deque
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
@@ -182,7 +183,16 @@ async def create_sandbox(
     try:
         async with creation_semaphore:
             start = time.monotonic()
-            sandbox = await _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+            create_task = asyncio.create_task(
+                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+            )
+            try:
+                sandbox = await asyncio.shield(create_task)
+            except asyncio.CancelledError:
+                with suppress(Exception):
+                    sandbox = await create_task
+                    await delete_sandbox(sandbox, provider)
+                raise
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
         raise
@@ -352,6 +362,8 @@ async def stream_command_output(
                 output.append(data)
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
+        except ProviderSandboxError as e:
+            raise SandboxError(str(e)) from e
 
         start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
         end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
