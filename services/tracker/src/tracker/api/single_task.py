@@ -193,9 +193,7 @@ def get_task_artifacts(
         key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
         if s3_object_exists(key, aws=aws, s3_bucket=bucket):
             ttl_seconds = 300
-            agent_output_url = generate_presigned_get_url(
-                key=key, aws=aws, s3_bucket=bucket, ttl_seconds=ttl_seconds
-            )
+            agent_output_url = generate_presigned_get_url(key=key, aws=aws, s3_bucket=bucket, ttl_seconds=ttl_seconds)
 
     return TaskArtifactsResponse(
         cloudwatch_url=cloudwatch_url,

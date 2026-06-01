@@ -1419,7 +1419,9 @@ def fetch_harness_config(
             return value
         if fallback:
             return fallback
-        raise HTTPException(status_code=400, detail=f"Missing harness config field '{header_key}' and no OrgConfig fallback")
+        raise HTTPException(
+            status_code=400, detail=f"Missing harness config field '{header_key}' and no OrgConfig fallback"
+        )
 
     return HarnessConfig(
         aws=AWSCredentials(

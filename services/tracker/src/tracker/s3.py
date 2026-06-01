@@ -235,7 +235,6 @@ def list_s3_objects(prefix: str, aws: "AWSCredentials", s3_bucket: str) -> list[
     return object_keys
 
 
-
 @handle_s3_error(message="Failed to create console URL")
 def create_console_url(s3_key: str, region: str, s3_bucket: str) -> str:
     """

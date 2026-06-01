@@ -460,7 +460,7 @@ def paginate_benchmarks(
         )
 
         response = tracker.fetch_benchmarks(request)
-        total_count = response.total_count
+        total_count = response.total_count or 0
         total_pages = max(1, (total_count + limit - 1) // limit)
 
         click.clear()

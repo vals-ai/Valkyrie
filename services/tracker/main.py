@@ -400,7 +400,9 @@ async def retrieve_results(
         s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
 
         https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"
-        presigned_url = generate_presigned_get_url(s3_key, harness_config.aws, harness_config.s3_bucket, ttl_seconds=86400)
+        presigned_url = generate_presigned_get_url(
+            s3_key, harness_config.aws, harness_config.s3_bucket, ttl_seconds=86400
+        )
         console_url = create_console_url(s3_key, harness_config.aws.aws_default_region, harness_config.s3_bucket)
 
         return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)

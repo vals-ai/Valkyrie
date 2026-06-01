@@ -1,3 +1,9 @@
+import os
+
+# config.py refuses to load without an explicit AUTH_REQUIRED — must be set
+# before any tracker import below transitively loads it.
+os.environ.setdefault("AUTH_REQUIRED", "false")
+
 from collections.abc import Generator
 from sqlite3 import Connection, Cursor
 from typing import Any, cast
