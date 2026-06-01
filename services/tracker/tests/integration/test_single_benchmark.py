@@ -182,6 +182,34 @@ def test_get_benchmark_tasks_filters_by_task_id_search(client, database_session)
     assert ids == ["astropy__astropy-12907", "astropy__astropy-13033"]
 
 
+def test_get_benchmark_tasks_search_treats_like_wildcards_literally(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="task_1", status=TaskStatus.PENDING))
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="taskA1", status=TaskStatus.PENDING))
+    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="task%1", status=TaskStatus.PENDING))
+    database_session.commit()
+
+    resp = client.get(
+        f"/benchmarks/{b.id}/tasks?task_id_search=task_1",
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["total_count"] == 1
+    assert data["tasks"][0]["task_id"] == "task_1"
+
+    resp = client.get(
+        f"/benchmarks/{b.id}/tasks?task_id_search=task%251",
+        headers={"Authorization": "Bearer fake"},
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["total_count"] == 1
+    assert data["tasks"][0]["task_id"] == "task%1"
+
+
 def test_get_benchmark_tasks_search_case_insensitive(client, database_session):
     b = _make_bench()
     database_session.add(b)

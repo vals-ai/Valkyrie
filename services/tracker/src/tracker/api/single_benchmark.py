@@ -19,6 +19,10 @@ from tracker.types import (
 router = APIRouter()
 
 
+def _escape_sql_like_pattern(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _load_benchmark_or_404(benchmark_id: UUID, org: Org, session: Session) -> Benchmark:
     bench = session.exec(
         select(Benchmark).where(Benchmark.id == benchmark_id).where(Benchmark.org_id == org.id)
@@ -102,7 +106,8 @@ def get_benchmark_tasks(
         base_filters.append(col(Task.status).in_(statuses))
 
     if task_id_search:
-        base_filters.append(col(Task.task_id).ilike(f"%{task_id_search}%"))
+        escaped_search = _escape_sql_like_pattern(task_id_search)
+        base_filters.append(col(Task.task_id).ilike(f"%{escaped_search}%", escape="\\"))
 
     rows = session.exec(
         select(Task).where(*base_filters).order_by(col(Task.started_at).desc()).limit(limit).offset(offset)

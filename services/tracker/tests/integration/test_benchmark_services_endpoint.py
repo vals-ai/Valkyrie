@@ -117,6 +117,20 @@ def test_benchmark_services_empty_when_no_config(client, monkeypatch):
     assert resp.json()["services"] == []
 
 
+def test_benchmark_services_health_cache_is_bounded():
+    import tracker.api.benchmark_services as bs
+
+    bs._health_cache.clear()
+    now = 1000.0
+    for i in range(bs._MAX_HEALTH_CACHE_ENTRIES + 5):
+        bs._health_cache[(str(i), (f"http://service-{i}",))] = (now, [])
+
+    bs._prune_health_cache(now)
+
+    assert len(bs._health_cache) == bs._MAX_HEALTH_CACHE_ENTRIES
+    assert ("0", ("http://service-0",)) not in bs._health_cache
+
+
 def test_benchmark_services_unauth_401(client):
     resp = client.get("/benchmark-services")
     assert resp.status_code == 401

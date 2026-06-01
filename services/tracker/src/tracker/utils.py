@@ -1667,6 +1667,12 @@ def _backfill_harness_config_from_org_config(hc: HarnessConfig, org_cfg: OrgConf
     if not aws_missing and hc.s3_bucket:
         return hc
 
+    log_retention_policy = (
+        hc.log_retention_policy
+        if hc.log_retention_policy
+        else _parse_log_retention_policy(org_cfg.log_retention_policy, source="OrgConfig")
+    )
+
     return hc.model_copy(
         update={
             "aws": hc.aws.model_copy(
@@ -1678,10 +1684,28 @@ def _backfill_harness_config_from_org_config(hc: HarnessConfig, org_cfg: OrgConf
             ),
             "s3_bucket": hc.s3_bucket or (org_cfg.s3_bucket or ""),
             "log_group": hc.log_group or (org_cfg.log_group or ""),
-            "log_retention_policy": hc.log_retention_policy or int(org_cfg.log_retention_policy or 30),
+            "log_retention_policy": log_retention_policy,
             "daytona_secret_name": hc.daytona_secret_name or (org_cfg.daytona_secret_name or ""),
         }
     )
+
+
+def _parse_log_retention_policy(value: int | str | None, *, source: str) -> int:
+    if value in (None, ""):
+        return 30
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid log_retention_policy from {source}: must be an integer",
+        ) from e
+    if parsed <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid log_retention_policy from {source}: must be positive",
+        )
+    return parsed
 
 
 def fetch_harness_config(
@@ -1721,6 +1745,9 @@ def fetch_harness_config(
         ),
         s3_bucket=pick("s3_bucket", cfg.s3_bucket if cfg else None),
         log_group=flat.get("log_group") or (cfg.log_group if cfg else "") or "",
-        log_retention_policy=int(flat.get("log_retention_policy") or (cfg.log_retention_policy if cfg else 30) or 30),
+        log_retention_policy=_parse_log_retention_policy(
+            flat.get("log_retention_policy") or (cfg.log_retention_policy if cfg else None),
+            source="request headers or OrgConfig",
+        ),
         daytona_secret_name=flat.get("daytona_secret_name") or (cfg.daytona_secret_name if cfg else "") or "",
     )

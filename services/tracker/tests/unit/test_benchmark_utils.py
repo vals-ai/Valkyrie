@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
+from fastapi import HTTPException
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 
@@ -19,12 +20,15 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     Org,
+    OrgConfig,
     Task,
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    _backfill_harness_config_from_org_config,
+    _parse_log_retention_policy,
     commit_task_error,
     create_task_rows,
     fetch_daytona_headers,
@@ -542,8 +546,6 @@ class TestBenchmarkUtils:
         set_benchmark_final_status(benchmark_row, database_session, self._test_org)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED
-
-
 def test_benchmark_persists_started_by_columns(
     database_session: Session,
     example_benchmark_object: Benchmark,
@@ -695,3 +697,40 @@ def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: S
     )
     assert total == 1
     assert rows[0].org_id == TEST_ORG_ID
+
+
+def test_parse_log_retention_policy_rejects_invalid_value():
+    with pytest.raises(HTTPException) as exc_info:
+        _parse_log_retention_policy("not-a-number", source="test")
+
+    assert exc_info.value.status_code == 400
+
+
+def test_backfill_harness_config_rejects_invalid_org_retention_policy(harness_config: HarnessConfig):
+    empty_config = harness_config.model_copy(
+        update={
+            "aws": harness_config.aws.model_copy(
+                update={
+                    "aws_access_key_id": "",
+                    "aws_secret_access_key": "",
+                    "aws_default_region": "",
+                }
+            ),
+            "s3_bucket": "",
+            "log_retention_policy": 0,
+        }
+    )
+    org_config = OrgConfig(
+        org_id=TEST_ORG_ID,
+        aws_access_key_id="A",
+        aws_secret_access_key="s",
+        aws_default_region="us-east-1",
+        s3_bucket="bucket",
+        daytona_secret_name="daytona",
+        log_retention_policy="not-a-number",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        _backfill_harness_config_from_org_config(empty_config, org_config)
+
+    assert exc_info.value.status_code == 400
