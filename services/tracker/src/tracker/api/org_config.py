@@ -51,6 +51,7 @@ def put_org_config(
             log_group=update.log_group,
             log_retention_policy=update.log_retention_policy,
             webhook=update.webhook if update.webhook != MASKED_SECRET else None,
+            benchmark_services=[s.model_dump() for s in update.benchmark_services],
         )
         session.add(config)
     else:
