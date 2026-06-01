@@ -22,6 +22,10 @@ run_cmd: >-
 
 final_output: /logs/my_agent
 
+output_artifacts:
+  - artifacts/summary.json
+  - artifacts/turns.jsonl
+
 secrets:
   ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
 
@@ -102,10 +106,10 @@ install_cmd: "bash setup.sh"
 
 Shell command to run the agent on a task. Must contain the `{problem_statement_path}` placeholder. Placeholders are substituted at runtime:
 
-| Placeholder | Substituted with |
-|-------------|------------------|
+| Placeholder                | Substituted with                                                 |
+| -------------------------- | ---------------------------------------------------------------- |
 | `{problem_statement_path}` | Path to the problem statement file in the sandbox **(required)** |
-| `{task_id}` | The task identifier (e.g. `astropy__astropy-12907`) |
+| `{task_id}`                | The task identifier (e.g. `astropy__astropy-12907`)              |
 
 ```yaml
 run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
@@ -119,6 +123,50 @@ Absolute path to the final output to collect. The artifact found here will be co
 
 ```yaml
 final_output: /logs/my_agent
+```
+
+### `output_artifacts: list`
+
+Small files to upload directly from the sandbox into the task's S3 folder without adding them to `agent_output.tar.gz`. Use this for parser/evaluation inputs that need cheap direct reads.
+
+String entries are shorthand: tracker reads `/tmp/valkyrie/<path>` and uploads to `<path>`.
+
+Producers can write files under `/tmp/valkyrie`:
+
+```yaml
+output_artifacts:
+  - artifacts/summary.json
+  - artifacts/turns.jsonl
+```
+
+Object entries specify an explicit sandbox source and upload destination. Sources may include `{task_id}` and shell-style glob patterns resolved inside the sandbox:
+
+```yaml
+output_artifacts:
+  - path: artifacts/config.json
+    source: /logs/{task_id}/turns/init/config.json
+  - path: artifacts/result.json
+    source: /logs/{task_id}/result.json
+```
+
+Valkyrie does not require a specific destination prefix. For Vals benchmark result ingestion, use the project convention `vals_format/config.json` and `vals_format/result.json`.
+
+Guardrails:
+
+- Artifact destination paths are relative to the task's S3 prefix. String entries use the same path under `/tmp/valkyrie`; object entries use their explicit `source`.
+- Object `source` paths must be absolute sandbox paths. Glob sources must include a non-root directory prefix such as `/logs` or `/app/results/...`.
+- Each declared artifact is required. Missing files or unresolved glob sources fail the task clearly.
+- Individual files cannot exceed 50 MiB.
+- At most 10 output artifacts can be declared.
+- The total uploaded sidecar bytes per task cannot exceed 50 MiB.
+
+For the examples above, task `task_0` in run `run_id` uploads to matching task-scoped keys such as:
+
+```text
+benchmarks/run_id/task_0/artifacts/summary.json
+benchmarks/run_id/task_0/artifacts/turns.jsonl
+benchmarks/run_id/task_0/artifacts/config.json
+benchmarks/run_id/task_0/artifacts/result.json
 ```
 
 ### `secrets: dict`
@@ -159,15 +207,16 @@ kwargs:
 
 Each kwarg supports these fields:
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `type` | yes | One of: `str`, `int`, `float`, `bool`, `dict` |
-| `required` | yes | Whether the user must provide this value |
-| `default` | no | Default value when the user doesn't provide one |
-| `description` | no | Human-readable description |
-| `choices` | no | List of valid values (enforced at validation time) |
+| Field         | Required | Description                                        |
+| ------------- | -------- | -------------------------------------------------- |
+| `type`        | yes      | One of: `str`, `int`, `float`, `bool`, `dict`      |
+| `required`    | yes      | Whether the user must provide this value           |
+| `default`     | no       | Default value when the user doesn't provide one    |
+| `description` | no       | Human-readable description                         |
+| `choices`     | no       | List of valid values (enforced at validation time) |
 
 Kwargs are resolved at parse time:
+
 - **Defaults** are applied for any kwarg the user doesn't provide
 - **CLI overrides** (`-k`) replace defaults when provided
 - **Required kwargs** without a value raise a validation error

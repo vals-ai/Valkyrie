@@ -1,10 +1,11 @@
 from datetime import datetime
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, computed_field, field_serializer
+from pydantic import BaseModel, computed_field, field_serializer, field_validator
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -81,13 +82,74 @@ class RetryMode(str, Enum):
     FROM_SCRATCH = "from_scratch"
 
 
+MAX_OUTPUT_ARTIFACT_BYTES = 50 * 1024 * 1024
+MAX_OUTPUT_ARTIFACT_COUNT = 10
+
+
+def _source_has_glob(source: str) -> bool:
+    return any(char in source for char in "*?[")
+
+
+def _source_glob_root(source: str) -> str:
+    glob_indices = [source.find(char) for char in "*?[" if source.find(char) != -1]
+    first_glob_index = min(glob_indices)
+    root = source[:first_glob_index].rsplit("/", 1)[0]
+    return root or "/"
+
+
+class OutputArtifact(BaseModel):
+    path: str
+    source: str | None = None
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        if not value.startswith("/"):
+            raise ValueError("output_artifacts source paths must be absolute sandbox paths")
+
+        path = PurePosixPath(value)
+        if not path.parts or ".." in path.parts or "." in path.parts:
+            raise ValueError("output_artifacts source paths cannot contain empty, '.', or '..' path parts")
+        if _source_has_glob(value) and _source_glob_root(value) == "/":
+            raise ValueError("output_artifacts glob sources must include a non-root directory prefix")
+
+        return value
+
+
+OutputArtifactSpec = str | OutputArtifact
+
+
 class AgentContractRequest(BaseModel):
     name: str
     model: str | None = None
     install_cmd: str
     run_cmd: str
     final_output: str | None = None
+    output_artifacts: list[OutputArtifactSpec] = []
     secrets: dict[str, str] = {}
+
+    @field_validator("output_artifacts")
+    @classmethod
+    def validate_output_artifacts(cls, value: list[OutputArtifactSpec]) -> list[OutputArtifactSpec]:
+        if len(value) > MAX_OUTPUT_ARTIFACT_COUNT:
+            raise ValueError(f"output_artifacts cannot contain more than {MAX_OUTPUT_ARTIFACT_COUNT} entries")
+
+        normalized_artifacts: list[OutputArtifactSpec] = []
+        for artifact in value:
+            artifact_path = artifact if isinstance(artifact, str) else artifact.path
+            path = PurePosixPath(artifact_path)
+            if path.is_absolute():
+                raise ValueError("output_artifacts paths must be relative paths")
+            if not path.parts or ".." in path.parts or "." in path.parts:
+                raise ValueError("output_artifacts paths cannot contain empty, '.', or '..' path parts")
+            if isinstance(artifact, str):
+                normalized_artifacts.append(str(path))
+            else:
+                normalized_artifacts.append(artifact.model_copy(update={"path": str(path)}))
+
+        return normalized_artifacts
 
 
 class BenchmarkArguments(BaseModel):
@@ -269,6 +331,7 @@ class Benchmark(SQLModel, table=True):
             name=self.name,
             agent_name=self.arguments.contract.name,
             model=self.arguments.contract.model,
+            dataset=self.arguments.dataset or "default",
             started_by_email=self.started_by_email,
             started_at=self.started_at,
             finished_at=self.finished_at,

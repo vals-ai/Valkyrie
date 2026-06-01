@@ -571,7 +571,13 @@ class TestFastapiServer:
         unique_benchmark = Benchmark(
             org_id=TEST_ORG_ID,
             name="terminal_bench",
-            arguments=BenchmarkArguments(contract=unique_contract, concurrency=5, task_ids=None, slice_str=None),
+            arguments=BenchmarkArguments(
+                contract=unique_contract,
+                concurrency=5,
+                task_ids=None,
+                slice_str=None,
+                dataset="terminal-bench-2.1",
+            ),
         )
         database_session.add(unique_benchmark)
         database_session.commit()
@@ -628,6 +634,42 @@ class TestFastapiServer:
         # There is 1 finished benchmark
         assert response_json.get("total_count") == 1
         assert len(response_json.get("benchmarks")) == 1
+        assert response_json["benchmarks"][0]["dataset"] == "terminal-bench-2.1"
+
+    async def test_fetch_benchmarks_filters_by_dataset(self, database_session: Session, contract: AgentContractRequest):
+        benchmark_rows = [
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset=None),
+            ),
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="default"),
+            ),
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="terminal-bench-2.1"),
+            ),
+        ]
+        database_session.add_all(benchmark_rows)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmarks", params={"dataset": "terminal-bench-2.1", "limit": 10})
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["total_count"] == 1
+        assert response_json["benchmarks"][0]["dataset"] == "terminal-bench-2.1"
+
+        response = client.get("/fetch-benchmarks", params={"dataset": "default", "limit": 10})
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["total_count"] == 2
+        assert {row["dataset"] for row in response_json["benchmarks"]} == {"default"}
 
     async def test_start_benchmark_writes_started_by_columns(
         self,

@@ -54,7 +54,7 @@ from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.exceptions import SandboxSetupError, TrackerServiceError
+from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
@@ -632,6 +632,16 @@ async def process_task(
     except SandboxSetupError as e:
         log_output(f"\n[ERROR] {e}")
         raise
+    except OutputArtifactError as e:
+        error_message = str(e)
+        logger.warning(error_message)
+        log_output(f"\n[ERROR] {error_message}")
+
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            commit_task_error(task, task_session, error_message)
+
+        return {task_id: None}
     except ConnectionClosedError:
         seconds = int(time.monotonic() - last_log_time)
         error_message = (
@@ -1471,6 +1481,13 @@ def fetch_filtered_benchmark_rows(
 
     if request.model:
         query = query.where(arguments_json["contract"]["model"].as_string() == request.model)
+
+    if request.dataset:
+        dataset_value = arguments_json["dataset"].as_string()
+        if request.dataset == "default":
+            query = query.where(or_(dataset_value == "default", dataset_value.is_(None)))
+        else:
+            query = query.where(dataset_value == request.dataset)
 
     if request.benchmark_name:
         query = query.where(Benchmark.name == request.benchmark_name)

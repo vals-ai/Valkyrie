@@ -1065,6 +1065,12 @@ run.add_command(retry_command)
     help="Model name (e.g., anthropic/claude-sonnet-4-20250514)",
 )
 @click.option(
+    "--dataset",
+    type=str,
+    required=False,
+    help="Dataset name (e.g., default, terminal-bench-2.1)",
+)
+@click.option(
     "--status",
     type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
     required=False,
@@ -1089,6 +1095,7 @@ def list_benchmarks(
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,
+    dataset: str | None,
     status: str | None,
     order_by: str = "desc",
     started_by: str | None = None,
@@ -1113,6 +1120,7 @@ def list_benchmarks(
                 agent_name,
                 benchmark_name,
                 model,
+                dataset,
                 status,
                 order_by,
                 started_by=started_by_list or None,

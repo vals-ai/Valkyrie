@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import base64
 import shlex
 import time
 import uuid
@@ -33,10 +34,16 @@ from tenacity import (
     stop_after_attempt,
 )
 
-from tracker.aws.s3 import create_presigned_url, get_benchmark_contract_s3_key, upload_to_s3
-from tracker.database.models import AgentCausedExitReason, AgentContractRequest
+from tracker.aws.s3 import create_presigned_url, get_agent_result_s3_key, get_benchmark_contract_s3_key, upload_to_s3
+from tracker.database.models import (
+    AgentCausedExitReason,
+    AgentContractRequest,
+    MAX_OUTPUT_ARTIFACT_BYTES,
+    OutputArtifactSpec,
+)
 from tracker.exceptions import (
     AgentRunFailedError,
+    OutputArtifactError,
     SandboxError,
     SandboxSetupError,
     SSLConnectionError,
@@ -415,6 +422,116 @@ async def archive_and_upload_output(
             pass
 
 
+OUTPUT_ARTIFACTS_SANDBOX_ROOT = PurePosixPath("/tmp/valkyrie")
+OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+
+
+def _output_artifact_path(artifact: OutputArtifactSpec) -> str:
+    return artifact if isinstance(artifact, str) else artifact.path
+
+
+def _output_artifact_source(artifact: OutputArtifactSpec) -> str:
+    artifact_path = _output_artifact_path(artifact)
+    source = artifact.source if not isinstance(artifact, str) else None
+    return source or str(OUTPUT_ARTIFACTS_SANDBOX_ROOT / artifact_path)
+
+
+def _format_output_artifact_source(source: str, task_id: str) -> str:
+    return source.replace("{task_id}", task_id)
+
+
+def _has_glob(source: str) -> bool:
+    return any(char in source for char in "*?[")
+
+
+def _find_root_for_glob(source: str) -> str:
+    glob_indices = [source.find(char) for char in "*?[" if source.find(char) != -1]
+    first_glob_index = min(glob_indices)
+    root = source[:first_glob_index].rsplit("/", 1)[0]
+    if not root or root == "/":
+        raise OutputArtifactError(f"Output artifact glob source must include a non-root directory prefix: {source}")
+    return root
+
+
+async def _resolve_output_artifact_sandbox_path(
+    sandbox: Sandbox, artifact: OutputArtifactSpec, task_id: str
+) -> str:
+    source = _format_output_artifact_source(_output_artifact_source(artifact), task_id)
+    if _has_glob(source):
+        find_root = _find_root_for_glob(source)
+        find_command = f"find {shlex.quote(find_root)} -type f -path {shlex.quote(source)} | sort | head -n 1"
+        source_result = await _exec(sandbox, find_command)
+        source_path = source_result.stdout.strip()
+        if source_result.exit_code == _SUCCESS_EXIT_CODE and source_path:
+            return source_path
+    else:
+        exists = await _exec(sandbox, f"test -f {shlex.quote(source)}")
+        if exists.exit_code == _SUCCESS_EXIT_CODE:
+            return source
+
+    raise OutputArtifactError(f"Required output artifact missing: {source}")
+
+
+async def upload_output_artifacts(
+    sandbox: Sandbox,
+    artifacts: list[OutputArtifactSpec],
+    benchmark_id: str,
+    task_id: str,
+    aws: AWSCredentials,
+    s3_bucket: str,
+) -> None:
+    """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
+    total_bytes = 0
+
+    for artifact in artifacts:
+        artifact_path = _output_artifact_path(artifact)
+        sandbox_path = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
+        quoted_path = shlex.quote(sandbox_path)
+
+        size_result = await _exec(sandbox, f"stat -c%s {quoted_path}")
+        if size_result.exit_code != _SUCCESS_EXIT_CODE:
+            raise OutputArtifactError(f"Failed to stat output artifact: {sandbox_path}")
+
+        try:
+            artifact_bytes = int(size_result.stdout.strip())
+        except ValueError as e:
+            raise OutputArtifactError(
+                f"Failed to parse output artifact size for {sandbox_path}: {size_result.stdout!r}"
+            ) from e
+
+        if artifact_bytes > MAX_OUTPUT_ARTIFACT_BYTES:
+            raise OutputArtifactError(
+                f"Output artifact {sandbox_path} is too large: {artifact_bytes} bytes > {MAX_OUTPUT_ARTIFACT_BYTES} bytes"
+            )
+
+        total_bytes += artifact_bytes
+        if total_bytes > OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES:
+            raise OutputArtifactError(
+                f"Output artifacts are too large: {total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
+            )
+
+        b64_result = await _exec(sandbox, f"base64 {quoted_path}")
+        if b64_result.exit_code != _SUCCESS_EXIT_CODE:
+            raise OutputArtifactError(f"Failed to read output artifact: {sandbox_path}")
+
+        s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
+        file_content = base64.b64decode(b64_result.stdout)
+        await upload_to_s3(file_content, s3_key, aws, s3_bucket)
+
+        logger.info(
+            "output_artifact.upload.complete",
+            extra={
+                "sandbox_id": sandbox.id,
+                "sandbox_name": sandbox.name,
+                "sandbox_path": sandbox_path,
+                "s3_key": s3_key,
+                "benchmark_id": benchmark_id,
+                "task_id": task_id,
+                "artifact_bytes": artifact_bytes,
+            },
+        )
+
+
 async def run_agent(
     sandbox: Sandbox,
     contract: AgentContractRequest,
@@ -487,6 +604,18 @@ async def run_agent(
                 benchmark_id=benchmark_id,
                 task_id=task_id,
             )
+
+    if contract.output_artifacts:
+        if benchmark_id is None:
+            raise SandboxError("benchmark_id is required to upload output artifacts")
+        await upload_output_artifacts(
+            sandbox,
+            contract.output_artifacts,
+            benchmark_id,
+            task_id,
+            aws,
+            s3_bucket,
+        )
 
     # Return why the agent terminated abnormally, or None on clean exit
     return exit_reason, agent_run_time
