@@ -62,10 +62,26 @@ def get_single_benchmark(
     )
 
 
+def _parse_task_statuses(status_csv: str | None) -> list[TaskStatus]:
+    """Parse a CSV string of TaskStatus values into a list."""
+    if not status_csv:
+        return []
+    result: list[TaskStatus] = []
+    for token in status_csv.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            result.append(TaskStatus(token))
+        except ValueError:
+            continue
+    return result
+
+
 @router.get("/benchmarks/{benchmark_id}/tasks", response_model=TasksResponse)
 def get_benchmark_tasks(
     benchmark_id: UUID,
-    status: TaskStatus | None = None,
+    status: str | None = Query(default=None, description="Comma-separated TaskStatus values"),
     task_id_search: str | None = None,
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -79,8 +95,11 @@ def get_benchmark_tasks(
         col(Task.benchmark) == benchmark_id,
         col(Task.org_id) == org.id,
     ]
-    if status is not None:
-        base_filters.append(col(Task.status) == status)
+    statuses = _parse_task_statuses(status)
+    if len(statuses) == 1:
+        base_filters.append(col(Task.status) == statuses[0])
+    elif len(statuses) > 1:
+        base_filters.append(col(Task.status).in_(statuses))
 
     if task_id_search:
         base_filters.append(col(Task.task_id).ilike(f"%{task_id_search}%"))

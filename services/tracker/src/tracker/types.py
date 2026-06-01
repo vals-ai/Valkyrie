@@ -158,11 +158,12 @@ class Order(str, Enum):
 
 
 class FetchBenchmarksRequest(BaseModel):
+    # CSV-valued filters: "FINISHED,IN_PROGRESS" → multiple values; empty/absent → no filter.
     agent_name: str | None = None
     benchmark_name: str | None = None
     model: str | None = None
-    status: BenchmarkStatus | None = None
-    run_by_user_id: UUID | None = None
+    status: str | None = None
+    run_by_user_id: str | None = None
     started_after: datetime | None = None
     started_before: datetime | None = None
     order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
@@ -171,6 +172,48 @@ class FetchBenchmarksRequest(BaseModel):
     cursor: str | None = None
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
+
+    def parsed_statuses(self) -> list[BenchmarkStatus]:
+        """Return the list of BenchmarkStatus values from the CSV status field."""
+        if not self.status:
+            return []
+        result: list[BenchmarkStatus] = []
+        for token in self.status.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                result.append(BenchmarkStatus(token))
+            except ValueError:
+                continue
+        return result
+
+    def parsed_run_by_user_ids(self) -> list[UUID]:
+        """Return parsed UUIDs from the CSV run_by_user_id field."""
+        if not self.run_by_user_id:
+            return []
+        result: list[UUID] = []
+        for token in self.run_by_user_id.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                result.append(UUID(token))
+            except ValueError:
+                continue
+        return result
+
+    def parsed_benchmark_names(self) -> list[str]:
+        """Return the list of benchmark names from the CSV benchmark_name field."""
+        if not self.benchmark_name:
+            return []
+        return [t.strip() for t in self.benchmark_name.split(",") if t.strip()]
+
+    def parsed_agent_names(self) -> list[str]:
+        """Return the list of agent names from the CSV agent_name field."""
+        if not self.agent_name:
+            return []
+        return [t.strip() for t in self.agent_name.split(",") if t.strip()]
 
 
 class BenchmarkTableRow(BaseModel):

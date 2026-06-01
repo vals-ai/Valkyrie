@@ -1216,20 +1216,32 @@ def fetch_filtered_benchmark_rows(
 
     arguments_json = type_coerce(col(Benchmark.arguments), JSON)
 
-    if request.agent_name:
-        query = query.where(arguments_json["contract"]["name"].as_string() == request.agent_name)
+    agent_names = request.parsed_agent_names()
+    if len(agent_names) == 1:
+        query = query.where(arguments_json["contract"]["name"].as_string() == agent_names[0])
+    elif len(agent_names) > 1:
+        query = query.where(col(arguments_json["contract"]["name"].as_string()).in_(agent_names))
 
     if request.model:
         query = query.where(arguments_json["contract"]["model"].as_string() == request.model)
 
-    if request.benchmark_name:
-        query = query.where(Benchmark.name == request.benchmark_name)
+    benchmark_names = request.parsed_benchmark_names()
+    if len(benchmark_names) == 1:
+        query = query.where(Benchmark.name == benchmark_names[0])
+    elif len(benchmark_names) > 1:
+        query = query.where(col(Benchmark.name).in_(benchmark_names))
 
-    if request.status:
-        query = query.where(Benchmark.status == request.status)
+    statuses = request.parsed_statuses()
+    if len(statuses) == 1:
+        query = query.where(Benchmark.status == statuses[0])
+    elif len(statuses) > 1:
+        query = query.where(col(Benchmark.status).in_(statuses))
 
-    if request.run_by_user_id is not None:
-        query = query.where(Benchmark.run_by_id == request.run_by_user_id)
+    run_by_user_ids = request.parsed_run_by_user_ids()
+    if len(run_by_user_ids) == 1:
+        query = query.where(Benchmark.run_by_id == run_by_user_ids[0])
+    elif len(run_by_user_ids) > 1:
+        query = query.where(col(Benchmark.run_by_id).in_(run_by_user_ids))
 
     if request.started_after is not None:
         query = query.where(Benchmark.started_at > request.started_after)
