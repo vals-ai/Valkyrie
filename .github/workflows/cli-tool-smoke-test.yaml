@@ -1,0 +1,41 @@
+name: CLI tool smoke test
+
+on:
+  pull_request:
+    branches: [dev, prod]
+
+jobs:
+  cli-tool-smoke-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Configure uv tool path
+        run: |
+          echo "UV_TOOL_BIN_DIR=$RUNNER_TEMP/uv-tool-bin" >> "$GITHUB_ENV"
+          echo "UV_TOOL_DIR=$RUNNER_TEMP/uv-tools" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/uv-tool-bin" "$RUNNER_TEMP/uv-tools"
+          echo "$RUNNER_TEMP/uv-tool-bin" >> "$GITHUB_PATH"
+
+      - name: Install Valkyrie CLI as a uv tool
+        run: uv tool install --force . --prerelease=allow
+
+      - name: Smoke test CLI startup
+        run: |
+          command -v valk
+          valk --help
+          valk agent --help
+          valk agent download --help

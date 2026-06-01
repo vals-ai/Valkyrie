@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from tracker.auth import get_current_user_and_org
-from tracker.cloudwatch import filter_log_events
+from tracker.aws.cloudwatch_logs import filter_log_events
 from tracker.database.models import Benchmark, Org, OrgConfig, User
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, LogEvent, LogsResponse

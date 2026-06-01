@@ -1,17 +1,23 @@
 import json
+import logging
 from datetime import timezone
 from typing import Any
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
-from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import VerifyTaskIdsResponse
+import httpx
+import pytest
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceUnauthenticatedError
+from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
+from descope import DescopeClient
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session
 
 from main import app
 from tests.conftest import TEST_ORG_ID
+from tracker.auth import RequestIdentity, get_current_starter
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -19,11 +25,13 @@ from tracker.database.models import (
     BenchmarkStatus,
     EvaluationResult,
     FinalEvaluation,
+    Org,
     OrgConfig,
     Task,
     TaskStatus,
 )
 from tracker.types import (
+    AWSCredentials,
     BenchmarkTableRow,
     BenchmarkServiceEntry,
     FetchBenchmarksRequest,
@@ -31,6 +39,7 @@ from tracker.types import (
     HarnessConfig,
     StartBenchmarkRequest,
 )
+from tracker.utils import fetch_harness_config
 
 client = TestClient(app)
 
@@ -55,6 +64,26 @@ class TestFastapiServer:
         assert response.status_code == 200
 
         assert response.json() == {"status": "ok"}
+
+    async def test_fetch_benchmark_tasks(
+        self,
+        monkeypatch: MonkeyPatch,
+    ):
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_1", "task_2"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post(
+            "/fetch-benchmark-tasks",
+            json={
+                "benchmark_name": "swebench",
+                "dataset": "verified",
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"task_ids": ["task_1", "task_2"]}
 
     async def test_start_benchmark(
         self,
@@ -123,6 +152,31 @@ class TestFastapiServer:
         assert json_response["benchmark_name"] == request.benchmark_name
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
+
+    async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ):
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=10,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+
+        async def _mock_health_check(*_args: Any, **_kwargs: Any):
+            raise httpx.ConnectError("Name or service not known")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
+
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        response = no_raise_client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 502
+        assert response.json() == {"detail": "Benchmark service 'swebench' is not reachable"}
 
     async def test_start_benchmark_forwards_tracker_api_key_to_benchmark_service(
         self,
@@ -248,7 +302,9 @@ class TestFastapiServer:
         assert details.get("total_tasks") and details["total_tasks"] == 10
         assert details.get("finished_tasks") and details["finished_tasks"] == 6
 
-    async def test_retrieve_results(self, database_session: Session, example_benchmark_object: Benchmark):
+    async def test_retrieve_results(
+        self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
+    ):
         """
         Test the retrieve results endpoint of the fastapi server.
 
@@ -395,6 +451,26 @@ class TestFastapiServer:
         # If we did not get an error message, we return a default message
         assert response_json.get("task_errors").get("task_23") == "No error message was provided"
 
+        # Test case 9. task_ids subset filters evaluation_results and recomputes final_score
+        observed_headers: dict[str, str] = {}
+
+        async def _mock_final_score(client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
+            observed_headers.update(client._headers)
+            ids = list(kwargs["evaluation_results"].keys())
+            return FinalScoreResponse(tasks_evaluated=ids, final_score=float(len(ids)), metadata={})
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+        response = client.get(
+            "/retrieve-results",
+            params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1"), ("task_ids", "task_3")],
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body["evaluation_results"]) == {"task_1", "task_3"}
+        assert body["final_evaluation"]["final_score"] == 2.0
+        assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
+
     async def test_benchmark_error_handling(
         self,
         contract: AgentContractRequest,
@@ -468,7 +544,7 @@ class TestFastapiServer:
         database_session.commit()
 
         # Add benchmark name to be a random string (expected no matches)
-        fetch_benchmarks_request.benchmark_name = str(uuid4())
+        fetch_benchmarks_request.benchmark_name = [str(uuid4())]
 
         # When we fetch with no benchmarks found, we return an empty list and total count of 0
         response = client.get(
@@ -497,15 +573,21 @@ class TestFastapiServer:
         unique_benchmark = Benchmark(
             org_id=TEST_ORG_ID,
             name="terminal_bench",
-            arguments=BenchmarkArguments(contract=unique_contract, concurrency=5, task_ids=None, slice_str=None),
+            arguments=BenchmarkArguments(
+                contract=unique_contract,
+                concurrency=5,
+                task_ids=None,
+                slice_str=None,
+                dataset="terminal-bench-2.1",
+            ),
         )
         database_session.add(unique_benchmark)
         database_session.commit()
 
         # Search for the 4 benchmarks just created + the original one we added before
-        fetch_benchmarks_request.benchmark_name = "swebench"
-        fetch_benchmarks_request.agent_name = "dummy"
-        fetch_benchmarks_request.status = BenchmarkStatus.IN_PROGRESS
+        fetch_benchmarks_request.benchmark_name = ["swebench"]
+        fetch_benchmarks_request.agent_name = ["dummy"]
+        fetch_benchmarks_request.status = [BenchmarkStatus.IN_PROGRESS]
 
         # When we fetch with benchmarks found, we return a 200 OK
         response = client.get(
@@ -521,9 +603,9 @@ class TestFastapiServer:
             assert set(row.keys()) == expected_fields
 
         # Clear filters and search again (checking limit and total)
-        fetch_benchmarks_request.benchmark_name = None
-        fetch_benchmarks_request.agent_name = None
-        fetch_benchmarks_request.status = None
+        fetch_benchmarks_request.benchmark_name = None  # type: ignore[assignment]
+        fetch_benchmarks_request.agent_name = None  # type: ignore[assignment]
+        fetch_benchmarks_request.status = None  # type: ignore[assignment]
 
         response = client.get(
             "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
@@ -541,7 +623,7 @@ class TestFastapiServer:
         database_session.commit()
 
         # Search for finished benchmarks
-        fetch_benchmarks_request.status = BenchmarkStatus.FINISHED
+        fetch_benchmarks_request.status = [BenchmarkStatus.FINISHED]
 
         response = client.get(
             "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
@@ -609,3 +691,388 @@ class TestFastapiServer:
 
         # Passes the allowlist check — proceeds to benchmark start (200)
         assert response.status_code == 200
+
+    async def test_fetch_benchmarks_filters_by_dataset(self, database_session: Session, contract: AgentContractRequest):
+        benchmark_rows = [
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset=None),
+            ),
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="default"),
+            ),
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="terminal-bench-2.1"),
+            ),
+        ]
+        database_session.add_all(benchmark_rows)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmarks", params={"dataset": "terminal-bench-2.1", "limit": 10})
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["total_count"] == 1
+        assert response_json["benchmarks"][0]["dataset"] == "terminal-bench-2.1"
+
+        response = client.get("/fetch-benchmarks", params={"dataset": "default", "limit": 10})
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["total_count"] == 2
+        assert {row["dataset"] for row in response_json["benchmarks"]} == {"default"}
+
+    async def test_start_benchmark_writes_started_by_columns(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        test_org = Org(id=TEST_ORG_ID, name="default")
+        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+            org=test_org,
+            access_key_id="K2abc",
+            email="alice@vals.ai",
+            name="Alice",
+        )
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        benchmark_id = UUID(response.json()["benchmark_id"])
+
+        benchmark_row = database_session.get(Benchmark, benchmark_id)
+        assert benchmark_row is not None
+        assert benchmark_row.started_by_id == "K2abc"
+        assert benchmark_row.started_by_email == "alice@vals.ai"
+
+    async def test_start_benchmark_self_hosted_writes_nulls(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        # The autouse override_starter fixture already returns a self-hosted identity.
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+        response = client.post("/start-benchmark", json=request.model_dump())
+        assert response.status_code == 200
+
+        benchmark_id = UUID(response.json()["benchmark_id"])
+        benchmark_row = database_session.get(Benchmark, benchmark_id)
+        assert benchmark_row is not None
+        assert benchmark_row.started_by_id is None
+        assert benchmark_row.started_by_email is None
+
+    async def test_start_benchmark_warns_when_email_claim_missing(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+        caplog: pytest.LogCaptureFixture,
+    ):
+        """Hosted-mode start with an email-less access key emits a one-shot warning. Self-hosted
+        identity (access_key_id is None) must NOT warn — that's the bug fix for the warning
+        firing on every authenticated request."""
+        test_org = Org(id=TEST_ORG_ID, name="default")
+        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+            org=test_org,
+            access_key_id="K2abc",
+            email=None,
+            name=None,
+        )
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+        with caplog.at_level(logging.WARNING, logger="main"):
+            response = client.post("/start-benchmark", json=request.model_dump())
+        assert response.status_code == 200
+        benchmark_id = response.json()["benchmark_id"]
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "email" in r.message]
+        assert len(warnings) == 1
+        assert "K2abc" in warnings[0].message
+        assert warnings[0].benchmark_id == benchmark_id
+
+    async def test_init_org_returns_email_claim_present(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+    ):
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.AUTH_REQUIRED", True)
+
+        mock_client = MagicMock(spec=DescopeClient)
+        mock_client.exchange_access_key.return_value = {
+            "tenants": {"test-tenant": {}},
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+                "email": "alice@vals.ai",
+                "name": "Alice",
+            },
+        }
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
+
+        response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["email_claim_missing"] is False
+        assert body["org_name"] == "test-tenant"
+
+    async def test_init_org_returns_email_claim_missing(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+    ):
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.AUTH_REQUIRED", True)
+
+        mock_client = MagicMock(spec=DescopeClient)
+        mock_client.exchange_access_key.return_value = {
+            "tenants": {"test-tenant": {}},
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+            },
+        }
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
+
+        response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert response.status_code == 200
+        assert response.json()["email_claim_missing"] is True
+
+    async def test_init_org_uses_bound_user_email_when_email_claim_missing(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+    ):
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.AUTH_REQUIRED", True)
+
+        mock_client = MagicMock(spec=DescopeClient)
+        mock_client.exchange_access_key.return_value = {
+            "tenants": {"test-tenant": {}},
+            "keyId": "K2abc",
+            "sessionToken": {
+                "sub": "K2abc",
+                "tenants": {"test-tenant": {}},
+                "customClaims": {"user_id": "U2abc"},
+            },
+        }
+        mock_client.mgmt.user.load_by_user_id.return_value = {
+            "user": {
+                "email": "alice@vals.ai",
+                "displayName": "Alice",
+            },
+        }
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
+
+        response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert response.status_code == 200
+        assert response.json()["email_claim_missing"] is False
+        mock_client.mgmt.user.load_by_user_id.assert_called_once_with("U2abc")
+
+    async def test_fetch_benchmarks_includes_started_by_email(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+    ):
+        bench = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            started_by_email="alice@vals.ai",
+            started_by_id="K2abc",
+        )
+        database_session.add(bench)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmarks", params={"limit": 10, "offset": 0})
+        assert response.status_code == 200
+
+        rows = response.json()["benchmarks"]
+        assert any(r["started_by_email"] == "alice@vals.ai" for r in rows)
+
+    async def test_fetch_benchmarks_started_by_query_param_filters(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+    ):
+        """Regression: FastAPI's Depends(PydanticModel) doesn't bind list[str] from query params;
+        started_by must be declared as a separate Query() parameter on the endpoint."""
+        for email in ("alice@vals.ai", "bob@vals.ai", None):
+            database_session.add(
+                Benchmark(
+                    org_id=TEST_ORG_ID,
+                    name="swebench",
+                    arguments=BenchmarkArguments(contract=contract, concurrency=1),
+                    started_by_email=email,
+                    started_by_id=f"K-{email or 'none'}",
+                )
+            )
+        database_session.commit()
+
+        response = client.get("/fetch-benchmarks", params={"started_by": "alice@vals.ai", "limit": 10})
+        assert response.status_code == 200
+        rows = response.json()["benchmarks"]
+        assert len(rows) == 1
+        assert rows[0]["started_by_email"] == "alice@vals.ai"
+
+        # Repeated query params for multi-value filter
+        response = client.get(
+            "/fetch-benchmarks",
+            params=[("started_by", "alice@vals.ai"), ("started_by", "bob@vals.ai"), ("limit", "10")],
+        )
+        assert response.status_code == 200
+        rows = response.json()["benchmarks"]
+        assert len(rows) == 2
+        assert {r["started_by_email"] for r in rows} == {"alice@vals.ai", "bob@vals.ai"}
+
+    async def test_fetch_benchmark_metadata_includes_started_by_email(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+    ):
+        bench = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            started_by_email="alice@vals.ai",
+            started_by_id="K2abc",
+        )
+        database_session.add(bench)
+        database_session.commit()
+
+        response = client.get(f"/fetch-benchmark-metadata/{bench.id}")
+        assert response.status_code == 200
+        assert response.json()["started_by_email"] == "alice@vals.ai"
+
+    async def test_benchmark_service_unauthenticated_error_returns(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        """
+        Test that BenchmarkServiceUnauthenticatedError returns 502 without capturing to Sentry.
+
+        Test Cases:
+            - /start-benchmark returns 502 when benchmark service returns 401
+            - /fetch-benchmark-tasks returns 502 when benchmark service returns 401
+            - /retry-or-resume-benchmark returns 502 when benchmark service returns 401
+            - None of the above cases capture the exception to Sentry
+        """
+        captured: list[Exception] = []
+        monkeypatch.setattr("sentry_sdk.capture_exception", lambda exc: captured.append(exc))  # type: ignore
+
+        async def _raise_unauth(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise BenchmarkServiceUnauthenticatedError("401 Unauthorized")
+
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+
+        # Case 1: /start-benchmark
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _raise_unauth)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+        )
+
+        response = no_raise_client.post("/start-benchmark", json=request.model_dump())
+        assert response.status_code == 502
+
+        # Case 2: /fetch-benchmark-tasks
+        response = no_raise_client.post(
+            "/fetch-benchmark-tasks",
+            json={"benchmark_name": "swebench"},
+        )
+        assert response.status_code == 502
+
+        # Case 3: /retry-or-resume-benchmark — needs at least one task so verify_task_ids is reached
+        benchmark = Benchmark(
+            org_id=TEST_ORG_ID,
+            name="swebench",
+            status=BenchmarkStatus.ERROR,
+            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+        )
+        database_session.add(benchmark)
+        database_session.commit()
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark.id, status=TaskStatus.ERROR)
+        )
+        database_session.commit()
+
+        response = no_raise_client.post(
+            f"/retry-or-resume-benchmark/{benchmark.id}",
+            json={"task_ids": [], "service_headers": {}},
+            params={"retry": "true"},
+        )
+        assert response.status_code == 502
+
+        # None of the three cases should have reached Sentry
+        assert captured == []
+
+    def test_fetch_benchmark_returns_400_when_harness_headers_missing(self):
+        """Missing X-Harness-* headers should return 400, not 500 KeyError."""
+        app.dependency_overrides.pop(fetch_harness_config)
+        try:
+            response = client.get("/fetch-benchmark", params={"benchmark_id": str(uuid4())})
+            assert response.status_code == 400
+            assert "Missing harness config field" in response.json()["detail"]
+        finally:
+            app.dependency_overrides[fetch_harness_config] = lambda: HarnessConfig(
+                aws=AWSCredentials(
+                    aws_access_key_id="test-aws-access-key-id",
+                    aws_secret_access_key="test-aws-secret-access-key",
+                    aws_default_region="test-aws-default-region",
+                ),
+                s3_bucket="test-bucket",
+                log_group="test-log-group",
+                log_retention_policy=30,
+                daytona_secret_name="test-daytona-secret",
+            )

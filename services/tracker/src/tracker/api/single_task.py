@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 from tracker.auth import get_current_user_and_org
-from tracker.cloudwatch import get_cloudwatch_url
+from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.database.models import (
     Benchmark,
     EvaluationResult,
@@ -18,7 +18,7 @@ from tracker.database.models import (
     User,
 )
 from tracker.database.session import get_session
-from tracker.s3 import (
+from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     generate_presigned_get_url,
     list_s3_objects_detailed,
@@ -180,7 +180,7 @@ def get_task_artifacts(
 
     cloudwatch_url: str | None = None
     if config is not None and config.log_group and config.aws_default_region:
-        cloudwatch_url = get_cloudwatch_url(
+        cloudwatch_url = get_benchmark_log_url(
             benchmark_id=str(benchmark_id),
             region=config.aws_default_region,
             log_group=config.log_group,

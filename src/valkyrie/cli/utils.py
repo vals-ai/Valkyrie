@@ -5,17 +5,21 @@ import json
 import shutil
 import tarfile
 import tempfile
+import urllib.request
+from collections.abc import Iterable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Coroutine, TypeVar
+from urllib.parse import urlparse
 from uuid import UUID
 
 import click
 import yaml
 from httpx import Response
-from tracker.database.models import BenchmarkStatus, TaskStatus
+from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import (
+    BenchmarkDetails,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
@@ -97,6 +101,38 @@ async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
     return result
 
 
+def _clean_task_ids(task_ids: Iterable[str]) -> list[str]:
+    cleaned = [task_id.strip() for task_id in task_ids]
+    return list(dict.fromkeys(task_id for task_id in cleaned if task_id))
+
+
+def read_task_ids_source(source: str) -> list[str]:
+    """Read task IDs (one per line) from a local path or an http(s) URL."""
+    try:
+        if urlparse(source).scheme in {"http", "https"}:
+            with urllib.request.urlopen(source) as response:
+                content = response.read().decode("utf-8")
+        else:
+            content = Path(source).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise click.ClickException(f"Failed to read task ids from {source}: {exc}") from exc
+
+    task_ids = _clean_task_ids(content.splitlines())
+    if not task_ids:
+        raise click.ClickException(f"No task ids found in {source}")
+    return task_ids
+
+
+def resolve_task_ids(task_ids: str | None = None, task_ids_file: str | None = None) -> list[str] | None:
+    if task_ids and task_ids_file:
+        raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
+    if task_ids_file:
+        return read_task_ids_source(task_ids_file)
+    if task_ids:
+        return _clean_task_ids(task_ids.split(",")) or None
+    return None
+
+
 def local_time(dt: datetime) -> str:
     """Convert UTC time to users local time"""
     return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -176,7 +212,7 @@ class BenchmarkFormatter:
             colored_part = click.style(f"{label}: {count}", fg=color)
             parts.append(colored_part)
 
-        return f"│ {' │ '.join(parts)} │" if parts else ""
+        return f"{' │ '.join(parts)}" if parts else ""
 
 
 def check_tracker_service_health(tracker: TrackerService) -> bool:
@@ -200,35 +236,129 @@ def check_tracker_service_health(tracker: TrackerService) -> bool:
 
 def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     """
-    Format and display run status with a progress bar.
+    Format and display run status in a box with a progress bar.
 
     Args:
         benchmark_response: FetchBenchmarkResponse
     """
-    benchmark_name = benchmark_response.benchmark_name
-    benchmark_id = benchmark_response.benchmark_id
     details = benchmark_response.details
 
-    status = details.status
-    started_at = details.started_at
-    total_tasks = details.total_tasks
-    finished_tasks = details.finished_tasks
+    bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
+    status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
+    status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
+    progress_line = f"[{bar}] {details.finished_tasks}/{details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
+    breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
 
-    bar, progress_pct = BenchmarkFormatter.create_progress_bar(finished_tasks, total_tasks)
-    status_color = BenchmarkFormatter.STATUS_COLORS[status.value]
+    click.echo("┌─ Run Status " + "─" * 66)
+    click.echo(f"│ {'Benchmark:':<12} {benchmark_response.benchmark_name}")
+    click.echo(f"│ {'Run ID:':<12} {benchmark_response.benchmark_id}")
+    click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
+    click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
+    analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
+    if analysis_line is not None:
+        click.echo(f"│ {'Analysis:':<12} {analysis_line}")
+    click.echo("├" + "─" * 79)
+    click.echo(f"│ {progress_line}")
+    if breakdown_text:
+        click.echo(f"│ {breakdown_text}")
+    click.echo("└" + "─" * 79)
 
-    click.echo(f"{click.style('Run:', bold=True)} {benchmark_name}")
-    click.echo(f"{click.style('Started at:', bold=True)} {local_time(started_at)}")
-    click.echo(f"{click.style('Run ID:', bold=True)} {benchmark_id}")
-    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
-    click.echo(f"{benchmark_response.s3_bucket_url}")
+
+def _format_docent_analysis(details: BenchmarkDetails, run_id: UUID) -> str | None:
+    """Render the docent analysis row for `valk run fetch`.
+
+    Returns None for IDLE (no analysis run yet) so the caller can skip the row entirely.
+    """
+
+    status = details.docent_reading_status
+    if status == DocentReadingStatus.DONE and details.docent_reading_url:
+        return details.docent_reading_url
+    if status == DocentReadingStatus.RUNNING:
+        return "running..."
+    if status == DocentReadingStatus.ERROR:
+        return f"failed (re-run with `valk run analyze {run_id} --no-cache`)"
+    return None
+
+
+COLUMN_WIDTH = 14
+
+
+def row(label: str, value: str) -> str:
+    return f"│ {label:<{COLUMN_WIDTH}} {value}"
+
+
+def cont(value: str) -> str:
+    """Continuation line (no label) for multi-value fields."""
+    return f"│ {' ' * COLUMN_WIDTH} {value}"
+
+
+def format_run_start_details(
+    benchmark: str, dataset: str | None, concurrency: int, slice_str: str | None, task_ids: str | None
+) -> None:
+    """
+    Format and display the start details of a run.
+
+    Args:
+        benchmark: The name of the benchmark
+        dataset: The name of the dataset
+        concurrency: The number of concurrent tasks
+        slice_str: The slice of the dataset to use
+        task_ids: The IDs of the tasks to run
+    """
+    click.echo("┌─ Benchmark " + "─" * 67)
+    click.echo(row("Name:", benchmark))
+    click.echo(row("Dataset:", dataset or "default"))
+    click.echo(row("Concurrency:", str(concurrency)))
+    if slice_str:
+        click.echo(row("Slice:", slice_str))
+    if task_ids:
+        display = task_ids[:60] + "..." if len(task_ids) > 60 else task_ids
+        click.echo(row("Task IDs:", display))
+    else:
+        click.echo(row("Task IDs:", "all tasks"))
+    click.echo("└" + "─" * 79)
     click.echo()
 
-    status_text = click.style(status.value.replace("_", " ").title(), fg=status_color, bold=True)
-    click.echo(f"[{bar}] {finished_tasks}/{total_tasks} ({progress_pct:.1f}%) • {status_text}")
 
-    breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
-    click.echo(breakdown_text)
+def format_agent_start_details(
+    agent: str,
+    model: str | None,
+    secrets: tuple[tuple[str, str], ...],
+    kwargs: tuple[tuple[str, str], ...],
+    service_headers: dict[str, str],
+    webhook_secret: str | None,
+    webhook_intervals: list[int] | None,
+) -> None:
+    """
+    Format and display the start details of an agent.
+
+    Args:
+        agent: The name of the agent
+        model: The model used by the agent
+        secrets: A tuple of secret environment variable and secret name pairs
+        kwargs: A tuple of keyword argument pairs
+        service_headers: A dictionary of service headers
+        webhook_secret: The secret for the webhook
+        webhook_intervals: A list of intervals for the webhook
+    """
+    click.echo("┌─ Agent " + "─" * 71)
+    click.echo(row("Agent:", agent))
+    if model:
+        click.echo(row("Model:", model))
+    if secrets:
+        for i, (env_var, secret_name) in enumerate(secrets):
+            if i == 0:
+                click.echo(row("Secrets:", f"{env_var} → {secret_name}"))
+            else:
+                click.echo(cont(f"{env_var} → {secret_name}"))
+    if kwargs:
+        click.echo(row("Kwargs:", ", ".join(f"{k}={v}" for k, v in kwargs)))
+    if service_headers:
+        click.echo(row("Headers:", ", ".join(service_headers.keys())))
+    if webhook_secret and webhook_intervals:
+        click.echo(row("Notify at:", ", ".join(f"{i}%" for i in webhook_intervals)))
+    click.echo("└" + "─" * 79)
+    click.echo()
 
 
 def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse) -> None:
@@ -239,58 +369,37 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
         start_benchmark_response: StartBenchmarkResponse
     """
 
+    rid = start_benchmark_response.benchmark_id
+
     click.echo()
     click.echo("┌─ Run Details " + "─" * 65)
-    click.echo(f"│ Benchmark:     {start_benchmark_response.benchmark_name}")
-    click.echo(f"│ Agent:      {start_benchmark_response.agent_name}")
-    click.echo(f"│ Run ID:  {start_benchmark_response.benchmark_id}")
-    click.echo(f"│ Started at:    {local_time(start_benchmark_response.started_at)}")
-    click.echo(f"│ Max concurrency:   {start_benchmark_response.concurrency}")
-    click.echo(f"│ Total tasks:   {start_benchmark_response.task_count}")
-    click.echo(f"│ CloudWatch:    {start_benchmark_response.cloudwatch_url}")
-    click.echo(f"│ S3 Bucket:     {start_benchmark_response.s3_bucket_url}")
+    click.echo(f"│ {'Benchmark:':<17} {start_benchmark_response.benchmark_name}")
+    click.echo(f"│ {'Agent:':<17} {start_benchmark_response.agent_name}")
+    click.echo(f"│ {'Run ID:':<17} {rid}")
+    click.echo(f"│ {'Started at:':<17} {local_time(start_benchmark_response.started_at)}")
+    click.echo(f"│ {'Max concurrency:':<17} {start_benchmark_response.concurrency}")
+    click.echo(f"│ {'Total tasks:':<17} {start_benchmark_response.task_count}")
+    click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
+    click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
+    click.echo("├" + "─" * 79)
+    click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {rid} --connect", fg="cyan"))
+    click.echo(f"│ {'Get results:':<17} " + click.style(f"valkyrie run results {rid} --path ./results.json", fg="cyan"))
+    click.echo(f"│ {'Stop:':<17} " + click.style(f"valkyrie run stop {rid}", fg="cyan"))
+    click.echo(f"│ {'Resume:':<17} " + click.style(f"valkyrie run resume {rid}", fg="cyan"))
+    click.echo(f"│ {'Retry:':<17} " + click.style(f"valkyrie run retry {rid}", fg="cyan"))
+    click.echo(f"│ {'Agent outputs:':<17} " + click.style(f"valkyrie agent outputs {rid} --output-dir .", fg="cyan"))
     click.echo("└" + "─" * 79)
     click.echo()
-    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
-    click.echo(f"{start_benchmark_response.s3_bucket_url}")
-    click.echo()
-    click.echo(
-        click.style(
-            f"Track progress: valkyrie run fetch {start_benchmark_response.benchmark_id} --connect",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Retrieve results: valkyrie run results {start_benchmark_response.benchmark_id} --path ./results.json",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Stop run: valkyrie run stop {start_benchmark_response.benchmark_id}",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Resume run: valkyrie run resume {start_benchmark_response.benchmark_id}",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Retry run: valkyrie run retry {start_benchmark_response.benchmark_id}",
-            fg="cyan",
-        )
-    )
-    click.echo(
-        click.style(
-            f"Fetch agent outputs: valkyrie agent outputs {start_benchmark_response.benchmark_id} --output-dir .",
-            fg="cyan",
-        )
-    )
-    click.echo()
+
+
+def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
+    """Print next-step commands after a stream ends."""
+    rid = benchmark_id
+    click.echo(f"│ {'Get results:':<17} " + click.style(f"valkyrie run results {rid} --path ./results.json", fg="cyan"))
+    click.echo(f"│ {'Agent outputs:':<17} " + click.style(f"valkyrie agent outputs {rid} --output-dir .", fg="cyan"))
+    if s3_url:
+        click.echo(f"│ {'S3 view:':<17} " + click.style(s3_url, fg="cyan"))
+    click.echo("└" + "─" * 79)
 
 
 def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None:
@@ -302,11 +411,20 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
         benchmark_id: Run UUID to stream
     """
     initial = tracker.fetch_benchmark(benchmark_id)
-    click.echo(click.style("Agent outputs and the final view will be saved to:", fg="yellow"))
-    click.echo(f"{initial.s3_bucket_url}")
-    click.echo()
+    s3_url = initial.s3_bucket_url
     click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
-    click.echo()
+
+    # Render initial state so there is something visible before the first SSE event
+    initial_details = initial.details
+    bar, progress_pct = BenchmarkFormatter.create_progress_bar(
+        initial_details.finished_tasks, initial_details.total_tasks
+    )
+    status_color = BenchmarkFormatter.STATUS_COLORS[initial_details.status.value]
+    status_text = click.style(initial_details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
+    click.echo(
+        f"[{bar}] {initial_details.finished_tasks}/{initial_details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
+    )
+    click.echo(BenchmarkFormatter.format_task_breakdown(initial_details.task_breakdown), nl=False)
 
     try:
         for event in tracker.stream_benchmark(benchmark_id):
@@ -332,21 +450,27 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None
             elif event.startswith("event: complete"):
                 click.echo("\n")
                 click.echo(click.style("✓ Run completed!", fg="green", bold=True))
+                click.echo("┌─ Next Steps " + "─" * 66)
+                _stream_next_steps(benchmark_id, s3_url)
                 break
 
             elif event.startswith("event: error"):
                 click.echo("\n")
-                click.echo(click.style("✗ Error occurred while streaming", fg="red", bold=True))
+                click.echo(click.style("✗ Run errored.", fg="red", bold=True))
+                click.echo("┌─ Next Steps " + "─" * 66)
+                _stream_next_steps(benchmark_id, s3_url)
                 break
 
             elif event.startswith("event: disconnect"):
                 click.echo("\n")
-                click.echo(click.style("Disconnected from stream", fg="yellow"))
+                click.echo(click.style("Disconnected from stream.", fg="yellow"))
                 break
 
     except KeyboardInterrupt:
         click.echo("\n")
-        click.echo(click.style("Stopped streaming", fg="yellow"))
+        click.echo(click.style("Streaming stopped.", fg="yellow"))
+        click.echo("┌─ Next Steps " + "─" * 66)
+        _stream_next_steps(benchmark_id, s3_url)
 
 
 def format_fetch_benchmarks_response(
@@ -368,6 +492,9 @@ def format_fetch_benchmarks_response(
         click.echo(click.style("No runs found.", fg="yellow"))
         return
 
+    def format_score(score: float | None) -> str:
+        return f"{score:.1f}%" if score is not None else "-"
+
     rows: list[dict[str, str]] = []
     for benchmark in benchmarks:
         _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
@@ -377,11 +504,14 @@ def format_fetch_benchmarks_response(
                 "ID": str(benchmark.id),
                 "Benchmark": benchmark.name,
                 "Agent": benchmark.agent_name,
+                "Started By": benchmark.started_by_email or "—",
                 "Model": benchmark.model or "-",
+                "Dataset": benchmark.dataset or "default",
                 "Status": click.style(
                     benchmark.status.value.replace("_", " ").title(),
                     fg=BenchmarkFormatter.STATUS_COLORS[benchmark.status.value],
                 ),
+                "Score": format_score(benchmark.final_score),
                 "Started / Finished": f"{short_local_time(benchmark.started_at)} / {short_local_time(benchmark.finished_at, include_date=False) if benchmark.finished_at else '-'}",
                 "Progress": f"{progress_percentage:.1f}%",
             }
@@ -389,7 +519,18 @@ def format_fetch_benchmarks_response(
 
     format_table(
         rows,
-        ["ID", "Benchmark", "Agent", "Model", "Status", "Started / Finished", "Progress"],
+        [
+            "ID",
+            "Benchmark",
+            "Agent",
+            "Started By",
+            "Model",
+            "Dataset",
+            "Status",
+            "Score",
+            "Started / Finished",
+            "Progress",
+        ],
         current_page,
         total_pages,
         fetch_benchmarks_response.total_count,
@@ -398,7 +539,12 @@ def format_fetch_benchmarks_response(
 
 
 def format_no_benchmarks_found(
-    agent_name: str | None, benchmark_name: str | None, model: str | None, status: str | None
+    agent_name: str | None,
+    benchmark_name: str | None,
+    model: str | None,
+    dataset: str | None,
+    status: str | None,
+    started_by: list[str] | None = None,
 ) -> None:
     """
     Handle the case where no runs are found matching the specified filters.
@@ -407,12 +553,14 @@ def format_no_benchmarks_found(
         agent_name: Agent name filter
         benchmark_name: Benchmark name filter
         model: Model name filter
+        dataset: Dataset name filter
         status: Status filter
+        started_by: Optional list of starter emails filter
     """
     click.echo()
     click.echo(click.style("No runs found matching the specified filters.", fg="yellow"))
     click.echo()
-    if any([agent_name, benchmark_name, model, status]):
+    if any([agent_name, benchmark_name, model, dataset, status, started_by]):
         click.echo("Filters applied:")
         if agent_name:
             click.echo(f"  • Agent: {agent_name}")
@@ -420,8 +568,12 @@ def format_no_benchmarks_found(
             click.echo(f"  • Benchmark: {benchmark_name}")
         if model:
             click.echo(f"  • Model: {model}")
+        if dataset:
+            click.echo(f"  • Dataset: {dataset}")
         if status:
             click.echo(f"  • Status: {status}")
+        if started_by:
+            click.echo(f"  • Started By: {', '.join(started_by)}")
 
 
 def paginate_benchmarks(
@@ -429,9 +581,11 @@ def paginate_benchmarks(
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,
+    dataset: str | None,
     status: str | None,
     order_by: str,
     limit: int = 5,
+    started_by: list[str] | None = None,
 ) -> None:
     """
     Interactive paginated display of runs with vim-style navigation.
@@ -441,19 +595,23 @@ def paginate_benchmarks(
         agent_name: Optional agent name filter
         benchmark_name: Optional benchmark name filter
         model: Optional model name filter
+        dataset: Optional dataset name filter
         status: Optional status filter
         order_by: Order (asc/desc)
         limit: Number of items per page
+        started_by: Optional list of starter emails to filter by
     """
     current_page = 1
     offset = 0
 
     while True:
         request = FetchBenchmarksRequest(
-            agent_name=agent_name,
-            benchmark_name=benchmark_name,
+            agent_name=[agent_name] if agent_name else None,
+            benchmark_name=[benchmark_name] if benchmark_name else None,
             model=model,
-            status=BenchmarkStatus(status) if status else None,
+            dataset=dataset,
+            status=[BenchmarkStatus(status)] if status else None,
+            started_by=started_by,
             order_by=Order(order_by),
             limit=limit,
             offset=offset,
@@ -466,7 +624,7 @@ def paginate_benchmarks(
         click.clear()
 
         if total_count == 0:
-            format_no_benchmarks_found(agent_name, benchmark_name, model, status)
+            format_no_benchmarks_found(agent_name, benchmark_name, model, dataset, status, started_by)
             break
 
         format_fetch_benchmarks_response(response, current_page, total_pages)
@@ -547,7 +705,7 @@ def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
             )
         )
 
-    click.echo(click.style(f"View the  '{path}'", fg="green", bold=True))
+    click.echo(click.style(f"Results saved to '{path}'", fg="green", bold=True))
 
 
 def format_table(
@@ -714,7 +872,7 @@ def resolve_webhook_config(
         click.echo(
             click.style(
                 "  Warning: --interval specified but no webhook secret configured. "
-                "Run `valkyrie config webhook set <secret-name>` first. Ignoring intervals.",
+                "Run `valkyrie config set webhook <secret-name>` first. Ignoring intervals.",
                 fg="yellow",
             )
         )

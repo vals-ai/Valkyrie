@@ -2,22 +2,25 @@
 
 import asyncio
 import os
+import sys
 from pathlib import Path
 from typing import Any
 from uuid import UUID
 
 import click
 import yaml
-from tracker.database.models import BenchmarkStatus
+from tracker.database.models import BenchmarkStatus, RetryMode
 from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
 from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
+from valkyrie.cli.logging import configure_cli_logging
 from valkyrie.cli.s3_client import (
     download_agent,
     download_s3_path,
     get_contract_from_s3,
+    get_ingest_lambda_from_s3,
     install_agent,
     list_agents,
     push_agent,
@@ -31,11 +34,15 @@ from valkyrie.cli.utils import (
     check_tracker_service_health,
     download_agent_outputs,
     download_final_view,
+    format_agent_start_details,
     format_benchmark_status,
+    format_run_start_details,
     format_start_benchmark_response,
+    format_table,
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
+    resolve_task_ids,
     resolve_webhook_config,
     stream_benchmark_status,
 )
@@ -45,7 +52,7 @@ from valkyrie.schemas import AgentConfig
 @click.group()
 def cli():
     """Valkyrie CLI."""
-    pass
+    configure_cli_logging()
 
 
 @cli.group()
@@ -57,6 +64,12 @@ def run():
 @cli.group()
 def agent():
     """Agent command group"""
+    pass
+
+
+@cli.group()
+def benchmark():
+    """Benchmark command group"""
     pass
 
 
@@ -111,14 +124,23 @@ def init() -> None:
             raise click.ClickException(str(e))
         click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
 
+        if result.get("email_claim_missing"):
+            click.echo(
+                click.style(
+                    "⚠  This access key is missing the 'email' custom claim. "
+                    "Run attribution for runs you start will be empty.\n"
+                    "   Ask your Vals admin to add an 'email' (and optionally 'name') "
+                    "custom claim to this key.",
+                    fg="yellow",
+                )
+            )
+
     # Both modes require AWS credentials
     collected_keys: dict[str, str] = {}
     for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
         sourced = current_config.get(key) or os.environ.get(key)
         if sourced:
-            click.echo(
-                f"  {key}: sourced from {'environment' if not current_config.get(key) else 'already created config'}"
-            )
+            click.echo(f"  {key}: sourced from {'environment' if not current_config.get(key) else 'existing config'}")
             collected_keys[key] = sourced
             continue
 
@@ -170,7 +192,7 @@ def set(key: str, value: str) -> None:
         config_value = ConfigValue.from_str(key)
     except ValueError:
         raise click.ClickException(
-            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(ConfigValue.__members__.values())}"
+            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
         )
 
     current[config_value.value] = value
@@ -200,7 +222,7 @@ def config_remove(key: str) -> None:
         config_value = ConfigValue.from_str(key)
     except ValueError:
         raise click.ClickException(
-            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(ConfigValue.__members__.keys())}"
+            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
         )
 
     if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
@@ -245,7 +267,7 @@ def service_set(name: str, url: str) -> None:
     with open(CONFIG_LOCATION, "w") as f:
         yaml.dump(harness_config, f, default_flow_style=False)
 
-    click.echo(click.style(f"Service '{name}' has been set set", fg="green"))
+    click.echo(click.style(f"Service '{name}' has been set.", fg="green"))
 
 
 @service.command("remove")
@@ -364,9 +386,81 @@ def auth_list() -> None:
         click.echo(click.style("No benchmark auth credentials configured.", fg="yellow"))
         return
 
-    for name, credential in auth_credentials.items():
-        masked = credential[:4] + "***" if len(credential) > 4 else "***"
-        click.echo(f"  {name}: {masked}")
+    rows = [
+        {"Benchmark": name, "Credential": credential[:4] + "***" if len(credential) > 4 else "***"}
+        for name, credential in auth_credentials.items()
+    ]
+    format_table(rows, ["Benchmark", "Credential"], item_name="credential")
+
+
+@benchmark.command(
+    name="tasks",
+    help="Save task IDs for a benchmark dataset. \n\nExample:\nvalkyrie benchmark tasks swebench --dataset default",
+)
+@click.argument("benchmark_name", type=str)
+@click.option(
+    "--dataset",
+    type=str,
+    required=False,
+    default=None,
+    help="Dataset name to fetch from the benchmark service (defaults to 'default')",
+)
+@click.option(
+    "--header",
+    "-H",
+    "headers",
+    multiple=True,
+    nargs=2,
+    type=(str, str),
+    help="Custom header for benchmark service requests (e.g., -H Authorization my-credential)",
+)
+@click.option(
+    "--ignore-custom-services",
+    "--ics",
+    is_flag=True,
+    help="Ignore custom benchmark services that have been configured. Provides opt-out for custom services.",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path, file_okay=True, dir_okay=False),
+    required=False,
+    default=None,
+    help="Path to save task IDs, one per line. Defaults to <benchmark>-<dataset>-tasks.txt.",
+)
+def tasks(
+    benchmark_name: str,
+    dataset: str | None,
+    headers: tuple[tuple[str, str]],
+    ignore_custom_services: bool,
+    output: Path | None,
+):
+    """
+    Save task IDs for a benchmark dataset.
+    """
+    service_headers: dict[str, str] = {}
+    auth_credential = TrackerService.get_benchmark_auth(benchmark_name)
+    if auth_credential:
+        service_headers["Authorization"] = str(auth_credential)
+    for name, value in headers:
+        service_headers[name] = value
+
+    try:
+        with TrackerService() as tracker:
+            if not check_tracker_service_health(tracker):
+                return
+
+            response = tracker.fetch_benchmark_tasks(
+                benchmark_name,
+                dataset=dataset,
+                ignore_custom_services=ignore_custom_services,
+                service_headers=service_headers,
+            )
+            output_path = output or Path(f"{benchmark_name}-{dataset or 'default'}-tasks.txt")
+            output_path.write_text("\n".join(response) + "\n", encoding="utf-8")
+            click.echo(f"Wrote {len(response)} task IDs to {output_path}")
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
 
 
 @run.command(
@@ -414,10 +508,10 @@ def auth_list() -> None:
 )
 @click.option(
     "--task-ids-file",
-    type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=False),
+    type=str,
     required=False,
     default=None,
-    help="Path to a text file with one task ID per line",
+    help="Path or http(s) URL to a text file with one task ID per line",
 )
 @click.option(
     "--slice",
@@ -482,7 +576,7 @@ def start(
     concurrency: int,
     lambda_function: str | None,
     task_ids: str | None,
-    task_ids_file: Path | None,
+    task_ids_file: str | None,
     slice_str: str | None,
     dataset: str | None,
     kwargs: tuple[tuple[str, str]],
@@ -497,26 +591,7 @@ def start(
     Example:
         valkyrie run start --agent agents/claude_code --benchmark swebench
     """
-    if task_ids and task_ids_file:
-        raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
-
-    if task_ids_file:
-        lines = task_ids_file.read_text().splitlines()
-        task_ids = ",".join(line.strip() for line in lines if line.strip())
-
-    click.echo("Arguments:")
-    click.echo(f"  - Benchmark: {benchmark}")
-    click.echo(f"  - Agent: {agent}")
-    if model:
-        click.echo(f"  - Model: {model}")
-    click.echo(f"  - Concurrency: {concurrency}")
-    click.echo(f"  - Slice: {slice_str}")
-    if dataset:
-        click.echo(f"  - Dataset: {dataset}")
-    if task_ids:
-        click.echo(f"  - Task IDs: {task_ids[:100]}{'...' if len(task_ids) > 100 else ''}")
-    else:
-        click.echo("  - Task IDs: all tasks")
+    formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
     service_headers: dict[str, str] = {}
     auth_credential = TrackerService.get_benchmark_auth(benchmark)
@@ -525,19 +600,13 @@ def start(
     for name, value in headers:
         service_headers[name] = value
 
-    if service_headers:
-        click.echo(f"  - Service headers: {', '.join(service_headers.keys())}")
-
-    # Webhook notification setup
+    # Webhook notification setup (may print a warning before the boxes)
     webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
-    if webhook_secret and webhook_intervals:
-        click.echo(f"  - Notifications: {webhook_intervals}%")
+    task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
+    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display)
 
-    formatted_task_ids: list[str] | None = None
-    if task_ids:
-        formatted_task_ids = task_ids.split(",")
-        click.echo(f"Discovered {len(formatted_task_ids)} task IDs")
+    format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
 
     try:
         # Build agent config
@@ -594,7 +663,14 @@ def start(
             click.echo("\r\033[K", nl=False)
             if response.status_code != 200:
                 click.echo(click.style("Run failed to start!", fg="red", bold=True))
-                click.echo(response.text)
+                detail = str(response.json().get("detail", response.text))
+                match response.status_code:
+                    case 401 | 403:
+                        click.echo(click.style("Authentication error: ", fg="yellow", bold=True) + detail)
+                    case 502:
+                        click.echo(click.style("Benchmark service error: ", fg="yellow", bold=True) + detail)
+                    case _:
+                        click.echo(detail)
                 return
 
             format_start_benchmark_response(StartBenchmarkResponse.model_validate(response.json()))
@@ -628,7 +704,6 @@ def fetch(run_id: UUID, connect: bool):
             if connect:
                 stream_benchmark_status(tracker, run_id)
             else:
-                click.echo(f"Fetching run: {run_id}")
                 response = tracker.fetch_benchmark(run_id)
                 format_benchmark_status(response)
     except TrackerServiceError as e:
@@ -654,13 +729,29 @@ def fetch(run_id: UUID, connect: bool):
     required=False,
     help="Saves results to s3 instead of downloading them locally. Can be found at bucket://benchmarks/run_id/<benchmark>.json",
 )
-def results(run_id: UUID, path: Path | None, s3: bool):
+@click.option(
+    "--task-ids",
+    type=str,
+    required=False,
+    default=None,
+    help="Comma-separated task IDs to score the subset over. Final score is recomputed over the subset.",
+)
+@click.option(
+    "--task-ids-file",
+    type=str,
+    required=False,
+    default=None,
+    help="Path or http(s) URL to a text file with one task ID per line",
+)
+def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, task_ids_file: str | None):
     """
     Retrieve the results of a run by its run id.
 
     Example:
         valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
     """
+    subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
+
     click.echo(f"Retrieving results for run: {run_id}")
 
     try:
@@ -673,9 +764,17 @@ def results(run_id: UUID, path: Path | None, s3: bool):
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3)
+            results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3, task_ids=subset_task_ids)
 
             if isinstance(results_response, FinalViewResponse):
+                if subset_task_ids:
+                    scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
+                    click.echo(
+                        click.style(
+                            f"Scored over {scored} of {len(subset_task_ids)} subset task ids.",
+                            fg="yellow" if scored < len(subset_task_ids) else "green",
+                        )
+                    )
                 default_path: Path = Path(f"./{results_response.benchmark_name}.json")
 
                 download_final_view(path or default_path, results_response)
@@ -708,10 +807,11 @@ def stop(run_id: UUID, force: bool):
     Example:
         valkyrie run stop 123e4567-e89b-12d3-a456-426614174000
     """
-    click.echo(f"Stopping run: {run_id}")
+    action = "Force stop" if force else "Stop"
+    if not click.confirm(f"{action} run {run_id}?"):
+        click.echo("Cancelled.")
+        return
 
-    if force:
-        click.echo(click.style("Force stopping the run", fg="yellow", bold=True))
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
@@ -719,22 +819,108 @@ def stop(run_id: UUID, force: bool):
 
             _ = tracker.stop_benchmark(run_id, force)
 
-            if not force:
+            if force:
+                click.echo(click.style("✓ Run force stopped.", fg="green", bold=True))
+            else:
                 click.echo(
                     click.style(
-                        "Run is currently being stopped. Will be stopped when all tasks in flight are finished.",
+                        "Run is stopping — will finish after in-flight tasks complete.",
                         fg="yellow",
                         bold=True,
                     )
                 )
+            click.echo("┌─ Next Steps " + "─" * 66)
             click.echo(
-                click.style(
-                    f"Retrieve results: valkyrie run results {run_id} --path ./results.json",
-                    fg="cyan",
-                )
+                f"│ {'Get results:':<17} "
+                + click.style(f"valkyrie run results {run_id} --path ./results.json", fg="cyan")
             )
+            click.echo("└" + "─" * 79)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
+
+
+@run.command(
+    name="analyze",
+    help="Trigger Docent ingestion + error analysis for a finished run.",
+)
+@click.argument("run_id", type=UUID)
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    default=False,
+    help="Bypass the cached reading-plan URL and re-fire ingestion.",
+)
+def analyze(run_id: UUID, no_cache: bool) -> None:
+    """Trigger Docent ingestion + error analysis for a finished run."""
+    try:
+        with TrackerService() as tracker:
+            if not check_tracker_service_health(tracker):
+                raise click.ClickException("Tracker service is unhealthy.")
+
+            # Resolve the analyzer Lambda from the agent's current pushed contract
+            # (handles both YAML and Python contracts).
+            metadata = tracker.fetch_benchmark_metadata(run_id)
+            contract_name = metadata.benchmark_arguments.contract.name
+            try:
+                lambda_function = asyncio.run(get_ingest_lambda_from_s3(contract_name))
+            except S3Error as e:
+                raise click.ClickException(
+                    f"Could not load contract for agent '{contract_name}' from S3: {e}\n\n"
+                    "If the agent has never been pushed, run `valk agent push ./<agent_dir>`."
+                )
+            if not lambda_function:
+                raise click.ClickException(
+                    f"Agent '{contract_name}' has no `ingest_lambda` set in its current contract. "
+                    "Declare it in contract.yaml (or override the `ingest_lambda` property in "
+                    "contract.py) and re-push with `valk agent push ./<agent_dir>`."
+                )
+
+            terminal: tuple[str, dict[str, Any]] | None = None
+            for event, data in tracker.analyze_benchmark(
+                run_id,
+                no_cache=no_cache,
+                lambda_function=lambda_function,
+            ):
+                if event == "started":
+                    click.echo(f"  Invoking {data.get('lambda_function')}...")
+                elif event == "heartbeat":
+                    click.echo(".", nl=False)
+                elif event == "done":
+                    terminal = (event, data)
+                elif event == "error":
+                    raise click.ClickException(data.get("message") or "analyzer Lambda failed")
+
+            click.echo()
+
+            if not terminal:
+                return
+
+            event, data = terminal
+            url = data.get("reading_plan_url")
+            if url:
+                click.echo(f"  Reading plan: {click.style(url, fg='blue', underline=True)}")
+            else:
+                click.echo(
+                    click.style(
+                        "Analysis completed but no reading plan URL was produced.",
+                        fg="yellow",
+                    )
+                )
+    except TrackerServiceError as e:
+        # "Cannot analyze run X: status is IN_PROGRESS (must be FINISHED)." —
+        # not really an error, just "come back later." Render it cleanly.
+        msg = str(e)
+        if "must be FINISHED" in msg:
+            for status, line in (
+                ("IN_PROGRESS", f"Run {run_id} is still in progress. Try again after it finishes."),
+                ("STOPPING", f"Run {run_id} is stopping. Try again once it settles."),
+                ("STOPPED", f"Run {run_id} was stopped before completion — nothing to analyze."),
+                ("ERROR", f"Run {run_id} errored before completing — nothing to analyze."),
+            ):
+                if f"status is {status}" in msg:
+                    click.echo(click.style(line, fg="yellow"))
+                    sys.exit(1)
+        raise click.ClickException(msg)
 
 
 @run.command(
@@ -764,10 +950,10 @@ def stop(run_id: UUID, force: bool):
 )
 @click.option(
     "--task-ids-file",
-    type=click.Path(exists=True, path_type=Path, file_okay=True, dir_okay=False),
+    type=str,
     required=False,
     default=None,
-    help="Path to a text file with one task ID per line",
+    help="Path or http(s) URL to a text file with one task ID per line",
 )
 @click.option(
     "--update-agent",
@@ -776,6 +962,12 @@ def stop(run_id: UUID, force: bool):
     default=False,
     help="Refresh the frozen agent copy from the current agents/<name>.zip in S3 before resuming.",
 )
+@click.option(
+    "--from-scratch",
+    is_flag=True,
+    default=False,
+    help="Clear durable eval state and rerun generation.",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -783,8 +975,9 @@ def resume(
     retry: bool,
     concurrency: int | None,
     task_ids: str | None,
-    task_ids_file: Path | None,
+    task_ids_file: str | None,
     update_agent: bool,
+    from_scratch: bool,
 ):
     """
     Resume a run by its run id.
@@ -792,12 +985,7 @@ def resume(
     Example:
         valkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20
     """
-    if task_ids and task_ids_file:
-        raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
-
-    if task_ids_file:
-        lines = task_ids_file.read_text().splitlines()
-        task_ids = ",".join(line.strip() for line in lines if line.strip())
+    retry_task_ids = resolve_task_ids(task_ids, task_ids_file) or []
 
     # NOTE: workaround for auto retrying tasks when using the retry command
     if ctx.info_name == "retry":
@@ -822,21 +1010,23 @@ def resume(
                 asyncio.run(update_benchmark_agent_version(agent_name, str(run_id)))
                 click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
 
-            retry_task_ids = task_ids.split(",") if task_ids else []
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
                 retry,
+                RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
             )
-            click.echo(click.style("Run continued successfully!", fg="green", bold=True))
+            action_label = "retried" if retry else "resumed"
+            click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))
+            click.echo("┌─ Next Steps " + "─" * 66)
+            click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
             click.echo(
-                click.style(
-                    f"Track progress: valkyrie run fetch {run_id} --connect",
-                    fg="cyan",
-                )
+                f"│ {'Get results:':<17} "
+                + click.style(f"valkyrie run results {run_id} --path ./results.json", fg="cyan")
             )
+            click.echo("└" + "─" * 79)
     except (TrackerServiceError, S3Error) as e:
         raise click.ClickException(str(e))
 
@@ -875,6 +1065,12 @@ run.add_command(retry_command)
     help="Model name (e.g., anthropic/claude-sonnet-4-20250514)",
 )
 @click.option(
+    "--dataset",
+    type=str,
+    required=False,
+    help="Dataset name (e.g., default, terminal-bench-2.1)",
+)
+@click.option(
     "--status",
     type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
     required=False,
@@ -888,12 +1084,21 @@ run.add_command(retry_command)
     default=Order.DESC.value,
     help="Order by the benchmarks to fetch (e.g., desc, asc)",
 )
+@click.option(
+    "--started-by",
+    type=str,
+    required=False,
+    default=None,
+    help="Comma-separated list of starter emails (e.g., alice@vals.ai,bob@vals.ai). Case-insensitive.",
+)
 def list_benchmarks(
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,
+    dataset: str | None,
     status: str | None,
     order_by: str = "desc",
+    started_by: str | None = None,
 ):
     """
     List runs based on the request parameters.
@@ -903,12 +1108,23 @@ def list_benchmarks(
     Example:
         valkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
     """
+    started_by_list: list[str] = [s.strip() for s in started_by.split(",") if s.strip()] if started_by else []
+
     try:
         with TrackerService() as tracker:
             if not check_tracker_service_health(tracker):
                 return
 
-            paginate_benchmarks(tracker, agent_name, benchmark_name, model, status, order_by)
+            paginate_benchmarks(
+                tracker,
+                agent_name,
+                benchmark_name,
+                model,
+                dataset,
+                status,
+                order_by,
+                started_by=started_by_list or None,
+            )
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
@@ -955,7 +1171,8 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
             click.echo(f"\r\033[KFetching agent outputs for run {run_id}...", nl=False)
 
             response = tracker.fetch_agent_outputs(
-                run_id, task_ids=[task.strip() for task in task_ids.split(",")] if task_ids else None
+                run_id,
+                task_ids=resolve_task_ids(task_ids),
             )
 
             download_agent_outputs(response, output_dir)
@@ -1023,10 +1240,8 @@ def install(github_url: str, name: str | None):
         valkyrie agent install https://github.com/org/registry/tree/main/agents/codex --name my-agent
     """
     try:
-        asyncio.run(install_agent(name, github_url))
-        click.echo(
-            click.style(f"✓ Agent {'(' + name + ') ' if name else ''}installed successfully!", fg="green", bold=True)
-        )
+        resolved_name = asyncio.run(install_agent(name, github_url))
+        click.echo(click.style(f"✓ Agent '{resolved_name}' installed successfully!", fg="green", bold=True))
     except (RuntimeError, S3Error) as e:
         raise click.ClickException(str(e))
     except Exception as e:
@@ -1051,7 +1266,7 @@ def push(agent_path: Path, name: str | None):
     """
     try:
         agent_name = name or agent_path.stem
-        asyncio.run(push_agent(name, agent_path))
+        asyncio.run(push_agent(agent_name, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
     except S3Error as e:
         raise click.ClickException(str(e))
@@ -1097,10 +1312,6 @@ def download(agent_name: str, output_dir: Path | None):
         valkyrie agent download my-agent
     """
     try:
-        if not click.confirm(f"Are you sure you want to download agent '{agent_name}'?"):
-            click.echo("Cancelled.")
-            return
-
         asyncio.run(download_agent(agent_name, output_dir))
         click.echo(click.style(f"✓ Agent '{agent_name}' downloaded successfully!", fg="green", bold=True))
     except S3Error as e:

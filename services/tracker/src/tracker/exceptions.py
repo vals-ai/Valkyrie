@@ -18,8 +18,27 @@ class InvalidSandboxConfigurationError(SandboxError):
     """Exception raised for deterministic sandbox configuration errors."""
 
 
-class PtyCreationError(SandboxError):
-    """Exception raised when PTY session creation fails after all retry attempts."""
+class OutputArtifactError(TrackerServiceError):
+    """Exception raised when a declared output artifact is missing or invalid."""
+
+    def __str__(self) -> str:
+        return "Output artifact error: " + super().__str__()
+
+
+class AgentRunFailedError(SandboxError):
+    """Exception raised when the agent process inside a healthy sandbox exits non-zero.
+
+    Distinct from infra-caused SandboxErrors. Sandbox retries don't help these
+    and they should be triaged separately from real infra failures.
+    """
+
+
+class SandboxSetupError(SandboxError):
+    """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
+
+
+class SSLConnectionError(SandboxSetupError):
+    """Exception raised when a sandbox command fails due to an SSL/TLS connection error (curl exit code 35)."""
 
 
 class S3Error(TrackerServiceError):

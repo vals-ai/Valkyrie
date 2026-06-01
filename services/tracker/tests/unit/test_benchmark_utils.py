@@ -1,20 +1,37 @@
 from datetime import datetime
 from typing import Any, Sequence
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-from benchmark_service.schemas import FinalScoreResponse
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 
-from tests.unit.test_fastapi_server import client
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkStatus, Org, Task, TaskStatus
+from tests.unit.test_fastapi_server import client
+from tracker.auth import RequestIdentity
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    EvaluationResult,
+    Org,
+    Task,
+    TaskStatus,
+)
 from tracker.exceptions import TrackerServiceError
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    commit_task_error,
     create_task_rows,
+    fetch_daytona_headers,
     fetch_benchmark_row,
+    fetch_final_score_inputs,
+    fetch_filtered_benchmark_rows,
+    has_runnable_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
@@ -22,6 +39,26 @@ from tracker.utils import (
 
 class TestBenchmarkUtils:
     _test_org = Org(id=TEST_ORG_ID, name="default")
+    _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+
+    def test_fetch_daytona_headers_sets_provider(
+        self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "tracker.utils.fetch_aws_secret",
+            lambda *_args, **_kwargs: {
+                "DAYTONA_API_KEY": "key",
+                "DAYTONA_API_URL": "url",
+                "DAYTONA_TARGET": "target",
+            },
+        )
+
+        assert fetch_daytona_headers(harness_config.daytona_secret_name, harness_config.aws) == {
+            "x-sandbox-provider": "daytona",
+            "x-api-key": "key",
+            "x-api-url": "url",
+            "x-target": "target",
+        }
 
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
@@ -50,9 +87,13 @@ class TestBenchmarkUtils:
             initial_task_rows.append(
                 Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.PENDING)
             )
-        for i in range(5, 10):
+        for i in range(5, 8):
             initial_task_rows.append(
                 Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.IN_PROGRESS)
+            )
+        for i in range(8, 10):
+            initial_task_rows.append(
+                Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.EVALUATING)
             )
         database_session.add_all(initial_task_rows)
         database_session.commit()
@@ -81,7 +122,7 @@ class TestBenchmarkUtils:
             .where(Task.benchmark == benchmark_row.id)
             .where(Task.status == TaskStatus.STOPPED)
         ).one()
-        assert task_rows == 5
+        assert task_rows == 7
 
         # The remaining tasks have been left alone in in progress state
         task_rows = database_session.exec(
@@ -90,7 +131,7 @@ class TestBenchmarkUtils:
             .where(Task.status == TaskStatus.IN_PROGRESS)
         ).one()
 
-        assert task_rows == 5
+        assert task_rows == 3
 
     def test_stop_benchmark_edge_cases(self, example_benchmark_object: Benchmark, database_session: Session):
         """
@@ -200,26 +241,26 @@ class TestBenchmarkUtils:
         example_benchmark_object: Benchmark,
         database_session: Session,
         harness_config: HarnessConfig,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         """
         Tests edge cases for resuming a benchmark
 
         Test Cases:
-            - Cannot resume a benchmark that is not in a stopped state
+            - Running benchmark retry with no error tasks is a no-op
             - Cannot resume a benchmark where all tasks have already finished
             - Errors are raised and returned to the client
             - Can recreate the same environment the benchmark was started in
             - Can force resume a task and validate the task ids passed in
         """
 
-        # Benchmark is not in a stopped state
+        # Running benchmark retry with no error tasks is a no-op
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
 
-        # failure code to resume the benchmark
         response: Response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
-        assert response.status_code == 400
+        assert response.status_code == 200
 
         # Set benchmark to stopped state but add only finished tasks
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -248,7 +289,7 @@ class TestBenchmarkUtils:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_org)
+        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_starter)
 
         recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
         assert recreated_start_benchmark_request == original_start_benchmark_request
@@ -264,6 +305,13 @@ class TestBenchmarkUtils:
         database_session.commit()
 
         # Task id is provided as a force parameter but does not exist in dataset
+        async def _verify_rejecting_task_5(*_args: Any, task_ids: list[str] | None, **_kwargs: Any) -> Any:
+            if task_ids and "task_5" in task_ids:
+                raise BenchmarkServiceError("task_5 does not exist in the dataset")
+            return VerifyTaskIdsResponse(task_ids=task_ids or [])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_rejecting_task_5)
+
         response = client.post(
             f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
             json={"task_ids": ["task_5"]},
@@ -333,6 +381,110 @@ class TestBenchmarkUtils:
         assert len(all_tasks) == len(verified_task_ids)
         assert all(task.status == TaskStatus.PENDING for task in all_tasks)
 
+        task_rows = create_task_rows(["task_1"], benchmark_row, database_session, self._test_org)
+        assert [task_id for task_id, _ in task_rows] == ["task_1"]
+
+    def test_fetch_final_score_inputs_waits_for_runnable_tasks(
+        self, example_benchmark_object: Benchmark, database_session: Session
+    ):
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        finished_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_finished",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        error_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_error",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+        )
+        stopped_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_stopped",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.STOPPED,
+        )
+        pending_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_pending",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add_all([finished_task, error_task, stopped_task, pending_task])
+        database_session.commit()
+
+        database_session.add(EvaluationResult(org_id=TEST_ORG_ID, task=finished_task.id, result={"score": 1.0}))
+        database_session.commit()
+
+        assert has_runnable_tasks(database_session, benchmark_row, self._test_org)
+
+        pending_task.status = TaskStatus.ERROR
+        database_session.add(pending_task)
+        database_session.commit()
+
+        assert not has_runnable_tasks(database_session, benchmark_row, self._test_org)
+        assert fetch_final_score_inputs(database_session, benchmark_row, self._test_org) == {
+            "task_finished": {"score": 1.0},
+            "task_error": None,
+            "task_stopped": None,
+            "task_pending": None,
+        }
+
+    def test_commit_task_error_spans_status_transition(
+        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
+    ):
+        log_records: list[dict[str, Any]] = []
+        span_records: list[dict[str, Any]] = []
+
+        def fake_info(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
+            log_records.append({"message": message, **(extra or {})})
+
+        class MockSpan:
+            def __init__(self, record: dict[str, Any]) -> None:
+                self._record = record
+
+            def __enter__(self) -> "MockSpan":
+                self._record["entered"] = True
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                self._record["exited"] = True
+
+        def fake_span(message: str, **attributes: Any) -> MockSpan:
+            record = {"message": message, **attributes}
+            span_records.append(record)
+            return MockSpan(record)
+
+        monkeypatch.setattr("tracker.utils.logger.info", fake_info)
+        monkeypatch.setattr("tracker.utils.logfire.span", fake_span)
+
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.IN_PROGRESS,
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        commit_task_error(task_row, database_session, "agent failed")
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
+        assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
+        assert transition_record["to_status"] == TaskStatus.ERROR.value
+        assert transition_record["task_id"] == "task_0"
+        assert transition_record["benchmark_id"] == str(example_benchmark_object.id)
+        assert transition_record["entered"] and transition_record["exited"]
+        assert transition_record["has_error_message"] is True
+        assert not any(record["message"].startswith("task.status_transition") for record in log_records)
+
     async def test_set_benchmark_final_status(self, example_benchmark_object: Benchmark, database_session: Session):
         """
         Tests the end to end flow when stopping and resuming a benchmark
@@ -390,3 +542,156 @@ class TestBenchmarkUtils:
         set_benchmark_final_status(benchmark_row, database_session, self._test_org)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED
+
+
+def test_benchmark_persists_started_by_columns(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+):
+    example_benchmark_object.started_by_id = "K2abc"
+    example_benchmark_object.started_by_email = "alice@vals.ai"
+    database_session.add(example_benchmark_object)
+    database_session.commit()
+
+    refetched = database_session.get(Benchmark, example_benchmark_object.id)
+    assert refetched is not None
+    assert refetched.started_by_id == "K2abc"
+    assert refetched.started_by_email == "alice@vals.ai"
+
+
+def test_benchmark_started_by_columns_default_none(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+):
+    database_session.add(example_benchmark_object)
+    database_session.commit()
+
+    refetched = database_session.get(Benchmark, example_benchmark_object.id)
+    assert refetched is not None
+    assert refetched.started_by_id is None
+    assert refetched.started_by_email is None
+
+
+def _make_benchmark(
+    session: Session,
+    contract: AgentContractRequest,
+    *,
+    started_by_email: str | None,
+    name: str = "swebench",
+) -> Benchmark:
+    bench = Benchmark(
+        org_id=TEST_ORG_ID,
+        name=name,
+        arguments=BenchmarkArguments(contract=contract, concurrency=1),
+        started_by_email=started_by_email,
+        started_by_id="K-" + (started_by_email or "none"),
+    )
+    session.add(bench)
+    session.commit()
+    return bench
+
+
+def test_fetch_filtered_started_by_single(database_session: Session, contract: AgentContractRequest):
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email=None)
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
+        database_session,
+        org,
+    )
+    assert total == 1
+    assert [r.started_by_email for r in rows] == ["alice@vals.ai"]
+
+
+def test_fetch_filtered_started_by_multiple(database_session: Session, contract: AgentContractRequest):
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email="carol@vals.ai")
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["alice@vals.ai", "bob@vals.ai"], limit=10),
+        database_session,
+        org,
+    )
+    assert total == 2
+    assert sorted(r.started_by_email for r in rows) == ["alice@vals.ai", "bob@vals.ai"]
+
+
+def test_fetch_filtered_started_by_case_insensitive(database_session: Session, contract: AgentContractRequest):
+    """Uppercase input matches the lower-cased rows in the DB."""
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["ALICE@VALS.AI"], limit=10),
+        database_session,
+        org,
+    )
+    assert total == 1
+    assert rows[0].started_by_email == "alice@vals.ai"
+
+
+def test_fetch_filtered_started_by_none_skips_filter(database_session: Session, contract: AgentContractRequest):
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+    _make_benchmark(database_session, contract, started_by_email=None)
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=None, limit=10),
+        database_session,
+        org,
+    )
+    assert total == 2
+
+
+def test_fetch_filtered_started_by_strips_whitespace(database_session: Session, contract: AgentContractRequest):
+    """Trailing whitespace on a filter email matches the clean DB row."""
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["  alice@vals.ai  "], limit=10),
+        database_session,
+        org,
+    )
+    assert total == 1
+    assert rows[0].started_by_email == "alice@vals.ai"
+
+
+def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: Session, contract: AgentContractRequest):
+    """Filter applies on top of scoped_select(Benchmark, org) — cross-org rows must not leak."""
+
+    other_org = Org(id=uuid4(), name="other-tenant")
+    database_session.add(other_org)
+    database_session.commit()
+
+    other_org_bench = Benchmark(
+        org_id=other_org.id,
+        name="swebench",
+        arguments=BenchmarkArguments(contract=contract, concurrency=1),
+        started_by_email="alice@vals.ai",
+        started_by_id="K-other",
+    )
+    database_session.add(other_org_bench)
+    database_session.commit()
+
+    default_org = database_session.get(Org, TEST_ORG_ID)
+    assert default_org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
+        database_session,
+        default_org,
+    )
+    assert total == 1
+    assert rows[0].org_id == TEST_ORG_ID

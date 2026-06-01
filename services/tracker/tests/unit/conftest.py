@@ -1,14 +1,22 @@
 import os
+from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import HealthCheckResponse, SetupTaskResponse, VerifyTaskIdsResponse
+from benchmark_service import ImageSource, Resources
+from benchmark_service.schemas import (
+    FinalScoreResponse,
+    HealthCheckResponse,
+    RetrieveTaskResponse,
+    SetupTaskResponse,
+    VerifyTaskIdsResponse,
+)
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
-from tracker.auth import get_current_org, get_current_user_and_org
+from tracker.auth import RequestIdentity, get_current_org, get_current_starter, get_current_user_and_org
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
@@ -70,8 +78,8 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_copy_agent_to_benchmark(*_args: Any, **_kwargs: Any) -> None:
         pass
 
-    monkeypatch.setattr("tracker.s3.download_from_s3", _mock_download_from_s3)
-    monkeypatch.setattr("tracker.s3.get_contract_s3_key", _mock_get_contract_s3_key)
+    monkeypatch.setattr("tracker.aws.s3.download_from_s3", _mock_download_from_s3)
+    monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
     monkeypatch.setattr("tracker.utils.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
@@ -93,6 +101,22 @@ def override_org() -> None:
     test_org = Org(id=TEST_ORG_ID, name="default")
     app.dependency_overrides[get_current_org] = lambda: test_org
     app.dependency_overrides[get_current_user_and_org] = lambda: (None, test_org)
+
+
+@pytest.fixture(autouse=True)
+def override_starter() -> None:
+    """Override get_current_starter to return a test identity.
+
+    Tests that need a different identity (e.g. hosted-mode with custom claims) can
+    monkeypatch app.dependency_overrides[get_current_starter] inside the test body.
+    """
+    test_org = Org(id=TEST_ORG_ID, name="default")
+    app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+        org=test_org,
+        access_key_id=None,
+        email=None,
+        name=None,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -127,10 +151,10 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
-    def _mock_create_benchmark_group(*_args: Any, **_kwargs: Any) -> str:
+    def _mock_create_benchmark_log_group(*_args: Any, **_kwargs: Any) -> str:
         return "mock-group"
 
-    def _mock_cloudwatch_stream(*_args: Any, **_kwargs: Any) -> None:
+    def _mock_write_benchmark_log_event(*_args: Any, **_kwargs: Any) -> None:
         pass
 
     async def _mock_upload_final_view(*_args: Any, **_kwargs: Any) -> None:
@@ -139,12 +163,12 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
     def _mock_fetch_aws_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:
         return {"DAYTONA_API_KEY": "test-key", "DAYTONA_API_URL": "http://localhost:8001", "DAYTONA_TARGET": "us"}
 
-    monkeypatch.setattr("tracker.cloudwatch.create_benchmark_group", _mock_create_benchmark_group)
-    monkeypatch.setattr("tracker.cloudwatch.cloudwatch_stream", _mock_cloudwatch_stream)
-    monkeypatch.setattr("tracker.utils.create_benchmark_group", _mock_create_benchmark_group)
-    monkeypatch.setattr("tracker.utils.cloudwatch_stream", _mock_cloudwatch_stream)
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.create_benchmark_log_group", _mock_create_benchmark_log_group)
+    monkeypatch.setattr("tracker.aws.cloudwatch_logs.write_benchmark_log_event", _mock_write_benchmark_log_event)
+    monkeypatch.setattr("tracker.utils.create_benchmark_log_group", _mock_create_benchmark_log_group)
+    monkeypatch.setattr("tracker.utils.write_benchmark_log_event", _mock_write_benchmark_log_event)
     monkeypatch.setattr("tracker.utils.upload_final_view", _mock_upload_final_view)
-    monkeypatch.setattr("tracker.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
+    monkeypatch.setattr("tracker.aws.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
     monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)
 
 
@@ -155,8 +179,11 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop(*_args: Any, **_kwargs: Any) -> None:
         pass
 
+    async def _noop_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        return None, 0.0
+
     monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _noop)
-    monkeypatch.setattr("tracker.utils.run_agent", _noop)
+    monkeypatch.setattr("tracker.utils.run_agent", _noop_run_agent)
 
 
 @pytest.fixture(autouse=True)
@@ -168,3 +195,45 @@ def mock_broker(monkeypatch: pytest.MonkeyPatch) -> None:
     mock_kicker.return_value.with_labels.return_value.kiq = _mock_kiq
 
     monkeypatch.setattr("main.process_benchmark.kicker", mock_kicker)
+
+
+@pytest.fixture
+def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> None:
+    """Common process_benchmark deps: test DB engine, no-op sandbox, echo verify, static
+    retrieve/evaluate/final_score. Tests requesting this fixture can override any one method
+    with their own monkeypatch.setattr call."""
+
+    @asynccontextmanager
+    async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "mock-sandbox-id"
+        yield mock_sandbox
+
+    async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+        return RetrieveTaskResponse(
+            source=ImageSource(image="test-image:latest"),
+            problem_path="/tmp/problem_statement.txt",
+            cwd="/testbed",
+            resources=Resources(vcpu=2, memory=4, disk=5),
+        )
+
+    async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"status": "success", "score": 1.0}
+
+    async def _mock_final_score(*_args: Any, evaluation_results: dict[str, Any], **_kwargs: Any) -> FinalScoreResponse:
+        tasks_evaluated = list(evaluation_results.keys())
+        return FinalScoreResponse(
+            tasks_evaluated=tasks_evaluated,
+            final_score=50.0,
+            metadata={"resolved_tasks": [], "unresolved_tasks": tasks_evaluated},
+        )
+
+    async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
+        return VerifyTaskIdsResponse(task_ids=task_ids)
+
+    monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+    monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+    monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+    monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
+    monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)

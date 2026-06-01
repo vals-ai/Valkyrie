@@ -1,14 +1,18 @@
 import logging
 import tarfile
 import traceback
-from typing import Annotated
+from typing import Annotated, Any
 from uuid import UUID
 
+import httpx
+import logfire
 import sentry_sdk
-from benchmark_service.client import BenchmarkServiceError
+from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
+from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session, select
@@ -23,23 +27,18 @@ from tracker.api.single_benchmark import router as single_benchmark_router
 from tracker.api.single_task import router as single_task_router
 from tracker.api.users import router as users_router
 from tracker.auth import (
+    RequestIdentity,
     extract_api_key,
     find_org_by_tenant,
     forward_tracker_api_key,
     get_current_org,
+    get_current_starter,
     get_current_user_and_org,
-    resolve_descope_tenant,
+    resolve_descope_identity,
     resolve_registry_auth_headers,
 )
-from tracker.cloudwatch import get_cloudwatch_url
-from tracker.config import AUTH_REQUIRED, CORS_ALLOWED_ORIGINS
-from tracker.database.models import Benchmark, BenchmarkStatus, Org, OrgConfig, User
-from tracker.database.scoping import assert_org, get_scoped
-from tracker.database.session import check_database_connection, get_session
-from tracker.exceptions import TrackerServiceError
-from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
-from tracker.middleware import RequestContextMiddleware
-from tracker.s3 import (
+from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
     create_benchmark_url,
@@ -49,14 +48,35 @@ from tracker.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
-from tracker.secrets import fetch_aws_secret
-from tracker.sentry import init_sentry
+from tracker.config import AUTH_REQUIRED, CORS_ALLOWED_ORIGINS, ENVIRONMENT, create_benchmark_service_url
+from tracker.database.models import (
+    Benchmark,
+    BenchmarkStatus,
+    DocentReadingStatus,
+    FinalEvaluation,
+    Org,
+    OrgConfig,
+    RetryMode,
+    User,
+)
+from tracker.database.scoping import assert_org, get_scoped
+from tracker.database.session import check_database_connection, get_session
+from tracker.docent_analysis import (
+    analyze_event_stream,
+)
+from tracker.exceptions import TrackerServiceError
+from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
+from tracker.middleware import RequestContextMiddleware
+from tracker.observability import configure_observability
+from tracker.aws.secrets import fetch_aws_secret
 from tracker.types import (
+    AnalyzeBenchmarkRequest,
     BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FetchBenchmarkTasksRequest,
     HarnessConfig,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
@@ -71,6 +91,7 @@ from tracker.utils import (
     YieldingWriter,
     _backfill_harness_config_from_org_config,
     commit_benchmark_error,
+    create_benchmark_service_client,
     create_final_view,
     fetch_filtered_benchmark_rows,
     fetch_harness_config,
@@ -84,11 +105,13 @@ from tracker.utils import (
 )
 
 configure_logging()
-init_sentry("valkyrie-tracker")
+configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
 
 app = FastAPI()
+
+logfire.instrument_fastapi(app, excluded_urls="/health$")
 
 app.add_middleware(
     CORSMiddleware,
@@ -129,11 +152,23 @@ def bind_benchmark_id(benchmark_id: UUID) -> UUID:
 TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
 
 
+def _taskiq_labels() -> dict[str, str]:
+    """Labels attached to a kicked task: current request id + injected OTel trace context."""
+    trace_context: dict[str, str] = {}
+    inject(trace_context)
+    return {"request_id": request_id_var.get(), **trace_context}
+
+
 @app.exception_handler(TrackerServiceError)
 async def tracker_service_error_handler(_request: Request, exc: TrackerServiceError):
     logger.error(exc, exc_info=True)
     sentry_sdk.capture_exception(exc)
     raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.exception_handler(BenchmarkServiceUnauthenticatedError)
+async def benchmark_service_unauth_error_handler(_request: Request, exc: BenchmarkServiceUnauthenticatedError):
+    raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.exception_handler(BenchmarkServiceError)
@@ -188,17 +223,18 @@ def init_org(
         raise HTTPException(status_code=405, detail="Init is only available in hosted mode")
 
     api_key = extract_api_key(request)
-    tenant_name = resolve_descope_tenant(api_key)
+    identity = resolve_descope_identity(api_key, include_user_profile=True)
 
-    stmt = pg_insert(Org).values(name=tenant_name).on_conflict_do_nothing(index_elements=["name"])
+    stmt = pg_insert(Org).values(name=identity.tenant_name).on_conflict_do_nothing(index_elements=["name"])
     result = session.exec(stmt)
     created = result.rowcount > 0
     session.commit()
 
-    org = find_org_by_tenant(tenant_name, session)
+    org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(status_code=500, detail="Internal error during org creation")
-    return {"org_name": org.name, "created": created}
+
+    return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
 @app.post("/start-benchmark")
@@ -207,6 +243,7 @@ async def start_benchmark(
     request: StartBenchmarkRequest,
     session: Session = Depends(get_session),
     user_and_org: tuple[User | None, Org] = Depends(get_current_user_and_org),
+    run_starter: RequestIdentity = Depends(get_current_starter),
 ) -> StartBenchmarkResponse:
     """
     Start a benchmark run with the uploaded contract.
@@ -266,14 +303,27 @@ async def start_benchmark(
     benchmark_service = request.benchmark_service
 
     # Check service is running
-    _ = await benchmark_service.health_check()
+    try:
+        _ = await benchmark_service.health_check()
+    except httpx.ConnectError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
+        ) from exc
 
     # Create benchmark row inside of database to mark start of the benchmark
-    benchmark_row = start_benchmark_request_to_benchmark(request, org)
+    benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
+    user, org = user_and_org
     benchmark_row.run_by_id = user.id if user else None
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))
+
+    if run_starter.access_key_id is not None and run_starter.email is None:
+        logger.warning(
+            "Access key %s resolved no user email; run attribution for this run will be empty",
+            run_starter.access_key_id,
+        )
 
     # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
@@ -288,6 +338,8 @@ async def start_benchmark(
             request.harness_config.aws,
             request.harness_config.s3_bucket,
         )
+    except BenchmarkServiceUnauthenticatedError:
+        raise
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
         commit_benchmark_error(benchmark_row, session, error_message)
@@ -300,9 +352,7 @@ async def start_benchmark(
 
     await (
         process_benchmark.kicker()
-        .with_labels(
-            request_id=request_id_var.get(),
-        )
+        .with_labels(**_taskiq_labels())
         .kiq(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
@@ -317,13 +367,45 @@ async def start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=get_cloudwatch_url(
+        cloudwatch_url=get_benchmark_log_url(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group
         ),
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
         ),
     )
+
+
+@app.post("/fetch-benchmark-tasks")
+async def fetch_benchmark_tasks(
+    http_request: Request,
+    request: FetchBenchmarkTasksRequest,
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    _org: Org = Depends(get_current_org),
+) -> VerifyTaskIdsResponse:
+    """
+    Fetch all task ids for a benchmark dataset.
+    """
+    try:
+        benchmark_service = create_benchmark_service_client(
+            url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
+            daytona_secret_name=harness_config.daytona_secret_name,
+            aws=harness_config.aws,
+            service_headers=forward_tracker_api_key(request.service_headers, http_request.headers.get("x-api-key")),
+        )
+        try:
+            return await benchmark_service.verify_task_ids(
+                task_ids=None,
+                slice_str=None,
+                dataset=request.dataset,
+            )
+        finally:
+            await benchmark_service.close()
+    except (BenchmarkServiceError, httpx.HTTPError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to fetch task ids from benchmark service '{request.benchmark_name}': {exc}",
+        ) from exc
 
 
 @app.get("/fetch-benchmark", response_model=None)
@@ -374,27 +456,132 @@ async def fetch_benchmark(
     )
 
 
+@app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
+async def analyze_benchmark(
+    benchmark_id: TrackedBenchmarkId,
+    body: AnalyzeBenchmarkRequest,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> dict[str, str] | StreamingResponse:
+    """
+    Invoke the Docent analyzer Lambda for a benchmark and stream progress over SSE.
+
+    Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
+    no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
+    """
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+
+    if benchmark_row.status != BenchmarkStatus.FINISHED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot analyze run {benchmark_id}: status is {benchmark_row.status.value} (must be FINISHED).",
+        )
+
+    if (
+        not body.no_cache
+        and benchmark_row.docent_reading_status == DocentReadingStatus.DONE
+        and benchmark_row.docent_reading_url
+    ):
+        return {
+            "status": "done",
+            "reading_plan_url": benchmark_row.docent_reading_url,
+        }
+
+    if not body.lambda_function:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No ingest_lambda provided for agent '{benchmark_row.arguments.contract.name}'. "
+                "The CLI normally resolves this from the agent's pushed contract — if you're "
+                "calling this endpoint directly, supply `lambda_function` in the request body."
+            ),
+        )
+
+    payload: dict[str, Any] = {
+        "benchmark_id": str(benchmark_id),
+        "benchmark_name": benchmark_row.name,
+        "s3_bucket": harness_config.s3_bucket,
+        "contract": {"name": benchmark_row.arguments.contract.name},
+    }
+
+    return StreamingResponse(
+        analyze_event_stream(
+            benchmark_id=benchmark_row.id,
+            lambda_function=body.lambda_function,
+            payload=payload,
+            aws=harness_config.aws,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @app.get("/retrieve-results")
 async def retrieve_results(
     benchmark_id: TrackedBenchmarkId,
+    http_request: Request,
     s3: bool = Query(default=False),
+    task_ids: list[str] | None = Query(default=None),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
     """
-    Retrieve the results of a benchmark by its id.
+    Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is
+    filtered to that subset and the final score is recomputed over the subset; the persisted
+    FinalEvaluation / per-task rows are left untouched.
+
+    Note: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was
+    just computed (full or subset). The DB remains source of truth, so re-running without
+    task_ids re-uploads the canonical full view.
 
     Usage:
-    curl -X GET http://<endpoint>/retrieve-results/<benchmark_id>?s3=false
-
-    Returns:
-        RetrieveResultsResponse
+    curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
+    curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
     """
     benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
     assert_org(benchmark_row, org)
 
     final_view = create_final_view(benchmark_row, session, org)
+
+    if task_ids:
+        task_ids_set = set(task_ids)
+
+        def _filter_task_map(task_map):
+            return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
+
+        final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
+        final_view.task_errors = _filter_task_map(final_view.task_errors)
+
+        # Missing/errored tasks are passed to the benchmark service as {task_id: None}.
+        scored_results = dict(final_view.evaluation_results or {})
+        for task_id in final_view.task_errors or {}:
+            scored_results.setdefault(task_id, None)
+
+        effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
+        benchmark_service = benchmark_row.benchmark_service(
+            harness_config.daytona_secret_name,
+            harness_config.aws,
+            service_headers=effective_service_headers,
+        )
+        try:
+            resp = await benchmark_service.final_score(
+                evaluation_results=scored_results,
+                dataset=benchmark_row.arguments.dataset,
+            )
+        finally:
+            await benchmark_service.close()
+        final_view.final_evaluation = FinalEvaluation(
+            org_id=org.id,
+            benchmark=benchmark_row.id,
+            final_score=resp.final_score,
+            properties=resp.metadata,
+        )
 
     if s3:
         s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
@@ -476,6 +663,7 @@ async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
     retry: bool = Query(default=False),
+    retry_mode: RetryMode = Query(default=RetryMode.AUTO),
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
@@ -484,7 +672,7 @@ async def retry_or_resume_benchmark(
     org: Org = Depends(get_current_org),
 ) -> RetryOrResumeBenchmarkResponse:
     """
-    Retry or resume a benchmark run by its id, we only can retry or resume a benchmark if its not currently running.
+    Retry or resume a benchmark run by its id.
 
     Usage:
     curl -X POST http://<endpoint>/retry-or-resume-benchmark/<benchmark_id>?retry=true&concurrency=20
@@ -494,33 +682,33 @@ async def retry_or_resume_benchmark(
         benchmark_id: The benchmark ID to retry/resume
         retry: If true, retry failed tasks. If false, resume from where it left off
         concurrency: Optional new concurrency level (overrides original value)
-        task_ids: Optional list of specific task IDs to run
+        task_ids: Optional list of specific task IDs to run. If a task id is not yet
+            registered but is valid in the current dataset, a fresh PENDING row is created.
 
     Returns:
         RetryOrResumeBenchmarkResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    invalid_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING]
-
-    if benchmark_row.status in invalid_states:
+    if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
             status_code=400,
-            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is currently running.",
+            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
+        )
+
+    if concurrency is not None and concurrency < 1:
+        raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
     effective_service_headers = forward_tracker_api_key(
         service_headers,
         http_request.headers.get("x-api-key"),
     )
 
-    # NOTE: 0 is not acceptable
-    if concurrency:
-        benchmark_row.arguments.concurrency = concurrency
-        session.add(benchmark_row)
-        session.commit()
-
-    # Reset tasks and retry or resume benchmark
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
@@ -528,9 +716,20 @@ async def retry_or_resume_benchmark(
             harness_config.daytona_secret_name, harness_config.aws, service_headers=effective_service_headers
         ),
         retry=retry,
+        retry_mode=retry_mode,
         rerun_task_ids=task_ids,
         org=org,
     )
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
+        )
+
+    if concurrency is not None:
+        benchmark_row.arguments.concurrency = concurrency
+        session.add(benchmark_row)
+        session.commit()
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(
@@ -541,9 +740,7 @@ async def retry_or_resume_benchmark(
     # we will delegate inside what tasks we are running
     await (
         process_benchmark.kicker()
-        .with_labels(
-            request_id=request_id_var.get(),
-        )
+        .with_labels(**_taskiq_labels())
         .kiq(
             start_benchmark_request_json=resume_request_json,
             benchmark_id_str=str(benchmark_row.id),
@@ -559,6 +756,10 @@ async def retry_or_resume_benchmark(
 @app.get("/fetch-benchmarks")
 async def fetch_benchmarks(
     request: FetchBenchmarksRequest = Depends(),
+    agent_name: list[str] | None = Query(default=None),
+    benchmark_name: list[str] | None = Query(default=None),
+    status: list[BenchmarkStatus] | None = Query(default=None),
+    started_by: list[str] | None = Query(default=None),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> FetchBenchmarksResponse:
@@ -571,6 +772,17 @@ async def fetch_benchmarks(
     Returns:
         list[FetchBenchmarksResponse]
     """
+
+    # list[str] and list[BenchmarkStatus] fields are not bound from query params by
+    # FastAPI's Depends(PydanticModel) — declare them separately and merge into the request.
+    request = request.model_copy(
+        update={
+            "agent_name": agent_name,
+            "benchmark_name": benchmark_name,
+            "status": status,
+            "started_by": started_by,
+        }
+    )
 
     benchmark_rows, total_count, next_cursor = fetch_filtered_benchmark_rows(request, session, org)
 

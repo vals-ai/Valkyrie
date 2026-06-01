@@ -17,6 +17,7 @@ ALLOWED_IPS: list[tuple[str, str]] = [
 NAMESPACE = "local"
 
 # Tracker Service
+TRACKER_LOG_GROUP_NAME = "/valkyrie/tracker"
 TRACKER_CPU = 1024
 TRACKER_MEMORY = 2048
 TRACKER_DOMAIN = "benchmark-tracker.vals.ai"
@@ -40,10 +41,11 @@ POSTGRES_PORT = 5432
 ELASTICACHE_NODE_TYPE = "cache.t4g.micro"
 
 # Worker Service
+WORKER_LOG_GROUP_NAME = "/valkyrie/worker"
 WORKER_CPU = 4096
 WORKER_MEMORY = 8192
-WORKER_MIN_TASKS = 1
-WORKER_MAX_TASKS = 2
+WORKER_MIN_TASKS = 2
+WORKER_MAX_TASKS = 4
 WORKER_SCALING_CPU_PERCENT = 70
 WORKER_STOP_TIMEOUT_SECONDS = 120  # If protection is enabled the task will not be deleted
 
@@ -54,7 +56,7 @@ POSTGRES_USER = "tracker"
 POSTGRES_DB = "tracker"
 
 # RDS
-RDS_INSTANCE_CLASS = "t4g.micro"  # Smallest instance, ~$12/month
+RDS_INSTANCE_CLASS = "t4g.small"
 RDS_ALLOCATED_STORAGE_GB = 20
 RDS_SECRET_NAME = "tracker-db-credentials"
 

@@ -8,7 +8,7 @@ from sqlmodel import Session, select
 from tracker.auth import get_current_user_and_org
 from tracker.database.models import Org, OrgConfig, User
 from tracker.database.session import get_session
-from tracker.s3 import generate_presigned_get_url, list_s3_agent_names, s3_object_exists
+from tracker.aws.s3 import generate_presigned_get_url, list_s3_agent_names, s3_object_exists
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse, AWSCredentials
 
 router = APIRouter()

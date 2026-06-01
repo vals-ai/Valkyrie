@@ -1,6 +1,9 @@
 # Valkyrie
 
+[![Paper](https://img.shields.io/badge/Paper-alphaXiv-B31B1B)](https://www.alphaxiv.org/abs/valkyrie)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/vals-ai/Valkyrie)
+[![Test Coverage](https://codecov.io/gh/vals-ai/Valkyrie/branch/dev/graph/badge.svg)](https://codecov.io/gh/vals-ai/Valkyrie)
+[![Doc Coverage](https://vals-ai.github.io/Valkyrie/docstr-coverage.svg)](https://github.com/vals-ai/Valkyrie)
 
 Benchmark orchestration platform for testing AI agents against standardized benchmarks.
 
@@ -231,7 +234,7 @@ valkyrie run start \
 | `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
 | `--lambda` | AWS Lambda function to invoke after the run completes |
 | `--task-ids` | Comma-separated task IDs to run |
-| `--task-ids-file` | Path to a text file with one task ID per line |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--slice` | Slice the benchmark dataset (`start:stop:step`) |
 | `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
@@ -256,7 +259,19 @@ valkyrie run results <id> --path ./results.json
 
 # Upload to S3
 valkyrie run results <id> --s3
+
+# Score over a task-id subset (recomputed via the benchmark service;
+# stored full results are unchanged)
+valkyrie run results <id> --task-ids task_1,task_2
+valkyrie run results <id> --task-ids-file https://example.com/subset.txt
 ```
+
+| Option | Description |
+| --- | --- |
+| `--path` | Local path to save results (default: `./<benchmark>.json`) |
+| `--s3` | Upload to S3 instead of downloading. With `--task-ids` / `--task-ids-file` the subset view overwrites the canonical S3 key — re-run without filters to restore |
+| `--task-ids` | Comma-separated task IDs to score the subset over (recomputes `final_score` over the filtered set) |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 
 ### Stop a run
 
@@ -278,14 +293,21 @@ valkyrie run retry <id>
 
 # Override concurrency on resume (works on retry)
 valkyrie run resume <id> --concurrency 20
+
+# Save every task ID in a benchmark dataset to a text file
+valkyrie benchmark tasks swebench --dataset default
+
+# Or choose the output path
+valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 ```
 
 | Option | Description |
 | --- | --- |
 | `--concurrency` | Override concurrency level |
-| `--task-ids` | Comma-separated task IDs to resume/retry |
-| `--task-ids-file` | Path to a text file with one task ID per line |
+| `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
+| `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
 
 ### List runs
 
@@ -294,10 +316,20 @@ valkyrie run list \
   --agent-name claude_code \
   --benchmark-name swebench \
   --status IN_PROGRESS \
-  --order-by DESC
+  --order-by DESC \
+  --started-by alice@vals.ai,bob@vals.ai
 ```
 
-Status options: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR`. Supports paginated navigation ([h] previous, [l] next, [q] quit).
+| Option | Description |
+| --- | --- |
+| `--agent-name` | Filter by agent name |
+| `--benchmark-name` | Filter by benchmark name |
+| `--model` | Filter by model |
+| `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
+| `--order-by` | Order results (`desc` or `asc`) |
+| `--started-by` | Comma-separated list of starter emails (case-insensitive) |
+
+Supports paginated navigation ([h] previous, [l] next, [q] quit).
 
 ### Download agent outputs
 
@@ -334,3 +366,24 @@ valkyrie agent output <id> [subpath] [-o ./output-dir]
 | Infrastructure (AWS CDK) | [INFRASTRUCTURE.md](infra/README.md) |
 | Sandbox secrets | [PROVIDER.md](docs/PROVIDER.md) |
 | Contribute benchmark services | [Create benchmark service](https://github.com/vals-ai/create-benchmark-service) |
+
+## Citation
+
+If you use Valkyrie in your research, please cite our paper:
+
+```bibtex
+@inproceedings{forzano2026valkyrie,
+  author    = {Forzano, Jarett and Almatov, Omar and Nashold, Langston and Ravi, Nikil and Kassian, Orestes},
+  title     = {Valkyrie: A Microservice-Based Framework for Scalable Evaluation of AI Agents},
+  booktitle = {Proceedings of the 1st ACM Conference on Agentic and AI Systems},
+  series    = {CAIS '26},
+  year      = {2026},
+  month     = {may},
+  address   = {San Jose, CA, USA},
+  publisher = {ACM},
+  location  = {New York, NY, USA},
+  numpages  = {5},
+  doi       = {10.1145/3786335.3813231},
+  url       = {https://doi.org/10.1145/3786335.3813231}
+}
+```

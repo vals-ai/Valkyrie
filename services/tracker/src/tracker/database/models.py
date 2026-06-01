@@ -1,10 +1,11 @@
 from datetime import datetime
 from enum import Enum
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, computed_field, field_serializer
+from pydantic import BaseModel, computed_field, field_serializer, field_validator
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -70,11 +71,62 @@ class BenchmarkStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class DocentReadingStatus(str, Enum):
+    IDLE = "IDLE"
+    RUNNING = "RUNNING"
+    ERROR = "ERROR"
+    DONE = "DONE"
+
+
 class AgentCausedExitReason(str, Enum):
     """Exit reasons caused by the agent that continue to evaluation"""
 
     TIMEOUT = "TIMEOUT"
     OS_KILLED = "OS_KILLED"
+
+
+class RetryMode(str, Enum):
+    AUTO = "auto"
+    FROM_SCRATCH = "from_scratch"
+
+
+MAX_OUTPUT_ARTIFACT_BYTES = 50 * 1024 * 1024
+MAX_OUTPUT_ARTIFACT_COUNT = 10
+
+
+def _source_has_glob(source: str) -> bool:
+    return any(char in source for char in "*?[")
+
+
+def _source_glob_root(source: str) -> str:
+    glob_indices = [source.find(char) for char in "*?[" if source.find(char) != -1]
+    first_glob_index = min(glob_indices)
+    root = source[:first_glob_index].rsplit("/", 1)[0]
+    return root or "/"
+
+
+class OutputArtifact(BaseModel):
+    path: str
+    source: str | None = None
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        if not value.startswith("/"):
+            raise ValueError("output_artifacts source paths must be absolute sandbox paths")
+
+        path = PurePosixPath(value)
+        if not path.parts or ".." in path.parts or "." in path.parts:
+            raise ValueError("output_artifacts source paths cannot contain empty, '.', or '..' path parts")
+        if _source_has_glob(value) and _source_glob_root(value) == "/":
+            raise ValueError("output_artifacts glob sources must include a non-root directory prefix")
+
+        return value
+
+
+OutputArtifactSpec = str | OutputArtifact
 
 
 class AgentContractRequest(BaseModel):
@@ -83,8 +135,30 @@ class AgentContractRequest(BaseModel):
     install_cmd: str
     run_cmd: str
     final_output: str | None = None
+    output_artifacts: list[OutputArtifactSpec] = []
     secrets: dict[str, str] = {}
     kwargs: dict[str, str] = {}
+
+    @field_validator("output_artifacts")
+    @classmethod
+    def validate_output_artifacts(cls, value: list[OutputArtifactSpec]) -> list[OutputArtifactSpec]:
+        if len(value) > MAX_OUTPUT_ARTIFACT_COUNT:
+            raise ValueError(f"output_artifacts cannot contain more than {MAX_OUTPUT_ARTIFACT_COUNT} entries")
+
+        normalized_artifacts: list[OutputArtifactSpec] = []
+        for artifact in value:
+            artifact_path = artifact if isinstance(artifact, str) else artifact.path
+            path = PurePosixPath(artifact_path)
+            if path.is_absolute():
+                raise ValueError("output_artifacts paths must be relative paths")
+            if not path.parts or ".." in path.parts or "." in path.parts:
+                raise ValueError("output_artifacts paths cannot contain empty, '.', or '..' path parts")
+            if isinstance(artifact, str):
+                normalized_artifacts.append(str(path))
+            else:
+                normalized_artifacts.append(artifact.model_copy(update={"path": str(path)}))
+
+        return normalized_artifacts
 
 
 class BenchmarkArguments(BaseModel):
@@ -165,6 +239,10 @@ class Benchmark(SQLModel, table=True):
     arguments: BenchmarkArguments = Field(
         sa_column=Column(BenchmarkArgumentsType),
     )
+    started_by_id: str | None = Field(default=None)
+    started_by_email: str | None = Field(default=None, index=True)
+    docent_reading_status: DocentReadingStatus = Field(default=DocentReadingStatus.IDLE)
+    docent_reading_url: str | None = Field(default=None)
     final_evaluation: Mapped[FinalEvaluation | None] = Relationship(
         sa_relationship_kwargs={"foreign_keys": "[FinalEvaluation.benchmark]"}
     )
@@ -227,6 +305,7 @@ class Benchmark(SQLModel, table=True):
             benchmark_id=self.id,
             benchmark_name=self.name,
             benchmark_arguments=self.arguments,
+            started_by_email=self.started_by_email,
         )
 
     def create_benchmark_table_row(self, session: Session) -> "BenchmarkTableRow":
@@ -256,6 +335,8 @@ class Benchmark(SQLModel, table=True):
             name=self.name,
             agent_name=self.arguments.contract.name,
             model=self.arguments.contract.model,
+            dataset=self.arguments.dataset or "default",
+            started_by_email=self.started_by_email,
             started_at=self.started_at,
             finished_at=self.finished_at,
             status=self.status,
@@ -326,7 +407,9 @@ class Task(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
+    eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     benchmark: UUID = Field(foreign_key="benchmark.id")
+    task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 
     @computed_field
     @property
@@ -358,11 +441,19 @@ def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Conne
         target.finished_at = datetime.now(ZoneInfo("UTC"))
 
 
+class TaskBreakdown(SQLModel, table=True):
+    id: UUID = Field(default_factory=uuid4, primary_key=True, exclude=True)
+    sandbox_build_duration: float | None = Field(default=None)
+    agent_run_duration: float | None = Field(default=None)
+    evaluation_run_duration: float | None = Field(default=None)
+    sandbox_run_duration: float | None = Field(default=None)
+
+
 class EvaluationResult(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
-    instance_id: str = Field(unique=True)
+    instance_id: str | None = Field(default=None, unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 

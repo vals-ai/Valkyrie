@@ -5,30 +5,23 @@ from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 import pytest
+from benchmark_service import Resources, SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
-from daytona import AsyncDaytona
 from dotenv import load_dotenv
 from sqlmodel import Session, SQLModel, create_engine
 from testcontainers.postgres import PostgresContainer
 
 from main import app
-from tracker.auth import get_current_org
 from tests.conftest import TEST_ORG_ID
+from tracker.auth import get_current_org
+from tracker.config import create_benchmark_service_url
 from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
-from tracker.sandbox import TrackerResources
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import create_benchmark_service_client, fetch_harness_config
 
 _ = load_dotenv()
-
-
-@pytest.fixture(autouse=True)
-def override_benchmark_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch benchmark service URL to localhost:8001 in all modules that import it."""
-    monkeypatch.setattr("tracker.config.create_benchmark_service_url", lambda _: "http://localhost:8001")  # type: ignore
-    monkeypatch.setattr("tracker.types.create_benchmark_service_url", lambda _: "http://localhost:8001")  # type: ignore
 
 
 @pytest.fixture(autouse=True)
@@ -104,6 +97,7 @@ def aws_credentials():
         aws_access_key_id=aws_access_key_id,
         aws_secret_access_key=aws_secret_access_key,
         aws_default_region=aws_default_region,
+        aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
     )
 
     return aws_credentials
@@ -132,6 +126,12 @@ def harness_config(daytona_secret_name: str, aws_credentials: AWSCredentials) ->
     )
 
 
+@pytest.fixture(scope="session")
+def service_headers() -> dict[str, str]:
+    auth_key = os.getenv("BENCHMARK_SERVICE_AUTH_KEY")
+    return {"x-descope-api-key": auth_key} if auth_key else {}
+
+
 @pytest.fixture
 def creation_semaphore() -> Semaphore:
     return Semaphore(10)
@@ -139,11 +139,13 @@ def creation_semaphore() -> Semaphore:
 
 @pytest.fixture(scope="function")
 async def benchmark_service(
-    daytona_secret_name: str, aws_credentials: AWSCredentials
+    daytona_secret_name: str, aws_credentials: AWSCredentials, service_headers: dict[str, str]
 ) -> AsyncGenerator[BenchmarkServiceClient, None]:
-
     service = create_benchmark_service_client(
-        url="http://localhost:8001", daytona_secret_name=daytona_secret_name, aws=aws_credentials
+        url=create_benchmark_service_url("swebench"),
+        daytona_secret_name=daytona_secret_name,
+        aws=aws_credentials,
+        service_headers=service_headers,
     )
 
     try:
@@ -153,8 +155,8 @@ async def benchmark_service(
 
 
 @pytest.fixture
-async def daytona_client(benchmark_service: BenchmarkServiceClient) -> AsyncGenerator[AsyncDaytona, None]:
-    yield benchmark_service.daytona_client
+async def sandbox_provider(benchmark_service: BenchmarkServiceClient) -> AsyncGenerator[SandboxProvider, None]:
+    yield benchmark_service.get_sandbox_provider()
 
 
 @pytest.fixture
@@ -169,4 +171,4 @@ def test_image():
 
 @pytest.fixture
 def test_resources():
-    return TrackerResources(vcpu=1, memory=2, disk=5)
+    return Resources(vcpu=1, memory=2, disk=5)

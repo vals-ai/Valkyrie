@@ -34,6 +34,7 @@ from constants import (
     RDS_INSTANCE_CLASS,
     TRACKER_CPU,
     TRACKER_DOMAIN,
+    TRACKER_LOG_GROUP_NAME,
     TRACKER_MAX_TASKS,
     TRACKER_MEMORY,
     TRACKER_MIN_TASKS,
@@ -84,7 +85,7 @@ class TrackerStack(Stack):
             "BROKER_ENVIRONMENT": "production",
             "AWS_S3_BUCKET": bucket.bucket_name,
             "ENVIRONMENT": "production",
-            "DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES": "100",
+            "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
         }
 
         # ── RDS ──────────────────────────────────────────────────────────
@@ -139,6 +140,17 @@ class TrackerStack(Stack):
             "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
         }
 
+        descope_secrets: dict[str, aws_ecs.Secret] = {}
+        if os.environ.get("AUTH_REQUIRED", "false").lower() == "true":
+            descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "DescopeManagementKeySecret",
+                "devEvalInfraDescopeManagementKey",
+            )
+            descope_secrets["DESCOPE_MANAGEMENT_KEY"] = aws_ecs.Secret.from_secrets_manager(
+                descope_management_key_secret,
+            )
+
         # ── Tracker API service ──────────────────────────────────────────
 
         tracker_task_def = aws_ecs.FargateTaskDefinition(
@@ -157,6 +169,7 @@ class TrackerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "TrackerLogGroup",
+                    log_group_name=TRACKER_LOG_GROUP_NAME,
                     retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
@@ -173,6 +186,7 @@ class TrackerStack(Stack):
             secrets={
                 **db_secrets,
                 **sentry_secrets,
+                **descope_secrets,
             },
             command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(

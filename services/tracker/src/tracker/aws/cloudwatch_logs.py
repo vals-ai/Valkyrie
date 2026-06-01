@@ -5,6 +5,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 import boto3
+import logfire
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -23,6 +24,7 @@ def _cloudwatch_client(aws: "AWSCredentials") -> Any:
         "logs",
         aws_access_key_id=aws.aws_access_key_id,
         aws_secret_access_key=aws.aws_secret_access_key,
+        aws_session_token=aws.aws_session_token,
         region_name=aws.aws_default_region,
         config=Config(max_pool_connections=200),
     )
@@ -42,7 +44,7 @@ def handle_cloudwatch_error(message: str):
     return decorator
 
 
-def get_cloudwatch_url(benchmark_id: str, region: str, log_group: str, task_id: str | None = None) -> str:
+def get_benchmark_log_url(benchmark_id: str, region: str, log_group: str, task_id: str | None = None) -> str:
     """
     Get the CloudWatch console URL for a benchmark or specific task.
 
@@ -68,7 +70,10 @@ def get_cloudwatch_url(benchmark_id: str, region: str, log_group: str, task_id: 
 
 
 @handle_cloudwatch_error(message="Failed to create log group")
-def create_benchmark_group(benchmark_id: str, aws: "AWSCredentials", log_group: str, log_retention_policy: int) -> str:
+@logfire.instrument("create_log_group", extract_args=("benchmark_id",))
+def create_benchmark_log_group(
+    benchmark_id: str, aws: "AWSCredentials", log_group: str, log_retention_policy: int
+) -> str:
     """
     Create a log group for a benchmark.
 
@@ -95,7 +100,7 @@ def create_benchmark_group(benchmark_id: str, aws: "AWSCredentials", log_group: 
 
 
 @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
-def cloudwatch_stream(stream_key: str, message: str, aws: "AWSCredentials", log_group: str) -> None:
+def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSCredentials", log_group: str) -> None:
     """
     Stream a log message to CloudWatch.
 

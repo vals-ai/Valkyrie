@@ -20,6 +20,7 @@ from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     FinalEvaluation,
     TaskStatus,
 )
@@ -40,12 +41,15 @@ class BenchmarkDetails(BaseModel):
     total_tasks: int
     finished_tasks: int
     task_breakdown: dict[TaskStatus, int]
+    docent_reading_status: DocentReadingStatus
+    docent_reading_url: str | None = None
 
 
 class AWSCredentials(BaseModel, frozen=True):
     aws_access_key_id: str
-    aws_secret_access_key: str
+    aws_secret_access_key: str = Field(repr=False)
     aws_default_region: str
+    aws_session_token: str | None = Field(default=None, repr=False)
 
     @classmethod
     def from_org_config(cls, cfg: "OrgConfig") -> "AWSCredentials":
@@ -74,7 +78,7 @@ class StartBenchmarkRequest(BaseModel):
     dataset: str | None = None
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
-    service_headers: dict[str, str] = {}
+    service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
 
@@ -90,6 +94,13 @@ class StartBenchmarkRequest(BaseModel):
             aws=self.harness_config.aws,
             service_headers=self.service_headers,
         )
+
+
+class FetchBenchmarkTasksRequest(BaseModel):
+    benchmark_name: str
+    dataset: str | None = None
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict)
 
 
 class StartBenchmarkErrorResponse(BaseModel):
@@ -115,6 +126,13 @@ class FetchBenchmarkResponse(BaseModel):
     s3_bucket_url: str
 
 
+class AverageTaskBreakdown(BaseModel):
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+
+
 class FinalViewResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
@@ -125,6 +143,7 @@ class FinalViewResponse(BaseModel):
     benchmark_arguments: BenchmarkArguments
     tasks_stopped: int | None
     final_evaluation: FinalEvaluation | None
+    average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
 
@@ -156,12 +175,12 @@ class Order(str, Enum):
 
 
 class FetchBenchmarksRequest(BaseModel):
-    # CSV-valued filters: "FINISHED,IN_PROGRESS" → multiple values; empty/absent → no filter.
-    agent_name: str | None = None
-    benchmark_name: str | None = None
+    agent_name: list[str] | None = None
+    benchmark_name: list[str] | None = None
     model: str | None = None
-    status: str | None = None
-    run_by_user_id: str | None = None
+    dataset: str | None = None
+    status: list[BenchmarkStatus] | None = None
+    started_by: list[str] | None = None
     started_after: datetime | None = None
     started_before: datetime | None = None
     order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
@@ -171,54 +190,14 @@ class FetchBenchmarksRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
 
-    def parsed_statuses(self) -> list[BenchmarkStatus]:
-        """Return the list of BenchmarkStatus values from the CSV status field."""
-        if not self.status:
-            return []
-        result: list[BenchmarkStatus] = []
-        for token in self.status.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            try:
-                result.append(BenchmarkStatus(token))
-            except ValueError:
-                continue
-        return result
-
-    def parsed_run_by_user_ids(self) -> list[UUID]:
-        """Return parsed UUIDs from the CSV run_by_user_id field."""
-        if not self.run_by_user_id:
-            return []
-        result: list[UUID] = []
-        for token in self.run_by_user_id.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            try:
-                result.append(UUID(token))
-            except ValueError:
-                continue
-        return result
-
-    def parsed_benchmark_names(self) -> list[str]:
-        """Return the list of benchmark names from the CSV benchmark_name field."""
-        if not self.benchmark_name:
-            return []
-        return [t.strip() for t in self.benchmark_name.split(",") if t.strip()]
-
-    def parsed_agent_names(self) -> list[str]:
-        """Return the list of agent names from the CSV agent_name field."""
-        if not self.agent_name:
-            return []
-        return [t.strip() for t in self.agent_name.split(",") if t.strip()]
-
 
 class BenchmarkTableRow(BaseModel):
     id: UUID
     name: str
     agent_name: str
     model: str | None
+    dataset: str = "default"
+    started_by_email: str | None
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus
@@ -251,6 +230,15 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
+    started_by_email: str | None = None
+
+
+class AnalyzeBenchmarkRequest(BaseModel):
+    no_cache: bool = False
+    # CLI resolves the analyzer Lambda from the agent's current pushed contract
+    # (handles YAML and Python contracts) and passes it here so the tracker
+    # doesn't have to parse arbitrary contract code.
+    lambda_function: str | None = None
 
 
 MASKED_SECRET = "********"

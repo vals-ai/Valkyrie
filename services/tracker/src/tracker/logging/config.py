@@ -80,6 +80,9 @@ def configure_logging() -> None:
                     "filters": ["context"],
                 },
             },
+            # Sentry's LoggingIntegration (enabled in init_sentry with sentry_logs_level=INFO)
+            # attaches to the root logger and ships records to Sentry Logs without needing a
+            # dictConfig handler entry.
             "root": {"handlers": ["console"], "level": log_level},
             "loggers": {
                 "tracker": {"handlers": ["console"], "level": log_level, "propagate": False},

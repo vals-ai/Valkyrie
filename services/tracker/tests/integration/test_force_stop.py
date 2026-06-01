@@ -1,8 +1,8 @@
 import asyncio
 
 import pytest
+from benchmark_service import ImageSource, Resources, SandboxProvider, SandboxQuery
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import Resources as TrackerResources
 from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
@@ -13,9 +13,14 @@ from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskS
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_sandboxes, force_stop_sandboxes, process_benchmark
+from tracker.utils import force_stop_sandboxes, process_benchmark
 
 logger = get_logger(__name__)
+
+
+async def _sandboxes_for_benchmark(benchmark: Benchmark, provider: SandboxProvider):
+    query = SandboxQuery(labels={"Benchmark": benchmark.name, "Id": str(benchmark.id)})
+    return [sandbox async for sandbox in provider.list_sandboxes(query)]
 
 
 class TestForceStop:
@@ -24,10 +29,9 @@ class TestForceStop:
         example_benchmark_object: Benchmark,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
-        test_resources: TrackerResources,
+        test_resources: Resources,
         daytona_secret_name: str,
         aws_credentials: AWSCredentials,
-        random_sandbox_name: str,
         test_image: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
@@ -51,7 +55,12 @@ class TestForceStop:
         database_session.add(task)
         database_session.commit()
 
-        daytona_client = benchmark_service.daytona_client
+        provider = benchmark_service.get_sandbox_provider()
+        labels = {
+            "Benchmark": example_benchmark_object.name,
+            "Id": str(example_benchmark_object.id),
+            "Task": task.task_id,
+        }
 
         async def force_stop_sandbox() -> None:
             await asyncio.sleep(0.5)
@@ -66,11 +75,12 @@ class TestForceStop:
 
         async def _generator_to_courtine():
             async with create_sandbox(
-                daytona_client,
-                random_sandbox_name,
-                test_image,
+                provider,
+                task.alias,
+                ImageSource(image=test_image),
                 resources=test_resources,
                 creation_semaphore=creation_semaphore,
+                labels=labels,
             ) as _:
                 pass
 
@@ -86,9 +96,7 @@ class TestForceStop:
 
         # Ensure that the sandbox does not exist anymore
         with pytest.raises(Exception):
-            await daytona_client.get(random_sandbox_name)
-
-        await daytona_client.close()
+            await provider.get_sandbox(task.alias)
 
     async def test_force_stop_sandboxes(
         self,
@@ -98,7 +106,7 @@ class TestForceStop:
         daytona_secret_name: str,
         benchmark_service: BenchmarkServiceClient,
         test_image: str,
-        test_resources: TrackerResources,
+        test_resources: Resources,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
         """
@@ -111,22 +119,22 @@ class TestForceStop:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        daytona_client = benchmark_service.daytona_client
+        provider = benchmark_service.get_sandbox_provider()
 
         labels = {"Benchmark": example_benchmark_object.name, "Id": str(example_benchmark_object.id)}
 
         async def create_sandbox_with_delay(sandbox_name: str) -> None:
             """Create sandbox that will not be closed automatically"""
             async with create_sandbox(
-                daytona=daytona_client,
+                provider=provider,
                 sandbox_name=sandbox_name,
-                image=test_image,
+                source=ImageSource(image=test_image),
                 resources=test_resources,
                 creation_semaphore=creation_semaphore,
                 labels=labels,
             ) as sandbox:
-                # NOTE: Must wait until sandboxes have been started
-                await sandbox.wait_for_sandbox_start(timeout=0)
+                result = await sandbox.exec("true")
+                assert result.exit_code == 0
 
         # Create 12 tasks that are in progress and evaluating
         tasks: list[Task] = []
@@ -161,10 +169,8 @@ class TestForceStop:
         await created_sandboxes
 
         # Ensure that there are no more sandboxes left running
-        sandboxes = await fetch_sandboxes(example_benchmark_object, daytona_client, 1)
-        assert len(sandboxes.items) == 0
-
-        await daytona_client.close()
+        sandboxes = await _sandboxes_for_benchmark(example_benchmark_object, provider)
+        assert len(sandboxes) == 0
 
     @pytest.mark.slow
     async def test_force_stop_end_to_end(
@@ -174,6 +180,7 @@ class TestForceStop:
         aws_credentials: AWSCredentials,
         daytona_secret_name: str,
         harness_config: HarnessConfig,
+        service_headers: dict[str, str],
     ) -> None:
         """
         Test end to end with a benchmark service -- Starting a slice of tasks and force stopping them
@@ -194,7 +201,9 @@ class TestForceStop:
 
         client = TestClient(app)
 
-        benchmark_service = example_benchmark_object.benchmark_service(daytona_secret_name, aws_credentials)
+        benchmark_service = example_benchmark_object.benchmark_service(
+            daytona_secret_name, aws_credentials, service_headers=service_headers
+        )
 
         verify_response = await benchmark_service.verify_task_ids(
             task_ids=example_benchmark_object.arguments.task_ids, slice_str=example_benchmark_object.arguments.slice_str
@@ -204,7 +213,7 @@ class TestForceStop:
         benchmark_task = asyncio.create_task(
             process_benchmark(
                 start_benchmark_request_json=example_benchmark_object.start_benchmark_request(
-                    harness_config
+                    harness_config, service_headers=service_headers
                 ).model_dump(),
                 benchmark_id_str=str(example_benchmark_object.id),
                 verified_task_ids=verify_response.task_ids,
@@ -257,10 +266,10 @@ class TestForceStop:
         assert example_benchmark_object.status == BenchmarkStatus.STOPPED
 
         # Create daytona client from the current benchmark service
-        daytona_client = benchmark_service.daytona_client
+        provider = benchmark_service.get_sandbox_provider()
 
         # Try to fetch the sandboxes and see if any of them are still running
-        sandboxes = await fetch_sandboxes(example_benchmark_object, daytona_client, 1)
-        assert len(sandboxes.items) == 0
+        sandboxes = await _sandboxes_for_benchmark(example_benchmark_object, provider)
+        assert len(sandboxes) == 0
 
-        await daytona_client.close()
+        await benchmark_service.close()

@@ -1,4 +1,6 @@
 import asyncio
+import importlib.util
+import io
 import re
 import tempfile
 import zipfile
@@ -8,25 +10,37 @@ from typing import cast
 
 import aioboto3
 import click
+import yaml
 from botocore.exceptions import ClientError
 from tracker import handle_s3_error
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
-from valkyrie.cli.utils import run_with_spinner
+from valkyrie.cli.utils import load_config, run_with_spinner
 from valkyrie.schemas import AgentConfig
+
+_S3_DOWNLOAD_CONCURRENCY = 8
 
 
 def _fetch_bucket_name() -> str:
-    from valkyrie.cli.utils import load_config
-
     config = load_config()
     bucket_name = config.get("S3_BUCKET")
     if not bucket_name:
         raise click.ClickException("S3_BUCKET key not found. Add it using 'valkyrie config set' first.")
 
     return bucket_name
+
+
+def _s3_client():
+    """Create an aioboto3 S3 client using credentials from the valkyrie config."""
+    config = load_config()
+    session = aioboto3.Session(
+        aws_access_key_id=config.get("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=config.get("AWS_SECRET_ACCESS_KEY"),
+        region_name=config.get("AWS_DEFAULT_REGION"),
+    )
+    return session.client("s3")
 
 
 async def _run_git_command(repo_path: Path | None, *args: str) -> None:
@@ -54,8 +68,8 @@ async def _run_git_command(repo_path: Path | None, *args: str) -> None:
         raise RuntimeError(f"Git command failed: {error_message}")
 
 
-async def install_agent(agent_name: str | None, github_url: str):
-    """Clone a GitHub repository and install it as an agent to S3"""
+async def install_agent(agent_name: str | None, github_url: str) -> str:
+    """Clone a GitHub repository and install it as an agent to S3. Returns the resolved agent name."""
 
     # Parse the GitHub URL to detect subfolder specification
     # Matches: https://github.com/user/repo or https://github.com/user/repo/tree/branch/path/to/folder
@@ -76,6 +90,15 @@ async def install_agent(agent_name: str | None, github_url: str):
             agent_name = subfolder.split("/")[-1]
         else:
             agent_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
+
+    # Resolve the agent name to a guaranteed str
+    if agent_name is None:
+        if subfolder:
+            resolved_name: str = subfolder.split("/")[-1]
+        else:
+            resolved_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
+    else:
+        resolved_name = agent_name
 
     # Clone the repo to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -116,7 +139,9 @@ async def install_agent(agent_name: str | None, github_url: str):
         if subfolder and not agent_path.exists():
             raise RuntimeError(f"Subfolder '{subfolder}' not found in repository")
 
-        await push_agent(agent_name, agent_path)
+        await push_agent(resolved_name, agent_path)
+
+    return resolved_name
 
 
 @handle_s3_error(message="Failed to push agent to S3")
@@ -136,7 +161,7 @@ async def push_agent(agent_name: str | None, agent_path: Path):
         file_size = file_stream.tell()
         file_stream.seek(0)  # Seek back to start
 
-        async with aioboto3.Session().client("s3") as s3_client:
+        async with _s3_client() as s3_client:
             # Initiate multipart upload
             key = f"agents/{agent_name}.zip"
             now = datetime.now(timezone.utc).isoformat()
@@ -204,7 +229,7 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
     source_key = f"agents/{agent_name}.zip"
     dest_key = f"benchmarks/{benchmark_id}/{agent_name}.zip"
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         try:
             await s3_client.copy_object(
                 Bucket=bucket_name,
@@ -224,7 +249,7 @@ async def remove_agent(agent_name: str):
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         key = f"agents/{agent_name}.zip"
 
         try:
@@ -247,7 +272,7 @@ async def list_agents():
 
     click.echo(f"\r\033[KListing agents from bucket '{bucket_name}'...", nl=False)
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         response = await s3_client.list_objects_v2(
             Bucket=bucket_name,
             Prefix="agents/",
@@ -274,7 +299,7 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
     """Download an agent zip from S3, extract it, and show progress"""
     bucket_name = _fetch_bucket_name()
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         try:
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
@@ -319,7 +344,7 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
     bucket_name = _fetch_bucket_name()
     prefix = s3_path.rstrip("/") + "/" if not Path(s3_path).suffix else s3_path
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         paginator = s3_client.get_paginator("list_objects_v2")
         keys: list[str] = []
         async for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
@@ -331,7 +356,7 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        for key in keys:
+        async def download_object(key: str) -> None:
             relative = key.removeprefix(prefix).lstrip("/")
             dest = output_dir / relative if relative else output_dir / Path(key).name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -339,14 +364,69 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
             response = await s3_client.get_object(Bucket=bucket_name, Key=key)
             dest.write_bytes(cast(bytes, await response["Body"].read()))
 
+        for start in range(0, len(keys), _S3_DOWNLOAD_CONCURRENCY):
+            batch = keys[start : start + _S3_DOWNLOAD_CONCURRENCY]
+            await asyncio.gather(*(download_object(key) for key in batch))
+
         return len(keys)
+
+
+async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
+    """Read just the ``ingest_lambda`` field from the currently-pushed agent contract.
+
+    Resolves to the latest pushed version, ignoring whatever snapshot is stored on a
+    benchmark run. This lets ``valk run analyze`` work on past runs after their
+    contract is updated to declare an analyzer Lambda.
+
+    Supports YAML contracts directly; for Python contracts, instantiates with an
+    empty ``AgentConfig`` and reads the ``ingest_lambda`` property without invoking
+    ``run_cmd`` (which would require model validation).
+    """
+    bucket_name = _fetch_bucket_name()
+
+    async with _s3_client() as s3_client:
+        try:
+            response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
+            zip_bytes: bytes = cast(bytes, await response["Body"].read())
+        except ClientError as e:
+            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                raise S3Error(f"Agent '{agent_name}' not found in S3.")
+            raise
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            names = zf.namelist()
+
+            for ext in (".yaml", ".yml"):
+                member = f"{agent_name}/contract{ext}"
+                if member in names:
+                    zf.extract(member, tmp_path)
+                    with open(tmp_path / member, "r") as f:
+                        return cast(dict[str, object], yaml.safe_load(f) or {}).get("ingest_lambda")  # type: ignore[return-value]
+
+            # TODO: remove this branch when we migrate off of Python contracts.
+            py_member = f"{agent_name}/contract.py"
+            if py_member in names:
+                zf.extractall(tmp_path)
+                contract_path = tmp_path / py_member
+                spec = importlib.util.spec_from_file_location("contract", contract_path)
+                if not spec or not spec.loader:
+                    return None
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                contract_cls = module.contract
+                return contract_cls(AgentConfig()).ingest_lambda
+
+    return None
 
 
 async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:
     """Download agent zip from S3 and extract contract.py into a temp dir, returning the contract request"""
     bucket_name = _fetch_bucket_name()
 
-    async with aioboto3.Session().client("s3") as s3_client:
+    async with _s3_client() as s3_client:
         try:
             response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
             zip_bytes: bytes = await response["Body"].read()

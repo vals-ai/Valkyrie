@@ -9,29 +9,34 @@ from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
 
 from tracker.logging import configure_logging
-from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware
-from tracker.sentry import init_sentry
+from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware, TracingContextMiddleware
+from tracker.observability import configure_observability
 
 load_dotenv()
 configure_logging()
 
 
-_BENCHMARK_SERVICE_NAMESPACE: str = "local"
-_BENCHMARK_SERVICE_PORT = 8001
+_CLOUDMAP_NAMESPACE: str = "local"
+_CLOUDMAP_PORT = 8001
+_BENCHMARK_SERVICE_BASE_URL: str | None = os.environ.get("BENCHMARK_SERVICE_BASE_URL")
 
 
 def create_benchmark_service_url(benchmark_name: str) -> str:
     """
-    Derive the benchmark service URL from the benchmark name and namespace
+    Derive the benchmark service URL from the benchmark name.
 
-    NOTE: If we are running this locally the namespace is blank
+    NOTE: If BENCHMARK_SERVICE_BASE_URL is set (e.g. benchmarks.vals.ai), use HTTPS subdomains.
+    Otherwise fall back to CloudMap internal DNS (only works inside the VPC).
     """
-    host = f"{benchmark_name}.{_BENCHMARK_SERVICE_NAMESPACE}"
-    return f"http://{host}:{_BENCHMARK_SERVICE_PORT}"
+    if _BENCHMARK_SERVICE_BASE_URL:
+        return f"https://{benchmark_name}.{_BENCHMARK_SERVICE_BASE_URL}"
+
+    return f"http://{benchmark_name}.{_CLOUDMAP_NAMESPACE}:{_CLOUDMAP_PORT}"
 
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
 
@@ -54,21 +59,25 @@ result_backend: RedisAsyncResultBackend[Any] = RedisAsyncResultBackend(
     redis_url=REDIS_URL,
 )
 
+# Tracing precedes Logging so that anything emitted after (logs, child spans
+# from middlewares or the task body) is captured under the propagated parent trace.
+_BROKER_MIDDLEWARES = (TaskProtectionMiddleware(), TracingContextMiddleware(), LoggingContextMiddleware())
+
 broker = (
-    InMemoryBroker()
+    InMemoryBroker().with_middlewares(*_BROKER_MIDDLEWARES)
     if BROKER_ENVIRONMENT == "testing"
     else RedisStreamBroker(
         url=REDIS_URL,
         idle_timeout=86400000,  # 24 hours
     )
     .with_result_backend(result_backend)
-    .with_middlewares(TaskProtectionMiddleware(), LoggingContextMiddleware())
+    .with_middlewares(*_BROKER_MIDDLEWARES)
 )
 
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
-async def _init_worker_sentry(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
-    init_sentry("valkyrie-worker")
+async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:  # pyright: ignore[reportUnusedFunction]
+    configure_observability("valkyrie-worker", environment=ENVIRONMENT)
 
 
 # Auth settings
@@ -79,6 +88,7 @@ if _auth_required_raw is None:
     )
 AUTH_REQUIRED = _auth_required_raw.lower() == "true"
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")
+DESCOPE_MANAGEMENT_KEY = os.environ.get("DESCOPE_MANAGEMENT_KEY", "")
 
 
 def _parse_cors_origins() -> list[str]:

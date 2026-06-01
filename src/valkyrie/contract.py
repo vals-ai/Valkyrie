@@ -2,9 +2,12 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, OutputArtifact, OutputArtifactSpec
 
 from valkyrie.schemas import AgentConfig
+
+
+__all__ = ["BaseAgentContract", "OutputArtifact", "OutputArtifactSpec"]
 
 
 class BaseAgentContract(ABC):
@@ -79,6 +82,12 @@ class BaseAgentContract(ABC):
         return {}
 
     @property
+    def ingest_lambda(self) -> str | None:
+        """Analyzer Lambda invoked by ``valk run analyze`` to ingest this agent's
+        output. Override to opt in. See docs/DOCENT.md."""
+        return None
+
+    @property
     @abstractmethod
     def final_output(self) -> Path | None:
         """
@@ -89,6 +98,11 @@ class BaseAgentContract(ABC):
             Path | None: The path to the final output that the agent writes to.
         """
         ...
+
+    @property
+    def output_artifacts(self) -> list[OutputArtifactSpec]:
+        """Artifacts uploaded directly to the task S3 folder."""
+        return []
 
     def to_request(self) -> AgentContractRequest:
         """
@@ -107,5 +121,6 @@ class BaseAgentContract(ABC):
             ),
             install_cmd=self.install_cmd,
             final_output=str(self.final_output) if self.final_output else None,
+            output_artifacts=self.output_artifacts,
             secrets=self.secrets,
         )

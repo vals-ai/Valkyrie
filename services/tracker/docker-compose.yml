@@ -47,8 +47,14 @@ services:
       - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
       - DB_HOST=postgres
       - DB_PORT=5432
-      - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
       - AUTH_REQUIRED=${AUTH_REQUIRED:?AUTH_REQUIRED must be set to 'true' or 'false'}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_REGION
+      - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
+      - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:
         condition: service_healthy
@@ -63,7 +69,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    command: ["uv", "run", "--no-sync", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["uv", "run", "--no-sync", "python", "-m", "tracker.serve"]
     ports:
       - "8000:8000"
     environment:
@@ -73,7 +79,14 @@ services:
       - DB_PORT=5432
       - AUTH_REQUIRED=${AUTH_REQUIRED:?AUTH_REQUIRED must be set to 'true' or 'false'}
       - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
-      - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
+      - DESCOPE_MANAGEMENT_KEY=${DESCOPE_MANAGEMENT_KEY:-}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_REGION
+      - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
+      - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:
         condition: service_healthy
