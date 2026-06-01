@@ -48,6 +48,7 @@ services:
       - DB_HOST=postgres
       - DB_PORT=5432
       - DAYTONA_WS_MAX_CONCURRENT_HANDSHAKES=100
+      - AUTH_REQUIRED=${AUTH_REQUIRED:?AUTH_REQUIRED must be set to 'true' or 'false'}
     depends_on:
       postgres:
         condition: service_healthy
