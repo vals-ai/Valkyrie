@@ -387,7 +387,6 @@ class Task(SQLModel, table=True):
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 
 
-
 @event.listens_for(Task, "before_insert")
 @event.listens_for(Task, "before_update")
 def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Connection, target: Task):
