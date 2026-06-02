@@ -19,6 +19,7 @@ from tracker.exceptions import (
     SandboxSetupError,
 )
 from tracker.sandbox import (
+    PtyStreamRenderer,
     create_sandbox,
     run_agent,
     upload_agent_artifacts,
@@ -31,6 +32,42 @@ _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
+
+
+class TestPtyStreamRenderer:
+    def test_renderer_emits_stable_lines_without_raw_terminal_controls(self) -> None:
+        """Terminal rendering keeps CloudWatch logs readable for PTY redraw output.
+
+        Test cases:
+        - Spinner frames overwritten by carriage returns are not emitted as log lines.
+        - ANSI cursor movement and erase-line controls render to final text without escape bytes.
+        - Orphaned CSI controls still render if the ESC byte was stripped upstream.
+        - Ordinary completed lines continue to stream as completed text.
+        """
+        renderer = PtyStreamRenderer()
+        chunks = [
+            "Starting\n",
+            "⠋ Resolving dependencies...\r",
+            "⠙ Resolving dependencies...\r",
+            "\x1b[2KResolved 115 packages in 4.94s\n",
+            "[2KPrepared 112 packages in 2.31s\n",
+            "   \x1b[36m\x1b[1mUpdating\x1b[0m model-proxy\n",
+            "\x1b[1A\x1b[2K   \x1b[32m\x1b[1mUpdated\x1b[0m model-proxy\n",
+        ]
+
+        rendered = "".join(line for chunk in chunks for line in renderer.feed(chunk))
+        rendered += "".join(renderer.flush())
+
+        assert rendered == (
+            "Starting\n"
+            "Resolved 115 packages in 4.94s\n"
+            "Prepared 112 packages in 2.31s\n"
+            "   Updated model-proxy\n"
+        )
+        assert "\x1b[" not in rendered
+        assert "[2K" not in rendered
+        assert "⠋" not in rendered
+        assert "⠙" not in rendered
 
 
 class TestOutputArtifacts:
@@ -567,6 +604,45 @@ class TestStreamCommandOutputAgentFailure:
         assert exec_commands[-1].startswith("rm -f ")
         assert ".start_ns" in exec_commands[-1]
         assert ".end_ns" in exec_commands[-1]
+
+    async def test_stream_command_output_logs_rendered_pty_text(self) -> None:
+        """PTY command output is rendered before it reaches the log callback.
+
+        Test cases:
+        - Spinner frames overwritten by carriage returns are omitted from callback output.
+        - ANSI color and erase-line controls are interpreted before callback output.
+        """
+        async def stream_command(_command: str) -> Any:
+            yield "⠋ Resolving dependencies...\r"
+            yield "⠙ Resolving dependencies...\r"
+            yield "\x1b[2KResolved 115 packages in 4.94s\n"
+            yield "\x1b[36m\x1b[1mDone\x1b[0m\n"
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("cat ") and command.endswith(".start_ns"):
+                return ExecResult(exit_code=0, output="1000000000")
+            if command.startswith("cat ") and command.endswith(".end_ns"):
+                return ExecResult(exit_code=0, output="3000000000")
+            return ExecResult(exit_code=0)
+
+        logged_messages: list[str] = []
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        exit_reason, duration = await sandbox_module.stream_command_output(
+            mock_sandbox, "run-agent.sh", on_output=logged_messages.append
+        )
+
+        output = "".join(logged_messages)
+        assert exit_reason is None
+        assert duration == 2
+        assert output == "Resolved 115 packages in 4.94s\nDone\n"
+        assert "\x1b[" not in output
+        assert "⠋" not in output
+        assert "⠙" not in output
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(

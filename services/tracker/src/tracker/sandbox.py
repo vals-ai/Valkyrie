@@ -1,6 +1,7 @@
 """Sandbox management utilities for the tracker service."""
 
 import base64
+import re
 import shlex
 import time
 import uuid
@@ -12,6 +13,7 @@ from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
 import logfire
+import pyte
 import sentry_sdk
 from benchmark_service import (
     ExecResult,
@@ -64,6 +66,64 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
+_PTY_RENDERER_COLUMNS = 240
+_PTY_RENDERER_ROWS = 240
+_PTY_STABLE_ROW_LAG = 8
+_LONE_NEWLINE_RE = re.compile(r"(?<!\r)\n")
+_ORPHANED_CSI_RE = re.compile(r"(?<!\x1b)\[((?:\d+;)*\d*[A-Za-z])")
+
+
+class PtyStreamRenderer:
+    """Render PTY terminal output into append-only log lines."""
+
+    def __init__(
+        self,
+        columns: int = _PTY_RENDERER_COLUMNS,
+        rows: int = _PTY_RENDERER_ROWS,
+        stable_row_lag: int = _PTY_STABLE_ROW_LAG,
+    ) -> None:
+        self._screen = pyte.Screen(columns, rows)
+        self._stream = pyte.Stream(self._screen)
+        self._stable_row_lag = stable_row_lag
+        self._next_emit_row = 0
+
+    def feed(self, data: str) -> list[str]:
+        """Consume a PTY chunk and return stable rendered log lines."""
+        self._stream.feed(_normalize_lone_newlines(data))
+        stable_end_row = max(0, self._screen.cursor.y - self._stable_row_lag)
+        return self._emit_through(stable_end_row)
+
+    def flush(self) -> list[str]:
+        """Return the remaining rendered terminal rows."""
+        display = self._screen.display
+        return self._emit_through(self._last_non_empty_row(display) + 1, display)
+
+    def _emit_through(self, end_row: int, display: list[str] | None = None) -> list[str]:
+        display = display or self._screen.display
+        end_row = min(end_row, len(display))
+        if end_row <= self._next_emit_row:
+            return []
+
+        lines = [self._format_row(display[row]) for row in range(self._next_emit_row, end_row)]
+        self._next_emit_row = end_row
+        return lines
+
+    def _format_row(self, row: str) -> str:
+        return f"{row.rstrip()}\n"
+
+    def _last_non_empty_row(self, display: list[str]) -> int:
+        for row in range(len(display) - 1, self._next_emit_row - 1, -1):
+            if display[row].strip():
+                return row
+        return self._next_emit_row - 1
+
+
+def _normalize_lone_newlines(data: str) -> str:
+    return _LONE_NEWLINE_RE.sub("\r\n", _restore_orphaned_csi(data))
+
+
+def _restore_orphaned_csi(data: str) -> str:
+    return _ORPHANED_CSI_RE.sub(lambda match: f"\x1b[{match.group(1)}", data)
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -332,6 +392,7 @@ async def stream_command_output(
     on_output: Callable[[str], None],
 ) -> tuple[AgentCausedExitReason | None, float]:
     output: deque[str] = deque(maxlen=50)
+    renderer = PtyStreamRenderer()
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
@@ -348,10 +409,15 @@ async def stream_command_output(
     try:
         try:
             async for data in sandbox.command(timed_command):
-                on_output(data)
-                output.append(data)
+                for rendered_data in renderer.feed(data):
+                    on_output(rendered_data)
+                    output.append(rendered_data)
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
+
+        for rendered_data in renderer.flush():
+            on_output(rendered_data)
+            output.append(rendered_data)
 
         start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
         end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
