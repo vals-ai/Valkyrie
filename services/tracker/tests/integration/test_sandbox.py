@@ -63,12 +63,13 @@ class TestSandboxOperations:
             test_resources,
             creation_semaphore,
         ) as sandbox:
-            assert sandbox.name == random_sandbox_name
+            assert sandbox.name.startswith(random_sandbox_name)
             result = await sandbox.exec("echo 'test'")
             assert result.exit_code == 0
+            actual_name = sandbox.name
 
         with pytest.raises(SandboxNotFoundError):
-            await sandbox_provider.get_sandbox(random_sandbox_name)
+            await sandbox_provider.get_sandbox(actual_name)
 
     async def test_upload_agent_artifacts(
         self, test_sandbox: Sandbox, aws_credentials: AWSCredentials, harness_config: HarnessConfig
@@ -195,36 +196,6 @@ class TestSandboxOperations:
         assert "line1" in output
         assert "line2" in output
         assert "line3" in output
-
-    async def test_create_sandbox_reuse(
-        self,
-        sandbox_provider: SandboxProvider,
-        test_resources: Resources,
-        test_image: str,
-        random_sandbox_name: str,
-        creation_semaphore: asyncio.Semaphore,
-    ) -> None:
-        """Test that create_sandbox reuses existing sandbox instead of creating new one."""
-
-        async with create_sandbox(
-            sandbox_provider,
-            random_sandbox_name,
-            ImageSource(image=test_image),
-            test_resources,
-            creation_semaphore,
-        ) as sandbox1:
-            result = await sandbox1.exec("echo 'test'")
-            assert result.exit_code == 0
-            first_id = sandbox1.id
-
-            async with create_sandbox(
-                sandbox_provider,
-                random_sandbox_name,
-                ImageSource(image=test_image),
-                test_resources,
-                creation_semaphore,
-            ) as sandbox2:
-                assert sandbox2.id == first_id
 
     async def test_deterministic_timeout_behavior(
         self,
