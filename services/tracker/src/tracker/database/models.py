@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, computed_field, field_serializer, field_validator
+from pydantic import BaseModel, field_serializer, field_validator
 from sqlalchemy import Connection, Dialect, event
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -386,16 +386,6 @@ class Task(SQLModel, table=True):
     benchmark: UUID = Field(foreign_key="benchmark.id")
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 
-    @computed_field
-    @property
-    def alias(self) -> str:
-        """Unique alias for the current task attempt, used when creating sandboxes.
-
-        Format: {task_id}_{suffix}
-        - suffix: hex-encoded microsecond timestamp from started_at, changes on each retry/resume
-        """
-        suffix = f"{int(self.started_at.timestamp() * 1_000_000):x}"
-        return f"{self.task_id}_{suffix}"
 
 
 @event.listens_for(Task, "before_insert")

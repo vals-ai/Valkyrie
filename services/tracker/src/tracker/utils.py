@@ -501,7 +501,7 @@ async def process_task(
         start_sandbox_build_time = time.perf_counter()
         async with create_sandbox(
             provider=sandbox_provider,
-            sandbox_name=task_row.alias,
+            sandbox_name=task_row.task_id,
             source=task_data.source,
             labels=labels,
             env_vars=env_vars,

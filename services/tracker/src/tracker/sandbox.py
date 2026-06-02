@@ -174,6 +174,7 @@ async def create_sandbox(
     Returns:
         A context manager that yields the sandbox
     """
+    sandbox_name = f"{sandbox_name}_{uuid.uuid4().hex[:6]}"
     source_name = _source_name(source)
     logger.info(f"Creating sandbox {sandbox_name} with source {source_name}")
 
