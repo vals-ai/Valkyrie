@@ -264,9 +264,9 @@ valkyrie agent output <id> [subpath] [-o ./output-dir]
 | `-o` / `--output-dir` | Local destination directory (defaults to `./<benchmark_id>`) |
 
 
-## Custom Benchmark Services
+## Adding Benchmarks
 
-Vals provides a set of hosted benchmark services by default. If you are developing your own benchmark service you will need to add support for that. We provide a set of utilities that allow you to interact with benchmark services outside of the ones that are provided.
+Vals provides a set of benchmarks out-of-the-box. If you want to add a new benchmark, you will need to add a new benchmark service. We provide a set of utilities that allow you to create and interact with benchmark services outside of the ones that are provided.
 
 If hosting locally please use the [documentation](https://github.com/vals-ai/create-benchmark-service?tab=readme-ov-file#reverse-tunnel-setup) on the reverse tunnel that is needed.
 
