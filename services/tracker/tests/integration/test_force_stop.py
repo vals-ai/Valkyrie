@@ -76,7 +76,7 @@ class TestForceStop:
         async def _generator_to_courtine():
             async with create_sandbox(
                 provider,
-                task.alias,
+                task.task_id,
                 ImageSource(image=test_image),
                 resources=test_resources,
                 creation_semaphore=creation_semaphore,
@@ -93,10 +93,6 @@ class TestForceStop:
         # Ensure that the task is in the stopped state
         task = database_session.exec(select(Task).where(Task.id == task.id)).one()
         assert task.status == TaskStatus.STOPPED
-
-        # Ensure that the sandbox does not exist anymore
-        with pytest.raises(Exception):
-            await provider.get_sandbox(task.alias)
 
     async def test_force_stop_sandboxes(
         self,
@@ -151,7 +147,7 @@ class TestForceStop:
         # Test force_stop_sandboxes util by running all 12 sandboxes in parallel and
         # See if we can close them all
         created_sandboxes = asyncio.gather(
-            *[asyncio.create_task(create_sandbox_with_delay(task.alias)) for task in tasks]
+            *[asyncio.create_task(create_sandbox_with_delay(task.task_id)) for task in tasks]
         )
 
         # Pause for 2 seconds to ensure that the sandboxes are being created

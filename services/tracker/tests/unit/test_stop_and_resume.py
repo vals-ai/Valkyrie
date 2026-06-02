@@ -150,49 +150,6 @@ class TestStopAndResume:
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
 
-    async def test_resume_changes_task_alias_per_attempt(
-        self,
-        example_benchmark_object: Benchmark,
-        database_session: Session,
-        monkeypatch: MonkeyPatch,
-        harness_config: HarnessConfig,
-    ):
-        benchmark_row = example_benchmark_object
-        benchmark_row.status = BenchmarkStatus.STOPPED
-        database_session.add(benchmark_row)
-        database_session.commit()
-
-        task_rows = [
-            Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
-            for i in range(2)
-        ]
-        database_session.add_all(task_rows)
-        database_session.commit()
-
-        original_aliases = {task_row.task_id: task_row.alias for task_row in task_rows}
-
-        async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=[task_row.task_id for task_row in task_rows])
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
-
-        # resets the start time of the task, so the alias will be different the next time we run the task
-        verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
-            session=database_session,
-            benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
-            retry=True,
-            retry_mode=RetryMode.AUTO,
-            rerun_task_ids=[],
-            org=self._test_org,
-        )
-
-        assert set(verified_task_ids) == set(original_aliases.keys())
-
-        updated_task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
-        for task_row in updated_task_rows:
-            assert task_row.alias != original_aliases[task_row.task_id]
-
     @pytest.mark.parametrize(
         ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),
         [
