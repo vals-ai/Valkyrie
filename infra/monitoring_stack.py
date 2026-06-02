@@ -4,6 +4,7 @@ from typing import Any
 
 import aws_cdk as cdk
 from aws_cdk import (
+    aws_chatbot,
     aws_cloudwatch,
     aws_cloudwatch_actions,
     aws_ecs,
@@ -12,6 +13,7 @@ from aws_cdk import (
     aws_rds,
     aws_sns,
 )
+from constants import get_slack_notification_config
 from constructs import Construct
 from dashboards import (
     create_alb_dashboard,
@@ -55,13 +57,23 @@ class MonitoringStack(cdk.Stack):
         self.database = database
         self.redis_cluster = redis_cluster
 
-        # SNS alerts topic. No subscribers yet.
         self.alerts_topic = aws_sns.Topic(
             self,
             "ValkyrieAlertsTopic",
             topic_name="Valkyrie-Alerts",
             display_name="Valkyrie infrastructure alerts",
         )
+        slack_config = get_slack_notification_config()
+        if slack_config is not None:
+            slack_workspace_id, slack_channel_id = slack_config
+            self.alerts_slack = aws_chatbot.SlackChannelConfiguration(
+                self,
+                "ValkyrieAlertsSlackChannel",
+                slack_channel_configuration_name="valkyrie-alerts",
+                slack_workspace_id=slack_workspace_id,
+                slack_channel_id=slack_channel_id,
+            )
+            self.alerts_slack.add_notification_topic(self.alerts_topic)  # type: ignore[arg-type]
 
         self._create_alarms(
             tracker_service=tracker_service,

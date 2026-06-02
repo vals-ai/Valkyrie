@@ -1,5 +1,7 @@
 """Constants for infrastructure configuration."""
 
+import os
+
 # VPC
 VPC_CIDR = "10.0.0.0/16"
 VPC_MAX_AZS = 2
@@ -66,6 +68,27 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 # S3
 S3_BUCKET_NAME = "agentic-harness"
 
-# Slack notifications
-SLACK_WORKSPACE_ID = "T05929786PK"
-SLACK_CHANNEL_ID = "C0AF4987EF6"
+
+def get_slack_notification_config() -> tuple[str, str] | None:
+    workspace_id = os.environ.get("SLACK_WORKSPACE_ID")
+    channel_id = os.environ.get("SLACK_CHANNEL_ID")
+
+    if workspace_id and channel_id:
+        return workspace_id, channel_id
+
+    if not workspace_id and not channel_id:
+        return None
+
+    missing = [
+        name
+        for name, value in (
+            ("SLACK_WORKSPACE_ID", workspace_id),
+            ("SLACK_CHANNEL_ID", channel_id),
+        )
+        if not value
+    ]
+    raise RuntimeError(
+        "Incomplete Slack notification environment configuration. "
+        "Set both SLACK_WORKSPACE_ID and SLACK_CHANNEL_ID, or neither. "
+        "Missing: " + ", ".join(missing)
+    )
