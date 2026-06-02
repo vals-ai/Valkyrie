@@ -13,7 +13,7 @@ from tracker.database.models import BenchmarkStatus, RetryMode
 from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
 
-from valkyrie.cli.bundler import get_contract
+from valkyrie.cli.bundler import find_contract_file, get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.logging import configure_cli_logging
 from valkyrie.cli.s3_client import (
@@ -621,15 +621,8 @@ def start(
 
         # If the user specified an agent on their machine we upload it first
         if agent_path.is_dir():
+            contract_file = find_contract_file(agent_path)
             asyncio.run(push_agent(agent_path.stem, agent_path))
-            contract_file = next(
-                (
-                    agent_path / f"contract{ext}"
-                    for ext in (".yaml", ".yml", ".py")
-                    if (agent_path / f"contract{ext}").exists()
-                ),
-                agent_path / "contract.py",
-            )
             contract = get_contract(contract_file, agent_config)
             contract.name = agent_path.stem
         else:
@@ -857,8 +850,7 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
             if not check_tracker_service_health(tracker):
                 raise click.ClickException("Tracker service is unhealthy.")
 
-            # Resolve the analyzer Lambda from the agent's current pushed contract
-            # (handles both YAML and Python contracts).
+            # Resolve the analyzer Lambda from the agent's current pushed YAML contract.
             metadata = tracker.fetch_benchmark_metadata(run_id)
             contract_name = metadata.benchmark_arguments.contract.name
             try:
@@ -871,8 +863,7 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
             if not lambda_function:
                 raise click.ClickException(
                     f"Agent '{contract_name}' has no `ingest_lambda` set in its current contract. "
-                    "Declare it in contract.yaml (or override the `ingest_lambda` property in "
-                    "contract.py) and re-push with `valk agent push ./<agent_dir>`."
+                    "Declare it in contract.yaml and re-push with `valk agent push ./<agent_dir>`."
                 )
 
             terminal: tuple[str, dict[str, Any]] | None = None

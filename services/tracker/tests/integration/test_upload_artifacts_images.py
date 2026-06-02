@@ -85,9 +85,6 @@ class TestUploadArtifactsAcrossImages:
                 leftover = await sandbox.exec(f"test -f /tmp/{contract.name}.zip")
                 assert leftover.exit_code != 0, f"[{label}] temp zip should be deleted after extraction"
 
-                excluded = await sandbox.exec("test -f /bundle/contract.py")
-                assert excluded.exit_code != 0, f"[{label}] contract.py should be excluded from extraction"
-
         results = await asyncio.gather(
             *(verify_image(image, label) for image, label in _IMAGES),
             return_exceptions=True,

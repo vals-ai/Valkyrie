@@ -1,6 +1,6 @@
 # Agent Contracts
 
-This guide explains how to create agent contracts for Valkyrie.
+This guide explains how to create YAML agent contracts for Valkyrie.
 
 ## Overview
 
@@ -73,7 +73,7 @@ valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swe
 
 ## Contract Definition
 
-Create a `contract.yaml` file in your agent directory:
+Create a `contract.yaml` or `contract.yml` file in your agent directory. Python `contract.py` files are not supported.
 
 ```yaml
 name: my_agent
@@ -271,8 +271,8 @@ WRAPPER
 chmod +x /usr/local/bin/my_agent
 ```
 
-The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox (`contract.yaml` will be excluded).
+The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox.
 
 ## Integrations
 
-- **Docent ingestion** — set `ingest_lambda` in `contract.yaml` (or override the property in `contract.py`) to declare which AWS Lambda converts this agent's output into a Docent `AgentRun`. Triggered post-run via `valk run analyze <run_id>`. See [DOCENT.md](DOCENT.md).
+- **Docent ingestion** — set `ingest_lambda` in `contract.yaml` to declare which AWS Lambda converts this agent's output into a Docent `AgentRun`. Triggered post-run via `valk run analyze <run_id>`. See [DOCENT.md](DOCENT.md).
