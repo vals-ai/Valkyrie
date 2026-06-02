@@ -54,7 +54,8 @@ jobs:
       - name: Deploy all stacks
         env:
           SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
-          SLACK_CHANNEL_ID: ${{ secrets.SLACK_CHANNEL_ID }}
+          VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
+          DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
         run: |

@@ -18,6 +18,7 @@ from aws_cdk import (
 )
 from constants import (
     CLUSTER_NAME,
+    DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
     ELASTICACHE_NODE_TYPE,
     NAMESPACE,
     REDIS_PORT,
@@ -51,7 +52,7 @@ class SharedStack(Stack):
             ],
         )
 
-        slack_config = get_slack_notification_config()
+        slack_config = get_slack_notification_config(DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV)
         if slack_config is not None:
             slack_workspace_id, slack_channel_id = slack_config
 

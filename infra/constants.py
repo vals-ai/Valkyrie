@@ -68,27 +68,24 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 # S3
 S3_BUCKET_NAME = "agentic-harness"
 
+# Slack notifications
+SLACK_WORKSPACE_ID_ENV = "SLACK_WORKSPACE_ID"
+VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV = "VALKYRIE_ALERTS_SLACK_CHANNEL_ID"
+DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV = "DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID"
 
-def get_slack_notification_config() -> tuple[str, str] | None:
-    workspace_id = os.environ.get("SLACK_WORKSPACE_ID")
-    channel_id = os.environ.get("SLACK_CHANNEL_ID")
 
-    if workspace_id and channel_id:
+def get_slack_notification_config(channel_id_env_var: str) -> tuple[str, str] | None:
+    workspace_id = os.environ.get(SLACK_WORKSPACE_ID_ENV)
+    channel_id = os.environ.get(channel_id_env_var)
+
+    if channel_id and workspace_id:
         return workspace_id, channel_id
 
-    if not workspace_id and not channel_id:
+    if not channel_id:
         return None
 
-    missing = [
-        name
-        for name, value in (
-            ("SLACK_WORKSPACE_ID", workspace_id),
-            ("SLACK_CHANNEL_ID", channel_id),
-        )
-        if not value
-    ]
     raise RuntimeError(
         "Incomplete Slack notification environment configuration. "
-        "Set both SLACK_WORKSPACE_ID and SLACK_CHANNEL_ID, or neither. "
-        "Missing: " + ", ".join(missing)
+        f"Set {SLACK_WORKSPACE_ID_ENV} when setting {channel_id_env_var}. "
+        f"Missing: {SLACK_WORKSPACE_ID_ENV}"
     )

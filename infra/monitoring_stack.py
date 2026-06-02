@@ -13,7 +13,7 @@ from aws_cdk import (
     aws_rds,
     aws_sns,
 )
-from constants import get_slack_notification_config
+from constants import VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV, get_slack_notification_config
 from constructs import Construct
 from dashboards import (
     create_alb_dashboard,
@@ -63,7 +63,7 @@ class MonitoringStack(cdk.Stack):
             topic_name="Valkyrie-Alerts",
             display_name="Valkyrie infrastructure alerts",
         )
-        slack_config = get_slack_notification_config()
+        slack_config = get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV)
         if slack_config is not None:
             slack_workspace_id, slack_channel_id = slack_config
             self.alerts_slack = aws_chatbot.SlackChannelConfiguration(

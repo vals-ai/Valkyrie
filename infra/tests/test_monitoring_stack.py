@@ -12,11 +12,26 @@ from aws_cdk import (
     aws_rds,
 )
 
-from constants import get_slack_notification_config
+from constants import (
+    DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
+    SLACK_WORKSPACE_ID_ENV,
+    VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV,
+    get_slack_notification_config,
+)
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
 
-TEST_SLACK_ENV = {"SLACK_WORKSPACE_ID": "TTESTWORKSPACE", "SLACK_CHANNEL_ID": "CTESTCHANNEL"}
+TEST_ALERTS_SLACK_ENV = {
+    SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
+    VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV: "CALERTSCHANNEL",
+}
+TEST_DEPLOYMENT_SLACK_ENV = {
+    SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
+    DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
+}
+TEST_ALL_SLACK_ENV = TEST_ALERTS_SLACK_ENV | {
+    DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
+}
 SHARED_STACK_CONTEXT = {
     "availability-zones:account=613431292675:region=us-east-1": ["us-east-1a", "us-east-1b"],
     "hosted-zone:account=613431292675:domainName=vals.ai:region=us-east-1": {
@@ -105,63 +120,89 @@ def _shared_template() -> assertions.Template:
 
 class MonitoringStackTest(unittest.TestCase):
     def test_alerts_topic_is_wired_to_slack(self) -> None:
-        with mock.patch.dict(os.environ, TEST_SLACK_ENV, clear=True):
+        with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
             template = _monitoring_template()
 
         template.has_resource_properties(
             "AWS::Chatbot::SlackChannelConfiguration",
             {
                 "ConfigurationName": "valkyrie-alerts",
-                "SlackChannelId": TEST_SLACK_ENV["SLACK_CHANNEL_ID"],
-                "SlackWorkspaceId": TEST_SLACK_ENV["SLACK_WORKSPACE_ID"],
+                "SlackChannelId": TEST_ALERTS_SLACK_ENV[VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV],
+                "SlackWorkspaceId": TEST_ALERTS_SLACK_ENV[SLACK_WORKSPACE_ID_ENV],
                 "SnsTopicArns": assertions.Match.array_with(
                     [{"Ref": assertions.Match.string_like_regexp("ValkyrieAlertsTopic")}]
                 ),
             },
         )
 
+    def test_deployment_notifications_are_wired_to_deployment_slack_channel(self) -> None:
+        with mock.patch.dict(os.environ, TEST_DEPLOYMENT_SLACK_ENV, clear=True):
+            template = _shared_template()
+
+        template.has_resource_properties(
+            "AWS::Chatbot::SlackChannelConfiguration",
+            {
+                "ConfigurationName": "deployment-notifications",
+                "SlackChannelId": TEST_DEPLOYMENT_SLACK_ENV[DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV],
+                "SlackWorkspaceId": TEST_DEPLOYMENT_SLACK_ENV[SLACK_WORKSPACE_ID_ENV],
+                "SnsTopicArns": assertions.Match.array_with(
+                    [{"Ref": assertions.Match.string_like_regexp("StackNotificationTopic")}]
+                ),
+            },
+        )
+
     def test_runtime_exceptions_stay_out_of_cloudwatch_log_metric_filters(self) -> None:
-        with mock.patch.dict(os.environ, TEST_SLACK_ENV, clear=True):
+        with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
             template = _monitoring_template()
 
         template.resource_count_is("AWS::Logs::MetricFilter", 0)
 
     def test_slack_config_reads_environment(self) -> None:
-        with mock.patch.dict(
-            os.environ,
-            {"SLACK_WORKSPACE_ID": "TENVWORKSPACE", "SLACK_CHANNEL_ID": "CENVCHANNEL"},
-            clear=True,
-        ):
+        with mock.patch.dict(os.environ, TEST_ALL_SLACK_ENV, clear=True):
             self.assertEqual(
-                get_slack_notification_config(),
-                ("TENVWORKSPACE", "CENVCHANNEL"),
+                get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV),
+                ("TTESTWORKSPACE", "CALERTSCHANNEL"),
+            )
+            self.assertEqual(
+                get_slack_notification_config(DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV),
+                ("TTESTWORKSPACE", "CDEPLOYCHANNEL"),
             )
 
     def test_missing_slack_environment_values_skip_slack_wiring(self) -> None:
-        for env in ({}, {"SLACK_WORKSPACE_ID": "", "SLACK_CHANNEL_ID": ""}):
+        for env in (
+            {},
+            {SLACK_WORKSPACE_ID_ENV: "", VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV: ""},
+            {SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE"},
+            TEST_DEPLOYMENT_SLACK_ENV,
+        ):
             with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
-                self.assertIsNone(get_slack_notification_config())
+                self.assertIsNone(get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV))
                 template = _monitoring_template()
 
                 template.resource_count_is("AWS::Chatbot::SlackChannelConfiguration", 0)
 
     def test_missing_slack_environment_skips_deployment_notification_resources(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
-            template = _shared_template()
+        for env in ({}, {SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE"}, TEST_ALERTS_SLACK_ENV):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
+                template = _shared_template()
 
-        template.resource_count_is("AWS::Chatbot::SlackChannelConfiguration", 0)
-        template.resource_count_is("AWS::Events::Rule", 0)
-        template.resource_count_is("AWS::SNS::Topic", 0)
+                template.resource_count_is("AWS::Chatbot::SlackChannelConfiguration", 0)
+                template.resource_count_is("AWS::Events::Rule", 0)
+                template.resource_count_is("AWS::SNS::Topic", 0)
 
     def test_partial_slack_environment_values_raise_clear_error(self) -> None:
-        with mock.patch.dict(os.environ, {"SLACK_WORKSPACE_ID": "TENVWORKSPACE"}, clear=True):
+        with mock.patch.dict(
+            os.environ,
+            {VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV: "CALERTSCHANNEL"},
+            clear=True,
+        ):
             with self.assertRaisesRegex(
                 RuntimeError,
                 "Incomplete Slack notification environment configuration. "
-                "Set both SLACK_WORKSPACE_ID and SLACK_CHANNEL_ID, or neither. "
-                "Missing: SLACK_CHANNEL_ID",
+                f"Set {SLACK_WORKSPACE_ID_ENV} when setting {VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV}. "
+                f"Missing: {SLACK_WORKSPACE_ID_ENV}",
             ):
-                get_slack_notification_config()
+                get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV)
 
 
 if __name__ == "__main__":
