@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import shlex
 import time
 import traceback
 from asyncio import Semaphore, gather
@@ -31,6 +32,7 @@ from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
     create_benchmark_url,
+    create_presigned_url,
     get_agent_result_s3_key,
     upload_to_s3,
 )
@@ -56,7 +58,7 @@ from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
-from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import archive_and_upload_output, create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     AverageTaskBreakdown,
     AWSCredentials,
@@ -74,6 +76,8 @@ logger = get_logger(__name__)
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+_PROGRAMBENCH_AGENT_OUTPUT_RESUME_TYPE = "programbench_agent_output"
+_PROGRAMBENCH_EVAL_ARTIFACTS_PATH = "/workspace/programbench-eval-artifacts"
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -322,6 +326,30 @@ def save_eval_resume_state(task_row_id: UUID, org: Org, eval_resume_state: dict[
         session.commit()
 
 
+async def upload_programbench_eval_artifacts(
+    sandbox: AsyncSandbox,
+    evaluation_result: dict[str, Any],
+    benchmark_id: UUID,
+    task_id: str,
+    harness_config: HarnessConfig,
+) -> None:
+    exists = await sandbox.process.exec(f"test -d {shlex.quote(_PROGRAMBENCH_EVAL_ARTIFACTS_PATH)}", timeout=60)
+    if exists.exit_code != 0:
+        return
+
+    s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "programbench_eval_artifacts.tar.gz")
+    await archive_and_upload_output(
+        sandbox,
+        _PROGRAMBENCH_EVAL_ARTIFACTS_PATH,
+        s3_key,
+        harness_config.aws,
+        harness_config.s3_bucket,
+        benchmark_id=str(benchmark_id),
+        task_id=task_id,
+    )
+    evaluation_result["eval_artifacts_s3_key"] = s3_key
+
+
 def _commit_task_status(
     task: Task,
     session: Session,
@@ -429,6 +457,102 @@ async def process_task(
         save_eval_resume_state(task_row.id, org, state)
 
     try:
+        if (
+            task_row.status == TaskStatus.EVALUATING
+            and task_row.eval_resume_state is not None
+            and start_benchmark_request.benchmark_name == "programbench"
+            and task_row.eval_resume_state.get("type") == _PROGRAMBENCH_AGENT_OUTPUT_RESUME_TYPE
+        ):
+            try:
+                state = task_row.eval_resume_state
+                s3_key = state["s3_key"]
+                assert isinstance(s3_key, str)
+
+                log_output("Resuming ProgramBench evaluation from saved agent output\n")
+                task_data = await benchmark_service.retrieve_task(
+                    task_id=task_id, dataset=start_benchmark_request.dataset
+                )
+                labels = {
+                    "Benchmark": start_benchmark_request.benchmark_name,
+                    "Id": str(benchmark_id),
+                    "Task": task_row.task_id,
+                }
+                env_vars = {
+                    "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
+                        f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
+                    ),
+                }
+
+                start_sandbox_build_time = time.perf_counter()
+                async with create_sandbox(
+                    daytona=benchmark_service.daytona_client,
+                    sandbox_name=task_row.alias,
+                    image=task_data.docker_image,
+                    labels=labels,
+                    env_vars=env_vars,
+                    resources=task_data.resources,
+                    creation_semaphore=creation_semaphore,
+                ) as sandbox:
+                    sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
+                    start_sandbox_run_time = time.perf_counter()
+                    await benchmark_service.setup_task(
+                        task_row.task_id, sandbox.id, on_message=log_output, dataset=start_benchmark_request.dataset
+                    )
+
+                    url = create_presigned_url(s3_key, harness_config.aws, harness_config.s3_bucket)
+                    restore_command = (
+                        "set -e; "
+                        "rm -rf /workspace/submission /tmp/programbench-agent-output; "
+                        "mkdir -p /tmp/programbench-agent-output; "
+                        f"curl -fL {shlex.quote(url)} | tar -xzf - -C /tmp/programbench-agent-output; "
+                        "test -f /tmp/programbench-agent-output/logs/programbench/submission/compile.sh; "
+                        "mkdir -p /workspace; "
+                        "cp -a /tmp/programbench-agent-output/logs/programbench/submission /workspace/submission"
+                    )
+                    await sandbox.process.exec("bash -lc " + shlex.quote(restore_command), timeout=300)
+
+                    evaluation_start_time = time.perf_counter()
+                    evaluation_result = await benchmark_service.evaluate_instance(
+                        task_row.task_id,
+                        sandbox.id,
+                        on_message=log_output,
+                        on_eval_resume_state=on_eval_resume_state,
+                        dataset=start_benchmark_request.dataset,
+                    )
+                    await upload_programbench_eval_artifacts(
+                        sandbox, evaluation_result, benchmark_id, task_id, harness_config
+                    )
+                    evaluation_run_duration = time.perf_counter() - evaluation_start_time
+                    sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
+
+                    evaluation_result_row = EvaluationResult(
+                        org_id=org.id,
+                        task=task_row.id,
+                        instance_id=sandbox.id,
+                        result=evaluation_result,
+                        agent_caused_exit_reason=None,
+                    )
+
+                    with Session(bind=engine) as task_session:
+                        task_session.add(evaluation_result_row)
+                        task_in_session = fetch_task_row(task_row.id, task_session, org)
+                        if task_in_session.task_breakdown:
+                            existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                            assert existing_breakdown is not None
+                            existing_breakdown.sandbox_build_duration = sandbox_build_duration
+                            existing_breakdown.evaluation_run_duration = evaluation_run_duration
+                            existing_breakdown.sandbox_run_duration = sandbox_run_duration
+                        commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
+
+                        return {task_id: evaluation_result_row.result}
+            except Exception as e:
+                with Session(bind=engine) as task_session:
+                    task = fetch_task_row(task_row.id, task_session, org)
+                    if task.status == TaskStatus.STOPPED:
+                        return {task_id: None}
+
+                raise e from e
+
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
@@ -454,6 +578,7 @@ async def process_task(
                     task_in_session = fetch_task_row(task_row.id, task_session, org)
                     if task_in_session.task_breakdown:
                         existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                        assert existing_breakdown is not None
                         existing_breakdown.evaluation_run_duration = resume_eval_duration
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
 
@@ -555,6 +680,11 @@ async def process_task(
 
                 task_breakdown.agent_run_duration = agent_run_time
 
+                if start_benchmark_request.benchmark_name == "programbench" and agent_output_s3_key is not None:
+                    on_eval_resume_state(
+                        {"type": _PROGRAMBENCH_AGENT_OUTPUT_RESUME_TYPE, "s3_key": agent_output_s3_key}
+                    )
+
                 with Session(bind=engine) as task_session:
                     task_session.add(task_breakdown)
                     task_in_session = fetch_task_row(task_row.id, task_session, org)
@@ -581,6 +711,10 @@ async def process_task(
                     on_eval_resume_state=on_eval_resume_state,
                     dataset=start_benchmark_request.dataset,
                 )
+                if start_benchmark_request.benchmark_name == "programbench":
+                    await upload_programbench_eval_artifacts(
+                        sandbox, evaluation_result, benchmark_id, task_id, harness_config
+                    )
 
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
 
@@ -603,6 +737,7 @@ async def process_task(
                     task_session.add(evaluation_result_row)
                     task_in_session = fetch_task_row(task_row.id, task_session, org)
                     existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                    assert existing_breakdown is not None
                     existing_breakdown.evaluation_run_duration = task_breakdown.evaluation_run_duration
                     existing_breakdown.sandbox_run_duration = task_breakdown.sandbox_run_duration
                     commit_task_status_transition(task_row.id, task_session, org, TaskStatus.FINISHED)
