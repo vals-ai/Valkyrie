@@ -1,0 +1,40 @@
+name: Docstring coverage badge
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: write
+
+jobs:
+  docstr-coverage:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --group dev
+
+      - name: Generate docstring coverage badge
+        run: |
+          mkdir -p badge-output
+          uv run docstr-coverage src/valkyrie services/tracker/src/tracker --badge badge-output/docstr-coverage.svg --fail-under 0
+
+      - name: Publish to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./badge-output
+          publish_branch: gh-pages
+          keep_files: true

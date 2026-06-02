@@ -1,83 +1,67 @@
-.PHONY: help install build run stop clean logs test tracker-service test test-integration test-unit test-alembic
+.PHONY: help setup build run stop clean logs tracker-service \
+        test test-integration test-unit test-alembic \
+        migrate-gen venv-check env-check
 
-IMAGE_NAME := tracker-service
-CONTAINER_NAME := tracker-service-container
+PYTHON_VERSION := 3.12
+PYTEST := uv run pytest
+COMPOSE := docker compose
 
 help:
 	@echo "Available commands:"
-	@echo "  make install - Install local development environment"
-	@echo "  make build  - Build the Docker image"
-	@echo "  make run    - Run the Docker container with environment variables from .env"
-	@echo "  make stop   - Stop and remove the Docker container"
-	@echo "  make clean  - Remove the Docker image and container"
-	@echo "  make logs   - View container logs"
+	@echo "  make install         - Install local development environment and dependencies"
+	@echo "  make build           - Build Docker images"
+	@echo "  make run             - Start all services with docker-compose"
+	@echo "  make stop            - Stop all services"
+	@echo "  make clean           - Stop services and remove images"
+	@echo "  make logs            - View container logs"
 	@echo "  make tracker-service - Build, run, and view logs for the tracker service"
+	@echo "  make migrate-gen     - Generate a new migration from model changes"
 
-install:
-	@echo "Installing tracker service (separate venv)..."
-	uv venv --python 3.12
-	uv cache clean agentic-harness
-	uv sync --group dev
-	@echo "🎉 Done! Run 'source .venv/bin/activate' to activate the environment locally."
-
-build:
-	@echo "Building Docker image..."
-	docker build -t $(IMAGE_NAME) .
-
-run:
-	@echo "Starting Redis container..."
-	@docker run -d \
-		--name tracker-redis \
-		-p 6379:6379 \
-		redis:7-alpine || echo "Redis container already running"
-	@echo "Starting tracker service container..."
-	@if [ ! -f .env ]; then \
-		echo "Error: .env file not found!"; \
+# --- Setup ---
+venv_check:
+	@if [ ! -f .venv/bin/activate ]; then \
+		echo "❌ Virtualenv not found! Run \`make install\` first."; \
 		exit 1; \
 	fi
-	@docker run -d \
-		--name $(CONTAINER_NAME) \
-		-p 8000:8000 \
-		--env-file .env \
-		-e REDIS_URL=redis://host.docker.internal:6379 \
-		-v ${HOME}/.aws:/root/.aws:ro \
-		$(IMAGE_NAME)
-	@echo "Containers started successfully!"
+env-check:
+	@if [ ! -f .env ]; then \
+		echo "❌ Env not found! Create a .env file first."; \
+		exit 1; \
+	fi
+install:
+	uv venv --python $(PYTHON_VERSION)
+	@echo "Installing tracker service dependencies..."
+	uv cache clean agentic-harness
+	uv sync --dev
+
+# --- Docker ---
+build:
+	@echo "Building Docker images..."
+	@$(COMPOSE) build
+run:
+	@echo "Starting services with docker-compose..."
+	@$(COMPOSE) up -d
 	@echo "Tracker service is running on http://localhost:8000"
 	@echo "Health check: http://localhost:8000/health"
-
 stop:
-	@echo "Stopping and removing containers..."
-	@docker stop $(CONTAINER_NAME) 2>/dev/null || true
-	@docker rm $(CONTAINER_NAME) 2>/dev/null || true
-	@docker stop tracker-redis 2>/dev/null || true
-	@docker rm tracker-redis 2>/dev/null || true
-	@echo "Containers stopped and removed."
-
-clean: stop
-	@echo "Removing Docker image..."
-	@docker rmi $(IMAGE_NAME) 2>/dev/null || true
-	@echo "Cleanup complete."
-
+	@echo "Stopping services..."
+	@$(COMPOSE) down
+clean:
+	@echo "Stopping services and removing images..."
+	@$(COMPOSE) down --rmi local
 logs:
-	@docker logs -f $(CONTAINER_NAME)
+	@$(COMPOSE) logs -f tracker worker
+tracker-service: build run logs
 
+# --- Tests ---
+test-unit: venv-check
+	$(PYTEST) tests/unit --test-alembic
+test-alembic: venv-check
+	$(PYTEST) --test-alembic -m alembic
+test-integration: venv-check env-check
+	$(PYTEST) tests/integration -n auto
 
-tracker-service:
-	@echo "Building tracker service..."
-	@make clean
-	@make build
-	@make run
-	@make logs
-
-test:
-	uv run pytest
-
-test-integration:
-	uv run pytest tests/integration
-
-test-unit:
-	uv run pytest tests/unit --test-alembic
-
-test-alembic:
-	uv run pytest --test-alembic -m alembic
+# --- Migrations ---
+migrate-gen: venv-check
+	@read -p "Migration message: " msg; \
+	uv run alembic revision --autogenerate -m "$$msg"

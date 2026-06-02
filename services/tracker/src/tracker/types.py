@@ -4,21 +4,21 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel
+from benchmark_service.client import BenchmarkServiceClient
+from pydantic import BaseModel, Field
 
-from tracker.config import BENCHMARK_SERVICE_URL
+from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     FinalEvaluation,
+    TaskStatus,
 )
-
-if TYPE_CHECKING:
-    from tracker.benchmark_service import BenchmarkService
 
 
 class BenchmarkDetails(BaseModel):
@@ -26,86 +26,124 @@ class BenchmarkDetails(BaseModel):
     started_at: datetime
     total_tasks: int
     finished_tasks: int
+    task_breakdown: dict[TaskStatus, int]
+    docent_reading_status: DocentReadingStatus
+    docent_reading_url: str | None = None
 
 
-class StartRunRequest(BaseModel):
+class AWSCredentials(BaseModel, frozen=True):
+    aws_access_key_id: str
+    aws_secret_access_key: str = Field(repr=False)
+    aws_default_region: str
+    aws_session_token: str | None = Field(default=None, repr=False)
+
+
+class HarnessConfig(BaseModel):
+    aws: AWSCredentials
+    s3_bucket: str
+    log_group: str
+    log_retention_policy: int
+    daytona_secret_name: str
+
+
+class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
     task_ids: list[str] | None = None
     slice_str: str | None = None
+    lambda_function: str | None = None
+    dataset: str | None = None
+    harness_config: HarnessConfig
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
+    webhook_secret_name: str | None = None
+    webhook_intervals: list[int] | None = None
 
     @property
-    def benchmark_service(self) -> "BenchmarkService":
-        from tracker.benchmark_service import BenchmarkService
+    def benchmark_service(self) -> BenchmarkServiceClient:
+        from tracker.utils import create_benchmark_service_client
 
-        return BenchmarkService(name=self.benchmark_name, url=BENCHMARK_SERVICE_URL)
+        # Prioritize user defined benchmark service over hosted one
+        benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
+        return create_benchmark_service_client(
+            url=benchmark_service_url,
+            daytona_secret_name=self.harness_config.daytona_secret_name,
+            aws=self.harness_config.aws,
+            service_headers=self.service_headers,
+        )
 
 
-class StartRunErrorResponse(BaseModel):
+class FetchBenchmarkTasksRequest(BaseModel):
+    benchmark_name: str
+    dataset: str | None = None
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict)
+
+
+class StartBenchmarkErrorResponse(BaseModel):
     benchmark_id: UUID
     error_message: str
 
 
-class StartRunResponse(BaseModel):
+class StartBenchmarkResponse(BaseModel):
     benchmark_name: str
-    contract_name: str
+    agent_name: str
     benchmark_id: UUID
     concurrency: int
     started_at: datetime
     task_count: int
+    cloudwatch_url: str
+    s3_bucket_url: str
 
 
 class FetchBenchmarkResponse(BaseModel):
     benchmark_name: str
     benchmark_id: UUID
     details: BenchmarkDetails
+    s3_bucket_url: str
 
 
-class RetrieveResultsResponse(BaseModel):
-    benchmark_name: str
-    status: BenchmarkStatus
+class AverageTaskBreakdown(BaseModel):
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+
+
+class FinalViewResponse(BaseModel):
     benchmark_id: UUID
+    benchmark_name: str
+    started_at: datetime
+    finished_at: datetime | None
+    status: BenchmarkStatus
+    error_message: str | None
     benchmark_arguments: BenchmarkArguments
-    tasks_stopped: int | None = None
-    final_evaluation: FinalEvaluation | None = None
-    evaluation_results: dict[str, dict[str, Any]] | None = None
-    task_errors: dict[str, str] | None = None
+    tasks_stopped: int | None
+    final_evaluation: FinalEvaluation | None
+    average_task_breakdown: AverageTaskBreakdown | None
+    evaluation_results: dict[str, dict[str, Any]] | None
+    task_errors: dict[str, str] | None
 
 
-class FinalScoreResponse(BaseModel):
-    tasks_evaluated: list[str]
-    final_score: float
-    metadata: dict[str, Any]
+class S3UploadResultsResponse(BaseModel):
+    s3_url: str
+    presigned_url: str
+    console_url: str
+
+
+RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
 
 
 class StatusResponse(BaseModel):
     status: str
 
 
-class SetupTaskResponse(StatusResponse):
+class StopBenchmarkResponse(StatusResponse):
     pass
 
 
-class HealthCheckResponse(StatusResponse):
-    pass
-
-
-class RetrieveTaskResponse(BaseModel):
-    docker_image: str
-    problem_statement: str
-    request_setup: bool
-
-
-class VerifyTaskIdsResponse(BaseModel):
-    task_ids: list[str]
-
-
-class StopRunResponse(StatusResponse):
-    pass
-
-
-class ResumeRunResponse(StatusResponse):
+class RetryOrResumeBenchmarkResponse(StatusResponse):
     pass
 
 
@@ -115,9 +153,11 @@ class Order(str, Enum):
 
 
 class FetchBenchmarksRequest(BaseModel):
-    contract_name: str | None = None
+    agent_name: str | None = None
     benchmark_name: str | None = None
+    model: str | None = None
     status: BenchmarkStatus | None = None
+    started_by: list[str] | None = None
     order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
 
     # Pagination
@@ -128,13 +168,32 @@ class FetchBenchmarksRequest(BaseModel):
 class BenchmarkTableRow(BaseModel):
     id: UUID
     name: str
-    contract_name: str
+    agent_name: str
+    model: str | None
+    started_by_email: str | None
     started_at: datetime
+    finished_at: datetime | None
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
+    final_score: float | None = None
 
 
 class FetchBenchmarksResponse(BaseModel):
     benchmarks: list[BenchmarkTableRow]
     total_count: int
+
+
+class FetchBenchmarkMetadataResponse(BaseModel):
+    benchmark_id: UUID
+    benchmark_name: str
+    benchmark_arguments: BenchmarkArguments
+    started_by_email: str | None
+
+
+class AnalyzeBenchmarkRequest(BaseModel):
+    no_cache: bool = False
+    # CLI resolves the analyzer Lambda from the agent's current pushed contract
+    # (handles YAML and Python contracts) and passes it here so the tracker
+    # doesn't have to parse arbitrary contract code.
+    lambda_function: str | None = None

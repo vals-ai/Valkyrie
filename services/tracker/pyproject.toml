@@ -10,13 +10,22 @@ dependencies = [
     "boto3>=1.42.20",
     "boto3-stubs[s3]",
     "moto[s3]",
-    "fastapi[standard]>=0.127.1",
-    "daytona>=0.128.1",
-    "sqlmodel>=0.0.31",
+    "fastapi[standard]>=0.135.3",
+    "daytona==0.176.1a1",
+    "sqlmodel>=0.0.38",
+    "psycopg2-binary>=2.9.11",
     "httpx>=0.28.1",
+    "logfire[fastapi,httpx]>=3.0.0",
+    "opentelemetry-api>=1.20.0",
+    "opentelemetry-sdk>=1.20.0",
     "taskiq>=0.12.1",
-    "taskiq-redis>=1.1.2",
-    "alembic>=1.18.1",
+    "taskiq-redis>=1.2.2",
+    "alembic>=1.18.4",
+    "descope>=0.9.0",
+    "tenacity>=9.0.0",
+    "sentry-sdk[fastapi]==2.58.0",
+    "python-json-logger>=3.2.1",
+    "create-benchmark-service @ git+https://github.com/vals-ai/create-benchmark-service.git@v0.2.0",
 ]
 
 [dependency-groups]
@@ -27,11 +36,20 @@ dev = [
     "basedpyright",
     "pytest-env>=1.2.0",
     "pytest-alembic>=0.12.1",
+    "testcontainers[postgres]>=4.10.0",
+    "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tracker"]
@@ -39,6 +57,7 @@ packages = ["src/tracker"]
 [tool.ruff]
 line-length = 120
 target-version = "py311"
+
 
 [tool.ruff.format]
 quote-style = "double"
@@ -62,3 +81,15 @@ pythonpath = ["."]
 env = [
     "BROKER_ENVIRONMENT=testing",
 ]
+markers = [
+    "slow: marks tests as slow (require Daytona/external services)",
+]
+
+[tool.coverage.run]
+source = ["src/tracker"]
+branch = true
+omit = ["*/tests/*", "*/__pycache__/*", "*/migrations/*"]
+
+[tool.coverage.report]
+fail_under = 1
+show_missing = true

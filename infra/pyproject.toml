@@ -1,0 +1,27 @@
+[project]
+name = "agentic-harness-infra"
+authors = [
+  { name = "Vals AI, Inc.", email = "contact@vals.ai" },
+]
+version = "0.1.0"
+description = "AWS CDK infrastructure for agentic harness services"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    "aws-cdk-lib>=2.233.0",
+    "constructs>=10.4.4",
+]
+
+[dependency-groups]
+dev = [
+  # style
+  "ruff",
+  "basedpyright",
+]
+
+[tool.basedpyright]
+exclude = [
+  ".*",
+]
+typeCheckingMode = "strict"

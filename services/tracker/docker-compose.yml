@@ -1,0 +1,105 @@
+networks:
+  tracker-network:
+    name: tracker-network
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tracker-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: tracker
+      POSTGRES_PASSWORD: tracker
+      POSTGRES_DB: tracker
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tracker -d tracker"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - tracker-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: tracker-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - tracker-network
+
+  worker:
+    image: tracker-service
+    container_name: tracker-worker-container
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "--no-sync", "taskiq", "worker", "tracker.config:broker", "tracker.utils"]
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_REGION
+      - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
+      - DAYTONA_HAPPY_EYEBALLS_DELAY=none
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tracker-network
+
+  tracker:
+    image: tracker-service
+    container_name: tracker-service-container
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uv", "run", "--no-sync", "python", "-m", "tracker.serve"]
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
+      - DESCOPE_PROJECT_ID=${DESCOPE_PROJECT_ID:-}
+      - DESCOPE_MANAGEMENT_KEY=${DESCOPE_MANAGEMENT_KEY:-}
+      - SENTRY_DSN=${SENTRY_DSN:-}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_REGION
+      - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
+      - DAYTONA_HAPPY_EYEBALLS_DELAY=none
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tracker-network
+
+volumes:
+  postgres_data:

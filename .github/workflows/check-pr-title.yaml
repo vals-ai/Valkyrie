@@ -1,0 +1,18 @@
+name: Semantic versioning check
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [prod]
+
+jobs:
+  check-pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title for version tag
+        run: |
+          TITLE="${{ github.event.pull_request.title }}"
+          if [[ ! "$TITLE" =~ \#(minor|major|patch) ]]; then
+            echo "❌ PR title must contain #minor, #major or #patch. Visit https://github.com/vals-ai/Valkyrie/blob/dev/docs/DEVELOPMENT.md#versioning to learn more."
+            exit 1
+          fi

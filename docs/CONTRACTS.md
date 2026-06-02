@@ -1,0 +1,229 @@
+# Agent Contracts
+
+This guide explains how to create agent contracts for Valkyrie.
+
+## Overview
+
+An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed.
+
+## Complete Contract Template
+
+Copy the template we created below to make integrating your own version easier.
+
+```yaml
+name: my_agent
+
+install_cmd: "bash setup.sh"
+
+run_cmd: >-
+  my_agent --task {problem_statement_path}
+  --model {model}
+  --temperature {temperature}
+
+final_output: /logs/my_agent
+
+secrets:
+  ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
+
+# Documentation only — these placeholders are always available and
+# substituted at runtime, changes will not be parsed
+provided:
+  task_id:
+    type: str
+    required: false
+    description: "Normally human readable id associated with a task inside of a benchmark, e.g., fib_buzz_123"
+  problem_statement_path:
+    type: str
+    required: true
+    description: "Path to the problem statement file"
+
+# Pre-defined parameters. The --model CLI flag is automatically
+# mapped here. Use `required: true` to enforce that users pass --model.
+# If choices is removed the model can be any string passed in
+defaults:
+  model:
+    type: str
+    required: false
+    description: "Model key (e.g. openai/gpt-4o)"
+    choices:
+      - openai/gpt-4o
+      - anthropic/claude-sonnet-4-20250514
+
+# Custom parameters passed via -k on the CLI.
+# Defaults are applied when the user doesn't provide a value.
+kwargs:
+  temperature:
+    type: float
+    required: false
+    default: 0.7
+    description: "Sampling temperature"
+```
+
+```bash
+# Run with required model and default temperature (0.7)
+valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
+
+# Override the default temperature
+valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench -k temperature 1.0
+```
+
+## Contract Definition
+
+Create a `contract.yaml` file in your agent directory:
+
+```yaml
+name: my_agent
+install_cmd: "bash setup.sh"
+run_cmd: "my_agent --task {problem_statement_path}"
+final_output: /logs/my_agent
+secrets:
+  API_KEY: myAwsSecretName
+```
+
+## Required Fields
+
+### `name: str`
+
+The name of your agent contract.
+
+```yaml
+name: my_agent
+```
+
+### `install_cmd: str`
+
+Command to install the agent and its dependencies. Runs once during sandbox setup with the working directory set to `/bundle/<agent_name>/`.
+
+```yaml
+install_cmd: "bash setup.sh"
+```
+
+### `run_cmd: str`
+
+Shell command to run the agent on a task. Must contain the `{problem_statement_path}` placeholder. Placeholders are substituted at runtime:
+
+| Placeholder | Substituted with |
+|-------------|------------------|
+| `{problem_statement_path}` | Path to the problem statement file in the sandbox **(required)** |
+| `{task_id}` | The task identifier (e.g. `astropy__astropy-12907`) |
+
+```yaml
+run_cmd: "my_agent --task {problem_statement_path} --id {task_id}"
+```
+
+## Optional Fields
+
+### `final_output: path`
+
+Absolute path to the final output to collect. The artifact found here will be copied into the corresponding S3 bucket at `benchmark/benchmark_id/task_id/`. Can be a directory or a file (copied as a tar).
+
+```yaml
+final_output: /logs/my_agent
+```
+
+### `secrets: dict`
+
+Secrets required by the agent. Maps environment variable names to AWS Secrets Manager secret names. These are resolved at sandbox creation time - raw values are never stored.
+
+```yaml
+secrets:
+  ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
+```
+
+Secrets can also be passed (or overridden) at runtime via the CLI:
+
+```bash
+valkyrie run start --agent agents/my_agent -s API_KEY myAwsSecretName
+```
+
+CLI secrets are merged with contract defaults. If both define the same key, the CLI value wins.
+
+### `kwargs: dict`
+
+Define typed parameters with defaults that get substituted into `run_cmd`:
+
+```yaml
+name: my_agent
+install_cmd: "bash setup.sh"
+run_cmd: "my_agent --task {problem_statement_path} --model {model} --temp {temperature}"
+kwargs:
+  model:
+    type: str
+    required: true
+  temperature:
+    type: float
+    required: false
+    default: 0.7
+    description: "Sampling temperature"
+```
+
+Each kwarg supports these fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `type` | yes | One of: `str`, `int`, `float`, `bool`, `dict` |
+| `required` | yes | Whether the user must provide this value |
+| `default` | no | Default value when the user doesn't provide one |
+| `description` | no | Human-readable description |
+| `choices` | no | List of valid values (enforced at validation time) |
+
+Kwargs are resolved at parse time:
+- **Defaults** are applied for any kwarg the user doesn't provide
+- **CLI overrides** (`-k`) replace defaults when provided
+- **Required kwargs** without a value raise a validation error
+
+```bash
+# Uses default temperature (0.7), must provide model
+valkyrie run start --agent agents/my_agent --benchmark swebench -k model gpt-4o
+
+# Override the default temperature
+valkyrie run start --agent agents/my_agent --benchmark swebench -k model gpt-4o -k temperature 1.0
+```
+
+## Using Model Selection
+
+The model is passed separately from kwargs via `--model` on the CLI:
+
+```bash
+valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
+```
+
+## Installation Scripts
+
+The `install_cmd` runs inside the sandbox with the working directory set to `/bundle/<agent_name>/`. Use it to install dependencies and set up your agent.
+
+Example `setup.sh`:
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Install CLI tools
+curl -fsSL https://example.com/install.sh | bash
+
+# Add to PATH if needed
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+
+# Install Python dependencies
+cd submodule/my_agent && uv sync
+```
+
+## Creating Wrapper Scripts
+
+If your agent requires a virtual environment or specific setup before running, create a wrapper script in `/usr/local/bin/` during installation:
+
+```bash
+# In setup.sh
+cat > /usr/local/bin/my_agent << 'WRAPPER'
+#!/bin/bash
+source /bundle/my_agent/submodule/my_agent/.venv/bin/activate
+exec python /bundle/my_agent/submodule/my_agent/main.py "$@"
+WRAPPER
+chmod +x /usr/local/bin/my_agent
+```
+
+The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox (`contract.yaml` will be excluded).
+
+## Integrations
+
+- **Docent ingestion** — set `ingest_lambda` in `contract.yaml` (or override the property in `contract.py`) to declare which AWS Lambda converts this agent's output into a Docent `AgentRun`. Triggered post-run via `valk run analyze <run_id>`. See [DOCENT.md](DOCENT.md).
