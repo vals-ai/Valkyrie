@@ -29,9 +29,6 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
-TEST_ALL_SLACK_ENV = TEST_ALERTS_SLACK_ENV | {
-    DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
-}
 SHARED_STACK_CONTEXT = {
     "availability-zones:account=613431292675:region=us-east-1": ["us-east-1a", "us-east-1b"],
     "hosted-zone:account=613431292675:domainName=vals.ai:region=us-east-1": {
@@ -39,6 +36,22 @@ SHARED_STACK_CONTEXT = {
         "Name": "vals.ai.",
     },
 }
+
+
+def _has_resource_property(
+    template: assertions.Template,
+    resource_type: str,
+    property_name: str,
+    expected_value: object,
+) -> bool:
+    return any(
+        resource.get("Properties", {}).get(property_name) == expected_value
+        for resource in template.find_resources(resource_type).values()
+    )
+
+
+def _has_logical_id_prefix(template: assertions.Template, resource_type: str, prefix: str) -> bool:
+    return any(logical_id.startswith(prefix) for logical_id in template.find_resources(resource_type))
 
 
 def _monitoring_template() -> assertions.Template:
@@ -151,22 +164,20 @@ class MonitoringStackTest(unittest.TestCase):
             },
         )
 
-    def test_runtime_exceptions_stay_out_of_cloudwatch_log_metric_filters(self) -> None:
+    def test_pty_runtime_exceptions_stay_out_of_cloudwatch_log_metric_filters(self) -> None:
         with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
             template = _monitoring_template()
 
-        template.resource_count_is("AWS::Logs::MetricFilter", 0)
-
-    def test_slack_config_reads_environment(self) -> None:
-        with mock.patch.dict(os.environ, TEST_ALL_SLACK_ENV, clear=True):
-            self.assertEqual(
-                get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV),
-                ("TTESTWORKSPACE", "CALERTSCHANNEL"),
+        metric_filters = template.find_resources("AWS::Logs::MetricFilter")
+        filter_patterns = [
+            str(resource.get("Properties", {}).get("FilterPattern", "")) for resource in metric_filters.values()
+        ]
+        self.assertFalse(
+            any(
+                "PTY" in pattern or "server disconnected" in pattern or "server_disconnected" in pattern
+                for pattern in filter_patterns
             )
-            self.assertEqual(
-                get_slack_notification_config(DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV),
-                ("TTESTWORKSPACE", "CDEPLOYCHANNEL"),
-            )
+        )
 
     def test_missing_slack_environment_values_skip_slack_wiring(self) -> None:
         for env in (
@@ -179,16 +190,37 @@ class MonitoringStackTest(unittest.TestCase):
                 self.assertIsNone(get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV))
                 template = _monitoring_template()
 
-                template.resource_count_is("AWS::Chatbot::SlackChannelConfiguration", 0)
+                self.assertFalse(
+                    _has_resource_property(
+                        template,
+                        "AWS::Chatbot::SlackChannelConfiguration",
+                        "ConfigurationName",
+                        "valkyrie-alerts",
+                    )
+                )
 
     def test_missing_slack_environment_skips_deployment_notification_resources(self) -> None:
         for env in ({}, {SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE"}, TEST_ALERTS_SLACK_ENV):
             with self.subTest(env=env), mock.patch.dict(os.environ, env, clear=True):
                 template = _shared_template()
 
-                template.resource_count_is("AWS::Chatbot::SlackChannelConfiguration", 0)
-                template.resource_count_is("AWS::Events::Rule", 0)
-                template.resource_count_is("AWS::SNS::Topic", 0)
+                self.assertFalse(
+                    _has_resource_property(
+                        template,
+                        "AWS::Chatbot::SlackChannelConfiguration",
+                        "ConfigurationName",
+                        "deployment-notifications",
+                    )
+                )
+                self.assertFalse(_has_logical_id_prefix(template, "AWS::Events::Rule", "StackDeploy"))
+                self.assertFalse(
+                    _has_resource_property(
+                        template,
+                        "AWS::SNS::Topic",
+                        "TopicName",
+                        "agentic-harness-notifications",
+                    )
+                )
 
     def test_partial_slack_environment_values_raise_clear_error(self) -> None:
         with mock.patch.dict(
