@@ -11,7 +11,7 @@ Valkyrie is an orchestration platform for running agentic benchmarks.
 ## Hosting Modes
 
 Valkyrie supports **hosted** and **self-hosted** modes. 
-- **Self-hosted Mode** requires you to 
+- **Self-hosted Mode** requires you to create AWS infrastructure using the IaC provided.
 - **Hosted Mode** allows you to use Vals-hosted infrastructure. Reach out to the Vals team for access (contact@vals.ai)
 
 Both modes require you to provide certain credentials and configuration:  
