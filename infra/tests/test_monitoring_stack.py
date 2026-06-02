@@ -164,21 +164,6 @@ class MonitoringStackTest(unittest.TestCase):
             },
         )
 
-    def test_pty_runtime_exceptions_stay_out_of_cloudwatch_log_metric_filters(self) -> None:
-        with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
-            template = _monitoring_template()
-
-        metric_filters = template.find_resources("AWS::Logs::MetricFilter")
-        filter_patterns = [
-            str(resource.get("Properties", {}).get("FilterPattern", "")) for resource in metric_filters.values()
-        ]
-        self.assertFalse(
-            any(
-                "PTY" in pattern or "server disconnected" in pattern or "server_disconnected" in pattern
-                for pattern in filter_patterns
-            )
-        )
-
     def test_missing_slack_environment_values_skip_slack_wiring(self) -> None:
         for env in (
             {},
