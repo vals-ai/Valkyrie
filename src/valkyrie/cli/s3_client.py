@@ -147,14 +147,14 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
 async def push_agent(agent_name: str | None, agent_path: Path):
     """Zip and push an agent to S3 at agents/{agent_name}.zip"""
 
+    find_contract_file(agent_path)
+
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
 
     # If agent_name is not provided, use the directory name
     if agent_name is None:
         agent_name = agent_path.name
-
-    find_contract_file(agent_path)
 
     with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
         # Get file size for progress bar
@@ -402,9 +402,6 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
                     zf.extract(member, tmp_path)
                     with open(tmp_path / member, "r") as f:
                         return cast(dict[str, object], yaml.safe_load(f) or {}).get("ingest_lambda")  # type: ignore[return-value]
-
-            if f"{agent_name}/contract.py" in names:
-                raise S3Error(f"Agent '{agent_name}' uses unsupported Python contract.py. Push a YAML contract.")
 
     raise S3Error(f"Agent '{agent_name}' has no contract.yaml or contract.yml.")
 

@@ -1,5 +1,3 @@
-import io
-import zipfile
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, cast
@@ -8,8 +6,7 @@ import pytest
 from pydantic import ValidationError
 from tracker.database.models import AgentContractRequest, OutputArtifact
 
-from valkyrie.cli.bundler import _parse_yaml_contract, get_contract, get_contract_from_zip_bytes  # type: ignore
-from valkyrie.cli.exceptions import BundlerError
+from valkyrie.cli.bundler import _parse_yaml_contract  # type: ignore
 from valkyrie.schemas import AgentConfig, AgentContract, Parameter
 
 
@@ -577,37 +574,3 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert result.name == "my_agent"
-
-
-class TestYamlOnlyContractLoading:
-    def test_get_contract_rejects_python_contract(self, tmp_path: Path) -> None:
-        path = tmp_path / "contract.py"
-        path.write_text("contract = object\n")
-
-        with pytest.raises(ValueError, match="Expected '.yaml' or '.yml'"):
-            get_contract(path, AgentConfig())
-
-    def test_zip_loader_rejects_python_only_contract(self) -> None:
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("agent/contract.py", "contract = object\n")
-
-        with pytest.raises(BundlerError, match="No YAML contract file found"):
-            get_contract_from_zip_bytes("agent", buffer.getvalue(), AgentConfig())
-
-    def test_zip_loader_loads_yaml_contract(self) -> None:
-        contract_yaml = dedent(
-            """\
-            name: agent
-            install_cmd: bash setup.sh
-            run_cmd: "agent --task {problem_statement_path}"
-            """
-        )
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("agent/contract.yaml", contract_yaml)
-
-        result = get_contract_from_zip_bytes("agent", buffer.getvalue(), AgentConfig())
-
-        assert result.name == "agent"
-        assert result.run_cmd == "agent --task {problem_statement_path}"

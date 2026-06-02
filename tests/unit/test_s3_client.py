@@ -5,7 +5,8 @@ from typing import Any
 
 import pytest
 
-from valkyrie.cli.s3_client import download_s3_path
+from valkyrie.cli.exceptions import BundlerError
+from valkyrie.cli.s3_client import download_s3_path, push_agent
 
 
 class FakeBody:
@@ -60,6 +61,19 @@ class FakeS3Client:
 def patch_s3(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
     monkeypatch.setattr("valkyrie.cli.s3_client._fetch_bucket_name", lambda: "test-bucket")
     monkeypatch.setattr("valkyrie.cli.s3_client._s3_client", lambda: FakeS3Client(payloads, tracker))
+
+
+@pytest.mark.asyncio
+async def test_push_agent_requires_yaml_contract_before_s3_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fail_fetch_bucket_name() -> str:
+        raise AssertionError("S3 config should not be read before contract validation")
+
+    monkeypatch.setattr("valkyrie.cli.s3_client._fetch_bucket_name", fail_fetch_bucket_name)
+
+    with pytest.raises(BundlerError, match="must contain contract.yaml or contract.yml"):
+        await push_agent("missing-contract", tmp_path)
 
 
 @pytest.mark.asyncio

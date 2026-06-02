@@ -73,7 +73,7 @@ valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swe
 
 ## Contract Definition
 
-Create a `contract.yaml` or `contract.yml` file in your agent directory. Python `contract.py` files are not supported.
+Create a `contract.yaml` or `contract.yml` file in your agent directory.
 
 ```yaml
 name: my_agent
