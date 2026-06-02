@@ -1,19 +1,20 @@
 """Integration tests for pinned create-benchmark-service sandbox provider behavior."""
 
-from typing import Any, cast
+import os
+import uuid
+from collections.abc import AsyncGenerator
 
 import pytest
-from benchmark_service import ImageSource, Resources, SandboxCreateRequest
+from benchmark_service import ImageSource, Resources, Sandbox, SandboxCreateRequest
+from benchmark_service.sandbox import DaytonaBackendConfig
 from benchmark_service.sandbox.daytona import DaytonaSandboxProvider
-from daytona import DaytonaNotFoundError, SandboxState
-from daytona.common.errors import DaytonaConflictError
 
 from tracker.types import AWSCredentials, HarnessConfig
 
 
 @pytest.fixture
 def harness_config() -> HarnessConfig:
-    """Provide a local harness config so this dependency integration does not need real secrets."""
+    """Provide app dependency config while this integration test uses direct Daytona credentials."""
     return HarnessConfig(
         aws=AWSCredentials(
             aws_access_key_id="test-access-key",
@@ -27,49 +28,32 @@ def harness_config() -> HarnessConfig:
     )
 
 
-class _InnerSandbox:
-    id = "sandbox-id"
-    name = "task-alias"
-    state = SandboxState.DESTROYING
+@pytest.fixture
+async def sandbox_provider() -> AsyncGenerator[DaytonaSandboxProvider, None]:
+    """
+    Create a Daytona sandbox provider from real API credentials.
 
-    async def wait_for_sandbox_start(self, timeout: int) -> None:
-        assert timeout == 0
+    Test cases:
+    - Daytona API credentials are read from the local integration-test environment.
+    - The provider is closed after the real API test completes.
+    """
+    api_key = os.getenv("DAYTONA_API_KEY")
+    api_url = os.getenv("DAYTONA_API_URL")
+    target = os.getenv("DAYTONA_TARGET")
+    if not api_key or not api_url or not target:
+        raise ValueError("DAYTONA_API_KEY, DAYTONA_API_URL, and DAYTONA_TARGET are required")
 
-
-class _DestroyingNameConflictDaytonaClient:
-    def __init__(self, sandbox: _InnerSandbox) -> None:
-        self.sandbox = sandbox
-        self.create_attempts = 0
-        self.get_attempts = 0
-        self.name_released = False
-
-    async def get(self, instance_id: str) -> _InnerSandbox:
-        self.get_attempts += 1
-        assert instance_id == self.sandbox.name
-        if self.get_attempts >= 3:
-            self.name_released = True
-            raise DaytonaNotFoundError("not found")
-        return self.sandbox
-
-    async def create(self, *_args: object, **_kwargs: object) -> _InnerSandbox:
-        self.create_attempts += 1
-        if self.create_attempts == 1:
-            raise DaytonaConflictError("Sandbox name already exists")
-        assert self.name_released
-        self.sandbox.state = SandboxState.STARTED
-        return self.sandbox
+    provider = DaytonaSandboxProvider(DaytonaBackendConfig(api_key=api_key, api_url=api_url, target=target))
+    try:
+        yield provider
+    finally:
+        await provider.close()
 
 
-def _provider(daytona: _DestroyingNameConflictDaytonaClient) -> DaytonaSandboxProvider:
-    provider = DaytonaSandboxProvider.__new__(DaytonaSandboxProvider)
-    provider._daytona = cast(Any, daytona)  # pyright: ignore[reportPrivateUsage]
-    return provider
-
-
-def _request(name: str) -> SandboxCreateRequest:
+def _request(name: str, source: ImageSource, resources: Resources) -> SandboxCreateRequest:
     return SandboxCreateRequest(
-        source=ImageSource(image="python:3.12"),
-        resources=Resources(vcpu=1, memory=2, disk=5),
+        source=source,
+        resources=resources,
         name=name,
         labels={},
         env_vars={},
@@ -78,29 +62,32 @@ def _request(name: str) -> SandboxCreateRequest:
     )
 
 
-async def test_daytona_provider_dependency_waits_for_destroying_name_conflict(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_daytona_provider_dependency_recreates_name_after_delete(
+    sandbox_provider: DaytonaSandboxProvider,
 ) -> None:
     """
-    Tracker depends on create-benchmark-service to wait when Daytona keeps a destroying sandbox name reserved.
+    Tracker depends on create-benchmark-service to wait when Daytona keeps a deleted sandbox name reserved.
 
     Test cases:
-    - The pinned provider catches DaytonaConflictError for a destroying sandbox name.
-    - The provider waits for Daytona to release the name before retrying create.
+    - A real Daytona sandbox can be deleted and recreated immediately with the same name.
+    - The recreated sandbox is usable and is cleaned up through the provider API.
     """
-    inner = _InnerSandbox()
-    daytona = _DestroyingNameConflictDaytonaClient(inner)
-    sleep_calls: list[float] = []
+    sandbox_name = f"test-recreate-{uuid.uuid4().hex[:8]}"
+    source = ImageSource(image="python:3.11-slim")
+    resources = Resources(vcpu=1, memory=2, disk=5)
+    request = _request(sandbox_name, source, resources)
+    recreated_sandbox: Sandbox | None = None
 
-    async def fake_sleep(seconds: float) -> None:
-        sleep_calls.append(seconds)
+    first_sandbox = await sandbox_provider.create_sandbox(request)
+    await sandbox_provider.delete_sandbox(first_sandbox.id)
 
-    monkeypatch.setattr("benchmark_service.sandbox.daytona.asyncio.sleep", fake_sleep)
+    try:
+        recreated_sandbox = await sandbox_provider.create_sandbox(request)
+        result = await recreated_sandbox.exec("echo recreated")
 
-    sandbox = await _provider(daytona).create_sandbox(_request(inner.name))
-
-    assert sandbox.id == inner.id
-    assert daytona.name_released is True
-    assert daytona.create_attempts == 2
-    assert daytona.get_attempts == 3
-    assert sleep_calls == [2]
+        assert recreated_sandbox.name == sandbox_name
+        assert result.exit_code == 0
+        assert result.output.strip() == "recreated"
+    finally:
+        if recreated_sandbox is not None:
+            await sandbox_provider.delete_sandbox(recreated_sandbox.id)
