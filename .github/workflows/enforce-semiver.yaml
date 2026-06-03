@@ -1,4 +1,4 @@
-name: create-benchmark-service dependency
+name: Validate benchmark service package is using semver
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
       - "uv.lock"
       - "services/tracker/pyproject.toml"
       - "services/tracker/uv.lock"
-      - ".github/workflows/create-benchmark-service-dependency.yaml"
+      - ".github/workflows/enforce-semver.yaml"
   pull_request:
     branches: [dev]
     paths:
@@ -16,7 +16,7 @@ on:
       - "uv.lock"
       - "services/tracker/pyproject.toml"
       - "services/tracker/uv.lock"
-      - ".github/workflows/create-benchmark-service-dependency.yaml"
+      - ".github/workflows/enforce-semver.yaml"
 
 jobs:
   check-create-benchmark-service-dependency:
