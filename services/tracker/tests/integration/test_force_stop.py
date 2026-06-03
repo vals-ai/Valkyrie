@@ -153,7 +153,8 @@ class TestForceStop:
         # Test force_stop_sandboxes util by running all 12 sandboxes in parallel and
         # See if we can close them all
         created_sandboxes = asyncio.gather(
-            *[asyncio.create_task(create_sandbox_with_delay(task.task_id)) for task in tasks]
+            *[asyncio.create_task(create_sandbox_with_delay(task.task_id)) for task in tasks],
+            return_exceptions=True,
         )
 
         # Pause for 2 seconds to ensure that the sandboxes are being created
