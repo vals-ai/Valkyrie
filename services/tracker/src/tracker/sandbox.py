@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
+from daytona import AsyncDaytona, DaytonaConfig
+from daytona.common.errors import DaytonaError
 import logfire
 import sentry_sdk
 from benchmark_service import (
@@ -37,6 +39,7 @@ from tenacity import (
 )
 
 from tracker.aws.s3 import create_presigned_url, get_agent_result_s3_key, get_benchmark_contract_s3_key, upload_to_s3
+from tracker.aws.secrets import fetch_aws_secret
 from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
@@ -66,6 +69,7 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
+_DAYTONA_SECRET_KEYS = ("DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET")
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -83,6 +87,32 @@ async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
         raise
     except Exception as e:
         logger.error(f"Unexpected error deleting sandbox {sandbox.name}: {e}")
+
+
+def _daytona_config(daytona_secret_name: str, aws: AWSCredentials) -> DaytonaConfig:
+    secret = fetch_aws_secret(daytona_secret_name, aws)
+    if not isinstance(secret, dict):
+        raise SandboxError(f"Expected Daytona secret {daytona_secret_name} to be a JSON object")
+
+    missing_keys = set(_DAYTONA_SECRET_KEYS) - set(secret.keys())
+    if missing_keys:
+        raise SandboxError(f"Missing Daytona secret keys: {', '.join(sorted(missing_keys))}")
+
+    return DaytonaConfig(
+        api_key=str(secret["DAYTONA_API_KEY"]),
+        api_url=str(secret["DAYTONA_API_URL"]),
+        target=str(secret["DAYTONA_TARGET"]),
+        connection_pool_maxsize=None,
+    )
+
+
+async def disable_sandbox_internet(sandbox: Sandbox, daytona_secret_name: str, aws: AWSCredentials) -> None:
+    try:
+        async with AsyncDaytona(config=_daytona_config(daytona_secret_name, aws)) as daytona:
+            daytona_sandbox = await daytona.get(sandbox.id)
+            await daytona_sandbox.update_network_settings(network_block_all=True)
+    except DaytonaError as e:
+        raise SandboxError(f"Failed to disable internet access for sandbox {sandbox.name}: {e}") from e
 
 
 def _source_name(source: SandboxSource) -> str:
@@ -547,6 +577,8 @@ async def run_agent(
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
+    block_network: bool = False,
+    daytona_secret_name: str | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -570,6 +602,13 @@ async def run_agent(
     log_output(f"Running agent {contract.name}")
 
     await install_agent_dependencies(sandbox, contract, log_output)
+
+    if block_network:
+        if daytona_secret_name is None:
+            raise SandboxError("daytona_secret_name is required to disable sandbox internet access")
+        log_output("Disabling sandbox internet access")
+        await disable_sandbox_internet(sandbox, daytona_secret_name, aws)
+        log_output("Sandbox internet access disabled")
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 

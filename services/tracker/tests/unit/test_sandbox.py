@@ -309,6 +309,58 @@ class TestAgentOutputTelemetry:
 
         assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
 
+    async def test_run_agent_blocks_network_after_installing_dependencies(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="install deps",
+            run_cmd="echo done",
+        )
+        events: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("mkdir -p"):
+                events.append("mkdir")
+                return ExecResult(exit_code=0)
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_install_agent_dependencies(*_args: Any, **_kwargs: Any) -> None:
+            events.append("install")
+
+        async def fake_disable_sandbox_internet(_sandbox: Any, daytona_secret_name: str, _aws: Any) -> None:
+            events.append(f"disable:{daytona_secret_name}")
+
+        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            events.append("run")
+            return None, 0.0
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "install_agent_dependencies", fake_install_agent_dependencies)
+        monkeypatch.setattr(sandbox_module, "disable_sandbox_internet", fake_disable_sandbox_internet)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/testbed",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            block_network=True,
+            daytona_secret_name=harness_config.daytona_secret_name,
+        )
+
+        assert events == ["install", f"disable:{harness_config.daytona_secret_name}", "mkdir", "run"]
+
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
         deps_before_sleep = _install_agent_dependencies.retry.before_sleep

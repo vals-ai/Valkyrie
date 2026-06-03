@@ -250,6 +250,8 @@ class TestPtyRetry:
         assert all(record["entered"] and record["exited"] for record in transition_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
         assert run_agent_kwargs["benchmark_id"] == str(benchmark_row.id)
+        assert run_agent_kwargs["block_network"] is True
+        assert run_agent_kwargs["daytona_secret_name"] == harness_config.daytona_secret_name
 
         event_names = [record["message"] for record in log_records]
         assert "agent.run.complete" in event_names

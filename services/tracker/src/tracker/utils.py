@@ -76,6 +76,11 @@ logger = get_logger(__name__)
 _SANDBOX_CREATION_CAP: int = 10
 _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+_NO_INTERNET_BENCHMARKS = {"swebench", "swe-bench"}
+
+
+def _requires_no_internet(benchmark_name: str) -> bool:
+    return benchmark_name.lower().replace("_", "-") in _NO_INTERNET_BENCHMARKS
 
 
 def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
@@ -550,6 +555,8 @@ async def process_task(
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
                     benchmark_id=str(benchmark_id),
+                    block_network=_requires_no_internet(start_benchmark_request.benchmark_name),
+                    daytona_secret_name=harness_config.daytona_secret_name,
                 )
                 logger.info(
                     "agent.run.complete",
