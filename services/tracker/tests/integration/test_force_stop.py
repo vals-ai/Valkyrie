@@ -73,6 +73,8 @@ class TestForceStop:
                 Org(id=TEST_ORG_ID, name="default"),
             )
 
+        created_sandbox_name: list[str] = []
+
         async def _generator_to_courtine():
             async with create_sandbox(
                 provider,
@@ -81,8 +83,8 @@ class TestForceStop:
                 resources=test_resources,
                 creation_semaphore=creation_semaphore,
                 labels=labels,
-            ) as _:
-                pass
+            ) as sandbox:
+                created_sandbox_name.append(sandbox.name)
 
         # Start sandbox and immediately try to stop it, expected to wait until its started to delete
         await asyncio.gather(
@@ -93,6 +95,10 @@ class TestForceStop:
         # Ensure that the task is in the stopped state
         task = database_session.exec(select(Task).where(Task.id == task.id)).one()
         assert task.status == TaskStatus.STOPPED
+
+        # Ensure that the sandbox does not exist anymore
+        with pytest.raises(Exception):
+            await provider.get_sandbox(created_sandbox_name[0])
 
     async def test_force_stop_sandboxes(
         self,
