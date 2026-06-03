@@ -5,18 +5,22 @@
 [![Test Coverage](https://codecov.io/gh/vals-ai/Valkyrie/branch/dev/graph/badge.svg)](https://codecov.io/gh/vals-ai/Valkyrie)
 [![Doc Coverage](https://vals-ai.github.io/Valkyrie/docstr-coverage.svg)](https://github.com/vals-ai/Valkyrie)
 
-Benchmark orchestration platform for testing AI agents against standardized benchmarks.
+Valkyrie is an orchestration platform for running agentic benchmarks.
 
-> **Note:** The CLI is named **Valkyrie**. You can invoke it using either `valkyrie` or the shorter alias `valk`. For example: `valkyrie run start` or `valk run start`.
 
-## Pre requisites
+## Hosting Modes
 
-Valkyrie supports **hosted** and **self-hosted** modes. Both require your own AWS credentials. See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for full details.
+Valkyrie supports **hosted** and **self-hosted** modes. 
+- **Self-hosted Mode** requires you to create AWS infrastructure using the IaC provided.
+- **Hosted Mode** allows you to use Vals-hosted infrastructure. Reach out to the Vals team for access (contact@vals.ai)
 
-- AWS account with S3, CloudWatch, and Secrets Manager access
-- S3 bucket for storing benchmark artifacts and agents
-- API key for sandbox provider (Daytona). [Setup docs](docs/PROVIDER.md)
-- **Hosted mode only:** Descope API key (provided by Vals)
+Both modes require you to provide certain credentials and configuration:  
+- AWS API Key: Authentication for an AWS account with S3, CloudWatch, and Secrets Manager access (to store benchmarking logs and results)
+- S3 Bucket Name: The S3 bucket to be used for storing benchmark artifacts and agents
+- Daytona API Key: API key for sandbox provider (Daytona). [Setup docs](docs/PROVIDER.md)
+- **Hosted mode only:** Vals API Key
+
+See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for more details.
 
 ## Installation
 
@@ -25,6 +29,8 @@ uv tool install git+https://github.com/vals-ai/Valkyrie@prod
 ```
 
 ## Configuration
+
+> **Note:** The Valkyrie can be invoked using either `valkyrie` or the alias `valk`. For example: `valkyrie run start` or `valk run start`.
 
 ```bash
 valkyrie config init
@@ -42,7 +48,7 @@ valkyrie config set <KEY> <VALUE>
 
 Before running benchmarks, you need to install and upload agents to Valkyrie. These commands manage agent lifecycle. All agents are installed inside of the S3 bucket provided by `valkyrie config init` at `agents/`.
 
-All agents will need to already be configured to work with Valkyrie. Please reference the [contract documentation](docs/CONTRACTS.md) to learn more.
+All agents will need to already be in the Valkyrie format. Please reference the [contract documentation](docs/CONTRACTS.md) to learn more.
 
 ### Install an agent from GitHub
 
@@ -99,9 +105,168 @@ Downloads an agent from S3 to your local machine and unzips it.
 | --- | --- |
 | `--output-dir, -o` | Output directory for downloaded agent (default: current directory) |
 
-## Custom Benchmark Services
+## Running Benchmarks 
 
-Vals provides a set of hosted benchmark services by default. If you are developing your own benchmark service you will need to add support for that. We provide a set of utilities that allow you to interact with benchmark services outside of the ones that are provided.
+### Start a run
+
+To run a specific agent on a given benchmark, use the command
+```
+valkyrie run start --agent <agent id> --benchmark <benchmark id>
+```
+
+You can pass `--concurrency` to control the number of tasks that run in parallel, and `--task-ids` or `--slice` to run only a subset of tasks. Specific agents may take additional parameters as well, most commonly, a parameter to set the model. 
+
+To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. 
+
+Here is an example of how to run the first ten tasks of SWE-Bench Verified:
+```bash
+valkyrie run start \
+  --agent sweagent \
+  --benchmark swebench \
+  --model anthropic/claude-sonnet-4-6 \
+  --concurrency 10 \
+  --dataset default \
+  -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey \
+  -k temperature 1 \
+  --slice "0:10" \
+```
+
+| Flag | Description |
+| --- | --- |
+| `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
+| `--benchmark` | Benchmark name (e.g. `swebench`) |
+| `--model` | Model key (e.g. `openai/gpt-4o`) |
+| `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
+| `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged with contract defaults (CLI wins on conflict) |
+| `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
+| `--lambda` | AWS Lambda function to invoke after the run completes |
+| `--task-ids` | Comma-separated task IDs to run |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
+| `--slice` | Slice the benchmark dataset (`start:stop:step`) |
+| `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
+| `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
+| `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
+| `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
+
+### Monitor a run
+
+After starting, use the following commands to check the status of a run: 
+
+```bash
+# Stream live updates
+valkyrie run fetch <id> --connect
+
+# One-time status check
+valkyrie run fetch <id>
+```
+
+### Download results
+
+To view results, you should use the following command to download results to disk:
+```bash
+# default path: ./<benchmark>.json)
+valkyrie run results <id> --path ./results.json
+```
+
+You can also score results on only a subset of tasks:
+```
+# Score over a task-id subset (recomputed via the benchmark service;
+# stored full results are unchanged)
+valkyrie run results <id> --task-ids task_1,task_2
+valkyrie run results <id> --task-ids-file https://example.com/subset.txt
+```
+
+| Option | Description |
+| --- | --- |
+| `--path` | Local path to save results (default: `./<benchmark>.json`) |
+| `--s3` | Upload to S3 instead of downloading. With `--task-ids` / `--task-ids-file` the subset view overwrites the canonical S3 key — re-run without filters to restore |
+| `--task-ids` | Comma-separated task IDs to score the subset over (recomputes `final_score` over the filtered set) |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
+
+### Stop a run
+
+```bash
+valkyrie run stop <id>
+
+# Force stop all in-flight tasks immediately
+valkyrie run stop <id> --force
+```
+
+### Resume / Retry a run
+
+```bash
+# Resume pending tasks
+valkyrie run resume <id>
+
+# Retry errored tasks
+valkyrie run retry <id>
+
+# Override concurrency on resume (works on retry)
+valkyrie run resume <id> --concurrency 20
+
+# Save every task ID in a benchmark dataset to a text file
+valkyrie benchmark tasks swebench --dataset default
+
+# Or choose the output path
+valkyrie benchmark tasks swebench --dataset default --output tasks.txt
+```
+
+| Option | Description |
+| --- | --- |
+| `--concurrency` | Override concurrency level |
+| `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
+| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
+| `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
+| `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
+
+### List runs
+
+```bash
+valkyrie run list \
+  --agent-name claude_code \
+  --benchmark-name swebench \
+  --status IN_PROGRESS \
+  --order-by DESC \
+  --started-by alice@vals.ai,bob@vals.ai
+```
+
+| Option | Description |
+| --- | --- |
+| `--agent-name` | Filter by agent name |
+| `--benchmark-name` | Filter by benchmark name |
+| `--model` | Filter by model |
+| `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
+| `--order-by` | Order results (`desc` or `asc`) |
+| `--started-by` | Comma-separated list of starter emails (case-insensitive) |
+
+Supports paginated navigation ([h] previous, [l] next, [q] quit).
+
+### Download agent outputs
+
+```bash
+# Download all task outputs for a run
+valkyrie agent outputs <id> --output-dir ./outputs
+
+# Download specific tasks (comma-separated)
+valkyrie agent outputs <id> --task-ids astropy__astropy-7606,django__django-10880
+```
+
+### Download a specific file or folder from a run
+
+```bash
+valkyrie agent output <id> [subpath] [-o ./output-dir]
+```
+
+| Argument / Option | Description |
+| --- | --- |
+| `BENCHMARK_ID` | UUID of the benchmark run |
+| `SUBPATH` | Optional file or folder within the benchmark directory |
+| `-o` / `--output-dir` | Local destination directory (defaults to `./<benchmark_id>`) |
+
+
+## Adding Benchmarks
+
+Vals provides a set of benchmarks out-of-the-box. If you want to add a new benchmark, you will need to add a new benchmark service. We provide a set of utilities that allow you to create and interact with benchmark services outside of the ones that are provided.
 
 If hosting locally please use the [documentation](https://github.com/vals-ai/create-benchmark-service?tab=readme-ov-file#reverse-tunnel-setup) on the reverse tunnel that is needed.
 
@@ -203,155 +368,6 @@ Webhook configuration is persisted per-benchmark in the database. On resume or r
 | **Finished** | All tasks within the benchmark have completed (includes final score) |
 | **Error** | Run has errored out |
 | **Stopped** | User has stopped the run |
-
-## Usage
-
-### Start a run
-
-```bash
-valkyrie run start \
-  --agent sweagent \
-  --benchmark swebench \
-  --model anthropic/claude-sonnet-4-6 \
-  --concurrency 5 \
-  --dataset default \
-  -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey \
-  -k temperature 1 \
-  -H X-Custom-Header my-value \
-  --task-ids "task_1,task_2" \
-  --slice "0:10" \
-  -i 25 -i 75 \
-  --ignore-custom-services
-```
-
-| Flag | Description |
-| --- | --- |
-| `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
-| `--benchmark` | Benchmark name (e.g. `swebench`) |
-| `--model` | Model key (e.g. `openai/gpt-4o`) |
-| `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
-| `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged with contract defaults (CLI wins on conflict) |
-| `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
-| `--lambda` | AWS Lambda function to invoke after the run completes |
-| `--task-ids` | Comma-separated task IDs to run |
-| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
-| `--slice` | Slice the benchmark dataset (`start:stop:step`) |
-| `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
-| `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
-| `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
-| `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
-
-### Monitor a run
-
-```bash
-# Stream live updates
-valkyrie run fetch <id> --connect
-
-# One-time status check
-valkyrie run fetch <id>
-```
-
-### Download results
-
-```bash
-# Download to disk (default: ./<benchmark>.json)
-valkyrie run results <id> --path ./results.json
-
-# Upload to S3
-valkyrie run results <id> --s3
-
-# Score over a task-id subset (recomputed via the benchmark service;
-# stored full results are unchanged)
-valkyrie run results <id> --task-ids task_1,task_2
-valkyrie run results <id> --task-ids-file https://example.com/subset.txt
-```
-
-| Option | Description |
-| --- | --- |
-| `--path` | Local path to save results (default: `./<benchmark>.json`) |
-| `--s3` | Upload to S3 instead of downloading. With `--task-ids` / `--task-ids-file` the subset view overwrites the canonical S3 key — re-run without filters to restore |
-| `--task-ids` | Comma-separated task IDs to score the subset over (recomputes `final_score` over the filtered set) |
-| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
-
-### Stop a run
-
-```bash
-valkyrie run stop <id>
-
-# Force stop all in-flight tasks immediately
-valkyrie run stop <id> --force
-```
-
-### Resume / Retry a run
-
-```bash
-# Resume pending tasks
-valkyrie run resume <id>
-
-# Retry errored tasks
-valkyrie run retry <id>
-
-# Override concurrency on resume (works on retry)
-valkyrie run resume <id> --concurrency 20
-
-# Save every task ID in a benchmark dataset to a text file
-valkyrie benchmark tasks swebench --dataset default
-
-# Or choose the output path
-valkyrie benchmark tasks swebench --dataset default --output tasks.txt
-```
-
-| Option | Description |
-| --- | --- |
-| `--concurrency` | Override concurrency level |
-| `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
-| `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
-| `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
-| `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
-
-### List runs
-
-```bash
-valkyrie run list \
-  --agent-name claude_code \
-  --benchmark-name swebench \
-  --status IN_PROGRESS \
-  --order-by DESC \
-  --started-by alice@vals.ai,bob@vals.ai
-```
-
-| Option | Description |
-| --- | --- |
-| `--agent-name` | Filter by agent name |
-| `--benchmark-name` | Filter by benchmark name |
-| `--model` | Filter by model |
-| `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
-| `--order-by` | Order results (`desc` or `asc`) |
-| `--started-by` | Comma-separated list of starter emails (case-insensitive) |
-
-Supports paginated navigation ([h] previous, [l] next, [q] quit).
-
-### Download agent outputs
-
-```bash
-# Download all task outputs for a run
-valkyrie agent outputs <id> --output-dir ./outputs
-
-# Download specific tasks (comma-separated)
-valkyrie agent outputs <id> --task-ids astropy__astropy-7606,django__django-10880
-```
-
-### Download a specific file or folder from a run
-
-```bash
-valkyrie agent output <id> [subpath] [-o ./output-dir]
-```
-
-| Argument / Option | Description |
-| --- | --- |
-| `BENCHMARK_ID` | UUID of the benchmark run |
-| `SUBPATH` | Optional file or folder within the benchmark directory |
-| `-o` / `--output-dir` | Local destination directory (defaults to `./<benchmark_id>`) |
 
 ## Documentation
 
