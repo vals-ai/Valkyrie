@@ -1,0 +1,46 @@
+name: create-benchmark-service dependency
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - "services/tracker/pyproject.toml"
+      - "services/tracker/uv.lock"
+      - ".github/workflows/create-benchmark-service-dependency.yaml"
+  pull_request:
+    branches: [dev]
+    paths:
+      - "pyproject.toml"
+      - "uv.lock"
+      - "services/tracker/pyproject.toml"
+      - "services/tracker/uv.lock"
+      - ".github/workflows/create-benchmark-service-dependency.yaml"
+
+jobs:
+  check-create-benchmark-service-dependency:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check create-benchmark-service dependency
+        run: |
+          set -euo pipefail
+
+          dependency_files=(
+            pyproject.toml
+            uv.lock
+            services/tracker/pyproject.toml
+            services/tracker/uv.lock
+          )
+
+          if grep -En 'create-benchmark-service.*(@main|rev=main|[?&]rev=main)' "${dependency_files[@]}"; then
+            echo "create-benchmark-service must not track main"
+            exit 1
+          fi
+
+          grep -Eq '"create-benchmark-service @ git\+https://github.com/vals-ai/create-benchmark-service.git@v[0-9]+\.[0-9]+\.[0-9]+"' services/tracker/pyproject.toml
+          grep -Eq 'create-benchmark-service.*rev=v[0-9]+\.[0-9]+\.[0-9]+' uv.lock
+          grep -Eq 'create-benchmark-service.*rev=v[0-9]+\.[0-9]+\.[0-9]+' services/tracker/uv.lock
