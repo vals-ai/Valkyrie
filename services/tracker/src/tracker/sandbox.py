@@ -1,5 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
 import base64
 import shlex
 import time
@@ -64,6 +65,7 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
+_UPLOAD_AGENT_TIMEOUT_SECONDS = 300
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -270,7 +272,12 @@ async def upload_agent_artifacts(
     script = " && ".join(steps)
 
     try:
-        result = await _exec(sandbox, script)
+        result = await asyncio.wait_for(_exec(sandbox, script), timeout=_UPLOAD_AGENT_TIMEOUT_SECONDS)
+    except TimeoutError as e:
+        raise SandboxError(
+            f"Timed out uploading contract {contract.name} to sandbox {sandbox.name} "
+            f"after {_UPLOAD_AGENT_TIMEOUT_SECONDS}s"
+        ) from e
     except Exception as e:
         raise SandboxError(f"Failed to upload contract {contract.name} to sandbox {sandbox.name}: {e}") from e
 

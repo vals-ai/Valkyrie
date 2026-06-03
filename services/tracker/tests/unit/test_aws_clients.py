@@ -1,7 +1,7 @@
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
-from tracker.aws.cloudwatch_logs import handle_cloudwatch_error
+from tracker.aws.cloudwatch_logs import _log_stream_name, handle_cloudwatch_error
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.aws.s3 import handle_s3_error
 
@@ -38,6 +38,9 @@ class TestS3DecoratorClient:
 
 
 class TestCloudWatchClient:
+    def test_log_stream_name_replaces_invalid_characters(self):
+        assert _log_stream_name("repo-name:Rust*variant") == "repo-name_Rust_variant"
+
     def test_cloudwatch_error_with_client(self):
         """Test that ClientError is caught buy the decorator"""
         client_error = ClientError({"Error": {"Code": "404", "Message": "Not found"}}, "CreateLogStream")

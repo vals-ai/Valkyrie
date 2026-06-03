@@ -486,6 +486,31 @@ class TestAgentOutputTelemetry:
 
 
 class TestUploadAgentArtifacts:
+    async def test_upload_timeout_raises_sandbox_error(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def _slow_exec(*_args: Any, **_kwargs: Any) -> ExecResult:
+            await asyncio.sleep(1)
+            return ExecResult(exit_code=0, stdout="", stderr="")
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.name = "test-sandbox"
+
+        monkeypatch.setattr(sandbox_module, "_UPLOAD_AGENT_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(sandbox_module, "_exec", _slow_exec)
+        monkeypatch.setattr("tracker.sandbox.create_presigned_url", Mock(return_value="https://example.com/presigned"))
+
+        aws = AWSCredentials(
+            aws_access_key_id="test",
+            aws_secret_access_key="test",
+            aws_default_region="us-east-1",
+        )
+
+        with pytest.raises(SandboxError, match="Timed out uploading contract"):
+            await upload_agent_artifacts(mock_sandbox, contract, "bench-123", aws, "test-bucket")
+
     @pytest.mark.parametrize(
         "exit_code,retryable",
         [
