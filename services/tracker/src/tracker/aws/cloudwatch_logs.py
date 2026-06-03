@@ -15,6 +15,10 @@ if TYPE_CHECKING:
 _created_streams: set[str] = set()
 
 
+def _log_stream_name(task_id: str) -> str:
+    return task_id.replace(":", "_").replace("*", "_")
+
+
 @lru_cache(maxsize=32)
 def _cloudwatch_client(aws: "AWSCredentials") -> Any:
     """Cloudwatch client cached to share instances."""
@@ -58,7 +62,7 @@ def get_benchmark_log_url(benchmark_id: str, region: str, log_group: str, task_i
     base = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
     encoded_log_group = f"{log_group}$252F{benchmark_id}"
     if task_id:
-        return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{task_id}"
+        return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{_log_stream_name(task_id)}"
 
     return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}"
 
@@ -116,21 +120,22 @@ def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSCredential
 
     client = _cloudwatch_client(aws)
     log_group_name = f"{log_group}/{benchmark_id}"
+    log_stream_name = _log_stream_name(task_id)
 
     if stream_key not in _created_streams:
         try:
-            client.create_log_stream(logGroupName=log_group_name, logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
+            client.create_log_stream(logGroupName=log_group_name, logStreamName=log_stream_name)  # pyright: ignore[reportUnknownMemberType]
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
                 raise
         except BotoCoreError as e:
-            raise CloudWatchError(f"Failed to create log stream '{task_id}': {e}") from e
+            raise CloudWatchError(f"Failed to create log stream '{log_stream_name}': {e}") from e
         _created_streams.add(stream_key)
 
     try:
         client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
             logGroupName=log_group_name,
-            logStreamName=task_id,
+            logStreamName=log_stream_name,
             logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],
         )
     except (ClientError, BotoCoreError) as e:
