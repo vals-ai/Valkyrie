@@ -10,7 +10,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Coroutine, TypeVar
+from typing import Any, Coroutine, Protocol, TypeVar
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -33,6 +33,10 @@ from valkyrie.cli.tracker_service import TrackerService
 CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
 
 T = TypeVar("T")
+
+
+class BenchmarkFetcher(Protocol):
+    def fetch_benchmarks(self, request: FetchBenchmarksRequest) -> FetchBenchmarksResponse: ...
 
 
 class ConfigValue(str, Enum):
@@ -577,7 +581,7 @@ def format_no_benchmarks_found(
 
 
 def paginate_benchmarks(
-    tracker: TrackerService,
+    tracker: BenchmarkFetcher,
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,
