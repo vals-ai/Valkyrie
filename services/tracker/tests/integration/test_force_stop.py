@@ -17,10 +17,12 @@ from tracker.utils import force_stop_sandboxes, process_benchmark
 
 logger = get_logger(__name__)
 
+_DEAD_STATES = {"destroying", "destroyed", "stopped", "error"}
+
 
 async def _sandboxes_for_benchmark(benchmark: Benchmark, provider: SandboxProvider):
     query = SandboxQuery(labels={"Benchmark": benchmark.name, "Id": str(benchmark.id)})
-    return [sandbox async for sandbox in provider.list_sandboxes(query)]
+    return [sandbox async for sandbox in provider.list_sandboxes(query) if sandbox.state not in _DEAD_STATES]
 
 
 class TestForceStop:
