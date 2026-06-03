@@ -16,13 +16,15 @@ import sentry_sdk
 from benchmark_service import (
     ExecResult,
     ImageSource,
-    Resources as TrackerResources,
     Sandbox,
     SandboxCreateRequest,
     SandboxNotFoundError,
     SandboxProvider,
     SandboxSource,
     SnapshotSource,
+)
+from benchmark_service import (
+    Resources as TrackerResources,
 )
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
@@ -36,9 +38,9 @@ from tenacity import (
 
 from tracker.aws.s3 import create_presigned_url, get_agent_result_s3_key, get_benchmark_contract_s3_key, upload_to_s3
 from tracker.database.models import (
+    MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
     AgentContractRequest,
-    MAX_OUTPUT_ARTIFACT_BYTES,
     OutputArtifactSpec,
 )
 from tracker.exceptions import (
@@ -353,6 +355,8 @@ async def stream_command_output(
                 output.append(data)
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
+        except ProviderSandboxError as e:
+            raise SandboxError(str(e)) from e
 
         start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
         end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
