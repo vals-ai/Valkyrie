@@ -627,9 +627,10 @@ def paginate_benchmarks(
             format_no_benchmarks_found(agent_name, benchmark_name, model, dataset, status, started_by)
             break
 
-        format_fetch_benchmarks_response(response, current_page, total_pages)
+        interactive = click.get_text_stream("stdin").isatty() and click.get_text_stream("stdout").isatty()
+        format_fetch_benchmarks_response(response, current_page, total_pages if interactive else 1)
 
-        if total_pages <= 1:
+        if total_pages <= 1 or not interactive:
             break
 
         char = click.getchar()
