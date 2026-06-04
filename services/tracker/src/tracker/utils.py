@@ -24,6 +24,7 @@ from sqlalchemy import JSON, type_coerce
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
+from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker._lambda import invoke_lambda, lambda_client
 from tracker.auth import RequestIdentity
@@ -52,8 +53,6 @@ from tracker.database.models import (
 )
 from tracker.database.scoping import scoped_select
 from tracker.database.session import engine
-from websockets.exceptions import ConnectionClosedError, InvalidStatus
-
 from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -915,7 +914,7 @@ async def process_benchmark(
                 return
             evaluation_results = fetch_final_score_inputs(session, benchmark_row, org)
 
-        if not evaluation_results:
+        if not any(result is not None for result in evaluation_results.values()):
             raise TrackerServiceError("No tasks were completed successfully")
 
         # Calculate the final score based off the tasks that were ran

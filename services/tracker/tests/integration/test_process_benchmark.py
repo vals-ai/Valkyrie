@@ -260,6 +260,37 @@ async def test_process_task_error(
     assert failing_task not in results
 
 
+async def test_process_benchmark_errors_when_all_tasks_fail_before_evaluation(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    service_headers: dict[str, str],
+):
+    """A run with no successful task results fails before final scoring.
+
+    Test cases:
+    - A missing declared output artifact marks the task as ERROR through the real sandbox path.
+    - The benchmark is marked ERROR instead of attempting final scoring with only failed task inputs.
+    """
+    failing_contract = contract.model_copy(update={"output_artifacts": ["missing-artifact.json"]})
+    benchmark, request = _create_benchmark(
+        failing_contract, harness_config, database_session, service_headers, task_ids=[_TASK_ID]
+    )
+
+    await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID])
+
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.ERROR
+    assert "No tasks were completed successfully" in (benchmark.error_message or "")
+    assert benchmark.final_evaluation is None
+
+    tasks = _task_rows(benchmark, database_session)
+    assert len(tasks) == 1
+    assert tasks[0].status == TaskStatus.ERROR
+    assert "Required output artifact missing" in (tasks[0].error_message or "")
+    assert benchmark.fetch_evaluation_results(database_session) == {}
+
+
 async def test_concurrent_benchmarks_same_task(
     contract: AgentContractRequest,
     database_session: Session,
