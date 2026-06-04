@@ -1,5 +1,12 @@
 .PHONY: help install deploy deploy-shared deploy-tracker hotswap diff destroy
 
+# Stage selection: STAGE=prod (default) or STAGE=dev. Passed to CDK as context;
+# STACK_PREFIX prefixes stack ids so STAGE=dev targets the Dev-* stacks.
+# Default prod => empty prefix, so every target is byte-identical to pre-stage behavior.
+STAGE ?= prod
+STACK_PREFIX := $(if $(filter-out prod,$(STAGE)),Dev-,)
+CDK_CTX := -c stage=$(STAGE)
+
 help:
 	@echo "Makefile for agentic-harness infrastructure"
 	@echo ""
@@ -23,20 +30,20 @@ venv_check:
 	fi
 
 deploy: venv_check
-	uv run cdk deploy --all --require-approval never
+	uv run cdk deploy --all $(CDK_CTX) --require-approval never
 
 deploy-shared: venv_check
-	uv run cdk deploy SharedStack --require-approval never
+	uv run cdk deploy $(STACK_PREFIX)SharedStack $(CDK_CTX) --require-approval never
 
 deploy-tracker: venv_check
-	uv run cdk deploy TrackerStack --require-approval never
+	uv run cdk deploy $(STACK_PREFIX)TrackerStack $(CDK_CTX) --require-approval never
 
 hotswap: venv_check
-	uv run cdk deploy --all --hotswap
+	uv run cdk deploy --all $(CDK_CTX) --hotswap
 
 diff: venv_check
-	uv run cdk diff
+	uv run cdk diff $(CDK_CTX)
 
 destroy: venv_check
 	@read -p "Are you sure you want to destroy all stacks? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	uv run cdk destroy --all
+	uv run cdk destroy --all $(CDK_CTX)

@@ -22,6 +22,7 @@ from dashboards import (
     create_rds_dashboard,
     create_redis_dashboard,
 )
+from stage import Stage
 
 
 class MonitoringStack(cdk.Stack):
@@ -38,6 +39,7 @@ class MonitoringStack(cdk.Stack):
         scope: Construct,
         id: str,
         *,
+        stage: Stage,
         cluster: aws_ecs.ICluster,
         tracker_service: aws_ecs.FargateService,
         worker_service: aws_ecs.FargateService,
@@ -48,6 +50,7 @@ class MonitoringStack(cdk.Stack):
         **kwargs: Any,
     ) -> None:
         super().__init__(scope, id, **kwargs)
+        self.stage = stage
 
         self.cluster = cluster
         self.tracker_service = tracker_service
@@ -60,7 +63,7 @@ class MonitoringStack(cdk.Stack):
         self.alerts_topic = aws_sns.Topic(
             self,
             "ValkyrieAlertsTopic",
-            topic_name="Valkyrie-Alerts",
+            topic_name=self.stage.phys("Valkyrie-Alerts"),
             display_name="Valkyrie infrastructure alerts",
         )
         slack_config = get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV)
@@ -69,7 +72,7 @@ class MonitoringStack(cdk.Stack):
             self.alerts_slack = aws_chatbot.SlackChannelConfiguration(
                 self,
                 "ValkyrieAlertsSlackChannel",
-                slack_channel_configuration_name="valkyrie-alerts",
+                slack_channel_configuration_name=self.stage.phys("valkyrie-alerts"),
                 slack_workspace_id=slack_workspace_id,
                 slack_channel_id=slack_channel_id,
             )
@@ -86,6 +89,7 @@ class MonitoringStack(cdk.Stack):
 
         self.overview_dashboard = create_overview_dashboard(
             self,
+            stage=self.stage,
             tracker_service=tracker_service,
             worker_service=worker_service,
             load_balancer=load_balancer,
@@ -95,21 +99,25 @@ class MonitoringStack(cdk.Stack):
         )
         self.ecs_dashboard = create_ecs_dashboard(
             self,
+            stage=self.stage,
             tracker_service=tracker_service,
             worker_service=worker_service,
         )
         self.alb_dashboard = create_alb_dashboard(
             self,
+            stage=self.stage,
             load_balancer=load_balancer,
             target_group=target_group,
         )
         self.rds_dashboard = create_rds_dashboard(
             self,
+            stage=self.stage,
             database=database,
             region=self.region,
         )
         self.redis_dashboard = create_redis_dashboard(
             self,
+            stage=self.stage,
             redis_cluster=redis_cluster,
         )
 
@@ -131,7 +139,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "TrackerUnhealthyAlarm",
-            alarm_name="Valkyrie-Tracker-Unhealthy",
+            alarm_name=self.stage.phys("Valkyrie-Tracker-Unhealthy"),
             alarm_description="Tracker ALB has at least one unhealthy target for 2+ minutes",
             metric=target_group.metric_unhealthy_host_count(
                 period=cdk.Duration.minutes(1),
@@ -149,7 +157,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "WorkerServiceDownAlarm",
-            alarm_name="Valkyrie-Worker-Service-Down",
+            alarm_name=self.stage.phys("Valkyrie-Worker-Service-Down"),
             alarm_description=(
                 "Worker Fargate running task count = 0 for 3+ minutes. "
                 "Worker containers not running (min=1 autoscale floor breached)."
@@ -175,7 +183,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "HighFiveXXRateAlarm",
-            alarm_name="Valkyrie-API-5XX-Rate-High",
+            alarm_name=self.stage.phys("Valkyrie-API-5XX-Rate-High"),
             alarm_description="API returning 10+ 5XX responses in a 5-minute window",
             metric=load_balancer.metric_http_code_target(
                 code=aws_elb.HttpCodeTarget.TARGET_5XX_COUNT,
@@ -192,7 +200,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "HighApiLatencyAlarm",
-            alarm_name="Valkyrie-API-Latency-High",
+            alarm_name=self.stage.phys("Valkyrie-API-Latency-High"),
             alarm_description="API target response time p99 >= 5s for 5+ minutes",
             metric=load_balancer.metric_target_response_time(
                 period=cdk.Duration.minutes(1),
@@ -211,7 +219,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "DbConnectionsHighAlarm",
-            alarm_name="Valkyrie-DB-Connections-High",
+            alarm_name=self.stage.phys("Valkyrie-DB-Connections-High"),
             alarm_description="RDS database connections >= 135 (~80% of t4g.small max)",
             metric=database.metric_database_connections(
                 period=cdk.Duration.minutes(1),
@@ -228,7 +236,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "DbStorageLowAlarm",
-            alarm_name="Valkyrie-DB-Storage-Low",
+            alarm_name=self.stage.phys("Valkyrie-DB-Storage-Low"),
             alarm_description="RDS free storage space <= 2 GB",
             metric=database.metric_free_storage_space(
                 period=cdk.Duration.minutes(5),
@@ -244,7 +252,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "DbCpuHighAlarm",
-            alarm_name="Valkyrie-DB-CPU-High",
+            alarm_name=self.stage.phys("Valkyrie-DB-CPU-High"),
             alarm_description="RDS CPU utilization >= 80% for 10+ minutes",
             metric=database.metric_cpu_utilization(
                 period=cdk.Duration.minutes(1),
@@ -261,7 +269,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "RedisMemoryHighAlarm",
-            alarm_name="Valkyrie-Redis-Memory-High",
+            alarm_name=self.stage.phys("Valkyrie-Redis-Memory-High"),
             alarm_description="Redis memory usage >= 80% for 5+ minutes",
             metric=aws_cloudwatch.Metric(
                 namespace="AWS/ElastiCache",
@@ -281,7 +289,7 @@ class MonitoringStack(cdk.Stack):
         aws_cloudwatch.Alarm(
             self,
             "RedisEvictionsAlarm",
-            alarm_name="Valkyrie-Redis-Evictions",
+            alarm_name=self.stage.phys("Valkyrie-Redis-Evictions"),
             alarm_description="Redis evicted 1+ keys in a 5-minute window (data loss in queue)",
             metric=aws_cloudwatch.Metric(
                 namespace="AWS/ElastiCache",

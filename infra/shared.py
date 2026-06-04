@@ -29,6 +29,7 @@ from constants import (
     get_slack_notification_config,
 )
 from constructs import Construct
+from stage import Stage
 
 DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "WorkerStack", "MonitoringStack")
 DEPLOYMENT_SUCCESS_STATUSES = ("CREATE_COMPLETE", "UPDATE_COMPLETE")
@@ -44,8 +45,9 @@ DEPLOYMENT_FAILURE_STATUSES = (
 class SharedStack(Stack):
     """Shared infrastructure for all services."""
 
-    def __init__(self, scope: Construct, id: str, **kwargs: Any):
+    def __init__(self, scope: Construct, id: str, stage: Stage, **kwargs: Any):
         super().__init__(scope, id, **kwargs)
+        self.stage = stage
 
         # shared VPC - public subnets only, no NAT gateway (cost savings)
         self.vpc = aws_ec2.Vpc(
@@ -71,7 +73,7 @@ class SharedStack(Stack):
             self,
             "AgenticHarnessCluster",
             vpc=self.vpc,
-            cluster_name=CLUSTER_NAME,
+            cluster_name=self.stage.phys(CLUSTER_NAME),
             container_insights=True,
         )
 
@@ -80,7 +82,7 @@ class SharedStack(Stack):
         self.namespace = aws_servicediscovery.PrivateDnsNamespace(
             self,
             "AgenticHarnessNamespace",
-            name=NAMESPACE,
+            name=self.stage.phys(NAMESPACE),
             vpc=self.vpc,
         )
 
@@ -95,7 +97,7 @@ class SharedStack(Stack):
         self.bucket = aws_s3.Bucket(
             self,
             "AgenticHarnessBucket",
-            bucket_name=S3_BUCKET_NAME,
+            bucket_name=self.stage.phys(S3_BUCKET_NAME),
             removal_policy=cdk.RemovalPolicy.RETAIN,
             block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
         )
@@ -150,12 +152,12 @@ class SharedStack(Stack):
         notification_topic = aws_sns.Topic(
             self,
             "StackNotificationTopic",
-            topic_name="agentic-harness-notifications",
+            topic_name=self.stage.phys("agentic-harness-notifications"),
         )
         slack = aws_chatbot.SlackChannelConfiguration(
             self,
             "DeploymentNotificationsSlackChannel",
-            slack_channel_configuration_name="deployment-notifications",
+            slack_channel_configuration_name=self.stage.phys("deployment-notifications"),
             slack_workspace_id=slack_workspace_id,
             slack_channel_id=slack_channel_id,
         )
@@ -206,7 +208,9 @@ class SharedStack(Stack):
                 detail_type=["CloudFormation Stack Status Change"],
                 detail={
                     "stack-id": [
-                        {"prefix": f"arn:aws:cloudformation:{self.region}:{self.account}:stack/{name}/"}
+                        {
+                            "prefix": f"arn:aws:cloudformation:{self.region}:{self.account}:stack/{self.stage.stack_id(name)}/"
+                        }
                         for name in DEPLOYMENT_STACK_NAMES
                     ],
                     "status-details": {

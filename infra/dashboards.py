@@ -15,6 +15,7 @@ from aws_cdk import (
     aws_rds,
 )
 from constructs import Construct
+from stage import Stage
 
 # Default widget height for dashboard layouts. CloudWatch grids are 24 units wide.
 _WIDGET_HEIGHT = 6
@@ -24,6 +25,7 @@ _SINGLE_VALUE_HEIGHT = 3
 def create_overview_dashboard(
     scope: Construct,
     *,
+    stage: Stage,
     tracker_service: aws_ecs.FargateService,
     worker_service: aws_ecs.FargateService,
     load_balancer: aws_elb.ApplicationLoadBalancer,
@@ -35,7 +37,7 @@ def create_overview_dashboard(
     dashboard = aws_cloudwatch.Dashboard(
         scope,
         "ValkyrieOverviewDashboard",
-        dashboard_name="Valkyrie-Overview",
+        dashboard_name=stage.phys("Valkyrie-Overview"),
         default_interval=cdk.Duration.hours(3),
         period_override=aws_cloudwatch.PeriodOverride.AUTO,
     )
@@ -237,6 +239,7 @@ def create_overview_dashboard(
 def create_ecs_dashboard(
     scope: Construct,
     *,
+    stage: Stage,
     tracker_service: aws_ecs.FargateService,
     worker_service: aws_ecs.FargateService,
 ) -> aws_cloudwatch.Dashboard:
@@ -244,7 +247,7 @@ def create_ecs_dashboard(
     dashboard = aws_cloudwatch.Dashboard(
         scope,
         "ValkyrieEcsDashboard",
-        dashboard_name="Valkyrie-ECS",
+        dashboard_name=stage.phys("Valkyrie-ECS"),
         default_interval=cdk.Duration.hours(24),
         period_override=aws_cloudwatch.PeriodOverride.AUTO,
     )
@@ -357,6 +360,7 @@ def create_ecs_dashboard(
 def create_alb_dashboard(
     scope: Construct,
     *,
+    stage: Stage,
     load_balancer: aws_elb.ApplicationLoadBalancer,
     target_group: aws_elb.ApplicationTargetGroup,
 ) -> aws_cloudwatch.Dashboard:
@@ -364,7 +368,7 @@ def create_alb_dashboard(
     dashboard = aws_cloudwatch.Dashboard(
         scope,
         "ValkyrieAlbDashboard",
-        dashboard_name="Valkyrie-ALB",
+        dashboard_name=stage.phys("Valkyrie-ALB"),
         default_interval=cdk.Duration.hours(24),
         period_override=aws_cloudwatch.PeriodOverride.AUTO,
     )
@@ -517,6 +521,7 @@ def create_alb_dashboard(
 def create_rds_dashboard(
     scope: Construct,
     *,
+    stage: Stage,
     database: aws_rds.DatabaseInstance,
     region: str,
 ) -> aws_cloudwatch.Dashboard:
@@ -524,7 +529,7 @@ def create_rds_dashboard(
     dashboard = aws_cloudwatch.Dashboard(
         scope,
         "ValkyrieRdsDashboard",
-        dashboard_name="Valkyrie-RDS",
+        dashboard_name=stage.phys("Valkyrie-RDS"),
         default_interval=cdk.Duration.hours(24),
         period_override=aws_cloudwatch.PeriodOverride.AUTO,
     )
@@ -695,13 +700,14 @@ def create_rds_dashboard(
 def create_redis_dashboard(
     scope: Construct,
     *,
+    stage: Stage,
     redis_cluster: aws_elasticache.CfnCacheCluster,
 ) -> aws_cloudwatch.Dashboard:
     """`Valkyrie-Redis` -- ElastiCache metrics including command breakdown."""
     dashboard = aws_cloudwatch.Dashboard(
         scope,
         "ValkyrieRedisDashboard",
-        dashboard_name="Valkyrie-Redis",
+        dashboard_name=stage.phys("Valkyrie-Redis"),
         default_interval=cdk.Duration.hours(24),
         period_override=aws_cloudwatch.PeriodOverride.AUTO,
     )

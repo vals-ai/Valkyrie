@@ -31,6 +31,7 @@ from constants import (
     WORKER_STOP_TIMEOUT_SECONDS,
 )
 from constructs import Construct
+from stage import Stage
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -55,6 +56,7 @@ class WorkerStack(Stack):
         self,
         scope: Construct,
         id: str,
+        stage: Stage,
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
         redis_url: str,
@@ -160,7 +162,7 @@ class WorkerStack(Stack):
             cluster=cluster,
             task_definition=worker_task_def,
             desired_count=WORKER_MIN_TASKS,
-            service_name="Worker",
+            service_name=stage.phys("Worker"),
             security_groups=[tracker_sg],
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
             min_healthy_percent=100,
