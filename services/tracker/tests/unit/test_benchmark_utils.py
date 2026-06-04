@@ -60,6 +60,19 @@ class TestBenchmarkUtils:
             "x-target": "target",
         }
 
+    def test_fetch_daytona_headers_does_not_echo_raw_secret(
+        self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        raw_daytona_key = "dtn_fake_key_that_should_not_be_logged"
+        monkeypatch.setattr("tracker.utils.fetch_aws_secret", lambda *_args, **_kwargs: raw_daytona_key)
+
+        with pytest.raises(TrackerServiceError) as exc_info:
+            fetch_daytona_headers(harness_config.daytona_secret_name, harness_config.aws)
+
+        error_message = str(exc_info.value)
+        assert "received a string" in error_message
+        assert raw_daytona_key not in error_message
+
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
     ) -> FinalScoreResponse:

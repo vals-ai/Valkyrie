@@ -85,7 +85,9 @@ def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict
     secret = fetch_aws_secret(daytona_secret_name, aws)
 
     if not isinstance(secret, dict):
-        raise TrackerServiceError(f"Expected a dict with all daytona keys inside, received a string {secret}")
+        raise TrackerServiceError(
+            f"Expected Daytona secret to be a JSON object with keys {', '.join(daytona_keys)}, received a string"
+        )
 
     missing_keys = set(daytona_keys) - set(secret.keys())
     if missing_keys:
