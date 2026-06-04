@@ -31,7 +31,12 @@ async def test_sandbox(
     random_sandbox_name: str,
     creation_semaphore: asyncio.Semaphore,
 ) -> AsyncGenerator[Sandbox, None]:
-    """Create a test sandbox with Python."""
+    """Create a real provider sandbox for sandbox-operation tests.
+
+    Test cases:
+    - The fixture yields a sandbox created from the configured test image.
+    - Context cleanup deletes the sandbox after the dependent test completes.
+    """
 
     async with create_sandbox(
         sandbox_provider,
@@ -54,7 +59,12 @@ class TestSandboxOperations:
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Test that sandbox is created and cleaned up properly."""
+        """Verify sandbox context creation and cleanup through the real provider.
+
+        Test cases:
+        - The created sandbox can execute a simple command and uses the requested name prefix.
+        - Exiting the context deletes the sandbox so provider lookup raises SandboxNotFoundError.
+        """
 
         async with create_sandbox(
             sandbox_provider,
@@ -74,7 +84,12 @@ class TestSandboxOperations:
     async def test_upload_agent_artifacts(
         self, test_sandbox: Sandbox, aws_credentials: AWSCredentials, harness_config: HarnessConfig
     ) -> None:
-        """Test that agent artifacts are uploaded to the sandbox."""
+        """Verify benchmark-scoped agent artifacts are downloaded from S3 into the sandbox.
+
+        Test cases:
+        - The frozen benchmark contract zip is extracted into /bundle.
+        - Setup and agent source files are readable from their expected sandbox paths.
+        """
         contract_name = "test_contract"
         benchmark_id = "test-benchmark-id-abc"
         contract = AgentContractRequest(
@@ -133,7 +148,12 @@ class TestSandboxOperations:
             s3.delete_object(Bucket=harness_config.s3_bucket, Key=frozen_key)
 
     async def test_install_agent_dependencies(self, test_sandbox: Sandbox) -> None:
-        """Test that install command is correctly executed in the sandbox."""
+        """Verify the contract install command runs from the sandbox bundle.
+
+        Test cases:
+        - install_agent_dependencies logs its installation banner.
+        - Output from the setup script is streamed through the provided log callback.
+        """
         logged_messages: list[str] = []
 
         def log_callback(message: str) -> None:
@@ -163,7 +183,12 @@ class TestSandboxOperations:
         aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
     ) -> None:
-        """Test that agent runs and prints output lines."""
+        """Verify run_agent streams output while executing a contract command.
+
+        Test cases:
+        - The contract run command executes from the sandbox and writes its final output artifact.
+        - All emitted output lines are passed to the log callback.
+        """
         logged_messages: list[str] = []
 
         def log_callback(message: str) -> None:
@@ -205,12 +230,11 @@ class TestSandboxOperations:
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
     ):
-        """
-        Timeouts are correct caught and returned from the stream outputs method
+        """Verify stream_command_output classifies timeout exits without raising.
 
-        Test Cases:
-        - Sandbox times out when we sleep past the timeout
-        - Sandbox does not timeout when the sleep is less than the timeout
+        Test cases:
+        - A command killed by the shell timeout returns AgentCausedExitReason.TIMEOUT.
+        - A command that completes before the timeout returns no agent-caused exit reason.
         """
 
         async with create_sandbox(
@@ -247,7 +271,12 @@ class TestSandboxOperations:
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Test that PTY streaming captures output from a multi-stage command."""
+        """Verify PTY streaming captures output across multiple command stages.
+
+        Test cases:
+        - stream_command_output does not report a timeout for a successful multi-stage command.
+        - Output before, between, and after sleeps is delivered to the log callback.
+        """
         logged_messages: list[str] = []
 
         def log_callback(message: str) -> None:
@@ -281,7 +310,8 @@ class TestSandboxOperations:
         """Verify stream_command_output preserves deleted-sandbox errors.
 
         Test cases:
-        - Deleting a sandbox during command streaming raises SandboxNotFoundError.
+        - A command is running while the sandbox is deleted through the provider.
+        - The wrapper raises SandboxNotFoundError instead of converting it to tracker SandboxError.
         """
 
         async with create_sandbox(
@@ -310,7 +340,12 @@ class TestSandboxOperations:
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Test that a command with non-zero exit code raises SandboxError."""
+        """Verify non-zero command exits are surfaced as tracker sandbox failures.
+
+        Test cases:
+        - A command returning exit code 1 raises SandboxError.
+        - The error message includes the command exit code for user-facing diagnostics.
+        """
         async with create_sandbox(
             sandbox_provider,
             random_sandbox_name,

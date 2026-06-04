@@ -79,12 +79,11 @@ class TestForceStop:
         test_image: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """
-        Test force stopping a single sandbox that is building
+        """Verify force_stop_sandboxes can stop a sandbox while creation is racing.
 
-        Test Cases:
-        - Force stop can be ran while a sandbox is being built
-        - After finished running, no sandbox exists anymore
+        Test cases:
+        - A task already marked in progress is moved to STOPPED while its sandbox context is active.
+        - The created sandbox is deleted and provider lookup raises SandboxNotFoundError.
         """
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -155,12 +154,12 @@ class TestForceStop:
         test_resources: Resources,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """
-        Test force stopping multiple sandboxes that are being built / already built
+        """Verify force_stop_sandboxes handles multiple active sandbox contexts.
 
-        Test Cases:
-        - Create 12 sandboxes all delayed to exist for 20 seconds, force stopping after they are built
-        - 0 Sandboxes exist from the group we created after have finished stopping them
+        Test cases:
+        - In-progress and evaluating task sandboxes are stopped while their contexts are still open.
+        - Deleted sandbox races surface only SandboxNotFoundError and no task error messages are recorded.
+        - No benchmark-labeled sandboxes remain after force stop completes.
         """
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -241,16 +240,12 @@ class TestForceStop:
         harness_config: HarnessConfig,
         service_headers: dict[str, str],
     ) -> None:
-        """
-        Test end to end with a benchmark service -- Starting a slice of tasks and force stopping them
+        """Verify the HTTP force-stop path interrupts a live benchmark without task errors.
 
-        Test Cases:
-        - Start the run using 5 tasks
-        - Force stop the benchmark
-        - Task statuses are set to stopped
-        - No tasks have any errors after force stopping
-        - Benchmark status is STOPPED
-        - No sandboxes exist in daytona from this run
+        Test cases:
+        - A five-task benchmark reaches an in-progress sandbox before the stop endpoint is called.
+        - The force stop endpoint returns success and leaves no active or error tasks.
+        - The benchmark status becomes STOPPED and no benchmark-labeled sandboxes remain.
         """
         # Max concurrency at 2 with 5 tasks
         example_benchmark_object.arguments.slice_str = ":5"

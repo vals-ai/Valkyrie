@@ -44,7 +44,12 @@ class TestUploadArtifactsAcrossImages:
         harness_config: HarnessConfig,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Run upload_agent_artifacts on all images bases and confirm that the agent can successfully be uploaded"""
+        """Verify agent artifact upload works across the supported Linux image families.
+
+        Test cases:
+        - The frozen benchmark contract zip is downloaded and extracted into each sandbox image.
+        - The temporary zip and excluded top-level contract.py file are not left behind after extraction.
+        """
 
         benchmark_id = f"test-benchmark-{uuid4().hex[:5]}"
 

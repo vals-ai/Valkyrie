@@ -64,11 +64,11 @@ class TestProvider:
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Verifies stale sandbox handles report the provider's generic not-found error.
+        """Verify deleted sandbox handles report the provider's SandboxNotFoundError.
 
         Test cases:
         - Provider lookup raises SandboxNotFoundError after delete.
-        - Stale sandbox exec, stream, upload, and download operations raise SandboxNotFoundError after delete.
+        - Stale sandbox exec, stream, upload, and download operations preserve SandboxNotFoundError after delete.
         """
         async with create_sandbox(
             sandbox_provider,
@@ -107,7 +107,7 @@ class TestProvider:
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Verifies deleting a sandbox during log streaming reports the provider's generic not-found error.
+        """Verify deleting a sandbox during provider command streaming reports not-found.
 
         Test cases:
         - The command stream starts returning output before deletion.
@@ -136,7 +136,7 @@ class TestProvider:
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Verifies list_sandboxes filters destroyed sandboxes.
+        """Verify list_sandboxes does not return a deleted sandbox.
 
         Test cases:
         - A live sandbox with a unique label appears in list_sandboxes.
@@ -166,7 +166,7 @@ class TestProvider:
         test_resources: Resources,
         random_sandbox_name: str,
     ) -> None:
-        """Verifies sandboxes that fail during image startup can still be deleted.
+        """Verify sandboxes that fail during image startup can still be deleted.
 
         Test cases:
         - A missing-image create leaves a provider-visible failed sandbox.

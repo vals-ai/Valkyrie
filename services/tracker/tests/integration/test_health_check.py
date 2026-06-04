@@ -9,12 +9,11 @@ client = TestClient(app)
 
 class TestHealthCheckIntegration:
     def test_health_check_with_database(self, postgres_engine: Engine, monkeypatch: pytest.MonkeyPatch):
-        """
-        Test health check with a real postgres database.
+        """Verify the health endpoint succeeds when the integration database is reachable.
 
-        Test Cases:
-            - Returns 200 OK when database is accessible
-            - Response contains expected format
+        Test cases:
+        - The endpoint returns 200 when check_database_connection uses the test Postgres engine.
+        - The response body matches the public health-check success payload.
         """
         import tracker.database.session as session_module
 
@@ -30,12 +29,11 @@ class TestHealthCheckIntegration:
         app.dependency_overrides.clear()
 
     def test_health_check_database_unavailable(self, monkeypatch: pytest.MonkeyPatch):
-        """
-        Test health check returns 503 when database is unavailable.
+        """Verify the health endpoint reports database connectivity failures.
 
-        Test Cases:
-            - Returns 503 Service Unavailable
-            - Response contains error detail
+        Test cases:
+        - The endpoint returns 503 when check_database_connection reports failure.
+        - The response body includes the public database-unavailable detail.
         """
         # Mock check_database_connection to return False (simulating DB down)
         monkeypatch.setattr("main.check_database_connection", lambda: False)
