@@ -1,17 +1,10 @@
-"""Stage-aware naming for the two-environment (prod/dev) CDK refactor.
+"""Stage-aware naming helper.
 
 prod  → every helper is the identity function, so `cdk synth -c stage=prod` is
         byte-identical to the pre-refactor `cdk synth`.
 dev   → stacks get a "Dev-" construct-id prefix; physical names get a "-dev"
         suffix; FQDNs get "-dev" on their first label.
 
-CONVENTION CONTRACT: benchmark-services-registry/infra/stage.py is a near-copy of
-this module (it adds an ssm() method) and its dev cross-repo lookups assume EXACTLY
-these dev names: VPC "Dev-SharedStack/AgenticHarnessVpc", cluster
-"AgenticHarnessCluster-dev", service-discovery namespace "local-dev" (tracker
-reachable at "tracker.local-dev"), SNS topic "agentic-harness-notifications-dev".
-The two repos share no code and this contract is comment-enforced only — keep them
-in sync; drift silently breaks dev discovery.
 """
 
 from __future__ import annotations
