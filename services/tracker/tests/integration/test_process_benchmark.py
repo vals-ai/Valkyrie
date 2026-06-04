@@ -1,4 +1,4 @@
-from asyncio import Semaphore, gather
+from asyncio import gather
 from collections.abc import Callable
 from sqlite3 import OperationalError
 from typing import Any
@@ -10,21 +10,18 @@ from sqlmodel import Session, select
 
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.aws.cloudwatch_logs import create_benchmark_log_group
-from tracker.aws.s3 import copy_agent_to_benchmark
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
-    EvaluationResult,
     Org,
     Task,
     TaskBreakdown,
     TaskStatus,
 )
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import process_benchmark, process_task, start_benchmark_request_to_benchmark
+from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
 
 _TASK_ID: str = "astropy__astropy-12907"
 _TASK_IDS: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
@@ -74,61 +71,6 @@ def _assert_task_breakdown_complete(task_breakdown: TaskBreakdown) -> None:
     assert task_breakdown.sandbox_run_duration is not None
 
 
-async def test_process_task(
-    contract: AgentContractRequest,
-    database_session: Session,
-    benchmark_service: BenchmarkServiceClient,
-    harness_config: HarnessConfig,
-    service_headers: dict[str, str],
-):
-    """Single task runs through the full pipeline and records task runtime details.
-
-    Test cases:
-    - The task finishes with one evaluation result and no captured task error.
-    - The task breakdown records each expected duration field.
-    """
-    benchmark, request = _create_benchmark(
-        contract, harness_config, database_session, service_headers, task_ids=[_TASK_ID]
-    )
-
-    task_row = Task(org_id=TEST_ORG_ID, task_id=_TASK_ID, benchmark=benchmark.id)
-    database_session.add(task_row)
-    database_session.commit()
-
-    # process_task expects the log group to already exist
-    create_benchmark_log_group(
-        str(benchmark.id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
-    )
-
-    # Need to copy agent inside subdir before we start the task
-    await copy_agent_to_benchmark(str(benchmark.id), contract.name, harness_config.aws, harness_config.s3_bucket)
-
-    await process_task(
-        task_row,
-        request,
-        benchmark_service,
-        benchmark.id,
-        _TASK_ID,
-        harness_config,
-        Org(id=TEST_ORG_ID, name="default"),
-        creation_semaphore=Semaphore(10),
-    )
-
-    database_session.refresh(task_row)
-    assert task_row.status == TaskStatus.FINISHED
-    assert task_row.error_message is None
-
-    evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).first()
-    assert evaluation is not None
-    assert evaluation.result is not None
-
-    # Task breakdown is tracked while the task runs
-    database_session.refresh(task_row)
-    task_breakdown = database_session.get(TaskBreakdown, task_row.task_breakdown)
-    assert task_breakdown is not None
-    _assert_task_breakdown_complete(task_breakdown)
-
-
 async def test_process_benchmark(
     contract: AgentContractRequest,
     database_session: Session,
@@ -139,7 +81,7 @@ async def test_process_benchmark(
 
     Test cases:
     - Every task finishes without a captured task error.
-    - Evaluation results and final evaluation exist for the completed benchmark.
+    - Evaluation results, task breakdowns, and final evaluation exist for the completed benchmark.
     """
     benchmark, request = _create_benchmark(
         contract, harness_config, database_session, service_headers, task_ids=_TASK_IDS
@@ -156,6 +98,10 @@ async def test_process_benchmark(
     assert len(tasks) == len(_TASK_IDS)
     assert all(task.status == TaskStatus.FINISHED for task in tasks)
     _assert_no_task_errors(benchmark, database_session)
+    for task in tasks:
+        task_breakdown = database_session.get(TaskBreakdown, task.task_breakdown)
+        assert task_breakdown is not None
+        _assert_task_breakdown_complete(task_breakdown)
 
     # Evaluation results exist for every task
     results = benchmark.fetch_evaluation_results(database_session)
