@@ -30,6 +30,20 @@ async def _wait_until_sandbox_not_found(
     pytest.fail(f"Sandbox {sandbox_id} was still found after delete")
 
 
+async def _wait_until_sandbox_listed(
+    sandbox_provider: SandboxProvider,
+    query: SandboxQuery,
+    sandbox_id: str,
+) -> None:
+    for _ in range(30):
+        listed_ids = [sandbox.id async for sandbox in sandbox_provider.list_sandboxes(query)]
+        if sandbox_id in listed_ids:
+            return
+        await asyncio.sleep(2)
+
+    pytest.fail(f"Sandbox {sandbox_id} was not listed before delete")
+
+
 async def _consume_command(sandbox: Sandbox) -> None:
     async for _ in sandbox.command("echo after-delete"):
         pass
@@ -139,8 +153,7 @@ class TestProvider:
             creation_semaphore,
             labels=labels,
         ) as sandbox:
-            listed_before_delete = [listed.id async for listed in sandbox_provider.list_sandboxes(query)]
-            assert sandbox.id in listed_before_delete
+            await _wait_until_sandbox_listed(sandbox_provider, query, sandbox.id)
 
         await _wait_until_sandbox_not_found(sandbox_provider, sandbox.id)
 

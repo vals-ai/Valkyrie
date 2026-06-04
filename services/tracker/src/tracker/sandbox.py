@@ -325,6 +325,8 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
     _set_sandbox_span_attributes(sandbox)
     try:
         return await sandbox.exec(command)
+    except SandboxNotFoundError:
+        raise
     except ProviderSandboxError as e:
         raise SandboxError(str(e)) from e
 
@@ -355,6 +357,8 @@ async def stream_command_output(
                 output.append(data)
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
+        except SandboxNotFoundError:
+            raise
         except ProviderSandboxError as e:
             raise SandboxError(str(e)) from e
 

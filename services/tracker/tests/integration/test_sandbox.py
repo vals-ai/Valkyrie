@@ -9,6 +9,7 @@ import boto3
 import pytest
 from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundError, SandboxProvider
 
+from tests.utils import random_task_id
 from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
@@ -20,7 +21,6 @@ from tracker.sandbox import (
     upload_agent_artifacts,
 )
 from tracker.types import AWSCredentials, HarnessConfig
-from tests.utils import random_task_id
 
 
 @pytest.fixture
@@ -270,7 +270,7 @@ class TestSandboxOperations:
             assert "STAGE_2" in output
             assert "STAGE_3" in output
 
-    async def test_stream_command_raises_on_sandbox_crash(
+    async def test_stream_command_raises_not_found_when_sandbox_is_deleted(
         self,
         sandbox_provider: SandboxProvider,
         test_resources: Resources,
@@ -278,7 +278,11 @@ class TestSandboxOperations:
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Test that a sandbox crash during execution is detected and raised."""
+        """Verify stream_command_output preserves deleted-sandbox errors.
+
+        Test cases:
+        - Deleting a sandbox during command streaming raises SandboxNotFoundError.
+        """
 
         async with create_sandbox(
             sandbox_provider,
@@ -292,7 +296,7 @@ class TestSandboxOperations:
                 await asyncio.sleep(2)
                 await sandbox_provider.delete_sandbox(sandbox.id)
 
-            with pytest.raises(SandboxError, match="crashed|health"):
+            with pytest.raises(SandboxNotFoundError):
                 await asyncio.gather(
                     stream_command_output(sandbox, "sleep 30", on_output=lambda _: None),
                     destroy_sandbox_after_delay(),
