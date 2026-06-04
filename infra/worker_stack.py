@@ -120,7 +120,7 @@ class WorkerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "WorkerLogGroup",
-                    log_group_name=WORKER_LOG_GROUP_NAME,
+                    log_group_name=stage.phys(WORKER_LOG_GROUP_NAME),
                     retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),

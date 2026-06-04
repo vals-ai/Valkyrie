@@ -15,11 +15,16 @@ from aws_cdk import (
 from constants import (
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
     SLACK_WORKSPACE_ID_ENV,
+    TRACKER_LOG_GROUP_NAME,
     VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV,
+    WORKER_LOG_GROUP_NAME,
     get_slack_notification_config,
 )
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
+from stage import DEV, PROD, Stage
+from tracker_stack import TrackerStack
+from worker_stack import WorkerStack
 
 TEST_ALERTS_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
@@ -56,6 +61,7 @@ def _has_logical_id_prefix(template: assertions.Template, resource_type: str, pr
 
 def _monitoring_template() -> assertions.Template:
     app = cdk.App()
+    stage = Stage(PROD)
     resources = cdk.Stack(
         app,
         "MonitoringTestResources",
@@ -107,6 +113,7 @@ def _monitoring_template() -> assertions.Template:
     monitoring = MonitoringStack(
         app,
         "MonitoringStack",
+        stage=stage,
         cluster=cluster,
         tracker_service=tracker_service,
         worker_service=worker_service,
@@ -122,13 +129,49 @@ def _monitoring_template() -> assertions.Template:
 
 def _shared_template() -> assertions.Template:
     app = cdk.App(context=SHARED_STACK_CONTEXT)
+    stage = Stage(PROD)
     shared = SharedStack(
         app,
         "SharedStack",
+        stage=stage,
         env=cdk.Environment(account="613431292675", region="us-east-1"),
     )
 
     return assertions.Template.from_stack(shared)
+
+
+def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions.Template]:
+    app = cdk.App(context=SHARED_STACK_CONTEXT)
+    stage = Stage(stage_name)
+    env = cdk.Environment(account="613431292675", region="us-east-1")
+    shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=env)
+    tracker = TrackerStack(
+        app,
+        stage.stack_id("TrackerStack"),
+        stage=stage,
+        vpc=shared.vpc,
+        cluster=shared.cluster,
+        namespace=shared.namespace,
+        hosted_zone=shared.hosted_zone,
+        bucket=shared.bucket,
+        redis_url=shared.redis_url,
+        env=env,
+    )
+    worker = WorkerStack(
+        app,
+        stage.stack_id("WorkerStack"),
+        stage=stage,
+        vpc=shared.vpc,
+        cluster=shared.cluster,
+        redis_url=shared.redis_url,
+        bucket=shared.bucket,
+        database=tracker.database,
+        db_credentials=tracker.db_credentials,
+        tracker_service=tracker.tracker_fargate_service,
+        env=env,
+    )
+
+    return assertions.Template.from_stack(tracker), assertions.Template.from_stack(worker)
 
 
 class MonitoringStackTest(unittest.TestCase):
@@ -220,6 +263,19 @@ class MonitoringStackTest(unittest.TestCase):
                 f"Missing: {SLACK_WORKSPACE_ID_ENV}",
             ):
                 get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV)
+
+    def test_dev_stage_suffixes_service_log_group_names(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            tracker_template, worker_template = _service_templates(DEV)
+
+        tracker_template.has_resource_properties(
+            "AWS::Logs::LogGroup",
+            {"LogGroupName": f"{TRACKER_LOG_GROUP_NAME}-dev"},
+        )
+        worker_template.has_resource_properties(
+            "AWS::Logs::LogGroup",
+            {"LogGroupName": f"{WORKER_LOG_GROUP_NAME}-dev"},
+        )
 
 
 if __name__ == "__main__":

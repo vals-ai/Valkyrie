@@ -171,7 +171,7 @@ class TrackerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "TrackerLogGroup",
-                    log_group_name=TRACKER_LOG_GROUP_NAME,
+                    log_group_name=stage.phys(TRACKER_LOG_GROUP_NAME),
                     retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
