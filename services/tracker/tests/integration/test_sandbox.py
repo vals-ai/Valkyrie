@@ -321,15 +321,24 @@ class TestSandboxOperations:
             test_resources,
             creation_semaphore,
         ) as sandbox:
+            ready = asyncio.Event()
 
-            async def destroy_sandbox_after_delay() -> None:
-                await asyncio.sleep(2)
+            def mark_ready(message: str) -> None:
+                if "stream-ready" in message:
+                    ready.set()
+
+            stream_task = asyncio.create_task(
+                stream_command_output(sandbox, "echo stream-ready && sleep 30", on_output=mark_ready)
+            )
+
+            async def destroy_sandbox_after_stream_starts() -> None:
+                await asyncio.wait_for(ready.wait(), timeout=30)
                 await sandbox_provider.delete_sandbox(sandbox.id)
 
             with pytest.raises(SandboxNotFoundError):
                 await asyncio.gather(
-                    stream_command_output(sandbox, "sleep 30", on_output=lambda _: None),
-                    destroy_sandbox_after_delay(),
+                    stream_task,
+                    destroy_sandbox_after_stream_starts(),
                 )
 
     async def test_stream_command_raises_on_nonzero_exit(
