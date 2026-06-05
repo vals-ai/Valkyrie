@@ -34,10 +34,15 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
+TEST_AWS_ACCOUNT = os.environ.get("CDK_DEFAULT_ACCOUNT", "123456789012")
+TEST_AWS_REGION = os.environ.get("CDK_DEFAULT_REGION", "us-east-1")
 SHARED_STACK_CONTEXT = {
-    "availability-zones:account=613431292675:region=us-east-1": ["us-east-1a", "us-east-1b"],
-    "hosted-zone:account=613431292675:domainName=vals.ai:region=us-east-1": {
-        "Id": "/hostedzone/Z047985721WA50ZRLCDNC",
+    f"availability-zones:account={TEST_AWS_ACCOUNT}:region={TEST_AWS_REGION}": [
+        f"{TEST_AWS_REGION}a",
+        f"{TEST_AWS_REGION}b",
+    ],
+    f"hosted-zone:account={TEST_AWS_ACCOUNT}:domainName=vals.ai:region={TEST_AWS_REGION}": {
+        "Id": "/hostedzone/ZTESTVALKYRIE",
         "Name": "vals.ai.",
     },
 }
@@ -134,7 +139,7 @@ def _shared_template() -> assertions.Template:
         app,
         "SharedStack",
         stage=stage,
-        env=cdk.Environment(account="613431292675", region="us-east-1"),
+        env=cdk.Environment(account=TEST_AWS_ACCOUNT, region=TEST_AWS_REGION),
     )
 
     return assertions.Template.from_stack(shared)
@@ -143,7 +148,7 @@ def _shared_template() -> assertions.Template:
 def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions.Template]:
     app = cdk.App(context=SHARED_STACK_CONTEXT)
     stage = Stage(stage_name)
-    env = cdk.Environment(account="613431292675", region="us-east-1")
+    env = cdk.Environment(account=TEST_AWS_ACCOUNT, region=TEST_AWS_REGION)
     shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=env)
     tracker = TrackerStack(
         app,
