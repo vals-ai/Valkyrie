@@ -28,6 +28,7 @@ from constants import (
     VPC_NAT_GATEWAYS,
     get_slack_notification_config,
 )
+import platform_contract
 from constructs import Construct
 from stage import Stage
 
@@ -84,6 +85,18 @@ class SharedStack(Stack):
             "AgenticHarnessNamespace",
             name=self.stage.phys(NAMESPACE),
             vpc=self.vpc,
+        )
+
+        # Advertise platform handles so co-deployed benchmark services can discover
+        # this shared infra without referencing Valkyrie's internal stack names.
+        platform_contract.tag_shared_vpc(self.vpc, self.stage.name)
+        platform_contract.publish_shared_handles(
+            self,
+            self.stage.name,
+            cluster_name=self.cluster.cluster_name,
+            namespace_name=self.namespace.namespace_name,
+            namespace_id=self.namespace.namespace_id,
+            namespace_arn=self.namespace.namespace_arn,
         )
 
         # Route53 hosted zone for vals.ai (shared by all services)

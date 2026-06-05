@@ -42,6 +42,7 @@ from constants import (
     TRACKER_SCALING_CPU_PERCENT,
     VPC_CIDR,
 )
+import platform_contract
 from constructs import Construct
 from stage import Stage
 
@@ -219,6 +220,13 @@ class TrackerStack(Stack):
 
         # Expose the inner FargateService for cross-stack security group rules
         self.tracker_fargate_service = self.service.service
+
+        # Advertise the tracker/worker security group for co-deployed services.
+        platform_contract.publish_tracker_security_group(
+            self,
+            stage.name,
+            self.tracker_fargate_service.connections.security_groups[0].security_group_id,
+        )
 
         # Cloud Map registration for internal access.
         # Intentionally unstaged: dev gets its own namespace, and benchmark
