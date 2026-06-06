@@ -71,6 +71,7 @@ from tracker.utils import (
     create_benchmark_service_client,
     create_final_view,
     fetch_filtered_benchmark_rows,
+    fetch_final_score_inputs,
     fetch_harness_config,
     force_stop_sandboxes,
     initiate_stop_benchmark,
@@ -472,10 +473,13 @@ async def retrieve_results(
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
         final_view.task_errors = _filter_task_map(final_view.task_errors)
 
-        # Missing/errored tasks are passed to the benchmark service as {task_id: None}.
-        scored_results = dict(final_view.evaluation_results or {})
-        for task_id in final_view.task_errors or {}:
-            scored_results.setdefault(task_id, None)
+        # Include every requested task with its result or None, so tasks without a result
+        # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
+        scored_results = {
+            task_id: result
+            for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
+            if task_id in task_ids_set
+        }
 
         effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
         benchmark_service = benchmark_row.benchmark_service(

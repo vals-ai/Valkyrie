@@ -451,9 +451,12 @@ class TestFastapiServer:
 
         # Test case 9. task_ids subset filters evaluation_results and recomputes final_score
         observed_headers: dict[str, str] = {}
+        observed_results: dict[str, Any] = {}
 
         async def _mock_final_score(client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
             observed_headers.update(client._headers)
+            observed_results.clear()
+            observed_results.update(kwargs["evaluation_results"])
             ids = list(kwargs["evaluation_results"].keys())
             return FinalScoreResponse(tasks_evaluated=ids, final_score=float(len(ids)), metadata={})
 
@@ -468,6 +471,19 @@ class TestFastapiServer:
         assert set(body["evaluation_results"]) == {"task_1", "task_3"}
         assert body["final_evaluation"]["final_score"] == 2.0
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
+
+        # Test case 10. A requested task without a result (stopped/errored/missing) is still
+        # scored: it is passed to the benchmark service as {task_id: None}, contributing to
+        # the denominator rather than being silently dropped from the subset.
+        response = client.get(
+            "/retrieve-results",
+            params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1"), ("task_ids", "task_11")],
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+        assert response.status_code == 200
+        assert observed_results.keys() == {"task_1", "task_11"}
+        assert observed_results["task_11"] is None
+        assert response.json()["final_evaluation"]["final_score"] == 2.0
 
     async def test_benchmark_error_handling(
         self,
