@@ -9,6 +9,7 @@ Create the daytona key with the correct permissions
 1. [Sign up](https://app.daytona.io/)
 2. Navigate to the [keys section](https://app.daytona.io/dashboard/keys)
 3. Create the api key ensuring that it has full access to `Sandboxes` and `Snapshots` (Read,  write, delete)
+4. Find what target you would like to use, options can be found under [shared regions](https://www.daytona.io/docs/regions#shared-regions)
 
 Upload that key to AWS secrets manager using the following format in plain text
 
