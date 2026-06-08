@@ -118,8 +118,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
             lambda_function=request.lambda_function,
             dataset=request.dataset,
             sandbox_provider=request.sandbox_provider,
-            sandbox_provider_secret_name=request.sandbox_provider_secret_name
-            or request.harness_config.sandbox_provider_secret_name,
+            sandbox_provider_secret_name=request.harness_config.sandbox_provider_secret_name,
         ),
         started_by_id=run_starter.access_key_id,
         started_by_email=run_starter.email,
@@ -419,6 +418,7 @@ async def process_task(
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
+
     def on_eval_resume_state(state: dict[str, Any]) -> None:
         save_eval_resume_state(task_row.id, org, state)
 

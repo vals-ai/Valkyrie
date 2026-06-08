@@ -624,9 +624,7 @@ async def retry_or_resume_benchmark(
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(
-            service_headers=effective_service_headers
-        ),
+        benchmark_service=benchmark_row.benchmark_service(service_headers=effective_service_headers),
         retry=retry,
         retry_mode=retry_mode,
         rerun_task_ids=task_ids,

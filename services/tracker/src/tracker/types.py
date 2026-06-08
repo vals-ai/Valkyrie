@@ -20,6 +20,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 
+
 class BenchmarkDetails(BaseModel):
     status: BenchmarkStatus
     started_at: datetime
