@@ -304,7 +304,7 @@ async def fetch_benchmark_tasks(
     try:
         benchmark_service = create_benchmark_service_client(
             url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
-            daytona_secret_name=harness_config.daytona_secret_name,
+            sandbox_provider_secret_name=harness_config.provider_secret_name,
             aws=harness_config.aws,
             service_headers=forward_tracker_api_key(request.service_headers, http_request.headers.get("x-api-key")),
         )
@@ -483,7 +483,7 @@ async def retrieve_results(
 
         effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
         benchmark_service = benchmark_row.benchmark_service(
-            harness_config.daytona_secret_name,
+            harness_config.provider_secret_name,
             harness_config.aws,
             service_headers=effective_service_headers,
         )
@@ -567,7 +567,7 @@ async def stop_benchmark(
     await initiate_stop_benchmark(benchmark_row, session, force, org)
 
     if force:
-        await force_stop_sandboxes(benchmark_row, session, harness_config.daytona_secret_name, harness_config.aws, org)
+        await force_stop_sandboxes(benchmark_row, session, harness_config.provider_secret_name, harness_config.aws, org)
 
     return StopBenchmarkResponse(
         status="success",
@@ -629,7 +629,7 @@ async def retry_or_resume_benchmark(
         benchmark_row=benchmark_row,
         session=session,
         benchmark_service=benchmark_row.benchmark_service(
-            harness_config.daytona_secret_name, harness_config.aws, service_headers=effective_service_headers
+            harness_config.provider_secret_name, harness_config.aws, service_headers=effective_service_headers
         ),
         retry=retry,
         retry_mode=retry_mode,

@@ -161,6 +161,7 @@ class BenchmarkArguments(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    sandbox_provider_secret_name: str | None = None
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -272,6 +273,7 @@ class Benchmark(SQLModel, table=True):
             lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
             harness_config=harness_config,
+            sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,
@@ -279,14 +281,14 @@ class Benchmark(SQLModel, table=True):
         )
 
     def benchmark_service(
-        self, daytona_secret_name: str, aws: "AWSCredentials", service_headers: dict[str, str] | None = None
+        self, sandbox_provider_secret_name: str, aws: "AWSCredentials", service_headers: dict[str, str] | None = None
     ) -> "BenchmarkServiceClient":
         from tracker.config import create_benchmark_service_url
         from tracker.utils import create_benchmark_service_client
 
         url = self.custom_benchmark_service or create_benchmark_service_url(self.name)
         return create_benchmark_service_client(
-            url=url, daytona_secret_name=daytona_secret_name, aws=aws, service_headers=service_headers
+            url=url, sandbox_provider_secret_name=sandbox_provider_secret_name, aws=aws, service_headers=service_headers
         )
 
     @property

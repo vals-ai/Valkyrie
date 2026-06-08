@@ -4,6 +4,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
+from benchmark_service import DaytonaProviderConfig, ModalProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from httpx._models import Response
@@ -27,10 +28,11 @@ from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkR
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
-    fetch_daytona_headers,
     fetch_benchmark_row,
-    fetch_final_score_inputs,
+    fetch_daytona_headers,
     fetch_filtered_benchmark_rows,
+    fetch_final_score_inputs,
+    fetch_sandbox_provider_config,
     has_runnable_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
@@ -59,6 +61,29 @@ class TestBenchmarkUtils:
             "x-api-url": "url",
             "x-target": "target",
         }
+
+    def test_fetch_sandbox_provider_config_is_provider_neutral(
+        self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Sandbox provider secrets should be parsed through create-benchmark-service.
+
+        Test cases:
+        - A Daytona-shaped provider secret validates to DaytonaProviderConfig.
+        - A Modal-shaped provider secret validates to ModalProviderConfig without tracker provider logic.
+        """
+        secrets = {
+            "daytona-secret": {"type": "daytona", "api_key": "key", "api_url": "url", "target": "target"},
+            "modal-secret": {"type": "modal"},
+        }
+
+        monkeypatch.setattr("tracker.utils.fetch_aws_secret", lambda name, _aws: secrets[name])
+
+        assert fetch_sandbox_provider_config("daytona-secret", harness_config.aws) == DaytonaProviderConfig(
+            api_key="key",
+            api_url="url",
+            target="target",
+        )
+        assert fetch_sandbox_provider_config("modal-secret", harness_config.aws) == ModalProviderConfig()
 
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
@@ -287,6 +312,7 @@ class TestBenchmarkUtils:
             task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
             slice_str=":10",
             harness_config=harness_config,
+            sandbox_provider_secret_name="modal-secret",
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_starter)

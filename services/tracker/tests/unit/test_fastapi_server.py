@@ -138,6 +138,7 @@ class TestFastapiServer:
             concurrency=request.concurrency,
             task_ids=None,
             slice_str=None,
+            sandbox_provider_secret_name=harness_config.provider_secret_name,
         )
 
         # Test case 3. Start timestamp is in UTC timezone and matches the benchmark row

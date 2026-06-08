@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -43,7 +43,18 @@ class HarnessConfig(BaseModel):
     s3_bucket: str
     log_group: str
     log_retention_policy: int
-    daytona_secret_name: str
+    sandbox_provider_secret_name: str | None = None
+    daytona_secret_name: str | None = None
+
+    @model_validator(mode="after")
+    def require_provider_secret_name(self) -> "HarnessConfig":
+        if self.sandbox_provider_secret_name is None and self.daytona_secret_name is None:
+            raise ValueError("sandbox_provider_secret_name is required")
+        return self
+
+    @property
+    def provider_secret_name(self) -> str:
+        return self.sandbox_provider_secret_name or self.daytona_secret_name or ""
 
 
 class StartBenchmarkRequest(BaseModel):
@@ -57,6 +68,7 @@ class StartBenchmarkRequest(BaseModel):
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
+    sandbox_provider_secret_name: str | None = None
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
 
@@ -68,7 +80,7 @@ class StartBenchmarkRequest(BaseModel):
         benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
         return create_benchmark_service_client(
             url=benchmark_service_url,
-            daytona_secret_name=self.harness_config.daytona_secret_name,
+            sandbox_provider_secret_name=self.sandbox_provider_secret_name or self.harness_config.provider_secret_name,
             aws=self.harness_config.aws,
             service_headers=self.service_headers,
         )
