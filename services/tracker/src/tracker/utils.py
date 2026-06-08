@@ -469,10 +469,7 @@ async def process_task(
                 raise e from e
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
-        sandbox_provider = cast(
-            SandboxProvider,
-            cast(Any, benchmark_service).get_sandbox_provider(start_benchmark_request.sandbox_provider),
-        )
+        sandbox_provider = benchmark_service.get_sandbox_provider(start_benchmark_request.sandbox_provider)
 
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
@@ -525,7 +522,7 @@ async def process_task(
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 last_log_time = time.monotonic()
-                _ = await cast(Any, benchmark_service).setup_task(
+                _ = await benchmark_service.setup_task(
                     task_row.task_id,
                     sandbox.id,
                     on_message=log_output,
@@ -588,16 +585,13 @@ async def process_task(
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 last_log_time = time.monotonic()
-                evaluation_result = cast(
-                    dict[str, Any],
-                    await cast(Any, benchmark_service).evaluate_instance(
-                        task_row.task_id,
-                        sandbox.id,
-                        on_message=log_output,
-                        on_eval_resume_state=on_eval_resume_state,
-                        dataset=start_benchmark_request.dataset,
-                        sandbox_provider=start_benchmark_request.sandbox_provider,
-                    ),
+                evaluation_result = await benchmark_service.evaluate_instance(
+                    task_row.task_id,
+                    sandbox.id,
+                    on_message=log_output,
+                    on_eval_resume_state=on_eval_resume_state,
+                    dataset=start_benchmark_request.dataset,
+                    sandbox_provider=start_benchmark_request.sandbox_provider,
                 )
 
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
@@ -854,12 +848,9 @@ async def process_benchmark(
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
     harness_config: HarnessConfig = start_benchmark_request.harness_config
-    sandbox_provider_secret_name = (
-        start_benchmark_request.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name
-    )
     service_headers = {
         **start_benchmark_request.service_headers,
-        **fetch_sandbox_provider_headers(sandbox_provider_secret_name, harness_config.aws),
+        **fetch_sandbox_provider_headers(harness_config.sandbox_provider_secret_name, harness_config.aws),
     }
     benchmark_service_url = start_benchmark_request.custom_benchmark_service or create_benchmark_service_url(
         start_benchmark_request.benchmark_name
@@ -1340,7 +1331,12 @@ async def sandbox_generator(benchmark_row: Benchmark, provider: SandboxProvider)
 
 
 async def force_stop_sandboxes(
-    benchmark_row: Benchmark, session: Session, sandbox_provider_secret_name: str, aws: AWSCredentials, org: Org
+    benchmark_row: Benchmark,
+    session: Session,
+    sandbox_provider_secret_name: str,
+    aws: AWSCredentials,
+    org: Org,
+    sandbox_provider: str = "daytona",
 ) -> None:
     """
     Stops and deletes all sandboxes which are in progress or evaluating.
@@ -1352,7 +1348,7 @@ async def force_stop_sandboxes(
     benchmark_service = benchmark_row.benchmark_service(
         service_headers=fetch_sandbox_provider_headers(sandbox_provider_secret_name, aws)
     )
-    provider = cast(SandboxProvider, cast(Any, benchmark_service).get_sandbox_provider("daytona"))
+    provider = benchmark_service.get_sandbox_provider(sandbox_provider)
 
     # Update all tasks being processed to stopped
     session.exec(
