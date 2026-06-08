@@ -20,7 +20,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 
-
 class BenchmarkDetails(BaseModel):
     status: BenchmarkStatus
     started_at: datetime
@@ -57,6 +56,7 @@ class StartBenchmarkRequest(BaseModel):
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
+    sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None

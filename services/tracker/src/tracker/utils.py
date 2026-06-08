@@ -16,11 +16,9 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service import (
-    DaytonaProviderConfig,
     Sandbox,
     SandboxNotFoundError,
     SandboxProvider,
-    SandboxProviderConfig,
     SandboxQuery,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
@@ -44,7 +42,7 @@ from tracker.aws.s3 import (
     upload_to_s3,
 )
 from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
-from tracker.config import ENVIRONMENT, broker
+from tracker.config import ENVIRONMENT, broker, create_benchmark_service_url
 from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
@@ -84,22 +82,13 @@ _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
-def fetch_sandbox_provider_config(secret_name: str, aws: AWSCredentials) -> SandboxProviderConfig:
-    """Fetch and validate the configured Daytona provider secret."""
+def fetch_sandbox_provider_headers(secret_name: str, aws: AWSCredentials) -> dict[str, str]:
+    """Fetch configured sandbox provider secret values as benchmark-service headers."""
     secret = fetch_aws_secret(secret_name, aws)
     if not isinstance(secret, dict):
         raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
 
-    required_keys = {"DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"}
-    missing_keys = required_keys - set(secret)
-    if missing_keys:
-        raise TrackerServiceError(f"Missing following keys to use daytona {', '.join(missing_keys)}")
-
-    return DaytonaProviderConfig(
-        api_key=str(secret["DAYTONA_API_KEY"]),
-        api_url=str(secret["DAYTONA_API_URL"]),
-        target=str(secret["DAYTONA_TARGET"]),
-    )
+    return {str(key): str(value) for key, value in secret.items()}
 
 
 def create_benchmark_service_client(
@@ -128,6 +117,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,
             dataset=request.dataset,
+            sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=request.sandbox_provider_secret_name
             or request.harness_config.sandbox_provider_secret_name,
         ),
@@ -429,8 +419,6 @@ async def process_task(
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
-    sandbox_provider: SandboxProvider | None = None
-
     def on_eval_resume_state(state: dict[str, Any]) -> None:
         save_eval_resume_state(task_row.id, org, state)
 
@@ -481,11 +469,10 @@ async def process_task(
                 raise e from e
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
-        sandbox_provider_config = fetch_sandbox_provider_config(
-            start_benchmark_request.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
+        sandbox_provider = cast(
+            SandboxProvider,
+            cast(Any, benchmark_service).get_sandbox_provider(start_benchmark_request.sandbox_provider),
         )
-        sandbox_provider = sandbox_provider_config.create_provider()
 
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
@@ -538,12 +525,12 @@ async def process_task(
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 last_log_time = time.monotonic()
-                _ = await benchmark_service.setup_task(
+                _ = await cast(Any, benchmark_service).setup_task(
                     task_row.task_id,
                     sandbox.id,
                     on_message=log_output,
                     dataset=start_benchmark_request.dataset,
-                    sandbox_provider=sandbox_provider_config,
+                    sandbox_provider=start_benchmark_request.sandbox_provider,
                 )
 
                 # Force flush the logs if anything has been buffered
@@ -601,13 +588,16 @@ async def process_task(
                 logger.info(f"Evaluating agent {start_benchmark_request.contract.name} in sandbox {sandbox.name}")
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 last_log_time = time.monotonic()
-                evaluation_result = await benchmark_service.evaluate_instance(
-                    task_row.task_id,
-                    sandbox.id,
-                    on_message=log_output,
-                    on_eval_resume_state=on_eval_resume_state,
-                    dataset=start_benchmark_request.dataset,
-                    sandbox_provider=sandbox_provider_config,
+                evaluation_result = cast(
+                    dict[str, Any],
+                    await cast(Any, benchmark_service).evaluate_instance(
+                        task_row.task_id,
+                        sandbox.id,
+                        on_message=log_output,
+                        on_eval_resume_state=on_eval_resume_state,
+                        dataset=start_benchmark_request.dataset,
+                        sandbox_provider=start_benchmark_request.sandbox_provider,
+                    ),
                 )
 
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
@@ -733,8 +723,6 @@ async def process_task(
 
         return {task_id: None}
     finally:
-        if sandbox_provider is not None:
-            await sandbox_provider.close()
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
             await flush_task
@@ -865,8 +853,18 @@ async def process_benchmark(
     # Was serialized to make it compatible with the broker
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
-    benchmark_service = start_benchmark_request.benchmark_service
     harness_config: HarnessConfig = start_benchmark_request.harness_config
+    sandbox_provider_secret_name = (
+        start_benchmark_request.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name
+    )
+    service_headers = {
+        **start_benchmark_request.service_headers,
+        **fetch_sandbox_provider_headers(sandbox_provider_secret_name, harness_config.aws),
+    }
+    benchmark_service_url = start_benchmark_request.custom_benchmark_service or create_benchmark_service_url(
+        start_benchmark_request.benchmark_name
+    )
+    benchmark_service = create_benchmark_service_client(benchmark_service_url, service_headers=service_headers)
 
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
@@ -1351,7 +1349,10 @@ async def force_stop_sandboxes(
     Raises:
         TrackerServiceError: If there are any errors stopping the sandboxes
     """
-    provider = fetch_sandbox_provider_config(sandbox_provider_secret_name, aws).create_provider()
+    benchmark_service = benchmark_row.benchmark_service(
+        service_headers=fetch_sandbox_provider_headers(sandbox_provider_secret_name, aws)
+    )
+    provider = cast(SandboxProvider, cast(Any, benchmark_service).get_sandbox_provider("daytona"))
 
     # Update all tasks being processed to stopped
     session.exec(
@@ -1371,7 +1372,7 @@ async def force_stop_sandboxes(
             result = await stop_sandbox(sandbox, provider)
             results[sandbox.name] = result
     finally:
-        await provider.close()
+        await benchmark_service.close()
 
     error_message: str = "\n".join(
         f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message

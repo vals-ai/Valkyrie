@@ -160,6 +160,7 @@ class BenchmarkArguments(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
+    sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
 
 
@@ -272,6 +273,7 @@ class Benchmark(SQLModel, table=True):
             lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
             harness_config=harness_config,
+            sandbox_provider=self.arguments.sandbox_provider,
             sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,

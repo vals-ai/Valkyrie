@@ -4,7 +4,6 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
-from benchmark_service import DaytonaProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from httpx._models import Response
@@ -31,7 +30,7 @@ from tracker.utils import (
     fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
-    fetch_sandbox_provider_config,
+    fetch_sandbox_provider_headers,
     has_runnable_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
@@ -42,29 +41,32 @@ class TestBenchmarkUtils:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
-    def test_fetch_sandbox_provider_config_uses_daytona_secret(
+    def test_fetch_sandbox_provider_headers_forwards_secret_values(
         self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Sandbox provider config should be derived from the configured Daytona secret.
+        """Sandbox provider headers should forward selected secret values without provider parsing.
 
         Test cases:
-        - A Daytona AWS secret validates to DaytonaProviderConfig.
+        - A selected AWS secret object becomes string-valued headers.
+        - Provider-specific validation is left to create-benchmark-service.
         """
         secrets = {
-            "daytona-secret": {
+            "provider-secret": {
                 "DAYTONA_API_KEY": "key",
                 "DAYTONA_API_URL": "url",
                 "DAYTONA_TARGET": "target",
+                "RETRY_LIMIT": 3,
             },
         }
 
         monkeypatch.setattr("tracker.utils.fetch_aws_secret", lambda name, _aws: secrets[name])
 
-        assert fetch_sandbox_provider_config("daytona-secret", harness_config.aws) == DaytonaProviderConfig(
-            api_key="key",
-            api_url="url",
-            target="target",
-        )
+        assert fetch_sandbox_provider_headers("provider-secret", harness_config.aws) == {
+            "DAYTONA_API_KEY": "key",
+            "DAYTONA_API_URL": "url",
+            "DAYTONA_TARGET": "target",
+            "RETRY_LIMIT": "3",
+        }
 
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any

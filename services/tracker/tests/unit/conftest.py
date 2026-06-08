@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
@@ -141,7 +141,11 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=[])
 
+    def _mock_get_sandbox_provider(*_args: Any, **_kwargs: Any) -> Mock:
+        return Mock()
+
     monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
+    monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", _mock_get_sandbox_provider)
     monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
 

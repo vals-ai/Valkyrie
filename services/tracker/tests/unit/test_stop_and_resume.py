@@ -798,12 +798,8 @@ class TestStopAndResume:
 
         mock_provider = Mock()
         mock_provider.list_sandboxes = _empty_list_sandboxes
-        mock_provider.close = AsyncMock()
-        mock_provider_config = Mock()
-        mock_provider_config.create_provider.return_value = mock_provider
-        monkeypatch.setattr(
-            "tracker.utils.fetch_sandbox_provider_config", lambda *_args, **_kwargs: mock_provider_config
-        )
+        monkeypatch.setattr("tracker.utils.fetch_sandbox_provider_headers", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", lambda *_args, **_kwargs: mock_provider)
 
         # Force stopping the sandboxes results in the benchmark row being stopped
         await force_stop_sandboxes(
