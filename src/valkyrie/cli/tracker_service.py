@@ -213,15 +213,7 @@ class TrackerService:
         provider_items = cast(dict[object, object], raw_providers) if isinstance(raw_providers, dict) else {}
         providers = {str(name): str(secret_name) for name, secret_name in provider_items.items()}
         if providers:
-            if provider is not None:
-                secret_name = providers.get(provider)
-                if secret_name is None:
-                    configured = ", ".join(providers)
-                    raise TrackerServiceError(f"Unknown sandbox provider '{provider}'. Configured providers: {configured}")
-                return secret_name
-
-            first_secret = next(iter(providers.values()))
-            return first_secret
+            return providers[self._sandbox_provider_name(provider)]
 
         if provider is not None:
             raise TrackerServiceError(
@@ -235,6 +227,24 @@ class TrackerService:
                 "Missing sandbox provider config. Run `valkyrie config provider set <provider> <secret-name>`."
             )
         return secret_name
+
+    def _sandbox_provider_name(self, provider: str | None = None) -> str:
+        raw_providers = self._config.get("sandbox_providers")
+        provider_items = cast(dict[object, object], raw_providers) if isinstance(raw_providers, dict) else {}
+        providers = {str(name): str(secret_name) for name, secret_name in provider_items.items()}
+        if providers:
+            if provider is None:
+                return next(iter(providers))
+            if provider in providers:
+                return provider
+            configured = ", ".join(providers)
+            raise TrackerServiceError(f"Unknown sandbox provider '{provider}'. Configured providers: {configured}")
+
+        if provider is not None:
+            raise TrackerServiceError(
+                f"Unknown sandbox provider '{provider}'. Configure it with `valkyrie config provider set`."
+            )
+        return "daytona"
 
     def _build_harness_config_payload(self, provider: str | None = None) -> dict[str, Any]:
         """Build the Valkyrie config in a way that can be packed into a object"""
@@ -317,6 +327,7 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
+            provider_name = self._sandbox_provider_name(provider)
             provider_secret_name = self._sandbox_provider_secret_name(provider)
             payload = StartBenchmarkRequest(
                 contract=contract,
@@ -331,6 +342,7 @@ class TrackerService:
                 if not ignore_custom_services
                 else None,
                 service_headers=service_headers or {},
+                sandbox_provider=provider_name,
                 sandbox_provider_secret_name=provider_secret_name,
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,

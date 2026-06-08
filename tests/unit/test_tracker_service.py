@@ -213,10 +213,56 @@ def test_start_benchmark_uses_runtime_provider_override(tmp_path: Path, monkeypa
     )
 
     assert client.json is not None
+    assert client.json["sandbox_provider"] == "modal"
     assert client.json["sandbox_provider_secret_name"] == "ModalSecrets"
     harness_config = client.json["harness_config"]
     assert isinstance(harness_config, dict)
     assert harness_config["sandbox_provider_secret_name"] == "ModalSecrets"
+
+
+def test_start_benchmark_allows_configured_provider_names_without_tracker_enum(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provider names should be validated by create-benchmark-service, not tracker.
+
+    Test cases:
+    - A provider configured in Valkyrie is forwarded in the request body.
+    - Tracker does not need code changes for a newly configured provider name.
+    """
+    client = FakeClient()
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "AWS_ACCESS_KEY_ID": "aws-key",
+                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "AWS_DEFAULT_REGION": "us-east-1",
+                "S3_BUCKET": "bucket",
+                "sandbox_providers": {"future": "FutureSecrets"},
+                "LOG_GROUP": "benchmarks",
+                "LOG_RETENTION_POLICY": 365,
+            },
+            sort_keys=False,
+        )
+    )
+
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", lambda **_kwargs: client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+        provider="future",
+    )
+
+    assert client.json is not None
+    assert client.json["sandbox_provider"] == "future"
+    assert client.json["sandbox_provider_secret_name"] == "FutureSecrets"
 
 
 def test_config_provider_commands_manage_named_provider_secrets(

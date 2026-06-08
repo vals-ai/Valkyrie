@@ -569,7 +569,12 @@ async def stop_benchmark(
 
     if force:
         await force_stop_sandboxes(
-            benchmark_row, session, harness_config.sandbox_provider_secret_name, harness_config.aws, org
+            benchmark_row,
+            session,
+            harness_config.sandbox_provider_secret_name,
+            harness_config.aws,
+            org,
+            sandbox_provider=benchmark_row.arguments.sandbox_provider,
         )
 
     return StopBenchmarkResponse(
