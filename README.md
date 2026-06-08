@@ -17,7 +17,7 @@ Valkyrie supports **hosted** and **self-hosted** modes.
 Both modes require you to provide certain credentials and configuration:  
 - AWS API Key: Authentication for an AWS account with S3, CloudWatch, and Secrets Manager access (to store benchmarking logs and results)
 - S3 Bucket Name: The S3 bucket to be used for storing benchmark artifacts and agents
-- Daytona API Key: API key for sandbox provider (Daytona). [Setup docs](docs/PROVIDER.md)
+- Sandbox provider config: AWS Secrets Manager entry for the sandbox provider. [Setup docs](docs/PROVIDER.md)
 - **Hosted mode only:** Vals API Key
 
 See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for more details.
