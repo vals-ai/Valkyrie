@@ -86,7 +86,7 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
     "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
     "AWS_DEFAULT_REGION": None,  # What region your secrets are in
     "S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
-    "DAYTONA_SECRET_NAME": None,  # AWS Secrets Manager name for Daytona credentials
+    "SANDBOX_PROVIDER_SECRET_NAME": None,  # AWS Secrets Manager name for sandbox provider config
     "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
     "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
 }

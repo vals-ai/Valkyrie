@@ -40,8 +40,8 @@ _REQUIRED_CONFIG_KEYS = {
     "AWS_SECRET_ACCESS_KEY",
     "AWS_DEFAULT_REGION",
     "S3_BUCKET",
-    "DAYTONA_SECRET_NAME",
 }
+_PROVIDER_SECRET_KEYS = {"DAYTONA_SECRET_NAME", "SANDBOX_PROVIDER_SECRET_NAME"}
 
 
 def _response_error_detail(response: Response) -> Any:
@@ -180,6 +180,8 @@ class TrackerService:
             harness_config: dict[str, str] = yaml.safe_load(f) or {}
 
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
+        if not (_PROVIDER_SECRET_KEYS & harness_config.keys()):
+            missing.add("SANDBOX_PROVIDER_SECRET_NAME")
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
@@ -214,7 +216,8 @@ class TrackerService:
             "s3_bucket": flat["s3_bucket"],
             "log_group": flat["log_group"],
             "log_retention_policy": int(flat["log_retention_policy"]),
-            "daytona_secret_name": flat["daytona_secret_name"],
+            "sandbox_provider_secret_name": flat.get("sandbox_provider_secret_name") or flat.get("daytona_secret_name"),
+            "daytona_secret_name": flat.get("daytona_secret_name"),
         }
 
     def health_check(self) -> Response:
