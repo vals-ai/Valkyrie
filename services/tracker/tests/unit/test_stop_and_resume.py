@@ -195,7 +195,7 @@ class TestStopAndResume:
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
+            benchmark_service=benchmark_row.benchmark_service(),
             retry=False,
             retry_mode=retry_mode,
             rerun_task_ids=[],
@@ -226,7 +226,7 @@ class TestStopAndResume:
         verified_task_ids = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
-            benchmark_service=benchmark_row.benchmark_service(harness_config.daytona_secret_name, harness_config.aws),
+            benchmark_service=benchmark_row.benchmark_service(),
             retry=False,
             retry_mode=RetryMode.AUTO,
             rerun_task_ids=["task_1", "task_2"],
@@ -807,7 +807,11 @@ class TestStopAndResume:
 
         # Force stopping the sandboxes results in the benchmark row being stopped
         await force_stop_sandboxes(
-            benchmark_row, database_session, harness_config.daytona_secret_name, harness_config.aws, self._test_org
+            benchmark_row,
+            database_session,
+            harness_config.sandbox_provider_secret_name,
+            harness_config.aws,
+            self._test_org,
         )
 
         database_session.refresh(benchmark_row)

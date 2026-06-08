@@ -1,11 +1,9 @@
 import time
 from asyncio import Semaphore
-from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
 
 import pytest
-from benchmark_service import ModalProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
@@ -101,62 +99,6 @@ class TestBenchmarkServiceDisconnect:
         )
         assert "last message received" in task_row.error_message
         assert "10s ago" in task_row.error_message
-
-    async def test_process_task_passes_selected_sandbox_provider(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        process_benchmark_env: None,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-    ) -> None:
-        """Task processing should use one provider config for sandbox and benchmark calls.
-
-        Test cases:
-        - Tracker validates a Modal provider secret without provider-specific tracker logic.
-        - setup_task and evaluate_instance receive the same sandbox_provider config.
-        """
-        harness_config.sandbox_provider_secret_name = "modal-secret"
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
-            contract, database_session, harness_config
-        )
-        provider_config = ModalProviderConfig()
-
-        class FakeProvider:
-            async def close(self) -> None:
-                pass
-
-        provider = FakeProvider()
-        setup_providers: list[object] = []
-        evaluate_providers: list[object] = []
-        create_providers: list[object] = []
-
-        monkeypatch.setattr("tracker.utils.fetch_aws_secret", lambda *_args, **_kwargs: {"type": "modal"})
-        monkeypatch.setattr(ModalProviderConfig, "create_provider", lambda _self: provider)
-
-        async def _mock_setup_task(*_args: Any, **kwargs: Any) -> Any:
-            setup_providers.append(kwargs["sandbox_provider"])
-
-        async def _mock_evaluate_instance(*_args: Any, **kwargs: Any) -> dict[str, Any]:
-            evaluate_providers.append(kwargs["sandbox_provider"])
-            return {"status": "success", "score": 1.0}
-
-        @asynccontextmanager
-        async def _mock_create_sandbox(*_args: Any, **kwargs: Any):
-            create_providers.append(kwargs["provider"])
-            mock_sandbox = type("Sandbox", (), {"id": "mock-sandbox-id", "name": "mock-sandbox", "state": "running"})()
-            yield mock_sandbox
-
-        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
-        monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
-        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
-
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
-
-        assert result == {"task_0": {"status": "success", "score": 1.0}}
-        assert create_providers == [provider]
-        assert setup_providers == [provider_config]
-        assert evaluate_providers == [provider_config]
 
     async def test_validation_error_produces_human_readable_message(
         self,

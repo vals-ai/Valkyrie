@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -43,18 +43,7 @@ class HarnessConfig(BaseModel):
     s3_bucket: str
     log_group: str
     log_retention_policy: int
-    sandbox_provider_secret_name: str | None = None
-    daytona_secret_name: str | None = None
-
-    @model_validator(mode="after")
-    def require_provider_secret_name(self) -> "HarnessConfig":
-        if self.sandbox_provider_secret_name is None and self.daytona_secret_name is None:
-            raise ValueError("sandbox_provider_secret_name is required")
-        return self
-
-    @property
-    def provider_secret_name(self) -> str:
-        return self.sandbox_provider_secret_name or self.daytona_secret_name or ""
+    sandbox_provider_secret_name: str
 
 
 class StartBenchmarkRequest(BaseModel):
@@ -80,8 +69,6 @@ class StartBenchmarkRequest(BaseModel):
         benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
         return create_benchmark_service_client(
             url=benchmark_service_url,
-            sandbox_provider_secret_name=self.sandbox_provider_secret_name or self.harness_config.provider_secret_name,
-            aws=self.harness_config.aws,
             service_headers=self.service_headers,
         )
 

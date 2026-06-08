@@ -255,9 +255,7 @@ class TestForceStop:
 
         client = TestClient(app)
 
-        benchmark_service = example_benchmark_object.benchmark_service(
-            daytona_secret_name, aws_credentials, service_headers=service_headers
-        )
+        benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
 
         try:
             verify_response = await benchmark_service.verify_task_ids(

@@ -22,7 +22,6 @@ from benchmark_service import (
     SandboxProvider,
     SandboxProviderConfig,
     SandboxQuery,
-    sandbox_provider_config_from_mapping,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from fastapi import HTTPException, Request
@@ -85,59 +84,29 @@ _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
-def fetch_daytona_headers(daytona_secret_name: str, aws: AWSCredentials) -> dict[str, str]:
-    """Fetch Daytona credentials from AWS Secrets Manager and return as headers for BenchmarkServiceClient."""
-    daytona_keys: list[str] = ["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"]
-
-    secret = fetch_aws_secret(daytona_secret_name, aws)
-
-    if not isinstance(secret, dict):
-        raise TrackerServiceError(
-            f"Expected Daytona secret to be a JSON object with keys {', '.join(daytona_keys)}, received a string"
-        )
-
-    missing_keys = set(daytona_keys) - set(secret.keys())
-    if missing_keys:
-        raise TrackerServiceError(f"Missing following keys to use daytona {', '.join(missing_keys)}")
-
-    missing_values = [key for key, value in secret.items() if not value]
-    if missing_values:
-        raise TrackerServiceError(f"Missing values for the following keys {', '.join(missing_values)}")
-
-    return {
-        "x-sandbox-provider": "daytona",
-        "x-api-key": secret["DAYTONA_API_KEY"],
-        "x-api-url": secret["DAYTONA_API_URL"],
-        "x-target": secret["DAYTONA_TARGET"],
-    }
-
-
 def fetch_sandbox_provider_config(secret_name: str, aws: AWSCredentials) -> SandboxProviderConfig:
-    """Fetch and validate sandbox provider config from AWS Secrets Manager."""
+    """Fetch and validate the configured Daytona provider secret."""
     secret = fetch_aws_secret(secret_name, aws)
     if not isinstance(secret, dict):
         raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
 
-    if "type" not in secret and {"DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"} <= set(secret):
-        return DaytonaProviderConfig(
-            api_key=secret["DAYTONA_API_KEY"],
-            api_url=secret["DAYTONA_API_URL"],
-            target=secret["DAYTONA_TARGET"],
-        )
+    required_keys = {"DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"}
+    missing_keys = required_keys - set(secret)
+    if missing_keys:
+        raise TrackerServiceError(f"Missing following keys to use daytona {', '.join(missing_keys)}")
 
-    return sandbox_provider_config_from_mapping(secret)
+    return DaytonaProviderConfig(
+        api_key=str(secret["DAYTONA_API_KEY"]),
+        api_url=str(secret["DAYTONA_API_URL"]),
+        target=str(secret["DAYTONA_TARGET"]),
+    )
 
 
 def create_benchmark_service_client(
     url: str,
-    sandbox_provider_secret_name: str | None = None,
-    aws: AWSCredentials | None = None,
     service_headers: dict[str, str] | None = None,
-    daytona_secret_name: str | None = None,
 ) -> BenchmarkServiceClient:
     """Create a BenchmarkServiceClient with benchmark-service headers."""
-    _ = sandbox_provider_secret_name or daytona_secret_name
-    _ = aws
     headers: dict[str, str] = {}
     if service_headers:
         headers.update(service_headers)
@@ -160,7 +129,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
             lambda_function=request.lambda_function,
             dataset=request.dataset,
             sandbox_provider_secret_name=request.sandbox_provider_secret_name
-            or request.harness_config.provider_secret_name,
+            or request.harness_config.sandbox_provider_secret_name,
         ),
         started_by_id=run_starter.access_key_id,
         started_by_email=run_starter.email,
@@ -513,7 +482,7 @@ async def process_task(
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
         sandbox_provider_config = fetch_sandbox_provider_config(
-            start_benchmark_request.sandbox_provider_secret_name or harness_config.provider_secret_name,
+            start_benchmark_request.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name,
             harness_config.aws,
         )
         sandbox_provider = sandbox_provider_config.create_provider()
@@ -1685,8 +1654,7 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
             s3_bucket=flat["s3_bucket"],
             log_group=flat["log_group"],
             log_retention_policy=int(flat["log_retention_policy"]),
-            sandbox_provider_secret_name=flat.get("sandbox_provider_secret_name") or flat.get("daytona_secret_name"),
-            daytona_secret_name=flat.get("daytona_secret_name"),
+            sandbox_provider_secret_name=flat["sandbox_provider_secret_name"],
         )
     except KeyError as e:
         config_key = e.args[0].upper()
