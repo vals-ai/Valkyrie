@@ -31,6 +31,7 @@ from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 from opentelemetry import trace
 from tenacity import (
     retry,
+    retry_if_exception,
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
@@ -318,9 +319,21 @@ _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
 _STATUS_DIR = "/tmp/.valkyrie"
+_FD_TRANSPORT_ERROR_MARKERS = ("file descriptor", "is used by transport", "tcptransport")
+
+
+def _is_fd_transport_error(exc: BaseException) -> bool:
+    error = str(exc).lower()
+    return isinstance(exc, SandboxError) and all(marker in error for marker in _FD_TRANSPORT_ERROR_MARKERS)
 
 
 @logfire.instrument("sandbox.exec", extract_args=False)
+@retry(
+    retry=retry_if_exception(_is_fd_transport_error),
+    reraise=True,
+    stop=stop_after_attempt(3),
+    before_sleep=retry_callback("valkyrie.sandbox.exec"),
+)
 async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
     _set_sandbox_span_attributes(sandbox)
     try:

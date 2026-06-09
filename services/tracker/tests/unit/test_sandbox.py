@@ -409,6 +409,28 @@ class TestAgentOutputTelemetry:
         with pytest.raises(SandboxError, match="exec failed"):
             await _exec(mock_sandbox, "echo hi")
 
+        assert mock_sandbox.exec.await_count == 1
+
+    async def test_exec_retries_fd_transport_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(sandbox_module, "_set_sandbox_span_attributes", Mock(), raising=False)
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.exec = AsyncMock(
+            side_effect=[
+                ProviderSandboxError(
+                    "Sandbox operation failed for name=task-alias, id=sandbox-123: "
+                    "Failed to execute command: File descriptor 97 is used by transport "
+                    "<TCPTransport closed=False reading=True 0xaaaadbc577b0>"
+                ),
+                ExecResult(exit_code=0, output="ok"),
+            ]
+        )
+
+        result = await _exec(mock_sandbox, "echo hi")
+
+        assert result.output == "ok"
+        assert mock_sandbox.exec.await_count == 2
+
     async def test_create_sandbox_emits_create_duration_and_context(self, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "sandbox-123"
