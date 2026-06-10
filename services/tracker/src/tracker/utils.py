@@ -19,7 +19,9 @@ from benchmark_service import (
     Sandbox,
     SandboxNotFoundError,
     SandboxProvider,
+    SandboxProviderConfig,
     SandboxQuery,
+    sandbox_provider_config_from_mapping,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from fastapi import HTTPException, Request
@@ -82,13 +84,13 @@ _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
-def fetch_sandbox_provider_headers(secret_name: str, aws: AWSCredentials) -> dict[str, str]:
-    """Fetch configured sandbox provider secret values as benchmark-service headers."""
+def fetch_sandbox_provider_config(secret_name: str, aws: AWSCredentials, provider_type: str) -> SandboxProviderConfig:
+    """Resolve sandbox provider config from the selected provider type and secret."""
     secret = fetch_aws_secret(secret_name, aws)
     if not isinstance(secret, dict):
         raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
 
-    return {str(key): str(value) for key, value in secret.items()}
+    return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
 
 
 def create_benchmark_service_client(
@@ -365,6 +367,7 @@ async def process_task(
     task_id: str,
     harness_config: HarnessConfig,
     org: Org,
+    sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
 ) -> dict[str, dict[str, Any] | None]:
     """
@@ -469,7 +472,7 @@ async def process_task(
                 raise e from e
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
-        sandbox_provider = benchmark_service.get_sandbox_provider(start_benchmark_request.sandbox_provider)
+        sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
@@ -527,7 +530,7 @@ async def process_task(
                     sandbox.id,
                     on_message=log_output,
                     dataset=start_benchmark_request.dataset,
-                    sandbox_provider=start_benchmark_request.sandbox_provider,
+                    sandbox_provider=sandbox_provider_config,
                 )
 
                 # Force flush the logs if anything has been buffered
@@ -591,7 +594,7 @@ async def process_task(
                     on_message=log_output,
                     on_eval_resume_state=on_eval_resume_state,
                     dataset=start_benchmark_request.dataset,
-                    sandbox_provider=start_benchmark_request.sandbox_provider,
+                    sandbox_provider=sandbox_provider_config,
                 )
 
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
@@ -848,10 +851,12 @@ async def process_benchmark(
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
     harness_config: HarnessConfig = start_benchmark_request.harness_config
-    service_headers = {
-        **start_benchmark_request.service_headers,
-        **fetch_sandbox_provider_headers(harness_config.sandbox_provider_secret_name, harness_config.aws),
-    }
+    sandbox_provider_config = fetch_sandbox_provider_config(
+        harness_config.sandbox_provider_secret_name,
+        harness_config.aws,
+        start_benchmark_request.sandbox_provider,
+    )
+    service_headers = {**start_benchmark_request.service_headers}
     benchmark_service_url = start_benchmark_request.custom_benchmark_service or create_benchmark_service_url(
         start_benchmark_request.benchmark_name
     )
@@ -925,6 +930,7 @@ async def process_benchmark(
                     task_id,
                     harness_config,
                     org,
+                    sandbox_provider_config=sandbox_provider_config,
                     creation_semaphore=creation_semaphore,
                 ),
                 org,
@@ -1345,10 +1351,10 @@ async def force_stop_sandboxes(
     Raises:
         TrackerServiceError: If there are any errors stopping the sandboxes
     """
-    benchmark_service = benchmark_row.benchmark_service(
-        service_headers=fetch_sandbox_provider_headers(sandbox_provider_secret_name, aws)
+    benchmark_service = benchmark_row.benchmark_service()
+    provider = benchmark_service.get_sandbox_provider(
+        fetch_sandbox_provider_config(sandbox_provider_secret_name, aws, sandbox_provider)
     )
-    provider = benchmark_service.get_sandbox_provider(sandbox_provider)
 
     # Update all tasks being processed to stopped
     session.exec(

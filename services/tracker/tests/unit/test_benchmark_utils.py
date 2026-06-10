@@ -30,7 +30,7 @@ from tracker.utils import (
     fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
-    fetch_sandbox_provider_headers,
+    fetch_sandbox_provider_config,
     has_runnable_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
@@ -41,31 +41,30 @@ class TestBenchmarkUtils:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
-    def test_fetch_sandbox_provider_headers_forwards_secret_values(
+    def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
         self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Sandbox provider headers should forward selected secret values without provider parsing.
+        """Sandbox provider config should combine client-selected type with secret values.
 
         Test cases:
-        - A selected AWS secret object becomes string-valued headers.
-        - Provider-specific validation is left to create-benchmark-service.
+        - A selected provider type is added to the existing provider secret.
         """
         secrets = {
             "provider-secret": {
                 "DAYTONA_API_KEY": "key",
                 "DAYTONA_API_URL": "url",
                 "DAYTONA_TARGET": "target",
-                "RETRY_LIMIT": 3,
             },
         }
 
         monkeypatch.setattr("tracker.utils.fetch_aws_secret", lambda name, _aws: secrets[name])
 
-        assert fetch_sandbox_provider_headers("provider-secret", harness_config.aws) == {
-            "DAYTONA_API_KEY": "key",
-            "DAYTONA_API_URL": "url",
-            "DAYTONA_TARGET": "target",
-            "RETRY_LIMIT": "3",
+        provider_config = fetch_sandbox_provider_config("provider-secret", harness_config.aws, "daytona")
+        assert provider_config.model_dump(mode="json") == {
+            "type": "daytona",
+            "api_key": "key",
+            "api_url": "url",
+            "target": "target",
         }
 
     async def _mock_request_final_score(

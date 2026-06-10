@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -396,6 +397,7 @@ class TestStopAndResume:
                 task_row.task_id,
                 harness_config,
                 self._test_org,
+                sandbox_provider_config=DaytonaProviderConfig(api_key="key", api_url="url", target="target"),
                 creation_semaphore=asyncio.Semaphore(1),
             )
         finally:
@@ -466,6 +468,7 @@ class TestStopAndResume:
                 task_row.task_id,
                 harness_config,
                 self._test_org,
+                sandbox_provider_config=DaytonaProviderConfig(api_key="key", api_url="url", target="target"),
                 creation_semaphore=asyncio.Semaphore(1),
             )
         finally:
@@ -798,7 +801,10 @@ class TestStopAndResume:
 
         mock_provider = Mock()
         mock_provider.list_sandboxes = _empty_list_sandboxes
-        monkeypatch.setattr("tracker.utils.fetch_sandbox_provider_headers", lambda *_args, **_kwargs: {})
+        monkeypatch.setattr(
+            "tracker.utils.fetch_sandbox_provider_config",
+            lambda *_args, **_kwargs: DaytonaProviderConfig(api_key="key", api_url="url", target="target"),
+        )
         monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", lambda *_args, **_kwargs: mock_provider)
 
         # Force stopping the sandboxes results in the benchmark row being stopped

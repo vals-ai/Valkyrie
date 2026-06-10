@@ -48,7 +48,7 @@ def harness_config() -> HarnessConfig:
 
 @pytest.fixture(autouse=True)
 def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
-    """Mocks AWS Secrets Manager to return test Daytona credentials"""
+    """Mocks AWS Secrets Manager to return test Daytona credentials."""
 
     def _mock_fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, str]:
         return {
