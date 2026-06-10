@@ -44,7 +44,6 @@ from tracker.database.models import (
     OutputArtifactSpec,
 )
 from tracker.exceptions import (
-    AgentRunFailedError,
     OutputArtifactError,
     SandboxError,
     SandboxSetupError,
@@ -376,7 +375,13 @@ async def stream_command_output(
         tail = "".join(output).strip().splitlines()
         recent = "\n".join(tail[-10:]) if tail else "(no output)"
         sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-        raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
+        # A non-zero agent exit (e.g. the agent self-crashed on a context-window
+        # limit) is agent-caused, not infra — it still leaves a gradeable workspace.
+        # Treat it like TIMEOUT/OS_KILLED and continue to evaluation rather than
+        # failing the task. Genuine infra failures raise above (ProviderSandboxError /
+        # SandboxNotFoundError); reaching here means the command ran and exited non-zero.
+        on_output(f"[WARNING]: agent exited non-zero (exit code {exit_code}); evaluation will proceed.\nLast output:\n{recent}")
+        return AgentCausedExitReason.AGENT_ERROR, duration
     finally:
         try:
             await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
@@ -596,6 +601,10 @@ async def run_agent(
     elif exit_reason == AgentCausedExitReason.OS_KILLED:
         log_output(
             f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
+        )
+    elif exit_reason == AgentCausedExitReason.AGENT_ERROR:
+        log_output(
+            f"[WARNING]:`{contract.name}` exited non-zero (an agent-side failure, e.g. a context-window limit). The process has been terminated and evaluation will proceed."
         )
 
     # Upload any output from the agent to S3

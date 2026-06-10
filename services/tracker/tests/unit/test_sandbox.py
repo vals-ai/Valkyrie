@@ -10,9 +10,13 @@ from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxComm
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
 from tracker import sandbox as sandbox_module
-from tracker.database.models import AgentContractRequest, MAX_OUTPUT_ARTIFACT_BYTES, OutputArtifact
+from tracker.database.models import (
+    AgentCausedExitReason,
+    AgentContractRequest,
+    MAX_OUTPUT_ARTIFACT_BYTES,
+    OutputArtifact,
+)
 from tracker.exceptions import (
-    AgentRunFailedError,
     OutputArtifactError,
     SSLConnectionError,
     SandboxError,
@@ -569,7 +573,7 @@ class TestStreamCommandOutputAgentFailure:
         assert ".end_ns" in exec_commands[-1]
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
-    async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
+    async def test_non_zero_exit_returns_agent_error_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int
     ) -> None:
         async def stream_command(_command: str) -> Any:
@@ -593,11 +597,16 @@ class TestStreamCommandOutputAgentFailure:
 
         monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", fake_set_tag)
 
-        with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+        # A non-zero agent exit is agent-caused (the workspace is still gradeable),
+        # so it returns AGENT_ERROR and continues to evaluation rather than raising.
+        outputs: list[str] = []
+        exit_reason, duration = await sandbox_module.stream_command_output(
+            mock_sandbox, "run-agent.sh", on_output=outputs.append
+        )
 
-        assert isinstance(exc_info.value, SandboxError)
-        assert not isinstance(exc_info.value, SandboxSetupError)
-        assert f"exit code: {exit_code}" in str(exc_info.value)
-        assert "last line" in str(exc_info.value)
+        assert exit_reason == AgentCausedExitReason.AGENT_ERROR
+        assert duration == 2
         assert tagged == {"agent_exit_code": str(exit_code)}
+        joined = "".join(outputs)
+        assert f"exit code {exit_code}" in joined
+        assert "last line" in joined

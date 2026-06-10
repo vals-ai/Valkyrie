@@ -75,6 +75,9 @@ class AgentCausedExitReason(str, Enum):
 
     TIMEOUT = "TIMEOUT"
     OS_KILLED = "OS_KILLED"
+    # Agent self-terminated non-zero (e.g. crashed on a context-window limit).
+    # Agent-caused, not infra — the workspace is still gradeable, so continue.
+    AGENT_ERROR = "AGENT_ERROR"
 
 
 class RetryMode(str, Enum):
