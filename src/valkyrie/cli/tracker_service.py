@@ -40,8 +40,8 @@ _REQUIRED_CONFIG_KEYS = {
     "AWS_SECRET_ACCESS_KEY",
     "AWS_DEFAULT_REGION",
     "S3_BUCKET",
+    "SANDBOX_PROVIDER_SECRET_NAME",
 }
-_PROVIDER_SECRET_KEYS = {"SANDBOX_PROVIDER_SECRET_NAME"}
 
 
 def _response_error_detail(response: Response) -> Any:
@@ -180,8 +180,6 @@ class TrackerService:
             harness_config: dict[str, str] = yaml.safe_load(f) or {}
 
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
-        if not (_PROVIDER_SECRET_KEYS & harness_config.keys()):
-            missing.add("SANDBOX_PROVIDER_SECRET_NAME")
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "

@@ -104,6 +104,12 @@ def create_benchmark_service_client(
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
+def create_benchmark_service_client_from_request(request: StartBenchmarkRequest) -> BenchmarkServiceClient:
+    """Create a BenchmarkServiceClient for a start request."""
+    url = request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name)
+    return create_benchmark_service_client(url, service_headers=request.service_headers)
+
+
 def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     return Benchmark(
@@ -856,11 +862,7 @@ async def process_benchmark(
         harness_config.aws,
         start_benchmark_request.sandbox_provider,
     )
-    service_headers = {**start_benchmark_request.service_headers}
-    benchmark_service_url = start_benchmark_request.custom_benchmark_service or create_benchmark_service_url(
-        start_benchmark_request.benchmark_name
-    )
-    benchmark_service = create_benchmark_service_client(benchmark_service_url, service_headers=service_headers)
+    benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
 
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)

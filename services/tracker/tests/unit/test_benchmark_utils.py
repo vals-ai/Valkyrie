@@ -23,7 +23,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
+from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
@@ -44,10 +44,10 @@ class TestBenchmarkUtils:
     def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
         self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Sandbox provider config should combine client-selected type with secret values.
+        """Sandbox provider config should combine client-selected type with the production secret shape.
 
         Test cases:
-        - A selected provider type is added to the existing provider secret.
+        - A selected provider type is added to DAYTONA_* secret values.
         """
         secrets = {
             "provider-secret": {
@@ -57,14 +57,17 @@ class TestBenchmarkUtils:
             },
         }
 
-        monkeypatch.setattr("tracker.utils.fetch_aws_secret", lambda name, _aws: secrets[name])
+        def fetch_secret(name: str, _aws: AWSCredentials) -> dict[str, str]:
+            return secrets[name]
+
+        monkeypatch.setattr("tracker.utils.fetch_aws_secret", fetch_secret)
 
         provider_config = fetch_sandbox_provider_config("provider-secret", harness_config.aws, "daytona")
         assert provider_config.model_dump(mode="json") == {
             "type": "daytona",
-            "api_key": "key",
-            "api_url": "url",
-            "target": "target",
+            "DAYTONA_API_KEY": "key",
+            "DAYTONA_API_URL": "url",
+            "DAYTONA_TARGET": "target",
         }
 
     async def _mock_request_final_score(
@@ -631,7 +634,10 @@ def test_fetch_filtered_started_by_multiple(database_session: Session, contract:
         org,
     )
     assert total == 2
-    assert sorted(r.started_by_email for r in rows) == ["alice@vals.ai", "bob@vals.ai"]
+    assert sorted(email for r in rows if (email := r.started_by_email) is not None) == [
+        "alice@vals.ai",
+        "bob@vals.ai",
+    ]
 
 
 def test_fetch_filtered_started_by_case_insensitive(database_session: Session, contract: AgentContractRequest):
@@ -655,7 +661,7 @@ def test_fetch_filtered_started_by_none_skips_filter(database_session: Session, 
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
     _make_benchmark(database_session, contract, started_by_email=None)
 
-    rows, total = fetch_filtered_benchmark_rows(
+    _rows, total = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=None, limit=10),
         database_session,
         org,
