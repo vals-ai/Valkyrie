@@ -961,6 +961,15 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
     help="Path or http(s) URL to a text file with one task ID per line",
 )
 @click.option(
+    "--secret",
+    "-s",
+    "secrets",
+    multiple=True,
+    nargs=2,
+    type=(str, str),
+    help="Secret as ENV_VAR aws_secret_name (e.g., -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey)",
+)
+@click.option(
     "--update-agent",
     "-u",
     is_flag=True,
@@ -981,6 +990,7 @@ def resume(
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: str | None,
+    secrets: tuple[tuple[str, str]],
     update_agent: bool,
     from_scratch: bool,
 ):
@@ -1022,6 +1032,7 @@ def resume(
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
+                secrets={key: value for key, value in secrets},
             )
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))

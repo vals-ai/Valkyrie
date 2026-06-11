@@ -36,6 +36,12 @@ def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
 
 
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resume requests should carry retry mode and override secrets.
+
+    Test cases:
+    - Retry mode and concurrency are query parameters.
+    - Secret overrides are sent in the JSON body with task IDs and service headers.
+    """
     client = FakeClient()
 
     def build_client(**_kwargs: object) -> FakeClient:
@@ -52,8 +58,13 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
         retry_mode=RetryMode.FROM_SCRATCH,
         concurrency=3,
         task_ids=["task-1"],
+        secrets={"ANTHROPIC_API_KEY": "new-secret"},
     )
 
     assert result.status == "success"
     assert client.params == {"retry": True, "retry_mode": "from_scratch", "concurrency": 3}
-    assert client.json == {"task_ids": ["task-1"], "service_headers": {}}
+    assert client.json == {
+        "task_ids": ["task-1"],
+        "service_headers": {},
+        "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
+    }

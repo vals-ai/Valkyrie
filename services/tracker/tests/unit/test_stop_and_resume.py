@@ -518,6 +518,63 @@ class TestStopAndResume:
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
 
+    async def test_retry_or_resume_applies_secrets_to_stored_contract(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        """Resume secrets should update the contract used by resumed tasks.
+
+        Test cases:
+        - Existing env var mappings are replaced by resume overrides.
+        - New env var mappings are added to the stored contract before enqueue.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.arguments.contract.secrets = {
+            "ANTHROPIC_API_KEY": "old-secret",
+            "OPENAI_API_KEY": "openai-secret",
+        }
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        captured_request_json: dict[str, Any] = {}
+
+        async def _mock_reset_to_in_progress_status(*_args: Any, **_kwargs: Any):
+            return ["task_0"]
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_request_json.update(kwargs["start_benchmark_request_json"])
+
+        monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "secrets": {
+                    "ANTHROPIC_API_KEY": "new-secret",
+                    "GEMINI_API_KEY": "gemini-secret",
+                },
+            },
+        )
+
+        assert response.status_code == 200
+        assert captured_request_json["contract"]["secrets"] == {
+            "ANTHROPIC_API_KEY": "new-secret",
+            "OPENAI_API_KEY": "openai-secret",
+            "GEMINI_API_KEY": "gemini-secret",
+        }
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.arguments.contract.secrets == captured_request_json["contract"]["secrets"]
+
     async def test_running_retry_noops_without_error_tasks(
         self,
         example_benchmark_object: Benchmark,

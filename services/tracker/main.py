@@ -583,6 +583,7 @@ async def retry_or_resume_benchmark(
     concurrency: int | None = Query(default=None),
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
+    secrets: dict[str, str] = Body(default={}),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -642,8 +643,15 @@ async def retry_or_resume_benchmark(
             status="success",
         )
 
+    if secrets:
+        contract = benchmark_row.arguments.contract
+        updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
+        session.add(benchmark_row)
+        session.commit()
+
     if concurrency is not None:
-        benchmark_row.arguments.concurrency = concurrency
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
         session.add(benchmark_row)
         session.commit()
 
