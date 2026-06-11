@@ -397,7 +397,11 @@ class TestStopAndResume:
                 task_row.task_id,
                 harness_config,
                 self._test_org,
-                sandbox_provider_config=DaytonaProviderConfig(api_key="key", api_url="url", target="target"),
+                sandbox_provider_config=DaytonaProviderConfig(
+                    DAYTONA_API_KEY="key",
+                    DAYTONA_API_URL="url",
+                    DAYTONA_TARGET="target",
+                ),
                 creation_semaphore=asyncio.Semaphore(1),
             )
         finally:
@@ -468,7 +472,11 @@ class TestStopAndResume:
                 task_row.task_id,
                 harness_config,
                 self._test_org,
-                sandbox_provider_config=DaytonaProviderConfig(api_key="key", api_url="url", target="target"),
+                sandbox_provider_config=DaytonaProviderConfig(
+                    DAYTONA_API_KEY="key",
+                    DAYTONA_API_URL="url",
+                    DAYTONA_TARGET="target",
+                ),
                 creation_semaphore=asyncio.Semaphore(1),
             )
         finally:
@@ -801,11 +809,22 @@ class TestStopAndResume:
 
         mock_provider = Mock()
         mock_provider.list_sandboxes = _empty_list_sandboxes
+
+        def _provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
+            return DaytonaProviderConfig(
+                DAYTONA_API_KEY="key",
+                DAYTONA_API_URL="url",
+                DAYTONA_TARGET="target",
+            )
+
+        def _sandbox_provider(*_args: Any, **_kwargs: Any) -> Mock:
+            return mock_provider
+
         monkeypatch.setattr(
             "tracker.utils.fetch_sandbox_provider_config",
-            lambda *_args, **_kwargs: DaytonaProviderConfig(api_key="key", api_url="url", target="target"),
+            _provider_config,
         )
-        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", lambda *_args, **_kwargs: mock_provider)
+        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", _sandbox_provider)
 
         # Force stopping the sandboxes results in the benchmark row being stopped
         await force_stop_sandboxes(
