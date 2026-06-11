@@ -119,6 +119,13 @@ def _taskiq_labels() -> dict[str, str]:
     return {"request_id": request_id_var.get(), **trace_context}
 
 
+def _apply_resume_secrets(benchmark_row: Benchmark, secrets: dict[str, str]) -> None:
+    """Merge resume secrets into the stored agent contract."""
+    contract = benchmark_row.arguments.contract
+    updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
+    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
+
+
 @app.exception_handler(TrackerServiceError)
 async def tracker_service_error_handler(_request: Request, exc: TrackerServiceError):
     logger.error(exc, exc_info=True)
@@ -644,9 +651,7 @@ async def retry_or_resume_benchmark(
         )
 
     if secrets:
-        contract = benchmark_row.arguments.contract
-        updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
-        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
+        _apply_resume_secrets(benchmark_row, secrets)
         session.add(benchmark_row)
         session.commit()
 
