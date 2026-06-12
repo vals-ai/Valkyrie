@@ -30,12 +30,14 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import (
+    AWSCredentials,
     BenchmarkTableRow,
     FetchBenchmarksRequest,
     FinalViewResponse,
     HarnessConfig,
     StartBenchmarkRequest,
 )
+from tracker.utils import fetch_harness_config
 
 client = TestClient(app)
 
@@ -452,9 +454,12 @@ class TestFastapiServer:
 
         # Test case 9. task_ids subset filters evaluation_results and recomputes final_score
         observed_headers: dict[str, str] = {}
+        observed_results: dict[str, Any] = {}
 
         async def _mock_final_score(client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
             observed_headers.update(client._headers)
+            observed_results.clear()
+            observed_results.update(kwargs["evaluation_results"])
             ids = list(kwargs["evaluation_results"].keys())
             return FinalScoreResponse(tasks_evaluated=ids, final_score=float(len(ids)), metadata={})
 
@@ -469,6 +474,19 @@ class TestFastapiServer:
         assert set(body["evaluation_results"]) == {"task_1", "task_3"}
         assert body["final_evaluation"]["final_score"] == 2.0
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
+
+        # Test case 10. A requested task without a result (stopped/errored/missing) is still
+        # scored: it is passed to the benchmark service as {task_id: None}, contributing to
+        # the denominator rather than being silently dropped from the subset.
+        response = client.get(
+            "/retrieve-results",
+            params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_1"), ("task_ids", "task_11")],
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+        assert response.status_code == 200
+        assert observed_results.keys() == {"task_1", "task_11"}
+        assert observed_results["task_11"] is None
+        assert response.json()["final_evaluation"]["final_score"] == 2.0
 
     async def test_benchmark_error_handling(
         self,
@@ -572,7 +590,13 @@ class TestFastapiServer:
         unique_benchmark = Benchmark(
             org_id=TEST_ORG_ID,
             name="terminal_bench",
-            arguments=BenchmarkArguments(contract=unique_contract, concurrency=5, task_ids=None, slice_str=None),
+            arguments=BenchmarkArguments(
+                contract=unique_contract,
+                concurrency=5,
+                task_ids=None,
+                slice_str=None,
+                dataset="terminal-bench-2.1",
+            ),
         )
         database_session.add(unique_benchmark)
         database_session.commit()
@@ -629,6 +653,42 @@ class TestFastapiServer:
         # There is 1 finished benchmark
         assert response_json.get("total_count") == 1
         assert len(response_json.get("benchmarks")) == 1
+        assert response_json["benchmarks"][0]["dataset"] == "terminal-bench-2.1"
+
+    async def test_fetch_benchmarks_filters_by_dataset(self, database_session: Session, contract: AgentContractRequest):
+        benchmark_rows = [
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset=None),
+            ),
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="default"),
+            ),
+            Benchmark(
+                org_id=TEST_ORG_ID,
+                name="terminal-bench",
+                arguments=BenchmarkArguments(contract=contract, concurrency=1, dataset="terminal-bench-2.1"),
+            ),
+        ]
+        database_session.add_all(benchmark_rows)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmarks", params={"dataset": "terminal-bench-2.1", "limit": 10})
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["total_count"] == 1
+        assert response_json["benchmarks"][0]["dataset"] == "terminal-bench-2.1"
+
+        response = client.get("/fetch-benchmarks", params={"dataset": "default", "limit": 10})
+
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json["total_count"] == 2
+        assert {row["dataset"] for row in response_json["benchmarks"]} == {"default"}
 
     async def test_start_benchmark_writes_started_by_columns(
         self,
@@ -959,3 +1019,23 @@ class TestFastapiServer:
 
         # None of the three cases should have reached Sentry
         assert captured == []
+
+    def test_fetch_benchmark_returns_400_when_harness_headers_missing(self):
+        """Missing X-Harness-* headers should return 400, not 500 KeyError."""
+        app.dependency_overrides.pop(fetch_harness_config)
+        try:
+            response = client.get("/fetch-benchmark", params={"benchmark_id": str(uuid4())})
+            assert response.status_code == 400
+            assert "Missing required config value" in response.json()["detail"]
+        finally:
+            app.dependency_overrides[fetch_harness_config] = lambda: HarnessConfig(
+                aws=AWSCredentials(
+                    aws_access_key_id="test-aws-access-key-id",
+                    aws_secret_access_key="test-aws-secret-access-key",
+                    aws_default_region="test-aws-default-region",
+                ),
+                s3_bucket="test-bucket",
+                log_group="test-log-group",
+                log_retention_policy=30,
+                daytona_secret_name="test-daytona-secret",
+            )

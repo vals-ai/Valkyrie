@@ -6,7 +6,6 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
-from daytona.common.errors import DaytonaRateLimitError
 
 
 def _observability() -> Any:
@@ -37,9 +36,7 @@ def test_observability_package_reexports_app_api() -> None:
         "gauge",
         "incr",
         "retry_callback",
-        "set_pty_context",
         "set_sandbox_context",
-        "tag_daytona_error",
     ):
         assert callable(getattr(observability, name))
 
@@ -212,54 +209,6 @@ def test_set_sandbox_context_failures_are_logged_without_propagating(monkeypatch
     assert str(warnings[0][1][1]) == "scope closed"
 
 
-def test_set_pty_context_sets_session_and_attempt_tags(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    tags: dict[str, str] = {}
-
-    def fake_set_tag(key: str, value: str) -> None:
-        tags[key] = value
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", fake_set_tag)
-
-    observability.set_pty_context(session_id="sandbox:pty-123", attempt=3)
-
-    assert tags == {
-        "pty_session_id": "sandbox:pty-123",
-        "pty_attempt": "3",
-    }
-
-
-def test_set_pty_context_omits_attempt_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    tags: dict[str, str] = {}
-
-    def fake_set_tag(key: str, value: str) -> None:
-        tags[key] = value
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", fake_set_tag)
-
-    observability.set_pty_context(session_id="sandbox:pty-123")
-
-    assert tags == {"pty_session_id": "sandbox:pty-123"}
-
-
-def test_set_pty_context_failures_are_logged_without_propagating(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    warnings: list[tuple[str, tuple[object, ...]]] = []
-
-    def fake_warning(message: str, *args: object) -> None:
-        warnings.append((message, args))
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock(side_effect=RuntimeError("scope closed")))
-    monkeypatch.setattr(observability.logger, "warning", fake_warning)
-
-    observability.set_pty_context(session_id="sandbox:pty-123")
-
-    assert warnings[0][0] == "set_pty_context failed: %s: %s"
-    assert warnings[0][1][:1] == ("RuntimeError",)
-    assert str(warnings[0][1][1]) == "scope closed"
-
-
 def test_retry_callback_logs_attempt_and_emits_retry_metric(monkeypatch: pytest.MonkeyPatch) -> None:
     observability = _retry()
     increments: list[tuple[str, dict[str, str]]] = []
@@ -314,90 +263,4 @@ def test_retry_callback_logs_attempt_and_emits_retry_metric(monkeypatch: pytest.
             "idle_for": 1.25,
             "error_class": "TimeoutError",
         }
-    ]
-
-
-def test_tag_daytona_error_sets_tags_and_metric(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    tags: dict[str, str] = {}
-    increments: list[tuple[str, dict[str, str]]] = []
-
-    def fake_set_tag(key: str, value: str) -> None:
-        tags[key] = value
-
-    def fake_incr(name: str, value: float = 1, tags: dict[str, str] | None = None) -> None:
-        increments.append((name, tags or {}))
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", fake_set_tag)
-    monkeypatch.setattr(observability, "incr", fake_incr)
-
-    observability.tag_daytona_error(TimeoutError("timed out"), op="sandbox.create")
-
-    assert tags == {
-        "daytona.op": "sandbox.create",
-        "error_class": "TimeoutError",
-    }
-    assert increments == [
-        (
-            "valkyrie.daytona.error",
-            {
-                "op": "sandbox.create",
-                "error_class": "TimeoutError",
-            },
-        )
-    ]
-
-
-def test_tag_daytona_error_emits_rate_limit_metric(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    increments: list[tuple[str, dict[str, str]]] = []
-
-    def fake_incr(name: str, value: float = 1, tags: dict[str, str] | None = None) -> None:
-        increments.append((name, tags or {}))
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock())
-    monkeypatch.setattr(observability, "incr", fake_incr)
-
-    observability.tag_daytona_error(DaytonaRateLimitError("rate limited"), op="sandbox.create")
-
-    assert increments == [
-        (
-            "valkyrie.daytona.error",
-            {
-                "op": "sandbox.create",
-                "error_class": "DaytonaRateLimitError",
-            },
-        ),
-        ("valkyrie.daytona.rate_limit.error", {"op": "sandbox.create"}),
-    ]
-
-
-def test_tag_daytona_error_logs_tag_failures_and_still_emits_metric(monkeypatch: pytest.MonkeyPatch) -> None:
-    observability = _sentry()
-    warnings: list[tuple[str, tuple[object, ...]]] = []
-    increments: list[tuple[str, dict[str, str]]] = []
-
-    def fake_warning(message: str, *args: object) -> None:
-        warnings.append((message, args))
-
-    def fake_incr(name: str, value: float = 1, tags: dict[str, str] | None = None) -> None:
-        increments.append((name, tags or {}))
-
-    monkeypatch.setattr(observability.sentry_sdk, "set_tag", Mock(side_effect=RuntimeError("scope closed")))
-    monkeypatch.setattr(observability.logger, "warning", fake_warning)
-    monkeypatch.setattr(observability, "incr", fake_incr)
-
-    observability.tag_daytona_error(TimeoutError("timed out"), op="sandbox.create")
-
-    assert warnings[0][0] == "tag_daytona_error failed: %s: %s"
-    assert warnings[0][1][:1] == ("RuntimeError",)
-    assert str(warnings[0][1][1]) == "scope closed"
-    assert increments == [
-        (
-            "valkyrie.daytona.error",
-            {
-                "op": "sandbox.create",
-                "error_class": "TimeoutError",
-            },
-        )
     ]

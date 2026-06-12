@@ -18,24 +18,36 @@ from aws_cdk import (
 )
 from constants import (
     CLUSTER_NAME,
+    DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
     ELASTICACHE_NODE_TYPE,
     NAMESPACE,
     REDIS_PORT,
     S3_BUCKET_NAME,
-    SLACK_CHANNEL_ID,
-    SLACK_WORKSPACE_ID,
     VPC_CIDR,
     VPC_MAX_AZS,
     VPC_NAT_GATEWAYS,
+    get_slack_notification_config,
 )
 from constructs import Construct
+from stage import Stage
+
+DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "WorkerStack", "MonitoringStack")
+DEPLOYMENT_SUCCESS_STATUSES = ("CREATE_COMPLETE", "UPDATE_COMPLETE")
+DEPLOYMENT_FAILURE_STATUSES = (
+    "CREATE_FAILED",
+    "UPDATE_FAILED",
+    "UPDATE_ROLLBACK_COMPLETE",
+    "ROLLBACK_COMPLETE",
+    "DELETE_FAILED",
+)
 
 
 class SharedStack(Stack):
     """Shared infrastructure for all services."""
 
-    def __init__(self, scope: Construct, id: str, **kwargs: Any):
+    def __init__(self, scope: Construct, id: str, stage: Stage, **kwargs: Any):
         super().__init__(scope, id, **kwargs)
+        self.stage = stage
 
         # shared VPC - public subnets only, no NAT gateway (cost savings)
         self.vpc = aws_ec2.Vpc(
@@ -52,141 +64,16 @@ class SharedStack(Stack):
             ],
         )
 
-        # SNS topic for deployment notifications
-        notification_topic = aws_sns.Topic(
-            self,
-            "StackNotificationTopic",
-            topic_name="agentic-harness-notifications",
-        )
-
-        # Slack channel configuration
-        slack = aws_chatbot.SlackChannelConfiguration(
-            self,
-            "DeploymentNotificationsSlackChannel",
-            slack_channel_configuration_name="deployment-notifications",
-            slack_workspace_id=SLACK_WORKSPACE_ID,
-            slack_channel_id=SLACK_CHANNEL_ID,
-        )
-
-        slack.add_notification_topic(notification_topic)  # type: ignore[arg-type]
-
-        # Only notify for stacks deployed by this project
-        stack_names = ["SharedStack", "TrackerStack", "WorkerStack", "MonitoringStack"]
-
-        # EventBridge rule Slack notification for successful stack deployments
-        success_rule = aws_events.Rule(
-            self,
-            "StackDeploySuccessRule",
-            event_pattern=aws_events.EventPattern(
-                source=["aws.cloudformation"],
-                detail_type=["CloudFormation Stack Status Change"],
-                detail={
-                    "stack-id": [
-                        {"prefix": f"arn:aws:cloudformation:{self.region}:{self.account}:stack/{name}/"}
-                        for name in stack_names
-                    ],
-                    "status-details": {
-                        "status": ["CREATE_COMPLETE", "UPDATE_COMPLETE"],
-                    },
-                },
-            ),
-        )
-
-        cfn_url = (
-            "<https://"
-            + aws_events.EventField.from_path("$.region")
-            + ".console.aws.amazon.com/cloudformation/home?region="
-            + aws_events.EventField.from_path("$.region")
-            + "#/stacks|CloudFormation Stack Notification>"
-        )
-
-        success_rule.add_target(
-            aws_events_targets.SnsTopic(  # type: ignore[arg-type]
-                notification_topic,  # type: ignore[arg-type]
-                message=aws_events.RuleTargetInput.from_object(
-                    {
-                        "version": "1.0",
-                        "source": "custom",
-                        "content": {
-                            "textType": "client-markdown",
-                            "title": ":white_check_mark: "
-                            + cfn_url
-                            + " | "
-                            + aws_events.EventField.from_path("$.region")
-                            + " | Account: "
-                            + aws_events.EventField.from_path("$.account"),
-                            "description": "CloudFormation stack deployment *SUCCEEDED*."
-                            + "\n\n*Stack*\n"
-                            + aws_events.EventField.from_path("$.detail.stack-id"),
-                        },
-                        "metadata": {
-                            "threadId": aws_events.EventField.from_path("$.detail.stack-id"),
-                            "summary": "Deployment succeeded",
-                        },
-                    }
-                ),
-            )
-        )
-
-        # EventBridge rule Slack notification for failed stack deployments
-        failure_rule = aws_events.Rule(
-            self,
-            "StackDeployFailureRule",
-            event_pattern=aws_events.EventPattern(
-                source=["aws.cloudformation"],
-                detail_type=["CloudFormation Stack Status Change"],
-                detail={
-                    "stack-id": [
-                        {"prefix": f"arn:aws:cloudformation:{self.region}:{self.account}:stack/{name}/"}
-                        for name in stack_names
-                    ],
-                    "status-details": {
-                        "status": [
-                            "CREATE_FAILED",
-                            "UPDATE_FAILED",
-                            "UPDATE_ROLLBACK_COMPLETE",
-                            "ROLLBACK_COMPLETE",
-                            "DELETE_FAILED",
-                        ],
-                    },
-                },
-            ),
-        )
-
-        failure_rule.add_target(
-            aws_events_targets.SnsTopic(  # type: ignore[arg-type]
-                notification_topic,  # type: ignore[arg-type]
-                message=aws_events.RuleTargetInput.from_object(
-                    {
-                        "version": "1.0",
-                        "source": "custom",
-                        "content": {
-                            "textType": "client-markdown",
-                            "title": ":rotating_light: "
-                            + cfn_url
-                            + " | "
-                            + aws_events.EventField.from_path("$.region")
-                            + " | Account: "
-                            + aws_events.EventField.from_path("$.account"),
-                            "description": "CloudFormation stack deployment *FAILED*."
-                            + "\n\n*Stack*\n"
-                            + aws_events.EventField.from_path("$.detail.stack-id"),
-                        },
-                        "metadata": {
-                            "threadId": aws_events.EventField.from_path("$.detail.stack-id"),
-                            "summary": "Deployment failed",
-                        },
-                    }
-                ),
-            )
-        )
+        slack_config = get_slack_notification_config(DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV)
+        if slack_config is not None:
+            self._create_deployment_notifications(*slack_config)
 
         # shared ECS cluster
         self.cluster = aws_ecs.Cluster(
             self,
             "AgenticHarnessCluster",
             vpc=self.vpc,
-            cluster_name=CLUSTER_NAME,
+            cluster_name=self.stage.phys(CLUSTER_NAME),
             container_insights=True,
         )
 
@@ -195,7 +82,7 @@ class SharedStack(Stack):
         self.namespace = aws_servicediscovery.PrivateDnsNamespace(
             self,
             "AgenticHarnessNamespace",
-            name=NAMESPACE,
+            name=self.stage.phys(NAMESPACE),
             vpc=self.vpc,
         )
 
@@ -210,7 +97,7 @@ class SharedStack(Stack):
         self.bucket = aws_s3.Bucket(
             self,
             "AgenticHarnessBucket",
-            bucket_name=S3_BUCKET_NAME,
+            bucket_name=self.stage.phys(S3_BUCKET_NAME),
             removal_policy=cdk.RemovalPolicy.RETAIN,
             block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
         )
@@ -259,4 +146,103 @@ class SharedStack(Stack):
                 ":",
                 self.redis_cluster.attr_redis_endpoint_port,
             ],
+        )
+
+    def _create_deployment_notifications(self, slack_workspace_id: str, slack_channel_id: str) -> None:
+        notification_topic = aws_sns.Topic(
+            self,
+            "StackNotificationTopic",
+            topic_name=self.stage.phys("agentic-harness-notifications"),
+        )
+        slack = aws_chatbot.SlackChannelConfiguration(
+            self,
+            "DeploymentNotificationsSlackChannel",
+            slack_channel_configuration_name=self.stage.phys("deployment-notifications"),
+            slack_workspace_id=slack_workspace_id,
+            slack_channel_id=slack_channel_id,
+        )
+        slack.add_notification_topic(notification_topic)  # type: ignore[arg-type]
+
+        cfn_url = (
+            "<https://"
+            + aws_events.EventField.from_path("$.region")
+            + ".console.aws.amazon.com/cloudformation/home?region="
+            + aws_events.EventField.from_path("$.region")
+            + "#/stacks|CloudFormation Stack Notification>"
+        )
+        self._add_deployment_notification_rule(
+            rule_id="StackDeploySuccessRule",
+            topic=notification_topic,
+            statuses=DEPLOYMENT_SUCCESS_STATUSES,
+            title_prefix=":white_check_mark: ",
+            description="CloudFormation stack deployment *SUCCEEDED*.",
+            summary="Deployment succeeded",
+            cfn_url=cfn_url,
+        )
+        self._add_deployment_notification_rule(
+            rule_id="StackDeployFailureRule",
+            topic=notification_topic,
+            statuses=DEPLOYMENT_FAILURE_STATUSES,
+            title_prefix=":rotating_light: ",
+            description="CloudFormation stack deployment *FAILED*.",
+            summary="Deployment failed",
+            cfn_url=cfn_url,
+        )
+
+    def _add_deployment_notification_rule(
+        self,
+        *,
+        rule_id: str,
+        topic: aws_sns.Topic,
+        statuses: tuple[str, ...],
+        title_prefix: str,
+        description: str,
+        summary: str,
+        cfn_url: str,
+    ) -> None:
+        rule = aws_events.Rule(
+            self,
+            rule_id,
+            event_pattern=aws_events.EventPattern(
+                source=["aws.cloudformation"],
+                detail_type=["CloudFormation Stack Status Change"],
+                detail={
+                    "stack-id": [
+                        {
+                            "prefix": f"arn:aws:cloudformation:{self.region}:{self.account}:stack/{self.stage.stack_id(name)}/"
+                        }
+                        for name in DEPLOYMENT_STACK_NAMES
+                    ],
+                    "status-details": {
+                        "status": list(statuses),
+                    },
+                },
+            ),
+        )
+        rule.add_target(
+            aws_events_targets.SnsTopic(  # type: ignore[arg-type]
+                topic,  # type: ignore[arg-type]
+                message=aws_events.RuleTargetInput.from_object(
+                    {
+                        "version": "1.0",
+                        "source": "custom",
+                        "content": {
+                            "textType": "client-markdown",
+                            "title": title_prefix
+                            + cfn_url
+                            + " | "
+                            + aws_events.EventField.from_path("$.region")
+                            + " | Account: "
+                            + aws_events.EventField.from_path("$.account"),
+                            "description": description
+                            + "\n\n*Stack*\n"
+                            + aws_events.EventField.from_path("$.detail.stack-id"),
+                        },
+                        "metadata": {
+                            "threadId": aws_events.EventField.from_path("$.detail.stack-id"),
+                            "summary": summary,
+                        },
+                    }
+                ),
+            )
         )

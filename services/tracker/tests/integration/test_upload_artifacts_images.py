@@ -2,8 +2,7 @@ import asyncio
 from uuid import uuid4
 
 import boto3
-from benchmark_service.schemas import Resources
-from daytona import AsyncDaytona
+from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
 from tracker.database.models import AgentContractRequest
@@ -38,14 +37,19 @@ def _format_failure(exc: BaseException) -> str:
 class TestUploadArtifactsAcrossImages:
     async def test_upload_all_images(
         self,
-        daytona_client: AsyncDaytona,
+        sandbox_provider: SandboxProvider,
         test_resources: Resources,
         contract: AgentContractRequest,
         aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Run upload_agent_artifacts on all images bases and confirm that the agent can successfully be uploaded"""
+        """Verify agent artifact upload works across the supported Linux image families.
+
+        Test cases:
+        - The frozen benchmark contract zip is downloaded and extracted into each sandbox image.
+        - The temporary zip and excluded top-level contract.py file are not left behind after extraction.
+        """
 
         benchmark_id = f"test-benchmark-{uuid4().hex[:5]}"
 
@@ -70,17 +74,23 @@ class TestUploadArtifactsAcrossImages:
 
             async with (
                 asyncio.timeout(_PER_IMAGE_TIMEOUT_SECONDS),
-                create_sandbox(daytona_client, sandbox_name, image, test_resources, creation_semaphore) as sandbox,
+                create_sandbox(
+                    sandbox_provider,
+                    sandbox_name,
+                    ImageSource(image=image),
+                    test_resources,
+                    creation_semaphore,
+                ) as sandbox,
             ):
                 await upload_agent_artifacts(sandbox, contract, benchmark_id, aws_credentials, harness_config.s3_bucket)
 
-                dir_check = await sandbox.process.exec(f"test -d /bundle/{contract.name}")
+                dir_check = await sandbox.exec(f"test -d /bundle/{contract.name}")
                 assert dir_check.exit_code == 0, f"[{label}] contract dir /bundle/{contract.name} should exist"
 
-                leftover = await sandbox.process.exec(f"test -f /tmp/{contract.name}.zip")
+                leftover = await sandbox.exec(f"test -f /tmp/{contract.name}.zip")
                 assert leftover.exit_code != 0, f"[{label}] temp zip should be deleted after extraction"
 
-                excluded = await sandbox.process.exec("test -f /bundle/contract.py")
+                excluded = await sandbox.exec("test -f /bundle/contract.py")
                 assert excluded.exit_code != 0, f"[{label}] contract.py should be excluded from extraction"
 
         results = await asyncio.gather(

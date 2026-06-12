@@ -23,6 +23,7 @@ from aws_cdk.aws_ecr_assets import Platform
 from constants import (
     POSTGRES_DB,
     WORKER_CPU,
+    WORKER_LOG_GROUP_NAME,
     WORKER_MAX_TASKS,
     WORKER_MEMORY,
     WORKER_MIN_TASKS,
@@ -30,6 +31,7 @@ from constants import (
     WORKER_STOP_TIMEOUT_SECONDS,
 )
 from constructs import Construct
+from stage import Stage
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -54,6 +56,7 @@ class WorkerStack(Stack):
         self,
         scope: Construct,
         id: str,
+        stage: Stage,
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
         redis_url: str,
@@ -117,6 +120,7 @@ class WorkerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "WorkerLogGroup",
+                    log_group_name=stage.phys(WORKER_LOG_GROUP_NAME),
                     retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
@@ -158,7 +162,7 @@ class WorkerStack(Stack):
             cluster=cluster,
             task_definition=worker_task_def,
             desired_count=WORKER_MIN_TASKS,
-            service_name="Worker",
+            service_name=stage.phys("Worker"),
             security_groups=[tracker_sg],
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
             min_healthy_percent=100,

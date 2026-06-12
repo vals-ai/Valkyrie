@@ -34,6 +34,7 @@ from constants import (
     RDS_INSTANCE_CLASS,
     TRACKER_CPU,
     TRACKER_DOMAIN,
+    TRACKER_LOG_GROUP_NAME,
     TRACKER_MAX_TASKS,
     TRACKER_MEMORY,
     TRACKER_MIN_TASKS,
@@ -42,6 +43,7 @@ from constants import (
     VPC_CIDR,
 )
 from constructs import Construct
+from stage import Stage
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -62,6 +64,7 @@ class TrackerStack(Stack):
         self,
         scope: Construct,
         id: str,
+        stage: Stage,
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
@@ -168,6 +171,7 @@ class TrackerStack(Stack):
                 log_group=aws_logs.LogGroup(
                     self,
                     "TrackerLogGroup",
+                    log_group_name=stage.phys(TRACKER_LOG_GROUP_NAME),
                     retention=aws_logs.RetentionDays.ONE_YEAR,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
@@ -202,9 +206,9 @@ class TrackerStack(Stack):
             cluster=cluster,
             desired_count=TRACKER_MIN_TASKS,
             task_definition=tracker_task_def,
-            service_name="Tracker",
+            service_name=stage.phys("Tracker"),
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
-            domain_name=TRACKER_DOMAIN,
+            domain_name=stage.domain(TRACKER_DOMAIN),
             domain_zone=hosted_zone,
             protocol=aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS,
             redirect_http=True,
@@ -216,7 +220,9 @@ class TrackerStack(Stack):
         # Expose the inner FargateService for cross-stack security group rules
         self.tracker_fargate_service = self.service.service
 
-        # Cloud Map registration for internal access
+        # Cloud Map registration for internal access.
+        # Intentionally unstaged: dev gets its own namespace, and benchmark
+        # services reach the tracker by the same internal name in either env.
         self.service.service.enable_cloud_map(
             name="tracker",
             cloud_map_namespace=namespace,

@@ -522,6 +522,7 @@ class TrackerService:
         concurrency: int | None,
         task_ids: list[str],
         service_headers: dict[str, str] | None = None,
+        secrets: dict[str, str] | None = None,
     ) -> RetryOrResumeBenchmarkResponse:
         """
         Run a benchmark that has already been created by its benchmark id.
@@ -533,6 +534,7 @@ class TrackerService:
             task_ids: List of task ids to force retry. Task ids without an existing row
                 are created as fresh PENDING if valid in the current dataset.
             service_headers: Optional headers for benchmark service authentication
+            secrets: Optional agent secret mappings to merge into the stored contract
 
         Returns:
             RetryOrResumeBenchmarkResponse with status and message
@@ -545,6 +547,8 @@ class TrackerService:
                 params["concurrency"] = concurrency
 
             body: dict[str, Any] = {"task_ids": task_ids, "service_headers": service_headers or {}}
+            if secrets:
+                body["secrets"] = secrets
 
             response = self._client.post(
                 f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",

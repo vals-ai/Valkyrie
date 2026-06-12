@@ -723,7 +723,12 @@ def fetch(run_id: UUID, connect: bool):
 
 @run.command(
     name="results",
-    help="Retrieve run results by its run id. \n\nExample:\nvalkyrie run results 123e4567-e89b-12d3-a456-426614174000 --path ./results.json",
+    help=(
+        "Retrieve run results by its run id. \n\n"
+        "Example:\n"
+        "valkyrie run results 123e4567-e89b-12d3-a456-426614174000 "
+        "--path ./results-123e4567-e89b-12d3-a456-426614174000.json"
+    ),
 )
 @click.argument("run_id", type=UUID)
 @click.option(
@@ -731,7 +736,7 @@ def fetch(run_id: UUID, connect: bool):
     type=click.Path(path_type=Path, file_okay=True, dir_okay=False),
     default=None,
     required=False,
-    help="Path to save the results (default: ./<benchmark>.json)",
+    help="Path to save the results (default: ./results-<run_id>.json)",
 )
 @click.option(
     "--s3",
@@ -759,7 +764,7 @@ def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, tas
     Retrieve the results of a run by its run id.
 
     Example:
-        valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results.json
+        valkyrie run results e532551e-d51b-4912-983d-47695bd24174 --path ./results-e532551e-d51b-4912-983d-47695bd24174.json
     """
     subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
@@ -786,7 +791,7 @@ def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, tas
                             fg="yellow" if scored < len(subset_task_ids) else "green",
                         )
                     )
-                default_path: Path = Path(f"./{results_response.benchmark_name}.json")
+                default_path: Path = Path(f"./results-{run_id}.json")
 
                 download_final_view(path or default_path, results_response)
             else:
@@ -843,7 +848,7 @@ def stop(run_id: UUID, force: bool):
             click.echo("┌─ Next Steps " + "─" * 66)
             click.echo(
                 f"│ {'Get results:':<17} "
-                + click.style(f"valkyrie run results {run_id} --path ./results.json", fg="cyan")
+                + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
             )
             click.echo("└" + "─" * 79)
     except TrackerServiceError as e:
@@ -967,6 +972,15 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
     help="Path or http(s) URL to a text file with one task ID per line",
 )
 @click.option(
+    "--secret",
+    "-s",
+    "secrets",
+    multiple=True,
+    nargs=2,
+    type=(str, str),
+    help="Secret as ENV_VAR aws_secret_name (e.g., -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey)",
+)
+@click.option(
     "--update-agent",
     "-u",
     is_flag=True,
@@ -987,6 +1001,7 @@ def resume(
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: str | None,
+    secrets: tuple[tuple[str, str]],
     update_agent: bool,
     from_scratch: bool,
 ):
@@ -1028,6 +1043,7 @@ def resume(
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
+                secrets={key: value for key, value in secrets},
             )
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))
@@ -1035,7 +1051,7 @@ def resume(
             click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
             click.echo(
                 f"│ {'Get results:':<17} "
-                + click.style(f"valkyrie run results {run_id} --path ./results.json", fg="cyan")
+                + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
             )
             click.echo("└" + "─" * 79)
     except (TrackerServiceError, S3Error) as e:
@@ -1076,6 +1092,12 @@ run.add_command(retry_command)
     help="Model name (e.g., anthropic/claude-sonnet-4-20250514)",
 )
 @click.option(
+    "--dataset",
+    type=str,
+    required=False,
+    help="Dataset name (e.g., default, terminal-bench-2.1)",
+)
+@click.option(
     "--status",
     type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
     required=False,
@@ -1100,6 +1122,7 @@ def list_benchmarks(
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,
+    dataset: str | None,
     status: str | None,
     order_by: str = "desc",
     started_by: str | None = None,
@@ -1124,6 +1147,7 @@ def list_benchmarks(
                 agent_name,
                 benchmark_name,
                 model,
+                dataset,
                 status,
                 order_by,
                 started_by=started_by_list or None,

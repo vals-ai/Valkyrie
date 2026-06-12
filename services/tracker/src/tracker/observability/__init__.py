@@ -4,7 +4,7 @@ import time
 
 from tracker.observability.metrics import distribution, gauge, incr
 from tracker.observability.retry import retry_callback
-from tracker.observability.sentry import init_sentry, set_pty_context, set_sandbox_context, tag_daytona_error
+from tracker.observability.sentry import init_sentry, set_sandbox_context
 from tracker.observability.tracing import configure_tracing
 
 
@@ -28,7 +28,5 @@ __all__ = [
     "incr",
     "init_sentry",
     "retry_callback",
-    "set_pty_context",
     "set_sandbox_context",
-    "tag_daytona_error",
 ]

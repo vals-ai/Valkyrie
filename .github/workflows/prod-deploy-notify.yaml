@@ -1,0 +1,142 @@
+name: Prod Deploy Slack Notification
+
+on:
+  workflow_run:
+    workflows: ["Deploy to AWS", "Auto Tag Release"]
+    types: [completed]
+    branches: [prod]
+
+permissions:
+  contents: write # required by the releases/generate-notes endpoint
+  actions: read
+
+jobs:
+  notify:
+    # Only proceed when the triggering workflow succeeded
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check all prod workflows passed
+        uses: actions/github-script@v7
+        id: check
+        with:
+          script: |
+            const sha = context.payload.workflow_run.head_sha;
+            const required = ['Deploy to AWS', 'Auto Tag Release'];
+
+            const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head_sha: sha,
+              per_page: 50,
+            });
+
+            let deployUrl = '';
+            for (const name of required) {
+              const run = data.workflow_runs.find(r => r.name === name);
+              if (!run || run.status !== 'completed' || run.conclusion !== 'success') {
+                console.log(`⏳ ${name}: status=${run?.status ?? 'not found'}, conclusion=${run?.conclusion ?? 'N/A'}`);
+                return;
+              }
+              if (name === 'Deploy to AWS') {
+                deployUrl = run.html_url;
+              }
+            }
+
+            console.log('All required workflows passed');
+            core.setOutput('all_passed', 'true');
+            core.setOutput('deploy_url', deployUrl);
+
+      - name: Checkout
+        if: steps.check.outputs.all_passed == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Build and send Slack notification
+        if: steps.check.outputs.all_passed == 'true'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_DEPLOY_WEBHOOK_URL }}
+          DEPLOY_URL: ${{ steps.check.outputs.deploy_url }}
+          REPO: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${SLACK_WEBHOOK_URL:-}" ]; then
+            echo "::warning::SLACK_DEPLOY_WEBHOOK_URL secret not set — skipping notification"
+            exit 0
+          fi
+
+          CURRENT_TAG=$(git describe --tags --abbrev=0 HEAD)
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || echo "")
+          RELEASE_URL="${SERVER_URL}/${REPO}/releases/tag/${CURRENT_TAG}"
+
+          # Reuse GitHub's auto-generated release notes (identical content to a published release).
+          if [ -n "$PREVIOUS_TAG" ]; then
+            RAW_NOTES=$(gh api "repos/${REPO}/releases/generate-notes" \
+              -f tag_name="$CURRENT_TAG" -f previous_tag_name="$PREVIOUS_TAG" --jq '.body')
+            LABEL="Changes since ${PREVIOUS_TAG}"
+          else
+            RAW_NOTES=$(gh api "repos/${REPO}/releases/generate-notes" \
+              -f tag_name="$CURRENT_TAG" --jq '.body')
+            LABEL="Release notes"
+          fi
+
+          # GitHub markdown -> Slack mrkdwn: "## Heading" -> "*Heading*", "**bold**" -> "*bold*",
+          # "* item" -> "• item", PR/compare URLs -> short <url|#NN> / <url|range> links
+          # (@ delimiter keeps the literal pipe the mrkdwn link syntax needs).
+          to_mrkdwn() {
+            sed -E 's/^## (.*)$/*\1*/' \
+              | sed -E 's/\*\*([^*]+)\*\*/*\1*/g' \
+              | sed -E 's/^\* /• /' \
+              | sed -E "s@ in (https://github.com/[^ ]+/pull/([0-9]+))@ (<\1|#\2>)@g" \
+              | sed -E "s@(https://github.com/[^ ]+/compare/([^ ]+))@<\1|\2>@g"
+          }
+
+          # Split the "Full Changelog" footer onto its own block from the change list.
+          FULL_CHANGELOG=$(printf '%s\n' "$RAW_NOTES" | grep -iE '^\*\*Full Changelog\*\*' | to_mrkdwn || true)
+          CHANGE_LIST=$(printf '%s\n' "$RAW_NOTES" | sed -E '/^\*\*Full Changelog\*\*/d' | to_mrkdwn)
+
+          # Slack section text caps at 3000 chars; trim the change list and link the rest.
+          if [ "${#CHANGE_LIST}" -gt 2800 ]; then
+            CHANGE_LIST="${CHANGE_LIST:0:2800}"$'\n'"…(truncated — see <${RELEASE_URL}|full release notes>)"
+          fi
+
+          # Pre-build each block's text so the message structure below stays readable.
+          HEADER_TEXT=":wing: Valkyrie ${CURRENT_TAG} deployed to prod"
+          CHANGES_TEXT="*${LABEL}*"$'\n'"${CHANGE_LIST}"
+          CLI_TEXT="🔄 *Remember to update your CLI:*"$'\n'"\`uv tool install git+https://github.com/vals-ai/Valkyrie@prod\`"
+          CONTEXT_TEXT="<${DEPLOY_URL}|Deploy run> · <${RELEASE_URL}|Release>"
+
+          jq -n \
+            --arg header_text "$HEADER_TEXT" \
+            --arg changes_text "$CHANGES_TEXT" \
+            --arg changelog_text "$FULL_CHANGELOG" \
+            --arg cli_text "$CLI_TEXT" \
+            --arg context_text "$CONTEXT_TEXT" \
+            '{
+              text: $header_text,
+              blocks: (
+                [
+                  { type: "header",  text: { type: "plain_text", text: $header_text, emoji: true } },
+                  { type: "divider" },
+                  { type: "section", text: { type: "mrkdwn", text: $changes_text } }
+                ]
+                + (if $changelog_text != "" then
+                    [ { type: "section", text: { type: "mrkdwn", text: $changelog_text } } ]
+                   else [] end)
+                + [
+                  { type: "divider" },
+                  { type: "section", text: { type: "mrkdwn", text: $cli_text } },
+                  { type: "context", elements: [ { type: "mrkdwn", text: $context_text } ] }
+                ]
+              )
+            }' > /tmp/slack-payload.json
+
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d @/tmp/slack-payload.json \
+            "$SLACK_WEBHOOK_URL"

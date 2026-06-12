@@ -12,11 +12,11 @@ from typing import BinaryIO, Generator
 
 import yaml
 from pydantic import ValidationError as PydanticValidationError
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, OutputArtifact
 
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError
 from valkyrie.contract import BaseAgentContract
-from valkyrie.schemas import AgentConfig, AgentContract
+from valkyrie.schemas import AgentConfig, AgentContract, OutputArtifact as ContractOutputArtifact
 
 
 def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
@@ -154,12 +154,20 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
 
         validated_kwargs = agent_contract.validate_kwargs(all_schema, user_values)
 
+        output_artifacts = [
+            OutputArtifact(path=artifact.path, source=artifact.source)
+            if isinstance(artifact, ContractOutputArtifact)
+            else artifact
+            for artifact in agent_contract.output_artifacts
+        ]
+
         return AgentContractRequest(
             name=agent_contract.name,
             model=agent_config.model,
             run_cmd=agent_contract.format_run_cmd(validated_kwargs),
             install_cmd=agent_contract.install_cmd,
             final_output=str(agent_contract.final_output) if agent_contract.final_output is not None else None,
+            output_artifacts=output_artifacts,
             secrets=agent_contract.secrets,
         )
     except ContractValidationError:

@@ -2,9 +2,12 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
 
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, OutputArtifact, OutputArtifactSpec
 
 from valkyrie.schemas import AgentConfig
+
+
+__all__ = ["BaseAgentContract", "OutputArtifact", "OutputArtifactSpec"]
 
 
 class BaseAgentContract(ABC):
@@ -96,6 +99,11 @@ class BaseAgentContract(ABC):
         """
         ...
 
+    @property
+    def output_artifacts(self) -> list[OutputArtifactSpec]:
+        """Artifacts uploaded directly to the task S3 folder."""
+        return []
+
     def to_request(self) -> AgentContractRequest:
         """
         Convert the contract to a request object for the tracker service.
@@ -113,5 +121,6 @@ class BaseAgentContract(ABC):
             ),
             install_cmd=self.install_cmd,
             final_output=str(self.final_output) if self.final_output else None,
+            output_artifacts=self.output_artifacts,
             secrets=self.secrets,
         )

@@ -18,6 +18,13 @@ class InvalidSandboxConfigurationError(SandboxError):
     """Exception raised for deterministic sandbox configuration errors."""
 
 
+class OutputArtifactError(TrackerServiceError):
+    """Exception raised when a declared output artifact is missing or invalid."""
+
+    def __str__(self) -> str:
+        return "Output artifact error: " + super().__str__()
+
+
 class AgentRunFailedError(SandboxError):
     """Exception raised when the agent process inside a healthy sandbox exits non-zero.
 
@@ -28,10 +35,6 @@ class AgentRunFailedError(SandboxError):
 
 class SandboxSetupError(SandboxError):
     """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
-
-
-class PtyCreationError(SandboxSetupError):
-    """Exception raised when PTY session creation fails after all retry attempts."""
 
 
 class SSLConnectionError(SandboxSetupError):

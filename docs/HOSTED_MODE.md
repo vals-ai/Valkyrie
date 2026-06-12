@@ -10,7 +10,7 @@ Use Vals-hosted compute infrastructure with your own AWS storage. Data is isolat
 
 - Descope API key (provided by Vals)
 - AWS account with the [required permissions](#required-aws-permissions)
-- S3 bucket for storing benchmark artifacts and agents
+- S3 bucket for storing benchmark artifacts and agents. This will need to be unique for the region and created before defining it inside of the config.
 - API key for sandbox provider (Daytona). [Setup docs](PROVIDER.md)
 
 ### Setup

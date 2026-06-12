@@ -170,6 +170,7 @@ class FetchBenchmarksRequest(BaseModel):
     agent_name: str | None = None
     benchmark_name: str | None = None
     model: str | None = None
+    dataset: str | None = None
     status: BenchmarkStatus | None = None
     started_by: list[str] | None = None
     order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
@@ -185,6 +186,7 @@ class BenchmarkTableRow(BaseModel):
     run_name: str | None
     agent_name: str
     model: str | None
+    dataset: str = "default"
     started_by_email: str | None
     started_at: datetime
     finished_at: datetime | None

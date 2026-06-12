@@ -5,10 +5,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
+from benchmark_service import ImageSource, Resources
 from benchmark_service.schemas import (
     FinalScoreResponse,
     HealthCheckResponse,
-    Resources,
     RetrieveTaskResponse,
     SetupTaskResponse,
     VerifyTaskIdsResponse,
@@ -208,7 +208,7 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
 
     async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
         return RetrieveTaskResponse(
-            docker_image="test-image:latest",
+            source=ImageSource(image="test-image:latest"),
             problem_path="/tmp/problem_statement.txt",
             cwd="/testbed",
             resources=Resources(vcpu=2, memory=4, disk=5),

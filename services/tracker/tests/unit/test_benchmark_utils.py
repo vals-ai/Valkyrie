@@ -27,6 +27,7 @@ from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkR
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
+    fetch_daytona_headers,
     fetch_benchmark_row,
     fetch_final_score_inputs,
     fetch_filtered_benchmark_rows,
@@ -39,6 +40,25 @@ from tracker.utils import (
 class TestBenchmarkUtils:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+
+    def test_fetch_daytona_headers_sets_provider(
+        self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "tracker.utils.fetch_aws_secret",
+            lambda *_args, **_kwargs: {
+                "DAYTONA_API_KEY": "key",
+                "DAYTONA_API_URL": "url",
+                "DAYTONA_TARGET": "target",
+            },
+        )
+
+        assert fetch_daytona_headers(harness_config.daytona_secret_name, harness_config.aws) == {
+            "x-sandbox-provider": "daytona",
+            "x-api-key": "key",
+            "x-api-url": "url",
+            "x-target": "target",
+        }
 
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any

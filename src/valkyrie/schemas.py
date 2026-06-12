@@ -3,8 +3,12 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, create_model, field_validator
+from tracker.database.models import OutputArtifact, OutputArtifactSpec
 
 from valkyrie.cli.exceptions import ContractValidationError
+
+
+__all__ = ["OutputArtifact", "OutputArtifactSpec"]
 
 
 class Defaults(str, Enum):
@@ -120,6 +124,23 @@ class AgentContract(BaseModel):
     ```yaml
     final_output: /artifacts
     ```
+    """
+
+    output_artifacts: list[OutputArtifactSpec] = []
+    """
+    Artifacts to upload directly into the task's S3 folder.
+
+    String entries are shorthand for reading `/tmp/valkyrie/<path>` and uploading to `<path>`.
+    Object entries can set an explicit sandbox `source` and destination `path`.
+
+    ```yaml
+    output_artifacts:
+      - artifacts/summary.json
+      - path: artifacts/result.json
+        source: /logs/{task_id}/result.json
+    ```
+    Valkyrie does not require a specific destination prefix. Vals benchmark ingestion conventionally uses
+    `vals_format/config.json` and `vals_format/result.json`.
     """
 
     secrets: dict[str, str] = {}

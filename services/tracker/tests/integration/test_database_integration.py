@@ -6,9 +6,9 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from benchmark_service import SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
-from daytona import AsyncDaytona
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, col, inspect, select
 
@@ -22,7 +22,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.sandbox import TrackerResources, create_sandbox
+from tracker.sandbox import create_sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +64,11 @@ class TestDatabaseIntegration:
         return final_evaluation_row
 
     async def test_create_tables(self, postgres_engine: Engine):
-        """
-        Test that the database tables are created correctly.
+        """Verify the integration database schema is created with tracker tables.
 
-        Test Cases:
-        - All expected tables are created in the database
-        - More than one table is created
+        Test cases:
+        - The database contains at least one created table.
+        - Benchmark, task, evaluation result, and final evaluation tables are present.
         """
         inspector = inspect(postgres_engine)
         tables = inspector.get_table_names()
@@ -81,12 +80,11 @@ class TestDatabaseIntegration:
         assert expected_tables.issubset(set(tables)), f"Missing tables. Found: {tables}"
 
     async def test_database_integrity(self, database_session: Session, example_benchmark_object: Benchmark):
-        """
-        Test the integrity of the database
+        """Verify status changes maintain finished_at timestamps on persisted rows.
 
-        Test Cases:
-            - Benchmark table finished_at timestamp is automatically set when the status is updated to finished
-            - Task table finished_at timestamp is automatically set when the status is updated to finished
+        Test cases:
+        - Benchmark and task rows start without finished_at while still active.
+        - FINISHED and ERROR statuses set finished_at for both benchmark and task rows.
         """
 
         # Test the benchmark table
@@ -137,13 +135,11 @@ class TestDatabaseIntegration:
         assert benchmark_row.finished_at, "Should be auto generated when the status is updated to error"
 
     async def test_database_relations(self, database_session: Session, example_benchmark_object: Benchmark):
-        """
-        Test the relationships between the tables and ensure that they are correctly being built
+        """Verify benchmark, task, and evaluation result relationships persist correctly.
 
-        Test Cases:
-            - Benchmark table is created and a row can be pushed to the database
-            - Task table is created and a row can be pushed to the database
-            - EvaluationResult table is created and a row can be pushed to the database
+        Test cases:
+        - A benchmark can be persisted and used to fetch ordered task rows.
+        - Evaluation results attach to finished tasks and update task status/timestamps.
         """
 
         # Add a new benchmark row to the database
@@ -214,21 +210,18 @@ class TestDatabaseIntegration:
         self,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
-        daytona_client: AsyncDaytona,
+        sandbox_provider: SandboxProvider,
         task_row: Task,
         task_data: RetrieveTaskResponse,
-        test_resources: TrackerResources,
         creation_semaphore: Semaphore,
     ) -> dict[str, str]:
-        docker_image: str = task_data.docker_image
-
         # Change the status of the task to evaluating before we start evaluation
         task_row.status = TaskStatus.EVALUATING
         database_session.add(task_row)
         database_session.flush()
 
         async with create_sandbox(
-            daytona_client, task_row.task_id, docker_image, test_resources, creation_semaphore
+            sandbox_provider, task_row.task_id, task_data.source, task_data.resources, creation_semaphore
         ) as sandbox:
             response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
             assert response.status == "ok"
@@ -242,19 +235,15 @@ class TestDatabaseIntegration:
         self,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
-        daytona_client: AsyncDaytona,
+        sandbox_provider: SandboxProvider,
         example_benchmark_object: Benchmark,
-        test_resources: TrackerResources,
         creation_semaphore: Semaphore,
     ):
-        """
-        Test the end to end flow when using database with a benchmark service
+        """Verify the database flow works with a live benchmark service and sandboxes.
 
-        Test Cases:
-            - Create a benchmark row to initiate a benchmark
-            - Apply concurrency to tasks and ensure that the tasks are correctly being added to the database
-            - As evaluation results come in, ensure that we are correclty adding them to the database
-            - The metadata from the final evaluation can be fetched from the database
+        Test cases:
+        - A sampled set of service task IDs is retrieved, evaluated, and stored in task/evaluation rows.
+        - Final score metadata and fetched evaluation results match the rows stored in the database.
         """
 
         try:
@@ -299,10 +288,9 @@ class TestDatabaseIntegration:
                         evaluation_result = await self._evaluate_instance(
                             database_session,
                             benchmark_service,
-                            daytona_client,
+                            sandbox_provider,
                             task_row,
                             task_data,
-                            test_resources,
                             creation_semaphore,
                         )
                         evaluation_result_row = await self._create_evaluation_result(

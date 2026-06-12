@@ -5,8 +5,8 @@ from collections.abc import AsyncGenerator, Generator
 from typing import Any
 
 import pytest
+from benchmark_service import Resources, SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
-from daytona import AsyncDaytona
 from dotenv import load_dotenv
 from sqlmodel import Session, SQLModel, create_engine
 from testcontainers.postgres import PostgresContainer
@@ -18,7 +18,6 @@ from tracker.config import create_benchmark_service_url
 from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
-from tracker.sandbox import TrackerResources
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import create_benchmark_service_client, fetch_harness_config
 
@@ -156,8 +155,8 @@ async def benchmark_service(
 
 
 @pytest.fixture
-async def daytona_client(benchmark_service: BenchmarkServiceClient) -> AsyncGenerator[AsyncDaytona, None]:
-    yield benchmark_service.daytona_client
+async def sandbox_provider(benchmark_service: BenchmarkServiceClient) -> AsyncGenerator[SandboxProvider, None]:
+    yield benchmark_service.get_sandbox_provider()
 
 
 @pytest.fixture
@@ -172,4 +171,4 @@ def test_image():
 
 @pytest.fixture
 def test_resources():
-    return TrackerResources(vcpu=1, memory=2, disk=5)
+    return Resources(vcpu=1, memory=2, disk=5)
