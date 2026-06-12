@@ -2,7 +2,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from tracker.database.models import RetryMode
+from tracker.database.models import AgentContractRequest, RetryMode
 
 from valkyrie.cli.tracker_service import TrackerService
 
@@ -35,6 +35,18 @@ def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
     return {}
 
 
+def harness_config_keys(_tracker: TrackerService) -> dict[str, str]:
+    return {
+        "AWS_ACCESS_KEY_ID": "test-access-key",
+        "AWS_SECRET_ACCESS_KEY": "test-secret-key",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "S3_BUCKET": "test-bucket",
+        "DAYTONA_SECRET_NAME": "test-daytona-secret",
+        "LOG_GROUP": "benchmarks",
+        "LOG_RETENTION_POLICY": "365",
+    }
+
+
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     client = FakeClient()
 
@@ -57,3 +69,35 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
     assert result.status == "success"
     assert client.params == {"retry": True, "retry_mode": "from_scratch", "concurrency": 3}
     assert client.json == {"task_ids": ["task-1"], "service_headers": {}}
+
+
+def test_start_benchmark_sends_run_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    contract = AgentContractRequest(
+        name="dummy",
+        install_cmd="echo installing dependencies",
+        run_cmd="echo running agent",
+    )
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", harness_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    response = tracker.start_benchmark(
+        contract=contract,
+        benchmark_name="swebench",
+        concurrency=3,
+        ignore_custom_services=True,
+        task_ids=["task-1"],
+        slice_str=None,
+        run_name="  my run  ",
+    )
+
+    assert response.status_code == 200
+    assert client.json is not None
+    assert client.json["run_name"] == "my run"

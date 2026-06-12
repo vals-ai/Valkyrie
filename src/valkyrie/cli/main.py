@@ -485,6 +485,14 @@ def tasks(
     help="Name of the benchmark to run (e.g., swebench, finance)",
 )
 @click.option(
+    "--name",
+    "run_name",
+    type=str,
+    required=False,
+    default=None,
+    help="Optional display name for this run.",
+)
+@click.option(
     "--concurrency",
     type=int,
     default=5,
@@ -573,6 +581,7 @@ def start(
     agent: str,
     model: str | None,
     benchmark: str,
+    run_name: str | None,
     concurrency: int,
     lambda_function: str | None,
     task_ids: str | None,
@@ -591,6 +600,7 @@ def start(
     Example:
         valkyrie run start --agent agents/claude_code --benchmark swebench
     """
+    run_name = run_name.strip() if run_name else None
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
     service_headers: dict[str, str] = {}
@@ -604,7 +614,7 @@ def start(
     webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
     task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
-    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display)
+    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display, run_name)
 
     format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
 
@@ -655,6 +665,7 @@ def start(
                 slice_str,
                 lambda_function,
                 dataset,
+                run_name,
                 service_headers=service_headers or None,
                 webhook_secret_name=webhook_secret if webhook_intervals else None,
                 webhook_intervals=webhook_intervals,

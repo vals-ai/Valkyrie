@@ -119,6 +119,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
     return Benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,
+        run_name=request.run_name,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
@@ -369,7 +370,7 @@ def _commit_task_status(
     if error_message is not None:
         span_attributes["has_error_message"] = True
 
-    with logfire.span("task.status_transition", **span_attributes):
+    with logfire.span("task.status_transition", **span_attributes):  # type: ignore[reportArgumentType]
         task.status = to_status
         if error_message is not None:
             task.error_message = error_message
@@ -1283,6 +1284,7 @@ async def stream_benchmark_results(
 
                 response_data = FetchBenchmarkResponse(
                     benchmark_name=fresh_benchmark.name,
+                    run_name=fresh_benchmark.run_name,
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
                     s3_bucket_url=create_benchmark_url(
@@ -1643,6 +1645,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
 
     final_view: FinalViewResponse = FinalViewResponse(
         benchmark_name=benchmark_row.name,
+        run_name=benchmark_row.run_name,
         status=benchmark_row.status,
         error_message=benchmark_row.error_message,
         benchmark_id=benchmark_row.id,

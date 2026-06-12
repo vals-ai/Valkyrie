@@ -259,6 +259,7 @@ class TrackerService:
         slice_str: str | None,
         lambda_function: str | None = None,
         dataset: str | None = None,
+        run_name: str | None = None,
         service_headers: dict[str, str] | None = None,
         webhook_secret_name: str | None = None,
         webhook_intervals: list[int] | None = None,
@@ -273,6 +274,7 @@ class TrackerService:
             task_ids: Optional list of specific task IDs to run
             slice_str: Optional slice string for task selection
             lambda_function: Optional lambda function to invoke after benchmark
+            run_name: Optional display name for the run
 
         Returns:
             Run response with status, message, and results
@@ -289,6 +291,7 @@ class TrackerService:
                 slice_str=slice_str,
                 lambda_function=lambda_function,
                 dataset=dataset,
+                run_name=run_name,
                 harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
                 if not ignore_custom_services

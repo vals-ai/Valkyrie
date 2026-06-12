@@ -8,7 +8,7 @@ from typing import Any
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -50,6 +50,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    run_name: str | None = Field(default=None, max_length=200)
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
@@ -59,6 +60,16 @@ class StartBenchmarkRequest(BaseModel):
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
+
+    @field_validator("run_name")
+    @classmethod
+    def normalize_run_name(cls, value: str | None) -> str | None:
+        """Trim display names and store empty values as unset."""
+        if value is None:
+            return None
+
+        value = value.strip()
+        return value or None
 
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
@@ -88,6 +99,7 @@ class StartBenchmarkErrorResponse(BaseModel):
 
 class StartBenchmarkResponse(BaseModel):
     benchmark_name: str
+    run_name: str | None = None
     agent_name: str
     benchmark_id: UUID
     concurrency: int
@@ -99,6 +111,7 @@ class StartBenchmarkResponse(BaseModel):
 
 class FetchBenchmarkResponse(BaseModel):
     benchmark_name: str
+    run_name: str | None = None
     benchmark_id: UUID
     details: BenchmarkDetails
     s3_bucket_url: str
@@ -114,6 +127,7 @@ class AverageTaskBreakdown(BaseModel):
 class FinalViewResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
+    run_name: str | None = None
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus
@@ -168,6 +182,7 @@ class FetchBenchmarksRequest(BaseModel):
 class BenchmarkTableRow(BaseModel):
     id: UUID
     name: str
+    run_name: str | None
     agent_name: str
     model: str | None
     started_by_email: str | None
@@ -187,6 +202,7 @@ class FetchBenchmarksResponse(BaseModel):
 class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
+    run_name: str | None
     benchmark_arguments: BenchmarkArguments
     started_by_email: str | None
 

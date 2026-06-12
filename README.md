@@ -211,6 +211,7 @@ Webhook configuration is persisted per-benchmark in the database. On resume or r
 valkyrie run start \
   --agent sweagent \
   --benchmark swebench \
+  --name "my run" \
   --model anthropic/claude-sonnet-4-6 \
   --concurrency 5 \
   --dataset default \
@@ -227,6 +228,7 @@ valkyrie run start \
 | --- | --- |
 | `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
 | `--benchmark` | Benchmark name (e.g. `swebench`) |
+| `--name` | Optional display name for the run |
 | `--model` | Model key (e.g. `openai/gpt-4o`) |
 | `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
 | `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged with contract defaults (CLI wins on conflict) |

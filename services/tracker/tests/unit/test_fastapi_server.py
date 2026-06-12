@@ -102,6 +102,7 @@ class TestFastapiServer:
         request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
+            run_name="my run",
             concurrency=10,
             task_ids=None,
             harness_config=harness_config,
@@ -129,6 +130,7 @@ class TestFastapiServer:
         # Test case 2. Benchmark row has been created and pushed to the database
         benchmark_row = database_session.get(Benchmark, UUID(json_response["benchmark_id"]))
         assert benchmark_row
+        assert benchmark_row.run_name == request.run_name
 
         # Secondary test. Arguments is correct serialized into the database
         assert benchmark_row.arguments == BenchmarkArguments(
@@ -146,6 +148,7 @@ class TestFastapiServer:
 
         # Remaining fields match what we passed into the request
         assert json_response["benchmark_name"] == request.benchmark_name
+        assert json_response["run_name"] == request.run_name
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 

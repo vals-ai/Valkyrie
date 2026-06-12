@@ -156,6 +156,7 @@ class Benchmark(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
     name: str
+    run_name: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
     status: BenchmarkStatus = Field(
@@ -204,6 +205,7 @@ class Benchmark(SQLModel, table=True):
         return StartBenchmarkRequest(
             contract=self.arguments.contract,
             benchmark_name=self.name,
+            run_name=self.run_name,
             concurrency=self.arguments.concurrency,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
@@ -234,6 +236,7 @@ class Benchmark(SQLModel, table=True):
         return FetchBenchmarkMetadataResponse(
             benchmark_id=self.id,
             benchmark_name=self.name,
+            run_name=self.run_name,
             benchmark_arguments=self.arguments,
             started_by_email=self.started_by_email,
         )
@@ -267,6 +270,7 @@ class Benchmark(SQLModel, table=True):
         return BenchmarkTableRow(
             id=self.id,
             name=self.name,
+            run_name=self.run_name,
             agent_name=self.arguments.contract.name,
             model=self.arguments.contract.model,
             started_by_email=self.started_by_email,

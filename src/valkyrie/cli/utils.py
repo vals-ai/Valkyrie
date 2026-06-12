@@ -250,6 +250,8 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     breakdown_text = BenchmarkFormatter.format_task_breakdown(details.task_breakdown)
 
     click.echo("┌─ Run Status " + "─" * 66)
+    if benchmark_response.run_name:
+        click.echo(f"│ {'Run name:':<12} {benchmark_response.run_name}")
     click.echo(f"│ {'Benchmark:':<12} {benchmark_response.benchmark_name}")
     click.echo(f"│ {'Run ID:':<12} {benchmark_response.benchmark_id}")
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
@@ -293,7 +295,12 @@ def cont(value: str) -> str:
 
 
 def format_run_start_details(
-    benchmark: str, dataset: str | None, concurrency: int, slice_str: str | None, task_ids: str | None
+    benchmark: str,
+    dataset: str | None,
+    concurrency: int,
+    slice_str: str | None,
+    task_ids: str | None,
+    run_name: str | None = None,
 ) -> None:
     """
     Format and display the start details of a run.
@@ -304,8 +311,11 @@ def format_run_start_details(
         concurrency: The number of concurrent tasks
         slice_str: The slice of the dataset to use
         task_ids: The IDs of the tasks to run
+        run_name: Optional display name for the run
     """
     click.echo("┌─ Benchmark " + "─" * 67)
+    if run_name:
+        click.echo(row("Run name:", run_name))
     click.echo(row("Name:", benchmark))
     click.echo(row("Dataset:", dataset or "default"))
     click.echo(row("Concurrency:", str(concurrency)))
@@ -373,6 +383,8 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
 
     click.echo()
     click.echo("┌─ Run Details " + "─" * 65)
+    if start_benchmark_response.run_name:
+        click.echo(f"│ {'Run name:':<17} {start_benchmark_response.run_name}")
     click.echo(f"│ {'Benchmark:':<17} {start_benchmark_response.benchmark_name}")
     click.echo(f"│ {'Agent:':<17} {start_benchmark_response.agent_name}")
     click.echo(f"│ {'Run ID:':<17} {rid}")
@@ -502,6 +514,7 @@ def format_fetch_benchmarks_response(
         rows.append(
             {
                 "ID": str(benchmark.id),
+                "Run": benchmark.run_name or "-",
                 "Benchmark": benchmark.name,
                 "Agent": benchmark.agent_name,
                 "Started By": benchmark.started_by_email or "—",
@@ -518,7 +531,7 @@ def format_fetch_benchmarks_response(
 
     format_table(
         rows,
-        ["ID", "Benchmark", "Agent", "Started By", "Model", "Status", "Score", "Started / Finished", "Progress"],
+        ["ID", "Run", "Benchmark", "Agent", "Started By", "Model", "Status", "Score", "Started / Finished", "Progress"],
         current_page,
         total_pages,
         fetch_benchmarks_response.total_count,

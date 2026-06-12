@@ -276,6 +276,7 @@ async def start_benchmark(
 
     return StartBenchmarkResponse(
         benchmark_name=benchmark_row.name,
+        run_name=benchmark_row.run_name,
         agent_name=request.contract.name,
         benchmark_id=benchmark_row.id,
         concurrency=request.concurrency,
@@ -362,6 +363,7 @@ async def fetch_benchmark(
 
     return FetchBenchmarkResponse(
         benchmark_name=benchmark_row.name,
+        run_name=benchmark_row.run_name,
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
         s3_bucket_url=create_benchmark_url(
@@ -458,22 +460,23 @@ async def retrieve_results(
     curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
     curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
     """
-    benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
-    assert_org(benchmark_row, org)
+    benchmark_row = assert_org(
+        session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)]), org
+    )
 
     final_view = create_final_view(benchmark_row, session, org)
 
     if task_ids:
         task_ids_set = set(task_ids)
 
-        def _filter_task_map(task_map):
+        def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
             return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
 
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
         final_view.task_errors = _filter_task_map(final_view.task_errors)
 
         # Missing/errored tasks are passed to the benchmark service as {task_id: None}.
-        scored_results = dict(final_view.evaluation_results or {})
+        scored_results: dict[str, dict[str, Any] | None] = dict(final_view.evaluation_results or {})
         for task_id in final_view.task_errors or {}:
             scored_results.setdefault(task_id, None)
 
