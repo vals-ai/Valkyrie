@@ -11,10 +11,10 @@ from typing import BinaryIO, Generator
 
 import yaml
 from pydantic import ValidationError as PydanticValidationError
-from tracker.database.models import AgentContractRequest, OutputArtifact
+from tracker.database.models import AgentContractRequest
 
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError
-from valkyrie.schemas import AgentConfig, AgentContract, OutputArtifact as ContractOutputArtifact
+from valkyrie.schemas import AgentConfig, AgentContract
 
 
 def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
@@ -81,11 +81,10 @@ def get_agent_zip_stream(agent_name: str | None, agent_path: Path) -> Generator[
         temp_path = Path(temp_dir)
         bundle_dir = temp_path / agent_name
 
-        if agent_path.is_dir():
-            shutil.copytree(agent_path, bundle_dir, dirs_exist_ok=True)
-        else:
-            bundle_dir.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(agent_path, bundle_dir)
+        if not agent_path.is_dir():
+            raise BundlerError(f"Agent path must be a directory: {agent_path}")
+
+        shutil.copytree(agent_path, bundle_dir, dirs_exist_ok=True)
 
         zip_path = temp_path / f"{agent_name}.zip"
         _zip_directory_to_file(bundle_dir, zip_path)
@@ -135,20 +134,13 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
 
         validated_kwargs = agent_contract.validate_kwargs(all_schema, user_values)
 
-        output_artifacts = [
-            OutputArtifact(path=artifact.path, source=artifact.source)
-            if isinstance(artifact, ContractOutputArtifact)
-            else artifact
-            for artifact in agent_contract.output_artifacts
-        ]
-
         return AgentContractRequest(
             name=agent_contract.name,
             model=agent_config.model,
             run_cmd=agent_contract.format_run_cmd(validated_kwargs),
             install_cmd=agent_contract.install_cmd,
             final_output=str(agent_contract.final_output) if agent_contract.final_output is not None else None,
-            output_artifacts=output_artifacts,
+            output_artifacts=agent_contract.output_artifacts,
             secrets=agent_contract.secrets,
         )
     except ContractValidationError:
