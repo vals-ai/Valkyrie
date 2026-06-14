@@ -196,6 +196,5 @@ class FetchBenchmarkMetadataResponse(BaseModel):
 class AnalyzeBenchmarkRequest(BaseModel):
     no_cache: bool = False
     # CLI resolves the analyzer Lambda from the agent's current pushed contract
-    # (handles YAML and Python contracts) and passes it here so the tracker
-    # doesn't have to parse arbitrary contract code.
+    # and passes it here so the tracker doesn't have to parse the contract.
     lambda_function: str | None = None

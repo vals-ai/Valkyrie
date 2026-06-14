@@ -265,7 +265,7 @@ async def upload_agent_artifacts(
         install_deps,
         f"curl -sfL -o {zip_path} {quoted_url}",
         f"mkdir -p {bundle_dir}",
-        f"unzip -o -d {bundle_dir} {zip_path} -x contract.py",
+        f"unzip -o -d {bundle_dir} {zip_path}",
         f"rm -f {zip_path}",
         f"mkdir -p {contract_dir}",
     ]

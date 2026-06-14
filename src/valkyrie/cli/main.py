@@ -625,10 +625,10 @@ def start(
             contract_file = next(
                 (
                     agent_path / f"contract{ext}"
-                    for ext in (".yaml", ".yml", ".py")
+                    for ext in (".yaml", ".yml")
                     if (agent_path / f"contract{ext}").exists()
                 ),
-                agent_path / "contract.py",
+                agent_path / "contract.yaml",
             )
             contract = get_contract(contract_file, agent_config)
             contract.name = agent_path.stem
@@ -862,8 +862,7 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
             if not check_tracker_service_health(tracker):
                 raise click.ClickException("Tracker service is unhealthy.")
 
-            # Resolve the analyzer Lambda from the agent's current pushed contract
-            # (handles both YAML and Python contracts).
+            # Resolve the analyzer Lambda from the agent's current pushed contract.
             metadata = tracker.fetch_benchmark_metadata(run_id)
             contract_name = metadata.benchmark_arguments.contract.name
             try:
@@ -876,8 +875,7 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
             if not lambda_function:
                 raise click.ClickException(
                     f"Agent '{contract_name}' has no `ingest_lambda` set in its current contract. "
-                    "Declare it in contract.yaml (or override the `ingest_lambda` property in "
-                    "contract.py) and re-push with `valk agent push ./<agent_dir>`."
+                    "Declare it in contract.yaml and re-push with `valk agent push ./<agent_dir>`."
                 )
 
             terminal: tuple[str, dict[str, Any]] | None = None

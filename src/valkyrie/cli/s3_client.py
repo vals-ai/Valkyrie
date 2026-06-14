@@ -1,5 +1,4 @@
 import asyncio
-import importlib.util
 import io
 import re
 import tempfile
@@ -378,9 +377,7 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
     benchmark run. This lets ``valk run analyze`` work on past runs after their
     contract is updated to declare an analyzer Lambda.
 
-    Supports YAML contracts directly; for Python contracts, instantiates with an
-    empty ``AgentConfig`` and reads the ``ingest_lambda`` property without invoking
-    ``run_cmd`` (which would require model validation).
+    Reads the ``ingest_lambda`` field directly from the agent's ``contract.yaml``.
     """
     bucket_name = _fetch_bucket_name()
 
@@ -406,24 +403,11 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
                     with open(tmp_path / member, "r") as f:
                         return cast(dict[str, object], yaml.safe_load(f) or {}).get("ingest_lambda")  # type: ignore[return-value]
 
-            # TODO: remove this branch when we migrate off of Python contracts.
-            py_member = f"{agent_name}/contract.py"
-            if py_member in names:
-                zf.extractall(tmp_path)
-                contract_path = tmp_path / py_member
-                spec = importlib.util.spec_from_file_location("contract", contract_path)
-                if not spec or not spec.loader:
-                    return None
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                contract_cls = module.contract
-                return contract_cls(AgentConfig()).ingest_lambda
-
     return None
 
 
 async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:
-    """Download agent zip from S3 and extract contract.py into a temp dir, returning the contract request"""
+    """Download agent zip from S3 and extract the contract into a temp dir, returning the contract request"""
     bucket_name = _fetch_bucket_name()
 
     async with _s3_client() as s3_client:
