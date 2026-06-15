@@ -13,7 +13,10 @@ from aws_cdk import (
     aws_rds,
     aws_sns,
 )
-from constants import VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV, get_slack_notification_config
+from constants import (
+    VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV,
+    get_slack_notification_config,
+)
 from constructs import Construct
 from dashboards import (
     create_alb_dashboard,
@@ -23,6 +26,7 @@ from dashboards import (
     create_redis_dashboard,
 )
 from stage import Stage
+from stage_config import config_for
 
 
 class MonitoringStack(cdk.Stack):
@@ -51,6 +55,7 @@ class MonitoringStack(cdk.Stack):
     ) -> None:
         super().__init__(scope, id, **kwargs)
         self.stage = stage
+        self.stage_config = config_for(stage)
 
         self.cluster = cluster
         self.tracker_service = tracker_service
@@ -213,19 +218,18 @@ class MonitoringStack(cdk.Stack):
             treat_missing_data=aws_cloudwatch.TreatMissingData.NOT_BREACHING,
         ).add_alarm_action(sns_action)
 
-        # Alarm 5: DB connections high (> 80% of max for t4g.small: ~170 connections)
-        # Max connections on t4g.small is ~170 (LEAST(DBInstanceClassMemory/9531392, 5000))
-        # Set threshold to 135 (roughly 80% of 170)
+        # Alarm 5: DB connections high
+        db_connection_threshold = self.stage_config.database.connection_alarm_threshold
         aws_cloudwatch.Alarm(
             self,
             "DbConnectionsHighAlarm",
             alarm_name=self.stage.phys("Valkyrie-DB-Connections-High"),
-            alarm_description="RDS database connections >= 135 (~80% of t4g.small max)",
+            alarm_description=f"RDS database connections >= {db_connection_threshold}",
             metric=database.metric_database_connections(
                 period=cdk.Duration.minutes(1),
                 statistic="Maximum",
             ),
-            threshold=135,
+            threshold=db_connection_threshold,
             evaluation_periods=5,
             datapoints_to_alarm=5,
             comparison_operator=aws_cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
