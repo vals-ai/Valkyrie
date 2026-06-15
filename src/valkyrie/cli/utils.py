@@ -610,11 +610,11 @@ def paginate_benchmarks(
 
     while True:
         request = FetchBenchmarksRequest(
-            agent_name=agent_name,
-            benchmark_name=benchmark_name,
+            agent_name=[agent_name] if agent_name else None,
+            benchmark_name=[benchmark_name] if benchmark_name else None,
             model=model,
             dataset=dataset,
-            status=BenchmarkStatus(status) if status else None,
+            status=[BenchmarkStatus(status)] if status else None,
             started_by=started_by,
             order_by=Order(order_by),
             limit=limit,
@@ -622,7 +622,7 @@ def paginate_benchmarks(
         )
 
         response = tracker.fetch_benchmarks(request)
-        total_count = response.total_count
+        total_count = response.total_count or 0
         total_pages = max(1, (total_count + limit - 1) // limit)
 
         click.clear()

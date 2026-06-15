@@ -296,3 +296,30 @@ def create_benchmark_url(benchmark_id: str, region: str, s3_bucket: str) -> str:
     """
     prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
     return f"https://{region}.console.aws.amazon.com/s3/buckets/{s3_bucket}?region={region}&prefix={prefix}"
+
+
+def list_s3_agent_names(aws: "AWSCredentials", s3_bucket: str) -> list[dict[str, object]]:
+    """List agents under `agents/` prefix.
+
+    Accepts both layouts:
+      * subfolders — `agents/<name>/...`
+      * zipped bundles — `agents/<name>.zip`
+    """
+    client = _s3_client(aws)
+    paginator = client.get_paginator("list_objects_v2")
+    seen: dict[str, str | None] = {}
+    for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/", Delimiter="/"):
+        for common_prefix in page.get("CommonPrefixes", []):
+            name = common_prefix["Prefix"][len("agents/") :].rstrip("/")
+            if name and name not in seen:
+                seen[name] = None
+        for s3_object in page.get("Contents", []):
+            tail = s3_object["Key"][len("agents/") :]
+            if not tail or tail.startswith(".") or not tail.endswith(".zip"):
+                continue
+            name = tail[: -len(".zip")]
+            if not name or name in seen:
+                continue
+            last_modified = s3_object.get("LastModified")
+            seen[name] = last_modified.isoformat() if last_modified else None
+    return [{"name": name, "last_modified": last_modified} for name, last_modified in seen.items()]

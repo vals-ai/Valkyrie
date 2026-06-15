@@ -36,7 +36,12 @@ from tenacity import (
     stop_after_attempt,
 )
 
-from tracker.aws.s3 import create_presigned_url, get_agent_result_s3_key, get_benchmark_contract_s3_key, upload_to_s3
+from tracker.aws.s3 import (
+    create_presigned_url,
+    get_agent_result_s3_key,
+    get_benchmark_contract_s3_key,
+    upload_to_s3,
+)
 from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
     AgentCausedExitReason,
@@ -237,7 +242,7 @@ async def upload_agent_artifacts(
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
-    presigned_url = create_presigned_url(contract_s3_key, aws, s3_bucket)
+    presigned_url = create_presigned_url(contract_s3_key, aws, s3_bucket, expiration=86400)
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
     contract_dir = shlex.quote(str(bundle_path / contract.name))
@@ -265,7 +270,7 @@ async def upload_agent_artifacts(
         install_deps,
         f"curl -sfL -o {zip_path} {quoted_url}",
         f"mkdir -p {bundle_dir}",
-        f"unzip -o -d {bundle_dir} {zip_path} -x contract.py",
+        f"unzip -o -d {bundle_dir} {zip_path}",
         f"rm -f {zip_path}",
         f"mkdir -p {contract_dir}",
     ]
@@ -576,6 +581,9 @@ async def run_agent(
     await install_agent_dependencies(sandbox, contract, log_output)
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
+
+    for kwarg_key, kwarg_value in contract.kwargs.items():
+        run_cmd = run_cmd.replace(f"{{{kwarg_key}}}", kwarg_value)
 
     # Apply timeout if specified
     if agent_timeout is not None:

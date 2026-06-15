@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer, field_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -19,6 +19,15 @@ from tracker.database.models import (
     FinalEvaluation,
     TaskStatus,
 )
+
+
+def _serialize_utc(value: datetime | None) -> str | None:
+    """Tag naive datetimes as UTC so JS clients parse them as UTC, not local."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
 
 
 class BenchmarkDetails(BaseModel):
@@ -57,6 +66,8 @@ class StartBenchmarkRequest(BaseModel):
     harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
+    service_auth_header_name: str | None = None
+    service_auth_secret_name: str | None = None
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
 
@@ -153,17 +164,20 @@ class Order(str, Enum):
 
 
 class FetchBenchmarksRequest(BaseModel):
-    agent_name: str | None = None
-    benchmark_name: str | None = None
+    agent_name: list[str] | None = None
+    benchmark_name: list[str] | None = None
     model: str | None = None
     dataset: str | None = None
-    status: BenchmarkStatus | None = None
+    status: list[BenchmarkStatus] | None = None
     started_by: list[str] | None = None
+    started_after: datetime | None = None
+    started_before: datetime | None = None
     order_by: Order = Order.DESC  # Order is based off the time the benchmark was started at
 
-    # Pagination
-    limit: int = 5
-    offset: int = 0
+    # Pagination — cursor preferred, offset/limit kept for backward compat
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    offset: int = Field(default=0, ge=0)
 
 
 class BenchmarkTableRow(BaseModel):
@@ -178,24 +192,179 @@ class BenchmarkTableRow(BaseModel):
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
+    # Per-TaskStatus counts: {"PENDING": 1, "IN_PROGRESS": 2, "FINISHED": 4, ...}.
+    # Absent keys mean zero; sum equals total_tasks.
+    task_state_counts: dict[str, int] = {}
+    run_by_email: str | None = None
     final_score: float | None = None
+    error_message: str | None = None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None  # started_at is non-nullable
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
 
 
 class FetchBenchmarksResponse(BaseModel):
     benchmarks: list[BenchmarkTableRow]
-    total_count: int
+    total_count: int | None = None
+    next_cursor: str | None = None
 
 
 class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
-    started_by_email: str | None
+    started_by_email: str | None = None
 
 
 class AnalyzeBenchmarkRequest(BaseModel):
     no_cache: bool = False
     # CLI resolves the analyzer Lambda from the agent's current pushed contract
-    # (handles YAML and Python contracts) and passes it here so the tracker
-    # doesn't have to parse arbitrary contract code.
+    # and passes it here so the tracker doesn't have to parse the contract.
     lambda_function: str | None = None
+
+
+class BenchmarkServiceEntry(BaseModel):
+    name: str
+    url: str
+    auth_header_name: str | None = None
+    auth_secret_name: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def remove_trailing_slashes(cls, value: str) -> str:
+        return value.rstrip("/")
+
+
+class BenchmarkServiceHealth(BaseModel):
+    name: str
+    url: str
+    healthy: bool
+    latency_ms: int | None
+    error: str | None = None
+
+
+class BenchmarkServicesResponse(BaseModel):
+    services: list[BenchmarkServiceHealth]
+
+
+class BenchmarkServicesRequest(BaseModel):
+    services: list[BenchmarkServiceEntry] = Field(default_factory=list)
+
+
+class BenchmarkStatusEntry(BaseModel):
+    id: UUID
+    status: BenchmarkStatus
+    finished_at: datetime | None
+    total_tasks: int
+    finished_tasks: int
+    # Per-TaskStatus counts; same shape as BenchmarkTableRow.task_state_counts.
+    task_state_counts: dict[str, int] = {}
+
+    @field_serializer("finished_at")
+    def _serialize_dt(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class BenchmarkStatusResponse(BaseModel):
+    entries: list[BenchmarkStatusEntry]
+
+
+class SingleBenchmarkResponse(BaseModel):
+    """Single-run view: BenchmarkTableRow fields plus optional final_score."""
+
+    id: UUID
+    name: str
+    agent_name: str
+    model: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    status: BenchmarkStatus
+    total_tasks: int
+    finished_tasks: int
+    task_state_counts: dict[str, int] = {}
+    run_by_email: str | None = None
+    final_score: float | None = None
+    error_message: str | None = None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class TaskSummary(BaseModel):
+    id: UUID
+    task_id: str
+    status: TaskStatus
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None = None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class TasksResponse(BaseModel):
+    tasks: list[TaskSummary]
+    total_count: int
+
+
+class SingleTaskResponse(BaseModel):
+    id: UUID
+    task_id: str
+    status: TaskStatus
+    started_at: datetime
+    finished_at: datetime | None
+    error_message: str | None
+    evaluation_result: dict[str, Any] | None
+    agent_caused_exit_reason: str | None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class AgentEntry(BaseModel):
+    name: str
+    last_modified: str | None = None
+
+
+class AgentsResponse(BaseModel):
+    agents: list[AgentEntry]
+
+
+class AgentDownloadURLResponse(BaseModel):
+    name: str
+    download_url: str
+    expires_in: int
+
+
+class TaskArtifactsResponse(BaseModel):
+    cloudwatch_url: str | None
+    agent_output_url: str | None
+    agent_output_expires_in: int | None

@@ -31,3 +31,6 @@ build
 
 *claude*
 *CLAUDE*
+
+# Local docker-compose overrides (per-dev port remaps, etc.)
+services/tracker/docker-compose.override.yml
