@@ -519,7 +519,7 @@ class TestUploadAgentArtifacts:
         )
         monkeypatch.setattr(
             "tracker.sandbox.create_presigned_url",
-            Mock(return_value="https://example.com/presigned"),
+            AsyncMock(return_value="https://example.com/presigned"),
         )
 
         aws = AWSCredentials(

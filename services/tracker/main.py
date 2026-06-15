@@ -1,6 +1,8 @@
+import io
 import logging
 import tarfile
 import traceback
+from collections.abc import AsyncIterator
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -32,7 +34,7 @@ from tracker.aws.s3 import (
     create_benchmark_url,
     create_console_url,
     create_presigned_url,
-    download_from_s3_stream,
+    download_many_from_s3,
     list_s3_objects,
     s3_object_exists,
 )
@@ -512,7 +514,7 @@ async def retrieve_results(
         s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
 
         https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"
-        presigned_url = create_presigned_url(s3_key, harness_config.aws, harness_config.s3_bucket)
+        presigned_url = await create_presigned_url(s3_key, harness_config.aws, harness_config.s3_bucket)
         console_url = create_console_url(s3_key, harness_config.aws.aws_default_region, harness_config.s3_bucket)
 
         return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)
@@ -539,7 +541,7 @@ async def check_results_exist(
     get_scoped(Benchmark, benchmark_id, session, org)
 
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
-    exists = s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
+    exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
     return {"exists": exists}
 
 
@@ -755,44 +757,40 @@ async def fetch_agent_outputs(
     get_scoped(Benchmark, benchmark_id, session, org)
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
-    if task_ids:
-        s3_keys = [
-            key
-            for task_id in task_ids
-            for key in list_s3_objects(f"{benchmark_prefix}{task_id}/", harness_config.aws, harness_config.s3_bucket)
-        ]
-    else:
-        s3_keys = list_s3_objects(benchmark_prefix, harness_config.aws, harness_config.s3_bucket)
 
-    if not s3_keys:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No outputs found for run '{benchmark_id}'",
-        )
+    async def output_keys() -> AsyncIterator[str]:
+        prefixes = [f"{benchmark_prefix}{task_id}/" for task_id in task_ids] if task_ids else [benchmark_prefix]
+        for prefix in prefixes:
+            async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
+                yield key
 
-    def tar_generator():
+    # Peek a single key so an empty result still returns 404 before the stream starts.
+    keys = output_keys()
+    first_key = await anext(keys, None)
+    if first_key is None:
+        raise HTTPException(status_code=404, detail=f"No outputs found for run '{benchmark_id}'")
+
+    async def all_keys() -> AsyncIterator[str]:
+        yield first_key
+        async for key in keys:
+            yield key
+
+    async def tar_generator():
         writer: YieldingWriter = YieldingWriter()
 
+        # download_many_from_s3 reuses a single client/connection pool across all keys,
+        # and reads one object into memory at a time (bounded by the largest object).
         with tarfile.open(fileobj=writer, mode="w|") as tar:
-            for s3_key in s3_keys:
+            async for s3_key, data in download_many_from_s3(all_keys(), harness_config.aws, harness_config.s3_bucket):
                 relative_path: str = s3_key.removeprefix(benchmark_prefix)
 
-                try:
-                    body, size = download_from_s3_stream(s3_key, harness_config.aws, harness_config.s3_bucket)
+                tarinfo = tarfile.TarInfo(name=relative_path)
+                tarinfo.size = len(data)
+                tar.addfile(tarinfo, fileobj=io.BytesIO(data))
 
-                    tarinfo = tarfile.TarInfo(name=relative_path)
-                    tarinfo.size = size
-
-                    tar.addfile(tarinfo, fileobj=body)
-
-                    chunk = writer.pop()
-                    if chunk:
-                        yield chunk
-
-                except Exception as e:
-                    logger.warning(f"Failed to add {s3_key} to tar: {e}", exc_info=True)
-
-                    continue
+                chunk = writer.pop()
+                if chunk:
+                    yield chunk
 
         final_chunk = writer.pop()
         if final_chunk:

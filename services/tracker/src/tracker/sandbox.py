@@ -237,7 +237,7 @@ async def upload_agent_artifacts(
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
-    presigned_url = create_presigned_url(contract_s3_key, aws, s3_bucket)
+    presigned_url = await create_presigned_url(contract_s3_key, aws, s3_bucket)
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
     contract_dir = shlex.quote(str(bundle_path / contract.name))
