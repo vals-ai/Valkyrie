@@ -1,10 +1,8 @@
-"""Resolves agent contracts from zipped agent bundles (yaml or python)."""
+"""Resolves agent contracts from zipped agent bundles (yaml)."""
 
-import importlib.util
 import io
 import os
 import shutil
-import sys
 import tempfile
 import zipfile
 from contextlib import contextmanager
@@ -14,7 +12,6 @@ from typing import BinaryIO, Generator
 import yaml
 from pydantic import ValidationError as PydanticValidationError
 
-from tracker.contract import BaseAgentContract
 from tracker.contract_schemas import AgentConfig, AgentContract
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import BundlerError, ContractValidationError
@@ -77,13 +74,13 @@ def get_agent_zip_stream(agent_name: str | None, agent_path: Path) -> Generator[
 
 
 def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config: AgentConfig) -> AgentContractRequest:
-    """Extract contract from zip bytes into a temp dir and load it. Tries .yaml/.yml first, then .py."""
+    """Extract contract from zip bytes into a temp dir and load it. Looks for contract.yaml/.yml."""
     try:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
                 names = zf.namelist()
-                for ext in (".yaml", ".yml", ".py"):
+                for ext in (".yaml", ".yml"):
                     contract_member = f"{agent_name}/contract{ext}"
                     if contract_member in names:
                         zf.extract(contract_member, tmp_path)
@@ -94,28 +91,6 @@ def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config:
         raise
     except Exception as e:
         raise BundlerError(f"Failed to load contract from zip for agent '{agent_name}':\n{e}") from e
-
-
-def _parse_python_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
-    # TODO: BAD — runs arbitrary tenant Python in the tracker process.
-    # Port every agent contract to YAML and remove this path ASAP.
-    if "valkyrie.contract" not in sys.modules:
-        import tracker.contract as _tracker_contract
-
-        sys.modules["valkyrie.contract"] = _tracker_contract
-
-    spec = importlib.util.spec_from_file_location("contract", contract_path)
-
-    if not spec or not spec.loader:
-        raise ImportError(f"Failed to import contract from {contract_path}")
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    Contract: type[BaseAgentContract] = module.contract
-    contract = Contract(agent_config)
-
-    return contract.to_request()
 
 
 def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
@@ -156,17 +131,13 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
 
 
 def get_contract(contract_path: Path, agent_config: AgentConfig) -> AgentContractRequest:
-    """Dispatch a contract file to the right parser based on extension (.py/.yaml/.yml)."""
+    """Dispatch a contract file to the right parser based on extension (.yaml/.yml)."""
     try:
         match contract_path.suffix:
-            case ".py":
-                return _parse_python_contract(contract_path, agent_config)
             case ".yaml" | ".yml":
                 return _parse_yaml_contract(contract_path, agent_config)
             case _:
-                raise ValueError(
-                    f"Unsupported contract format: `{contract_path.suffix}`. Expected '.py', '.yaml', or '.yml'"
-                )
+                raise ValueError(f"Unsupported contract format: `{contract_path.suffix}`. Expected '.yaml' or '.yml'")
     except ValueError:
         raise
     except Exception as e:

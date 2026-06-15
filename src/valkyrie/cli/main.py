@@ -625,10 +625,10 @@ def start(
             contract_file = next(
                 (
                     agent_path / f"contract{ext}"
-                    for ext in (".yaml", ".yml", ".py")
+                    for ext in (".yaml", ".yml")
                     if (agent_path / f"contract{ext}").exists()
                 ),
-                agent_path / "contract.py",
+                agent_path / "contract.yaml",
             )
             contract = get_contract(contract_file, agent_config)
             contract.name = agent_path.stem
@@ -862,8 +862,7 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
             if not check_tracker_service_health(tracker):
                 raise click.ClickException("Tracker service is unhealthy.")
 
-            # Resolve the analyzer Lambda from the agent's current pushed contract
-            # (handles both YAML and Python contracts).
+            # Resolve the analyzer Lambda from the agent's current pushed contract.
             metadata = tracker.fetch_benchmark_metadata(run_id)
             contract_name = metadata.benchmark_arguments.contract.name
             try:
@@ -876,8 +875,7 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
             if not lambda_function:
                 raise click.ClickException(
                     f"Agent '{contract_name}' has no `ingest_lambda` set in its current contract. "
-                    "Declare it in contract.yaml (or override the `ingest_lambda` property in "
-                    "contract.py) and re-push with `valk agent push ./<agent_dir>`."
+                    "Declare it in contract.yaml and re-push with `valk agent push ./<agent_dir>`."
                 )
 
             terminal: tuple[str, dict[str, Any]] | None = None
@@ -961,6 +959,15 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
     help="Path or http(s) URL to a text file with one task ID per line",
 )
 @click.option(
+    "--secret",
+    "-s",
+    "secrets",
+    multiple=True,
+    nargs=2,
+    type=(str, str),
+    help="Secret as ENV_VAR aws_secret_name (e.g., -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey)",
+)
+@click.option(
     "--update-agent",
     "-u",
     is_flag=True,
@@ -981,6 +988,7 @@ def resume(
     concurrency: int | None,
     task_ids: str | None,
     task_ids_file: str | None,
+    secrets: tuple[tuple[str, str]],
     update_agent: bool,
     from_scratch: bool,
 ):
@@ -1022,6 +1030,7 @@ def resume(
                 concurrency,
                 retry_task_ids,
                 service_headers=service_headers,
+                secrets={key: value for key, value in secrets},
             )
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))
