@@ -8,6 +8,7 @@ from typing import Any
 
 from descope import AuthException, DescopeClient
 from fastapi import Depends, HTTPException, Request
+from fastapi.security.utils import get_authorization_scheme_param
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import ReadTimeout
 from sqlmodel import Session, select
@@ -242,13 +243,12 @@ def forward_tracker_api_key(
 
 
 def _extract_bearer_token(request: Request) -> str | None:
-    auth = request.headers.get("authorization")
-    if not auth:
+    scheme, credentials = get_authorization_scheme_param(request.headers.get("Authorization"))
+    if scheme.lower() != "bearer":
         return None
-    parts = auth.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    return parts[1]
+
+    token = credentials.strip()
+    return token or None
 
 
 def resolve_bearer_session(jwt: str, session: Session) -> Org:

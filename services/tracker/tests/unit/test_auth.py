@@ -1,5 +1,6 @@
 import pytest
 from sqlmodel import Session, SQLModel, create_engine
+from starlette.requests import Request
 
 from tests.conftest import TEST_ORG_ID
 from tracker.database.models import DEFAULT_ORG_NAME, Org
@@ -43,3 +44,21 @@ def test_forward_tracker_api_key_preserves_explicit_override_case_insensitive():
 
     assert headers == original_headers
     assert headers is not original_headers
+
+
+def _request_with_header(name: str, value: str) -> Request:
+    return Request({"type": "http", "headers": [(name.lower().encode(), value.encode())]})
+
+
+def test_extract_bearer_token_uses_case_insensitive_scheme_matching():
+    from tracker.auth import _extract_bearer_token
+
+    assert _extract_bearer_token(_request_with_header("Authorization", "Bearer token-1")) == "token-1"
+    assert _extract_bearer_token(_request_with_header("authorization", "bearer token-2")) == "token-2"
+
+
+def test_extract_bearer_token_rejects_missing_or_wrong_scheme():
+    from tracker.auth import _extract_bearer_token
+
+    assert _extract_bearer_token(_request_with_header("Authorization", "Basic token")) is None
+    assert _extract_bearer_token(_request_with_header("Authorization", "Bearer   ")) is None
