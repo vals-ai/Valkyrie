@@ -9,6 +9,7 @@ from uuid import UUID
 
 import click
 import yaml
+from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 from tracker.database.models import BenchmarkStatus, RetryMode
 from tracker.exceptions import S3Error
 from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
@@ -1218,7 +1219,7 @@ def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
         valkyrie agent output 6f176c17-7199-4ebc-b931-973e5600c1c9 swebench.json -o .
     """
     try:
-        path = f"benchmarks/{benchmark_id}"
+        path = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}"
         if subpath:
             path = f"{path}/{subpath.strip('/')}"
 

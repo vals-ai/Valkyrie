@@ -12,8 +12,15 @@ import click
 import yaml
 from botocore.exceptions import ClientError
 from tracker import handle_s3_error
+from tracker.aws.s3 import (
+    copy_s3_object,
+    get_benchmark_contract_s3_key,
+    get_contract_s3_key,
+    s3_object_exists,
+)
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
+from tracker.types import AWSCredentials
 
 from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
 from valkyrie.cli.utils import load_config, run_with_spinner
@@ -29,6 +36,16 @@ def _fetch_bucket_name() -> str:
         raise click.ClickException("S3_BUCKET key not found. Add it using 'valkyrie config set' first.")
 
     return bucket_name
+
+
+def _aws_credentials() -> AWSCredentials:
+    """Build AWS credentials from the valkyrie config."""
+    config = load_config()
+    return AWSCredentials(
+        aws_access_key_id=config["AWS_ACCESS_KEY_ID"],
+        aws_secret_access_key=config["AWS_SECRET_ACCESS_KEY"],
+        aws_default_region=config["AWS_DEFAULT_REGION"],
+    )
 
 
 def _s3_client():
@@ -162,7 +179,7 @@ async def push_agent(agent_name: str | None, agent_path: Path):
 
         async with _s3_client() as s3_client:
             # Initiate multipart upload
-            key = f"agents/{agent_name}.zip"
+            key = get_contract_s3_key(agent_name)
             now = datetime.now(timezone.utc).isoformat()
 
             multipart = await s3_client.create_multipart_upload(
@@ -224,21 +241,15 @@ async def push_agent(agent_name: str | None, agent_path: Path):
 
 async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
+    aws = _aws_credentials()
     bucket_name = _fetch_bucket_name()
-    source_key = f"agents/{agent_name}.zip"
-    dest_key = f"benchmarks/{benchmark_id}/{agent_name}.zip"
+    source_key = get_contract_s3_key(agent_name)
+    dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
 
-    async with _s3_client() as s3_client:
-        try:
-            await s3_client.copy_object(
-                Bucket=bucket_name,
-                CopySource={"Bucket": bucket_name, "Key": source_key},
-                Key=dest_key,
-            )
-        except ClientError as e:
-            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
-                raise S3Error(f"Agent '{agent_name}.zip' not found in S3.") from e
-            raise S3Error(f"Failed to copy agent '{agent_name}' in S3: {e}") from e
+    if not await s3_object_exists(source_key, aws, bucket_name):
+        raise S3Error(f"Agent '{agent_name}.zip' not found in S3.")
+
+    await copy_s3_object(source_key, dest_key, aws, bucket_name)
 
 
 @handle_s3_error(message="Failed to remove agent from S3")
@@ -249,7 +260,7 @@ async def remove_agent(agent_name: str):
     bucket_name = _fetch_bucket_name()
 
     async with _s3_client() as s3_client:
-        key = f"agents/{agent_name}.zip"
+        key = get_contract_s3_key(agent_name)
 
         try:
             # Check if agent exists and raise if we cannot find it
@@ -300,7 +311,7 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
 
     async with _s3_client() as s3_client:
         try:
-            response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
+            response = await s3_client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
         except ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
@@ -383,7 +394,7 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
 
     async with _s3_client() as s3_client:
         try:
-            response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
+            response = await s3_client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
         except ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
@@ -412,7 +423,7 @@ async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> Ag
 
     async with _s3_client() as s3_client:
         try:
-            response = await s3_client.get_object(Bucket=bucket_name, Key=f"agents/{agent_name}.zip")
+            response = await s3_client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
             zip_bytes: bytes = await response["Body"].read()
         except ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
