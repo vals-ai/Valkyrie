@@ -204,6 +204,9 @@ valkyrie run retry <id>
 # Override concurrency on resume (works on retry)
 valkyrie run resume <id> --concurrency 20
 
+# Override agent secrets for resumed tasks
+valkyrie run resume <id> -s ANTHROPIC_API_KEY newSecretName
+
 # Save every task ID in a benchmark dataset to a text file
 valkyrie benchmark tasks swebench --dataset default
 
@@ -214,6 +217,7 @@ valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 | Option | Description |
 | --- | --- |
 | `--concurrency` | Override concurrency level |
+| `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged into the stored run contract before resumed/retried tasks are enqueued (CLI wins on conflict) |
 | `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
