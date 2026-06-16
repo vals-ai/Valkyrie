@@ -71,6 +71,7 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
+CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -242,7 +243,9 @@ async def upload_agent_artifacts(
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
     contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
-    presigned_url = await create_presigned_url(contract_s3_key, aws, s3_bucket, expiration=86400)
+    presigned_url = await create_presigned_url(
+        contract_s3_key, aws, s3_bucket, expiration=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS
+    )
 
     zip_path = shlex.quote(f"/tmp/{contract.name}.zip")
     contract_dir = shlex.quote(str(bundle_path / contract.name))

@@ -279,7 +279,7 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
         return get_default_org(session)
 
     bearer = _extract_bearer_token(request)
-    api_key = request.headers.get("x-api-key")
+    api_key = request.headers.get("x-api-key") or ""
 
     if bearer and api_key:
         raise HTTPException(status_code=401, detail="Send Authorization OR x-api-key, not both")
@@ -289,7 +289,6 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
     if bearer:
         return resolve_bearer_session(bearer, session)
 
-    assert api_key is not None
     identity = resolve_descope_identity(api_key)
     org = find_org_by_tenant(identity.tenant_name, session)
     if not org:

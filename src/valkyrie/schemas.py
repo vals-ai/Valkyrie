@@ -1,6 +1,6 @@
-"""Shim — agent contract schemas now live in tracker.contract_schemas."""
+"""Shim — agent contract schemas now live in tracker.agent.schemas."""
 
-from tracker.contract_schemas import AgentConfig, AgentContract, OutputArtifact, OutputArtifactSpec, Parameter
+from tracker.agent.schemas import AgentConfig, AgentContract, OutputArtifact, OutputArtifactSpec, Parameter
 
 
 __all__ = ["AgentConfig", "AgentContract", "OutputArtifact", "OutputArtifactSpec", "Parameter"]
