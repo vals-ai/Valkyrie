@@ -1262,7 +1262,13 @@ def install(github_url: str, name: str | None):
     required=False,
     help="Agent name (defaults to path stem)",
 )
-def push(agent_path: Path, name: str | None):
+@click.option(
+    "--version",
+    type=str,
+    required=False,
+    help="Also publish an immutable copy at agents/<name>/<version>.zip (refuses overwrite). Intended for release CI.",
+)
+def push(agent_path: Path, name: str | None, version: str | None):
     """Push a local agent to S3.
 
     Example:
@@ -1271,7 +1277,7 @@ def push(agent_path: Path, name: str | None):
     """
     try:
         agent_name = name or agent_path.stem
-        asyncio.run(push_agent(agent_name, agent_path))
+        asyncio.run(push_agent(agent_name, agent_path, version=version))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
     except S3Error as e:
         raise click.ClickException(str(e))

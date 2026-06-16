@@ -6,7 +6,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import aioboto3
 import click
@@ -15,6 +15,9 @@ from botocore.exceptions import ClientError
 from tracker import handle_s3_error
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
 
 from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
 from valkyrie.cli.utils import load_config, run_with_spinner
@@ -144,9 +147,24 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
     return resolved_name
 
 
+async def _versioned_key_exists(s3_client: "S3Client", bucket_name: str, key: str) -> bool:
+    """Return whether an object already lives at key, treating a missing key as False."""
+    try:
+        await s3_client.head_object(Bucket=bucket_name, Key=key)
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
+            return False
+        raise
+    return True
+
+
 @handle_s3_error(message="Failed to push agent to S3")
-async def push_agent(agent_name: str | None, agent_path: Path):
-    """Zip and push an agent to S3 at agents/{agent_name}.zip"""
+async def push_agent(agent_name: str | None, agent_path: Path, version: str | None = None):
+    """Zip and push an agent to S3 at agents/{agent_name}.zip.
+
+    When version is given, also publish an immutable copy at agents/{agent_name}/{version}.zip,
+    refusing to overwrite an existing versioned key.
+    """
 
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
@@ -155,6 +173,10 @@ async def push_agent(agent_name: str | None, agent_path: Path):
     if agent_name is None:
         agent_name = agent_path.name
 
+    # Validate the version up front so a malformed key can never reach S3 or overwrite latest.
+    if version is not None and (not version or "/" in version or version in (".", "..")):
+        raise S3Error(f"Invalid version '{version}': must be a single path segment with no '/'.")
+
     with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
         # Get file size for progress bar
         file_stream.seek(0, 2)  # Seek to end
@@ -162,8 +184,19 @@ async def push_agent(agent_name: str | None, agent_path: Path):
         file_stream.seek(0)  # Seek back to start
 
         async with _s3_client() as s3_client:
-            # Initiate multipart upload
             key = f"agents/{agent_name}.zip"
+            versioned_key = f"agents/{agent_name}/{version}.zip" if version is not None else None
+
+            # Refuse to overwrite a released bundle before mutating the latest key.
+            # cast: the aioboto3 stubs surface the entered client as Unknown.
+            typed_client = cast("S3Client", s3_client)
+            if versioned_key is not None and await _versioned_key_exists(typed_client, bucket_name, versioned_key):
+                raise S3Error(
+                    f"s3://{bucket_name}/{versioned_key} already exists. Released bundles are "
+                    "immutable — bump the version (merge a PR with #patch/#minor/#major) instead."
+                )
+
+            # Initiate multipart upload
             now = datetime.now(timezone.utc).isoformat()
 
             multipart = await s3_client.create_multipart_upload(
@@ -221,6 +254,14 @@ async def push_agent(agent_name: str | None, agent_path: Path):
                     UploadId=upload_id,
                 )
                 raise
+
+            if versioned_key is not None:
+                await s3_client.copy_object(
+                    Bucket=bucket_name,
+                    CopySource={"Bucket": bucket_name, "Key": key},
+                    Key=versioned_key,
+                )
+                click.echo(f"Published immutable bundle s3://{bucket_name}/{versioned_key}")
 
 
 async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
@@ -281,9 +322,10 @@ async def list_agents():
         agents: list[tuple[str, datetime]] = []
         if "Contents" in response:
             for obj in response["Contents"]:
-                # Extract agent name from a value like "agents/agent_name.zip"
+                # Extract agent name from a value like "agents/agent_name.zip".
+                # Exclude nested immutable bundles at "agents/{name}/{version}.zip".
                 key = obj["Key"]
-                match = re.match(r"agents/(.+?)\.zip$", cast(str, key))
+                match = re.match(r"agents/([^/]+?)\.zip$", cast(str, key))
                 if not match:
                     continue
 
