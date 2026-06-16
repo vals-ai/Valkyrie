@@ -1,6 +1,6 @@
 """S3 upload utilities for the tracker service."""
 
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
@@ -57,10 +57,10 @@ def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/{output_name}"
 
 
-def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Awaitable[_R]]]:
+def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Coroutine[Any, Any, _R]]]:
     """Wrap AWS errors raised by an async S3 helper as S3Error."""
 
-    def decorator(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
+    def decorator(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Coroutine[Any, Any, _R]]:
         @wraps(func)
         async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
             try:
