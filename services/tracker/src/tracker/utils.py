@@ -403,6 +403,9 @@ async def process_task(
         if benchmark_row.status == BenchmarkStatus.STOPPING:
             handle_early_exit(task_row, task_session)
             return {task_id: None}
+        benchmark_name = benchmark_row.name
+        benchmark_agent_name = benchmark_row.arguments.contract.name
+        benchmark_started_by_email = benchmark_row.started_by_email
 
     # Setup logging infrastructure before try block so it's always available
     # Suffix is required to version control streams, never delete between retires
@@ -491,8 +494,18 @@ async def process_task(
         with Session(bind=engine) as task_session:
             commit_task_status_transition(task_row.id, task_session, org, TaskStatus.BUILDING)
 
+        identity = {
+            "benchmark_name": benchmark_name,
+            "agent_name": benchmark_agent_name,
+        }
+        if benchmark_started_by_email:
+            identity["email"] = benchmark_started_by_email
+
         env_vars = {
             **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+            "RUN_ID": str(benchmark_id),
+            "TASK_ID": task_row.task_id,
+            "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per benchmark run and separable from other environments sharing the
             # same Daytona account (sandbox OTLP export is account-level).
