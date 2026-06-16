@@ -78,9 +78,7 @@ def get_benchmark_tasks(
         col(Task.benchmark) == benchmark_id,
         col(Task.org_id) == org.id,
     ]
-    if len(statuses) == 1:
-        base_filters.append(col(Task.status) == statuses[0])
-    elif len(statuses) > 1:
+    if statuses:
         base_filters.append(col(Task.status).in_(statuses))
 
     if task_id_search:

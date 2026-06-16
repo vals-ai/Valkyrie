@@ -3,8 +3,9 @@ from io import BytesIO
 
 import pytest
 
-from tracker.agent_bundler import _zip_directory_to_file, get_agent_zip_stream, get_contract_from_zip_bytes
-from tracker.contract_schemas import AgentConfig
+from tracker.agent.bundler import _zip_directory_to_file, get_agent_zip_stream
+from tracker.agent.contract import get_contract_from_zip_bytes
+from tracker.agent.schemas import AgentConfig
 from tracker.exceptions import BundlerError
 
 

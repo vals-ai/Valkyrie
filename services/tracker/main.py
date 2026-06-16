@@ -38,7 +38,7 @@ from tracker.auth import (
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.secrets import resolve_secrets
-from tracker.agent_bundler import get_contract_from_zip_bytes
+from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
@@ -51,7 +51,7 @@ from tracker.aws.s3 import (
     list_s3_objects,
     s3_object_exists,
 )
-from tracker.contract_schemas import AgentConfig
+from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
     CORS_ALLOWED_ORIGIN_REGEX,

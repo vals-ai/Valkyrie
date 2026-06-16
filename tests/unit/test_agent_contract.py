@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 from tracker.database.models import AgentContractRequest, OutputArtifact
 
-from tracker.agent_bundler import _parse_yaml_contract  # type: ignore
+from tracker.agent.contract import _parse_yaml_contract  # type: ignore
 from valkyrie.schemas import AgentConfig, AgentContract, Parameter
 
 

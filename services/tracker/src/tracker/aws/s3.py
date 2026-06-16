@@ -307,33 +307,21 @@ def create_benchmark_url(benchmark_id: str, region: str, s3_bucket: str) -> str:
 
 @handle_s3_error(message="Failed to list agents from S3")
 async def list_agents(aws: "AWSCredentials", s3_bucket: str) -> list[tuple[str, datetime | None]]:
-    """List agents under the `agents/` prefix.
+    """List zipped agent bundles under the `agents/` prefix.
 
-    Accepts both layouts:
-      * subfolders — `agents/<name>/...`
-      * zipped bundles — `agents/<name>.zip`
-
-    Returns (name, last_modified) pairs. last_modified is None for the subfolder
-    layout, which has no single object timestamp.
+    Returns (name, last_modified) pairs, one per `agents/<name>.zip`.
 
     Raises:
         S3Error: If listing fails due to AWS errors or network issues
     """
-    seen: dict[str, datetime | None] = {}
+    agents: list[tuple[str, datetime | None]] = []
     async with _s3_client(aws) as client:
         paginator = client.get_paginator("list_objects_v2")
-        async for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/", Delimiter="/"):
-            for common_prefix in page.get("CommonPrefixes", []):
-                name = common_prefix["Prefix"][len("agents/") :].rstrip("/")
-                if name and name not in seen:
-                    seen[name] = None
+        async for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/"):
             for s3_object in page.get("Contents", []):
                 tail = s3_object["Key"][len("agents/") :]
-                if not tail or tail.startswith(".") or not tail.endswith(".zip"):
+                if not tail.endswith(".zip"):
                     continue
-                name = tail[: -len(".zip")]
-                if not name or name in seen:
-                    continue
-                seen[name] = s3_object.get("LastModified")
+                agents.append((tail[: -len(".zip")], s3_object.get("LastModified")))
 
-    return list(seen.items())
+    return agents
