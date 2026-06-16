@@ -39,9 +39,7 @@ def _create_task_env(
         harness_config=harness_config,
     )
 
-    benchmark_row = start_benchmark_request_to_benchmark(
-        start_benchmark_request, run_starter or _TEST_STARTER
-    )
+    benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, run_starter or _TEST_STARTER)
     benchmark_row.status = BenchmarkStatus.IN_PROGRESS
     database_session.add(benchmark_row)
     database_session.commit()
@@ -110,18 +108,14 @@ async def test_process_task_injects_tracker_owned_attribution_env(
         }
 
     @asynccontextmanager
-    async def _capture_create_sandbox(
-        *_args: Any, env_vars: dict[str, str], **_kwargs: Any
-    ):
+    async def _capture_create_sandbox(*_args: Any, env_vars: dict[str, str], **_kwargs: Any):
         captured_env_vars.append(env_vars)
         yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
 
     monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
     monkeypatch.setattr(utils_module, "create_sandbox", _capture_create_sandbox)
 
-    result = await _run_process_task(
-        start_benchmark_request, task_row, benchmark_id, harness_config
-    )
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
     assert result == {"task_0": {"status": "success", "score": 1.0}}
     assert len(captured_env_vars) == 1
@@ -154,9 +148,7 @@ async def test_process_task_omits_identity_email_when_unavailable(
     captured_env_vars: list[dict[str, str]] = []
 
     @asynccontextmanager
-    async def _capture_create_sandbox(
-        *_args: Any, env_vars: dict[str, str], **_kwargs: Any
-    ):
+    async def _capture_create_sandbox(*_args: Any, env_vars: dict[str, str], **_kwargs: Any):
         captured_env_vars.append(env_vars)
         yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
 
@@ -166,9 +158,7 @@ async def test_process_task_omits_identity_email_when_unavailable(
     monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_no_secrets)
     monkeypatch.setattr(utils_module, "create_sandbox", _capture_create_sandbox)
 
-    result = await _run_process_task(
-        start_benchmark_request, task_row, benchmark_id, harness_config
-    )
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
     assert result == {"task_0": {"status": "success", "score": 1.0}}
     assert len(captured_env_vars) == 1
