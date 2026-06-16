@@ -50,7 +50,6 @@ from tracker.aws.s3 import (
     get_contract_s3_key,
     list_s3_objects,
     s3_object_exists,
-    upload_to_s3,
 )
 from tracker.contract_schemas import AgentConfig
 from tracker.config import (
@@ -865,18 +864,15 @@ async def fetch_agent_outputs(
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
     task_ids: list[str] | None = Query(default=None),
-    s3: bool = Query(default=False),
-) -> StreamingResponse | S3UploadResultsResponse:
+) -> StreamingResponse:
     """
-    Stream a tar file with agent outputs to the client, or upload it to S3 and
-    return a presigned URL when ``?s3=true``.
+    Stream a tar file with agent outputs to the client.
 
     Usage:
     curl -X GET http://<endpoint>/fetch-agent-outputs/<benchmark_id>
-    curl -X GET http://<endpoint>/fetch-agent-outputs/<benchmark_id>?s3=true
 
     Returns:
-        StreamingResponse (default) or S3UploadResultsResponse (s3=true)
+        StreamingResponse
     """
     get_scoped(Benchmark, benchmark_id, session, org)
 
@@ -898,27 +894,6 @@ async def fetch_agent_outputs(
         yield first_key
         async for key in keys:
             yield key
-
-    if s3:
-        buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            async for s3_key, data in download_many_from_s3(all_keys(), harness_config.aws, harness_config.s3_bucket):
-                relative_path: str = s3_key.removeprefix(benchmark_prefix)
-                tarinfo = tarfile.TarInfo(name=relative_path)
-                tarinfo.size = len(data)
-                tar.addfile(tarinfo, fileobj=io.BytesIO(data))
-
-        tar_bytes = buf.getvalue()
-        s3_tar_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/agent_outputs.tar.gz"
-        await upload_to_s3(tar_bytes, s3_tar_key, harness_config.aws, harness_config.s3_bucket)
-
-        https_url = f"s3://{harness_config.s3_bucket}/{s3_tar_key}"
-        presigned_url = await create_presigned_url(
-            s3_tar_key, harness_config.aws, harness_config.s3_bucket, expiration=300
-        )
-        console_url = create_console_url(s3_tar_key, harness_config.aws.aws_default_region, harness_config.s3_bucket)
-
-        return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)
 
     async def tar_generator():
         writer: YieldingWriter = YieldingWriter()
