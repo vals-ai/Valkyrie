@@ -13,7 +13,6 @@ import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
@@ -54,8 +53,6 @@ from tracker.aws.s3 import (
 from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
-    CORS_ALLOWED_ORIGIN_REGEX,
-    CORS_ALLOWED_ORIGINS,
     ENVIRONMENT,
     create_benchmark_service_url,
 )
@@ -129,28 +126,6 @@ def _operation_id(route: APIRoute) -> str:
 app = FastAPI(generate_unique_id_function=_operation_id)
 
 logfire.instrument_fastapi(app, excluded_urls="/health$")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=CORS_ALLOWED_ORIGINS,
-    allow_origin_regex=CORS_ALLOWED_ORIGIN_REGEX,
-    allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allow_headers=[
-        "Authorization",
-        "x-api-key",
-        "Content-Type",
-        "x-harness-aws-access-key-id",
-        "x-harness-aws-secret-access-key",
-        "x-harness-aws-default-region",
-        "x-harness-aws-session-token",
-        "x-harness-s3-bucket",
-        "x-harness-log-group",
-        "x-harness-log-retention-policy",
-        "x-harness-daytona-secret-name",
-        "x-harness-run-by-email",
-    ],
-)
 
 app.add_middleware(RequestContextMiddleware)
 

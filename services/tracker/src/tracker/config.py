@@ -83,6 +83,3 @@ async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")
 DESCOPE_MANAGEMENT_KEY = os.environ.get("DESCOPE_MANAGEMENT_KEY", "")
-
-CORS_ALLOWED_ORIGINS: list[str] = ["http://localhost:3000"]
-CORS_ALLOWED_ORIGIN_REGEX = r"https://([^/]+\.)?platform\.vals\.ai"
