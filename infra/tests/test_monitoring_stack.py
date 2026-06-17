@@ -168,6 +168,7 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
         stage=stage,
         vpc=shared.vpc,
         cluster=shared.cluster,
+        namespace=shared.namespace,
         redis_url=shared.redis_url,
         bucket=shared.bucket,
         database=tracker.database,
@@ -305,7 +306,10 @@ class MonitoringStackTest(unittest.TestCase):
         )
 
     def test_service_environment_labels_follow_stage(self) -> None:
-        for stage_name, expected_environment in ((PROD, "production"), (DEV, "dev")):
+        for stage_name, expected_environment, expected_namespace in (
+            (PROD, "production", "local"),
+            (DEV, "dev", "local-dev"),
+        ):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, {}, clear=True):
                 tracker_template, worker_template = _service_templates(stage_name)
 
@@ -313,6 +317,7 @@ class MonitoringStackTest(unittest.TestCase):
                     [
                         {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
                         {"Name": "ENVIRONMENT", "Value": expected_environment},
+                        {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
                     ]
                 )
                 tracker_template.has_resource_properties(

@@ -18,6 +18,7 @@ from aws_cdk import (
     aws_rds,
     aws_s3,
     aws_secretsmanager,
+    aws_servicediscovery,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
@@ -56,6 +57,7 @@ class WorkerStack(Stack):
         stage: Stage,
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
+        namespace: aws_servicediscovery.IPrivateDnsNamespace,
         redis_url: str,
         bucket: aws_s3.IBucket,
         database: aws_rds.DatabaseInstance,
@@ -80,6 +82,7 @@ class WorkerStack(Stack):
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket.bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
+            "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
         }
 
