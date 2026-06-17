@@ -32,6 +32,7 @@ class TestBenchmarkServiceDisconnect:
         contract: AgentContractRequest,
         database_session: Session,
         harness_config: HarnessConfig,
+        run_starter: RequestIdentity | None = None,
     ) -> tuple[StartBenchmarkRequest, Task, UUID]:
         """Create a benchmark request, benchmark row, and task row for process_task tests."""
         start_benchmark_request = StartBenchmarkRequest(
@@ -42,7 +43,7 @@ class TestBenchmarkServiceDisconnect:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, run_starter or self._test_starter)
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         database_session.add(benchmark_row)
         database_session.commit()
