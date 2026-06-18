@@ -457,7 +457,9 @@ async def analyze_benchmark(
     org: Org = Depends(get_current_org),
 ) -> dict[str, str] | StreamingResponse:
     """
-    Invoke the Docent analyzer Lambda for a benchmark and stream progress over SSE.
+    Invoke the Docent analyzer Lambda for a benchmark and emit SSE-formatted progress events
+    (started/heartbeat/done/error) that clients consume as buffered text (the response is read
+    in full; the terminal done/error event carries the result).
 
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
