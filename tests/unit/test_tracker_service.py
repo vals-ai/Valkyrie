@@ -5,8 +5,20 @@ import httpx
 import pytest
 from tracker.database.models import RetryMode
 
-from valkyrie.cli.runtime_config import DEV_TRACKER_URL, VALKYRIE_CONFIG_PATH_ENV_VAR, VALKYRIE_ENV_ENV_VAR
+from valkyrie.cli.runtime_config import (
+    DEV_TRACKER_URL,
+    VALKYRIE_CONFIG_PATH_ENV_VAR,
+    VALKYRIE_ENV_ENV_VAR,
+    TRACKER_SERVICE_URL_ENV_VAR,
+)
 from valkyrie.cli.tracker_service import TrackerService
+
+
+@pytest.fixture(autouse=True)
+def clear_runtime_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(VALKYRIE_ENV_ENV_VAR, raising=False)
+    monkeypatch.delenv(TRACKER_SERVICE_URL_ENV_VAR, raising=False)
+    monkeypatch.delenv(VALKYRIE_CONFIG_PATH_ENV_VAR, raising=False)
 
 
 class FakeClient:

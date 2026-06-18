@@ -17,6 +17,13 @@ from valkyrie.cli.runtime_config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def clear_runtime_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(VALKYRIE_ENV_ENV_VAR, raising=False)
+    monkeypatch.delenv(TRACKER_SERVICE_URL_ENV_VAR, raising=False)
+    monkeypatch.delenv(VALKYRIE_CONFIG_PATH_ENV_VAR, raising=False)
+
+
 def test_default_environment_keeps_existing_prod_config() -> None:
     assert selected_environment() == PROD_ENVIRONMENT
     assert tracker_service_url() == PROD_TRACKER_URL

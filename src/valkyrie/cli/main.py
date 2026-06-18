@@ -29,7 +29,6 @@ from valkyrie.cli.s3_client import (
 )
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import (
-    CONFIG_LOCATION,
     ConfigValue,
     check_tracker_service_health,
     download_agent_outputs,
@@ -39,6 +38,7 @@ from valkyrie.cli.utils import (
     format_run_start_details,
     format_start_benchmark_response,
     format_table,
+    get_config_location,
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
@@ -100,8 +100,9 @@ def init() -> None:
     """
 
     current_config: dict[str, Any] = {}
-    if CONFIG_LOCATION.exists():
-        with open(CONFIG_LOCATION) as f:
+    config_path = get_config_location()
+    if config_path.exists():
+        with open(config_path) as f:
             try:
                 current_config = yaml.safe_load(f) or {}
             except Exception:
@@ -117,7 +118,7 @@ def init() -> None:
         api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")
         current_config["api_key"] = api_key
 
-        # Validate the key and create/confirm org (uses default tracker URL)
+        # Validate the key and create/confirm org against the selected tracker URL.
         try:
             result = TrackerService.init_org(api_key)
         except TrackerServiceError as e:
@@ -164,12 +165,12 @@ def init() -> None:
     if mode != "hosted":
         current_config.pop("api_key", None)
 
-    CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(CONFIG_LOCATION, "w") as f:
+    with open(config_path, "w") as f:
         yaml.dump(current_config, f, default_flow_style=False)
 
-    click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
+    click.echo(click.style(f"\nConfig written to {config_path}", fg="green", bold=True))
 
 
 @config.command()
@@ -182,10 +183,11 @@ def set(key: str, value: str) -> None:
     Example: valkyrie config set AWS_DEFAULT_REGION us-west-2
     """
 
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         current: dict[str, str] = yaml.safe_load(f) or {}
 
     try:
@@ -197,7 +199,7 @@ def set(key: str, value: str) -> None:
 
     current[config_value.value] = value
 
-    with open(CONFIG_LOCATION, "w") as f:
+    with open(config_path, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"  {key} updated.", fg="green"))
@@ -212,10 +214,11 @@ def config_remove(key: str) -> None:
     Example: valkyrie config remove AWS_DEFAULT_REGION
     """
 
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         current: dict[str, str] = yaml.safe_load(f) or {}
 
     try:
@@ -233,7 +236,7 @@ def config_remove(key: str) -> None:
     if config_value.value in current:
         del current[config_value.value]
 
-    with open(CONFIG_LOCATION, "w") as f:
+    with open(config_path, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"  {key} removed.", fg="green"))
@@ -253,10 +256,11 @@ def service_set(name: str, url: str) -> None:
 
     Example: valkyrie config service set swebench https://my-tunnel.ngrok.io
     """
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
     if "custom_benchmark_services" not in harness_config:
@@ -264,7 +268,7 @@ def service_set(name: str, url: str) -> None:
 
     harness_config["custom_benchmark_services"][name] = url
 
-    with open(CONFIG_LOCATION, "w") as f:
+    with open(config_path, "w") as f:
         yaml.dump(harness_config, f, default_flow_style=False)
 
     click.echo(click.style(f"Service '{name}' has been set.", fg="green"))
@@ -277,10 +281,11 @@ def service_remove(name: str) -> None:
 
     Example: valkyrie config service remove swebench
     """
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
 
     services = current.get("custom_benchmark_services") or {}
@@ -290,7 +295,7 @@ def service_remove(name: str) -> None:
     del services[name]
     current["custom_benchmark_services"] = services
 
-    with open(CONFIG_LOCATION, "w") as f:
+    with open(config_path, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"Service '{name}' has been removed.", fg="green"))
@@ -299,10 +304,11 @@ def service_remove(name: str) -> None:
 @service.command("list")
 def service_list() -> None:
     """List all custom benchmark service URL overrides."""
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
 
     services: dict[str, str] = current.get("custom_benchmark_services") or {}
@@ -329,10 +335,11 @@ def auth_set(name: str, credential: str) -> None:
 
     Example: valkyrie config auth set swebench my-secret-credential
     """
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
     if "benchmark_auth" not in harness_config:
@@ -340,7 +347,7 @@ def auth_set(name: str, credential: str) -> None:
 
     harness_config["benchmark_auth"][name] = credential
 
-    with open(CONFIG_LOCATION, "w") as f:
+    with open(config_path, "w") as f:
         yaml.dump(harness_config, f, default_flow_style=False)
 
     click.echo(click.style(f"Auth for '{name}' has been set.", fg="green"))
@@ -353,10 +360,11 @@ def auth_remove(name: str) -> None:
 
     Example: valkyrie config auth remove swebench
     """
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
 
     auth_credentials = current.get("benchmark_auth") or {}
@@ -366,7 +374,7 @@ def auth_remove(name: str) -> None:
     del auth_credentials[name]
     current["benchmark_auth"] = auth_credentials
 
-    with open(CONFIG_LOCATION, "w") as f:
+    with open(config_path, "w") as f:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"Auth for '{name}' has been removed.", fg="green"))
@@ -375,10 +383,11 @@ def auth_remove(name: str) -> None:
 @auth.command("list")
 def auth_list() -> None:
     """List all configured benchmark auth credentials."""
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         current: dict[str, Any] = yaml.safe_load(f) or {}
 
     auth_credentials: dict[str, str] = current.get("benchmark_auth") or {}

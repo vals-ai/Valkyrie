@@ -31,8 +31,6 @@ from tracker.types import (
 from valkyrie.cli.runtime_config import config_location
 from valkyrie.cli.tracker_service import TrackerService
 
-CONFIG_LOCATION: Path = config_location()
-
 T = TypeVar("T")
 
 
@@ -145,12 +143,17 @@ def short_local_time(dt: datetime, include_date: bool = True) -> str:
     return dt.astimezone().strftime(fmt)
 
 
+def get_config_location() -> Path:
+    return config_location()
+
+
 def load_config() -> dict[str, str]:
     """Load the Valkyrie configuration from YAML file."""
-    if not CONFIG_LOCATION.exists():
+    config_path = get_config_location()
+    if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
-    with open(CONFIG_LOCATION) as f:
+    with open(config_path) as f:
         config = yaml.safe_load(f)
 
     return config

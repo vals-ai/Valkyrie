@@ -28,11 +28,10 @@ from tracker.types import (
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.runtime_config import PROD_TRACKER_URL, config_location, tracker_service_url
+from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
 load_dotenv()
 
-TRACKER_URL = PROD_TRACKER_URL
 _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
