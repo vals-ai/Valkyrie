@@ -68,11 +68,21 @@ jobs:
           cd infra
           uv sync
 
-      - name: Deploy all stacks
+      - name: Deploy all stacks with Slack notifications
+        if: steps.deploy-stage.outputs.stage == 'prod'
         env:
           SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
           VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
           DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
+          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
+          DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+        run: |
+          cd infra
+          uv run cdk deploy --all -c stage=${{ steps.deploy-stage.outputs.stage }} --require-approval never
+
+      - name: Deploy all stacks without Slack notifications
+        if: steps.deploy-stage.outputs.stage != 'prod'
+        env:
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
         run: |
