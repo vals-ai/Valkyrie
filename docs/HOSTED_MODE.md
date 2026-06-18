@@ -42,6 +42,19 @@ You can also set the API key manually:
 valkyrie config set api_key <your-descope-access-key>
 ```
 
+### Hosted dev
+
+Hosted mode uses the prod tracker and `~/.config/valkyrie/valkyrie.yaml` by default. To run against the dev tracker
+with a separate config file, set `VALKYRIE_ENV=dev`:
+
+```bash
+VALKYRIE_ENV=dev valkyrie config init
+VALKYRIE_ENV=dev valkyrie run start ...
+```
+
+This uses `https://benchmark-tracker-dev.vals.ai` and `~/.config/valkyrie/dev.yaml`. Explicit overrides still win:
+set `TRACKER_SERVICE_URL` for a custom tracker URL or `VALKYRIE_CONFIG_PATH` for a custom config path.
+
 ## Self-hosted mode
 
 Run your own infrastructure end-to-end, including your own tracker service deployment.

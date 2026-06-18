@@ -1,10 +1,8 @@
 """Client for interacting with the tracker service."""
 
 import json
-import os
 import re
 from collections.abc import Generator, Iterator
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -30,11 +28,11 @@ from tracker.types import (
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.runtime_config import PROD_TRACKER_URL, config_location, tracker_service_url
 
 load_dotenv()
 
-TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
-_CONFIG_LOCATION = Path("~/.config/valkyrie/valkyrie.yaml")
+TRACKER_URL = PROD_TRACKER_URL
 _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -62,7 +60,7 @@ class TrackerService:
 
     def __init__(
         self,
-        base_url: str = TRACKER_URL,
+        base_url: str | None = None,
         timeout: int = 120,
     ):
         """
@@ -74,7 +72,7 @@ class TrackerService:
         """
         self._config = self._load_config()
         self._api_key = self._config.get("api_key")
-        self._base_url = base_url.rstrip("/")
+        self._base_url = (base_url or tracker_service_url()).rstrip("/")
         self._timeout = timeout
         self._config_values = self.parse_config_keys()
         self._client = httpx.Client(timeout=timeout, headers=self._build_auth_headers())
@@ -94,7 +92,7 @@ class TrackerService:
     @staticmethod
     def _load_config() -> dict[str, Any]:
         """Load the valkyrie config file if it exists."""
-        config_path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         if not config_path.exists():
             return {}
 
@@ -119,7 +117,7 @@ class TrackerService:
         Returns:
             Custom URL if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         if not config_path.exists():
             return None
 
@@ -140,7 +138,7 @@ class TrackerService:
         Returns:
             Auth credential if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         if not config_path.exists():
             return None
 
@@ -158,7 +156,7 @@ class TrackerService:
         Returns:
             Webhook secret name if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         if not config_path.exists():
             return None
 
@@ -171,10 +169,10 @@ class TrackerService:
     @staticmethod
     def parse_config_keys() -> dict[str, str]:
         """Parses expected config keys and handles edge cases"""
-        config_path: Path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         config_keys: dict[str, str] = {}
         if not config_path.exists():
-            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `valkyrie config init`")
+            raise TrackerServiceError(f"Could not find the config at {config_path}, run `valkyrie config init`")
 
         with open(config_path) as f:
             harness_config: dict[str, str] = yaml.safe_load(f) or {}
@@ -235,11 +233,12 @@ class TrackerService:
             raise TrackerServiceError(f"Health check failed: {e}") from e
 
     @classmethod
-    def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
+    def init_org(cls, api_key: str, base_url: str | None = None) -> dict[str, str | bool]:
         """Validate a Descope API key and create/confirm the org. Does not require a full config."""
         try:
+            tracker_url = (base_url or tracker_service_url()).rstrip("/")
             with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
-                response = client.post(f"{base_url.rstrip('/')}/init")
+                response = client.post(f"{tracker_url}/init")
 
                 if response.status_code != 200:
                     details = _response_error_detail(response)

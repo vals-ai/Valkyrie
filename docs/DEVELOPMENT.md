@@ -9,11 +9,14 @@ Local development guide for the Agentic Harness.
 
 ### Environment
 
-Add inside of `.env`
+Add inside of `.env` when running against a local tracker service:
 
 ```env
 TRACKER_SERVICE_URL=http://localhost:8000
 ```
+
+To run the CLI against the hosted dev tracker instead, set `VALKYRIE_ENV=dev`. This uses
+`https://benchmark-tracker-dev.vals.ai` and stores credentials separately at `~/.config/valkyrie/dev.yaml`.
 
 ## Installation
 
@@ -45,7 +48,8 @@ The service will be available at `http://localhost:8000`.
 
 ### CLI (valkyrie config)
 
-The CLI reads credentials from `~/.config/valkyrie/valkyrie.yaml`. Run `valkyrie config init` to create it.
+The CLI reads credentials from `~/.config/valkyrie/valkyrie.yaml` by default, or
+`~/.config/valkyrie/dev.yaml` when `VALKYRIE_ENV=dev`. Run `valkyrie config init` to create the selected config.
 
 ```bash
 valkyrie config init

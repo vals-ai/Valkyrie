@@ -28,9 +28,10 @@ from tracker.types import (
     StartBenchmarkResponse,
 )
 
+from valkyrie.cli.runtime_config import config_location
 from valkyrie.cli.tracker_service import TrackerService
 
-CONFIG_LOCATION: Path = Path("~/.config/valkyrie/valkyrie.yaml").expanduser()
+CONFIG_LOCATION: Path = config_location()
 
 T = TypeVar("T")
 
