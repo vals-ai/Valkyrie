@@ -22,7 +22,7 @@ from constants import (
 )
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
-from stage import DEV, PROD, Stage
+from stage import DEV, DEV_STACK_PREFIX, PROD, Stage
 from tracker_stack import TrackerStack
 from worker_stack import WorkerStack
 
@@ -181,6 +181,10 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
 
 
 class MonitoringStackTest(unittest.TestCase):
+    def test_dev_stack_ids_are_valk_scoped(self) -> None:
+        self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")
+        self.assertEqual(Stage(DEV).stack_id("TrackerStack"), f"{DEV_STACK_PREFIX}TrackerStack")
+
     def test_alerts_topic_is_wired_to_slack(self) -> None:
         with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
             template = _monitoring_template()
