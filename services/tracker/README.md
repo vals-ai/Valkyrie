@@ -55,6 +55,7 @@ TEST_DAYTONA_SECRET_NAME=       # AWS Secrets Manager secret containing Daytona 
 
 # Benchmark service
 BENCHMARK_SERVICE_BASE_URL=     # Use the domain of the benchmark service
+BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE=local  # Cloud Map namespace fallback when no base URL is set
 BENCHMARK_SERVICE_AUTH_KEY=     # Access key for authenticating with a benchmark service
 ```
 

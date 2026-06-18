@@ -90,6 +90,20 @@ def test_configure_logging_production_json(capfd):
     assert "request_id" in line
 
 
+def test_configure_logging_dev_stage_json(capfd):
+    """Deployed dev stage uses structured logs."""
+    with patch.dict(os.environ, {"ENVIRONMENT": "dev", "LOG_LEVEL": "INFO"}):
+        configure_logging()
+
+    logger = logging.getLogger("tracker.test_deployed_dev")
+    logger.info("hello deployed dev")
+    captured = capfd.readouterr()
+    line = json.loads(captured.out.strip())
+    assert line["message"] == "hello deployed dev"
+    assert "timestamp" in line
+    assert "level" in line
+
+
 def test_configure_logging_includes_context_vars(capfd):
     """Context variables appear in structured JSON output."""
     with patch.dict(os.environ, {"ENVIRONMENT": "production", "LOG_LEVEL": "INFO"}):

@@ -30,20 +30,15 @@ from constants import (
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
-    RDS_ALLOCATED_STORAGE_GB,
-    RDS_INSTANCE_CLASS,
-    TRACKER_CPU,
     TRACKER_DOMAIN,
     TRACKER_LOG_GROUP_NAME,
-    TRACKER_MAX_TASKS,
-    TRACKER_MEMORY,
-    TRACKER_MIN_TASKS,
     TRACKER_PORT,
     TRACKER_SCALING_CPU_PERCENT,
     VPC_CIDR,
 )
 from constructs import Construct
 from stage import Stage
+from stage_config import config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -74,6 +69,7 @@ class TrackerStack(Stack):
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
+        stage_config = config_for(stage)
 
         # Docker image for the tracker API
         tracker_image = aws_ecs.ContainerImage.from_asset(
@@ -84,9 +80,10 @@ class TrackerStack(Stack):
 
         # Shared environment variables
         shared_env = {
-            "BROKER_ENVIRONMENT": "production",
+            "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket.bucket_name,
-            "ENVIRONMENT": "production",
+            "ENVIRONMENT": stage_config.runtime_environment,
+            "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
         }
 
@@ -112,17 +109,17 @@ class TrackerStack(Stack):
             engine=aws_rds.DatabaseInstanceEngine.postgres(
                 version=aws_rds.PostgresEngineVersion.VER_16,
             ),
-            instance_type=aws_ec2.InstanceType(RDS_INSTANCE_CLASS),
+            instance_type=aws_ec2.InstanceType(stage_config.database.instance_class),
             vpc=vpc,
             vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
             security_groups=[db_security_group],
             credentials=aws_rds.Credentials.from_secret(self.db_credentials),
             database_name=POSTGRES_DB,
-            allocated_storage=RDS_ALLOCATED_STORAGE_GB,
+            allocated_storage=stage_config.database.allocated_storage_gb,
             publicly_accessible=True,
             deletion_protection=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
-            backup_retention=Duration.days(7),
+            backup_retention=Duration.days(stage_config.database.backup_retention_days),
         )
 
         db_env = {
@@ -158,8 +155,8 @@ class TrackerStack(Stack):
         tracker_task_def = aws_ecs.FargateTaskDefinition(
             self,
             "TrackerTaskDef",
-            cpu=TRACKER_CPU,
-            memory_limit_mib=TRACKER_MEMORY,
+            cpu=stage_config.tracker.cpu,
+            memory_limit_mib=stage_config.tracker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
         )
 
@@ -172,7 +169,7 @@ class TrackerStack(Stack):
                     self,
                     "TrackerLogGroup",
                     log_group_name=stage.phys(TRACKER_LOG_GROUP_NAME),
-                    retention=aws_logs.RetentionDays.ONE_YEAR,
+                    retention=stage_config.service_log_retention,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
             ),
@@ -204,7 +201,7 @@ class TrackerStack(Stack):
             self,
             "TrackerService",
             cluster=cluster,
-            desired_count=TRACKER_MIN_TASKS,
+            desired_count=stage_config.tracker.min_tasks,
             task_definition=tracker_task_def,
             service_name=stage.phys("Tracker"),
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
@@ -255,8 +252,8 @@ class TrackerStack(Stack):
 
         # Tracker auto-scaling
         tracker_scaling = self.service.service.auto_scale_task_count(
-            min_capacity=TRACKER_MIN_TASKS,
-            max_capacity=TRACKER_MAX_TASKS,
+            min_capacity=stage_config.tracker.min_tasks,
+            max_capacity=stage_config.tracker.max_tasks,
         )
         tracker_scaling.scale_on_cpu_utilization(
             "CpuScaling",
