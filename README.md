@@ -38,17 +38,6 @@ valkyrie config init
 
 This will prompt you to choose between **hosted** and **self-hosted** mode, then collect the required credentials. See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for detailed setup instructions.
 
-The CLI uses the hosted prod tracker by default and stores config at `~/.config/valkyrie/valkyrie.yaml`.
-To run against dev, set `VALKYRIE_ENV=dev`; this uses `https://benchmark-tracker-dev.vals.ai` and
-`~/.config/valkyrie/dev.yaml`.
-
-```bash
-VALKYRIE_ENV=dev valkyrie config init
-VALKYRIE_ENV=dev valkyrie run start ...
-```
-
-Use `TRACKER_SERVICE_URL` to override the tracker URL and `VALKYRIE_CONFIG_PATH` to override the config file path.
-
 To upsert a single key:
 
 ```bash

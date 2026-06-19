@@ -27,6 +27,7 @@ from valkyrie.cli.s3_client import (
     remove_agent,
     update_benchmark_agent_version,
 )
+from valkyrie.cli.runtime_config import config_location
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import (
     ConfigValue,
@@ -38,7 +39,6 @@ from valkyrie.cli.utils import (
     format_run_start_details,
     format_start_benchmark_response,
     format_table,
-    get_config_location,
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
@@ -100,7 +100,7 @@ def init() -> None:
     """
 
     current_config: dict[str, Any] = {}
-    config_path = get_config_location()
+    config_path = config_location()
     if config_path.exists():
         with open(config_path) as f:
             try:
@@ -183,7 +183,7 @@ def set(key: str, value: str) -> None:
     Example: valkyrie config set AWS_DEFAULT_REGION us-west-2
     """
 
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -214,7 +214,7 @@ def config_remove(key: str) -> None:
     Example: valkyrie config remove AWS_DEFAULT_REGION
     """
 
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -256,7 +256,7 @@ def service_set(name: str, url: str) -> None:
 
     Example: valkyrie config service set swebench https://my-tunnel.ngrok.io
     """
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -281,7 +281,7 @@ def service_remove(name: str) -> None:
 
     Example: valkyrie config service remove swebench
     """
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -304,7 +304,7 @@ def service_remove(name: str) -> None:
 @service.command("list")
 def service_list() -> None:
     """List all custom benchmark service URL overrides."""
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -335,7 +335,7 @@ def auth_set(name: str, credential: str) -> None:
 
     Example: valkyrie config auth set swebench my-secret-credential
     """
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -360,7 +360,7 @@ def auth_remove(name: str) -> None:
 
     Example: valkyrie config auth remove swebench
     """
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -383,7 +383,7 @@ def auth_remove(name: str) -> None:
 @auth.command("list")
 def auth_list() -> None:
     """List all configured benchmark auth credentials."""
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 

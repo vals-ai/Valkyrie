@@ -143,13 +143,9 @@ def short_local_time(dt: datetime, include_date: bool = True) -> str:
     return dt.astimezone().strftime(fmt)
 
 
-def get_config_location() -> Path:
-    return config_location()
-
-
 def load_config() -> dict[str, str]:
     """Load the Valkyrie configuration from YAML file."""
-    config_path = get_config_location()
+    config_path = config_location()
     if not config_path.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
