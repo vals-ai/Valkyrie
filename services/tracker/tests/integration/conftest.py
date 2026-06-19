@@ -19,7 +19,7 @@ from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import create_benchmark_service_client, fetch_harness_config
+from tracker.utils import create_benchmark_service_client, fetch_harness_config, fetch_sandbox_provider_config
 
 _ = load_dotenv()
 
@@ -151,8 +151,13 @@ async def benchmark_service(service_headers: dict[str, str]) -> AsyncGenerator[B
 
 
 @pytest.fixture
-async def sandbox_provider(benchmark_service: BenchmarkServiceClient) -> AsyncGenerator[SandboxProvider, None]:
-    yield benchmark_service.get_sandbox_provider()
+async def sandbox_provider(
+    benchmark_service: BenchmarkServiceClient,
+    daytona_secret_name: str,
+    aws_credentials: AWSCredentials,
+) -> AsyncGenerator[SandboxProvider, None]:
+    provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona")
+    yield benchmark_service.get_sandbox_provider(provider_config)
 
 
 @pytest.fixture

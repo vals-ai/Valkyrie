@@ -64,7 +64,7 @@ from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerSe
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
-from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import create_sandbox, delete_sandbox, read_agent_metrics, run_agent, upload_agent_artifacts
 from tracker.types import (
     AverageTaskBreakdown,
     AWSCredentials,
@@ -572,6 +572,7 @@ async def process_task(
                 )
 
                 task_breakdown.agent_run_duration = agent_run_time
+                agent_metrics = await read_agent_metrics(sandbox, start_benchmark_request.contract.metrics_output)
 
                 with Session(bind=engine) as task_session:
                     task_session.add(task_breakdown)
@@ -602,6 +603,8 @@ async def process_task(
                     dataset=start_benchmark_request.dataset,
                     sandbox_provider=sandbox_provider_config,
                 )
+                if agent_metrics is not None:
+                    evaluation_result["agent_metrics"] = agent_metrics
 
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
 
