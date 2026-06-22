@@ -46,6 +46,7 @@ def _aws_credentials() -> AWSCredentials:
         aws_access_key_id=config["AWS_ACCESS_KEY_ID"],
         aws_secret_access_key=config["AWS_SECRET_ACCESS_KEY"],
         aws_default_region=config["AWS_DEFAULT_REGION"],
+        aws_session_token=config.get("AWS_SESSION_TOKEN"),
     )
 
 
@@ -55,6 +56,7 @@ def _s3_client():
     session = aioboto3.Session(
         aws_access_key_id=config.get("AWS_ACCESS_KEY_ID"),
         aws_secret_access_key=config.get("AWS_SECRET_ACCESS_KEY"),
+        aws_session_token=config.get("AWS_SESSION_TOKEN"),
         region_name=config.get("AWS_DEFAULT_REGION"),
     )
     return session.client("s3")
