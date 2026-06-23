@@ -47,6 +47,7 @@ services:
       - DATABASE_URL=postgresql://tracker:tracker@postgres:5432/tracker
       - DB_HOST=postgres
       - DB_PORT=5432
+      - AUTH_REQUIRED=${AUTH_REQUIRED:-false}
       - SENTRY_DSN=${SENTRY_DSN:-}
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}

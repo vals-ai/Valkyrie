@@ -80,7 +80,6 @@ async def _init_worker_observability(*_args: object, **_kwargs: object) -> None:
     configure_observability("valkyrie-worker", environment=ENVIRONMENT)
 
 
-# Auth settings
 AUTH_REQUIRED = os.environ.get("AUTH_REQUIRED", "false").lower() == "true"
 DESCOPE_PROJECT_ID = os.environ.get("DESCOPE_PROJECT_ID", "")
 DESCOPE_MANAGEMENT_KEY = os.environ.get("DESCOPE_MANAGEMENT_KEY", "")

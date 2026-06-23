@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, field_serializer, field_validator
-from sqlalchemy import Connection, Dialect, event
+from sqlalchemy import Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -124,11 +124,12 @@ OutputArtifactSpec = str | OutputArtifact
 class AgentContractRequest(BaseModel):
     name: str
     model: str | None = None
-    install_cmd: str
-    run_cmd: str
+    install_cmd: str = ""
+    run_cmd: str = ""
     final_output: str | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     secrets: dict[str, str] = {}
+    kwargs: dict[str, str] = {}
 
     @field_validator("output_artifacts")
     @classmethod
@@ -208,10 +209,16 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
 
 
 class Benchmark(SQLModel, table=True):
-    __table_args__: tuple[CheckConstraint, ...] = (
+    __table_args__ = (
         CheckConstraint(
             "(status != 'FINISHED' AND status != 'ERROR') OR (finished_at IS NOT NULL)",
             name="benchmark_finished_requires_timestamp",
+        ),
+        Index(
+            "ix_benchmark_org_started_at_id",
+            "org_id",
+            text("started_at DESC"),
+            "id",
         ),
     )
 
@@ -220,9 +227,8 @@ class Benchmark(SQLModel, table=True):
     name: str
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
-    status: BenchmarkStatus = Field(
-        default=BenchmarkStatus.IN_PROGRESS
-    )  # TODO: Automatically set to finished when all tasks are in a finished state or error state
+    status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
+    run_by_email: str | None = Field(default=None)
 
     error_message: str | None = Field(default=None)
     webhook_secret_name: str | None = Field(default=None)
@@ -313,18 +319,9 @@ class Benchmark(SQLModel, table=True):
         """
         from tracker.types import BenchmarkTableRow
 
-        total_tasks: int = session.exec(
-            select(func.count(col(Task.task_id)))
-            .where(col(Task.benchmark) == self.id)
-            .where(col(Task.org_id) == self.org_id)
-        ).one()
-
-        finished_tasks: int = session.exec(
-            select(func.count(col(Task.task_id)))
-            .where(col(Task.benchmark) == self.id)
-            .where(col(Task.org_id) == self.org_id)
-            .where(col(Task.status).in_([TaskStatus.FINISHED, TaskStatus.ERROR]))
-        ).one()
+        task_state_counts = self.fetch_task_state_counts(session)
+        total_tasks = sum(task_state_counts.values())
+        finished_tasks = task_state_counts.get(TaskStatus.FINISHED, 0) + task_state_counts.get(TaskStatus.ERROR, 0)
 
         return BenchmarkTableRow(
             id=self.id,
@@ -338,8 +335,29 @@ class Benchmark(SQLModel, table=True):
             status=self.status,
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,
-            final_score=self.final_evaluation.final_score if self.final_evaluation else None,
+            task_state_counts={k.value: v for k, v in task_state_counts.items()},
+            run_by_email=self.run_by_email,
+            final_score=(self.final_evaluation.final_score if self.final_evaluation else None),
         )
+
+    def fetch_task_state_counts(self, session: Session) -> dict[TaskStatus, int]:
+        """Count this benchmark's tasks grouped by TaskStatus."""
+        rows = session.exec(
+            select(col(Task.status), func.count(col(Task.task_id)))
+            .where(col(Task.benchmark) == self.id)
+            .where(col(Task.org_id) == self.org_id)
+            .group_by(col(Task.status))
+        ).all()
+        return {status: count for status, count in rows}
+
+    def fetch_final_score(self, session: Session) -> float | None:
+        """Return the FinalEvaluation.final_score for this benchmark, or None if no row exists."""
+        row = session.exec(
+            select(FinalEvaluation.final_score)
+            .where(col(FinalEvaluation.benchmark) == self.id)
+            .where(col(FinalEvaluation.org_id) == self.org_id)
+        ).first()
+        return row if row is not None else None
 
 
 @event.listens_for(Benchmark, "before_insert")

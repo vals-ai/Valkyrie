@@ -1,4 +1,3 @@
-import json
 import logging
 from datetime import timezone
 from typing import Any
@@ -13,7 +12,7 @@ from dateutil.parser import isoparse
 from descope import DescopeClient
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from main import app
 from tests.conftest import TEST_ORG_ID
@@ -496,12 +495,14 @@ class TestFastapiServer:
         Test benchmark error handling of the fastapi server.
 
         Test Cases:
-            - Returns error message from exception
-            - Benchmark row is marked as error and error message is set
+            - Verify failure returns 502 with the error message
+            - No benchmark row is created when pre-flight checks fail
         """
 
         # Expection is raised if verify task ids fails
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", self._mock_verify_task_ids_error)
+
+        row_count_before = len(database_session.exec(select(Benchmark)).all())
 
         # Example request sent from the cli to the fastapi server
         request = StartBenchmarkRequest(
@@ -512,24 +513,15 @@ class TestFastapiServer:
             harness_config=harness_config,
         )
 
-        # Send request to start the benchmark and ensure that the start response is returned
         response = client.post("/start-benchmark", json=request.model_dump())
 
-        # Test case 1. Returns error message from exception
-        assert response.status_code == 500
-        response_json = response.json()
-        detail = json.loads(response_json.get("detail", "{}"))
+        # Test case 1. Verify failure returns 502 with the error message
+        assert response.status_code == 502
+        assert "Error verifying task ids" in response.json()["detail"]
 
-        # benchmark id and error message are included in the response
-        assert detail
-        assert detail.get("benchmark_id")
-        assert "Error verifying task ids" in detail.get("error_message")
-
-        # Test case 2. Benchmark row is marked as error and error message is set
-        benchmark_row = database_session.get(Benchmark, UUID(detail.get("benchmark_id")))
-        assert benchmark_row
-        assert benchmark_row.status == BenchmarkStatus.ERROR
-        assert benchmark_row.error_message == detail.get("error_message")
+        # Test case 2. No benchmark row is created when pre-flight checks fail
+        row_count_after = len(database_session.exec(select(Benchmark)).all())
+        assert row_count_after == row_count_before
 
     async def test_fetch_benchmarks(self, database_session: Session, example_benchmark_object: Benchmark):
         """
@@ -558,7 +550,7 @@ class TestFastapiServer:
         database_session.commit()
 
         # Add benchmark name to be a random string (expected no matches)
-        fetch_benchmarks_request.benchmark_name = str(uuid4())
+        fetch_benchmarks_request.benchmark_name = [str(uuid4())]
 
         # When we fetch with no benchmarks found, we return an empty list and total count of 0
         response = client.get(
@@ -599,9 +591,9 @@ class TestFastapiServer:
         database_session.commit()
 
         # Search for the 4 benchmarks just created + the original one we added before
-        fetch_benchmarks_request.benchmark_name = "swebench"
-        fetch_benchmarks_request.agent_name = "dummy"
-        fetch_benchmarks_request.status = BenchmarkStatus.IN_PROGRESS
+        fetch_benchmarks_request.benchmark_name = ["swebench"]
+        fetch_benchmarks_request.agent_name = ["dummy"]
+        fetch_benchmarks_request.status = [BenchmarkStatus.IN_PROGRESS]
 
         # When we fetch with benchmarks found, we return a 200 OK
         response = client.get(
@@ -617,9 +609,9 @@ class TestFastapiServer:
             assert set(row.keys()) == expected_fields
 
         # Clear filters and search again (checking limit and total)
-        fetch_benchmarks_request.benchmark_name = None
-        fetch_benchmarks_request.agent_name = None
-        fetch_benchmarks_request.status = None
+        fetch_benchmarks_request.benchmark_name = None  # type: ignore[assignment]
+        fetch_benchmarks_request.agent_name = None  # type: ignore[assignment]
+        fetch_benchmarks_request.status = None  # type: ignore[assignment]
 
         response = client.get(
             "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
@@ -627,11 +619,9 @@ class TestFastapiServer:
         assert response.status_code == 200
         response_json = response.json()
 
-        # There are 6 total benchmarks
+        # There are 6 total benchmarks (default limit is 50, so all are returned)
         assert response_json.get("total_count") == 6
-
-        # Limit will always be 5
-        assert len(response_json.get("benchmarks")) == 5
+        assert len(response_json.get("benchmarks")) == 6
 
         # Change benchmark status to finished and search again
         unique_benchmark.status = BenchmarkStatus.FINISHED
@@ -639,7 +629,7 @@ class TestFastapiServer:
         database_session.commit()
 
         # Search for finished benchmarks
-        fetch_benchmarks_request.status = BenchmarkStatus.FINISHED
+        fetch_benchmarks_request.status = [BenchmarkStatus.FINISHED]
 
         response = client.get(
             "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
@@ -650,7 +640,25 @@ class TestFastapiServer:
         # There is 1 finished benchmark
         assert response_json.get("total_count") == 1
         assert len(response_json.get("benchmarks")) == 1
-        assert response_json["benchmarks"][0]["dataset"] == "terminal-bench-2.1"
+
+    async def test_start_benchmark_accepts_custom_service_from_request(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+    ):
+        allowed_url = "http://internal-swebench.example.com:8001"
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=5,
+            task_ids=None,
+            harness_config=harness_config,
+            custom_benchmark_service=allowed_url,
+        )
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
 
     async def test_fetch_benchmarks_filters_by_dataset(self, database_session: Session, contract: AgentContractRequest):
         benchmark_rows = [
@@ -1023,7 +1031,7 @@ class TestFastapiServer:
         try:
             response = client.get("/fetch-benchmark", params={"benchmark_id": str(uuid4())})
             assert response.status_code == 400
-            assert "Missing required config value" in response.json()["detail"]
+            assert "Missing harness config header" in response.json()["detail"]
         finally:
             app.dependency_overrides[fetch_harness_config] = lambda: HarnessConfig(
                 aws=AWSCredentials(

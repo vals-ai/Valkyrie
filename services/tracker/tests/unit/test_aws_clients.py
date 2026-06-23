@@ -7,31 +7,31 @@ from tracker.aws.s3 import handle_s3_error
 
 
 class TestS3DecoratorClient:
-    def test_s3_error_with_client(self):
+    async def test_s3_error_with_client(self):
         """Test that ClientError is caught buy the decorator"""
 
         client_error = ClientError({"Error": {"Code": "500", "Message": "Error"}}, "GetObject")
 
         @handle_s3_error(message="Failed to get object")
-        def failing_function():
+        async def failing_function():
             raise client_error
 
         with pytest.raises(S3Error) as exc_info:
-            failing_function()
+            await failing_function()
 
         assert "Failed to get object" in str(exc_info.value)
         assert exc_info.value.__cause__ == client_error
 
-    def test_s3_error_with_botocore(self):
+    async def test_s3_error_with_botocore(self):
         """Test that BotoCoreError is caught by the decorator"""
         botocore_error = BotoCoreError()
 
         @handle_s3_error(message="Failed to connect to S3")
-        def failing_function():
+        async def failing_function():
             raise botocore_error
 
         with pytest.raises(S3Error) as exc_info:
-            failing_function()
+            await failing_function()
 
         assert "Failed to connect to S3" in str(exc_info.value)
         assert exc_info.value.__cause__ == botocore_error

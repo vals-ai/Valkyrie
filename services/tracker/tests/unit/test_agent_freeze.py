@@ -1,6 +1,6 @@
 """Unit tests for the per-benchmark agent freeze helper."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 from pytest import MonkeyPatch
 
@@ -14,7 +14,7 @@ class TestCopyAgentToBenchmark:
         self, harness_config: HarnessConfig, monkeypatch: MonkeyPatch
     ) -> None:
         """On first call, the agent zip is copied from agents/<name>.zip into the benchmark folder."""
-        exists_mock = MagicMock(return_value=False)
+        exists_mock = AsyncMock(return_value=False)
         copy_mock = AsyncMock()
 
         # The unit-test autouse mock_s3 fixture patches get_contract_s3_key to return
@@ -30,7 +30,7 @@ class TestCopyAgentToBenchmark:
             s3_bucket="test-bucket",
         )
 
-        exists_mock.assert_called_once_with("benchmarks/bench-123/my_agent.zip", harness_config.aws, "test-bucket")
+        exists_mock.assert_awaited_once_with("benchmarks/bench-123/my_agent.zip", harness_config.aws, "test-bucket")
         copy_mock.assert_awaited_once_with(
             "agents/my_agent.zip",
             "benchmarks/bench-123/my_agent.zip",
@@ -45,7 +45,7 @@ class TestCopyAgentToBenchmark:
         Retry/resume must not overwrite the frozen agent copy. If benchmarks/<id>/<name>.zip
         already exists, copy_agent_to_benchmark must not call copy_s3_object.
         """
-        exists_mock = MagicMock(return_value=True)
+        exists_mock = AsyncMock(return_value=True)
         copy_mock = AsyncMock()
 
         monkeypatch.setattr(s3_module, "get_contract_s3_key", lambda name: f"agents/{name}.zip")
@@ -59,5 +59,5 @@ class TestCopyAgentToBenchmark:
             s3_bucket="test-bucket",
         )
 
-        exists_mock.assert_called_once_with("benchmarks/bench-123/my_agent.zip", harness_config.aws, "test-bucket")
+        exists_mock.assert_awaited_once_with("benchmarks/bench-123/my_agent.zip", harness_config.aws, "test-bucket")
         copy_mock.assert_not_awaited()
