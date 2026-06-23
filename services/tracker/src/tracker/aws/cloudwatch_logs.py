@@ -1,6 +1,7 @@
 import time
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
+from urllib.parse import quote
 
 import boto3
 import logfire
@@ -55,10 +56,14 @@ def get_benchmark_log_url(benchmark_id: str, region: str, log_group: str, task_i
     Returns:
         CloudWatch console URL
     """
-    base = f"https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}"
-    encoded_log_group = f"{log_group}$252F{benchmark_id}"
+    safe_region = quote(region, safe="-")
+    safe_log_group = quote(log_group, safe="-_")
+    safe_benchmark_id = quote(benchmark_id, safe="-_")
+    base = f"https://{safe_region}.console.aws.amazon.com/cloudwatch/home?region={safe_region}"
+    encoded_log_group = f"{safe_log_group}$252F{safe_benchmark_id}"
     if task_id:
-        return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{task_id}"
+        safe_task_id = quote(task_id, safe="-_.")
+        return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{safe_task_id}"
 
     return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}"
 

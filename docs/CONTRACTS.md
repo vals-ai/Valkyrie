@@ -275,4 +275,4 @@ The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox 
 
 ## Integrations
 
-- **Docent ingestion** — set `ingest_lambda` in `contract.yaml` (or override the property in `contract.py`) to declare which AWS Lambda converts this agent's output into a Docent `AgentRun`. Triggered post-run via `valk run analyze <run_id>`. See [DOCENT.md](DOCENT.md).
+- **Docent ingestion** — set `ingest_lambda` in `contract.yaml` to declare which AWS Lambda converts this agent's output into a Docent `AgentRun`. Triggered post-run via `valk run analyze <run_id>`. See [DOCENT.md](DOCENT.md).
