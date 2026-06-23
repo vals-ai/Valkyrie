@@ -31,19 +31,22 @@ class DevFormatter(logging.Formatter):
         return f"{level} {record.name}:{context_str} {message}"
 
 
-_FORMATTERS = {
-    "production": {
-        "()": "pythonjsonlogger.json.JsonFormatter",
-        "fmt": (
-            "%(asctime)s %(levelname)s %(name)s %(module)s %(funcName)s %(message)s "
-            "%(request_id)s %(benchmark_id)s %(task_id)s"
-        ),
-        "rename_fields": {
-            "asctime": "timestamp",
-            "levelname": "level",
-            "name": "logger",
-        },
+_JSON_FORMATTER = {
+    "()": "pythonjsonlogger.json.JsonFormatter",
+    "fmt": (
+        "%(asctime)s %(levelname)s %(name)s %(module)s %(funcName)s %(message)s "
+        "%(request_id)s %(benchmark_id)s %(task_id)s"
+    ),
+    "rename_fields": {
+        "asctime": "timestamp",
+        "levelname": "level",
+        "name": "logger",
     },
+}
+
+_FORMATTERS = {
+    "production": _JSON_FORMATTER,
+    "dev": _JSON_FORMATTER,
     "development": {
         "()": "tracker.logging.config.DevFormatter",
         "fmt": "%(message)s",

@@ -22,7 +22,7 @@ from constants import (
 )
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
-from stage import DEV, PROD, Stage
+from stage import DEV, DEV_STACK_PREFIX, PROD, Stage
 from tracker_stack import TrackerStack
 from worker_stack import WorkerStack
 
@@ -64,9 +64,9 @@ def _has_logical_id_prefix(template: assertions.Template, resource_type: str, pr
     return any(logical_id.startswith(prefix) for logical_id in template.find_resources(resource_type))
 
 
-def _monitoring_template() -> assertions.Template:
+def _monitoring_template(stage_name: str = PROD) -> assertions.Template:
     app = cdk.App()
-    stage = Stage(PROD)
+    stage = Stage(stage_name)
     resources = cdk.Stack(
         app,
         "MonitoringTestResources",
@@ -74,7 +74,7 @@ def _monitoring_template() -> assertions.Template:
     )
 
     vpc = aws_ec2.Vpc(resources, "Vpc", max_azs=2)
-    cluster = aws_ecs.Cluster(resources, "Cluster", vpc=vpc, cluster_name="AgenticHarnessCluster")
+    cluster = aws_ecs.Cluster(resources, "Cluster", vpc=vpc, cluster_name=stage.phys("AgenticHarnessCluster"))
 
     tracker_task = aws_ecs.FargateTaskDefinition(resources, "TrackerTask")
     tracker_task.add_container("TrackerContainer", image=aws_ecs.ContainerImage.from_registry("busybox"))
@@ -83,7 +83,7 @@ def _monitoring_template() -> assertions.Template:
         "TrackerService",
         cluster=cluster,
         task_definition=tracker_task,
-        service_name="Tracker",
+        service_name=stage.phys("Tracker"),
     )
 
     worker_task = aws_ecs.FargateTaskDefinition(resources, "WorkerTask")
@@ -93,7 +93,7 @@ def _monitoring_template() -> assertions.Template:
         "WorkerService",
         cluster=cluster,
         task_definition=worker_task,
-        service_name="Worker",
+        service_name=stage.phys("Worker"),
     )
 
     load_balancer = aws_elb.ApplicationLoadBalancer(resources, "LoadBalancer", vpc=vpc)
@@ -132,12 +132,12 @@ def _monitoring_template() -> assertions.Template:
     return assertions.Template.from_stack(monitoring)
 
 
-def _shared_template() -> assertions.Template:
+def _shared_template(stage_name: str = PROD) -> assertions.Template:
     app = cdk.App(context=SHARED_STACK_CONTEXT)
-    stage = Stage(PROD)
+    stage = Stage(stage_name)
     shared = SharedStack(
         app,
-        "SharedStack",
+        stage.stack_id("SharedStack"),
         stage=stage,
         env=cdk.Environment(account=TEST_AWS_ACCOUNT, region=TEST_AWS_REGION),
     )
@@ -168,6 +168,7 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
         stage=stage,
         vpc=shared.vpc,
         cluster=shared.cluster,
+        namespace=shared.namespace,
         redis_url=shared.redis_url,
         bucket=shared.bucket,
         database=tracker.database,
@@ -180,6 +181,10 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
 
 
 class MonitoringStackTest(unittest.TestCase):
+    def test_dev_stack_ids_are_valk_scoped(self) -> None:
+        self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")
+        self.assertEqual(Stage(DEV).stack_id("TrackerStack"), f"{DEV_STACK_PREFIX}TrackerStack")
+
     def test_alerts_topic_is_wired_to_slack(self) -> None:
         with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
             template = _monitoring_template()
@@ -269,18 +274,72 @@ class MonitoringStackTest(unittest.TestCase):
             ):
                 get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV)
 
-    def test_dev_stage_suffixes_service_log_group_names(self) -> None:
+    def test_dev_stage_wires_stage_config_to_resources(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             tracker_template, worker_template = _service_templates(DEV)
+        with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
+            monitoring_template = _monitoring_template(DEV)
 
         tracker_template.has_resource_properties(
             "AWS::Logs::LogGroup",
-            {"LogGroupName": f"{TRACKER_LOG_GROUP_NAME}-dev"},
+            {"LogGroupName": f"{TRACKER_LOG_GROUP_NAME}-dev", "RetentionInDays": 7},
+        )
+        tracker_template.has_resource_properties(
+            "AWS::RDS::DBInstance",
+            {"DBInstanceClass": "db.t4g.micro", "BackupRetentionPeriod": 1},
+        )
+        tracker_template.has_resource_properties(
+            "AWS::ApplicationAutoScaling::ScalableTarget",
+            {"MinCapacity": 1, "MaxCapacity": 1},
+        )
+        worker_template.has_resource_properties(
+            "AWS::ECS::Service",
+            {"DesiredCount": 1},
+        )
+        worker_template.has_resource_properties(
+            "AWS::ApplicationAutoScaling::ScalableTarget",
+            {"MinCapacity": 1, "MaxCapacity": 2},
         )
         worker_template.has_resource_properties(
             "AWS::Logs::LogGroup",
-            {"LogGroupName": f"{WORKER_LOG_GROUP_NAME}-dev"},
+            {"LogGroupName": f"{WORKER_LOG_GROUP_NAME}-dev", "RetentionInDays": 7},
         )
+        monitoring_template.has_resource_properties(
+            "AWS::CloudWatch::Alarm",
+            {"AlarmName": "Valkyrie-DB-Connections-High-dev", "Threshold": 65},
+        )
+
+    def test_service_environment_labels_follow_stage(self) -> None:
+        for stage_name, expected_environment, expected_namespace in (
+            (PROD, "production", "local"),
+            (DEV, "dev", "local-dev"),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, {}, clear=True):
+                tracker_template, worker_template = _service_templates(stage_name)
+
+                expected_env = assertions.Match.array_with(
+                    [
+                        {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
+                        {"Name": "ENVIRONMENT", "Value": expected_environment},
+                        {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
+                    ]
+                )
+                tracker_template.has_resource_properties(
+                    "AWS::ECS::TaskDefinition",
+                    {
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [assertions.Match.object_like({"Environment": expected_env})]
+                        )
+                    },
+                )
+                worker_template.has_resource_properties(
+                    "AWS::ECS::TaskDefinition",
+                    {
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [assertions.Match.object_like({"Environment": expected_env})]
+                        )
+                    },
+                )
 
 
 if __name__ == "__main__":

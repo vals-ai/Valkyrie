@@ -18,20 +18,18 @@ from aws_cdk import (
     aws_rds,
     aws_s3,
     aws_secretsmanager,
+    aws_servicediscovery,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
     POSTGRES_DB,
-    WORKER_CPU,
     WORKER_LOG_GROUP_NAME,
-    WORKER_MAX_TASKS,
-    WORKER_MEMORY,
-    WORKER_MIN_TASKS,
     WORKER_SCALING_CPU_PERCENT,
     WORKER_STOP_TIMEOUT_SECONDS,
 )
 from constructs import Construct
 from stage import Stage
+from stage_config import config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -59,6 +57,7 @@ class WorkerStack(Stack):
         stage: Stage,
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
+        namespace: aws_servicediscovery.IPrivateDnsNamespace,
         redis_url: str,
         bucket: aws_s3.IBucket,
         database: aws_rds.DatabaseInstance,
@@ -67,6 +66,7 @@ class WorkerStack(Stack):
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
+        stage_config = config_for(stage)
 
         # Reuse the tracker's security group so both services share the same
         # SG — benchmark services only need to whitelist one group.
@@ -79,9 +79,10 @@ class WorkerStack(Stack):
         )
 
         shared_env = {
-            "BROKER_ENVIRONMENT": "production",
+            "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket.bucket_name,
-            "ENVIRONMENT": "production",
+            "ENVIRONMENT": stage_config.runtime_environment,
+            "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
         }
 
@@ -107,8 +108,8 @@ class WorkerStack(Stack):
         worker_task_def = aws_ecs.FargateTaskDefinition(
             self,
             "WorkerTaskDef",
-            cpu=WORKER_CPU,
-            memory_limit_mib=WORKER_MEMORY,
+            cpu=stage_config.worker.cpu,
+            memory_limit_mib=stage_config.worker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
         )
 
@@ -121,7 +122,7 @@ class WorkerStack(Stack):
                     self,
                     "WorkerLogGroup",
                     log_group_name=stage.phys(WORKER_LOG_GROUP_NAME),
-                    retention=aws_logs.RetentionDays.ONE_YEAR,
+                    retention=stage_config.service_log_retention,
                     removal_policy=cdk.RemovalPolicy.DESTROY,
                 ),
             ),
@@ -161,7 +162,7 @@ class WorkerStack(Stack):
             "WorkerService",
             cluster=cluster,
             task_definition=worker_task_def,
-            desired_count=WORKER_MIN_TASKS,
+            desired_count=stage_config.worker.min_tasks,
             service_name=stage.phys("Worker"),
             security_groups=[tracker_sg],
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
@@ -172,8 +173,8 @@ class WorkerStack(Stack):
 
         # Worker auto-scaling
         worker_scaling = self.worker_service.auto_scale_task_count(
-            min_capacity=WORKER_MIN_TASKS,
-            max_capacity=WORKER_MAX_TASKS,
+            min_capacity=stage_config.worker.min_tasks,
+            max_capacity=stage_config.worker.max_tasks,
         )
         worker_scaling.scale_on_cpu_utilization(
             "WorkerCpuScaling",

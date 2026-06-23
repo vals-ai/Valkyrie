@@ -16,7 +16,7 @@ load_dotenv()
 configure_logging()
 
 
-_CLOUDMAP_NAMESPACE: str = "local"
+_BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE: str = os.environ.get("BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "local")
 _CLOUDMAP_PORT = 8001
 _BENCHMARK_SERVICE_BASE_URL: str | None = os.environ.get("BENCHMARK_SERVICE_BASE_URL")
 
@@ -31,7 +31,7 @@ def create_benchmark_service_url(benchmark_name: str) -> str:
     if _BENCHMARK_SERVICE_BASE_URL:
         return f"https://{benchmark_name}.{_BENCHMARK_SERVICE_BASE_URL}"
 
-    return f"http://{benchmark_name}.{_CLOUDMAP_NAMESPACE}:{_CLOUDMAP_PORT}"
+    return f"http://{benchmark_name}.{_BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE}:{_CLOUDMAP_PORT}"
 
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
