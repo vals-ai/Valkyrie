@@ -278,7 +278,7 @@ class TestForceStop:
             )
 
             provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona")
-        provider = benchmark_service.get_sandbox_provider(provider_config)
+            provider = benchmark_service.get_sandbox_provider(provider_config)
             await _wait_for_running_benchmark(example_benchmark_object, database_session, provider)
 
             # Force stop the benchmark run with all sandboxes
