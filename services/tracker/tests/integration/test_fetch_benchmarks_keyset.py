@@ -57,6 +57,8 @@ def client(monkeypatch, database_session: Session):
     with patch.object(auth_mod, "_descope_client") as mock_client:
         mock_client.exchange_access_key.return_value = {
             "tenants": {"default": {}},
+            "keyId": "K_caller",
+            "sub": "K_caller",
             "userId": "U_caller",
             "user_id": "U_caller",
             "email": "caller@example.com",
