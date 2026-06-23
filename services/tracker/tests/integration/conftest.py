@@ -37,7 +37,7 @@ FAKE_HARNESS_CONFIG = HarnessConfig(
     s3_bucket="test-bucket",
     log_group="test-log-group",
     log_retention_policy=30,
-    daytona_secret_name="test-daytona-secret",
+    sandbox_provider_secret_name="test-daytona-secret",
 )
 
 
