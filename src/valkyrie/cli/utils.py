@@ -610,11 +610,11 @@ def paginate_benchmarks(
 
     while True:
         request = FetchBenchmarksRequest(
-            agent_name=agent_name,
-            benchmark_name=benchmark_name,
+            agent_name=[agent_name] if agent_name else None,
+            benchmark_name=[benchmark_name] if benchmark_name else None,
             model=model,
             dataset=dataset,
-            status=BenchmarkStatus(status) if status else None,
+            status=[BenchmarkStatus(status)] if status else None,
             started_by=started_by,
             order_by=Order(order_by),
             limit=limit,
@@ -622,7 +622,7 @@ def paginate_benchmarks(
         )
 
         response = tracker.fetch_benchmarks(request)
-        total_count = response.total_count
+        total_count = response.total_count or 0
         total_pages = max(1, (total_count + limit - 1) // limit)
 
         click.clear()
@@ -780,7 +780,7 @@ def format_table(
 
 
 def format_agents_response(
-    agents: list[tuple[str, datetime]],
+    agents: list[tuple[str, datetime | None]],
     current_page: int,
     total_pages: int,
     total_count: int,
@@ -794,12 +794,15 @@ def format_agents_response(
         total_pages: Total number of pages
         total_count: Total agent count across all pages
     """
-    rows = [{"Agent": name, "Last Modified": local_time(last_modified)} for name, last_modified in agents]
+    rows = [
+        {"Agent": name, "Last Modified": local_time(last_modified) if last_modified else "-"}
+        for name, last_modified in agents
+    ]
 
     format_table(rows, ["Agent", "Last Modified"], current_page, total_pages, total_count, "agent")
 
 
-def paginate_agents(agents: list[tuple[str, datetime]], limit: int = 10) -> None:
+def paginate_agents(agents: list[tuple[str, datetime | None]], limit: int = 10) -> None:
     """
     Interactive paginated display of agents with vim-style navigation.
 

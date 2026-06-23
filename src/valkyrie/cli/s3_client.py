@@ -18,6 +18,7 @@ from tracker.aws.s3 import (
     get_contract_s3_key,
     s3_object_exists,
 )
+from tracker.aws.s3 import list_agents as list_s3_agents
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 from tracker.types import AWSCredentials
@@ -274,34 +275,13 @@ async def remove_agent(agent_name: str):
             raise
 
 
-async def list_agents():
-    """List all agents in the S3 bucket's agents/ folder with the dates that they were added"""
-
-    # fetch bucket name from config
+async def list_agents() -> list[tuple[str, datetime | None]]:
+    """List all agents in the S3 bucket's agents/ folder with the dates that they were added."""
     bucket_name = _fetch_bucket_name()
 
     click.echo(f"\r\033[KListing agents from bucket '{bucket_name}'...", nl=False)
 
-    async with _s3_client() as s3_client:
-        response = await s3_client.list_objects_v2(
-            Bucket=bucket_name,
-            Prefix="agents/",
-        )
-
-        agents: list[tuple[str, datetime]] = []
-        if "Contents" in response:
-            for obj in response["Contents"]:
-                # Extract agent name from a value like "agents/agent_name.zip"
-                key = obj["Key"]
-                match = re.match(r"agents/(.+?)\.zip$", cast(str, key))
-                if not match:
-                    continue
-
-                agent_name = match.group(1)
-                last_modified = cast(datetime, obj["LastModified"])
-                agents.append((agent_name, last_modified))
-
-        return agents
+    return await list_s3_agents(_aws_credentials(), bucket_name)
 
 
 @handle_s3_error(message="Failed to download agent from S3")
