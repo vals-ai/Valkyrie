@@ -88,10 +88,6 @@ _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
-def _history_created_at(entry: dict[str, Any]) -> str:
-    return str(entry.get("created_at") or "")
-
-
 def _history_result(created_at: datetime, result: dict[str, Any]) -> dict[str, Any]:
     return {"created_at": created_at.isoformat(), "result": dict(result)}
 
@@ -1226,7 +1222,7 @@ def _fetch_result_histories(
         histories.setdefault(task_row_id, []).append(_history_error(created_at, error_message))
 
     return {
-        task_row_id: sorted(entries, key=_history_created_at, reverse=True)
+        task_row_id: sorted(entries, key=lambda entry: entry["created_at"], reverse=True)
         for task_row_id, entries in histories.items()
         if entries
     }
