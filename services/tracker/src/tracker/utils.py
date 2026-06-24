@@ -87,6 +87,10 @@ _PTY_TASK_RETRY_LIMIT: int = 1
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 
 
+def _history_created_at(entry: dict[str, Any]) -> str:
+    return str(entry.get("created_at") or "")
+
+
 def fetch_sandbox_provider_config(secret_name: str, aws: AWSCredentials, provider_type: str) -> SandboxProviderConfig:
     """Resolve sandbox provider config from the selected provider type and secret."""
     secret = fetch_aws_secret(secret_name, aws)
@@ -1151,21 +1155,29 @@ class BenchmarkContext:
 def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID) -> dict[str, dict[str, Any]]:
     """Select all evaluation results for a given benchmark"""
     statement = (
-        select(EvaluationResult, Task.task_id, TaskBreakdown)
+        select(EvaluationResult, Task.task_id, Task.history, TaskBreakdown)
         .join(Task, col(EvaluationResult.task) == col(Task.id))
         .outerjoin(TaskBreakdown, col(Task.task_breakdown) == col(TaskBreakdown.id))
         .where(Task.benchmark == benchmark_id)
         .where(Task.org_id == org_id)
     )
-    results = session.exec(statement).all()
+    results = cast(
+        Sequence[tuple[EvaluationResult, str, list[dict[str, Any]] | None, TaskBreakdown | None]],
+        session.exec(statement).all(),  # pyright: ignore[reportUnknownArgumentType]
+    )
 
     evaluation_results: dict[str, dict[str, Any]] = {}
-    for evaluation_result, task_id, task_breakdown in results:
-        task_breakdown = cast(TaskBreakdown | None, task_breakdown)
-        result_data = evaluation_result.result
+    for evaluation_result, task_id, task_history, task_breakdown in results:
+        result_data = dict(evaluation_result.result)
         result_data["agent_caused_exit_reason"] = evaluation_result.agent_caused_exit_reason
         if task_breakdown is not None:
             result_data["task_breakdown"] = task_breakdown.model_dump()
+        if task_history:
+            result_data["history"] = sorted(
+                task_history,
+                key=_history_created_at,
+                reverse=True,
+            )
         evaluation_results[task_id] = result_data
 
     return evaluation_results
@@ -1414,6 +1426,35 @@ async def force_stop_sandboxes(
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
 
 
+def _preserve_task_history(existing_rows: Sequence[Task], session: Session, org: Org) -> None:
+    created_at = datetime.now(ZoneInfo("UTC")).isoformat()
+    entries_by_task_id: dict[str, list[dict[str, Any]]] = {}
+    task_row_ids = [task.id for task in existing_rows]
+
+    if task_row_ids:
+        result_rows = session.exec(
+            select(EvaluationResult, Task.task_id)
+            .join(Task, col(EvaluationResult.task) == col(Task.id))
+            .where(col(EvaluationResult.task).in_(task_row_ids))
+            .where(col(EvaluationResult.org_id) == org.id)
+        ).all()
+        for evaluation_result, task_id in result_rows:
+            entries_by_task_id.setdefault(task_id, []).append(
+                {"created_at": created_at, "result": dict(evaluation_result.result)}
+            )
+
+    for task in existing_rows:
+        entries = entries_by_task_id.get(task.task_id, [])
+        if task.error_message:
+            entries.append({"created_at": created_at, "error_message": task.error_message})
+        if entries:
+            task.history = sorted(
+                [*(task.history or []), *entries],
+                key=_history_created_at,
+                reverse=True,
+            )
+
+
 async def reset_to_in_progress_status(
     benchmark_row: Benchmark,
     session: Session,
@@ -1469,6 +1510,8 @@ async def reset_to_in_progress_status(
             benchmark_row.status = BenchmarkStatus.IN_PROGRESS
             session.add(benchmark_row)
             session.commit()
+
+        _preserve_task_history(existing_rows, session, org)
 
         for task in existing_rows:
             task.status = (
@@ -1667,7 +1710,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
     ).all()
     counts_by_bench: dict[UUID, dict[TaskStatus, int]] = {}
     for bench_id, status, count in count_rows:
-        counts_by_bench.setdefault(bench_id, {})[status] = count
+        counts_by_bench.setdefault(bench_id, {})[TaskStatus(status)] = count
 
     rows: list[BenchmarkTableRow] = []
     for b in benchmarks:

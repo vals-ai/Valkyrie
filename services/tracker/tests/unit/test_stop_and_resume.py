@@ -208,6 +208,91 @@ class TestStopAndResume:
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
 
+    async def test_retry_preserves_previous_task_history_for_export(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        """Retried tasks should keep prior attempts visible in exported results.
+
+        Test cases:
+        - Previous error messages are saved before retry clears the task row.
+        - Previous evaluation results are saved and history exports newest first.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+
+        task_error = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_error",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+            error_message="retry failed before",
+            history=[{"created_at": "2026-06-01T00:00:00+00:00", "result": {"score": 0.25}}],
+        )
+        task_result = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_result",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all([task_error, task_result])
+        database_session.flush()
+        database_session.add(
+            EvaluationResult(
+                org_id=TEST_ORG_ID,
+                task=task_result.id,
+                instance_id="previous-task-result",
+                result={"score": 0.5},
+            )
+        )
+        database_session.commit()
+
+        async def _mock_request_verify_task_ids(
+            *_args: Any, task_ids: list[str], **_kwargs: Any
+        ) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(),
+            retry=True,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=["task_result"],
+            org=self._test_org,
+        )
+
+        assert verified_task_ids == ["task_error", "task_result"]
+
+        for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all():
+            task.status = TaskStatus.FINISHED
+            database_session.add(task)
+            database_session.add(
+                EvaluationResult(
+                    org_id=TEST_ORG_ID,
+                    task=task.id,
+                    instance_id=f"current-{task.task_id}",
+                    result={"score": 1.0},
+                )
+            )
+        database_session.commit()
+
+        response = client.get("/retrieve-results", params={"benchmark_id": str(benchmark_row.id)})
+
+        assert response.status_code == 200
+        evaluation_results = response.json()["evaluation_results"]
+        error_history = evaluation_results["task_error"]["history"]
+        result_history = evaluation_results["task_result"]["history"]
+        assert [entry.get("error_message") for entry in error_history] == ["retry failed before", None]
+        assert error_history[0]["created_at"] > error_history[1]["created_at"]
+        assert error_history[1]["result"] == {"score": 0.25}
+        assert result_history == [{"created_at": result_history[0]["created_at"], "result": {"score": 0.5}}]
+
     async def test_reset_lazily_creates_rows_for_unregistered_task_ids(
         self,
         example_benchmark_object: Benchmark,
