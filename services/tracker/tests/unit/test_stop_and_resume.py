@@ -280,7 +280,7 @@ class TestStopAndResume:
             benchmark_service=benchmark_row.benchmark_service(),
             retry=True,
             retry_mode=RetryMode.AUTO,
-            rerun_task_ids=["task_result"],
+            rerun_task_ids=["task_error", "task_result"],
             org=self._test_org,
         )
 
