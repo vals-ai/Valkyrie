@@ -7,6 +7,7 @@ import yaml
 from tracker.database.models import AgentContractRequest, RetryMode
 
 from valkyrie.cli import tracker_service as tracker_service_module
+from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_service import TrackerService
 
 
@@ -32,6 +33,34 @@ class FakeClient:
 
     def close(self) -> None:
         pass
+
+
+class ListBenchmarksErrorClient(FakeClient):
+    def post(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+        json: dict[str, object],
+    ) -> httpx.Response:
+        self.params = params
+        self.json = json
+        if url.endswith("/list-benchmarks"):
+            return httpx.Response(500, json={"detail": "server error"})
+        return super().post(url, params=params, json=json)
+
+
+class ListBenchmarksConnectionErrorClient(FakeClient):
+    def post(
+        self,
+        _url: str,
+        *,
+        params: dict[str, object] | None = None,
+        json: dict[str, object],
+    ) -> httpx.Response:
+        self.params = params
+        self.json = json
+        raise httpx.ConnectError("connection failed")
 
 
 def empty_config() -> dict[str, object]:
@@ -176,3 +205,61 @@ def test_list_benchmarks_sends_custom_services_and_auth(tmp_path: Path, monkeypa
         "service_headers_by_benchmark": {"custom-benchmark": {"Authorization": "Bearer token"}},
         "include_inaccessible": True,
     }
+
+
+def test_list_benchmarks_ignores_invalid_custom_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+
+    def config_with_invalid_entries() -> dict[str, object]:
+        return {
+            "custom_benchmark_services": {"custom-benchmark": 123, 1: "http://service"},
+            "benchmark_auth": {"custom-benchmark": 123},
+        }
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(config_with_invalid_entries))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.list_benchmarks()
+
+    assert client.json == {
+        "custom_benchmark_services": {},
+        "service_headers_by_benchmark": {},
+        "include_inaccessible": False,
+    }
+
+
+def test_list_benchmarks_surfaces_http_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = ListBenchmarksErrorClient()
+
+    def build_client(**_kwargs: object) -> ListBenchmarksErrorClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+
+    with pytest.raises(TrackerServiceError, match="server error"):
+        tracker.list_benchmarks()
+
+
+def test_list_benchmarks_surfaces_connection_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = ListBenchmarksConnectionErrorClient()
+
+    def build_client(**_kwargs: object) -> ListBenchmarksConnectionErrorClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+
+    with pytest.raises(TrackerServiceError, match="connection failed"):
+        tracker.list_benchmarks()
