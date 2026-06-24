@@ -568,6 +568,7 @@ def _make_benchmark(
     *,
     started_by_email: str | None,
     name: str = "swebench",
+    label: str | None = None,
 ) -> Benchmark:
     bench = Benchmark(
         org_id=TEST_ORG_ID,
@@ -575,6 +576,7 @@ def _make_benchmark(
         arguments=BenchmarkArguments(contract=contract, concurrency=1),
         started_by_email=started_by_email,
         started_by_id="K-" + (started_by_email or "none"),
+        label=label,
     )
     session.add(bench)
     session.commit()
@@ -688,6 +690,29 @@ def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: S
     )
     assert total == 1
     assert rows[0].org_id == TEST_ORG_ID
+
+
+def test_fetch_filtered_by_label(database_session: Session, contract: AgentContractRequest):
+    """Label filtering should return only runs with the exact requested label.
+
+    Test cases:
+    - A matching label returns the labeled run.
+    - Unlabeled and differently labeled runs are excluded.
+    """
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai", label="nightly")
+    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai", label="manual")
+    _make_benchmark(database_session, contract, started_by_email="carol@vals.ai", label=None)
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(label="nightly", limit=10),
+        database_session,
+        org,
+    )
+
+    assert total == 1
+    assert rows[0].label == "nightly"
 
 
 def test_parse_log_retention_policy_rejects_invalid_value():

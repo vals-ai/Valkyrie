@@ -118,6 +118,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
     return Benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,
+        label=request.label,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
@@ -1288,6 +1289,7 @@ async def stream_benchmark_results(
                     s3_bucket_url=create_benchmark_url(
                         str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
                     ),
+                    label=fresh_benchmark.label,
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
@@ -1584,6 +1586,9 @@ def fetch_filtered_benchmark_rows(
         else:
             query = query.where(dataset_value == request.dataset)
 
+    if request.label is not None:
+        query = query.where(Benchmark.label == request.label)
+
     if request.benchmark_name:
         if len(request.benchmark_name) == 1:
             query = query.where(Benchmark.name == request.benchmark_name[0])
@@ -1681,6 +1686,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 id=b.id,
                 name=b.name,
                 agent_name=b.arguments.contract.name,
+                label=b.label,
                 model=b.arguments.contract.model,
                 dataset=b.arguments.dataset or "default",
                 started_by_email=b.started_by_email,

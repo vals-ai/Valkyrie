@@ -229,6 +229,7 @@ class Benchmark(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
+    label: str | None = Field(default=None, index=True)
 
     error_message: str | None = Field(default=None)
     webhook_secret_name: str | None = Field(default=None)
@@ -335,6 +336,7 @@ class Benchmark(SQLModel, table=True):
             finished_tasks=finished_tasks,
             task_state_counts={k.value: v for k, v in task_state_counts.items()},
             final_score=(self.final_evaluation.final_score if self.final_evaluation else None),
+            label=self.label,
         )
 
     def fetch_task_state_counts(self, session: Session) -> dict[TaskStatus, int]:
