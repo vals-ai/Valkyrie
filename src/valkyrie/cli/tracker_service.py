@@ -236,7 +236,7 @@ class TrackerService:
 
     @classmethod
     def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
-        """Validate a Vals AI API key and create/confirm the org. Does not require a full config."""
+        """Validate a Descope API key and create/confirm the org. Does not require a full config."""
         try:
             with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
                 response = client.post(f"{base_url.rstrip('/')}/init")
