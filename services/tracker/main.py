@@ -386,7 +386,7 @@ async def fetch_benchmark_tasks(
         try:
             return await benchmark_service.verify_task_ids(
                 task_ids=None,
-                slice_str=None,
+                slice_str=request.slice_str,
                 dataset=request.dataset,
             )
         finally:

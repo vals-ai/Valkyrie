@@ -88,6 +88,7 @@ class StartBenchmarkRequest(BaseModel):
 class FetchBenchmarkTasksRequest(BaseModel):
     benchmark_name: str
     dataset: str | None = None
+    slice_str: str | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict)
 

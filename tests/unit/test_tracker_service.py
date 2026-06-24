@@ -17,13 +17,15 @@ class FakeClient:
 
     def post(
         self,
-        _url: str,
+        url: str,
         *,
         params: dict[str, object] | None = None,
         json: dict[str, object],
     ) -> httpx.Response:
         self.params = params
         self.json = json
+        if url.endswith("/fetch-benchmark-tasks"):
+            return httpx.Response(200, json={"task_ids": []})
         return httpx.Response(200, json={"status": "success"})
 
     def close(self) -> None:
@@ -117,3 +119,22 @@ def test_tracker_service_accepts_provider_secret_config(tmp_path: Path, monkeypa
     harness_config = client.json["harness_config"]
     assert isinstance(harness_config, dict)
     assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
+
+
+def test_fetch_benchmark_tasks_sends_slice(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.fetch_benchmark_tasks("swebench", dataset="default", slice_str="0:0")
+
+    assert client.json is not None
+    assert client.json["benchmark_name"] == "swebench"
+    assert client.json["dataset"] == "default"
+    assert client.json["slice_str"] == "0:0"

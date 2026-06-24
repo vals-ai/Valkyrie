@@ -107,6 +107,14 @@ Downloads an agent from S3 to your local machine and unzips it.
 
 ## Running Benchmarks 
 
+### List accessible benchmarks
+
+To see the hosted benchmarks and datasets your Valkyrie API key can access, run:
+
+```bash
+valkyrie benchmark list
+```
+
 ### Start a run
 
 To run a specific agent on a given benchmark, use the command

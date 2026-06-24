@@ -440,6 +440,7 @@ class TrackerService:
         self,
         benchmark_name: str,
         dataset: str | None = None,
+        slice_str: str | None = None,
         ignore_custom_services: bool = False,
         service_headers: dict[str, str] | None = None,
     ) -> list[str]:
@@ -450,6 +451,7 @@ class TrackerService:
             payload = FetchBenchmarkTasksRequest(
                 benchmark_name=benchmark_name,
                 dataset=dataset,
+                slice_str=slice_str,
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
                 if not ignore_custom_services
                 else None,

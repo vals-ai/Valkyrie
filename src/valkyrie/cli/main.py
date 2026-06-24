@@ -80,6 +80,75 @@ def config():
     pass
 
 
+HOSTED_BENCHMARK_DATASETS: dict[str, tuple[str, ...]] = {
+    "code-migration": ("cobol", "cli", "smoke", "public", "test", "validation"),
+    "cyberbench": ("default", "poc_l0", "patch", "poc_patch"),
+    "deep-swe": ("default", "deep-swe"),
+    "deepmind-formal-conjectures": (
+        "default",
+        "fc100_open",
+        "fc100_solved",
+        "open",
+        "non_open",
+        "research_solved_known_formal",
+        "all",
+    ),
+    "emb": ("default",),
+    "fabv2-anthropic": ("validation",),
+    "fabv2-exa": ("validation",),
+    "fabv2-internal": ("default", "validation", "test", "public", "vals_index"),
+    "fabv2-meta": ("validation",),
+    "fabv2-xai": ("validation",),
+    "harvey-legal-agent": ("default",),
+    "ioi": ("ioi2024", "ioi2025"),
+    "legal-research": ("default", "testing", "full", "test", "validation", "public"),
+    "programbench": ("default", "smoke"),
+    "proof-bench": ("validation", "test", "default"),
+    "skillsbench": ("default",),
+    "snap": (
+        "sample_1_target_both",
+        "sample_1_target_multi_turn",
+        "sample_1_target_web_search",
+        "sample_1_target_neither",
+        "sample_1_auditor_both",
+        "sample_1_auditor_multi_turn",
+        "sample_1_auditor_web_search",
+        "sample_1_auditor_neither",
+        "sample_2_target_both",
+        "sample_2_target_multi_turn",
+        "sample_2_target_web_search",
+        "sample_2_target_neither",
+        "sample_2_auditor_both",
+        "sample_2_auditor_multi_turn",
+        "sample_2_auditor_web_search",
+        "sample_2_auditor_neither",
+    ),
+    "swebench": ("default", "vals_index"),
+    "terminal-bench": ("default", "terminal-bench-2", "terminal-bench-2.1"),
+    "vcb": ("default", "test_set", "validation_set", "vals_index", "zeeter"),
+    "vcb-1-100": ("default", "candidate", "smoke"),
+}
+
+
+def _benchmark_catalog() -> dict[str, tuple[str, ...]]:
+    catalog = dict(HOSTED_BENCHMARK_DATASETS)
+    if CONFIG_LOCATION.exists():
+        with open(CONFIG_LOCATION) as f:
+            loaded_config = yaml.safe_load(f)
+        current = loaded_config if isinstance(loaded_config, dict) else {}
+        custom_services = current.get("custom_benchmark_services")
+        if isinstance(custom_services, dict):
+            for name in custom_services:
+                if isinstance(name, str):
+                    catalog.setdefault(name, ("default",))
+    return dict(sorted(catalog.items()))
+
+
+def _benchmark_service_headers(benchmark_name: str) -> dict[str, str]:
+    auth_credential = TrackerService.get_benchmark_auth(benchmark_name)
+    return {"Authorization": str(auth_credential)} if auth_credential else {}
+
+
 # Mapping between the expected key and default value
 # None means its user provided if not found
 _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
@@ -392,6 +461,55 @@ def auth_list() -> None:
         for name, credential in auth_credentials.items()
     ]
     format_table(rows, ["Benchmark", "Credential"], item_name="credential")
+
+
+@benchmark.command(
+    name="list",
+    help="List hosted benchmark datasets your Valkyrie config can access. \n\nExample:\nvalkyrie benchmark list",
+)
+@click.option(
+    "--include-inaccessible",
+    is_flag=True,
+    help="Also show benchmarks that were checked but had no accessible datasets.",
+)
+def benchmark_list(include_inaccessible: bool) -> None:
+    """
+    List hosted benchmark datasets available to the configured Valkyrie API key.
+    """
+    rows: list[dict[str, str]] = []
+
+    try:
+        with TrackerService() as tracker:
+            if not check_tracker_service_health(tracker):
+                return
+
+            for benchmark_name, datasets in _benchmark_catalog().items():
+                accessible_datasets: list[str] = []
+                service_headers = _benchmark_service_headers(benchmark_name)
+                for dataset in datasets:
+                    try:
+                        tracker.fetch_benchmark_tasks(
+                            benchmark_name,
+                            dataset=None if dataset == "default" else dataset,
+                            slice_str="0:0",
+                            service_headers=service_headers,
+                        )
+                    except TrackerServiceError:
+                        continue
+                    accessible_datasets.append(dataset)
+
+                if accessible_datasets:
+                    rows.append({"Benchmark": benchmark_name, "Datasets": ", ".join(accessible_datasets)})
+                elif include_inaccessible:
+                    rows.append({"Benchmark": benchmark_name, "Datasets": click.style("No access", fg="yellow")})
+
+        if not rows:
+            click.echo(click.style("No accessible benchmarks found.", fg="yellow"))
+            return
+
+        format_table(rows, ["Benchmark", "Datasets"], item_name="benchmark")
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
 
 
 @benchmark.command(
