@@ -118,7 +118,7 @@ valkyrie run start --agent <agent id> --benchmark <benchmark id>
 
 You can pass `--concurrency` to control the number of tasks that run in parallel, and `--task-ids` or `--slice` to run only a subset of tasks. Specific agents may take additional parameters as well, most commonly, a parameter to set the model. 
 
-To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. 
+To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. This will map the value stored in AWS SECRET NAME to ENVIRONMENT_VARIABLE inside the agent container. 
 
 Here is an example of how to run the first ten tasks of SWE-Bench Verified:
 ```bash
@@ -256,6 +256,8 @@ valkyrie agent outputs <id> --output-dir ./outputs
 # Download specific tasks (comma-separated)
 valkyrie agent outputs <id> --task-ids astropy__astropy-7606,django__django-10880
 ```
+
+Valkyrie agent outputs downloads the _output_ of the agent, Valkyrie run results downloads the scores and evaluation. 
 
 ### Download a specific file or folder from a run
 
