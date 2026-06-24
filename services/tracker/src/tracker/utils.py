@@ -1690,7 +1690,6 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                     + counts.get(TaskStatus.STOPPED, 0)
                 ),
                 task_state_counts={k.value: v for k, v in counts.items()},
-                run_by_email=b.run_by_email,
                 final_score=b.final_evaluation.final_score if b.final_evaluation else None,
             )
         )

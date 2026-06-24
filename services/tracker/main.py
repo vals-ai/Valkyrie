@@ -314,7 +314,6 @@ async def start_benchmark(
 
     # Create benchmark row only after pre-flight checks pass.
     benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
-    benchmark_row.run_by_email = http_request.headers.get("x-harness-run-by-email")
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))

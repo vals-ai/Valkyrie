@@ -195,7 +195,6 @@ class BenchmarkTableRow(BaseModel):
     # Per-TaskStatus counts: {"PENDING": 1, "IN_PROGRESS": 2, "FINISHED": 4, ...}.
     # Absent keys mean zero; sum equals total_tasks.
     task_state_counts: dict[str, int] = {}
-    run_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None
 
@@ -289,7 +288,7 @@ class SingleBenchmarkResponse(BaseModel):
     total_tasks: int
     finished_tasks: int
     task_state_counts: dict[str, int] = {}
-    run_by_email: str | None = None
+    started_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None
 

@@ -54,7 +54,7 @@ def get_single_benchmark(
         total_tasks=total,
         finished_tasks=finished,
         task_state_counts={status.value: count for status, count in task_state_counts.items()},
-        run_by_email=benchmark.run_by_email,
+        started_by_email=benchmark.started_by_email,
         final_score=benchmark.fetch_final_score(session),
         error_message=benchmark.error_message,
     )
