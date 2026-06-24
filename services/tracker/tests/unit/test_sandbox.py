@@ -5,7 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from benchmark_service import ExecResult, ImageSource, Resources, SnapshotSource
+from benchmark_service import ComposeSandbox, ComposeSource, ExecResult, ImageSource, Resources, SnapshotSource
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
@@ -457,6 +457,56 @@ class TestAgentOutputTelemetry:
             )
         ]
         assert context_calls == [("sandbox-123", "ghcr.io/vals/swebench:latest")]
+
+    async def test_create_sandbox_uses_outer_source_for_compose(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Compose sources should create and clean up the outer sandbox.
+
+        Test cases:
+        - Provider creation receives the outer image source.
+        - Runtime wrapping is explicit so pre-setup uploads can still target the outer sandbox.
+        """
+        mock_outer = AsyncMock()
+        mock_outer.id = "sandbox-123"
+        mock_outer.name = "task-alias"
+        mock_outer.state = "started"
+        created_sources: list[Any] = []
+        deleted_ids: list[str] = []
+
+        async def fake_create_sandbox(
+            _provider: Any,
+            _sandbox_name: str,
+            source: Any,
+            _resources: Any,
+            _labels: Any,
+            _env_vars: Any,
+        ) -> Any:
+            created_sources.append(source)
+            return mock_outer
+
+        async def fake_delete_sandbox(sandbox: Any, _provider: Any) -> None:
+            deleted_ids.append(sandbox.id)
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", fake_delete_sandbox)
+        monkeypatch.setattr(sandbox_module, "distribution", Mock(), raising=False)
+        monkeypatch.setattr(sandbox_module, "set_sandbox_context", Mock(), raising=False)
+
+        outer_source = ImageSource(image="docker:28.3.3-dind")
+        resources = Resources(vcpu=2, memory=4, disk=5)
+        async with create_sandbox(
+            provider=AsyncMock(),
+            sandbox_name="task-alias",
+            source=ComposeSource(outer=outer_source),
+            resources=resources,
+            creation_semaphore=asyncio.Semaphore(1),
+        ) as sandbox:
+            runtime = sandbox_module.runtime_sandbox(sandbox, ComposeSource(outer=outer_source))
+            assert sandbox is mock_outer
+            assert isinstance(runtime, ComposeSandbox)
+            assert runtime.id == "sandbox-123"
+
+        assert created_sources == [outer_source]
+        assert deleted_ids == ["sandbox-123"]
 
     async def test_create_sandbox_emits_error_metric(self, monkeypatch: pytest.MonkeyPatch) -> None:
         create_error = RuntimeError("create failed")

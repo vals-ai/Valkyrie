@@ -67,7 +67,7 @@ from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerSe
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
-from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, runtime_sandbox, upload_agent_artifacts
 from tracker.types import (
     AverageTaskBreakdown,
     AWSCredentials,
@@ -565,6 +565,7 @@ async def process_task(
 
                 # Force flush the logs if anything has been buffered
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                agent_sandbox = runtime_sandbox(sandbox, task_data.source)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
@@ -572,7 +573,7 @@ async def process_task(
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
                 exit_reason, agent_run_time = await run_agent(
-                    sandbox,
+                    agent_sandbox,
                     start_benchmark_request.contract,
                     task_data.problem_path,
                     task_id,

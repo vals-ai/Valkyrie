@@ -14,6 +14,8 @@ from typing import Any, AsyncGenerator
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    ComposeSandbox,
+    ComposeSource,
     ExecResult,
     ImageSource,
     Sandbox,
@@ -93,10 +95,24 @@ async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
 
 def _source_name(source: SandboxSource) -> str:
     match source:
+        case ComposeSource(outer=outer):
+            return _source_name(outer)
         case ImageSource(image=image):
             return image
         case SnapshotSource():
             return "snapshot"
+
+
+def _provider_source(source: SandboxSource) -> SandboxSource:
+    if isinstance(source, ComposeSource):
+        return source.outer
+    return source
+
+
+def runtime_sandbox(sandbox: Sandbox, source: SandboxSource) -> Sandbox:
+    if isinstance(source, ComposeSource):
+        return ComposeSandbox(sandbox, source)
+    return sandbox
 
 
 def _metric_source_name(source: SandboxSource) -> str:
@@ -143,10 +159,11 @@ async def _create_sandbox(
     env_vars: dict[str, str] | None = None,
 ) -> Sandbox:
     """Create a sandbox through its provider."""
-    _set_sandbox_create_span_attributes(sandbox_name, source, resources)
+    provider_source = _provider_source(source)
+    _set_sandbox_create_span_attributes(sandbox_name, provider_source, resources)
     return await provider.create_sandbox(
         SandboxCreateRequest(
-            source=source,
+            source=provider_source,
             resources=resources,
             name=sandbox_name,
             labels=labels or {},
@@ -191,7 +208,7 @@ async def create_sandbox(
     try:
         async with creation_semaphore:
             start = time.monotonic()
-            sandbox = await _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+            sandbox = await _create_sandbox(provider, sandbox_name, _provider_source(source), resources, labels, env_vars)
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
         raise
