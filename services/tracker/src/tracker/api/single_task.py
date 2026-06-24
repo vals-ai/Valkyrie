@@ -49,6 +49,29 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
+def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, ErrorResult | None]:
+    """Fetches a task's evaluation result or error message depending on its status."""
+    eval_row: EvaluationResult | None = None
+    error_message: str | None = None
+
+    if task.status == TaskStatus.FINISHED:
+        eval_row = session.exec(
+            select(EvaluationResult)
+            .where(EvaluationResult.task == task.id)
+            .where(EvaluationResult.org_id == org.id)
+            .order_by(desc(EvaluationResult.created_at))
+        ).first()
+    elif task.status == TaskStatus.ERROR:
+        error_message = session.exec(
+            select(ErrorResult.error_message)
+            .where(ErrorResult.task == task.id)
+            .where(ErrorResult.org_id == org.id)
+            .order_by(desc(ErrorResult.created_at))
+        ).first()
+
+    return eval_row, error_message
+
+
 @router.get(
     "/{benchmark_id}/tasks/{task_id}",
     response_model=SingleTaskResponse,
@@ -62,17 +85,7 @@ def get_single_task(
     """Fetch a single task's status + evaluation result for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
-    eval_row = session.exec(
-        select(EvaluationResult).where(EvaluationResult.task == task.id).where(EvaluationResult.org_id == org.id)
-    ).first()
-    error_message: str | None = None
-    if task.status == TaskStatus.ERROR:
-        error_message = session.exec(
-            select(ErrorResult.error_message)
-            .where(ErrorResult.task == task.id)
-            .where(ErrorResult.org_id == org.id)
-            .order_by(desc(ErrorResult.created_at))
-        ).first()
+    eval_row, error_message = _fetch_result_objects(session, task, org)
 
     return SingleTaskResponse(
         id=task.id,
