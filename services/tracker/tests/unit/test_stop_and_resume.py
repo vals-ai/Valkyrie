@@ -246,6 +246,46 @@ class TestStopAndResume:
             "task_2": TaskStatus.PENDING,
         }
 
+    async def test_error_retry_with_task_ids_only_resets_requested_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        process_benchmark_env: None,
+    ):
+        """Explicit retry task ids on errored runs must not pull in every ERROR task.
+
+        Test cases:
+            - Terminal ERROR retry with --task-ids resets only the requested error task.
+            - Other ERROR rows stay ERROR for a later full retry.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.ERROR
+        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                Task(org_id=TEST_ORG_ID, task_id="task_requested", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+                Task(org_id=TEST_ORG_ID, task_id="task_other", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+            ]
+        )
+        database_session.commit()
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(),
+            retry=True,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=["task_requested"],
+            org=self._test_org,
+        )
+
+        task_statuses = {
+            task.task_id: task.status
+            for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+        assert verified_task_ids == ["task_requested"]
+        assert task_statuses == {"task_requested": TaskStatus.PENDING, "task_other": TaskStatus.ERROR}
+
     async def test_resume_runs_lazily_added_task_and_recomputes_final_score(
         self,
         contract: AgentContractRequest,

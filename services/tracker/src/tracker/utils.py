@@ -1531,6 +1531,10 @@ def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: l
             filters.append(col(Task.task_id).in_(rerun_task_ids))
         return filters
 
+    if retry and rerun_task_ids:
+        filters.append(col(Task.task_id).in_(rerun_task_ids))
+        return filters
+
     retry_statuses = [TaskStatus.STOPPED]
     if retry:
         retry_statuses.append(TaskStatus.ERROR)
