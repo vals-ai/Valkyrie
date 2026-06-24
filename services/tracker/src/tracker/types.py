@@ -93,6 +93,21 @@ class FetchBenchmarkTasksRequest(BaseModel):
     service_headers: dict[str, str] = Field(default_factory=dict)
 
 
+class ListBenchmarksRequest(BaseModel):
+    custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
+    service_headers_by_benchmark: dict[str, dict[str, str]] = Field(default_factory=dict)
+    include_inaccessible: bool = False
+
+
+class BenchmarkListEntry(BaseModel):
+    benchmark_name: str
+    datasets: list[str]
+
+
+class ListBenchmarksResponse(BaseModel):
+    benchmarks: list[BenchmarkListEntry]
+
+
 class StartBenchmarkErrorResponse(BaseModel):
     benchmark_id: UUID
     error_message: str

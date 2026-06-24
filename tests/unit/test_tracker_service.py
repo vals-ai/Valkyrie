@@ -26,6 +26,8 @@ class FakeClient:
         self.json = json
         if url.endswith("/fetch-benchmark-tasks"):
             return httpx.Response(200, json={"task_ids": []})
+        if url.endswith("/list-benchmarks"):
+            return httpx.Response(200, json={"benchmarks": [{"benchmark_name": "swebench", "datasets": ["default"]}]})
         return httpx.Response(200, json={"status": "success"})
 
     def close(self) -> None:
@@ -138,3 +140,39 @@ def test_fetch_benchmark_tasks_sends_slice(monkeypatch: pytest.MonkeyPatch) -> N
     assert client.json["benchmark_name"] == "swebench"
     assert client.json["dataset"] == "default"
     assert client.json["slice_str"] == "0:0"
+
+
+def test_list_benchmarks_sends_custom_services_and_auth(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "AWS_ACCESS_KEY_ID": "aws-key",
+                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "AWS_DEFAULT_REGION": "us-east-1",
+                "S3_BUCKET": "bucket",
+                "SANDBOX_PROVIDER_SECRET_NAME": "DaytonaSecrets",
+                "LOG_GROUP": "benchmarks",
+                "LOG_RETENTION_POLICY": 365,
+                "custom_benchmark_services": {"custom-benchmark": "http://service"},
+                "benchmark_auth": {"custom-benchmark": "Bearer token"},
+            }
+        )
+    )
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    response = tracker.list_benchmarks(include_inaccessible=True)
+
+    assert response.benchmarks[0].benchmark_name == "swebench"
+    assert client.json == {
+        "custom_benchmark_services": {"custom-benchmark": "http://service"},
+        "service_headers_by_benchmark": {"custom-benchmark": {"Authorization": "Bearer token"}},
+        "include_inaccessible": True,
+    }

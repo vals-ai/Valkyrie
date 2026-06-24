@@ -1,4 +1,5 @@
 import io
+import asyncio
 import logging
 import tarfile
 import traceback
@@ -51,6 +52,7 @@ from tracker.aws.s3 import (
     s3_object_exists,
 )
 from tracker.agent.schemas import AgentConfig
+from tracker.benchmark_catalog import hosted_benchmark_catalog
 from tracker.config import (
     AUTH_REQUIRED,
     ENVIRONMENT,
@@ -82,6 +84,9 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
     HarnessConfig,
+    BenchmarkListEntry,
+    ListBenchmarksRequest,
+    ListBenchmarksResponse,
     Order,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
@@ -115,6 +120,7 @@ configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
+_BENCHMARK_LIST_CONCURRENCY = 16
 
 
 def _operation_id(route: APIRoute) -> str:
@@ -366,6 +372,71 @@ async def start_benchmark(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
         ),
     )
+
+
+async def _check_benchmark_dataset(
+    benchmark_name: str,
+    dataset: str,
+    custom_benchmark_service: str | None,
+    service_headers: dict[str, str],
+    semaphore: asyncio.Semaphore,
+) -> str | None:
+    async with semaphore:
+        benchmark_service = create_benchmark_service_client(
+            url=custom_benchmark_service or create_benchmark_service_url(benchmark_name),
+            service_headers=service_headers,
+        )
+        try:
+            await benchmark_service.verify_task_ids(
+                task_ids=None,
+                slice_str="0:0",
+                dataset=None if dataset == "default" else dataset,
+            )
+            return dataset
+        except (BenchmarkServiceError, httpx.HTTPError):
+            return None
+        finally:
+            await benchmark_service.close()
+
+
+@app.post("/list-benchmarks")
+async def list_benchmarks(
+    http_request: Request,
+    request: ListBenchmarksRequest,
+    _org: Org = Depends(get_current_org),
+) -> ListBenchmarksResponse:
+    catalog = hosted_benchmark_catalog()
+    for benchmark_name in request.custom_benchmark_services:
+        catalog[benchmark_name] = ("default",)
+
+    semaphore = asyncio.Semaphore(_BENCHMARK_LIST_CONCURRENCY)
+
+    async def list_single_benchmark(benchmark_name: str, datasets: tuple[str, ...]) -> BenchmarkListEntry | None:
+        service_headers = forward_tracker_api_key(
+            request.service_headers_by_benchmark.get(benchmark_name),
+            http_request.headers.get("x-api-key"),
+        )
+        custom_benchmark_service = request.custom_benchmark_services.get(benchmark_name)
+        checks = [
+            _check_benchmark_dataset(
+                benchmark_name=benchmark_name,
+                dataset=dataset,
+                custom_benchmark_service=custom_benchmark_service,
+                service_headers=service_headers,
+                semaphore=semaphore,
+            )
+            for dataset in datasets
+        ]
+        checked_datasets = await asyncio.gather(*checks)
+        accessible_datasets = [dataset for dataset in checked_datasets if dataset is not None]
+        if not accessible_datasets and not request.include_inaccessible:
+            return None
+        return BenchmarkListEntry(benchmark_name=benchmark_name, datasets=accessible_datasets)
+
+    rows = await asyncio.gather(
+        *(list_single_benchmark(benchmark_name, datasets) for benchmark_name, datasets in sorted(catalog.items()))
+    )
+    return ListBenchmarksResponse(benchmarks=[row for row in rows if row is not None])
 
 
 @app.post("/fetch-benchmark-tasks")

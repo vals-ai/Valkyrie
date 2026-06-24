@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceUnauthenticatedError
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
 from descope import DescopeClient
@@ -81,6 +81,45 @@ class TestFastapiServer:
 
         assert response.status_code == 200
         assert response.json() == {"task_ids": ["task_1", "task_2"]}
+
+    async def test_list_benchmarks(
+        self,
+        monkeypatch: MonkeyPatch,
+    ):
+        async def _mock_verify_task_ids(
+            self: BenchmarkServiceClient,
+            task_ids: list[str] | None,
+            slice_str: str | None,
+            dataset: str | None = None,
+        ) -> VerifyTaskIdsResponse:
+            del self, task_ids
+            assert slice_str == "0:0"
+            if dataset == "vals_index":
+                raise BenchmarkServiceError("Dataset not allowed")
+            return VerifyTaskIdsResponse(task_ids=[])
+
+        monkeypatch.setattr("main.hosted_benchmark_catalog", lambda: {"swebench": ("default", "vals_index")})
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post("/list-benchmarks", json={})
+
+        assert response.status_code == 200
+        assert response.json() == {"benchmarks": [{"benchmark_name": "swebench", "datasets": ["default"]}]}
+
+    async def test_list_benchmarks_can_include_inaccessible(
+        self,
+        monkeypatch: MonkeyPatch,
+    ):
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise BenchmarkServiceError("Dataset not allowed")
+
+        monkeypatch.setattr("main.hosted_benchmark_catalog", lambda: {"swebench": ("default",)})
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post("/list-benchmarks", json={"include_inaccessible": True})
+
+        assert response.status_code == 200
+        assert response.json() == {"benchmarks": [{"benchmark_name": "swebench", "datasets": []}]}
 
     async def test_start_benchmark(
         self,

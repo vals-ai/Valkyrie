@@ -22,6 +22,8 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FinalViewResponse,
     HarnessConfig,
+    ListBenchmarksRequest,
+    ListBenchmarksResponse,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -128,6 +130,22 @@ class TrackerService:
 
         services = harness_config.get("custom_benchmark_services") or {}
         return services.get(benchmark_name)
+
+    def _custom_benchmark_services(self) -> dict[str, str]:
+        services = self._config.get("custom_benchmark_services")
+        if not isinstance(services, dict):
+            return {}
+        return {name: url for name, url in services.items() if isinstance(name, str) and isinstance(url, str)}
+
+    def _benchmark_service_headers_by_name(self) -> dict[str, dict[str, str]]:
+        auth_entries = self._config.get("benchmark_auth")
+        if not isinstance(auth_entries, dict):
+            return {}
+        return {
+            name: {"Authorization": credential}
+            for name, credential in auth_entries.items()
+            if isinstance(name, str) and isinstance(credential, str)
+        }
 
     @staticmethod
     def get_benchmark_auth(benchmark_name: str) -> str | None:
@@ -466,6 +484,23 @@ class TrackerService:
             return VerifyTaskIdsResponse.model_validate(response.json()).task_ids
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch task ids: {e}") from e
+
+    def list_benchmarks(self, include_inaccessible: bool = False) -> ListBenchmarksResponse:
+        try:
+            payload = ListBenchmarksRequest(
+                custom_benchmark_services=self._custom_benchmark_services(),
+                service_headers_by_benchmark=self._benchmark_service_headers_by_name(),
+                include_inaccessible=include_inaccessible,
+            )
+            response = self._client.post(f"{self._base_url}/list-benchmarks", json=payload.model_dump())
+
+            if response.status_code != 200:
+                details = _response_error_detail(response)
+                raise TrackerServiceError(f"Failed to list benchmarks: {details}")
+
+            return ListBenchmarksResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to list benchmarks: {e}") from e
 
     def check_results_exist_in_s3(self, benchmark_id: UUID) -> bool:
         """
