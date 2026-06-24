@@ -19,6 +19,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     Org,
     Task,
@@ -494,6 +495,12 @@ class TestBenchmarkUtils:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
+        error_message = database_session.exec(
+            select(ErrorResult.error_message)
+            .where(ErrorResult.task == task_row.id)
+            .where(ErrorResult.org_id == TEST_ORG_ID)
+        ).one()
+        assert error_message == "agent failed"
         transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
         assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
         assert transition_record["to_status"] == TaskStatus.ERROR.value

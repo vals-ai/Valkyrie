@@ -57,8 +57,24 @@ def upgrade() -> None:
                 for task_row in existing_error_rows
             ],
         )
+    op.drop_column("task", "error_message")
 
 
 def downgrade() -> None:
+    op.add_column("task", sa.Column("error_message", sa.String(), nullable=True))
+    op.execute(
+        sa.text(
+            """
+            UPDATE task
+            SET error_message = latest.error_message
+            FROM (
+                SELECT DISTINCT ON (task) task, error_message
+                FROM errorresult
+                ORDER BY task, created_at DESC
+            ) AS latest
+            WHERE task.id = latest.task
+            """
+        )
+    )
     op.drop_table("errorresult")
     op.drop_column("evaluationresult", "created_at")

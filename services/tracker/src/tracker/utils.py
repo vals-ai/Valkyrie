@@ -361,8 +361,6 @@ def _commit_task_status(
 
     with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
         task.status = to_status
-        if error_message is not None:
-            task.error_message = error_message
         session.add(task)
         session.commit()
 
@@ -1192,10 +1190,11 @@ def _fetch_result_histories(
     Fetch the history of evaluation + error results for the provided task ids, mixing them with the evaluation results we already have.
     """
     # Prep query to fetch all evaluation results for the given tasks
-    evaluation_statement = (
+    evaluation_statement = cast(
+        Any,
         select(EvaluationResult.id, EvaluationResult.task, EvaluationResult.created_at, EvaluationResult.result)
         .where(col(EvaluationResult.task).in_(task_row_ids))
-        .where(col(EvaluationResult.org_id) == org_id)
+        .where(col(EvaluationResult.org_id) == org_id),
     )
 
     # Exclude evaluation results we have already collected
@@ -1205,9 +1204,10 @@ def _fetch_result_histories(
         )
 
     # Fetched evaluation results
+    evaluation_query_result = cast(Any, session.exec(evaluation_statement))
     evaluation_rows = cast(
         Sequence[tuple[UUID, UUID, datetime, dict[str, Any]]],
-        session.exec(evaluation_statement).all(),  # pyright: ignore[reportUnknownArgumentType]
+        evaluation_query_result.all(),
     )
 
     # Fetch all of the error results from the provided task_rows (A task can have a error message and a evaluation result depending on if its been reran)
@@ -1329,13 +1329,16 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
 
     # Force non exited tasks to be ERROR
     task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
-    session.exec(
-        update(Task)
+    undetected_exit_tasks = session.exec(
+        select(Task)
         .where(col(Task.benchmark) == benchmark_id)
         .where(col(Task.org_id) == org.id)
         .where(col(Task.status).notin_(task_terminal_statuses))
-        .values(status=TaskStatus.ERROR, error_message="Undetected exit of task")
-    )
+    ).all()
+    for task in undetected_exit_tasks:
+        session.add(ErrorResult(org_id=org.id, task=task.id, error_message="Undetected exit of task"))
+        task.status = TaskStatus.ERROR
+        session.add(task)
     session.commit()
 
     # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
@@ -1584,7 +1587,6 @@ async def reset_to_in_progress_status(
                 else TaskStatus.PENDING
             )
             task.started_at = datetime.now(ZoneInfo("UTC"))
-            task.error_message = None
             task.finished_at = None
             if retry_mode == RetryMode.FROM_SCRATCH:
                 task.eval_resume_state = None

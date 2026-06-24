@@ -5,16 +5,18 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlmodel import Session, desc, select
 
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
     Benchmark,
+    ErrorResult,
     EvaluationResult,
     Org,
     Task,
+    TaskStatus,
 )
 from tracker.database.session import get_session
 from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
@@ -63,6 +65,14 @@ def get_single_task(
     eval_row = session.exec(
         select(EvaluationResult).where(EvaluationResult.task == task.id).where(EvaluationResult.org_id == org.id)
     ).first()
+    error_message: str | None = None
+    if task.status == TaskStatus.ERROR:
+        error_message = session.exec(
+            select(ErrorResult.error_message)
+            .where(ErrorResult.task == task.id)
+            .where(ErrorResult.org_id == org.id)
+            .order_by(desc(ErrorResult.created_at))
+        ).first()
 
     return SingleTaskResponse(
         id=task.id,
@@ -70,7 +80,7 @@ def get_single_task(
         status=task.status,
         started_at=task.started_at,
         finished_at=task.finished_at,
-        error_message=task.error_message,
+        error_message=error_message,
         evaluation_result=eval_row.result if eval_row else None,
         agent_caused_exit_reason=(
             eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None

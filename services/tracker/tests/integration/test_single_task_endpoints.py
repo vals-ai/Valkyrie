@@ -6,6 +6,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     Task,
     TaskStatus,
@@ -32,6 +33,7 @@ def _make_bench_with_task(session: Session, task_id: str = "astropy__12907") -> 
 
 def test_get_single_task_returns_payload(client, database_session):
     b, t = _make_bench_with_task(database_session)
+    database_session.add(ErrorResult(org_id=t.org_id, task=t.id, error_message="old boom"))
     database_session.add(
         EvaluationResult(
             org_id=t.org_id,
@@ -50,6 +52,7 @@ def test_get_single_task_returns_payload(client, database_session):
     data = resp.json()
     assert data["task_id"] == t.task_id
     assert data["status"] == "FINISHED"
+    assert data["error_message"] is None
     assert data["evaluation_result"]["resolved"] is True
 
 

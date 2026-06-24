@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import RetrieveTaskResponse
-from sqlmodel import Session
+from sqlmodel import Session, desc, select
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 from websockets.http11 import Response
@@ -14,7 +14,7 @@ from websockets.http11 import Response
 import tracker.utils as utils_module
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Org, Task, TaskStatus
 from tracker.exceptions import OutputArtifactError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
@@ -56,6 +56,15 @@ class TestBenchmarkServiceDisconnect:
         database_session.commit()
 
         return start_benchmark_request, task_row, benchmark_row.id
+
+    def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
+        error_message = database_session.exec(
+            select(ErrorResult.error_message)
+            .where(ErrorResult.task == task_row.id)
+            .where(ErrorResult.org_id == task_row.org_id)
+            .order_by(desc(ErrorResult.created_at))
+        ).one()
+        return error_message
 
     async def _run_process_task(
         self,
@@ -105,12 +114,10 @@ class TestBenchmarkServiceDisconnect:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        assert task_row.error_message is not None
-        assert (
-            "Benchmark service has not sent a message, causing the connection to disconnect" in task_row.error_message
-        )
-        assert "last message received" in task_row.error_message
-        assert "10s ago" in task_row.error_message
+        error_message = self._latest_task_error(database_session, task_row)
+        assert "Benchmark service has not sent a message, causing the connection to disconnect" in error_message
+        assert "last message received" in error_message
+        assert "10s ago" in error_message
 
     async def test_validation_error_produces_human_readable_message(
         self,
@@ -138,10 +145,10 @@ class TestBenchmarkServiceDisconnect:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        assert task_row.error_message is not None
-        assert "Missing or invalid fields" in task_row.error_message
-        assert "source.image.image" in task_row.error_message
-        assert "resources.vcpu" in task_row.error_message
+        error_message = self._latest_task_error(database_session, task_row)
+        assert "Missing or invalid fields" in error_message
+        assert "source.image.image" in error_message
+        assert "resources.vcpu" in error_message
 
     async def test_invalid_status_produces_human_readable_message(
         self,
@@ -167,9 +174,9 @@ class TestBenchmarkServiceDisconnect:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        assert task_row.error_message is not None
-        assert "rejected the WebSocket connection" in task_row.error_message
-        assert "404" in task_row.error_message
+        error_message = self._latest_task_error(database_session, task_row)
+        assert "rejected the WebSocket connection" in error_message
+        assert "404" in error_message
 
     async def test_output_artifact_error_marks_task_error_without_generic_exception(
         self,
@@ -194,9 +201,9 @@ class TestBenchmarkServiceDisconnect:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        assert task_row.error_message is not None
-        assert "Output artifact error" in task_row.error_message
-        assert "Required output artifact missing" in task_row.error_message
+        error_message = self._latest_task_error(database_session, task_row)
+        assert "Output artifact error" in error_message
+        assert "Required output artifact missing" in error_message
 
     async def test_benchmark_service_error_produces_human_readable_message(
         self,
@@ -224,8 +231,8 @@ class TestBenchmarkServiceDisconnect:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        assert task_row.error_message is not None
-        assert "ProgramBench task container failed to start" in task_row.error_message
+        error_message = self._latest_task_error(database_session, task_row)
+        assert "ProgramBench task container failed to start" in error_message
 
     async def test_benchmark_service_error_in_process_benchmark(
         self,

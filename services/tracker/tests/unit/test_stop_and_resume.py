@@ -230,7 +230,6 @@ class TestStopAndResume:
             task_id="task_error",
             benchmark=benchmark_row.id,
             status=TaskStatus.ERROR,
-            error_message="retry failed before",
         )
         task_result = Task(
             org_id=TEST_ORG_ID,

@@ -59,9 +59,7 @@ def _task_rows(benchmark: Benchmark, session: Session) -> list[Task]:
 
 
 def _assert_no_task_errors(benchmark: Benchmark, session: Session) -> None:
-    tasks = _task_rows(benchmark, session)
-    task_errors = [f"{task.task_id}: {task.error_message}" for task in tasks if task.error_message]
-    assert task_errors == []
+    assert benchmark.fetch_tasks_with_errors(session) is None
 
 
 def _assert_task_breakdown_complete(task_breakdown: TaskBreakdown) -> None:
@@ -201,7 +199,9 @@ async def test_process_task_error(
     ).all()
     assert len(error_tasks) == 1
     assert error_tasks[0].task_id == failing_task
-    assert "Simulated setup failure" in (error_tasks[0].error_message or "")
+    task_errors = benchmark.fetch_tasks_with_errors(database_session)
+    assert task_errors is not None
+    assert "Simulated setup failure" in task_errors[failing_task]
 
     # The valid task still finished
     finished_tasks = database_session.exec(
@@ -209,7 +209,6 @@ async def test_process_task_error(
     ).all()
     assert len(finished_tasks) == 1
     assert finished_tasks[0].task_id == _TASK_ID
-    assert finished_tasks[0].error_message is None
 
     # Evaluation exists for the successful task only
     results = benchmark.fetch_evaluation_results(database_session)
@@ -245,7 +244,9 @@ async def test_process_benchmark_errors_when_all_tasks_fail_before_evaluation(
     tasks = _task_rows(benchmark, database_session)
     assert len(tasks) == 1
     assert tasks[0].status == TaskStatus.ERROR
-    assert "Required output artifact missing" in (tasks[0].error_message or "")
+    task_errors = benchmark.fetch_tasks_with_errors(database_session)
+    assert task_errors is not None
+    assert "Required output artifact missing" in task_errors[_TASK_ID]
     assert benchmark.fetch_evaluation_results(database_session) == {}
 
 
@@ -296,7 +297,7 @@ async def test_concurrent_benchmarks_same_task(
         assert len(tasks) == 1
         assert tasks[0].task_id == _TASK_ID
         assert tasks[0].status == TaskStatus.FINISHED
-        assert tasks[0].error_message is None
+        assert benchmark.fetch_tasks_with_errors(database_session) is None
 
         results = benchmark.fetch_evaluation_results(database_session)
         assert set(results.keys()) == {_TASK_ID}

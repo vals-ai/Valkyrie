@@ -252,18 +252,23 @@ class Benchmark(SQLModel, table=True):
         return fetch_evaluation_results(self.id, session, self.org_id)
 
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
-        statement = (
-            select(Task.task_id, Task.error_message)
+        error_rows = session.exec(
+            select(Task.task_id, ErrorResult.error_message)
+            .outerjoin(ErrorResult, col(ErrorResult.task) == col(Task.id))
             .where(Task.benchmark == self.id)
             .where(Task.org_id == self.org_id)
             .where(Task.status == TaskStatus.ERROR)
-        )
-        tasks = session.exec(statement).all()
+            .order_by(col(Task.id), col(ErrorResult.created_at).desc())
+        ).all()
 
-        if not tasks:
+        if not error_rows:
             return None
 
-        return {task_id: (error_message or "No error message was provided") for task_id, error_message in tasks}
+        errors_by_task_id: dict[str, str] = {}
+        for task_id, error_message in error_rows:
+            errors_by_task_id.setdefault(task_id, error_message or "No error message was provided")
+
+        return errors_by_task_id
 
     def start_benchmark_request(
         self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
@@ -397,7 +402,6 @@ class Task(SQLModel, table=True):
     task_id: str
     status: TaskStatus = Field(default=TaskStatus.PENDING)
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
-    error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     benchmark: UUID = Field(foreign_key="benchmark.id")

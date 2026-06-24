@@ -5,17 +5,17 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session, col, desc, func, select
 
 from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
-from tracker.database.models import Benchmark, Org, Task, TaskStatus
+from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.types import (
     SingleBenchmarkResponse,
-    TaskSummary,
     TasksResponse,
+    TaskSummary,
 )
 
 router = APIRouter(prefix="/benchmarks")
@@ -85,9 +85,22 @@ def get_benchmark_tasks(
         escaped_search = _escape_sql_like_pattern(task_id_search)
         base_filters.append(col(Task.task_id).ilike(f"%{escaped_search}%", escape="\\"))
 
+    latest_error_message = (
+        select(ErrorResult.error_message)
+        .where(ErrorResult.task == Task.id)
+        .where(ErrorResult.org_id == org.id)
+        .order_by(desc(ErrorResult.created_at))
+        .limit(1)
+        .scalar_subquery()
+    )
     rows = session.exec(
-        select(Task).where(*base_filters).order_by(col(Task.started_at).desc()).limit(limit).offset(offset)
+        select(Task, latest_error_message)
+        .where(*base_filters)
+        .order_by(col(Task.started_at).desc())
+        .limit(limit)
+        .offset(offset)
     ).all()
+
     total = session.exec(select(func.count(col(Task.id))).where(*base_filters)).one()
 
     return TasksResponse(
@@ -98,9 +111,9 @@ def get_benchmark_tasks(
                 status=task.status,
                 started_at=task.started_at,
                 finished_at=task.finished_at,
-                error_message=task.error_message,
+                error_message=error_message if task.status == TaskStatus.ERROR else None,
             )
-            for task in rows
+            for task, error_message in rows
         ],
         total_count=total,
     )

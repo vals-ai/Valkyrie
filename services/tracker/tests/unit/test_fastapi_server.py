@@ -22,6 +22,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     FinalEvaluation,
     Org,
@@ -284,7 +285,13 @@ class TestFastapiServer:
                 database_session.add(evaluation_result_row)
             else:
                 task_row.status = TaskStatus.ERROR
-                task_row.error_message = "Error occured during task execution or evaluation"
+                database_session.add(
+                    ErrorResult(
+                        org_id=TEST_ORG_ID,
+                        task=task_row.id,
+                        error_message="Error occured during task execution or evaluation",
+                    )
+                )
 
             database_session.add(task_row)
 
@@ -415,7 +422,7 @@ class TestFastapiServer:
         assert len(response_json.get("evaluation_results")) == 10
 
         # Test case 8. Task errors field is populated when we encounter an error
-        # Add some new tasks with the status error (One with erro message and one without)
+        # Add some new tasks with the status error (one with ErrorResult and one without)
         error_message = "Error occured during task execution or evaluation"
         task_rows = [
             Task(
@@ -423,11 +430,18 @@ class TestFastapiServer:
                 task_id=f"task_{i}",
                 benchmark=benchmark_row.id,
                 status=TaskStatus.ERROR,
-                error_message=error_message if i == 22 else None,
             )
             for i in range(22, 24)
         ]
         database_session.add_all(task_rows)
+        database_session.flush()
+        database_session.add(
+            ErrorResult(
+                org_id=TEST_ORG_ID,
+                task=task_rows[0].id,
+                error_message=error_message,
+            )
+        )
         database_session.commit()
 
         response = client.get("/retrieve-results", params=query_params)
