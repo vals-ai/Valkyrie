@@ -50,6 +50,8 @@ Before running benchmarks, you need to install and upload agents to Valkyrie. Th
 
 All agents will need to already be in the Valkyrie format. Please reference the [contract documentation](docs/CONTRACTS.md) to learn more.
 
+You can browse Valkyrie-compatible community agents in the [public agent registry](https://github.com/vals-ai/public-agent-registry).
+
 ### Install an agent from GitHub
 
 ```bash
