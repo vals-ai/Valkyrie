@@ -36,31 +36,6 @@ def _make_bench_with_task(session: Session, task_id: str = "astropy__12907") -> 
     return b, t
 
 
-def test_get_single_task_returns_payload(client: TestClient, database_session: Session) -> None:
-    b, t = _make_bench_with_task(database_session)
-    database_session.add(ErrorResult(org_id=t.org_id, task=t.id, error_message="old boom"))
-    database_session.add(
-        EvaluationResult(
-            org_id=t.org_id,
-            task=t.id,
-            instance_id=f"{b.id}/{t.task_id}",
-            result={"resolved": True, "f2p_score": 0.9},
-        )
-    )
-    database_session.commit()
-
-    resp = client.get(
-        f"/benchmarks/{b.id}/tasks/{t.task_id}",
-        headers={"Authorization": "Bearer fake"},
-    )
-    assert resp.status_code == 200, resp.text
-    data: dict[str, Any] = resp.json()
-    assert data["task_id"] == t.task_id
-    assert data["status"] == "FINISHED"
-    assert data["error_message"] is None
-    assert data["evaluation_result"]["resolved"] is True
-
-
 def test_get_single_task_returns_current_result_or_error(client: TestClient, database_session: Session) -> None:
     """The single task endpoint should expose only the current task outcome.
 
@@ -126,6 +101,8 @@ def test_get_single_task_returns_current_result_or_error(client: TestClient, dat
     )
     assert finished_response.status_code == 200, finished_response.text
     finished_data: dict[str, Any] = finished_response.json()
+    assert finished_data["task_id"] == finished_task.task_id
+    assert finished_data["status"] == "FINISHED"
     assert finished_data["error_message"] is None
     assert finished_data["evaluation_result"] == {"attempt": "new"}
 
@@ -135,6 +112,8 @@ def test_get_single_task_returns_current_result_or_error(client: TestClient, dat
     )
     assert error_response.status_code == 200, error_response.text
     error_data: dict[str, Any] = error_response.json()
+    assert error_data["task_id"] == error_task.task_id
+    assert error_data["status"] == "ERROR"
     assert error_data["error_message"] == "new error"
     assert error_data["evaluation_result"] is None
 

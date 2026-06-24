@@ -306,7 +306,8 @@ class TestStopAndResume:
         assert [entry.get("error_message") for entry in error_history] == ["retry failed before", None]
         assert error_history[0]["created_at"] > error_history[1]["created_at"]
         assert error_history[1]["result"] == {"score": 0.25}
-        assert result_history == [{"created_at": result_history[0]["created_at"], "result": {"score": 0.5}}]
+        assert len(result_history) == 1
+        assert result_history[0]["result"] == {"score": 0.5}
 
     async def test_reset_lazily_creates_rows_for_unregistered_task_ids(
         self,
