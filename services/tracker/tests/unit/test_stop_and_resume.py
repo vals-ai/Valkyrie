@@ -298,6 +298,8 @@ class TestStopAndResume:
         evaluation_results = response.json()["evaluation_results"]
         error_history = evaluation_results["task_error"]["history"]
         result_history = evaluation_results["task_result"]["history"]
+        assert evaluation_results["task_error"]["attempts"] == 3
+        assert evaluation_results["task_result"]["attempts"] == 2
         assert [entry.get("error_message") for entry in error_history] == ["retry failed before", None]
         assert error_history[0]["created_at"] > error_history[1]["created_at"]
         assert error_history[1]["result"] == {"score": 0.25}

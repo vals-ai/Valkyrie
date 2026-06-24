@@ -1270,7 +1270,9 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
         result_data["agent_caused_exit_reason"] = evaluation_result.agent_caused_exit_reason
         if task_breakdown is not None:
             result_data["task_breakdown"] = task_breakdown.model_dump()
-        if task_history := histories.get(task_row_id):
+        task_history = histories.get(task_row_id, [])
+        result_data["attempts"] = len(task_history) + 1
+        if task_history:
             result_data["history"] = task_history
         evaluation_results[task_id] = result_data
 
