@@ -1288,6 +1288,9 @@ async def stream_benchmark_results(
                     s3_bucket_url=create_benchmark_url(
                         str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
                     ),
+                    final_score=fresh_benchmark.final_evaluation.final_score
+                    if fresh_benchmark.final_evaluation
+                    else None,
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"

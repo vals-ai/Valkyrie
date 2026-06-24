@@ -113,6 +113,7 @@ class FetchBenchmarkResponse(BaseModel):
     benchmark_id: UUID
     details: BenchmarkDetails
     s3_bucket_url: str
+    final_score: float | None = None
 
 
 class AverageTaskBreakdown(BaseModel):
