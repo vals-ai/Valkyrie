@@ -30,7 +30,7 @@ from opentelemetry import trace
 from pydantic import ValidationError
 from sqlalchemy import JSON, literal, tuple_, type_coerce
 from sqlalchemy.orm import selectinload
-from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
+from sqlmodel import Session, asc, case, col, desc, func, or_, select, update
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
@@ -52,6 +52,7 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
+    ErrorResult,
     EvaluationResult,
     FinalEvaluation,
     Org,
@@ -89,6 +90,14 @@ _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.I
 
 def _history_created_at(entry: dict[str, Any]) -> str:
     return str(entry.get("created_at") or "")
+
+
+def _history_result(created_at: datetime, result: dict[str, Any]) -> dict[str, Any]:
+    return {"created_at": created_at.isoformat(), "result": dict(result)}
+
+
+def _history_error(created_at: datetime, error_message: str) -> dict[str, Any]:
+    return {"created_at": created_at.isoformat(), "error_message": error_message}
 
 
 def fetch_sandbox_provider_config(secret_name: str, aws: AWSCredentials, provider_type: str) -> SandboxProviderConfig:
@@ -851,17 +860,41 @@ def has_stopped_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> b
 
 
 def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:
+    """
+    Return a mapping of the task IDs to their latest evaluation results. If a task is not finished we default to None.
+    """
+    # Fetch task rows which belong to the benchmark we are running
     task_rows = cast(
-        Sequence[tuple[str, dict[str, Any] | None]],
+        Sequence[tuple[UUID, str, TaskStatus]],
         session.exec(
-            select(Task.task_id, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
-            .join(EvaluationResult, col(Task.id) == col(EvaluationResult.task), isouter=True)
-            .where(Task.benchmark == benchmark_row.id)
-            .where(Task.org_id == org.id)
+            select(Task.id, Task.task_id, Task.status)
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.org_id) == org.id)
         ).all(),
     )
 
-    return dict(task_rows)
+    # Fetch all results from tasks that are finished
+    task_row_ids = [task_row_id for task_row_id, _task_id, status in task_rows if status == TaskStatus.FINISHED]
+    result_rows = cast(
+        Sequence[tuple[UUID, dict[str, Any]]],
+        session.exec(
+            select(EvaluationResult.task, EvaluationResult.result)  # pyright: ignore[reportUnknownArgumentType]
+            .where(col(EvaluationResult.task).in_(task_row_ids))
+            .where(col(EvaluationResult.org_id) == org.id)
+            .order_by(desc(EvaluationResult.created_at))
+        ).all(),
+    )
+
+    # Group results by task row ID
+    latest_results: dict[UUID, dict[str, Any]] = {}
+    for task_row_id, result in result_rows:
+        latest_results.setdefault(task_row_id, result)
+
+    # Return mapping between task IDs and their latest evaluation results
+    return {
+        task_id: latest_results.get(task_row_id) if status == TaskStatus.FINISHED else None
+        for task_row_id, task_id, status in task_rows
+    }
 
 
 @broker.task
@@ -1152,32 +1185,93 @@ class BenchmarkContext:
         )
 
 
+def _fetch_result_histories(
+    session: Session, task_row_ids: Sequence[UUID], current_evaluation_result_ids: set[UUID], org_id: UUID
+) -> dict[UUID, list[dict[str, Any]]]:
+    """
+    Fetch the history of evaluation + error results for the provided task ids, mixing them with the evaluation results we already have.
+    """
+    # Prep query to fetch all evaluation results for the given tasks
+    evaluation_statement = (
+        select(EvaluationResult.id, EvaluationResult.task, EvaluationResult.created_at, EvaluationResult.result)
+        .where(col(EvaluationResult.task).in_(task_row_ids))
+        .where(col(EvaluationResult.org_id) == org_id)
+    )
+
+    # Exclude evaluation results we have already collected
+    if current_evaluation_result_ids:
+        evaluation_statement = evaluation_statement.where(
+            col(EvaluationResult.id).notin_(current_evaluation_result_ids)
+        )
+
+    # Fetched evaluation results
+    evaluation_rows = cast(
+        Sequence[tuple[UUID, UUID, datetime, dict[str, Any]]],
+        session.exec(evaluation_statement).all(),  # pyright: ignore[reportUnknownArgumentType]
+    )
+
+    # Fetch all of the error results from the provided task_rows (A task can have a error message and a evaluation result depending on if its been reran)
+    error_rows = session.exec(
+        select(ErrorResult.task, ErrorResult.created_at, ErrorResult.error_message)
+        .where(col(ErrorResult.task).in_(task_row_ids))
+        .where(col(ErrorResult.org_id) == org_id)
+    ).all()
+
+    # Create a mapping of the task row, time stamp of when the result for the row was created, and the resulting row
+    # We do this so that we can easily sort it downstream
+    histories: dict[UUID, list[dict[str, Any]]] = {}
+    for _result_id, task_row_id, created_at, result in evaluation_rows:
+        histories.setdefault(task_row_id, []).append(_history_result(created_at, result))
+    for task_row_id, created_at, error_message in error_rows:
+        histories.setdefault(task_row_id, []).append(_history_error(created_at, error_message))
+
+    return {
+        task_row_id: sorted(entries, key=_history_created_at, reverse=True)
+        for task_row_id, entries in histories.items()
+        if entries
+    }
+
+
 def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID) -> dict[str, dict[str, Any]]:
-    """Select all evaluation results for a given benchmark"""
+    """Select the latest successful evaluation result for each finished task."""
     statement = (
-        select(EvaluationResult, Task.task_id, Task.history, TaskBreakdown)
+        select(EvaluationResult, Task.id, Task.task_id, TaskBreakdown)
         .join(Task, col(EvaluationResult.task) == col(Task.id))
         .outerjoin(TaskBreakdown, col(Task.task_breakdown) == col(TaskBreakdown.id))
         .where(Task.benchmark == benchmark_id)
         .where(Task.org_id == org_id)
+        .where(Task.status == TaskStatus.FINISHED)
+        .order_by(desc(EvaluationResult.created_at))
     )
+
     results = cast(
-        Sequence[tuple[EvaluationResult, str, list[dict[str, Any]] | None, TaskBreakdown | None]],
+        Sequence[tuple[EvaluationResult, UUID, str, TaskBreakdown | None]],
         session.exec(statement).all(),  # pyright: ignore[reportUnknownArgumentType]
     )
 
+    latest_results: list[tuple[EvaluationResult, UUID, str, TaskBreakdown | None]] = []
+    seen_task_row_ids: set[UUID] = set()
+    for row in results:
+        task_row_id = row[1]
+        if task_row_id not in seen_task_row_ids:
+            latest_results.append(row)
+            seen_task_row_ids.add(task_row_id)
+
+    histories = _fetch_result_histories(
+        session,
+        list(seen_task_row_ids),
+        {evaluation_result.id for evaluation_result, _task_row_id, _task_id, _breakdown in latest_results},
+        org_id,
+    )
+
     evaluation_results: dict[str, dict[str, Any]] = {}
-    for evaluation_result, task_id, task_history, task_breakdown in results:
+    for evaluation_result, task_row_id, task_id, task_breakdown in latest_results:
         result_data = dict(evaluation_result.result)
         result_data["agent_caused_exit_reason"] = evaluation_result.agent_caused_exit_reason
         if task_breakdown is not None:
             result_data["task_breakdown"] = task_breakdown.model_dump()
-        if task_history:
-            result_data["history"] = sorted(
-                task_history,
-                key=_history_created_at,
-                reverse=True,
-            )
+        if task_history := histories.get(task_row_id):
+            result_data["history"] = task_history
         evaluation_results[task_id] = result_data
 
     return evaluation_results
@@ -1260,6 +1354,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
 
 
 def commit_task_error(task_row: Task, session: Session, error_message: str) -> None:
+    session.add(ErrorResult(org_id=task_row.org_id, task=task_row.id, error_message=error_message))
     _commit_task_status(task_row, session, TaskStatus.ERROR, error_message=error_message)
 
 
@@ -1426,37 +1521,6 @@ async def force_stop_sandboxes(
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
 
 
-def _preserve_task_history(existing_rows: Sequence[Task], session: Session, org: Org) -> None:
-    task_row_ids = [task.id for task in existing_rows]
-    if not task_row_ids:
-        return
-
-    created_at = datetime.now(ZoneInfo("UTC")).isoformat()
-    result_statement = (
-        select(EvaluationResult.task, EvaluationResult.result)
-        .where(col(EvaluationResult.task).in_(task_row_ids))
-        .where(col(EvaluationResult.org_id) == org.id)
-    )
-    result_rows = cast(
-        Sequence[tuple[UUID, dict[str, Any]]],
-        session.exec(result_statement).all(),  # pyright: ignore[reportUnknownArgumentType]
-    )
-    entries_by_task_row_id: dict[UUID, list[dict[str, Any]]] = {}
-    for task_row_id, result in result_rows:
-        entries_by_task_row_id.setdefault(task_row_id, []).append({"created_at": created_at, "result": dict(result)})
-
-    for task in existing_rows:
-        entries = list(entries_by_task_row_id.get(task.id, []))
-        if task.error_message:
-            entries.append({"created_at": created_at, "error_message": task.error_message})
-        if entries:
-            task.history = sorted(
-                [*(task.history or []), *entries],
-                key=_history_created_at,
-                reverse=True,
-            )
-
-
 async def reset_to_in_progress_status(
     benchmark_row: Benchmark,
     session: Session,
@@ -1513,8 +1577,6 @@ async def reset_to_in_progress_status(
             session.add(benchmark_row)
             session.commit()
 
-        _preserve_task_history(existing_rows, session, org)
-
         for task in existing_rows:
             task.status = (
                 TaskStatus.EVALUATING
@@ -1530,14 +1592,6 @@ async def reset_to_in_progress_status(
 
         for task_id in new_task_ids:
             session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
-
-        # Delete all evaluation results for the tasks (unlikely they exist)
-        if existing_rows:
-            session.exec(
-                delete(EvaluationResult)
-                .where(col(EvaluationResult.task).in_([task.id for task in existing_rows]))
-                .where(col(EvaluationResult.org_id) == org.id)
-            )
 
         session.commit()
 

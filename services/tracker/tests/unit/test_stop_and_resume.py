@@ -20,6 +20,7 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     Org,
     RetryMode,
@@ -230,7 +231,6 @@ class TestStopAndResume:
             benchmark=benchmark_row.id,
             status=TaskStatus.ERROR,
             error_message="retry failed before",
-            history=[{"created_at": "2026-06-01T00:00:00+00:00", "result": {"score": 0.25}}],
         )
         task_result = Task(
             org_id=TEST_ORG_ID,
@@ -240,13 +240,29 @@ class TestStopAndResume:
         )
         database_session.add_all([task_error, task_result])
         database_session.flush()
-        database_session.add(
-            EvaluationResult(
-                org_id=TEST_ORG_ID,
-                task=task_result.id,
-                instance_id="previous-task-result",
-                result={"score": 0.5},
-            )
+        database_session.add_all(
+            [
+                EvaluationResult(
+                    org_id=TEST_ORG_ID,
+                    task=task_error.id,
+                    created_at=datetime(2026, 6, 1, tzinfo=ZoneInfo("UTC")),
+                    instance_id="older-task-error-result",
+                    result={"score": 0.25},
+                ),
+                ErrorResult(
+                    org_id=TEST_ORG_ID,
+                    task=task_error.id,
+                    created_at=datetime(2026, 6, 2, tzinfo=ZoneInfo("UTC")),
+                    error_message="retry failed before",
+                ),
+                EvaluationResult(
+                    org_id=TEST_ORG_ID,
+                    task=task_result.id,
+                    created_at=datetime(2026, 6, 1, tzinfo=ZoneInfo("UTC")),
+                    instance_id="previous-task-result",
+                    result={"score": 0.5},
+                ),
+            ]
         )
         database_session.commit()
 

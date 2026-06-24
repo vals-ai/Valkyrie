@@ -400,7 +400,6 @@ class Task(SQLModel, table=True):
     error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
-    history: list[dict[str, Any]] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     benchmark: UUID = Field(foreign_key="benchmark.id")
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 
@@ -431,10 +430,18 @@ class TaskBreakdown(SQLModel, table=True):
     sandbox_run_duration: float | None = Field(default=None)
 
 
-class EvaluationResult(SQLModel, table=True):
+class ResultBase(SQLModel):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+
+
+class EvaluationResult(ResultBase, table=True):
     instance_id: str | None = Field(default=None, unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+
+
+class ErrorResult(ResultBase, table=True):
+    error_message: str = Field(nullable=False)
