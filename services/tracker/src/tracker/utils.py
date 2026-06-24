@@ -1427,24 +1427,26 @@ async def force_stop_sandboxes(
 
 
 def _preserve_task_history(existing_rows: Sequence[Task], session: Session, org: Org) -> None:
-    created_at = datetime.now(ZoneInfo("UTC")).isoformat()
-    entries_by_task_id: dict[str, list[dict[str, Any]]] = {}
     task_row_ids = [task.id for task in existing_rows]
+    if not task_row_ids:
+        return
 
-    if task_row_ids:
-        result_rows = session.exec(
-            select(EvaluationResult, Task.task_id)
-            .join(Task, col(EvaluationResult.task) == col(Task.id))
-            .where(col(EvaluationResult.task).in_(task_row_ids))
-            .where(col(EvaluationResult.org_id) == org.id)
-        ).all()
-        for evaluation_result, task_id in result_rows:
-            entries_by_task_id.setdefault(task_id, []).append(
-                {"created_at": created_at, "result": dict(evaluation_result.result)}
-            )
+    created_at = datetime.now(ZoneInfo("UTC")).isoformat()
+    result_statement = (
+        select(EvaluationResult.task, EvaluationResult.result)
+        .where(col(EvaluationResult.task).in_(task_row_ids))
+        .where(col(EvaluationResult.org_id) == org.id)
+    )
+    result_rows = cast(
+        Sequence[tuple[UUID, dict[str, Any]]],
+        session.exec(result_statement).all(),  # pyright: ignore[reportUnknownArgumentType]
+    )
+    entries_by_task_row_id: dict[UUID, list[dict[str, Any]]] = {}
+    for task_row_id, result in result_rows:
+        entries_by_task_row_id.setdefault(task_row_id, []).append({"created_at": created_at, "result": dict(result)})
 
     for task in existing_rows:
-        entries = entries_by_task_id.get(task.task_id, [])
+        entries = list(entries_by_task_row_id.get(task.id, []))
         if task.error_message:
             entries.append({"created_at": created_at, "error_message": task.error_message})
         if entries:
