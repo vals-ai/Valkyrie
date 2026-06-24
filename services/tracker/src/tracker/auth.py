@@ -301,7 +301,7 @@ def get_current_starter(request: Request, session: Session = Depends(get_session
     """FastAPI dependency that returns the full identity behind the current request.
 
     Self-hosted (AUTH_REQUIRED=False): returns RequestIdentity with default org and Nones.
-    Hosted (AUTH_REQUIRED=True): validates Descope API key and resolves org + identity.
+    Hosted (AUTH_REQUIRED=True): validates Vals AI API key and resolves org + identity.
     """
     if not AUTH_REQUIRED:
         return RequestIdentity(org=get_default_org(session), access_key_id=None, email=None, name=None)
