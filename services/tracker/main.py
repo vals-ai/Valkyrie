@@ -828,13 +828,23 @@ async def fetch_benchmark_metadata(
     return benchmark_row.benchmark_metadata
 
 
-async def _stream_run_outputs(
+@app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
+async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
-    session: Session,
-    harness_config: HarnessConfig,
-    org: Org,
-    task_ids: list[str] | None,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+    task_ids: list[str] | None = Query(default=None),
 ) -> StreamingResponse:
+    """
+    Stream a tar file with run outputs to the client.
+
+    Usage:
+    curl -X GET http://<endpoint>/fetch-run-outputs/<benchmark_id>
+
+    Returns:
+        StreamingResponse
+    """
     get_scoped(Benchmark, benchmark_id, session, org)
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
@@ -882,23 +892,3 @@ async def _stream_run_outputs(
         media_type="application/x-tar",
         headers={"Content-Disposition": f"attachment; filename=benchmark_{benchmark_id}_outputs.tar"},
     )
-
-
-@app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
-async def fetch_run_outputs(
-    benchmark_id: TrackedBenchmarkId,
-    session: Session = Depends(get_session),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
-    org: Org = Depends(get_current_org),
-    task_ids: list[str] | None = Query(default=None),
-) -> StreamingResponse:
-    """
-    Stream a tar file with run outputs to the client.
-
-    Usage:
-    curl -X GET http://<endpoint>/fetch-run-outputs/<benchmark_id>
-
-    Returns:
-        StreamingResponse
-    """
-    return await _stream_run_outputs(benchmark_id, session, harness_config, org, task_ids)
