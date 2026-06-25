@@ -1,12 +1,9 @@
 import time
 from asyncio import Semaphore
-from contextlib import asynccontextmanager
-from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import pytest
-from benchmark_service import SnapshotSource
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
@@ -20,7 +17,13 @@ from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.exceptions import OutputArtifactError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import fetch_benchmark_row, process_benchmark, process_task, start_benchmark_request_to_benchmark
+from tracker.utils import (
+    fetch_benchmark_row,
+    fetch_sandbox_provider_config,
+    process_benchmark,
+    process_task,
+    start_benchmark_request_to_benchmark,
+)
 
 
 class TestBenchmarkServiceDisconnect:
@@ -69,6 +72,11 @@ class TestBenchmarkServiceDisconnect:
             task_id="task_0",
             harness_config=harness_config,
             org=self._test_org,
+            sandbox_provider_config=fetch_sandbox_provider_config(
+                harness_config.sandbox_provider_secret_name,
+                harness_config.aws,
+                start_benchmark_request.sandbox_provider,
+            ),
             creation_semaphore=Semaphore(1),
         )
 
@@ -134,44 +142,6 @@ class TestBenchmarkServiceDisconnect:
         assert "Missing or invalid fields" in task_row.error_message
         assert "source.image.image" in task_row.error_message
         assert "resources.vcpu" in task_row.error_message
-
-    async def test_legacy_snapshot_docker_image_uses_snapshot_source(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        process_benchmark_env: None,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-    ) -> None:
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
-            contract, database_session, harness_config
-        )
-        sandbox_sources: list[Any] = []
-
-        async def _mock_retrieve_task_legacy_snapshot(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-            return RetrieveTaskResponse.model_validate(
-                {
-                    "docker_image": "snapshot:code-migration-eval-container-v8",
-                    "problem_path": "/tmp/problem_statement.txt",
-                    "cwd": "/testbed",
-                    "resources": {"vcpu": 2, "memory": 4, "disk": 5},
-                }
-            )
-
-        @asynccontextmanager
-        async def _capture_create_sandbox(*_args: Any, source: Any, **_kwargs: Any):
-            sandbox_sources.append(source)
-            yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
-
-        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_legacy_snapshot)
-        monkeypatch.setattr(utils_module, "create_sandbox", _capture_create_sandbox)
-
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
-
-        assert result == {"task_0": {"status": "success", "score": 1.0}}
-        assert len(sandbox_sources) == 1
-        assert isinstance(sandbox_sources[0], SnapshotSource)
-        assert sandbox_sources[0].snapshot == "code-migration-eval-container-v8"
 
     async def test_invalid_status_produces_human_readable_message(
         self,

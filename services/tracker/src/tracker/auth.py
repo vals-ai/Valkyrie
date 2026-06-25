@@ -241,6 +241,62 @@ def forward_tracker_api_key(
     return forwarded_headers
 
 
+def _extract_bearer_token(request: Request) -> str | None:
+    auth = request.headers.get("authorization")
+    if not auth:
+        return None
+    parts = auth.split(" ", 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1]
+
+
+def resolve_bearer_session(jwt: str, session: Session) -> Org:
+    """Validate a Descope session JWT and resolve the org."""
+    if not _descope_client:
+        raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
+
+    try:
+        jwt_response = _descope_client.validate_session(jwt)
+    except AuthException as e:
+        raise HTTPException(status_code=401, detail=f"Invalid session: {e.error_message}") from e
+
+    tenants = list(jwt_response.get("tenants", {}).keys())
+    if not tenants:
+        raise HTTPException(status_code=400, detail="Session token has no tenant")
+    tenant_name = tenants[0]
+
+    org = find_org_by_tenant(tenant_name, session)
+    if not org:
+        raise HTTPException(status_code=404, detail=f"Organization '{tenant_name}' not configured")
+
+    return org
+
+
+def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
+    """Resolve the current org from either an Authorization: Bearer or x-api-key header."""
+    if not AUTH_REQUIRED:
+        return get_default_org(session)
+
+    bearer = _extract_bearer_token(request)
+    api_key = request.headers.get("x-api-key") or ""
+
+    if bearer and api_key:
+        raise HTTPException(status_code=401, detail="Send Authorization OR x-api-key, not both")
+    if not bearer and not api_key:
+        raise HTTPException(status_code=401, detail="Missing Authorization or x-api-key header")
+
+    if bearer:
+        return resolve_bearer_session(bearer, session)
+
+    identity = resolve_descope_identity(api_key)
+    org = find_org_by_tenant(identity.tenant_name, session)
+    if not org:
+        raise HTTPException(status_code=404, detail=f"Organization '{identity.tenant_name}' not configured")
+
+    return org
+
+
 def get_current_starter(request: Request, session: Session = Depends(get_session)) -> RequestIdentity:
     """FastAPI dependency that returns the full identity behind the current request.
 
@@ -259,19 +315,3 @@ def get_current_starter(request: Request, session: Session = Depends(get_session
             detail=f"Organization '{identity.tenant_name}' not configured — run valk config init",
         )
     return RequestIdentity(org=org, access_key_id=identity.access_key_id, email=identity.email, name=identity.name)
-
-
-def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
-    """FastAPI dependency that resolves the current org without loading user profile data."""
-    if not AUTH_REQUIRED:
-        return get_default_org(session)
-
-    api_key = extract_api_key(request)
-    identity = resolve_descope_identity(api_key)
-    org = find_org_by_tenant(identity.tenant_name, session)
-    if not org:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Organization '{identity.tenant_name}' not configured — run valk config init",
-        )
-    return org

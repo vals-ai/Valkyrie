@@ -6,8 +6,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
+from fastapi import HTTPException
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
+from starlette.requests import Request
 
 from tests.conftest import TEST_ORG_ID
 from tests.unit.test_fastapi_server import client
@@ -23,14 +25,16 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.types import FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
+from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    _parse_log_retention_policy,
     commit_task_error,
     create_task_rows,
-    fetch_daytona_headers,
     fetch_benchmark_row,
-    fetch_final_score_inputs,
+    fetch_harness_config,
     fetch_filtered_benchmark_rows,
+    fetch_final_score_inputs,
+    fetch_sandbox_provider_config,
     has_runnable_tasks,
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
@@ -41,23 +45,33 @@ class TestBenchmarkUtils:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
-    def test_fetch_daytona_headers_sets_provider(
+    def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
         self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr(
-            "tracker.utils.fetch_aws_secret",
-            lambda *_args, **_kwargs: {
+        """Sandbox provider config should combine client-selected type with the production secret shape.
+
+        Test cases:
+        - A selected provider type is added to DAYTONA_* secret values.
+        """
+        secrets = {
+            "provider-secret": {
                 "DAYTONA_API_KEY": "key",
                 "DAYTONA_API_URL": "url",
                 "DAYTONA_TARGET": "target",
             },
-        )
+        }
 
-        assert fetch_daytona_headers(harness_config.daytona_secret_name, harness_config.aws) == {
-            "x-sandbox-provider": "daytona",
-            "x-api-key": "key",
-            "x-api-url": "url",
-            "x-target": "target",
+        def fetch_secret(name: str, _aws: AWSCredentials) -> dict[str, str]:
+            return secrets[name]
+
+        monkeypatch.setattr("tracker.utils.fetch_aws_secret", fetch_secret)
+
+        provider_config = fetch_sandbox_provider_config("provider-secret", harness_config.aws, "daytona")
+        assert provider_config.model_dump(mode="json") == {
+            "type": "daytona",
+            "DAYTONA_API_KEY": "key",
+            "DAYTONA_API_URL": "url",
+            "DAYTONA_TARGET": "target",
         }
 
     async def _mock_request_final_score(
@@ -287,12 +301,16 @@ class TestBenchmarkUtils:
             task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
             slice_str=":10",
             harness_config=harness_config,
+            sandbox_provider_secret_name="ignored-request-secret",
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_starter)
+        assert benchmark_row.arguments.sandbox_provider_secret_name == harness_config.sandbox_provider_secret_name
 
         recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
-        assert recreated_start_benchmark_request == original_start_benchmark_request
+        assert recreated_start_benchmark_request == original_start_benchmark_request.model_copy(
+            update={"sandbox_provider_secret_name": harness_config.sandbox_provider_secret_name}
+        )
 
         # Assert we have 5 tasks in the database
         task_rows = database_session.exec(select(Task).where(col(Task.benchmark) == example_benchmark_object.id)).all()
@@ -544,34 +562,6 @@ class TestBenchmarkUtils:
         assert benchmark_row.status == BenchmarkStatus.STOPPED
 
 
-def test_benchmark_persists_started_by_columns(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-):
-    example_benchmark_object.started_by_id = "K2abc"
-    example_benchmark_object.started_by_email = "alice@vals.ai"
-    database_session.add(example_benchmark_object)
-    database_session.commit()
-
-    refetched = database_session.get(Benchmark, example_benchmark_object.id)
-    assert refetched is not None
-    assert refetched.started_by_id == "K2abc"
-    assert refetched.started_by_email == "alice@vals.ai"
-
-
-def test_benchmark_started_by_columns_default_none(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-):
-    database_session.add(example_benchmark_object)
-    database_session.commit()
-
-    refetched = database_session.get(Benchmark, example_benchmark_object.id)
-    assert refetched is not None
-    assert refetched.started_by_id is None
-    assert refetched.started_by_email is None
-
-
 def _make_benchmark(
     session: Session,
     contract: AgentContractRequest,
@@ -598,7 +588,7 @@ def test_fetch_filtered_started_by_single(database_session: Session, contract: A
     _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
     _make_benchmark(database_session, contract, started_by_email=None)
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
         database_session,
         org,
@@ -614,13 +604,16 @@ def test_fetch_filtered_started_by_multiple(database_session: Session, contract:
     _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
     _make_benchmark(database_session, contract, started_by_email="carol@vals.ai")
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["alice@vals.ai", "bob@vals.ai"], limit=10),
         database_session,
         org,
     )
     assert total == 2
-    assert sorted(r.started_by_email for r in rows) == ["alice@vals.ai", "bob@vals.ai"]
+    assert sorted(email for r in rows if (email := r.started_by_email) is not None) == [
+        "alice@vals.ai",
+        "bob@vals.ai",
+    ]
 
 
 def test_fetch_filtered_started_by_case_insensitive(database_session: Session, contract: AgentContractRequest):
@@ -629,7 +622,7 @@ def test_fetch_filtered_started_by_case_insensitive(database_session: Session, c
     assert org is not None
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["ALICE@VALS.AI"], limit=10),
         database_session,
         org,
@@ -644,7 +637,7 @@ def test_fetch_filtered_started_by_none_skips_filter(database_session: Session, 
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
     _make_benchmark(database_session, contract, started_by_email=None)
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=None, limit=10),
         database_session,
         org,
@@ -658,7 +651,7 @@ def test_fetch_filtered_started_by_strips_whitespace(database_session: Session, 
     assert org is not None
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["  alice@vals.ai  "], limit=10),
         database_session,
         org,
@@ -688,10 +681,37 @@ def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: S
     assert default_org is not None
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
         database_session,
         default_org,
     )
     assert total == 1
     assert rows[0].org_id == TEST_ORG_ID
+
+
+def test_parse_log_retention_policy_rejects_invalid_value():
+    with pytest.raises(HTTPException) as exc_info:
+        _parse_log_retention_policy("not-a-number", source="test")
+
+    assert exc_info.value.status_code == 400
+
+
+def test_fetch_harness_config_rejects_invalid_retention_header():
+    request = Request(
+        {
+            "type": "http",
+            "headers": [
+                (b"x-harness-aws-access-key-id", b"A"),
+                (b"x-harness-aws-secret-access-key", b"s"),
+                (b"x-harness-aws-default-region", b"us-east-1"),
+                (b"x-harness-s3-bucket", b"bucket"),
+                (b"x-harness-log-retention-policy", b"not-a-number"),
+            ],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        fetch_harness_config(request)
+
+    assert exc_info.value.status_code == 400

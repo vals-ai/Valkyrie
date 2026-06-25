@@ -40,7 +40,7 @@ _REQUIRED_CONFIG_KEYS = {
     "AWS_SECRET_ACCESS_KEY",
     "AWS_DEFAULT_REGION",
     "S3_BUCKET",
-    "DAYTONA_SECRET_NAME",
+    "SANDBOX_PROVIDER_SECRET_NAME",
 }
 
 
@@ -214,7 +214,7 @@ class TrackerService:
             "s3_bucket": flat["s3_bucket"],
             "log_group": flat["log_group"],
             "log_retention_policy": int(flat["log_retention_policy"]),
-            "daytona_secret_name": flat["daytona_secret_name"],
+            "sandbox_provider_secret_name": flat["sandbox_provider_secret_name"],
         }
 
     def health_check(self) -> Response:

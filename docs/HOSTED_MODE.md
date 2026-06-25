@@ -1,14 +1,14 @@
 # Hosted vs Self-Hosted Mode
 
-Valkyrie supports two operational modes. Both require your own AWS credentials — hosted mode adds Descope-based authentication for multi-tenant data isolation.
+Valkyrie supports two operational modes. Both require your own AWS credentials — hosted mode adds Vals AI API key authentication for multi-tenant data isolation.
 
 ## Hosted mode
 
-Use Vals-hosted compute infrastructure with your own AWS storage. Data is isolated per organization via Descope API key authentication.
+Use Vals-hosted compute infrastructure with your own AWS storage. Data is isolated per organization via Vals AI API key authentication.
 
 ### Prerequisites
 
-- Descope API key (provided by Vals)
+- Vals AI API key (provided by Vals)
 - AWS account with the [required permissions](#required-aws-permissions)
 - S3 bucket for storing benchmark artifacts and agents. This will need to be unique for the region and created before defining it inside of the config.
 - API key for sandbox provider (Daytona). [Setup docs](PROVIDER.md)
@@ -20,13 +20,13 @@ valkyrie config init
 ```
 
 Choose **hosted** when prompted. You'll be asked for:
-1. Your Descope API key — validates against the tracker and creates your organization
+1. Your Vals AI API key — validates against the tracker and creates your organization
 2. AWS credentials — same as self-hosted (you supply your own S3, CloudWatch, Daytona)
 
 ```
 $ valkyrie config init
 Setup mode (hosted, self-hosted) [self-hosted]: hosted
-API Key: <your-descope-access-key>
+API Key: <your-vals-ai-api-key>
 Organization 'your-org' configured successfully.
 
 AWS_ACCESS_KEY_ID: ...
@@ -39,7 +39,7 @@ Your API key is sent with every request to authenticate and scope data to your o
 You can also set the API key manually:
 
 ```bash
-valkyrie config set api_key <your-descope-access-key>
+valkyrie config set api_key <your-vals-ai-api-key>
 ```
 
 ## Self-hosted mode

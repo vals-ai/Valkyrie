@@ -1,9 +1,12 @@
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
 import pytest
-from tracker.database.models import RetryMode
+import yaml
+from tracker.database.models import AgentContractRequest, RetryMode
 
+from valkyrie.cli import tracker_service as tracker_service_module
 from valkyrie.cli.tracker_service import TrackerService
 
 
@@ -68,3 +71,49 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
         "service_headers": {},
         "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
     }
+
+
+def test_tracker_service_accepts_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tracker config should accept a sandbox provider secret key.
+
+    Test cases:
+    - SANDBOX_PROVIDER_SECRET_NAME satisfies provider secret config.
+    - Harness payload carries the neutral provider secret field.
+    """
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "AWS_ACCESS_KEY_ID": "aws-key",
+                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "AWS_DEFAULT_REGION": "us-east-1",
+                "S3_BUCKET": "bucket",
+                "SANDBOX_PROVIDER_SECRET_NAME": "DaytonaSecrets",
+                "LOG_GROUP": "benchmarks",
+                "LOG_RETENTION_POLICY": 365,
+            }
+        )
+    )
+
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+    )
+
+    assert client.json is not None
+    harness_config = client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"

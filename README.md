@@ -17,7 +17,7 @@ Valkyrie supports **hosted** and **self-hosted** modes.
 Both modes require you to provide certain credentials and configuration:  
 - AWS API Key: Authentication for an AWS account with S3, CloudWatch, and Secrets Manager access (to store benchmarking logs and results)
 - S3 Bucket Name: The S3 bucket to be used for storing benchmark artifacts and agents
-- Daytona API Key: API key for sandbox provider (Daytona). [Setup docs](docs/PROVIDER.md)
+- Sandbox provider config: AWS Secrets Manager entry for the sandbox provider. [Setup docs](docs/PROVIDER.md)
 - **Hosted mode only:** Vals API Key
 
 See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for more details.
@@ -49,6 +49,8 @@ valkyrie config set <KEY> <VALUE>
 Before running benchmarks, you need to install and upload agents to Valkyrie. These commands manage agent lifecycle. All agents are installed inside of the S3 bucket provided by `valkyrie config init` at `agents/`.
 
 All agents will need to already be in the Valkyrie format. Please reference the [contract documentation](docs/CONTRACTS.md) to learn more.
+
+You can browse Valkyrie-compatible community agents in the [public agent registry](https://github.com/vals-ai/public-agent-registry).
 
 ### Install an agent from GitHub
 
@@ -116,7 +118,7 @@ valkyrie run start --agent <agent id> --benchmark <benchmark id>
 
 You can pass `--concurrency` to control the number of tasks that run in parallel, and `--task-ids` or `--slice` to run only a subset of tasks. Specific agents may take additional parameters as well, most commonly, a parameter to set the model. 
 
-To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. 
+To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. This will map the value stored in AWS SECRET NAME to ENVIRONMENT_VARIABLE inside the agent container. 
 
 Here is an example of how to run the first ten tasks of SWE-Bench Verified:
 ```bash
@@ -254,6 +256,8 @@ valkyrie agent outputs <id> --output-dir ./outputs
 # Download specific tasks (comma-separated)
 valkyrie agent outputs <id> --task-ids astropy__astropy-7606,django__django-10880
 ```
+
+Valkyrie agent outputs downloads the _output_ of the agent, Valkyrie run results downloads the scores and evaluation. 
 
 ### Download a specific file or folder from a run
 
