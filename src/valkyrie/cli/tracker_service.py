@@ -585,29 +585,29 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch runs: {e}") from e
 
-    def fetch_agent_outputs(self, benchmark_id: UUID, task_ids: list[str] | None = None) -> Response:
+    def fetch_run_outputs(self, benchmark_id: UUID, task_ids: list[str] | None = None) -> Response:
         """
-        Fetch agent outputs for a benchmark by its benchmark id.
+        Fetch run outputs for a benchmark by its benchmark id.
 
         Args:
             benchmark_id: Benchmark id
             task_ids: Optional list of task ids to filter outputs
 
         Returns:
-            httpx Response with agent outputs
+            httpx Response with run outputs
         """
         try:
             params: dict[str, Any] = {}
             if task_ids:
                 params["task_ids"] = task_ids
-            response = self._client.get(f"{self._base_url}/fetch-agent-outputs/{benchmark_id}", params=params)
+            response = self._client.get(f"{self._base_url}/fetch-run-outputs/{benchmark_id}", params=params)
             if response.status_code != 200:
                 details = _response_error_detail(response)
-                raise TrackerServiceError(f"Failed to fetch agent outputs: {details}")
+                raise TrackerServiceError(f"Failed to fetch run outputs: {details}")
 
             return response
         except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to fetch agent outputs: {e}") from e
+            raise TrackerServiceError(f"Failed to fetch run outputs: {e}") from e
 
     def fetch_benchmark_metadata(self, benchmark_id: UUID) -> FetchBenchmarkMetadataResponse:
         """
