@@ -21,7 +21,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
+from tracker.utils import create_final_view, process_benchmark, start_benchmark_request_to_benchmark
 
 _TASK_ID: str = "astropy__astropy-12907"
 _TASK_IDS: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
@@ -247,6 +247,15 @@ async def test_process_benchmark_errors_when_all_tasks_fail_before_evaluation(
     assert tasks[0].status == TaskStatus.ERROR
     assert "Required output artifact missing" in (tasks[0].error_message or "")
     assert benchmark.fetch_evaluation_results(database_session) == {}
+
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    final_view = create_final_view(benchmark, database_session, org)
+    assert final_view.task_errors == {_TASK_ID: tasks[0].error_message}
+    assert final_view.task_error_details is not None
+    assert final_view.task_error_details[_TASK_ID].error_class == "missing_output_artifact"
+    assert final_view.task_error_details[_TASK_ID].error_owner == "model"
+    assert final_view.task_error_details[_TASK_ID].phase == "agent_output"
 
 
 async def test_concurrent_benchmarks_same_task(

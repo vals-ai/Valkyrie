@@ -125,6 +125,13 @@ class AverageTaskBreakdown(BaseModel):
     sandbox_run_duration: float | None
 
 
+class TaskErrorDetail(BaseModel):
+    message: str
+    error_class: str
+    error_owner: str
+    phase: str
+
+
 class FinalViewResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
@@ -138,6 +145,7 @@ class FinalViewResponse(BaseModel):
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
+    task_error_details: dict[str, TaskErrorDetail] | None = None
 
 
 class S3UploadResultsResponse(BaseModel):

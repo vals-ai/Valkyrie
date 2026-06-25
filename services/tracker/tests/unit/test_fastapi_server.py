@@ -465,6 +465,25 @@ class TestFastapiServer:
         # If we did not get an error message, we return a default message
         assert response_json.get("task_errors").get("task_23") == "No error message was provided"
 
+        # Structured task error details preserve machine-readable metadata without changing task_errors.
+        assert response_json.get("task_error_details") == {
+            "task_22": {
+                "message": error_message,
+                "error_class": "task_error",
+                "error_owner": "unknown",
+                "phase": "unknown",
+            },
+            "task_23": {
+                "message": "No error message was provided",
+                "error_class": "task_error",
+                "error_owner": "unknown",
+                "phase": "unknown",
+            },
+        }
+        legacy_response_json = dict(response_json)
+        legacy_response_json.pop("task_error_details")
+        assert FinalViewResponse(**legacy_response_json).task_error_details is None
+
         # Test case 9. task_ids subset filters evaluation_results and recomputes final_score
         observed_headers: dict[str, str] = {}
         observed_results: dict[str, Any] = {}
@@ -500,6 +519,24 @@ class TestFastapiServer:
         assert observed_results.keys() == {"task_1", "task_11"}
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
+
+        # Test case 11. The same subset filtering applies to structured task error details.
+        response = client.get(
+            "/retrieve-results",
+            params=[("benchmark_id", str(benchmark_row.id)), ("task_ids", "task_22")],
+            headers={"X-Api-Key": "tracker-api-key"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert body["task_errors"] == {"task_22": error_message}
+        assert body["task_error_details"] == {
+            "task_22": {
+                "message": error_message,
+                "error_class": "task_error",
+                "error_owner": "unknown",
+                "phase": "unknown",
+            }
+        }
 
     async def test_benchmark_error_handling(
         self,

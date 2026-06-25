@@ -28,12 +28,13 @@ from tracker.exceptions import TrackerServiceError
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     _parse_log_retention_policy,  # pyright: ignore[reportPrivateUsage]
+    classify_task_error,
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
-    fetch_harness_config,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
+    fetch_harness_config,
     fetch_sandbox_provider_config,
     has_runnable_tasks,
     set_benchmark_final_status,
@@ -44,6 +45,42 @@ from tracker.utils import (
 class TestBenchmarkUtils:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+
+    @pytest.mark.parametrize(
+        ("message", "expected"),
+        [
+            (
+                "ProgramBench cleanroom preflight failed: cleanroom_preflight_failed; see /logs/programbench/preflight.json",
+                {"error_class": "cleanroom_preflight_failed", "error_owner": "infra", "phase": "preflight"},
+            ),
+            (
+                "Output artifact error: Required output artifact missing: /workspace/submission",
+                {"error_class": "missing_output_artifact", "error_owner": "model", "phase": "agent_output"},
+            ),
+            (
+                "Sandbox error: Failed to run command bash setup.sh, exit code: 42",
+                {"error_class": "sandbox_runtime_error", "error_owner": "infra", "phase": "sandbox"},
+            ),
+            (
+                "ProgramBench task container failed to start: task_cleanroom: Pulling from programbench/test",
+                {"error_class": "setup_or_package_failed", "error_owner": "infra", "phase": "setup"},
+            ),
+            (
+                "Benchmark service returned an incompatible task response. Missing or invalid fields: resources",
+                {
+                    "error_class": "benchmark_service_protocol_error",
+                    "error_owner": "infra",
+                    "phase": "benchmark_service",
+                },
+            ),
+            (
+                "Benchmark service has not sent a message, causing the connection to disconnect: last message received 600s ago",
+                {"error_class": "benchmark_service_disconnect", "error_owner": "infra", "phase": "benchmark_service"},
+            ),
+        ],
+    )
+    def test_classify_task_error(self, message: str, expected: dict[str, str]) -> None:
+        assert classify_task_error(message).model_dump() == {"message": message, **expected}
 
     def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
         self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch

@@ -78,6 +78,7 @@ from tracker.types import (
     HarnessConfig,
     Order,
     StartBenchmarkRequest,
+    TaskErrorDetail,
 )
 
 logger = get_logger(__name__)
@@ -859,6 +860,73 @@ def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Or
     )
 
     return dict(task_rows)
+
+
+_DEFAULT_TASK_ERROR_MESSAGE = "No error message was provided"
+
+
+def classify_task_error(message: str) -> TaskErrorDetail:
+    message_lower = message.lower()
+    if "cleanroom_preflight_failed" in message_lower:
+        return TaskErrorDetail(
+            message=message,
+            error_class="cleanroom_preflight_failed",
+            error_owner="infra",
+            phase="preflight",
+        )
+    if "required output artifact missing" in message_lower or message_lower.startswith("output artifact error"):
+        return TaskErrorDetail(
+            message=message,
+            error_class="missing_output_artifact",
+            error_owner="model",
+            phase="agent_output",
+        )
+    if "benchmark service has not sent a message" in message_lower:
+        return TaskErrorDetail(
+            message=message,
+            error_class="benchmark_service_disconnect",
+            error_owner="infra",
+            phase="benchmark_service",
+        )
+    if (
+        "benchmark service returned an incompatible task response" in message_lower
+        or "benchmark service rejected the websocket connection" in message_lower
+    ):
+        return TaskErrorDetail(
+            message=message,
+            error_class="benchmark_service_protocol_error",
+            error_owner="infra",
+            phase="benchmark_service",
+        )
+    if "task container failed to start" in message_lower:
+        return TaskErrorDetail(
+            message=message,
+            error_class="setup_or_package_failed",
+            error_owner="infra",
+            phase="setup",
+        )
+    if message_lower.startswith("sandbox error:"):
+        return TaskErrorDetail(
+            message=message,
+            error_class="sandbox_runtime_error",
+            error_owner="infra",
+            phase="sandbox",
+        )
+    return TaskErrorDetail(message=message, error_class="task_error", error_owner="unknown", phase="unknown")
+
+
+def fetch_task_error_details(benchmark_row: Benchmark, session: Session) -> dict[str, TaskErrorDetail] | None:
+    rows = session.exec(
+        select(Task.task_id, Task.error_message)
+        .where(Task.benchmark == benchmark_row.id)
+        .where(Task.org_id == benchmark_row.org_id)
+        .where(Task.status == TaskStatus.ERROR)
+    ).all()
+    if not rows:
+        return None
+    return {
+        task_id: classify_task_error(error_message or _DEFAULT_TASK_ERROR_MESSAGE) for task_id, error_message in rows
+    }
 
 
 @broker.task
@@ -1758,6 +1826,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
         final_evaluation=benchmark_row.final_evaluation,
         evaluation_results=benchmark_row.fetch_evaluation_results(session),
         task_errors=benchmark_row.fetch_tasks_with_errors(session),
+        task_error_details=fetch_task_error_details(benchmark_row, session),
         average_task_breakdown=fetch_average_task_breakdown(benchmark_row.id, session, org.id),
     )
 
