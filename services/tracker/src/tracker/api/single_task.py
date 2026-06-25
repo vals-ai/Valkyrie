@@ -43,7 +43,7 @@ def _load_task_or_404(benchmark_id: UUID, task_id: str, org: Org, session: Sessi
 
 
 def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
-    """S3 prefix for a task's artifacts (presigned URLs + agent outputs)."""
+    """S3 prefix for a task's artifacts (presigned URLs + run outputs)."""
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 

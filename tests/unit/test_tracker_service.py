@@ -14,17 +14,29 @@ class FakeClient:
     def __init__(self) -> None:
         self.params: dict[str, object] | None = None
         self.json: dict[str, object] | None = None
+        self.url: str | None = None
 
     def post(
         self,
-        _url: str,
+        url: str,
         *,
         params: dict[str, object] | None = None,
         json: dict[str, object],
     ) -> httpx.Response:
+        self.url = url
         self.params = params
         self.json = json
         return httpx.Response(200, json={"status": "success"})
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> httpx.Response:
+        self.url = url
+        self.params = params
+        return httpx.Response(200, content=b"tar")
 
     def close(self) -> None:
         pass
@@ -36,6 +48,44 @@ def empty_config() -> dict[str, object]:
 
 def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
     return {}
+
+
+def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    run_id = uuid4()
+    tracker = TrackerService(base_url="http://tracker")
+    response = tracker.fetch_run_outputs(run_id, task_ids=["task-1", "task-2"])
+
+    assert response.content == b"tar"
+    assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
+    assert client.params == {"task_ids": ["task-1", "task-2"]}
+
+
+def test_fetch_agent_outputs_is_legacy_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    run_id = uuid4()
+    tracker = TrackerService(base_url="http://tracker")
+    response = tracker.fetch_agent_outputs(run_id)
+
+    assert response.content == b"tar"
+    assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
+    assert client.params == {}
 
 
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -247,22 +247,22 @@ valkyrie run list \
 
 Supports paginated navigation ([h] previous, [l] next, [q] quit).
 
-### Download agent outputs
+### Download run outputs
 
 ```bash
 # Download all task outputs for a run
-valkyrie agent outputs <id> --output-dir ./outputs
+valkyrie run outputs <id> --output-dir ./outputs
 
 # Download specific tasks (comma-separated)
-valkyrie agent outputs <id> --task-ids astropy__astropy-7606,django__django-10880
+valkyrie run outputs <id> --task-ids astropy__astropy-7606,django__django-10880
 ```
 
-Valkyrie agent outputs downloads the _output_ of the agent, Valkyrie run results downloads the scores and evaluation. 
+Valkyrie run outputs downloads the files produced during a run, while Valkyrie run results downloads the scores and evaluation. 
 
 ### Download a specific file or folder from a run
 
 ```bash
-valkyrie agent output <id> [subpath] [-o ./output-dir]
+valkyrie run output <id> [subpath] [-o ./output-dir]
 ```
 
 | Argument / Option | Description |

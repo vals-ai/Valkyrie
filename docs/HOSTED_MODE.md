@@ -79,7 +79,7 @@ Your AWS credentials must have the following permissions:
 
 | Service | Permissions | Used for |
 |---------|------------|----------|
-| **S3** | `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket` | Storing benchmark results, agent artifacts, and agent outputs |
+| **S3** | `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`, `s3:ListBucket` | Storing benchmark results, agent artifacts, and run outputs |
 | **S3** | `s3:GetObject` (for presigned URLs) | Generating download links for results |
 | **CloudWatch Logs** | `logs:CreateLogGroup`, `logs:CreateLogStream`, `logs:PutLogEvents` | Streaming task execution logs |
 | **Secrets Manager** | `secretsmanager:GetSecretValue` | Retrieving sandbox provider credentials (Daytona) and webhook URLs |

@@ -828,23 +828,13 @@ async def fetch_benchmark_metadata(
     return benchmark_row.benchmark_metadata
 
 
-@app.get("/fetch-agent-outputs/{benchmark_id}", response_model=None)
-async def fetch_agent_outputs(
+async def _stream_run_outputs(
     benchmark_id: TrackedBenchmarkId,
-    session: Session = Depends(get_session),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
-    org: Org = Depends(get_current_org),
-    task_ids: list[str] | None = Query(default=None),
+    session: Session,
+    harness_config: HarnessConfig,
+    org: Org,
+    task_ids: list[str] | None,
 ) -> StreamingResponse:
-    """
-    Stream a tar file with agent outputs to the client.
-
-    Usage:
-    curl -X GET http://<endpoint>/fetch-agent-outputs/<benchmark_id>
-
-    Returns:
-        StreamingResponse
-    """
     get_scoped(Benchmark, benchmark_id, session, org)
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
@@ -855,8 +845,8 @@ async def fetch_agent_outputs(
             async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
                 yield key
 
-    # Peek a single key so an empty result still returns 404 before the stream starts.
     keys = output_keys()
+    # Peek a single key so an empty result still returns 404 before the stream starts.
     first_key = await anext(keys, None)
     if first_key is None:
         raise HTTPException(status_code=404, detail=f"No outputs found for run '{benchmark_id}'")
@@ -892,3 +882,34 @@ async def fetch_agent_outputs(
         media_type="application/x-tar",
         headers={"Content-Disposition": f"attachment; filename=benchmark_{benchmark_id}_outputs.tar"},
     )
+
+
+@app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
+async def fetch_run_outputs(
+    benchmark_id: TrackedBenchmarkId,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+    task_ids: list[str] | None = Query(default=None),
+) -> StreamingResponse:
+    """
+    Stream a tar file with run outputs to the client.
+
+    Usage:
+    curl -X GET http://<endpoint>/fetch-run-outputs/<benchmark_id>
+
+    Returns:
+        StreamingResponse
+    """
+    return await _stream_run_outputs(benchmark_id, session, harness_config, org, task_ids)
+
+
+@app.get("/fetch-agent-outputs/{benchmark_id}", response_model=None, include_in_schema=False)
+async def fetch_agent_outputs(
+    benchmark_id: TrackedBenchmarkId,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+    task_ids: list[str] | None = Query(default=None),
+) -> StreamingResponse:
+    return await _stream_run_outputs(benchmark_id, session, harness_config, org, task_ids)
