@@ -845,8 +845,8 @@ async def _stream_run_outputs(
             async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
                 yield key
 
-    keys = output_keys()
     # Peek a single key so an empty result still returns 404 before the stream starts.
+    keys = output_keys()
     first_key = await anext(keys, None)
     if first_key is None:
         raise HTTPException(status_code=404, detail=f"No outputs found for run '{benchmark_id}'")
