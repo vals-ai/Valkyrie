@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -104,8 +105,8 @@ def get_benchmark_tasks(
     benchmark_id: UUID,
     status: str = Query(default=""),
     task_id_search: str | None = None,
-    sort: str = Query(default=""),
-    sort_dir: str = Query(default="desc"),
+    sort: Literal["", "task_id", "started_at", "duration", "status"] = Query(default=""),
+    sort_dir: Literal["asc", "desc"] = Query(default="desc"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     org: Org = Depends(get_current_org),
@@ -113,8 +114,7 @@ def get_benchmark_tasks(
 ) -> TasksResponse:
     """Paginated tasks for a benchmark, with optional status filter + task-id search.
 
-    sort selects the column (task_id | started_at | duration | status); sort_dir is
-    asc | desc. sort=status desc surfaces errors first. Default: newest first."""
+    sort=status desc surfaces errors first (attention priority). Default: newest first."""
     get_scoped(Benchmark, benchmark_id, session, org)
 
     statuses = parse_csv(status, TaskStatus)
