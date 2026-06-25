@@ -694,9 +694,6 @@ def download_run_outputs(run_outputs_response: Response, output_dir: Path) -> No
     tmp_path.unlink()
 
 
-download_agent_outputs = download_run_outputs
-
-
 def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
     if not path.parent.exists():
         raise click.ClickException(f"'{path.parent}' directory does not exist! Please create it first.")

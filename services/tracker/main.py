@@ -902,14 +902,3 @@ async def fetch_run_outputs(
         StreamingResponse
     """
     return await _stream_run_outputs(benchmark_id, session, harness_config, org, task_ids)
-
-
-@app.get("/fetch-agent-outputs/{benchmark_id}", response_model=None, include_in_schema=False)
-async def fetch_agent_outputs(
-    benchmark_id: TrackedBenchmarkId,
-    session: Session = Depends(get_session),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
-    org: Org = Depends(get_current_org),
-    task_ids: list[str] | None = Query(default=None),
-) -> StreamingResponse:
-    return await _stream_run_outputs(benchmark_id, session, harness_config, org, task_ids)

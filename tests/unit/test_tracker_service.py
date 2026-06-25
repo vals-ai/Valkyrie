@@ -69,25 +69,6 @@ def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyP
     assert client.params == {"task_ids": ["task-1", "task-2"]}
 
 
-def test_fetch_agent_outputs_is_legacy_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = FakeClient()
-
-    def build_client(**_kwargs: object) -> FakeClient:
-        return client
-
-    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
-    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
-    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
-
-    run_id = uuid4()
-    tracker = TrackerService(base_url="http://tracker")
-    response = tracker.fetch_agent_outputs(run_id)
-
-    assert response.content == b"tar"
-    assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
-    assert client.params == {}
-
-
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     """Resume requests should carry retry mode and override secrets.
 

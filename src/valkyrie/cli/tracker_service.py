@@ -606,10 +606,6 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run outputs: {e}") from e
 
-    def fetch_agent_outputs(self, benchmark_id: UUID, task_ids: list[str] | None = None) -> Response:
-        """Deprecated alias for fetch_run_outputs."""
-        return self.fetch_run_outputs(benchmark_id, task_ids=task_ids)
-
     def fetch_benchmark_metadata(self, benchmark_id: UUID) -> FetchBenchmarkMetadataResponse:
         """
         Fetch benchmark metadata for a benchmark by its benchmark id.
