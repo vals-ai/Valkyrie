@@ -94,6 +94,28 @@ def test_get_benchmark_tasks_filters_by_status(client, database_session):
     assert data["tasks"][0]["error_message"] == "boom"
 
 
+def test_get_benchmark_tasks_sort_by_status_surfaces_errors_first(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+    # Insert out of priority order.
+    for task_id, status in [
+        ("a-pending", TaskStatus.PENDING),
+        ("b-finished", TaskStatus.FINISHED),
+        ("c-error", TaskStatus.ERROR),
+        ("d-in-progress", TaskStatus.IN_PROGRESS),
+    ]:
+        database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id=task_id, status=status))
+    database_session.commit()
+
+    resp = client.get(
+        f"/benchmarks/{b.id}/tasks?sort=status",
+        headers={"Authorization": "Bearer fake"},
+    )
+    statuses = [t["status"] for t in resp.json()["tasks"]]
+    assert statuses == ["ERROR", "FINISHED", "IN_PROGRESS", "PENDING"]
+
+
 def test_unauth_returns_401(client):
     bogus = uuid4()
     assert client.get(f"/benchmarks/{bogus}").status_code == 401

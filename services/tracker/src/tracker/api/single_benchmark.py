@@ -5,18 +5,23 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import case
 from sqlmodel import Session, col, func, select
 
 from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
+from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.types import (
+    HarnessConfig,
     SingleBenchmarkResponse,
     TaskSummary,
     TasksResponse,
 )
+from tracker.utils import try_fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -26,10 +31,28 @@ def _escape_sql_like_pattern(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+# Attention priority — higher is more urgent, so ORDER BY ... DESC surfaces
+# errors first, then abnormal/successful terminal, then active, then queued.
+_STATUS_SORT_PRIORITY = case(
+    {
+        TaskStatus.ERROR: 6,
+        TaskStatus.STOPPED: 5,
+        TaskStatus.FINISHED: 4,
+        TaskStatus.EVALUATING: 3,
+        TaskStatus.IN_PROGRESS: 2,
+        TaskStatus.BUILDING: 1,
+        TaskStatus.PENDING: 0,
+    },
+    value=col(Task.status),
+    else_=-1,
+)
+
+
 @router.get("/{benchmark_id}", response_model=SingleBenchmarkResponse)
 def get_single_benchmark(
     benchmark_id: UUID,
     org: Org = Depends(get_current_org),
+    harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
     session: Session = Depends(get_session),
 ) -> SingleBenchmarkResponse:
     """Fetch a single benchmark with task counts + final score for the SingleRun page."""
@@ -42,6 +65,19 @@ def get_single_benchmark(
         + task_state_counts.get(TaskStatus.ERROR, 0)
         + task_state_counts.get(TaskStatus.STOPPED, 0)
     )
+
+    cloudwatch_url: str | None = None
+    s3_bucket_url: str | None = None
+    if harness_config and harness_config.aws.aws_default_region:
+        region = harness_config.aws.aws_default_region
+        if harness_config.log_group:
+            cloudwatch_url = get_benchmark_log_url(
+                benchmark_id=str(benchmark.id),
+                region=region,
+                log_group=harness_config.log_group,
+            )
+        if harness_config.s3_bucket:
+            s3_bucket_url = create_benchmark_url(str(benchmark.id), region, harness_config.s3_bucket)
 
     return SingleBenchmarkResponse(
         id=benchmark.id,
@@ -57,6 +93,8 @@ def get_single_benchmark(
         started_by_email=benchmark.started_by_email,
         final_score=benchmark.fetch_final_score(session),
         error_message=benchmark.error_message,
+        cloudwatch_url=cloudwatch_url,
+        s3_bucket_url=s3_bucket_url,
     )
 
 
@@ -65,12 +103,17 @@ def get_benchmark_tasks(
     benchmark_id: UUID,
     status: str = Query(default=""),
     task_id_search: str | None = None,
+    sort: str = Query(default=""),
+    sort_dir: str = Query(default="desc"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> TasksResponse:
-    """Paginated tasks for a benchmark, with optional status filter + task-id search."""
+    """Paginated tasks for a benchmark, with optional status filter + task-id search.
+
+    sort selects the column (task_id | started_at | duration | status); sort_dir is
+    asc | desc. sort=status desc surfaces errors first. Default: newest first."""
     get_scoped(Benchmark, benchmark_id, session, org)
 
     statuses = parse_csv(status, TaskStatus)
@@ -85,9 +128,21 @@ def get_benchmark_tasks(
         escaped_search = _escape_sql_like_pattern(task_id_search)
         base_filters.append(col(Task.task_id).ilike(f"%{escaped_search}%", escape="\\"))
 
-    rows = session.exec(
-        select(Task).where(*base_filters).order_by(col(Task.started_at).desc()).limit(limit).offset(offset)
-    ).all()
+    sort_expr = {
+        "task_id": col(Task.task_id),
+        "started_at": col(Task.started_at),
+        "duration": func.coalesce(col(Task.finished_at), func.now()) - col(Task.started_at),
+        "status": _STATUS_SORT_PRIORITY,
+    }.get(sort)
+
+    started_at_desc = col(Task.started_at).desc()
+    if sort_expr is None:
+        order_by = [started_at_desc]
+    else:
+        primary = sort_expr.asc() if sort_dir == "asc" else sort_expr.desc()
+        order_by = [primary, started_at_desc]  # tie-break newest-first for stable ordering
+
+    rows = session.exec(select(Task).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)).all()
     total = session.exec(select(func.count(col(Task.id))).where(*base_filters)).one()
 
     return TasksResponse(
