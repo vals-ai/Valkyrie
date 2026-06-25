@@ -66,18 +66,19 @@ def get_single_benchmark(
         + task_state_counts.get(TaskStatus.STOPPED, 0)
     )
 
+    # region + s3_bucket are required harness headers, so they're present whenever
+    # harness_config is; log_group is optional (no log group -> no CloudWatch link).
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
-    if harness_config and harness_config.aws.aws_default_region:
+    if harness_config:
         region = harness_config.aws.aws_default_region
+        s3_bucket_url = create_benchmark_url(str(benchmark.id), region, harness_config.s3_bucket)
         if harness_config.log_group:
             cloudwatch_url = get_benchmark_log_url(
                 benchmark_id=str(benchmark.id),
                 region=region,
                 log_group=harness_config.log_group,
             )
-        if harness_config.s3_bucket:
-            s3_bucket_url = create_benchmark_url(str(benchmark.id), region, harness_config.s3_bucket)
 
     return SingleBenchmarkResponse(
         id=benchmark.id,
