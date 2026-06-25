@@ -252,7 +252,11 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo("┌─ Run Status " + "─" * 66)
     click.echo(f"│ {'Benchmark:':<12} {benchmark_response.benchmark_name}")
     click.echo(f"│ {'Run ID:':<12} {benchmark_response.benchmark_id}")
+    if benchmark_response.label:
+        click.echo(f"│ {'Label:':<12} {benchmark_response.label}")
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
+    if benchmark_response.final_score is not None:
+        click.echo(f"│ {'Final score:':<12} {benchmark_response.final_score:.1f}%")
     click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
     analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
     if analysis_line is not None:
@@ -508,6 +512,7 @@ def format_fetch_benchmarks_response(
                 "ID": str(benchmark.id),
                 "Benchmark": benchmark.name,
                 "Agent": benchmark.agent_name,
+                "Label": benchmark.label or "-",
                 "Started By": benchmark.started_by_email or "—",
                 "Model": benchmark.model or "-",
                 "Dataset": benchmark.dataset or "default",
@@ -527,6 +532,7 @@ def format_fetch_benchmarks_response(
             "ID",
             "Benchmark",
             "Agent",
+            "Label",
             "Started By",
             "Model",
             "Dataset",
@@ -547,6 +553,7 @@ def format_no_benchmarks_found(
     benchmark_name: str | None,
     model: str | None,
     dataset: str | None,
+    label: str | None,
     status: str | None,
     started_by: list[str] | None = None,
 ) -> None:
@@ -558,13 +565,14 @@ def format_no_benchmarks_found(
         benchmark_name: Benchmark name filter
         model: Model name filter
         dataset: Dataset name filter
+        label: Run label filter
         status: Status filter
         started_by: Optional list of starter emails filter
     """
     click.echo()
     click.echo(click.style("No runs found matching the specified filters.", fg="yellow"))
     click.echo()
-    if any([agent_name, benchmark_name, model, dataset, status, started_by]):
+    if any([agent_name, benchmark_name, model, dataset, label, status, started_by]):
         click.echo("Filters applied:")
         if agent_name:
             click.echo(f"  • Agent: {agent_name}")
@@ -574,6 +582,8 @@ def format_no_benchmarks_found(
             click.echo(f"  • Model: {model}")
         if dataset:
             click.echo(f"  • Dataset: {dataset}")
+        if label:
+            click.echo(f"  • Label: {label}")
         if status:
             click.echo(f"  • Status: {status}")
         if started_by:
@@ -586,6 +596,7 @@ def paginate_benchmarks(
     benchmark_name: str | None,
     model: str | None,
     dataset: str | None,
+    label: str | None,
     status: str | None,
     order_by: str,
     limit: int = 5,
@@ -600,6 +611,7 @@ def paginate_benchmarks(
         benchmark_name: Optional benchmark name filter
         model: Optional model name filter
         dataset: Optional dataset name filter
+        label: Optional run label filter
         status: Optional status filter
         order_by: Order (asc/desc)
         limit: Number of items per page
@@ -614,6 +626,7 @@ def paginate_benchmarks(
             benchmark_name=[benchmark_name] if benchmark_name else None,
             model=model,
             dataset=dataset,
+            label=label,
             status=[BenchmarkStatus(status)] if status else None,
             started_by=started_by,
             order_by=Order(order_by),
@@ -628,7 +641,7 @@ def paginate_benchmarks(
         click.clear()
 
         if total_count == 0:
-            format_no_benchmarks_found(agent_name, benchmark_name, model, dataset, status, started_by)
+            format_no_benchmarks_found(agent_name, benchmark_name, model, dataset, label, status, started_by)
             break
 
         format_fetch_benchmarks_response(response, current_page, total_pages)

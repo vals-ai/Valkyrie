@@ -1,13 +1,25 @@
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from uuid import uuid4
 
+import click
 import httpx
 import pytest
 import yaml
-from tracker.database.models import AgentContractRequest, RetryMode
+from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
+from tracker.types import (
+    BenchmarkDetails,
+    BenchmarkTableRow,
+    FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    FetchBenchmarksResponse,
+)
 
 from valkyrie.cli import tracker_service as tracker_service_module
+from valkyrie.cli.main import list_benchmarks, start
 from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response
 
 
 class FakeClient:
@@ -26,6 +38,10 @@ class FakeClient:
         self.json = json
         return httpx.Response(200, json={"status": "success"})
 
+    def get(self, _url: str, *, params: dict[str, object] | None = None) -> httpx.Response:
+        self.params = params
+        return httpx.Response(200, json={"benchmarks": [], "total_count": 0})
+
     def close(self) -> None:
         pass
 
@@ -36,6 +52,20 @@ def empty_config() -> dict[str, object]:
 
 def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
     return {}
+
+
+def harness_config_payload(_tracker: TrackerService) -> dict[str, object]:
+    return {
+        "aws": {
+            "aws_access_key_id": "aws-key",
+            "aws_secret_access_key": "aws-secret",
+            "aws_default_region": "us-east-1",
+        },
+        "s3_bucket": "bucket",
+        "log_group": "benchmarks",
+        "log_retention_policy": 365,
+        "sandbox_provider_secret_name": "DaytonaSecrets",
+    }
 
 
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,3 +147,104 @@ def test_tracker_service_accepts_provider_secret_config(tmp_path: Path, monkeypa
     harness_config = client.json["harness_config"]
     assert isinstance(harness_config, dict)
     assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
+
+
+def _command_option_flags(command: click.Command, param_name: str) -> set[str]:
+    param = next(param for param in command.params if param.name == param_name)
+    assert isinstance(param, click.Option)
+    return {*param.opts}
+
+
+def test_run_label_cli_options_and_client_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run labels should be accepted by start and sent as list filters.
+
+    Test cases:
+    - Click exposes `--label` and `-l` on run start and run list.
+    - Tracker client start and list requests carry the label value.
+    """
+    assert _command_option_flags(start, "label") >= {"--label", "-l"}
+    assert _command_option_flags(list_benchmarks, "label") >= {"--label", "-l"}
+
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr(TrackerService, "_build_harness_config_payload", harness_config_payload)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+        label="nightly",
+    )
+    assert client.json is not None
+    assert client.json["label"] == "nightly"
+
+    tracker.fetch_benchmarks(FetchBenchmarksRequest(label="nightly"))
+    assert client.params is not None
+    assert client.params["label"] == "nightly"
+
+
+def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> None:
+    """Run fetch and list output should include labels when present.
+
+    Test cases:
+    - `valk run fetch` renders the label row.
+    - `valk run list` includes a Label column.
+    """
+    run_id = uuid4()
+    started_at = datetime.now(ZoneInfo("UTC"))
+    details = BenchmarkDetails(
+        status=BenchmarkStatus.IN_PROGRESS,
+        started_at=started_at,
+        total_tasks=1,
+        finished_tasks=0,
+        task_breakdown={TaskStatus.PENDING: 1},
+        docent_reading_status=DocentReadingStatus.IDLE,
+    )
+
+    format_benchmark_status(
+        FetchBenchmarkResponse(
+            benchmark_name="swebench",
+            benchmark_id=run_id,
+            details=details,
+            s3_bucket_url="s3://bucket/benchmarks/run",
+            label="nightly",
+        )
+    )
+    fetch_output = capsys.readouterr().out
+    assert "Label:" in fetch_output
+    assert "nightly" in fetch_output
+
+    format_fetch_benchmarks_response(
+        FetchBenchmarksResponse(
+            benchmarks=[
+                BenchmarkTableRow(
+                    id=run_id,
+                    name="swebench",
+                    agent_name="agent",
+                    model="openai/gpt-5.5",
+                    dataset="default",
+                    started_by_email=None,
+                    started_at=started_at,
+                    finished_at=None,
+                    status=BenchmarkStatus.IN_PROGRESS,
+                    total_tasks=1,
+                    finished_tasks=0,
+                    label="nightly",
+                )
+            ],
+            total_count=1,
+        )
+    )
+    list_output = capsys.readouterr().out
+    assert "Label" in list_output
+    assert "nightly" in list_output

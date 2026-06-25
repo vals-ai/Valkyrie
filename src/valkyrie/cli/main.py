@@ -530,6 +530,14 @@ def tasks(
     help="Dataset name to use from the benchmark service (defaults to 'default')",
 )
 @click.option(
+    "--label",
+    "-l",
+    type=str,
+    required=False,
+    default=None,
+    help="Label to attach to the run",
+)
+@click.option(
     "--kwarg",
     "-k",
     "kwargs",
@@ -580,6 +588,7 @@ def start(
     task_ids_file: str | None,
     slice_str: str | None,
     dataset: str | None,
+    label: str | None,
     kwargs: tuple[tuple[str, str]],
     secrets: tuple[tuple[str, str]],
     headers: tuple[tuple[str, str]],
@@ -654,6 +663,7 @@ def start(
                 ignore_custom_services,
                 formatted_task_ids,
                 slice_str,
+                label,
                 lambda_function,
                 dataset,
                 service_headers=service_headers or None,
@@ -1086,6 +1096,13 @@ run.add_command(retry_command)
     help="Dataset name (e.g., default, terminal-bench-2.1)",
 )
 @click.option(
+    "--label",
+    "-l",
+    type=str,
+    required=False,
+    help="Run label",
+)
+@click.option(
     "--status",
     type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
     required=False,
@@ -1111,6 +1128,7 @@ def list_benchmarks(
     benchmark_name: str | None,
     model: str | None,
     dataset: str | None,
+    label: str | None,
     status: str | None,
     order_by: str = "desc",
     started_by: str | None = None,
@@ -1136,6 +1154,7 @@ def list_benchmarks(
                 benchmark_name,
                 model,
                 dataset,
+                label,
                 status,
                 order_by,
                 started_by=started_by_list or None,
