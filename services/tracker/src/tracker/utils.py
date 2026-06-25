@@ -1587,7 +1587,7 @@ def fetch_filtered_benchmark_rows(
             query = query.where(dataset_value == request.dataset)
 
     if request.label is not None:
-        query = query.where(Benchmark.label == request.label)
+        query = query.where(func.lower(Benchmark.label) == request.label.lower())
 
     if request.benchmark_name:
         if len(request.benchmark_name) == 1:
@@ -1676,7 +1676,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
     ).all()
     counts_by_bench: dict[UUID, dict[TaskStatus, int]] = {}
     for bench_id, status, count in count_rows:
-        counts_by_bench.setdefault(bench_id, {})[status] = count
+        counts_by_bench.setdefault(bench_id, {})[cast(TaskStatus, status)] = count
 
     rows: list[BenchmarkTableRow] = []
     for b in benchmarks:

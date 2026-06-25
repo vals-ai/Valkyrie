@@ -27,7 +27,7 @@ from tracker.database.models import (
 from tracker.exceptions import TrackerServiceError
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
-    _parse_log_retention_policy,
+    _parse_log_retention_policy,  # pyright: ignore[reportPrivateUsage]
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
@@ -639,7 +639,7 @@ def test_fetch_filtered_started_by_none_skips_filter(database_session: Session, 
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
     _make_benchmark(database_session, contract, started_by_email=None)
 
-    rows, total, _ = fetch_filtered_benchmark_rows(
+    _, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=None, limit=10),
         database_session,
         org,
@@ -693,26 +693,26 @@ def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: S
 
 
 def test_fetch_filtered_by_label(database_session: Session, contract: AgentContractRequest):
-    """Label filtering should return only runs with the exact requested label.
+    """Label filtering should ignore case while preserving stored label casing.
 
     Test cases:
-    - A matching label returns the labeled run.
+    - A mixed-case label returns when queried with different casing.
     - Unlabeled and differently labeled runs are excluded.
     """
     org = database_session.get(Org, TEST_ORG_ID)
     assert org is not None
-    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai", label="nightly")
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai", label="Nightly")
     _make_benchmark(database_session, contract, started_by_email="bob@vals.ai", label="manual")
     _make_benchmark(database_session, contract, started_by_email="carol@vals.ai", label=None)
 
     rows, total, _ = fetch_filtered_benchmark_rows(
-        FetchBenchmarksRequest(label="nightly", limit=10),
+        FetchBenchmarksRequest(label="nightLY", limit=10),
         database_session,
         org,
     )
 
     assert total == 1
-    assert rows[0].label == "nightly"
+    assert rows[0].label == "Nightly"
 
 
 def test_parse_log_retention_policy_rejects_invalid_value():
