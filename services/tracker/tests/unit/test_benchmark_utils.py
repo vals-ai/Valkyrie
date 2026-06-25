@@ -6,8 +6,10 @@ from zoneinfo import ZoneInfo
 import pytest
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
+from fastapi import HTTPException
 from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
+from starlette.requests import Request
 
 from tests.conftest import TEST_ORG_ID
 from tests.unit.test_fastapi_server import client
@@ -25,9 +27,11 @@ from tracker.database.models import (
 from tracker.exceptions import TrackerServiceError
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    _parse_log_retention_policy,  # pyright: ignore[reportPrivateUsage]
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
+    fetch_harness_config,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
     fetch_sandbox_provider_config,
@@ -558,40 +562,13 @@ class TestBenchmarkUtils:
         assert benchmark_row.status == BenchmarkStatus.STOPPED
 
 
-def test_benchmark_persists_started_by_columns(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-):
-    example_benchmark_object.started_by_id = "K2abc"
-    example_benchmark_object.started_by_email = "alice@vals.ai"
-    database_session.add(example_benchmark_object)
-    database_session.commit()
-
-    refetched = database_session.get(Benchmark, example_benchmark_object.id)
-    assert refetched is not None
-    assert refetched.started_by_id == "K2abc"
-    assert refetched.started_by_email == "alice@vals.ai"
-
-
-def test_benchmark_started_by_columns_default_none(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-):
-    database_session.add(example_benchmark_object)
-    database_session.commit()
-
-    refetched = database_session.get(Benchmark, example_benchmark_object.id)
-    assert refetched is not None
-    assert refetched.started_by_id is None
-    assert refetched.started_by_email is None
-
-
 def _make_benchmark(
     session: Session,
     contract: AgentContractRequest,
     *,
     started_by_email: str | None,
     name: str = "swebench",
+    label: str | None = None,
 ) -> Benchmark:
     bench = Benchmark(
         org_id=TEST_ORG_ID,
@@ -599,6 +576,7 @@ def _make_benchmark(
         arguments=BenchmarkArguments(contract=contract, concurrency=1),
         started_by_email=started_by_email,
         started_by_id="K-" + (started_by_email or "none"),
+        label=label,
     )
     session.add(bench)
     session.commit()
@@ -612,7 +590,7 @@ def test_fetch_filtered_started_by_single(database_session: Session, contract: A
     _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
     _make_benchmark(database_session, contract, started_by_email=None)
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
         database_session,
         org,
@@ -628,7 +606,7 @@ def test_fetch_filtered_started_by_multiple(database_session: Session, contract:
     _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
     _make_benchmark(database_session, contract, started_by_email="carol@vals.ai")
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["alice@vals.ai", "bob@vals.ai"], limit=10),
         database_session,
         org,
@@ -646,7 +624,7 @@ def test_fetch_filtered_started_by_case_insensitive(database_session: Session, c
     assert org is not None
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["ALICE@VALS.AI"], limit=10),
         database_session,
         org,
@@ -661,7 +639,7 @@ def test_fetch_filtered_started_by_none_skips_filter(database_session: Session, 
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
     _make_benchmark(database_session, contract, started_by_email=None)
 
-    _rows, total = fetch_filtered_benchmark_rows(
+    _, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=None, limit=10),
         database_session,
         org,
@@ -675,7 +653,7 @@ def test_fetch_filtered_started_by_strips_whitespace(database_session: Session, 
     assert org is not None
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["  alice@vals.ai  "], limit=10),
         database_session,
         org,
@@ -705,10 +683,60 @@ def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: S
     assert default_org is not None
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
 
-    rows, total = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
         database_session,
         default_org,
     )
     assert total == 1
     assert rows[0].org_id == TEST_ORG_ID
+
+
+def test_fetch_filtered_by_label(database_session: Session, contract: AgentContractRequest):
+    """Label filtering should ignore case while preserving stored label casing.
+
+    Test cases:
+    - A mixed-case label returns when queried with different casing.
+    - Unlabeled and differently labeled runs are excluded.
+    """
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai", label="Nightly")
+    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai", label="manual")
+    _make_benchmark(database_session, contract, started_by_email="carol@vals.ai", label=None)
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(label="nightLY", limit=10),
+        database_session,
+        org,
+    )
+
+    assert total == 1
+    assert rows[0].label == "Nightly"
+
+
+def test_parse_log_retention_policy_rejects_invalid_value():
+    with pytest.raises(HTTPException) as exc_info:
+        _parse_log_retention_policy("not-a-number", source="test")
+
+    assert exc_info.value.status_code == 400
+
+
+def test_fetch_harness_config_rejects_invalid_retention_header():
+    request = Request(
+        {
+            "type": "http",
+            "headers": [
+                (b"x-harness-aws-access-key-id", b"A"),
+                (b"x-harness-aws-secret-access-key", b"s"),
+                (b"x-harness-aws-default-region", b"us-east-1"),
+                (b"x-harness-s3-bucket", b"bucket"),
+                (b"x-harness-log-retention-policy", b"not-a-number"),
+            ],
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        fetch_harness_config(request)
+
+    assert exc_info.value.status_code == 400

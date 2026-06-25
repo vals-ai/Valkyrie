@@ -41,6 +41,7 @@ worker = WorkerStack(
     stage=stage,
     vpc=shared.vpc,
     cluster=shared.cluster,
+    namespace=shared.namespace,
     redis_url=shared.redis_url,
     bucket=shared.bucket,
     database=tracker.database,

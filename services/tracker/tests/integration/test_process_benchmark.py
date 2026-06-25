@@ -169,11 +169,23 @@ async def test_process_task_error(
     original_setup_task = BenchmarkServiceClient.setup_task
 
     async def setup_task_with_failure(
-        self: Any, task_id: str, instance_id: str, on_message: Callable[[str], None] | None = None, **kwargs: Any
+        self: Any,
+        task_id: str,
+        instance_id: str,
+        sandbox_provider: Any = None,
+        on_message: Callable[[str], None] | None = None,
+        **kwargs: Any,
     ) -> SetupTaskResponse:
         if task_id == failing_task:
             raise Exception("Simulated setup failure")
-        return await original_setup_task(self, task_id, instance_id, on_message, **kwargs)
+        return await original_setup_task(
+            self,
+            task_id,
+            instance_id,
+            sandbox_provider=sandbox_provider,
+            on_message=on_message,
+            **kwargs,
+        )
 
     monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task_with_failure)
 

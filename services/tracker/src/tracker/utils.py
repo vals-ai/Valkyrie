@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import io
 import json
 import time
@@ -27,7 +28,8 @@ from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceErr
 from fastapi import HTTPException, Request
 from opentelemetry import trace
 from pydantic import ValidationError
-from sqlalchemy import JSON, type_coerce
+from sqlalchemy import JSON, literal, tuple_, type_coerce
+from sqlalchemy.orm import selectinload
 from sqlmodel import Session, asc, case, col, delete, desc, func, or_, select, update
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
@@ -69,6 +71,7 @@ from tracker.types import (
     AverageTaskBreakdown,
     AWSCredentials,
     BenchmarkDetails,
+    BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FinalViewResponse,
@@ -115,6 +118,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
     return Benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,
+        label=request.label,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
@@ -402,9 +406,12 @@ async def process_task(
         if benchmark_row.status == BenchmarkStatus.STOPPING:
             handle_early_exit(task_row, task_session)
             return {task_id: None}
+        benchmark_name = benchmark_row.name
+        benchmark_agent_name = benchmark_row.arguments.contract.name
+        benchmark_started_by_email = benchmark_row.started_by_email
 
     # Setup logging infrastructure before try block so it's always available
-    # Suffix is required to version control streams, never delete between retires
+    # Suffix is required to version control streams, never delete between retries
     stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
     stream_key: str = f"{benchmark_id}:{task_id}_{stream_suffix}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
@@ -490,8 +497,18 @@ async def process_task(
         with Session(bind=engine) as task_session:
             commit_task_status_transition(task_row.id, task_session, org, TaskStatus.BUILDING)
 
+        identity = {
+            "benchmark_name": benchmark_name,
+            "agent_name": benchmark_agent_name,
+        }
+        if benchmark_started_by_email:
+            identity["email"] = benchmark_started_by_email
+
         env_vars = {
             **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+            "RUN_ID": str(benchmark_id),
+            "TASK_ID": task_row.task_id,
+            "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per benchmark run and separable from other environments sharing the
             # same Daytona account (sandbox OTLP export is account-level).
@@ -572,7 +589,6 @@ async def process_task(
                 )
 
                 task_breakdown.agent_run_duration = agent_run_time
-
                 with Session(bind=engine) as task_session:
                     task_session.add(task_breakdown)
                     task_in_session = fetch_task_row(task_row.id, task_session, org)
@@ -602,7 +618,6 @@ async def process_task(
                     dataset=start_benchmark_request.dataset,
                     sandbox_provider=sandbox_provider_config,
                 )
-
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
 
                 task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
@@ -1274,6 +1289,10 @@ async def stream_benchmark_results(
                     s3_bucket_url=create_benchmark_url(
                         str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
                     ),
+                    label=fresh_benchmark.label,
+                    final_score=fresh_benchmark.final_evaluation.final_score
+                    if fresh_benchmark.final_evaluation
+                    else None,
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
@@ -1489,6 +1508,19 @@ async def reset_to_in_progress_status(
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
 
 
+def encode_cursor(started_at: datetime, row_id: UUID) -> str:
+    """Encode a keyset pagination cursor from a started_at timestamp and row id."""
+    payload = json.dumps({"started_at": started_at.isoformat(), "id": str(row_id)})
+    return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
+    """Decode a keyset pagination cursor into a started_at timestamp and row id."""
+    padded = cursor + "=" * (-len(cursor) % 4)
+    payload = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
+    return datetime.fromisoformat(payload["started_at"]), UUID(payload["id"])
+
+
 def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
     """Select retryable rows.
 
@@ -1504,6 +1536,10 @@ def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: l
             filters.append(col(Task.task_id).in_(rerun_task_ids))
         return filters
 
+    if retry and rerun_task_ids:
+        filters.append(col(Task.task_id).in_(rerun_task_ids))
+        return filters
+
     retry_statuses = [TaskStatus.STOPPED]
     if retry:
         retry_statuses.append(TaskStatus.ERROR)
@@ -1514,24 +1550,34 @@ def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: l
 
 def fetch_filtered_benchmark_rows(
     request: FetchBenchmarksRequest, session: Session, org: Org
-) -> tuple[Sequence[Benchmark], int]:
+) -> tuple[Sequence[Benchmark], int | None, str | None]:
     """
     Creates a query to fetch benchmark rows from the database based on the fetch benchmark request.
+
+    When request.cursor is a non-empty string, uses keyset pagination (tuple comparison on
+    started_at, id) and returns next_cursor. total_count is None in this path.
+
+    When request.cursor is None or empty, uses legacy offset/limit pagination and returns
+    total_count. next_cursor is None in this path.
 
     Args:
         request: FetchBenchmarksRequest
 
     Returns:
-        tuple[Sequence[Benchmark], int]
-        Sequence of benchmark rows and total count of benchmark rows
+        tuple[Sequence[Benchmark], int | None, str | None]
+        Sequence of benchmark rows, optional total count, optional next cursor
 
     """
-    query = scoped_select(Benchmark, org)
+
+    query = scoped_select(Benchmark, org).options(selectinload(Benchmark.final_evaluation))
 
     arguments_json = type_coerce(col(Benchmark.arguments), JSON)
 
     if request.agent_name:
-        query = query.where(arguments_json["contract"]["name"].as_string() == request.agent_name)
+        if len(request.agent_name) == 1:
+            query = query.where(arguments_json["contract"]["name"].as_string() == request.agent_name[0])
+        else:
+            query = query.where(col(arguments_json["contract"]["name"].as_string()).in_(request.agent_name))
 
     if request.model:
         query = query.where(arguments_json["contract"]["model"].as_string() == request.model)
@@ -1543,11 +1589,26 @@ def fetch_filtered_benchmark_rows(
         else:
             query = query.where(dataset_value == request.dataset)
 
+    if request.label is not None:
+        query = query.where(func.lower(Benchmark.label) == request.label.lower())
+
     if request.benchmark_name:
-        query = query.where(Benchmark.name == request.benchmark_name)
+        if len(request.benchmark_name) == 1:
+            query = query.where(Benchmark.name == request.benchmark_name[0])
+        else:
+            query = query.where(col(Benchmark.name).in_(request.benchmark_name))
 
     if request.status:
-        query = query.where(Benchmark.status == request.status)
+        if len(request.status) == 1:
+            query = query.where(Benchmark.status == request.status[0])
+        else:
+            query = query.where(col(Benchmark.status).in_(request.status))
+
+    if request.started_after is not None:
+        query = query.where(Benchmark.started_at > request.started_after)
+
+    if request.started_before is not None:
+        query = query.where(Benchmark.started_at < request.started_before)
 
     if request.started_by:
         normalized_emails = [s.strip().lower() for s in request.started_by if s and s.strip()]
@@ -1555,20 +1616,97 @@ def fetch_filtered_benchmark_rows(
             query = query.where(col(Benchmark.started_by_email).in_(normalized_emails))
 
     if request.order_by == Order.DESC:
-        query = query.order_by(desc(Benchmark.started_at))
+        query = query.order_by(desc(Benchmark.started_at), desc(Benchmark.id))
     else:
-        query = query.order_by(asc(Benchmark.started_at))
+        query = query.order_by(asc(Benchmark.started_at), asc(Benchmark.id))
 
+    # Keyset cursor path — skip offset/limit and total_count computation.
+    # cursor="" means first page of keyset mode; non-empty cursor means subsequent page.
+    if request.cursor is not None:
+        if request.cursor:
+            cursor_started_at, cursor_id = decode_cursor(request.cursor)
+
+            if request.order_by == Order.DESC:
+                query = query.where(
+                    tuple_(col(Benchmark.started_at), col(Benchmark.id))
+                    < tuple_(literal(cursor_started_at), literal(str(cursor_id)))
+                )
+            else:
+                query = query.where(
+                    tuple_(col(Benchmark.started_at), col(Benchmark.id))
+                    > tuple_(literal(cursor_started_at), literal(str(cursor_id)))
+                )
+
+        # Fetch one extra row to detect whether there is a next page
+        query = query.limit(request.limit + 1)
+        benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
+
+        next_cursor: str | None = None
+        if len(benchmark_rows) > request.limit:
+            benchmark_rows = benchmark_rows[: request.limit]
+            last_row = benchmark_rows[-1]
+            next_cursor = encode_cursor(last_row.started_at, last_row.id)
+
+        return benchmark_rows, None, next_cursor
+
+    # Legacy offset/limit path — compute total_count for backward compat
     total_count = session.exec(select(func.count()).select_from(query.subquery())).one()
 
     if not total_count:
-        return [], 0
+        return [], 0, None
 
     query = query.limit(request.limit).offset(request.offset)
+    benchmark_rows = session.exec(query).all()
 
-    benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
+    return benchmark_rows, total_count, None
 
-    return benchmark_rows, total_count
+
+def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session) -> list[BenchmarkTableRow]:
+    """Batch-load task counts + run-by emails for a page of benchmarks.
+
+    Caller must have eager-loaded `final_evaluation`. Avoids the N+1 of
+    Benchmark.create_benchmark_table_row in a loop.
+    """
+    if not benchmarks:
+        return []
+
+    bench_ids = [b.id for b in benchmarks]
+
+    count_rows = session.exec(
+        select(Task.benchmark, Task.status, func.count())
+        .where(col(Task.benchmark).in_(bench_ids))
+        .group_by(col(Task.benchmark), col(Task.status))
+    ).all()
+    counts_by_bench: dict[UUID, dict[TaskStatus, int]] = {}
+    for bench_id, status, count in count_rows:
+        counts_by_bench.setdefault(bench_id, {})[cast(TaskStatus, status)] = count
+
+    rows: list[BenchmarkTableRow] = []
+    for b in benchmarks:
+        counts = counts_by_bench.get(b.id, {})
+        rows.append(
+            BenchmarkTableRow(
+                id=b.id,
+                name=b.name,
+                agent_name=b.arguments.contract.name,
+                label=b.label,
+                model=b.arguments.contract.model,
+                dataset=b.arguments.dataset or "default",
+                started_by_email=b.started_by_email,
+                started_at=b.started_at,
+                finished_at=b.finished_at,
+                status=b.status,
+                total_tasks=sum(counts.values()),
+                finished_tasks=(
+                    counts.get(TaskStatus.FINISHED, 0)
+                    + counts.get(TaskStatus.ERROR, 0)
+                    + counts.get(TaskStatus.STOPPED, 0)
+                ),
+                task_state_counts={k.value: v for k, v in counts.items()},
+                final_score=b.final_evaluation.final_score if b.final_evaluation else None,
+            )
+        )
+    return rows
 
 
 class YieldingWriter(io.RawIOBase):
@@ -1641,32 +1779,71 @@ async def upload_final_view(
     return s3_key
 
 
-def fetch_harness_config(request: Request) -> HarnessConfig:
-    """Constructs HarnessConfig from X-Harness-* request headers."""
+def _parse_log_retention_policy(value: int | str | None, *, source: str) -> int:
+    if value in (None, ""):
+        return 30
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid log_retention_policy from {source}: must be an integer",
+        ) from e
+    if parsed <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid log_retention_policy from {source}: must be positive",
+        )
+    return parsed
+
+
+_REQUIRED_HARNESS_HEADER_KEYS = ("aws_access_key_id", "aws_secret_access_key", "aws_default_region", "s3_bucket")
+
+
+def _parse_harness_headers(request: Request) -> dict[str, str]:
     prefix = "x-harness-"
-    flat = {
+    return {
         key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
     }
 
-    try:
-        return HarnessConfig(
-            aws=AWSCredentials(
-                aws_access_key_id=flat["aws_access_key_id"],
-                aws_secret_access_key=flat["aws_secret_access_key"],
-                aws_default_region=flat["aws_default_region"],
-                aws_session_token=flat.get("aws_session_token"),
-            ),
-            s3_bucket=flat["s3_bucket"],
-            log_group=flat["log_group"],
-            log_retention_policy=int(flat["log_retention_policy"]),
-            sandbox_provider_secret_name=flat["sandbox_provider_secret_name"],
-        )
-    except KeyError as e:
-        config_key = e.args[0].upper()
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Missing required config value: '{config_key}'. "
-                "Run `valk config init` to initialize or `valk config set` to update your Valkyrie config."
-            ),
-        ) from e
+
+def _build_harness_config(flat: dict[str, str]) -> HarnessConfig:
+    return HarnessConfig(
+        aws=AWSCredentials(
+            aws_access_key_id=flat["aws_access_key_id"],
+            aws_secret_access_key=flat["aws_secret_access_key"],
+            aws_default_region=flat["aws_default_region"],
+            aws_session_token=flat.get("aws_session_token"),
+        ),
+        s3_bucket=flat["s3_bucket"],
+        log_group=flat.get("log_group") or "",
+        log_retention_policy=_parse_log_retention_policy(
+            flat.get("log_retention_policy"),
+            source="request headers",
+        ),
+        sandbox_provider_secret_name=flat.get("sandbox_provider_secret_name") or flat.get("daytona_secret_name") or "",
+    )
+
+
+def try_fetch_harness_config(request: Request) -> HarnessConfig | None:
+    """HarnessConfig from X-Harness-* headers, or None if any required header is missing.
+
+    Used by endpoints (e.g. /start-benchmark) that accept harness_config either from headers (web FE)
+    or from the request body (CLI).
+    """
+    flat = _parse_harness_headers(request)
+    if any(not flat.get(key) for key in _REQUIRED_HARNESS_HEADER_KEYS):
+        return None
+
+    return _build_harness_config(flat)
+
+
+def fetch_harness_config(request: Request) -> HarnessConfig:
+    """HarnessConfig from X-Harness-* headers; 400 naming the first missing required header."""
+    flat = _parse_harness_headers(request)
+    for key in _REQUIRED_HARNESS_HEADER_KEYS:
+        if not flat.get(key):
+            header_name = key.replace("_", "-")
+            raise HTTPException(status_code=400, detail=f"Missing harness config header 'x-harness-{header_name}'")
+
+    return _build_harness_config(flat)

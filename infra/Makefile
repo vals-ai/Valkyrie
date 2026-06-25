@@ -1,10 +1,10 @@
 .PHONY: help install deploy deploy-shared deploy-tracker hotswap diff destroy
 
 # Stage selection: STAGE=prod (default) or STAGE=dev. Passed to CDK as context;
-# STACK_PREFIX prefixes stack ids so STAGE=dev targets the Dev-* stacks.
+# STACK_PREFIX prefixes stack ids so STAGE=dev targets the Valk-Dev-* stacks.
 # Default prod => empty prefix, so every target is byte-identical to pre-stage behavior.
 STAGE ?= prod
-STACK_PREFIX := $(if $(filter-out prod,$(STAGE)),Dev-,)
+STACK_PREFIX := $(if $(filter-out prod,$(STAGE)),Valk-Dev-,)
 CDK_CTX := -c stage=$(STAGE)
 
 help:

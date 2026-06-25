@@ -2,13 +2,17 @@ name: Deploy to AWS
 
 on:
   push:
-    branches: [prod]
+    branches: [dev, prod]
 
   workflow_dispatch:
 
 permissions:
   contents: read
   id-token: write
+
+concurrency:
+  group: valkyrie-${{ github.ref_name }}-deploy
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -20,6 +24,19 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.GH_PAT }}
+
+      - name: Resolve deploy stage
+        id: deploy-stage
+        run: |
+          case "${GITHUB_REF_NAME}" in
+            dev|prod)
+              echo "stage=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::Unsupported deploy ref '${GITHUB_REF_NAME}'. Run this workflow from dev or prod."
+              exit 1
+              ;;
+          esac
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -51,7 +68,8 @@ jobs:
           cd infra
           uv sync
 
-      - name: Deploy all stacks
+      - name: Deploy all stacks with Slack notifications
+        if: steps.deploy-stage.outputs.stage == 'prod'
         env:
           SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
           VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
@@ -60,4 +78,13 @@ jobs:
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
         run: |
           cd infra
-          uv run cdk deploy --all --require-approval never
+          uv run cdk deploy --all -c stage=${{ steps.deploy-stage.outputs.stage }} --require-approval never
+
+      - name: Deploy all stacks without Slack notifications
+        if: steps.deploy-stage.outputs.stage != 'prod'
+        env:
+          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
+          DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+        run: |
+          cd infra
+          uv run cdk deploy --all -c stage=${{ steps.deploy-stage.outputs.stage }} --require-approval never
