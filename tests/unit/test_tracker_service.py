@@ -1,8 +1,7 @@
 from datetime import datetime
 from pathlib import Path
-from types import SimpleNamespace
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
-from uuid import uuid4
 
 import click
 import httpx
@@ -158,62 +157,16 @@ def _command_option_flags(command: click.Command, param_name: str) -> set[str]:
     return {*param.opts}
 
 
-def test_run_commands_connect_after_success(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_commands_connect_after_success(connect_stream_testbed: tuple[UUID, list[str]]) -> None:
     """Connect should stream the run once start, resume, or retry succeeds.
 
     Test cases:
     - Start streams the new run ID returned by the tracker.
     - Resume and retry stream the run ID supplied by the user.
     """
-    started_run_id = uuid4()
+    started_run_id, streamed_run_ids = connect_stream_testbed
     resume_run_id = uuid4()
     retry_run_id = uuid4()
-    streamed_run_ids: list[str] = []
-    start_response = {
-        "benchmark_name": "swebench",
-        "agent_name": "agent",
-        "benchmark_id": str(started_run_id),
-        "concurrency": 5,
-        "started_at": datetime.now(ZoneInfo("UTC")).isoformat(),
-        "task_count": 1,
-        "cloudwatch_url": "https://cloudwatch.example/run",
-        "s3_bucket_url": "s3://bucket/benchmarks/run",
-    }
-
-    class FakeTrackerService:
-        @staticmethod
-        def get_benchmark_auth(_benchmark_name: str) -> None:
-            return None
-
-        @staticmethod
-        def get_webhook_secret() -> None:
-            return None
-
-        def __enter__(self) -> "FakeTrackerService":
-            return self
-
-        def __exit__(self, *_exc_info: object) -> None:
-            return None
-
-        def start_benchmark(self, *_args: object, **_kwargs: object) -> httpx.Response:
-            return httpx.Response(200, json=start_response)
-
-        def fetch_benchmark(self, _run_id: object) -> SimpleNamespace:
-            return SimpleNamespace(benchmark_name="swebench")
-
-        def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
-            return SimpleNamespace(status="success")
-
-    async def get_contract_from_s3(_agent: str, _agent_config: object) -> AgentContractRequest:
-        return AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run")
-
-    def stream_benchmark_status(_tracker: FakeTrackerService, run_id: object) -> None:
-        streamed_run_ids.append(str(run_id))
-
-    monkeypatch.setattr(cli_main, "TrackerService", FakeTrackerService)
-    monkeypatch.setattr(cli_main, "get_contract_from_s3", get_contract_from_s3)
-    monkeypatch.setattr(cli_main, "check_tracker_service_health", lambda _tracker: True)
-    monkeypatch.setattr(cli_main, "stream_benchmark_status", stream_benchmark_status)
 
     runner = CliRunner()
     for command in (
