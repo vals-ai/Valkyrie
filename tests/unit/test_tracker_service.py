@@ -8,7 +8,13 @@ import httpx
 import pytest
 import yaml
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
-from tracker.types import BenchmarkDetails, BenchmarkTableRow, FetchBenchmarkResponse, FetchBenchmarksRequest, FetchBenchmarksResponse
+from tracker.types import (
+    BenchmarkDetails,
+    BenchmarkTableRow,
+    FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    FetchBenchmarksResponse,
+)
 
 from valkyrie.cli import tracker_service as tracker_service_module
 from valkyrie.cli.main import list_benchmarks, start
