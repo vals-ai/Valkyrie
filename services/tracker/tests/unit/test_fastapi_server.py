@@ -300,6 +300,22 @@ class TestFastapiServer:
         assert details.get("total_tasks") and details["total_tasks"] == 10
         assert details.get("finished_tasks") and details["finished_tasks"] == 6
 
+        final_evaluation_row = FinalEvaluation(
+            org_id=TEST_ORG_ID,
+            benchmark=benchmark_row.id,
+            final_score=83.25,
+            properties={},
+        )
+        database_session.add(final_evaluation_row)
+        database_session.commit()
+        database_session.expire_all()
+
+        response = client.get("/fetch-benchmark", params=query_params)
+
+        # Test case 6. Final score is returned when the benchmark has a final evaluation
+        assert response.status_code == 200
+        assert response.json().get("final_score") == 83.25
+
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
     ):

@@ -443,6 +443,7 @@ async def fetch_benchmark(
             str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
         label=benchmark_row.label,
+        final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
     )
 
 
