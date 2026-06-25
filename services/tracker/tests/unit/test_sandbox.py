@@ -309,6 +309,71 @@ class TestAgentOutputTelemetry:
 
         assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
 
+    async def test_run_agent_uploads_command_env_for_agent_commands(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="echo install",
+            run_cmd="echo run",
+        )
+        exec_commands: list[str] = []
+        stream_env_files: list[str | None] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            exec_commands.append(command)
+            return ExecResult(exit_code=0)
+
+        async def fake_stream_command_output(
+            _sandbox: Any,
+            _command: str,
+            _on_output: Any,
+            *,
+            env_file_path: str | None = None,
+        ) -> tuple[None, float]:
+            stream_env_files.append(env_file_path)
+            return None, 0.0
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.upload_file = AsyncMock()
+
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/testbed",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            env_vars={
+                "RUN_ID": "benchmark-123",
+                "TASK_ID": "task_0",
+                "QUESTION_ID": "task_0",
+                "IDENTITY": '{"agent":"test-agent"}',
+                "INVALID-KEY": "ignored",
+            },
+        )
+
+        upload_path, upload_content = mock_sandbox.upload_file.await_args.args
+        assert upload_path.startswith("/tmp/.valkyrie/")
+        assert upload_path.endswith(".env")
+        assert upload_content.decode() == (
+            "export RUN_ID=benchmark-123\n"
+            "export TASK_ID=task_0\n"
+            "export QUESTION_ID=task_0\n"
+            'export IDENTITY=\'{"agent":"test-agent"}\'\n'
+        )
+        assert stream_env_files == [upload_path, upload_path]
+        assert exec_commands[-1] == f"rm -f {upload_path}"
+
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
         deps_before_sleep = _install_agent_dependencies.retry.before_sleep
@@ -538,7 +603,10 @@ class TestUploadAgentArtifacts:
 
 class TestStreamCommandOutputAgentFailure:
     async def test_stream_command_output_removes_timing_files(self) -> None:
-        async def stream_command(_command: str) -> Any:
+        streamed_commands: list[str] = []
+
+        async def stream_command(command: str) -> Any:
+            streamed_commands.append(command)
             yield "done\n"
 
         exec_commands: list[str] = []
@@ -559,11 +627,16 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.exec = exec_command
 
         exit_reason, duration = await sandbox_module.stream_command_output(
-            mock_sandbox, "run-agent.sh", on_output=lambda _: None
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=lambda _: None,
+            env_file_path="/tmp/.valkyrie/test.env",
         )
 
         assert exit_reason is None
         assert duration == 2
+        assert streamed_commands[0].startswith(". /tmp/.valkyrie/test.env && { ")
+        assert streamed_commands[0].endswith("; }")
         assert exec_commands[-1].startswith("rm -f ")
         assert ".start_ns" in exec_commands[-1]
         assert ".end_ns" in exec_commands[-1]

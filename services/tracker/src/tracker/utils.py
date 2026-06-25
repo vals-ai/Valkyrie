@@ -507,6 +507,7 @@ async def process_task(
             **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
+            "QUESTION_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per benchmark run and separable from other environments sharing the
@@ -575,6 +576,7 @@ async def process_task(
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
                     benchmark_id=str(benchmark_id),
+                    env_vars=env_vars,
                 )
                 logger.info(
                     "agent.run.complete",

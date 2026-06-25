@@ -101,6 +101,7 @@ async def test_process_task_injects_tracker_owned_attribution_env(
         }
     )
     captured_env_vars: list[dict[str, str]] = []
+    captured_run_agent_env_vars: list[dict[str, str]] = []
 
     def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
         return {
@@ -117,17 +118,23 @@ async def test_process_task_injects_tracker_owned_attribution_env(
         captured_env_vars.append(env_vars)
         yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
 
+    async def _capture_run_agent(*_args: Any, env_vars: dict[str, str], **_kwargs: Any) -> tuple[None, float]:
+        captured_run_agent_env_vars.append(env_vars)
+        return None, 0.0
+
     monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
     monkeypatch.setattr(utils_module, "create_sandbox", _capture_create_sandbox)
+    monkeypatch.setattr(utils_module, "run_agent", _capture_run_agent)
 
     result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
     assert result == {"task_0": {"status": "success", "score": 1.0}}
     assert len(captured_env_vars) == 1
     env_vars = captured_env_vars[0]
+    assert env_vars["QUESTION_ID"] == "task_0"
     assert env_vars["RUN_ID"] == str(benchmark_id)
-    assert "QUESTION_ID" not in env_vars
     assert env_vars["TASK_ID"] == "task_0"
+    assert env_vars["QUESTION_ID"] == "task_0"
     assert json.loads(env_vars["IDENTITY"]) == {
         "benchmark_name": "swebench",
         "agent_name": contract.name,
@@ -136,6 +143,7 @@ async def test_process_task_injects_tracker_owned_attribution_env(
     assert env_vars["UNRELATED_SECRET"] == "secret-value"
     assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
     assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+    assert captured_run_agent_env_vars == [env_vars]
 
 
 async def test_process_task_omits_identity_email_when_unavailable(

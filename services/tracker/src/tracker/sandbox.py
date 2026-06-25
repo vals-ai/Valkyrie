@@ -1,6 +1,7 @@
 """Sandbox management utilities for the tracker service."""
 
 import base64
+import re
 import shlex
 import time
 import uuid
@@ -72,6 +73,28 @@ bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
+_ENV_VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _command_with_env_file(command: str, env_file_path: str | None = None) -> str:
+    if not env_file_path:
+        return command
+
+    return f". {shlex.quote(env_file_path)} && {{ {command}; }}"
+
+
+async def _upload_command_env(sandbox: Sandbox, env_vars: dict[str, str] | None = None) -> str | None:
+    if not env_vars:
+        return None
+
+    lines = [f"export {key}={shlex.quote(value)}" for key, value in env_vars.items() if _ENV_VAR_NAME.fullmatch(key)]
+    if not lines:
+        return None
+
+    env_file_path = f"{_STATUS_DIR}/{uuid.uuid4().hex}.env"
+    await _exec(sandbox, f"mkdir -p {shlex.quote(_STATUS_DIR)}")
+    await sandbox.upload_file(env_file_path, ("\n".join(lines) + "\n").encode())
+    return env_file_path
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -306,6 +329,7 @@ async def install_agent_dependencies(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
+    env_file_path: str | None = None,
 ) -> None:
     """Install agent dependencies in the sandbox."""
     if not contract.install_cmd:
@@ -315,7 +339,12 @@ async def install_agent_dependencies(
 
     contract_path = get_contract_path(contract.name)
 
-    await stream_command_output(sandbox, f"cd {shlex.quote(str(contract_path))} && {contract.install_cmd}", log_output)
+    await stream_command_output(
+        sandbox,
+        f"cd {shlex.quote(str(contract_path))} && {contract.install_cmd}",
+        log_output,
+        env_file_path=env_file_path,
+    )
 
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 
@@ -343,6 +372,7 @@ async def stream_command_output(
     sandbox: Sandbox,
     command: str,
     on_output: Callable[[str], None],
+    env_file_path: str | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     output: deque[str] = deque(maxlen=50)
     run_id = uuid.uuid4().hex
@@ -360,7 +390,7 @@ async def stream_command_output(
     exit_code = _SUCCESS_EXIT_CODE
     try:
         try:
-            async for data in sandbox.command(timed_command):
+            async for data in sandbox.command(_command_with_env_file(timed_command, env_file_path)):
                 on_output(data)
                 output.append(data)
         except ProviderSandboxCommandError as e:
@@ -559,6 +589,7 @@ async def run_agent(
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
+    env_vars: dict[str, str] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -581,24 +612,35 @@ async def run_agent(
     """
     log_output(f"Running agent {contract.name}")
 
-    await install_agent_dependencies(sandbox, contract, log_output)
+    env_file_path = await _upload_command_env(sandbox, env_vars)
+    try:
+        await install_agent_dependencies(sandbox, contract, log_output, env_file_path=env_file_path)
 
-    run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
+        run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
-    for kwarg_key, kwarg_value in contract.kwargs.items():
-        run_cmd = run_cmd.replace(f"{{{kwarg_key}}}", kwarg_value)
+        for kwarg_key, kwarg_value in contract.kwargs.items():
+            run_cmd = run_cmd.replace(f"{{{kwarg_key}}}", kwarg_value)
 
-    # Apply timeout if specified
-    if agent_timeout is not None:
-        run_cmd = f"timeout {agent_timeout} {run_cmd}"
+        # Apply timeout if specified
+        if agent_timeout is not None:
+            run_cmd = f"timeout {agent_timeout} {run_cmd}"
 
-    # Create cwd if it does not already exist
-    await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
+        # Create cwd if it does not already exist
+        await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
-    # Run the agent without including task directory dependencies
-    exit_reason, agent_run_time = await stream_command_output(
-        sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
-    )
+        # Run the agent without including task directory dependencies
+        exit_reason, agent_run_time = await stream_command_output(
+            sandbox,
+            f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+            log_output,
+            env_file_path=env_file_path,
+        )
+    finally:
+        if env_file_path:
+            try:
+                await _exec(sandbox, f"rm -f {shlex.quote(env_file_path)}")
+            except Exception as e:
+                logger.warning(f"Failed to remove sandbox command env file {env_file_path}: {e}")
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         log_output(
