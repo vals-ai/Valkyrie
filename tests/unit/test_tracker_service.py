@@ -7,7 +7,7 @@ import yaml
 from tracker.database.models import AgentContractRequest, RetryMode
 
 from valkyrie.cli import tracker_service as tracker_service_module
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.tracker_service import TrackerService, TrackerServiceError
 
 
 class FakeClient:
@@ -67,6 +67,77 @@ def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyP
     assert response.content == b"tar"
     assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
     assert client.params == {"task_ids": ["task-1", "task-2"]}
+
+
+def test_fetch_run_outputs_omits_empty_task_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    run_id = uuid4()
+    tracker = TrackerService(base_url="http://tracker")
+    response = tracker.fetch_run_outputs(run_id)
+
+    assert response.content == b"tar"
+    assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
+    assert client.params == {}
+
+
+def test_fetch_run_outputs_raises_tracker_error_for_non_ok_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    class ErrorClient(FakeClient):
+        def get(
+            self,
+            url: str,
+            *,
+            params: dict[str, object] | None = None,
+        ) -> httpx.Response:
+            self.url = url
+            self.params = params
+            return httpx.Response(404, json={"detail": "No outputs found"})
+
+    client = ErrorClient()
+
+    def build_client(**_kwargs: object) -> ErrorClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    with pytest.raises(TrackerServiceError, match="Failed to fetch run outputs: No outputs found"):
+        tracker.fetch_run_outputs(uuid4())
+
+
+def test_fetch_run_outputs_raises_tracker_error_for_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingClient(FakeClient):
+        def get(
+            self,
+            url: str,
+            *,
+            params: dict[str, object] | None = None,
+        ) -> httpx.Response:
+            self.url = url
+            self.params = params
+            raise httpx.ConnectError("connection failed")
+
+    client = FailingClient()
+
+    def build_client(**_kwargs: object) -> FailingClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    with pytest.raises(TrackerServiceError, match="Failed to fetch run outputs: connection failed"):
+        tracker.fetch_run_outputs(uuid4())
 
 
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
