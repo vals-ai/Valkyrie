@@ -578,6 +578,12 @@ def tasks(
     is_flag=True,
     help="Ignore custom benchmark services that have been configured. Provides opt-out for custom services.",
 )
+@click.option(
+    "--connect",
+    is_flag=True,
+    required=False,
+    help="Connect to the tracker service to stream run updates after starting",
+)
 def start(
     agent: str,
     model: str | None,
@@ -594,6 +600,7 @@ def start(
     headers: tuple[tuple[str, str]],
     intervals: tuple[int, ...],
     ignore_custom_services: bool,
+    connect: bool,
 ):
     """
     Run an agent on a benchmark.
@@ -684,7 +691,10 @@ def start(
                         click.echo(detail)
                 return
 
-            format_start_benchmark_response(StartBenchmarkResponse.model_validate(response.json()))
+            start_response = StartBenchmarkResponse.model_validate(response.json())
+            format_start_benchmark_response(start_response)
+            if connect:
+                stream_benchmark_status(tracker, start_response.benchmark_id)
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))
 
@@ -991,6 +1001,12 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
     default=False,
     help="Clear durable eval state and rerun generation.",
 )
+@click.option(
+    "--connect",
+    is_flag=True,
+    required=False,
+    help="Connect to the tracker service to stream run updates after resuming",
+)
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -1002,6 +1018,7 @@ def resume(
     secrets: tuple[tuple[str, str]],
     update_agent: bool,
     from_scratch: bool,
+    connect: bool,
 ):
     """
     Resume a run by its run id.
@@ -1052,6 +1069,8 @@ def resume(
                 + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
             )
             click.echo("└" + "─" * 79)
+            if connect:
+                stream_benchmark_status(tracker, run_id)
     except (TrackerServiceError, S3Error) as e:
         raise click.ClickException(str(e))
 

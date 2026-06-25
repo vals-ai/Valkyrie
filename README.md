@@ -134,6 +134,12 @@ valkyrie run start \
   --label swebench_sweagent
 ```
 
+Add `--connect` to stream updates after the run starts:
+
+```bash
+valkyrie run start --agent sweagent --benchmark swebench --connect
+```
+
 | Flag | Description |
 | --- | --- |
 | `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
@@ -151,6 +157,7 @@ valkyrie run start \
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
 | `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
+| `--connect` | Stream run updates after the run starts |
 
 ### Monitor a run
 
@@ -208,6 +215,12 @@ valkyrie run retry <id>
 # Override concurrency on resume (works on retry)
 valkyrie run resume <id> --concurrency 20
 
+# Stream updates after resume
+valkyrie run resume <id> --connect
+
+# Stream updates after retry
+valkyrie run retry <id> --connect
+
 # Override agent secrets for resumed tasks
 valkyrie run resume <id> -s ANTHROPIC_API_KEY newSecretName
 
@@ -226,6 +239,7 @@ valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
 | `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
+| `--connect` | Stream run updates after resume/retry |
 
 ### List runs
 
