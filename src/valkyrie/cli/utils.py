@@ -20,6 +20,7 @@ from httpx import Response
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
+    BenchmarkServiceHealth,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
@@ -907,12 +908,24 @@ def resolve_webhook_config(
     return None, None
 
 
-def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:
+def merge_benchmark_services(
+    hosted_services: list[BenchmarkServiceHealth],
+    custom_services: list[BenchmarkServiceHealth],
+) -> list[BenchmarkServiceHealth]:
+    """Merge hosted and custom services, with custom URLs overriding hosted services."""
+    services_by_name = {service.name: service for service in hosted_services}
+    for service in custom_services:
+        source = "custom override" if service.name in services_by_name else "custom"
+        services_by_name[service.name] = service.model_copy(update={"source": source})
+    return list(services_by_name.values())
+
+
+def paginate_services(services: list[BenchmarkServiceHealth], limit: int = 10) -> None:
     """
     Interactive paginated display of services with vim-style navigation.
 
     Args:
-        services: List of tuples (benchmark_name, service_url)
+        services: List of benchmark service health entries
         limit: Number of items per page
     """
     current_page = 1
@@ -924,12 +937,29 @@ def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:
         click.clear()
 
         if total_count == 0:
-            click.echo(click.style("No custom services have been added.", fg="yellow"))
+            click.echo(click.style("No benchmark services found.", fg="yellow"))
             break
 
         page_services = services[offset : offset + limit]
-        rows = [{"Benchmark": name, "Service URL": url} for name, url in page_services]
-        format_table(rows, ["Benchmark", "Service URL"], current_page, total_pages, total_count, "service")
+        rows = [
+            {
+                "Benchmark": service.name,
+                "Service URL": service.url,
+                "Source": service.source,
+                "Healthy": click.style("yes", fg="green") if service.healthy else click.style("no", fg="red"),
+                "Latency": f"{service.latency_ms} ms" if service.latency_ms is not None else "-",
+                "Error": service.error or "",
+            }
+            for service in page_services
+        ]
+        format_table(
+            rows,
+            ["Benchmark", "Service URL", "Source", "Healthy", "Latency", "Error"],
+            current_page,
+            total_pages,
+            total_count,
+            "service",
+        )
 
         if total_pages <= 1:
             break

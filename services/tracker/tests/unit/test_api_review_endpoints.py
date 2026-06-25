@@ -123,8 +123,8 @@ async def test_ping_service_reports_request_errors() -> None:
 def test_benchmark_services_endpoint_reuses_ping_client(monkeypatch: pytest.MonkeyPatch) -> None:
     import tracker.api.benchmark_services as benchmark_services_api
 
-    async def fake_ping(_client: httpx.AsyncClient, name: str, url: str):
-        return {"name": name, "url": url, "healthy": True, "latency_ms": 1, "error": None}
+    async def fake_ping(_client: httpx.AsyncClient, name: str, url: str, source: str = "custom"):
+        return {"name": name, "url": url, "healthy": True, "latency_ms": 1, "error": None, "source": source}
 
     ping_mock = AsyncMock(side_effect=fake_ping)
     monkeypatch.setattr(benchmark_services_api, "_ping_service", ping_mock)
@@ -156,6 +156,50 @@ def test_benchmark_services_endpoint_returns_empty_services(monkeypatch: pytest.
     assert response.status_code == 200
     assert response.json() == {"services": []}
     ping_mock.assert_not_awaited()
+
+
+def test_benchmark_services_get_lists_configured_hosted_services(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tracker.api.benchmark_services as benchmark_services_api
+
+    async def fake_ping(_client: httpx.AsyncClient, name: str, url: str, source: str = "custom"):
+        return {
+            "name": name,
+            "url": url,
+            "healthy": name == "swebench",
+            "latency_ms": 7,
+            "error": None if name == "swebench" else "HTTP 503",
+            "source": source,
+        }
+
+    monkeypatch.setattr(benchmark_services_api, "list_benchmark_service_names", lambda: ["swebench", "fab"])
+    monkeypatch.setattr(
+        benchmark_services_api,
+        "create_benchmark_service_url",
+        lambda name: f"https://{name}.benchmarks.vals.ai",
+    )
+    monkeypatch.setattr(benchmark_services_api, "_ping_service", AsyncMock(side_effect=fake_ping))
+
+    response = client.get("/benchmark-services")
+
+    assert response.status_code == 200
+    assert response.json()["services"] == [
+        {
+            "name": "swebench",
+            "url": "https://swebench.benchmarks.vals.ai",
+            "healthy": True,
+            "latency_ms": 7,
+            "error": None,
+            "source": "hosted",
+        },
+        {
+            "name": "fab",
+            "url": "https://fab.benchmarks.vals.ai",
+            "healthy": False,
+            "latency_ms": 7,
+            "error": "HTTP 503",
+            "source": "hosted",
+        },
+    ]
 
 
 def test_benchmarks_status_empty_ids_returns_empty_entries() -> None:

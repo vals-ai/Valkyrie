@@ -252,6 +252,7 @@ class BenchmarkServiceHealth(BaseModel):
     healthy: bool
     latency_ms: int | None
     error: str | None = None
+    source: str = "custom"
 
 
 class BenchmarkServicesResponse(BaseModel):

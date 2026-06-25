@@ -7,17 +7,22 @@ import click
 import httpx
 import pytest
 import yaml
+from click.testing import CliRunner
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
+    BenchmarkServiceEntry,
+    BenchmarkServiceHealth,
+    BenchmarkServicesResponse,
     BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
 )
 
+from valkyrie.cli import main as cli_main
 from valkyrie.cli import tracker_service as tracker_service_module
-from valkyrie.cli.main import list_benchmarks, start
+from valkyrie.cli.main import cli, list_benchmarks, start
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response
 
@@ -248,3 +253,99 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
     list_output = capsys.readouterr().out
     assert "Label" in list_output
     assert "nightly" in list_output
+
+
+def test_service_list_merges_hosted_and_custom_services(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Service list should show hosted services plus local custom overrides.
+
+    Test cases:
+    - Local custom services override hosted services with the same benchmark name.
+    - Custom-only services are health-checked and included with the hosted rows.
+    """
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "api_key": "test-key",
+                "custom_benchmark_services": {
+                    "swebench": "http://local-swebench",
+                    "custombench": "http://custombench",
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
+
+    class FakeTracker:
+        def __enter__(self) -> "FakeTracker":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            pass
+
+        def list_benchmark_services(self) -> BenchmarkServicesResponse:
+            return BenchmarkServicesResponse(
+                services=[
+                    BenchmarkServiceHealth(
+                        name="swebench",
+                        url="https://swebench.benchmarks.vals.ai",
+                        healthy=True,
+                        latency_ms=10,
+                        source="hosted",
+                    ),
+                    BenchmarkServiceHealth(
+                        name="fab",
+                        url="https://fab.benchmarks.vals.ai",
+                        healthy=True,
+                        latency_ms=20,
+                        source="hosted",
+                    ),
+                ]
+            )
+
+        def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
+            assert [(service.name, service.url) for service in services] == [
+                ("swebench", "http://local-swebench"),
+                ("custombench", "http://custombench"),
+            ]
+            return BenchmarkServicesResponse(
+                services=[
+                    BenchmarkServiceHealth(
+                        name="swebench",
+                        url="http://local-swebench",
+                        healthy=False,
+                        latency_ms=None,
+                        error="timeout",
+                        source="custom",
+                    ),
+                    BenchmarkServiceHealth(
+                        name="custombench",
+                        url="http://custombench",
+                        healthy=True,
+                        latency_ms=5,
+                        source="custom",
+                    ),
+                ]
+            )
+
+    captured_services: list[BenchmarkServiceHealth] = []
+
+    def fake_paginate_services(services: list[BenchmarkServiceHealth]) -> None:
+        captured_services.extend(services)
+
+    monkeypatch.setattr(cli_main, "TrackerService", FakeTracker)
+    monkeypatch.setattr(cli_main, "paginate_services", fake_paginate_services)
+
+    result = CliRunner().invoke(cli, ["config", "service", "list"])
+
+    assert result.exit_code == 0, result.output
+    by_name = {service.name: service for service in captured_services}
+    assert list(by_name) == ["swebench", "fab", "custombench"]
+    assert by_name["swebench"].url == "http://local-swebench"
+    assert by_name["swebench"].source == "custom override"
+    assert by_name["fab"].source == "hosted"
+    assert by_name["custombench"].source == "custom"

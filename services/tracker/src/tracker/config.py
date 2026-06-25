@@ -21,6 +21,12 @@ _CLOUDMAP_PORT = 8001
 _BENCHMARK_SERVICE_BASE_URL: str | None = os.environ.get("BENCHMARK_SERVICE_BASE_URL")
 
 
+def list_benchmark_service_names() -> list[str]:
+    """Return configured hosted benchmark service names."""
+    names = (name.strip() for name in os.environ.get("BENCHMARK_SERVICE_NAMES", "").split(","))
+    return list(dict.fromkeys(name for name in names if name))
+
+
 def create_benchmark_service_url(benchmark_name: str) -> str:
     """
     Derive the benchmark service URL from the benchmark name.

@@ -15,6 +15,9 @@ from dotenv import load_dotenv
 from httpx._models import Response
 from tracker.database.models import AgentContractRequest, RetryMode
 from tracker.types import (
+    BenchmarkServiceEntry,
+    BenchmarkServicesRequest,
+    BenchmarkServicesResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarkTasksRequest,
@@ -233,6 +236,33 @@ class TrackerService:
             return response
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Health check failed: {e}") from e
+
+    def list_benchmark_services(self) -> BenchmarkServicesResponse:
+        """List hosted benchmark services visible to the configured tenant."""
+        try:
+            response = self._client.get(f"{self._base_url}/benchmark-services")
+
+            if response.status_code != 200:
+                details = _response_error_detail(response)
+                raise TrackerServiceError(f"Failed to list benchmark services: {details}")
+
+            return BenchmarkServicesResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to list benchmark services: {e}") from e
+
+    def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
+        """Health-check caller-provided benchmark services."""
+        try:
+            payload = BenchmarkServicesRequest(services=services)
+            response = self._client.post(f"{self._base_url}/benchmark-services", json=payload.model_dump())
+
+            if response.status_code != 200:
+                details = _response_error_detail(response)
+                raise TrackerServiceError(f"Failed to check benchmark services: {details}")
+
+            return BenchmarkServicesResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to check benchmark services: {e}") from e
 
     @classmethod
     def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
