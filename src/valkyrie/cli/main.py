@@ -695,6 +695,11 @@ def start(
             format_start_benchmark_response(start_response)
             if connect:
                 stream_benchmark_status(tracker, start_response.benchmark_id)
+            else:
+                click.echo(
+                    f"{'Track progress:':<17} "
+                    + click.style(f"valkyrie run fetch {start_response.benchmark_id} --connect", fg="cyan")
+                )
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))
 
@@ -1063,7 +1068,8 @@ def resume(
             action_label = "retried" if retry else "resumed"
             click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))
             click.echo("┌─ Next Steps " + "─" * 66)
-            click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
+            if not connect:
+                click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
             click.echo(
                 f"│ {'Get results:':<17} "
                 + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")

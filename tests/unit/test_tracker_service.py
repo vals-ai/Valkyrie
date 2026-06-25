@@ -163,6 +163,7 @@ def test_run_commands_connect_after_success(connect_stream_testbed: tuple[UUID, 
     Test cases:
     - Start streams the new run ID returned by the tracker.
     - Resume and retry stream the run ID supplied by the user.
+    - Connected commands skip the redundant track-progress next step.
     """
     started_run_id, streamed_run_ids = connect_stream_testbed
     resume_run_id = uuid4()
@@ -176,6 +177,7 @@ def test_run_commands_connect_after_success(connect_stream_testbed: tuple[UUID, 
     ):
         result = runner.invoke(cli_main.cli, command)
         assert result.exit_code == 0, result.output
+        assert "Track progress:" not in result.output
 
     assert streamed_run_ids == [str(started_run_id), str(resume_run_id), str(retry_run_id)]
 

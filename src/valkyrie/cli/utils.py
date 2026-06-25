@@ -386,7 +386,6 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
     click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
-    click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {rid} --connect", fg="cyan"))
     click.echo(
         f"│ {'Get results:':<17} " + click.style(f"valkyrie run results {rid} --path ./results-{rid}.json", fg="cyan")
     )
@@ -395,7 +394,6 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'Retry:':<17} " + click.style(f"valkyrie run retry {rid}", fg="cyan"))
     click.echo(f"│ {'Agent outputs:':<17} " + click.style(f"valkyrie agent outputs {rid} --output-dir .", fg="cyan"))
     click.echo("└" + "─" * 79)
-    click.echo()
 
 
 def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
