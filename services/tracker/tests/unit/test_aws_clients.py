@@ -1,9 +1,24 @@
+from unittest.mock import MagicMock
+
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
-from tracker.aws.cloudwatch_logs import _sanitize_log_stream_name, handle_cloudwatch_error
+from tracker.aws import cloudwatch_logs
+from tracker.aws.cloudwatch_logs import (
+    _sanitize_log_stream_name,
+    get_benchmark_log_url,
+    handle_cloudwatch_error,
+    write_benchmark_log_event,
+)
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.aws.s3 import handle_s3_error
+from tracker.types import AWSCredentials
+
+_AWS = AWSCredentials(
+    aws_access_key_id="test-key",
+    aws_secret_access_key="test-secret",
+    aws_default_region="us-east-1",
+)
 
 
 class TestS3DecoratorClient:
@@ -89,3 +104,44 @@ class TestSanitizeLogStreamName:
 
         for raw in ["openai/gpt-5.5", "laguna-xs.2:fast", "x*:y", "plain_id"]:
             assert re.fullmatch(r"[^:*]*", _sanitize_log_stream_name(raw))
+
+
+class TestGetBenchmarkLogUrl:
+    def test_sanitizes_task_id_in_url(self):
+        url = get_benchmark_log_url("bench123", "us-east-1", "/valkyrie/worker", task_id="provider/model:fast")
+        # task id is sanitized before being url-quoted into the log-events path
+        assert "model_fast" in url
+        assert "model:fast" not in url
+
+    def test_no_task_id_omits_log_events(self):
+        url = get_benchmark_log_url("bench123", "us-east-1", "/valkyrie/worker")
+        assert "log-events" not in url
+
+
+class TestWriteBenchmarkLogEvent:
+    def _mock_client(self, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+        client = MagicMock()
+        monkeypatch.setattr(cloudwatch_logs, "_cloudwatch_client", lambda aws: client)
+        monkeypatch.setattr(cloudwatch_logs, "_created_streams", set())
+        return client
+
+    def test_creates_stream_and_puts_event_with_sanitized_name(self, monkeypatch: pytest.MonkeyPatch):
+        client = self._mock_client(monkeypatch)
+
+        # stream_key splits on the first ':' -> task_id keeps its own ':'
+        write_benchmark_log_event("bench123:provider/model:fast", "hello", _AWS, "/valkyrie/worker")
+
+        client.create_log_stream.assert_called_once_with(
+            logGroupName="/valkyrie/worker/bench123", logStreamName="provider/model_fast"
+        )
+        assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model_fast"
+
+    def test_create_stream_botocore_error_reports_sanitized_name(self, monkeypatch: pytest.MonkeyPatch):
+        client = self._mock_client(monkeypatch)
+        client.create_log_stream.side_effect = BotoCoreError()
+
+        with pytest.raises(CloudWatchError) as exc_info:
+            write_benchmark_log_event("bench123:provider/model:fast", "hello", _AWS, "/valkyrie/worker")
+
+        assert "provider/model_fast" in str(exc_info.value)
+        client.put_log_events.assert_not_called()
