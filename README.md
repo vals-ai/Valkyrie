@@ -131,6 +131,7 @@ valkyrie run start \
   -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey \
   -k temperature 1 \
   --slice "0:10" \
+  --label swebench_sweagent
 ```
 
 | Flag | Description |
@@ -146,6 +147,7 @@ valkyrie run start \
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--slice` | Slice the benchmark dataset (`start:stop:step`) |
 | `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
+| `-l` / `--label` | Label to attach to the run, can filter by when using `valk run list -l <LABEL>`. Can only set one label per run.  |
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
 | `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
@@ -233,7 +235,8 @@ valkyrie run list \
   --benchmark-name swebench \
   --status IN_PROGRESS \
   --order-by DESC \
-  --started-by alice@vals.ai,bob@vals.ai
+  --started-by alice@vals.ai,bob@vals.ai \
+  --label swebench_claude_code
 ```
 
 | Option | Description |
@@ -241,6 +244,7 @@ valkyrie run list \
 | `--agent-name` | Filter by agent name |
 | `--benchmark-name` | Filter by benchmark name |
 | `--model` | Filter by model |
+| `-l` / `--label` | Filter by run label |
 | `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
 | `--order-by` | Order results (`desc` or `asc`) |
 | `--started-by` | Comma-separated list of starter emails (case-insensitive) |

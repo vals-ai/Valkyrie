@@ -118,6 +118,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
     return Benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,
+        label=request.label,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
@@ -1288,6 +1289,7 @@ async def stream_benchmark_results(
                     s3_bucket_url=create_benchmark_url(
                         str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
                     ),
+                    label=fresh_benchmark.label,
                     final_score=fresh_benchmark.final_evaluation.final_score
                     if fresh_benchmark.final_evaluation
                     else None,
@@ -1587,6 +1589,9 @@ def fetch_filtered_benchmark_rows(
         else:
             query = query.where(dataset_value == request.dataset)
 
+    if request.label is not None:
+        query = query.where(func.lower(Benchmark.label) == request.label.lower())
+
     if request.benchmark_name:
         if len(request.benchmark_name) == 1:
             query = query.where(Benchmark.name == request.benchmark_name[0])
@@ -1674,7 +1679,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
     ).all()
     counts_by_bench: dict[UUID, dict[TaskStatus, int]] = {}
     for bench_id, status, count in count_rows:
-        counts_by_bench.setdefault(bench_id, {})[status] = count
+        counts_by_bench.setdefault(bench_id, {})[cast(TaskStatus, status)] = count
 
     rows: list[BenchmarkTableRow] = []
     for b in benchmarks:
@@ -1684,6 +1689,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 id=b.id,
                 name=b.name,
                 agent_name=b.arguments.contract.name,
+                label=b.label,
                 model=b.arguments.contract.model,
                 dataset=b.arguments.dataset or "default",
                 started_by_email=b.started_by_email,

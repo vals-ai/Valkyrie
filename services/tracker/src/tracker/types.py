@@ -59,6 +59,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
@@ -113,6 +114,7 @@ class FetchBenchmarkResponse(BaseModel):
     benchmark_id: UUID
     details: BenchmarkDetails
     s3_bucket_url: str
+    label: str | None = None
     final_score: float | None = None
 
 
@@ -169,6 +171,7 @@ class FetchBenchmarksRequest(BaseModel):
     benchmark_name: list[str] | None = None
     model: str | None = None
     dataset: str | None = None
+    label: str | None = None
     status: list[BenchmarkStatus] | None = None
     started_by: list[str] | None = None
     started_after: datetime | None = None
@@ -185,6 +188,7 @@ class BenchmarkTableRow(BaseModel):
     id: UUID
     name: str
     agent_name: str
+    label: str | None = None
     model: str | None
     dataset: str = "default"
     started_by_email: str | None

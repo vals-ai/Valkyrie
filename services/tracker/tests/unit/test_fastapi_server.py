@@ -958,6 +958,57 @@ class TestFastapiServer:
         assert len(rows) == 2
         assert {r["started_by_email"] for r in rows} == {"alice@vals.ai", "bob@vals.ai"}
 
+    async def test_run_label_is_persisted_fetchable_and_filterable(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        """Run labels should persist on start and be visible through fetch and list.
+
+        Test cases:
+            - Start stores the label on the benchmark row.
+            - Fetch and list responses expose the label, and list can filter by it.
+        """
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=None,
+            harness_config=harness_config,
+            label="nightly",
+        )
+        start_response = client.post("/start-benchmark", json=request.model_dump())
+        assert start_response.status_code == 200
+        benchmark_id = UUID(start_response.json()["benchmark_id"])
+
+        benchmark_row = database_session.get(Benchmark, benchmark_id)
+        assert benchmark_row is not None
+        assert benchmark_row.label == "nightly"
+
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", status=TaskStatus.PENDING, benchmark=benchmark_id)
+        )
+        database_session.commit()
+
+        fetch_response = client.get("/fetch-benchmark", params={"benchmark_id": str(benchmark_id)})
+        assert fetch_response.status_code == 200
+        assert fetch_response.json()["label"] == "nightly"
+
+        list_response = client.get("/fetch-benchmarks", params={"label": "nightly", "limit": 10})
+        assert list_response.status_code == 200
+        rows = list_response.json()["benchmarks"]
+        assert len(rows) == 1
+        assert rows[0]["id"] == str(benchmark_id)
+        assert rows[0]["label"] == "nightly"
+
     async def test_fetch_benchmark_metadata_includes_started_by_email(
         self,
         contract: AgentContractRequest,

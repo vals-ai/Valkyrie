@@ -257,6 +257,7 @@ class TrackerService:
         ignore_custom_services: bool,
         task_ids: list[str] | None,
         slice_str: str | None,
+        label: str | None = None,
         lambda_function: str | None = None,
         dataset: str | None = None,
         service_headers: dict[str, str] | None = None,
@@ -272,6 +273,7 @@ class TrackerService:
             concurrency: Number of concurrent tasks
             task_ids: Optional list of specific task IDs to run
             slice_str: Optional slice string for task selection
+            label: Optional run label
             lambda_function: Optional lambda function to invoke after benchmark
 
         Returns:
@@ -285,6 +287,7 @@ class TrackerService:
                 contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
+                label=label,
                 task_ids=task_ids,
                 slice_str=slice_str,
                 lambda_function=lambda_function,

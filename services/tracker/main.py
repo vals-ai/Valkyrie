@@ -442,6 +442,7 @@ async def fetch_benchmark(
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
+        label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
     )
 
@@ -767,6 +768,7 @@ async def fetch_benchmarks(
     started_by: list[str] | None = Query(default=None),
     model: str | None = Query(default=None),
     dataset: str | None = Query(default=None),
+    label: str | None = Query(default=None),
     started_after: datetime | None = Query(default=None),
     started_before: datetime | None = Query(default=None),
     order_by: Order = Query(default=Order.DESC),
@@ -791,6 +793,7 @@ async def fetch_benchmarks(
         started_by=started_by,
         model=model,
         dataset=dataset,
+        label=label,
         started_after=started_after,
         started_before=started_before,
         order_by=order_by,
