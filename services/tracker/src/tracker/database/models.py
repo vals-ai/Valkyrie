@@ -270,6 +270,7 @@ class Benchmark(SQLModel, table=True):
     ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
+        # TODO: Remove this fallback after legacy benchmark rows have been migrated for a few weeks.
         if self.arguments.sandbox_provider_secret_name:
             harness_config = harness_config.model_copy(
                 update={"sandbox_provider_secret_name": self.arguments.sandbox_provider_secret_name}
