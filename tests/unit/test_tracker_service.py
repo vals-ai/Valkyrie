@@ -164,39 +164,6 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
     }
 
 
-def test_tracker_service_accepts_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tracker config should accept a sandbox provider secret key.
-
-    Test cases:
-    - SANDBOX_PROVIDER_SECRET_NAME satisfies provider secret config.
-    - Harness payload carries the neutral provider secret field.
-    """
-    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", SANDBOX_PROVIDER_SECRET_NAME="DaytonaSecrets")
-
-    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
-    client = FakeClient()
-
-    def build_client(**_kwargs: object) -> FakeClient:
-        return client
-
-    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
-
-    tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
-        benchmark_name="swebench",
-        concurrency=1,
-        ignore_custom_services=True,
-        task_ids=None,
-        slice_str=None,
-    )
-
-    assert client.json is not None
-    harness_config = client.json["harness_config"]
-    assert isinstance(harness_config, dict)
-    assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
-
-
 def test_tracker_service_accepts_legacy_daytona_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", DAYTONA_SECRET_NAME="DaytonaSecrets")
 
@@ -229,7 +196,7 @@ def test_tracker_service_requires_provider_secret_config(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
 
-    with pytest.raises(TrackerServiceError, match="SANDBOX_PROVIDER_SECRET_NAME"):
+    with pytest.raises(TrackerServiceError, match="DAYTONA_SECRET_NAME"):
         TrackerService(base_url="http://tracker")
 
 
@@ -393,7 +360,6 @@ def test_config_provider_commands_manage_named_provider_secrets(
 
     config = yaml.safe_load(config_path.read_text())
     assert config["sandbox_providers"] == {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}
-    assert "SANDBOX_PROVIDER_SECRET_NAME" not in config
 
     result = runner.invoke(cli_main.cli, ["config", "provider", "default", "modal"])
     assert result.exit_code == 0
@@ -410,46 +376,6 @@ def test_config_provider_commands_manage_named_provider_secrets(
     config = yaml.safe_load(config_path.read_text())
     assert config["sandbox_providers"] == {"modal": "ModalSecrets"}
     assert config["default_sandbox_provider"] == "modal"
-
-
-def test_config_remove_keeps_required_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Removing flat provider config should not leave Valkyrie without a provider secret.
-
-    Test cases:
-    - A legacy flat provider secret cannot be removed by itself.
-    - The flat key can be removed after named providers are configured.
-    - The flat key can be removed if another legacy provider secret remains.
-    """
-    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", SANDBOX_PROVIDER_SECRET_NAME="DaytonaSecrets")
-    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
-    runner = CliRunner()
-
-    result = runner.invoke(cli_main.cli, ["config", "remove", "SANDBOX_PROVIDER_SECRET_NAME"])
-    assert result.exit_code != 0
-    assert "provider secret" in result.output
-
-    result = runner.invoke(cli_main.cli, ["config", "provider", "set", "daytona", "DaytonaSecrets"])
-    assert result.exit_code == 0
-    result = runner.invoke(cli_main.cli, ["config", "remove", "SANDBOX_PROVIDER_SECRET_NAME"])
-    assert result.exit_code == 0
-
-    config = yaml.safe_load(config_path.read_text())
-    assert "SANDBOX_PROVIDER_SECRET_NAME" not in config
-    assert config["sandbox_providers"] == {"daytona": "DaytonaSecrets"}
-
-    legacy_config_path = write_valkyrie_config(
-        tmp_path / "legacy-valkyrie.yaml",
-        SANDBOX_PROVIDER_SECRET_NAME="ModalSecrets",
-        DAYTONA_SECRET_NAME="DaytonaSecrets",
-    )
-    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", legacy_config_path)
-
-    result = runner.invoke(cli_main.cli, ["config", "remove", "SANDBOX_PROVIDER_SECRET_NAME"])
-    assert result.exit_code == 0
-
-    legacy_config = yaml.safe_load(legacy_config_path.read_text())
-    assert "SANDBOX_PROVIDER_SECRET_NAME" not in legacy_config
-    assert legacy_config["DAYTONA_SECRET_NAME"] == "DaytonaSecrets"
 
 
 def _command_option_flags(command: click.Command, param_name: str) -> set[str]:

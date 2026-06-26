@@ -40,4 +40,4 @@ The first configured provider is used by default. Select a provider for a single
 valkyrie run start --agent agents/claude_code --benchmark swebench --provider modal
 ```
 
-Legacy flat config key `SANDBOX_PROVIDER_SECRET_NAME` is still accepted when `sandbox_providers` is not configured.
+Legacy flat config key `DAYTONA_SECRET_NAME` is still accepted when `sandbox_providers` is not configured.

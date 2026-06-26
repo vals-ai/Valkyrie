@@ -181,12 +181,10 @@ class TrackerService:
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
         sandbox_providers = harness_config.get("sandbox_providers")
         has_named_provider_config = isinstance(sandbox_providers, dict) and bool(sandbox_providers)
-        has_legacy_provider_config = bool(
-            {"DAYTONA_SECRET_NAME", "SANDBOX_PROVIDER_SECRET_NAME"} & harness_config.keys()
-        )
+        has_legacy_provider_config = "DAYTONA_SECRET_NAME" in harness_config
         has_provider_config = has_named_provider_config or has_legacy_provider_config
         if not has_provider_config:
-            missing.add("SANDBOX_PROVIDER_SECRET_NAME")
+            missing.add("DAYTONA_SECRET_NAME")
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
@@ -222,7 +220,7 @@ class TrackerService:
             )
 
         flat = {key.lower(): value for key, value in self._config_values.items()}
-        secret_name = flat.get("sandbox_provider_secret_name") or flat.get("daytona_secret_name")
+        secret_name = flat.get("daytona_secret_name")
         if not secret_name:
             raise TrackerServiceError(
                 "Missing sandbox provider config. Run `valkyrie config provider set <provider> <secret-name>`."

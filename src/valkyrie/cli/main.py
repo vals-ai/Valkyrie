@@ -4,7 +4,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 from uuid import UUID
 
 import click
@@ -229,18 +229,6 @@ def config_remove(key: str) -> None:
         raise click.ClickException(
             f"Key '{key}' is required and cannot be removed. Consider using `valkyrie config set` to update it."
         )
-
-    if config_value == ConfigValue.SANDBOX_PROVIDER_SECRET_NAME and config_value.value in current:
-        remaining = dict(current)
-        remaining.pop(config_value.value, None)
-        providers = remaining.get("sandbox_providers")
-        provider_entries = cast(dict[object, object], providers) if isinstance(providers, dict) else {}
-        has_named_provider_config = bool(provider_entries)
-        has_legacy_provider_config = bool({"DAYTONA_SECRET_NAME", "SANDBOX_PROVIDER_SECRET_NAME"} & remaining.keys())
-        if not has_named_provider_config and not has_legacy_provider_config:
-            raise click.ClickException(
-                "Cannot remove SANDBOX_PROVIDER_SECRET_NAME until another provider secret is configured."
-            )
 
     if config_value.value in current:
         del current[config_value.value]
