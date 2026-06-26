@@ -247,7 +247,6 @@ class TestFastapiServer:
             task_ids=None,
             harness_config=selected_harness_config,
             sandbox_provider="modal",
-            sandbox_provider_secret_name="ModalSecrets",
         )
 
         async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
