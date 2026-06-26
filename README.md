@@ -49,9 +49,10 @@ To configure sandbox providers:
 ```bash
 valkyrie config provider set daytona DaytonaSecrets
 valkyrie config provider set modal ModalSecrets
+valkyrie config provider default modal
 ```
 
-The first configured provider is used by default. Use `valkyrie run start --provider <name>` to select another configured provider for one run.
+The first configured provider is used by default unless you set one with `valkyrie config provider default <name>`. Use `valkyrie run start --provider <name>` to select another configured provider for one run.
 
 ## Agent Management
 

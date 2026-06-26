@@ -43,6 +43,14 @@ _REQUIRED_CONFIG_KEYS = {
 }
 
 
+def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
+    raw_providers = config.get("sandbox_providers")
+    if not isinstance(raw_providers, dict):
+        return {}
+    providers = cast(dict[object, object], raw_providers)
+    return {str(name): str(secret_name) for name, secret_name in providers.items()}
+
+
 def _response_error_detail(response: Response) -> Any:
     try:
         body = response.json()
@@ -176,14 +184,10 @@ class TrackerService:
             raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `valkyrie config init`")
 
         with open(config_path) as f:
-            harness_config: dict[str, str] = yaml.safe_load(f) or {}
+            harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
-        sandbox_providers = harness_config.get("sandbox_providers")
-        has_named_provider_config = isinstance(sandbox_providers, dict) and bool(sandbox_providers)
-        has_legacy_provider_config = "DAYTONA_SECRET_NAME" in harness_config
-        has_provider_config = has_named_provider_config or has_legacy_provider_config
-        if not has_provider_config:
+        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
             missing.add("DAYTONA_SECRET_NAME")
         if missing:
             raise TrackerServiceError(
@@ -208,16 +212,10 @@ class TrackerService:
         return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
 
     def _sandbox_provider_secret_name(self, provider: str | None = None) -> str:
-        raw_providers = self._config.get("sandbox_providers")
-        provider_items = cast(dict[object, object], raw_providers) if isinstance(raw_providers, dict) else {}
-        providers = {str(name): str(secret_name) for name, secret_name in provider_items.items()}
+        provider_name = self._sandbox_provider_name(provider)
+        providers = _sandbox_providers(self._config)
         if providers:
-            return providers[self._sandbox_provider_name(provider)]
-
-        if provider is not None:
-            raise TrackerServiceError(
-                f"Unknown sandbox provider '{provider}'. Configure it with `valkyrie config provider set`."
-            )
+            return providers[provider_name]
 
         flat = {key.lower(): value for key, value in self._config_values.items()}
         secret_name = flat.get("daytona_secret_name")
@@ -228,9 +226,7 @@ class TrackerService:
         return secret_name
 
     def _sandbox_provider_name(self, provider: str | None = None) -> str:
-        raw_providers = self._config.get("sandbox_providers")
-        provider_items = cast(dict[object, object], raw_providers) if isinstance(raw_providers, dict) else {}
-        providers = {str(name): str(secret_name) for name, secret_name in provider_items.items()}
+        providers = _sandbox_providers(self._config)
         if providers:
             provider_name = provider if provider is not None else self._config.get("default_sandbox_provider")
             provider_name = str(provider_name or next(iter(providers)))
