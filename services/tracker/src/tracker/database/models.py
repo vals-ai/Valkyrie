@@ -320,7 +320,11 @@ class Benchmark(SQLModel, table=True):
 
         task_state_counts = self.fetch_task_state_counts(session)
         total_tasks = sum(task_state_counts.values())
-        finished_tasks = task_state_counts.get(TaskStatus.FINISHED, 0) + task_state_counts.get(TaskStatus.ERROR, 0)
+        finished_tasks = (
+            task_state_counts.get(TaskStatus.FINISHED, 0)
+            + task_state_counts.get(TaskStatus.ERROR, 0)
+            + task_state_counts.get(TaskStatus.STOPPED, 0)
+        )
 
         return BenchmarkTableRow(
             id=self.id,
