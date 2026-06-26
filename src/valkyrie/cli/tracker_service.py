@@ -194,7 +194,7 @@ class TrackerService:
             )
 
         # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"webhook", "api_key"}
+        _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():
@@ -234,12 +234,12 @@ class TrackerService:
         provider_items = cast(dict[object, object], raw_providers) if isinstance(raw_providers, dict) else {}
         providers = {str(name): str(secret_name) for name, secret_name in provider_items.items()}
         if providers:
-            if provider is None:
-                return next(iter(providers))
-            if provider in providers:
-                return provider
+            provider_name = provider if provider is not None else self._config.get("default_sandbox_provider")
+            provider_name = str(provider_name or next(iter(providers)))
+            if provider_name in providers:
+                return provider_name
             configured = ", ".join(providers)
-            raise TrackerServiceError(f"Unknown sandbox provider '{provider}'. Configured providers: {configured}")
+            raise TrackerServiceError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
 
         if provider is not None:
             raise TrackerServiceError(

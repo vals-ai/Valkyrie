@@ -269,6 +269,39 @@ def test_tracker_service_uses_first_named_provider_as_default(tmp_path: Path, mo
     assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
 
 
+def test_tracker_service_uses_configured_default_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured default provider should be used when runtime provider is omitted.
+
+    Test cases:
+    - default_sandbox_provider selects the modal provider and secret.
+    """
+    client = FakeClient()
+    config_path = write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
+        default_sandbox_provider="modal",
+    )
+
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", lambda **_kwargs: client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+    )
+
+    assert client.json is not None
+    assert client.json["sandbox_provider"] == "modal"
+    harness_config = client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "ModalSecrets"
+
+
 def test_start_benchmark_uses_runtime_provider_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Runtime provider selection should choose a configured provider secret.
 
@@ -346,6 +379,7 @@ def test_config_provider_commands_manage_named_provider_secrets(
 
     Test cases:
     - provider set creates named provider secrets without flat provider fields.
+    - provider default writes a configured provider name and rejects unknown providers.
     - provider remove deletes only the requested provider.
     """
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
@@ -361,11 +395,21 @@ def test_config_provider_commands_manage_named_provider_secrets(
     assert config["sandbox_providers"] == {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}
     assert "SANDBOX_PROVIDER_SECRET_NAME" not in config
 
+    result = runner.invoke(cli_main.cli, ["config", "provider", "default", "modal"])
+    assert result.exit_code == 0
+    config = yaml.safe_load(config_path.read_text())
+    assert config["default_sandbox_provider"] == "modal"
+
+    result = runner.invoke(cli_main.cli, ["config", "provider", "default", "future"])
+    assert result.exit_code != 0
+    assert "not configured" in result.output
+
     result = runner.invoke(cli_main.cli, ["config", "provider", "remove", "daytona"])
     assert result.exit_code == 0
 
     config = yaml.safe_load(config_path.read_text())
     assert config["sandbox_providers"] == {"modal": "ModalSecrets"}
+    assert config["default_sandbox_provider"] == "modal"
 
 
 def test_config_remove_keeps_required_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
