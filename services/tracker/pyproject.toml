@@ -11,7 +11,7 @@ dependencies = [
     "boto3-stubs[s3]",
     "moto[s3]",
     "fastapi[standard]>=0.135.3",
-    "daytona>=0.180.0",
+    "daytona>=0.189.0",
     "starlette>=1.0.1",
     "sqlmodel>=0.0.38",
     "psycopg2-binary>=2.9.11",
@@ -26,7 +26,8 @@ dependencies = [
     "tenacity>=9.0.0",
     "sentry-sdk[fastapi]==2.58.0",
     "python-json-logger>=3.2.1",
-    "create-benchmark-service",
+    "create-benchmark-service>=0.8.1",
+    "aioboto3>=7.0.0",
 ]
 
 [dependency-groups]
@@ -50,7 +51,7 @@ build-backend = "hatchling.build"
 prerelease = "allow"
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "v0.7.4" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", tag = "v0.8.1" }
 
 [tool.hatch.metadata]
 allow-direct-references = true

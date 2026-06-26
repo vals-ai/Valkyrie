@@ -75,10 +75,10 @@ class TestUploadToS3:
                 )
 
                 file_members = _archive_members(
-                    download_from_s3(file_s3_key, harness_config.aws, harness_config.s3_bucket)
+                    await download_from_s3(file_s3_key, harness_config.aws, harness_config.s3_bucket)
                 )
                 dir_members = _archive_members(
-                    download_from_s3(dir_s3_key, harness_config.aws, harness_config.s3_bucket)
+                    await download_from_s3(dir_s3_key, harness_config.aws, harness_config.s3_bucket)
                 )
 
                 assert _member_content(file_members, "tmp/test_output.json") == f"{file_content}\n".encode()
@@ -86,5 +86,5 @@ class TestUploadToS3:
                 assert _member_content(dir_members, "tmp/test_output_dir/file2.txt") == b"file2 content\n"
                 assert _member_content(dir_members, "tmp/test_output_dir/nested/file3.txt") == b"nested content\n"
         finally:
-            delete_from_s3(file_s3_key, harness_config.aws, harness_config.s3_bucket)
-            delete_from_s3(dir_s3_key, harness_config.aws, harness_config.s3_bucket)
+            await delete_from_s3(file_s3_key, harness_config.aws, harness_config.s3_bucket)
+            await delete_from_s3(dir_s3_key, harness_config.aws, harness_config.s3_bucket)

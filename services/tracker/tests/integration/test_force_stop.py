@@ -13,7 +13,8 @@ from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskS
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import force_stop_sandboxes, process_benchmark
+from tracker.utils import fetch_harness_config, force_stop_sandboxes, process_benchmark
+from tracker.utils import fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
 
@@ -98,7 +99,8 @@ class TestForceStop:
         database_session.add(task)
         database_session.commit()
 
-        provider = benchmark_service.get_sandbox_provider()
+        provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona")
+        provider = benchmark_service.get_sandbox_provider(provider_config)
         labels = {
             "Benchmark": example_benchmark_object.name,
             "Id": str(example_benchmark_object.id),
@@ -164,7 +166,8 @@ class TestForceStop:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        provider = benchmark_service.get_sandbox_provider()
+        provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona")
+        provider = benchmark_service.get_sandbox_provider(provider_config)
 
         labels = {"Benchmark": example_benchmark_object.name, "Id": str(example_benchmark_object.id)}
         release_sandboxes = asyncio.Event()
@@ -254,10 +257,11 @@ class TestForceStop:
         database_session.commit()
 
         client = TestClient(app)
+        # This end-to-end test drives the real force-stop endpoint against real AWS,
+        # so the endpoint needs the real harness config — not the autouse FAKE one.
+        app.dependency_overrides[fetch_harness_config] = lambda: harness_config
 
-        benchmark_service = example_benchmark_object.benchmark_service(
-            daytona_secret_name, aws_credentials, service_headers=service_headers
-        )
+        benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
 
         try:
             verify_response = await benchmark_service.verify_task_ids(
@@ -276,7 +280,8 @@ class TestForceStop:
                 )
             )
 
-            provider = benchmark_service.get_sandbox_provider()
+            provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona")
+            provider = benchmark_service.get_sandbox_provider(provider_config)
             await _wait_for_running_benchmark(example_benchmark_object, database_session, provider)
 
             # Force stop the benchmark run with all sandboxes

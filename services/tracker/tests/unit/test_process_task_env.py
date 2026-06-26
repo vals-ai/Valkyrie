@@ -13,7 +13,7 @@ from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import process_task, start_benchmark_request_to_benchmark
+from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
 
 _TEST_ORG = Org(id=TEST_ORG_ID, name="default")
 _TEST_STARTER = RequestIdentity(
@@ -65,6 +65,11 @@ async def _run_process_task(
         task_id="task_0",
         harness_config=harness_config,
         org=_TEST_ORG,
+        sandbox_provider_config=fetch_sandbox_provider_config(
+            harness_config.sandbox_provider_secret_name,
+            harness_config.aws,
+            start_benchmark_request.sandbox_provider,
+        ),
         creation_semaphore=Semaphore(1),
     )
 

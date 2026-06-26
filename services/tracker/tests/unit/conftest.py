@@ -1,7 +1,7 @@
 import os
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
@@ -42,13 +42,13 @@ def harness_config() -> HarnessConfig:
         s3_bucket="test-bucket",
         log_group="test-log-group",
         log_retention_policy=30,
-        daytona_secret_name="test-daytona-secret",
+        sandbox_provider_secret_name="test-daytona-secret",
     )
 
 
 @pytest.fixture(autouse=True)
 def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
-    """Mocks AWS Secrets Manager to return test Daytona credentials"""
+    """Mocks AWS Secrets Manager to return test Daytona credentials."""
 
     def _mock_fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, str]:
         return {
@@ -64,7 +64,7 @@ def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
 def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     """Mocks all s3 related functionality"""
 
-    def _mock_download_from_s3(_s3_key: str) -> bytes:
+    async def _mock_download_from_s3(*_args: Any, **_kwargs: Any) -> bytes:
         return b"mock-contract-content"
 
     def _mock_get_contract_s3_key(contract_name: str) -> str:
@@ -141,7 +141,11 @@ def mock_benchmark_service(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=[])
 
+    def _mock_get_sandbox_provider(*_args: Any, **_kwargs: Any) -> Mock:
+        return Mock()
+
     monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
+    monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", _mock_get_sandbox_provider)
     monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
 

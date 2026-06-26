@@ -21,4 +21,4 @@ Upload that key to AWS secrets manager using the following format in plain text
 }
 ```
 
-When using `valkyrie config init` or `valkyrie config set` add to the key `DAYTONA_SECRET_NAME` with the name of the secret (e.x, DaytonaSecrets)
+When using `valkyrie config init` or `valkyrie config set`, add `SANDBOX_PROVIDER_SECRET_NAME` with the name of the secret (e.g. `DaytonaSecrets`).
