@@ -327,7 +327,7 @@ async def list_agents() -> list[tuple[str, datetime | None]]:
             Prefix="agents/",
         )
 
-        agents: list[tuple[str, datetime]] = []
+        agents: list[tuple[str, datetime | None]] = []
         if "Contents" in response:
             for obj in response["Contents"]:
                 # Extract agent name from a value like "agents/agent_name.zip".
