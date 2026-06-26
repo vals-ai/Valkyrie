@@ -13,7 +13,6 @@ from aws_cdk import (
     Stack,
     aws_ec2,
     aws_ecs,
-    aws_iam,
     aws_logs,
     aws_rds,
     aws_s3,
@@ -45,9 +44,7 @@ class WorkerStack(Stack):
 
     Deployment is configured with ``min_healthy_percent=100`` and
     ``max_healthy_percent=200`` so ECS starts new tasks before stopping old
-    ones.  A Taskiq middleware enables ECS Task Protection while benchmarks
-    are running, preventing ECS from killing tasks with active work.
-    Protection is automatically released once all benchmarks on a task finish.
+    ones.
     """
 
     def __init__(
@@ -147,14 +144,6 @@ class WorkerStack(Stack):
                 "tracker.utils",
             ],
             stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),
-        )
-
-        # Allow the worker to toggle ECS Task Protection while benchmarks run
-        worker_task_def.task_role.add_to_policy(
-            aws_iam.PolicyStatement(
-                actions=["ecs:UpdateTaskProtection"],
-                resources=["*"],
-            )
         )
 
         self.worker_service = aws_ecs.FargateService(
