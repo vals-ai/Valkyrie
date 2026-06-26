@@ -291,6 +291,27 @@ def test_tracker_service_accepts_legacy_daytona_secret_config(tmp_path: Path, mo
     assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
 
 
+def test_tracker_service_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "AWS_ACCESS_KEY_ID": "aws-key",
+                "AWS_SECRET_ACCESS_KEY": "aws-secret",
+                "AWS_DEFAULT_REGION": "us-east-1",
+                "S3_BUCKET": "bucket",
+                "LOG_GROUP": "benchmarks",
+                "LOG_RETENTION_POLICY": 365,
+            }
+        )
+    )
+
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+
+    with pytest.raises(TrackerServiceError, match="SANDBOX_PROVIDER_SECRET_NAME"):
+        TrackerService(base_url="http://tracker")
+
+
 def _command_option_flags(command: click.Command, param_name: str) -> set[str]:
     param = next(param for param in command.params if param.name == param_name)
     assert isinstance(param, click.Option)
