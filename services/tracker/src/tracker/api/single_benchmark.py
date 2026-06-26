@@ -105,7 +105,7 @@ def get_benchmark_tasks(
     benchmark_id: UUID,
     status: str = Query(default=""),
     task_id_search: str | None = None,
-    sort: Literal["", "task_id", "started_at", "duration", "status"] = Query(default=""),
+    sort: Literal["task_id", "started_at", "duration", "status"] = Query(default="started_at"),
     sort_dir: Literal["asc", "desc"] = Query(default="desc"),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -114,7 +114,7 @@ def get_benchmark_tasks(
 ) -> TasksResponse:
     """Paginated tasks for a benchmark, with optional status filter + task-id search.
 
-    sort=status desc surfaces errors first (attention priority). Default: newest first."""
+    sort=status desc surfaces errors first (attention priority). Default: started_at desc."""
     get_scoped(Benchmark, benchmark_id, session, org)
 
     statuses = parse_csv(status, TaskStatus)
@@ -134,14 +134,10 @@ def get_benchmark_tasks(
         "started_at": col(Task.started_at),
         "duration": func.coalesce(col(Task.finished_at), func.now()) - col(Task.started_at),
         "status": _STATUS_SORT_PRIORITY,
-    }.get(sort)
-
-    started_at_desc = col(Task.started_at).desc()
-    if sort_expr is None:
-        order_by = [started_at_desc]
-    else:
-        primary = sort_expr.asc() if sort_dir == "asc" else sort_expr.desc()
-        order_by = [primary, started_at_desc]  # tie-break newest-first for stable ordering
+    }[sort]
+    primary = sort_expr.asc() if sort_dir == "asc" else sort_expr.desc()
+    # Tie-break newest-first for stable ordering within equal keys.
+    order_by = [primary, col(Task.started_at).desc()]
 
     rows = session.exec(select(Task).where(*base_filters).order_by(*order_by).limit(limit).offset(offset)).all()
     total = session.exec(select(func.count(col(Task.id))).where(*base_filters)).one()
