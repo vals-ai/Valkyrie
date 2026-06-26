@@ -267,6 +267,10 @@ async def start_benchmark(
     # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
     header_harness_config = try_fetch_harness_config(http_request)
     effective_harness_config = header_harness_config or request.harness_config
+    if request.sandbox_provider_secret_name:
+        effective_harness_config = effective_harness_config.model_copy(
+            update={"sandbox_provider_secret_name": request.sandbox_provider_secret_name}
+        )
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
@@ -644,7 +648,12 @@ async def stop_benchmark(
 
     if force:
         await force_stop_sandboxes(
-            benchmark_row, session, harness_config.sandbox_provider_secret_name, harness_config.aws, org
+            benchmark_row,
+            session,
+            harness_config.sandbox_provider_secret_name,
+            harness_config.aws,
+            org,
+            sandbox_provider=benchmark_row.arguments.sandbox_provider,
         )
 
     return StopBenchmarkResponse(

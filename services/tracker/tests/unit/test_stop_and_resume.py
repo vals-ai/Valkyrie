@@ -933,6 +933,7 @@ class TestStopAndResume:
             harness_config.sandbox_provider_secret_name,
             harness_config.aws,
             self._test_org,
+            sandbox_provider="daytona",
         )
 
         database_session.refresh(benchmark_row)
