@@ -1,6 +1,9 @@
+import io
 import logging
 import tarfile
 import traceback
+from collections.abc import AsyncIterator
+from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -11,11 +14,18 @@ from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnau
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
+from tracker.api.agents import router as agents_router
+from tracker.api.benchmark_services import router as benchmark_services_router
+from tracker.api.benchmarks_status import router as benchmarks_status_router
+from tracker.api.filter_options import router as filter_options_router
+from tracker.api.single_benchmark import router as single_benchmark_router
+from tracker.api.single_task import router as single_task_router
 from tracker.auth import (
     RequestIdentity,
     extract_api_key,
@@ -26,18 +36,35 @@ from tracker.auth import (
     resolve_descope_identity,
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.secrets import resolve_secrets
+from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
     create_benchmark_url,
     create_console_url,
     create_presigned_url,
-    download_from_s3_stream,
+    download_from_s3,
+    download_many_from_s3,
+    get_contract_s3_key,
     list_s3_objects,
     s3_object_exists,
 )
-from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_url
-from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus, FinalEvaluation, Org, RetryMode
+from tracker.agent.schemas import AgentConfig
+from tracker.config import (
+    AUTH_REQUIRED,
+    ENVIRONMENT,
+    create_benchmark_service_url,
+)
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkStatus,
+    DocentReadingStatus,
+    FinalEvaluation,
+    Org,
+    RetryMode,
+)
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
@@ -49,13 +76,13 @@ from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
     AnalyzeBenchmarkRequest,
-    BenchmarkTableRow,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
     HarnessConfig,
+    Order,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -67,12 +94,14 @@ from tracker.types import (
 from tracker.utils import (
     BenchmarkContext,
     YieldingWriter,
+    build_benchmark_table_rows,
     commit_benchmark_error,
     create_benchmark_service_client,
     create_final_view,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
     fetch_harness_config,
+    try_fetch_harness_config,
     force_stop_sandboxes,
     initiate_stop_benchmark,
     process_benchmark,
@@ -87,11 +116,25 @@ configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
 
-app = FastAPI()
+
+def _operation_id(route: APIRoute) -> str:
+    """Use route function name as operation_id so generated client hooks are short.
+    E.g. `list_agents` (not `list_agents_agents_get`)."""
+    return route.name
+
+
+app = FastAPI(generate_unique_id_function=_operation_id)
 
 logfire.instrument_fastapi(app, excluded_urls="/health$")
 
 app.add_middleware(RequestContextMiddleware)
+
+app.include_router(agents_router)
+app.include_router(benchmark_services_router)
+app.include_router(benchmarks_status_router)
+app.include_router(filter_options_router)
+app.include_router(single_benchmark_router)
+app.include_router(single_task_router)
 
 
 # Preserve health check log suppression after configure_logging() replaced handlers
@@ -117,13 +160,6 @@ def _taskiq_labels() -> dict[str, str]:
     trace_context: dict[str, str] = {}
     inject(trace_context)
     return {"request_id": request_id_var.get(), **trace_context}
-
-
-def _apply_resume_secrets(benchmark_row: Benchmark, secrets: dict[str, str]) -> None:
-    """Merge resume secrets into the stored agent contract."""
-    contract = benchmark_row.arguments.contract
-    updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
-    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
 
 
 @app.exception_handler(TrackerServiceError)
@@ -191,6 +227,20 @@ def init_org(
     return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
+async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentContractRequest:
+    """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
+    zip_bytes = await download_from_s3(
+        get_contract_s3_key(request.contract.name),
+        request.harness_config.aws,
+        request.harness_config.s3_bucket,
+    )
+    agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
+    resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
+    if request.contract.secrets:
+        resolved.secrets = {**resolved.secrets, **request.contract.secrets}
+    return resolved
+
+
 @app.post("/start-benchmark")
 async def start_benchmark(
     http_request: Request,
@@ -214,19 +264,37 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
+    # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
+    header_harness_config = try_fetch_harness_config(http_request)
+    effective_harness_config = header_harness_config or request.harness_config
+
+    service_headers = dict(request.service_headers)
+    if request.service_auth_header_name and request.service_auth_secret_name:
+        resolved = resolve_secrets(
+            {request.service_auth_header_name: request.service_auth_secret_name},
+            effective_harness_config.aws,
+        )
+        service_headers.update(resolved)
+
     request = request.model_copy(
         update={
+            "harness_config": effective_harness_config,
             "service_headers": forward_tracker_api_key(
-                request.service_headers,
+                service_headers,
                 http_request.headers.get("x-api-key"),
-            )
+            ),
         }
     )
+
+    if not request.contract.install_cmd and not request.contract.run_cmd:
+        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})
+
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
     benchmark_service = request.benchmark_service
 
-    # Check service is running
+    # Validate benchmark service is reachable + tasks resolve BEFORE creating the DB row,
+    # so failed auth / unreachable services don't pollute the benchmark list.
     try:
         _ = await benchmark_service.health_check()
     except httpx.ConnectError as exc:
@@ -235,7 +303,16 @@ async def start_benchmark(
             detail=f"Benchmark service '{request.benchmark_name}' is not reachable",
         ) from exc
 
-    # Create benchmark row inside of database to mark start of the benchmark
+    try:
+        verify_response = await benchmark_service.verify_task_ids(
+            task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
+        )
+    except BenchmarkServiceUnauthenticatedError as e:
+        raise HTTPException(status_code=502, detail=f"Benchmark service auth failed: {e}") from e
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to verify task ids: {e}") from e
+
+    # Create benchmark row only after pre-flight checks pass.
     benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
     session.add(benchmark_row)
     session.commit()
@@ -247,21 +324,13 @@ async def start_benchmark(
             run_starter.access_key_id,
         )
 
-    # Verify task ids passed in (they exist within dataset and all dependencies are met to run them)
     try:
-        verify_response = await benchmark_service.verify_task_ids(
-            task_ids=request.task_ids, slice_str=request.slice_str, dataset=request.dataset
-        )
-
-        # Copy agent so edits to agents/<name>.zip during the run doesn't affect it
         await copy_agent_to_benchmark(
             str(benchmark_row.id),
             request.contract.name,
             request.harness_config.aws,
             request.harness_config.s3_bucket,
         )
-    except BenchmarkServiceUnauthenticatedError:
-        raise
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
         commit_benchmark_error(benchmark_row, session, error_message)
@@ -311,8 +380,6 @@ async def fetch_benchmark_tasks(
     try:
         benchmark_service = create_benchmark_service_client(
             url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
-            daytona_secret_name=harness_config.daytona_secret_name,
-            aws=harness_config.aws,
             service_headers=forward_tracker_api_key(request.service_headers, http_request.headers.get("x-api-key")),
         )
         try:
@@ -375,6 +442,8 @@ async def fetch_benchmark(
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
+        label=benchmark_row.label,
+        final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
     )
 
 
@@ -387,7 +456,9 @@ async def analyze_benchmark(
     org: Org = Depends(get_current_org),
 ) -> dict[str, str] | StreamingResponse:
     """
-    Invoke the Docent analyzer Lambda for a benchmark and stream progress over SSE.
+    Invoke the Docent analyzer Lambda for a benchmark and emit SSE-formatted progress events
+    (started/heartbeat/done/error) that clients consume as buffered text (the response is read
+    in full; the terminal done/error event carries the result).
 
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
@@ -489,11 +560,7 @@ async def retrieve_results(
         }
 
         effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
-        benchmark_service = benchmark_row.benchmark_service(
-            harness_config.daytona_secret_name,
-            harness_config.aws,
-            service_headers=effective_service_headers,
-        )
+        benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
         try:
             resp = await benchmark_service.final_score(
                 evaluation_results=scored_results,
@@ -512,7 +579,9 @@ async def retrieve_results(
         s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
 
         https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"
-        presigned_url = create_presigned_url(s3_key, harness_config.aws, harness_config.s3_bucket)
+        presigned_url = await create_presigned_url(
+            s3_key, harness_config.aws, harness_config.s3_bucket, expiration=86400
+        )
         console_url = create_console_url(s3_key, harness_config.aws.aws_default_region, harness_config.s3_bucket)
 
         return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)
@@ -539,7 +608,7 @@ async def check_results_exist(
     get_scoped(Benchmark, benchmark_id, session, org)
 
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
-    exists = s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
+    exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
     return {"exists": exists}
 
 
@@ -574,11 +643,20 @@ async def stop_benchmark(
     await initiate_stop_benchmark(benchmark_row, session, force, org)
 
     if force:
-        await force_stop_sandboxes(benchmark_row, session, harness_config.daytona_secret_name, harness_config.aws, org)
+        await force_stop_sandboxes(
+            benchmark_row, session, harness_config.sandbox_provider_secret_name, harness_config.aws, org
+        )
 
     return StopBenchmarkResponse(
         status="success",
     )
+
+
+def _apply_resume_secrets(benchmark_row: Benchmark, secrets: dict[str, str]) -> None:
+    """Merge resume secrets into the stored agent contract."""
+    contract = benchmark_row.arguments.contract
+    updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
+    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
 
 
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
@@ -636,9 +714,7 @@ async def retry_or_resume_benchmark(
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(
-            harness_config.daytona_secret_name, harness_config.aws, service_headers=effective_service_headers
-        ),
+        benchmark_service=benchmark_row.benchmark_service(service_headers=effective_service_headers),
         retry=retry,
         retry_mode=retry_mode,
         rerun_task_ids=task_ids,
@@ -656,6 +732,8 @@ async def retry_or_resume_benchmark(
         session.commit()
 
     if concurrency is not None:
+        # Reassign (not in-place mutate): arguments is a JSON-backed TypeDecorator,
+        # so SQLAlchemy only detects the change when the attribute itself is replaced.
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
         session.add(benchmark_row)
         session.commit()
@@ -684,8 +762,19 @@ async def retry_or_resume_benchmark(
 
 @app.get("/fetch-benchmarks")
 async def fetch_benchmarks(
-    request: FetchBenchmarksRequest = Depends(),
+    agent_name: list[str] | None = Query(default=None),
+    benchmark_name: list[str] | None = Query(default=None),
+    status: list[BenchmarkStatus] | None = Query(default=None),
     started_by: list[str] | None = Query(default=None),
+    model: str | None = Query(default=None),
+    dataset: str | None = Query(default=None),
+    label: str | None = Query(default=None),
+    started_after: datetime | None = Query(default=None),
+    started_before: datetime | None = Query(default=None),
+    order_by: Order = Query(default=Order.DESC),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
     session: Session = Depends(get_session),
     org: Org = Depends(get_current_org),
 ) -> FetchBenchmarksResponse:
@@ -694,24 +783,31 @@ async def fetch_benchmarks(
 
     Usage:
     curl -X GET http://<endpoint>/fetch-benchmarks?agent_name=claude_code&benchmark_name=swebench&status=IN_PROGRESS&order_by=DESC&limit=5&offset=0
-
-    Returns:
-        list[FetchBenchmarksResponse]
     """
+    # Inline Query params (not `request: PydanticModel = Depends()`) so FastAPI doesn't
+    # emit a requestBody on this GET — browsers reject GET-with-body.
+    request = FetchBenchmarksRequest(
+        agent_name=agent_name,
+        benchmark_name=benchmark_name,
+        status=status,
+        started_by=started_by,
+        model=model,
+        dataset=dataset,
+        label=label,
+        started_after=started_after,
+        started_before=started_before,
+        order_by=order_by,
+        cursor=cursor,
+        limit=limit,
+        offset=offset,
+    )
 
-    # list[str] fields are not bound from query params by FastAPI's Depends(PydanticModel)
-    # — declare started_by separately and merge into the request.
-    request = request.model_copy(update={"started_by": started_by})
-
-    benchmark_rows, total_count = fetch_filtered_benchmark_rows(request, session, org)
-
-    benchmark_table_rows: list[BenchmarkTableRow] = [
-        benchmark_row.create_benchmark_table_row(session) for benchmark_row in benchmark_rows
-    ]
+    benchmark_rows, total_count, next_cursor = fetch_filtered_benchmark_rows(request, session, org)
 
     return FetchBenchmarksResponse(
-        benchmarks=benchmark_table_rows,
+        benchmarks=build_benchmark_table_rows(benchmark_rows, session),
         total_count=total_count,
+        next_cursor=next_cursor,
     )
 
 
@@ -735,8 +831,8 @@ async def fetch_benchmark_metadata(
     return benchmark_row.benchmark_metadata
 
 
-@app.get("/fetch-agent-outputs/{benchmark_id}")
-async def fetch_agent_outputs(
+@app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
+async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -744,10 +840,10 @@ async def fetch_agent_outputs(
     task_ids: list[str] | None = Query(default=None),
 ) -> StreamingResponse:
     """
-    Stream a tar file with agent outputs to the client.
+    Stream a tar file with run outputs to the client.
 
     Usage:
-    curl -X GET http://<endpoint>/fetch-agent-outputs/<benchmark_id>
+    curl -X GET http://<endpoint>/fetch-run-outputs/<benchmark_id>
 
     Returns:
         StreamingResponse
@@ -755,44 +851,40 @@ async def fetch_agent_outputs(
     get_scoped(Benchmark, benchmark_id, session, org)
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
-    if task_ids:
-        s3_keys = [
-            key
-            for task_id in task_ids
-            for key in list_s3_objects(f"{benchmark_prefix}{task_id}/", harness_config.aws, harness_config.s3_bucket)
-        ]
-    else:
-        s3_keys = list_s3_objects(benchmark_prefix, harness_config.aws, harness_config.s3_bucket)
 
-    if not s3_keys:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No outputs found for run '{benchmark_id}'",
-        )
+    async def output_keys() -> AsyncIterator[str]:
+        prefixes = [f"{benchmark_prefix}{task_id}/" for task_id in task_ids] if task_ids else [benchmark_prefix]
+        for prefix in prefixes:
+            async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
+                yield key
 
-    def tar_generator():
+    # Peek a single key so an empty result still returns 404 before the stream starts.
+    keys = output_keys()
+    first_key = await anext(keys, None)
+    if first_key is None:
+        raise HTTPException(status_code=404, detail=f"No outputs found for run '{benchmark_id}'")
+
+    async def all_keys() -> AsyncIterator[str]:
+        yield first_key
+        async for key in keys:
+            yield key
+
+    async def tar_generator():
         writer: YieldingWriter = YieldingWriter()
 
+        # download_many_from_s3 reuses a single client/connection pool across all keys,
+        # and reads one object into memory at a time (bounded by the largest object).
         with tarfile.open(fileobj=writer, mode="w|") as tar:
-            for s3_key in s3_keys:
+            async for s3_key, data in download_many_from_s3(all_keys(), harness_config.aws, harness_config.s3_bucket):
                 relative_path: str = s3_key.removeprefix(benchmark_prefix)
 
-                try:
-                    body, size = download_from_s3_stream(s3_key, harness_config.aws, harness_config.s3_bucket)
+                tarinfo = tarfile.TarInfo(name=relative_path)
+                tarinfo.size = len(data)
+                tar.addfile(tarinfo, fileobj=io.BytesIO(data))
 
-                    tarinfo = tarfile.TarInfo(name=relative_path)
-                    tarinfo.size = size
-
-                    tar.addfile(tarinfo, fileobj=body)
-
-                    chunk = writer.pop()
-                    if chunk:
-                        yield chunk
-
-                except Exception as e:
-                    logger.warning(f"Failed to add {s3_key} to tar: {e}", exc_info=True)
-
-                    continue
+                chunk = writer.pop()
+                if chunk:
+                    yield chunk
 
         final_chunk = writer.pop()
         if final_chunk:

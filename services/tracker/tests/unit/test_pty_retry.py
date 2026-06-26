@@ -4,8 +4,8 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service import ImageSource, Resources
+from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
 
@@ -14,7 +14,7 @@ from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.exceptions import SandboxSetupError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import process_task, start_benchmark_request_to_benchmark
+from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
 
 
 class TestPtyRetry:
@@ -128,6 +128,11 @@ class TestPtyRetry:
             task_id="task_0",
             harness_config=harness_config,
             org=self._test_org,
+            sandbox_provider_config=fetch_sandbox_provider_config(
+                harness_config.sandbox_provider_secret_name,
+                harness_config.aws,
+                start_benchmark_request.sandbox_provider,
+            ),
             creation_semaphore=Semaphore(1),
         )
 
@@ -234,6 +239,11 @@ class TestPtyRetry:
             task_id="task_0",
             harness_config=harness_config,
             org=self._test_org,
+            sandbox_provider_config=fetch_sandbox_provider_config(
+                harness_config.sandbox_provider_secret_name,
+                harness_config.aws,
+                start_benchmark_request.sandbox_provider,
+            ),
             creation_semaphore=Semaphore(1),
         )
 
