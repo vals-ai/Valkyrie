@@ -181,7 +181,9 @@ class TrackerService:
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
         sandbox_providers = harness_config.get("sandbox_providers")
         has_named_provider_config = isinstance(sandbox_providers, dict) and bool(sandbox_providers)
-        has_legacy_provider_config = bool({"DAYTONA_SECRET_NAME", "SANDBOX_PROVIDER_SECRET_NAME"} & harness_config.keys())
+        has_legacy_provider_config = bool(
+            {"DAYTONA_SECRET_NAME", "SANDBOX_PROVIDER_SECRET_NAME"} & harness_config.keys()
+        )
         has_provider_config = has_named_provider_config or has_legacy_provider_config
         if not has_provider_config:
             missing.add("SANDBOX_PROVIDER_SECRET_NAME")
@@ -329,7 +331,6 @@ class TrackerService:
         """
         try:
             provider_name = self._sandbox_provider_name(provider)
-            provider_secret_name = self._sandbox_provider_secret_name(provider)
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -345,7 +346,6 @@ class TrackerService:
                 else None,
                 service_headers=service_headers or {},
                 sandbox_provider=provider_name,
-                sandbox_provider_secret_name=provider_secret_name,
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,
             )

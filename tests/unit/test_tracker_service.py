@@ -8,6 +8,7 @@ import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
+from conftest import FakeClient, FakeTrackerService, empty_config, empty_config_keys, write_valkyrie_config
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
@@ -22,48 +23,6 @@ from valkyrie.cli import main as cli_main
 from valkyrie.cli.main import list_benchmarks, start
 from valkyrie.cli.tracker_service import TrackerService, TrackerServiceError
 from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response
-
-
-class FakeClient:
-    def __init__(self) -> None:
-        self.params: dict[str, object] | None = None
-        self.json: dict[str, object] | None = None
-        self.url: str | None = None
-
-    def post(
-        self,
-        url: str,
-        *,
-        params: dict[str, object] | None = None,
-        json: dict[str, object],
-    ) -> httpx.Response:
-        self.url = url
-        self.params = params
-        self.json = json
-        return httpx.Response(200, json={"status": "success"})
-
-    def get(
-        self,
-        url: str,
-        *,
-        params: dict[str, object] | None = None,
-    ) -> httpx.Response:
-        self.url = url
-        self.params = params
-        if "/fetch-run-outputs/" in url:
-            return httpx.Response(200, content=b"tar")
-        return httpx.Response(200, json={"benchmarks": [], "total_count": 0})
-
-    def close(self) -> None:
-        pass
-
-
-def empty_config() -> dict[str, object]:
-    return {}
-
-
-def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
-    return {}
 
 
 def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -212,20 +171,7 @@ def test_tracker_service_accepts_provider_secret_config(tmp_path: Path, monkeypa
     - SANDBOX_PROVIDER_SECRET_NAME satisfies provider secret config.
     - Harness payload carries the neutral provider secret field.
     """
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "SANDBOX_PROVIDER_SECRET_NAME": "DaytonaSecrets",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            }
-        )
-    )
+    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", SANDBOX_PROVIDER_SECRET_NAME="DaytonaSecrets")
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
     client = FakeClient()
@@ -252,20 +198,7 @@ def test_tracker_service_accepts_provider_secret_config(tmp_path: Path, monkeypa
 
 
 def test_tracker_service_accepts_legacy_daytona_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "DAYTONA_SECRET_NAME": "DaytonaSecrets",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            }
-        )
-    )
+    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", DAYTONA_SECRET_NAME="DaytonaSecrets")
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
     client = FakeClient()
@@ -292,19 +225,7 @@ def test_tracker_service_accepts_legacy_daytona_secret_config(tmp_path: Path, mo
 
 
 def test_tracker_service_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            }
-        )
-    )
+    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
 
@@ -312,29 +233,16 @@ def test_tracker_service_requires_provider_secret_config(tmp_path: Path, monkeyp
         TrackerService(base_url="http://tracker")
 
 
-def test_tracker_service_uses_first_named_provider_as_default(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tracker_service_uses_first_named_provider_as_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Named sandbox providers should provide a deterministic default.
 
     Test cases:
     - sandbox_providers satisfies provider config requirements.
     - The first configured provider supplies the default secret name.
     """
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            },
-            sort_keys=False,
-        )
+    config_path = write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
     )
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
@@ -366,23 +274,12 @@ def test_start_benchmark_uses_runtime_provider_override(tmp_path: Path, monkeypa
 
     Test cases:
     - provider='modal' resolves to the modal cloud secret.
-    - StartBenchmarkRequest carries the selected secret in the harness and run override fields.
+    - StartBenchmarkRequest carries the selected secret in the harness config.
     """
     client = FakeClient()
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            },
-            sort_keys=False,
-        )
+    config_path = write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
     )
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
@@ -401,7 +298,6 @@ def test_start_benchmark_uses_runtime_provider_override(tmp_path: Path, monkeypa
 
     assert client.json is not None
     assert client.json["sandbox_provider"] == "modal"
-    assert client.json["sandbox_provider_secret_name"] == "ModalSecrets"
     harness_config = client.json["harness_config"]
     assert isinstance(harness_config, dict)
     assert harness_config["sandbox_provider_secret_name"] == "ModalSecrets"
@@ -417,20 +313,9 @@ def test_start_benchmark_allows_configured_provider_names_without_tracker_enum(
     - Tracker does not need code changes for a newly configured provider name.
     """
     client = FakeClient()
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "sandbox_providers": {"future": "FutureSecrets"},
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            },
-            sort_keys=False,
-        )
+    config_path = write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"future": "FutureSecrets"},
     )
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
@@ -449,7 +334,9 @@ def test_start_benchmark_allows_configured_provider_names_without_tracker_enum(
 
     assert client.json is not None
     assert client.json["sandbox_provider"] == "future"
-    assert client.json["sandbox_provider_secret_name"] == "FutureSecrets"
+    harness_config = client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "FutureSecrets"
 
 
 def test_config_provider_commands_manage_named_provider_secrets(
@@ -461,19 +348,7 @@ def test_config_provider_commands_manage_named_provider_secrets(
     - provider set creates named provider secrets without flat provider fields.
     - provider remove deletes only the requested provider.
     """
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            }
-        )
-    )
+    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
     monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
     runner = CliRunner()
 
@@ -491,6 +366,46 @@ def test_config_provider_commands_manage_named_provider_secrets(
 
     config = yaml.safe_load(config_path.read_text())
     assert config["sandbox_providers"] == {"modal": "ModalSecrets"}
+
+
+def test_config_remove_keeps_required_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Removing flat provider config should not leave Valkyrie without a provider secret.
+
+    Test cases:
+    - A legacy flat provider secret cannot be removed by itself.
+    - The flat key can be removed after named providers are configured.
+    - The flat key can be removed if another legacy provider secret remains.
+    """
+    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", SANDBOX_PROVIDER_SECRET_NAME="DaytonaSecrets")
+    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["config", "remove", "SANDBOX_PROVIDER_SECRET_NAME"])
+    assert result.exit_code != 0
+    assert "provider secret" in result.output
+
+    result = runner.invoke(cli_main.cli, ["config", "provider", "set", "daytona", "DaytonaSecrets"])
+    assert result.exit_code == 0
+    result = runner.invoke(cli_main.cli, ["config", "remove", "SANDBOX_PROVIDER_SECRET_NAME"])
+    assert result.exit_code == 0
+
+    config = yaml.safe_load(config_path.read_text())
+    assert "SANDBOX_PROVIDER_SECRET_NAME" not in config
+    assert config["sandbox_providers"] == {"daytona": "DaytonaSecrets"}
+
+    legacy_config_path = write_valkyrie_config(
+        tmp_path / "legacy-valkyrie.yaml",
+        SANDBOX_PROVIDER_SECRET_NAME="ModalSecrets",
+        DAYTONA_SECRET_NAME="DaytonaSecrets",
+    )
+    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", legacy_config_path)
+
+    result = runner.invoke(cli_main.cli, ["config", "remove", "SANDBOX_PROVIDER_SECRET_NAME"])
+    assert result.exit_code == 0
+
+    legacy_config = yaml.safe_load(legacy_config_path.read_text())
+    assert "SANDBOX_PROVIDER_SECRET_NAME" not in legacy_config
+    assert legacy_config["DAYTONA_SECRET_NAME"] == "DaytonaSecrets"
 
 
 def _command_option_flags(command: click.Command, param_name: str) -> set[str]:
@@ -522,6 +437,23 @@ def test_run_commands_connect_after_success(connect_stream_testbed: tuple[UUID, 
         assert "Track progress:" not in result.output
 
     assert streamed_run_ids == [str(started_run_id), str(resume_run_id), str(retry_run_id)]
+
+
+def test_run_start_provider_option_reaches_tracker(connect_stream_testbed: tuple[UUID, list[str]]) -> None:
+    """The CLI provider option should reach the tracker start request.
+
+    Test cases:
+    - `--provider modal` is forwarded as the runtime provider selection.
+    """
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["run", "start", "--agent", "agent", "--benchmark", "swebench", "--provider", "modal"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert FakeTrackerService.start_calls[-1]["kwargs"]["provider"] == "modal"
 
 
 def test_run_label_cli_options_and_client_requests(monkeypatch: pytest.MonkeyPatch) -> None:

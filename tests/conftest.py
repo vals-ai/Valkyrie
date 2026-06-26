@@ -1,17 +1,81 @@
 from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
+import yaml
 from tracker.database.models import AgentContractRequest
 
 from valkyrie.cli import main as cli_main
 
 
+class FakeClient:
+    def __init__(self) -> None:
+        self.params: dict[str, object] | None = None
+        self.json: dict[str, object] | None = None
+        self.url: str | None = None
+
+    def post(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+        json: dict[str, object],
+    ) -> httpx.Response:
+        self.url = url
+        self.params = params
+        self.json = json
+        return httpx.Response(200, json={"status": "success"})
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> httpx.Response:
+        self.url = url
+        self.params = params
+        if "/fetch-run-outputs/" in url:
+            return httpx.Response(200, content=b"tar")
+        return httpx.Response(200, json={"benchmarks": [], "total_count": 0})
+
+    def close(self) -> None:
+        pass
+
+
+def empty_config() -> dict[str, object]:
+    return {}
+
+
+def empty_config_keys(_tracker: object) -> dict[str, str]:
+    return {}
+
+
+def write_valkyrie_config(config_path: Path, **overrides: object) -> Path:
+    config: dict[str, object] = {
+        "AWS_ACCESS_KEY_ID": "aws-key",
+        "AWS_SECRET_ACCESS_KEY": "aws-secret",
+        "AWS_DEFAULT_REGION": "us-east-1",
+        "S3_BUCKET": "bucket",
+        "LOG_GROUP": "benchmarks",
+        "LOG_RETENTION_POLICY": 365,
+    }
+    for key, value in overrides.items():
+        if value is None:
+            config.pop(key, None)
+        else:
+            config[key] = value
+
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    return config_path
+
+
 class FakeTrackerService:
     start_response: dict[str, object] = {}
+    start_calls: list[dict[str, object]] = []
 
     @staticmethod
     def get_benchmark_auth(_benchmark_name: str) -> None:
@@ -28,6 +92,7 @@ class FakeTrackerService:
         return None
 
     def start_benchmark(self, *_args: object, **_kwargs: object) -> httpx.Response:
+        self.start_calls.append({"args": _args, "kwargs": _kwargs})
         return httpx.Response(200, json=self.start_response)
 
     def fetch_benchmark(self, _run_id: object) -> SimpleNamespace:
@@ -41,6 +106,7 @@ class FakeTrackerService:
 def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[str]]:
     started_run_id = uuid4()
     streamed_run_ids: list[str] = []
+    FakeTrackerService.start_calls = []
     FakeTrackerService.start_response = {
         "benchmark_name": "swebench",
         "agent_name": "agent",
