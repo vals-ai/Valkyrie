@@ -1,3 +1,4 @@
+import json
 from asyncio import Semaphore
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -260,6 +261,16 @@ class TestPtyRetry:
         assert all(record["entered"] and record["exited"] for record in transition_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
         assert run_agent_kwargs["benchmark_id"] == str(benchmark_row.id)
+        assert run_agent_kwargs["runtime_env_vars"] == {
+            "RUN_ID": str(benchmark_row.id),
+            "TASK_ID": "task_0",
+            "IDENTITY": json.dumps(
+                {
+                    "benchmark_name": "swebench",
+                    "agent_name": contract.name,
+                }
+            ),
+        }
 
         event_names = [record["message"] for record in log_records]
         assert "agent.run.complete" in event_names

@@ -66,7 +66,7 @@ from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerSe
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
-from tracker.sandbox import create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import AGENT_RUNTIME_ENV_KEYS, create_sandbox, delete_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     AverageTaskBreakdown,
     AWSCredentials,
@@ -516,6 +516,7 @@ async def process_task(
                 f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
             ),
         }
+        runtime_env_vars = {key: env_vars[key] for key in AGENT_RUNTIME_ENV_KEYS}
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
@@ -576,6 +577,7 @@ async def process_task(
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
                     benchmark_id=str(benchmark_id),
+                    runtime_env_vars=runtime_env_vars,
                 )
                 logger.info(
                     "agent.run.complete",

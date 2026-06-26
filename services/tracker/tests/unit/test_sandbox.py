@@ -1,4 +1,5 @@
 import asyncio
+import shlex
 from collections import deque
 from collections.abc import Mapping
 from typing import Any
@@ -199,6 +200,65 @@ class TestOutputArtifacts:
 
 
 class TestAgentOutputTelemetry:
+    async def test_run_agent_prefixes_tracker_runtime_env_without_secrets(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="python agent.py && echo done",
+        )
+        commands: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("mkdir -p"):
+                return ExecResult(exit_code=0, output="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_stream_command_output(_sandbox: Any, command: str, *_args: Any) -> tuple[None, float]:
+            commands.append(command)
+            return None, 0.0
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/testbed",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            agent_timeout=123,
+            runtime_env_vars={
+                "RUN_ID": "run-123",
+                "TASK_ID": "task_0",
+                "IDENTITY": '{"benchmark_name":"emb","agent_name":"test-agent"}',
+                "OPENAI_API_KEY": "secret-value",
+            },
+        )
+
+        assert len(commands) == 1
+        tokens = shlex.split(commands[0])
+        assert tokens[:4] == ["cd", "/testbed", "&&", "PYTHONSAFEPATH=1"]
+        assert tokens[4:6] == ["timeout", "123"]
+        env_index = tokens.index("env")
+        assert tokens[env_index + 1 : env_index + 4] == [
+            "RUN_ID=run-123",
+            "TASK_ID=task_0",
+            'IDENTITY={"benchmark_name":"emb","agent_name":"test-agent"}',
+        ]
+        assert tokens[env_index + 4 : env_index + 7] == ["/bin/sh", "-c", "python agent.py && echo done"]
+        assert "OPENAI_API_KEY=secret-value" not in tokens
+
     async def test_run_agent_uploads_declared_output_artifacts(
         self,
         monkeypatch: pytest.MonkeyPatch,

@@ -6,7 +6,7 @@ import time
 import uuid
 from asyncio import Semaphore
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
@@ -72,11 +72,26 @@ bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
+AGENT_RUNTIME_ENV_KEYS = ("RUN_ID", "TASK_ID", "IDENTITY")
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
     """Get the path to a contract in the sandbox."""
     return bundle_path / contract_name
+
+
+def _runtime_env_assignments(env_vars: Mapping[str, str] | None) -> list[str]:
+    if not env_vars:
+        return []
+
+    return [shlex.quote(f"{key}={value}") for key in AGENT_RUNTIME_ENV_KEYS if (value := env_vars.get(key))]
+
+
+def _command_with_runtime_env(command: str, env_vars: Mapping[str, str] | None) -> str:
+    assignments = _runtime_env_assignments(env_vars)
+    if not assignments:
+        return command
+    return f"env {' '.join(assignments)} /bin/sh -c {shlex.quote(command)}"
 
 
 async def delete_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> None:
@@ -559,6 +574,7 @@ async def run_agent(
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
+    runtime_env_vars: Mapping[str, str] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -587,6 +603,8 @@ async def run_agent(
 
     for kwarg_key, kwarg_value in contract.kwargs.items():
         run_cmd = run_cmd.replace(f"{{{kwarg_key}}}", kwarg_value)
+
+    run_cmd = _command_with_runtime_env(run_cmd, runtime_env_vars)
 
     # Apply timeout if specified
     if agent_timeout is not None:
