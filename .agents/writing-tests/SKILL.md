@@ -443,6 +443,18 @@ When creating unit tests, follow these rubrics.
         mock_client.send.assert_called_once_with({"id": 1})
     ```
 
+13. **Make module-local constants private.** A constant used only inside a single test module should be prefixed with an underscore, signalling it is local to that module and not meant to be imported elsewhere. (This is the opposite of rule 3 for classes: mock classes are shared and public in `conftest.py`, whereas one-off test data is private to its module.) If a constant is needed by more than one module, move it to `conftest.py` and drop the prefix.
+
+    ```python
+    # Avoid: looks shared/importable, but is only used in this module.
+    RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
+    STARTED_AT = datetime(2026, 6, 24, tzinfo=timezone.utc)
+
+    # Prefer: the underscore marks it private to this test module.
+    _RUN_ID = UUID("123e4567-e89b-12d3-a456-426614174000")
+    _STARTED_AT = datetime(2026, 6, 24, tzinfo=timezone.utc)
+    ```
+
 ## Integration tests
 
 When creating integration tests, follow these rubrics.
