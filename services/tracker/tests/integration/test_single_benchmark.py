@@ -94,6 +94,87 @@ def test_get_benchmark_tasks_filters_by_status(client, database_session):
     assert data["tasks"][0]["error_message"] == "boom"
 
 
+def test_get_benchmark_tasks_sort_by_status_surfaces_errors_first(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+    # Insert out of priority order.
+    for task_id, status in [
+        ("a-pending", TaskStatus.PENDING),
+        ("b-finished", TaskStatus.FINISHED),
+        ("c-error", TaskStatus.ERROR),
+        ("d-in-progress", TaskStatus.IN_PROGRESS),
+    ]:
+        database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id=task_id, status=status))
+    database_session.commit()
+
+    resp = client.get(
+        f"/benchmarks/{b.id}/tasks?sort=status",
+        headers={"Authorization": "Bearer fake"},
+    )
+    statuses = [t["status"] for t in resp.json()["tasks"]]
+    assert statuses == ["ERROR", "FINISHED", "IN_PROGRESS", "PENDING"]
+
+
+_HARNESS_HEADERS = {
+    "Authorization": "Bearer fake",
+    "X-Harness-AWS-Access-Key-Id": "AKIA",
+    "X-Harness-AWS-Secret-Access-Key": "secret",
+    "X-Harness-AWS-Default-Region": "us-east-1",
+    "X-Harness-S3-Bucket": "agentic-harness",
+    "X-Harness-Log-Group": "benchmarks",
+    "X-Harness-Log-Retention-Policy": "30",
+}
+
+
+def test_get_single_benchmark_builds_run_console_urls_from_harness_headers(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+
+    data = client.get(f"/benchmarks/{b.id}", headers=_HARNESS_HEADERS).json()
+    assert "cloudwatch/home" in data["cloudwatch_url"]
+    assert str(b.id) in data["cloudwatch_url"]
+    assert "s3/buckets/agentic-harness" in data["s3_bucket_url"]
+    assert str(b.id) in data["s3_bucket_url"]
+
+
+def test_get_single_benchmark_omits_console_urls_without_harness_headers(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+
+    data = client.get(f"/benchmarks/{b.id}", headers={"Authorization": "Bearer fake"}).json()
+    assert data["cloudwatch_url"] is None
+    assert data["s3_bucket_url"] is None
+
+
+def test_get_single_benchmark_s3_url_without_log_group_skips_cloudwatch(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+
+    headers = {k: v for k, v in _HARNESS_HEADERS.items() if k != "X-Harness-Log-Group"}
+    data = client.get(f"/benchmarks/{b.id}", headers=headers).json()
+    assert data["cloudwatch_url"] is None
+    assert "s3/buckets/agentic-harness" in data["s3_bucket_url"]
+
+
+def test_get_benchmark_tasks_sort_by_task_id_ascending(client, database_session):
+    b = _make_bench()
+    database_session.add(b)
+    database_session.commit()
+    for task_id in ["t-c", "t-a", "t-b"]:
+        database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id=task_id, status=TaskStatus.PENDING))
+    database_session.commit()
+
+    data = client.get(
+        f"/benchmarks/{b.id}/tasks?sort=task_id&sort_dir=asc",
+        headers={"Authorization": "Bearer fake"},
+    ).json()
+    assert [t["task_id"] for t in data["tasks"]] == ["t-a", "t-b", "t-c"]
+
+
 def test_unauth_returns_401(client):
     bogus = uuid4()
     assert client.get(f"/benchmarks/{bogus}").status_code == 401
