@@ -108,19 +108,34 @@ TEST_TRACKER_API_KEY=...    # used by tracker integration tests
 
 ### Spacing and inline comments
 
-Structure each test as **arrange, act, assert**: set up the inputs and context, perform the single action under test, then assert on the outcome. The blank lines below separate exactly these phases.
+Structure each test as **arrange, act, assert**: set up the inputs and context, perform the single action under test, then assert on the outcome.
 
-Give tests room to breathe. Separate logical sections of a test with a blank line so each step reads as a distinct unit. An inline comment goes on its own line directly above the code it describes, with a blank line above the comment. Never sandwich code between a comment and the next statement with no spacing — keep one blank line before each commented block.
+Separate logical steps with a blank line so each reads as a distinct unit. **This is independent of comments** — insert the blank line whenever a new step begins, even when there is no comment to introduce it. A new step includes performing the action, starting a fresh group of assertions, or pulling a value out of a result to assert on next. In particular, a statement that sets up the following assertions (for example, extracting a nested value before checking it) begins a new step: put a blank line before it instead of sandwiching it against the previous `assert`.
 
 ```python
-# Avoid: code sandwiched together with no breathing room.
-def test_deploy_command():
-    result = run_cli(["deploy", "--name", "svc"])
-    assert result.status == "completed"
-    fetched = api_client.get_service("svc")  # inline, trailing, and cramped
-    assert fetched.name == "svc"
+# Avoid: a new step (extract, then assert on it) is sandwiched against the prior assert.
+def test_start_benchmark_sets_provider_secret(...) -> None:
+    tracker.start_benchmark(...)
+    assert mock_http_client.json is not None
+    harness_config = mock_http_client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
 
-# Prefer: blank line above each commented section, comment above the code.
+# Prefer: a blank line before each new step, with or without a comment.
+def test_start_benchmark_sets_provider_secret(...) -> None:
+    tracker.start_benchmark(...)
+
+    assert mock_http_client.json is not None
+
+    harness_config = mock_http_client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
+```
+
+When you do add an inline comment, put it on its own line directly above the code it describes, with a blank line above the comment. Never trail a comment on the end of a code line.
+
+```python
+# Prefer: comments introduce steps that are already separated by blank lines.
 def test_deploy_command(api_client: ApiClient) -> None:
     # Run the command exactly as the CLI would invoke it.
     result = run_cli(["deploy", "--name", "svc"])
