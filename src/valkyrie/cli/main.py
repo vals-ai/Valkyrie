@@ -319,17 +319,17 @@ def service_list() -> None:
         with TrackerService(require_config=False) as tracker:
             services_by_name = {service.name: service for service in tracker.catalog_benchmark_services()}
             services_by_name.update({service.name: service for service in custom_entries})
-            services_list = (
-                tracker.check_benchmark_services(list(services_by_name.values())).services if services_by_name else []
+            services_list = list(services_by_name.values())
+            if not services_list:
+                click.echo(click.style("No benchmark services configured.", fg="yellow"))
+                return
+
+            paginate_services(
+                services_list,
+                check_services=lambda entries: tracker.check_benchmark_services(entries).services,
             )
     except TrackerServiceError as e:
         raise click.ClickException(str(e)) from e
-
-    if not services_list:
-        click.echo(click.style("No benchmark services configured.", fg="yellow"))
-        return
-
-    paginate_services(services_list)
 
 
 @config.group()

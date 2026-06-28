@@ -6,7 +6,7 @@ import shutil
 import tarfile
 import tempfile
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -20,6 +20,7 @@ from httpx import Response
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
+    BenchmarkServiceEntry,
     BenchmarkServiceHealth,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
@@ -911,7 +912,33 @@ def _service_source_domain(service: BenchmarkServiceHealth) -> str:
     return host.removeprefix(f"{service.name}.")
 
 
-def paginate_services(services: list[BenchmarkServiceHealth], limit: int = 10) -> None:
+def _unchecked_service(service: BenchmarkServiceEntry | BenchmarkServiceHealth) -> BenchmarkServiceHealth:
+    return BenchmarkServiceHealth(name=service.name, url=service.url, healthy=False, latency_ms=None)
+
+
+def _health_checked_page(
+    services: Sequence[BenchmarkServiceEntry | BenchmarkServiceHealth],
+    cache: dict[str, BenchmarkServiceHealth],
+    check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]] | None,
+) -> list[BenchmarkServiceHealth]:
+    missing = [service for service in services if service.name not in cache]
+    if missing and check_services is not None:
+        entries = [BenchmarkServiceEntry(name=service.name, url=service.url) for service in missing]
+        cache.update({service.name: service for service in check_services(entries)})
+
+    for service in missing:
+        cache.setdefault(
+            service.name, service if isinstance(service, BenchmarkServiceHealth) else _unchecked_service(service)
+        )
+
+    return [cache[service.name] for service in services]
+
+
+def paginate_services(
+    services: Sequence[BenchmarkServiceEntry | BenchmarkServiceHealth],
+    limit: int = 10,
+    check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]] | None = None,
+) -> None:
     """
     Interactive paginated display of services with vim-style navigation.
 
@@ -923,6 +950,7 @@ def paginate_services(services: list[BenchmarkServiceHealth], limit: int = 10) -
     offset = 0
     total_count = len(services)
     total_pages = max(1, (total_count + limit - 1) // limit)
+    health_cache: dict[str, BenchmarkServiceHealth] = {}
 
     while True:
         click.clear()
@@ -931,7 +959,7 @@ def paginate_services(services: list[BenchmarkServiceHealth], limit: int = 10) -
             click.echo(click.style("No benchmark services found.", fg="yellow"))
             break
 
-        page_services = services[offset : offset + limit]
+        page_services = _health_checked_page(services[offset : offset + limit], health_cache, check_services)
         rows = [
             {
                 "Benchmark": service.name,
