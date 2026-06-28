@@ -309,7 +309,7 @@ Markers are for selecting suites, not for parking tests. Every test runs on ever
 
 Coverage is tracked with `pytest-cov` (wired into `make unit-test`). New code must ship with tests, and coverage should not regress in a PR.
 
-Full instructions for running the suites and the environment variables each one requires live in `tracker/README.md`. Treat that file as the source of truth for setup, and update it whenever the run steps or required variables change.
+Full instructions for running the suites and the environment variables each one requires live in `services/tracker/README.md`. Treat that file as the source of truth for setup, and update it whenever the run steps or required variables change.
 
 ## Unit tests
 
