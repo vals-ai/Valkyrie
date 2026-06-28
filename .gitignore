@@ -9,12 +9,28 @@ env
 .ruff_cache
 __pycache__/
 
+# coverage
+.coverage
+coverage.xml
+htmlcov/
+badge-output/
+
 # Config files
 config/**.yaml
 
 # fab
 logs
 
+# mac
+.DS_Store
 
 tracker.db*
 dump.rdb*
+dist
+build
+
+*claude*
+*CLAUDE*
+
+# Local docker-compose overrides (per-dev port remaps, etc.)
+services/tracker/docker-compose.override.yml
