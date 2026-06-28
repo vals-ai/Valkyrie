@@ -101,6 +101,9 @@ class FakeTrackerService:
     def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(status="success")
 
+    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
+        return provider or "daytona", "DaytonaSecrets"
+
 
 @pytest.fixture
 def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[str]]:

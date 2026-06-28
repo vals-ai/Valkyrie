@@ -448,7 +448,7 @@ def test_run_label_cli_options_and_client_requests(monkeypatch: pytest.MonkeyPat
     def provider_config(_tracker: TrackerService, _provider: str | None = None) -> tuple[str, str]:
         return "daytona", "DaytonaSecrets"
 
-    monkeypatch.setattr(TrackerService, "_sandbox_provider", provider_config)
+    monkeypatch.setattr(TrackerService, "resolve_sandbox_provider", provider_config)
     monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
 
     tracker = TrackerService(base_url="http://tracker")

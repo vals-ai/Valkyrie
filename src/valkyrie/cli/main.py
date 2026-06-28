@@ -724,6 +724,12 @@ def start(
     """
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
+    try:
+        with TrackerService() as tracker:
+            tracker.resolve_sandbox_provider(provider)
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
+
     service_headers: dict[str, str] = {}
     auth_credential = TrackerService.get_benchmark_auth(benchmark)
     if auth_credential:

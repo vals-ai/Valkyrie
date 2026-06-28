@@ -211,7 +211,7 @@ class TrackerService:
         """Automate building the headers from the config keys"""
         return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
 
-    def _sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
+    def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
         providers = _sandbox_providers(self._config)
 
         # Fall back to the legacy Daytona secret when named providers are not configured.
@@ -320,7 +320,7 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
-            provider_name, sandbox_provider_secret_name = self._sandbox_provider(provider)
+            provider_name, sandbox_provider_secret_name = self.resolve_sandbox_provider(provider)
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
