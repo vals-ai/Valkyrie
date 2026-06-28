@@ -213,25 +213,28 @@ class TrackerService:
 
     def _sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
         providers = _sandbox_providers(self._config)
-        if providers:
-            provider_name = provider if provider is not None else self._config.get("default_sandbox_provider")
-            provider_name = str(provider_name or next(iter(providers)))
-            if provider_name in providers:
-                return provider_name, providers[provider_name]
-            configured = ", ".join(providers)
-            raise TrackerServiceError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
 
-        if provider is not None:
-            raise TrackerServiceError(
-                f"Unknown sandbox provider '{provider}'. Configure it with `valkyrie config provider set`."
-            )
-        flat = {key.lower(): value for key, value in self._config_values.items()}
-        secret_name = flat.get("daytona_secret_name")
-        if not secret_name:
-            raise TrackerServiceError(
-                "Missing sandbox provider config. Run `valkyrie config provider set <provider> <secret-name>`."
-            )
-        return "daytona", secret_name
+        # Fall back to the legacy Daytona secret when named providers are not configured.
+        if not providers:
+            if provider is not None:
+                raise TrackerServiceError(
+                    f"Unknown sandbox provider '{provider}'. Configure it with `valkyrie config provider set`."
+                )
+            secret_name = self._config_values.get("DAYTONA_SECRET_NAME")
+            if not secret_name:
+                raise TrackerServiceError(
+                    "Missing sandbox provider config. Run `valkyrie config provider set <provider> <secret-name>`."
+                )
+            return "daytona", secret_name
+
+        # Use the requested provider, configured default, or first configured provider.
+        provider_name = str(provider or self._config.get("default_sandbox_provider") or next(iter(providers)))
+        secret_name = providers.get(provider_name)
+        if secret_name is not None:
+            return provider_name, secret_name
+
+        # Report valid provider names when the selected provider is unknown.
+        raise TrackerServiceError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {', '.join(providers)}")
 
     def _build_harness_config_payload(self, sandbox_provider_secret_name: str) -> dict[str, Any]:
         """Build the Valkyrie config in a way that can be packed into a object"""
