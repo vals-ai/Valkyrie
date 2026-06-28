@@ -6,8 +6,10 @@ Covers tracker client request construction, config handling, and CLI output help
 tracker-client behavior or CLI rendering that can regress without requiring live services.
 """
 
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -69,50 +71,13 @@ class FakeClient:
         pass
 
 
-class MockCatalogClient:
-    """Records catalog and tracker health-check calls for service listing tests."""
+class CatalogClientRecorder(Protocol):
+    """Tracks requests made through the catalog client mock."""
 
-    def __init__(self) -> None:
-        self.headers: object = None
-        self.get_url: str | None = None
-        self.post_url: str | None = None
-        self.json: dict[str, object] | None = None
-
-    def get(self, url: str, *, params: dict[str, object] | None = None) -> httpx.Response:
-        self.get_url = url
-
-        return httpx.Response(
-            200,
-            json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
-        )
-
-    def post(
-        self,
-        url: str,
-        *,
-        params: dict[str, object] | None = None,
-        json: dict[str, object],
-    ) -> httpx.Response:
-        self.post_url = url
-        self.json = json
-
-        return httpx.Response(
-            200,
-            json={
-                "services": [
-                    {
-                        "name": "swebench",
-                        "url": "https://swebench.benchmarks.vals.ai",
-                        "healthy": True,
-                        "latency_ms": 12,
-                        "error": None,
-                    }
-                ]
-            },
-        )
-
-    def close(self) -> None:
-        pass
+    headers: object
+    get_url: str | None
+    post_url: str | None
+    json: dict[str, object] | None
 
 
 class MockTrackerService:
@@ -175,7 +140,10 @@ def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
     return {}
 
 
-def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tracker_service_lists_catalog_services_through_health_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_catalog_client_factory: Callable[[], CatalogClientRecorder],
+) -> None:
     """Catalog service listing should use catalog auth and the existing tracker health-check endpoint.
 
     Test cases:
@@ -183,9 +151,9 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypa
     - Catalog URL is unset, so hosted entries are empty without calling the tracker API.
     """
 
-    client = MockCatalogClient()
+    client = mock_catalog_client_factory()
 
-    def build_client(**_kwargs: object) -> MockCatalogClient:
+    def build_client(**_kwargs: object) -> CatalogClientRecorder:
         client.headers = _kwargs.get("headers")
 
         return client
@@ -213,9 +181,9 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypa
     }
     assert [(service.name, service.latency_ms) for service in response.services] == [("swebench", 12)]
 
-    empty_client = MockCatalogClient()
+    empty_client = mock_catalog_client_factory()
 
-    def build_empty_client(**_kwargs: object) -> MockCatalogClient:
+    def build_empty_client(**_kwargs: object) -> CatalogClientRecorder:
         empty_client.headers = _kwargs.get("headers")
 
         return empty_client
