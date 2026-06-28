@@ -17,6 +17,7 @@ from aws_cdk import (
     aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
+    aws_ssm,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
@@ -44,6 +45,16 @@ _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
     operating_system_family=aws_ecs.OperatingSystemFamily.LINUX,
 )
+
+_BENCHMARK_CATALOG_API_URL_PARAM = "/benchmark-services/catalog-api-url"
+
+
+def _stage_ssm_path(stage: Stage, path: str) -> str:
+    if stage.is_prod:
+        return path
+    parts = path.split("/")
+    parts[1] = f"{parts[1]}-dev"
+    return "/".join(parts)
 
 
 class TrackerStack(Stack):
@@ -83,6 +94,11 @@ class TrackerStack(Stack):
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket.bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
+            "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL")
+            or aws_ssm.StringParameter.value_for_string_parameter(
+                self,
+                _stage_ssm_path(stage, _BENCHMARK_CATALOG_API_URL_PARAM),
+            ),
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "BENCHMARK_SERVICE_NAMES": os.environ.get("BENCHMARK_SERVICE_NAMES", ""),
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",

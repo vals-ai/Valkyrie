@@ -24,7 +24,7 @@ from valkyrie.cli import main as cli_main
 from valkyrie.cli import tracker_service as tracker_service_module
 from valkyrie.cli.main import cli, list_benchmarks, start
 from valkyrie.cli.tracker_service import TrackerService
-from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response
+from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response, paginate_services
 
 
 class FakeClient:
@@ -71,6 +71,55 @@ def harness_config_payload(_tracker: TrackerService) -> dict[str, object]:
         "log_retention_policy": 365,
         "sandbox_provider_secret_name": "DaytonaSecrets",
     }
+
+
+def test_paginate_services_renders_latency_as_response_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Service list should show response latency when available and dash when not.
+
+    Test cases:
+    - Responding services render measured latency.
+    - Non-responding services render a dash without healthy/error columns.
+    """
+    captured_rows: list[dict[str, str]] = []
+    captured_headers: list[str] = []
+
+    def fake_format_table(
+        rows: list[dict[str, str]],
+        headers: list[str],
+        _current_page: int,
+        _total_pages: int,
+        _total_count: int,
+        _item_name: str,
+    ) -> None:
+        captured_rows.extend(rows)
+        captured_headers.extend(headers)
+
+    monkeypatch.setattr(cli_main.click, "clear", lambda: None)
+    monkeypatch.setattr("valkyrie.cli.utils.format_table", fake_format_table)
+
+    paginate_services(
+        [
+            BenchmarkServiceHealth(
+                name="swebench",
+                url="https://swebench.benchmarks.vals.ai",
+                healthy=True,
+                latency_ms=23,
+                source="hosted",
+            ),
+            BenchmarkServiceHealth(
+                name="vcb",
+                url="http://localhost:9000",
+                healthy=False,
+                latency_ms=None,
+                error="[Errno -2] Name or service not known",
+                source="custom",
+            ),
+        ]
+    )
+
+    assert captured_headers == ["Benchmark", "Service URL", "Source", "Latency"]
+    assert [row["Source"] for row in captured_rows] == ["benchmarks.vals.ai", "localhost:9000"]
+    assert [row["Latency"] for row in captured_rows] == ["23 ms", "-"]
 
 
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:

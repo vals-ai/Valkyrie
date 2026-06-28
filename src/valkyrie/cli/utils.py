@@ -920,6 +920,11 @@ def merge_benchmark_services(
     return list(services_by_name.values())
 
 
+def _service_source_domain(service: BenchmarkServiceHealth) -> str:
+    host = urlparse(service.url).netloc or service.url
+    return host.removeprefix(f"{service.name}.")
+
+
 def paginate_services(services: list[BenchmarkServiceHealth], limit: int = 10) -> None:
     """
     Interactive paginated display of services with vim-style navigation.
@@ -945,16 +950,14 @@ def paginate_services(services: list[BenchmarkServiceHealth], limit: int = 10) -
             {
                 "Benchmark": service.name,
                 "Service URL": service.url,
-                "Source": service.source,
-                "Healthy": click.style("yes", fg="green") if service.healthy else click.style("no", fg="red"),
+                "Source": _service_source_domain(service),
                 "Latency": f"{service.latency_ms} ms" if service.latency_ms is not None else "-",
-                "Error": service.error or "",
             }
             for service in page_services
         ]
         format_table(
             rows,
-            ["Benchmark", "Service URL", "Source", "Healthy", "Latency", "Error"],
+            ["Benchmark", "Service URL", "Source", "Latency"],
             current_page,
             total_pages,
             total_count,

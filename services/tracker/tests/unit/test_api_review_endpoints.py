@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
@@ -21,6 +22,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.types import BenchmarkServiceEntry
 
 client = TestClient(app)
 
@@ -158,7 +160,74 @@ def test_benchmark_services_endpoint_returns_empty_services(monkeypatch: pytest.
     ping_mock.assert_not_awaited()
 
 
-def test_benchmark_services_get_lists_configured_hosted_services(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_list_catalog_services_reads_catalog_or_local_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catalog listing must be server-filtered, with local configured names as a fallback.
+
+    Test cases:
+    - Catalog URL is set and the tracker forwards the caller's auth header.
+    - Catalog URL is unset and the tracker uses locally configured service names.
+    """
+    import tracker.api.benchmark_services as benchmark_services_api
+
+    class CatalogClient:
+        def __init__(self, *, timeout: float) -> None:
+            assert timeout == benchmark_services_api.CATALOG_TIMEOUT_SECONDS
+
+        async def __aenter__(self) -> CatalogClient:
+            return self
+
+        async def __aexit__(self, _exc_type: object, _exc_value: object, _traceback: object) -> None:
+            return None
+
+        async def get(self, url: str, headers: dict[str, str]) -> httpx.Response:
+            assert url == "https://catalog.example/benchmark-services"
+            assert headers == {"x-api-key": "tracker-key"}
+            return httpx.Response(
+                200,
+                json={
+                    "services": [
+                        {
+                            "name": "swebench",
+                            "url": "https://swebench.benchmarks.vals.ai/",
+                        }
+                    ]
+                },
+                request=httpx.Request("GET", url),
+            )
+
+    monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
+    monkeypatch.setattr(benchmark_services_api.httpx, "AsyncClient", CatalogClient)
+    list_catalog_services = cast(
+        Callable[[dict[str, str]], Awaitable[list[BenchmarkServiceEntry]]],
+        getattr(benchmark_services_api, "_list_catalog_services"),
+    )
+
+    catalog_services = await list_catalog_services({"x-api-key": "tracker-key"})
+
+    assert [(service.name, service.url) for service in catalog_services] == [
+        ("swebench", "https://swebench.benchmarks.vals.ai")
+    ]
+
+    monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "")
+    monkeypatch.setattr(benchmark_services_api, "list_benchmark_service_names", lambda: ["localbench"])
+
+    def create_local_benchmark_service_url(name: str) -> str:
+        return f"https://{name}.local"
+
+    monkeypatch.setattr(
+        benchmark_services_api,
+        "create_benchmark_service_url",
+        create_local_benchmark_service_url,
+    )
+
+    fallback_services = await list_catalog_services({})
+
+    assert [(service.name, service.url) for service in fallback_services] == [
+        ("localbench", "https://localbench.local")
+    ]
+
+
+def test_benchmark_services_get_lists_registry_catalog_services(monkeypatch: pytest.MonkeyPatch) -> None:
     import tracker.api.benchmark_services as benchmark_services_api
 
     async def fake_ping(_client: httpx.AsyncClient, name: str, url: str, source: str = "custom"):
@@ -171,15 +240,23 @@ def test_benchmark_services_get_lists_configured_hosted_services(monkeypatch: py
             "source": source,
         }
 
-    monkeypatch.setattr(benchmark_services_api, "list_benchmark_service_names", lambda: ["swebench", "fab"])
-    monkeypatch.setattr(
-        benchmark_services_api,
-        "create_benchmark_service_url",
-        lambda name: f"https://{name}.benchmarks.vals.ai",
-    )
+    async def fake_catalog_services(headers: dict[str, str]):
+        assert headers == {"x-api-key": "tracker-key"}
+        return [
+            benchmark_services_api.BenchmarkServiceEntry(
+                name="swebench",
+                url="https://swebench.benchmarks.vals.ai",
+            ),
+            benchmark_services_api.BenchmarkServiceEntry(
+                name="fab",
+                url="https://fab.benchmarks.vals.ai",
+            ),
+        ]
+
+    monkeypatch.setattr(benchmark_services_api, "_list_catalog_services", fake_catalog_services)
     monkeypatch.setattr(benchmark_services_api, "_ping_service", AsyncMock(side_effect=fake_ping))
 
-    response = client.get("/benchmark-services")
+    response = client.get("/benchmark-services", headers={"x-api-key": "tracker-key"})
 
     assert response.status_code == 200
     assert response.json()["services"] == [
