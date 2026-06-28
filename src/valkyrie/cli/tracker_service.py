@@ -5,7 +5,7 @@ import os
 import re
 from collections.abc import Generator, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import httpx
@@ -41,10 +41,14 @@ _REQUIRED_CONFIG_KEYS = {
     "AWS_DEFAULT_REGION",
     "S3_BUCKET",
 }
-_SANDBOX_PROVIDER_SECRET_CONFIG_KEYS = {
-    "SANDBOX_PROVIDER_SECRET_NAME",
-    "DAYTONA_SECRET_NAME",
-}
+
+
+def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
+    raw_providers = config.get("sandbox_providers")
+    if not isinstance(raw_providers, dict):
+        return {}
+    providers = cast(dict[object, object], raw_providers)
+    return {str(name): str(secret_name) for name, secret_name in providers.items()}
 
 
 def _response_error_detail(response: Response) -> Any:
@@ -180,11 +184,11 @@ class TrackerService:
             raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `valkyrie config init`")
 
         with open(config_path) as f:
-            harness_config: dict[str, str] = yaml.safe_load(f) or {}
+            harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
-        if not (_SANDBOX_PROVIDER_SECRET_CONFIG_KEYS & harness_config.keys()):
-            missing.add("SANDBOX_PROVIDER_SECRET_NAME")
+        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
+            missing.add("DAYTONA_SECRET_NAME")
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
@@ -192,7 +196,7 @@ class TrackerService:
             )
 
         # Keys that are managed separately and should not be sent as harness headers
-        _SKIP_HEADER_KEYS = {"webhook", "api_key"}
+        _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
 
         # Skip custom_benchmark_services to avoid adding them inside of the header
         for key, value in harness_config.items():
@@ -207,9 +211,40 @@ class TrackerService:
         """Automate building the headers from the config keys"""
         return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
 
-    def _build_harness_config_payload(self) -> dict[str, Any]:
+    def _sandbox_provider_secret_name(self, provider: str | None = None) -> str:
+        provider_name = self._sandbox_provider_name(provider)
+        providers = _sandbox_providers(self._config)
+        if providers:
+            return providers[provider_name]
+
+        flat = {key.lower(): value for key, value in self._config_values.items()}
+        secret_name = flat.get("daytona_secret_name")
+        if not secret_name:
+            raise TrackerServiceError(
+                "Missing sandbox provider config. Run `valkyrie config provider set <provider> <secret-name>`."
+            )
+        return secret_name
+
+    def _sandbox_provider_name(self, provider: str | None = None) -> str:
+        providers = _sandbox_providers(self._config)
+        if providers:
+            provider_name = provider if provider is not None else self._config.get("default_sandbox_provider")
+            provider_name = str(provider_name or next(iter(providers)))
+            if provider_name in providers:
+                return provider_name
+            configured = ", ".join(providers)
+            raise TrackerServiceError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
+
+        if provider is not None:
+            raise TrackerServiceError(
+                f"Unknown sandbox provider '{provider}'. Configure it with `valkyrie config provider set`."
+            )
+        return "daytona"
+
+    def _build_harness_config_payload(self, provider: str | None = None) -> dict[str, Any]:
         """Build the Valkyrie config in a way that can be packed into a object"""
         flat = {key.lower(): value for key, value in self._config_values.items()}
+        provider_secret_name = self._sandbox_provider_secret_name(provider)
         return {
             "aws": {
                 "aws_access_key_id": flat["aws_access_key_id"],
@@ -219,8 +254,7 @@ class TrackerService:
             "s3_bucket": flat["s3_bucket"],
             "log_group": flat["log_group"],
             "log_retention_policy": int(flat["log_retention_policy"]),
-            "sandbox_provider_secret_name": flat.get("sandbox_provider_secret_name")
-            or flat.get("daytona_secret_name", ""),
+            "sandbox_provider_secret_name": provider_secret_name,
         }
 
     def health_check(self) -> Response:
@@ -267,6 +301,7 @@ class TrackerService:
         lambda_function: str | None = None,
         dataset: str | None = None,
         service_headers: dict[str, str] | None = None,
+        provider: str | None = None,
         webhook_secret_name: str | None = None,
         webhook_intervals: list[int] | None = None,
     ) -> Response:
@@ -289,6 +324,7 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
+            provider_name = self._sandbox_provider_name(provider)
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -298,11 +334,12 @@ class TrackerService:
                 slice_str=slice_str,
                 lambda_function=lambda_function,
                 dataset=dataset,
-                harness_config=HarnessConfig.model_validate(self._build_harness_config_payload()),
+                harness_config=HarnessConfig.model_validate(self._build_harness_config_payload(provider)),
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
                 if not ignore_custom_services
                 else None,
                 service_headers=service_headers or {},
+                sandbox_provider=provider_name,
                 webhook_secret_name=webhook_secret_name,
                 webhook_intervals=webhook_intervals,
             )
