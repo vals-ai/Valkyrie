@@ -69,6 +69,104 @@ class FakeClient:
         pass
 
 
+class MockCatalogClient:
+    """Records catalog and tracker health-check calls for service listing tests."""
+
+    def __init__(self) -> None:
+        self.headers: object = None
+        self.get_url: str | None = None
+        self.post_url: str | None = None
+        self.json: dict[str, object] | None = None
+
+    def get(self, url: str, *, params: dict[str, object] | None = None) -> httpx.Response:
+        self.get_url = url
+
+        return httpx.Response(
+            200,
+            json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
+        )
+
+    def post(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+        json: dict[str, object],
+    ) -> httpx.Response:
+        self.post_url = url
+        self.json = json
+
+        return httpx.Response(
+            200,
+            json={
+                "services": [
+                    {
+                        "name": "swebench",
+                        "url": "https://swebench.benchmarks.vals.ai",
+                        "healthy": True,
+                        "latency_ms": 12,
+                        "error": None,
+                    }
+                ]
+            },
+        )
+
+    def close(self) -> None:
+        pass
+
+
+class MockTrackerService:
+    """Provides hosted and custom service rows for CLI service-list tests."""
+
+    def __enter__(self) -> "MockTrackerService":
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        pass
+
+    def list_benchmark_services(self) -> BenchmarkServicesResponse:
+        return BenchmarkServicesResponse(
+            services=[
+                BenchmarkServiceHealth(
+                    name="swebench",
+                    url="https://swebench.benchmarks.vals.ai",
+                    healthy=True,
+                    latency_ms=10,
+                ),
+                BenchmarkServiceHealth(
+                    name="fab",
+                    url="https://fab.benchmarks.vals.ai",
+                    healthy=True,
+                    latency_ms=20,
+                ),
+            ]
+        )
+
+    def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
+        assert [(service.name, service.url) for service in services] == [
+            ("swebench", "http://local-swebench"),
+            ("custombench", "http://custombench"),
+        ]
+
+        return BenchmarkServicesResponse(
+            services=[
+                BenchmarkServiceHealth(
+                    name="swebench",
+                    url="http://local-swebench",
+                    healthy=False,
+                    latency_ms=None,
+                    error="timeout",
+                ),
+                BenchmarkServiceHealth(
+                    name="custombench",
+                    url="http://custombench",
+                    healthy=True,
+                    latency_ms=5,
+                ),
+            ]
+        )
+
+
 def empty_config() -> dict[str, object]:
     return {}
 
@@ -85,52 +183,9 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypa
     - Catalog URL is unset, so hosted entries are empty without calling the tracker API.
     """
 
-    class CatalogClient:
-        def __init__(self, **_kwargs: object) -> None:
-            self.headers = _kwargs.get("headers")
-            self.get_url: str | None = None
-            self.post_url: str | None = None
-            self.json: dict[str, object] | None = None
+    client = MockCatalogClient()
 
-        def get(self, url: str, *, params: dict[str, object] | None = None) -> httpx.Response:
-            self.get_url = url
-
-            return httpx.Response(
-                200,
-                json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
-            )
-
-        def post(
-            self,
-            url: str,
-            *,
-            params: dict[str, object] | None = None,
-            json: dict[str, object],
-        ) -> httpx.Response:
-            self.post_url = url
-            self.json = json
-
-            return httpx.Response(
-                200,
-                json={
-                    "services": [
-                        {
-                            "name": "swebench",
-                            "url": "https://swebench.benchmarks.vals.ai",
-                            "healthy": True,
-                            "latency_ms": 12,
-                            "error": None,
-                        }
-                    ]
-                },
-            )
-
-        def close(self) -> None:
-            pass
-
-    client = CatalogClient()
-
-    def build_client(**_kwargs: object) -> CatalogClient:
+    def build_client(**_kwargs: object) -> MockCatalogClient:
         client.headers = _kwargs.get("headers")
 
         return client
@@ -158,9 +213,9 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypa
     }
     assert [(service.name, service.latency_ms) for service in response.services] == [("swebench", 12)]
 
-    empty_client = CatalogClient()
+    empty_client = MockCatalogClient()
 
-    def build_empty_client(**_kwargs: object) -> CatalogClient:
+    def build_empty_client(**_kwargs: object) -> MockCatalogClient:
         empty_client.headers = _kwargs.get("headers")
 
         return empty_client
@@ -620,61 +675,13 @@ def test_service_list_merges_hosted_and_custom_services(
     )
     monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
 
-    class FakeTracker:
-        def __enter__(self) -> "FakeTracker":
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-        def list_benchmark_services(self) -> BenchmarkServicesResponse:
-            return BenchmarkServicesResponse(
-                services=[
-                    BenchmarkServiceHealth(
-                        name="swebench",
-                        url="https://swebench.benchmarks.vals.ai",
-                        healthy=True,
-                        latency_ms=10,
-                    ),
-                    BenchmarkServiceHealth(
-                        name="fab",
-                        url="https://fab.benchmarks.vals.ai",
-                        healthy=True,
-                        latency_ms=20,
-                    ),
-                ]
-            )
-
-        def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
-            assert [(service.name, service.url) for service in services] == [
-                ("swebench", "http://local-swebench"),
-                ("custombench", "http://custombench"),
-            ]
-            return BenchmarkServicesResponse(
-                services=[
-                    BenchmarkServiceHealth(
-                        name="swebench",
-                        url="http://local-swebench",
-                        healthy=False,
-                        latency_ms=None,
-                        error="timeout",
-                    ),
-                    BenchmarkServiceHealth(
-                        name="custombench",
-                        url="http://custombench",
-                        healthy=True,
-                        latency_ms=5,
-                    ),
-                ]
-            )
-
     captured_services: list[BenchmarkServiceHealth] = []
 
-    def fake_paginate_services(services: list[BenchmarkServiceHealth]) -> None:
+    def capture_paginated_services(services: list[BenchmarkServiceHealth]) -> None:
         captured_services.extend(services)
 
-    monkeypatch.setattr(cli_main, "TrackerService", FakeTracker)
-    monkeypatch.setattr(cli_main, "paginate_services", fake_paginate_services)
+    monkeypatch.setattr(cli_main, "TrackerService", MockTrackerService)
+    monkeypatch.setattr(cli_main, "paginate_services", capture_paginated_services)
 
     result = CliRunner().invoke(cli, ["config", "service", "list"])
 
