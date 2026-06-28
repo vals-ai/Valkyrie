@@ -831,8 +831,8 @@ async def fetch_benchmark_metadata(
     return benchmark_row.benchmark_metadata
 
 
-@app.get("/fetch-agent-outputs/{benchmark_id}", response_model=None)
-async def fetch_agent_outputs(
+@app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
+async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -840,10 +840,10 @@ async def fetch_agent_outputs(
     task_ids: list[str] | None = Query(default=None),
 ) -> StreamingResponse:
     """
-    Stream a tar file with agent outputs to the client.
+    Stream a tar file with run outputs to the client.
 
     Usage:
-    curl -X GET http://<endpoint>/fetch-agent-outputs/<benchmark_id>
+    curl -X GET http://<endpoint>/fetch-run-outputs/<benchmark_id>
 
     Returns:
         StreamingResponse

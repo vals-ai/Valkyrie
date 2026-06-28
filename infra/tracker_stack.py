@@ -1,7 +1,7 @@
 """Tracker service stack - public-facing API with ALB and shared RDS database."""
 
 import os
-from typing import Any, cast
+from typing import Any
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -17,7 +17,6 @@ from aws_cdk import (
     aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
-    aws_ssm,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
@@ -45,16 +44,6 @@ _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
     operating_system_family=aws_ecs.OperatingSystemFamily.LINUX,
 )
-
-_BENCHMARK_CATALOG_API_URL_PARAM = "/benchmark-services/catalog-api-url"
-
-
-def _stage_ssm_path(stage: Stage, path: str) -> str:
-    if stage.is_prod:
-        return path
-    parts = path.split("/")
-    parts[1] = f"{parts[1]}-dev"
-    return "/".join(parts)
 
 
 class TrackerStack(Stack):
@@ -94,13 +83,7 @@ class TrackerStack(Stack):
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket.bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
-            "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL")
-            or aws_ssm.StringParameter.value_for_string_parameter(
-                self,
-                _stage_ssm_path(stage, _BENCHMARK_CATALOG_API_URL_PARAM),
-            ),
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
-            "BENCHMARK_SERVICE_NAMES": os.environ.get("BENCHMARK_SERVICE_NAMES", ""),
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
         }
 
@@ -119,7 +102,6 @@ class TrackerStack(Stack):
             "TrackerDbCredentials",
             username=POSTGRES_USER,
         )
-        db_credentials_secret = cast(aws_secretsmanager.ISecret, self.db_credentials)
 
         self.database = aws_rds.DatabaseInstance(
             self,
@@ -131,7 +113,7 @@ class TrackerStack(Stack):
             vpc=vpc,
             vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
             security_groups=[db_security_group],
-            credentials=aws_rds.Credentials.from_secret(db_credentials_secret),
+            credentials=aws_rds.Credentials.from_secret(self.db_credentials),
             database_name=POSTGRES_DB,
             allocated_storage=stage_config.database.allocated_storage_gb,
             publicly_accessible=True,
@@ -147,8 +129,8 @@ class TrackerStack(Stack):
         }
 
         db_secrets = {
-            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="username"),
-            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
+            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(self.db_credentials, field="username"),
+            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(self.db_credentials, field="password"),
         }
 
         sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")

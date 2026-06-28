@@ -1,4 +1,7 @@
+from collections.abc import AsyncIterator
+import io
 import logging
+import tarfile
 from datetime import timezone
 from typing import Any
 from unittest.mock import MagicMock
@@ -1024,6 +1027,71 @@ class TestFastapiServer:
         response = client.get(f"/fetch-benchmark-metadata/{bench.id}")
         assert response.status_code == 200
         assert response.json()["started_by_email"] == "alice@vals.ai"
+
+    async def test_fetch_run_outputs_streams_tar(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ):
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        observed_prefixes: list[str] = []
+
+        async def _mock_list_s3_objects(prefix: str, *_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            observed_prefixes.append(prefix)
+            yield f"{prefix}output.txt"
+
+        async def _mock_download_many_from_s3(
+            keys: AsyncIterator[str], *_args: Any, **_kwargs: Any
+        ) -> AsyncIterator[tuple[str, bytes]]:
+            async for key in keys:
+                yield key, b"output contents"
+
+        monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
+        monkeypatch.setattr("main.download_many_from_s3", _mock_download_many_from_s3)
+
+        response = client.get(
+            f"/fetch-run-outputs/{example_benchmark_object.id}",
+            params={"task_ids": ["task_1", "task_2"]},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "application/x-tar"
+        assert response.headers["content-disposition"] == (
+            f"attachment; filename=benchmark_{example_benchmark_object.id}_outputs.tar"
+        )
+        assert observed_prefixes == [
+            f"benchmarks/{example_benchmark_object.id}/task_1/",
+            f"benchmarks/{example_benchmark_object.id}/task_2/",
+        ]
+
+        with tarfile.open(fileobj=io.BytesIO(response.content), mode="r:") as tar:
+            assert tar.getnames() == ["task_1/output.txt", "task_2/output.txt"]
+            task_file = tar.extractfile("task_1/output.txt")
+            assert task_file is not None
+            assert task_file.read() == b"output contents"
+
+    async def test_fetch_run_outputs_returns_404_when_empty(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ):
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        async def _mock_list_s3_objects(*_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            if False:
+                yield ""
+
+        monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
+
+        response = client.get(f"/fetch-run-outputs/{example_benchmark_object.id}")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": f"No outputs found for run '{example_benchmark_object.id}'"}
 
     async def test_benchmark_service_unauthenticated_error_returns(
         self,

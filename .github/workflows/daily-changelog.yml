@@ -1,0 +1,248 @@
+# Obtained from [daily-changelog.yml](https://github.com/abundant-ai/oddish/blob/main/.github/workflows/daily-changelog.yml)
+
+name: Daily Changelog
+
+# This workflow generates daily changelog entries using Claude and auto-merges them.
+#
+# REQUIREMENTS FOR AUTO-MERGE:
+# 1. Enable "Allow auto-merge" in repository Settings > General > Pull Requests
+# 2. Do NOT add this workflow as a required status check (creates deadlock)
+# 3. Ensure CLAUDE_CODE_OAUTH_TOKEN secret is configured
+
+on:
+  schedule:
+    # Run daily at 00:00 UTC
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  update-changelog:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get yesterday's date
+        id: dates
+        run: |
+          echo "yesterday=$(date -d 'yesterday' '+%Y-%m-%d')" >> $GITHUB_OUTPUT
+          echo "today=$(date '+%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Check for merged PRs since yesterday
+        id: check-changes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get PRs merged since yesterday
+          MERGED_PRS=$(gh pr list --state merged --search "merged:>=${{ steps.dates.outputs.yesterday }}" --json number,title,mergedAt --jq 'length')
+          echo "merged_count=$MERGED_PRS" >> $GITHUB_OUTPUT
+
+          if [ "$MERGED_PRS" -eq "0" ]; then
+            echo "No PRs merged since yesterday. Skipping changelog update."
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          else
+            echo "Found $MERGED_PRS merged PR(s). Proceeding with changelog update."
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get merged PR details with commits and diffs
+        if: steps.check-changes.outputs.has_changes == 'true'
+        id: pr-details
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Get list of merged PR numbers
+          PR_NUMBERS=$(gh pr list --state merged --search "merged:>=${{ steps.dates.outputs.yesterday }}" --json number --jq '.[].number')
+
+          # Create output file
+          > ${{ github.workspace }}/merged_prs_info.txt
+
+          for PR_NUM in $PR_NUMBERS; do
+            echo "Processing PR #$PR_NUM..."
+
+            # Get PR metadata
+            echo "========================================" >> ${{ github.workspace }}/merged_prs_info.txt
+            echo "PR #$PR_NUM" >> ${{ github.workspace }}/merged_prs_info.txt
+            echo "========================================" >> ${{ github.workspace }}/merged_prs_info.txt
+
+            # Get title and body
+            gh pr view $PR_NUM --json title,body,labels,mergedAt --jq '"Title: \(.title)\nMerged: \(.mergedAt)\nLabels: \(.labels | map(.name) | join(", "))\n\nDescription:\n\(.body // "No description")"' >> ${{ github.workspace }}/merged_prs_info.txt
+
+            echo "" >> ${{ github.workspace }}/merged_prs_info.txt
+            echo "--- Commits in this PR ---" >> ${{ github.workspace }}/merged_prs_info.txt
+
+            # Get commits in the PR
+            gh pr view $PR_NUM --json commits --jq '.commits[] | "- \(.messageHeadline)"' >> ${{ github.workspace }}/merged_prs_info.txt
+
+            echo "" >> ${{ github.workspace }}/merged_prs_info.txt
+            echo "--- Files changed ---" >> ${{ github.workspace }}/merged_prs_info.txt
+
+            # Get files changed
+            gh pr view $PR_NUM --json files --jq '.files[] | "- \(.path) (+\(.additions)/-\(.deletions))"' >> ${{ github.workspace }}/merged_prs_info.txt
+
+            echo "" >> ${{ github.workspace }}/merged_prs_info.txt
+            echo "--- Diff summary (first 300 lines) ---" >> ${{ github.workspace }}/merged_prs_info.txt
+
+            # Get diff (limited to avoid huge outputs, but enough for context)
+            gh pr diff $PR_NUM | head -300 >> ${{ github.workspace }}/merged_prs_info.txt
+
+            echo "" >> ${{ github.workspace }}/merged_prs_info.txt
+            echo "" >> ${{ github.workspace }}/merged_prs_info.txt
+          done
+
+          echo "Merged PRs info collected:"
+          wc -l ${{ github.workspace }}/merged_prs_info.txt
+
+      - name: Create changelog branch
+        if: steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b changelog/${{ steps.dates.outputs.today }}
+
+      - name: Run Claude to update changelog
+        if: steps.check-changes.outputs.has_changes == 'true'
+        id: claude
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--allowedTools Read,Edit,Write,Bash'
+          prompt: |
+            You are updating the CHANGELOG.md file with today's changes.
+
+            Today's date: ${{ steps.dates.outputs.today }}
+
+            First, read the file "merged_prs_info.txt" in the repository root. This file contains detailed information about each merged PR including:
+            - PR title and description
+            - Actual commit messages
+            - Files changed with line counts
+            - Diff snippets showing the actual code changes
+
+            IMPORTANT: Do NOT rely solely on PR titles. Analyze the actual commits, files changed, and diffs to understand what was really changed. PR titles can be vague or misleading - the commits and code changes tell the true story.
+
+            Then update CHANGELOG.md following these rules:
+
+            1. Read the current CHANGELOG.md to understand the format
+            2. Add a new section at the TOP (after the header) for today's date: ## [${{ steps.dates.outputs.today }}]. If a section for today's date already exists in CHANGELOG.md (e.g. from an earlier run that day), REPLACE it with the freshly generated content rather than adding a duplicate section.
+            3. Categorize changes under these headers as appropriate:
+               - ### Added - for new features
+               - ### Changed - for changes in existing functionality
+               - ### Fixed - for bug fixes
+               - ### Removed - for removed features
+               - ### Security - for security fixes
+               - ### Deprecated - for soon-to-be removed features
+            4. Write changelog entries based on what the code ACTUALLY does, not just what the PR title says. Look at:
+               - The commit messages for context
+               - The files changed to understand scope
+               - The diff to see the actual implementation
+            5. Each entry should be a concise but accurate summary with the PR number in parentheses, e.g., "- Add dark mode toggle with system preference detection (#7)"
+            6. Only include categories that have entries (don't add empty categories)
+            7. If a PR is purely about access control (adding users to allowlists), you can skip it or group them together as "Access control updates"
+            8. Make sure the new section is placed right after the header content (after the "---" following the intro text)
+
+            Only modify CHANGELOG.md. Do not create any other files.
+
+      - name: Cleanup temp file
+        if: always() && steps.check-changes.outputs.has_changes == 'true'
+        run: |
+          rm -f ${{ github.workspace }}/merged_prs_info.txt
+
+      - name: Check Claude result
+        if: steps.check-changes.outputs.has_changes == 'true' && steps.claude.outcome == 'failure'
+        run: |
+          echo "::error::Claude failed to update the changelog. Manual intervention may be required."
+          echo "Check the Claude step logs for details."
+
+      - name: Check for changes
+        if: steps.check-changes.outputs.has_changes == 'true' && steps.claude.outcome == 'success'
+        id: verify-changes
+        run: |
+          if git diff --quiet CHANGELOG.md; then
+            echo "No changes made to CHANGELOG.md"
+            echo "changelog_updated=false" >> $GITHUB_OUTPUT
+          else
+            echo "CHANGELOG.md was updated"
+            echo "changelog_updated=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Commit and push changes
+        if: steps.check-changes.outputs.has_changes == 'true' && steps.verify-changes.outputs.changelog_updated == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git add CHANGELOG.md
+          git commit -m "docs: update changelog for ${{ steps.dates.outputs.today }}"
+          # Explicitly set remote URL with token to avoid auth issues
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          # Force-push so manual re-runs the same day overwrite the prior branch
+          # instead of failing with non-fast-forward when the branch already exists.
+          git push -u origin changelog/${{ steps.dates.outputs.today }} --force
+
+      - name: Create Pull Request
+        if: steps.check-changes.outputs.has_changes == 'true' && steps.verify-changes.outputs.changelog_updated == 'true'
+        id: create-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Reuse an existing PR for this branch if one is already open
+          # (e.g. from an earlier same-day run); otherwise create a new one.
+          EXISTING_PR=$(gh pr list \
+            --head "changelog/${{ steps.dates.outputs.today }}" \
+            --state open \
+            --json url \
+            --jq '.[0].url // empty')
+
+          if [ -n "$EXISTING_PR" ]; then
+            PR_URL="$EXISTING_PR"
+            echo "Reusing existing PR: $PR_URL"
+          else
+            PR_URL=$(gh pr create \
+              --title "docs: changelog update for ${{ steps.dates.outputs.today }}" \
+              --body "$(cat <<'EOF'
+          ## Automated Changelog Update
+
+          This PR was automatically generated by the daily changelog workflow.
+
+          **Date:** ${{ steps.dates.outputs.today }}
+          **Merged PRs processed:** ${{ steps.check-changes.outputs.merged_count }}
+
+          ---
+
+          *This PR will be auto-merged if auto-merge is enabled and all checks pass.*
+          EOF
+          )")
+            echo "Created PR: $PR_URL"
+          fi
+
+          echo "pr_url=$PR_URL" >> $GITHUB_OUTPUT
+
+          # Try to add labels, but don't fail if they don't exist
+          gh pr edit "$PR_URL" --add-label "documentation" 2>/dev/null || echo "Label 'documentation' not found, skipping"
+          gh pr edit "$PR_URL" --add-label "automated" 2>/dev/null || echo "Label 'automated' not found, skipping"
+
+      - name: Enable auto-merge
+        if: steps.check-changes.outputs.has_changes == 'true' && steps.verify-changes.outputs.changelog_updated == 'true'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Try to enable auto-merge, but don't fail if it's not available
+          # Auto-merge may not be enabled in repo settings or may require additional permissions
+          if gh pr merge --auto --squash "${{ steps.create-pr.outputs.pr_url }}"; then
+            echo "Auto-merge enabled for PR"
+          else
+            echo "::warning::Auto-merge could not be enabled. This may be because:"
+            echo "  - Auto-merge is not enabled in repository settings"
+            echo "  - Branch protection rules prevent auto-merge"
+            echo "  - The PR requires manual approval"
+            echo "The PR has been created and can be merged manually."
+          fi

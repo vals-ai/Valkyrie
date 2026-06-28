@@ -19,13 +19,6 @@ configure_logging()
 _BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE: str = os.environ.get("BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "local")
 _CLOUDMAP_PORT = 8001
 _BENCHMARK_SERVICE_BASE_URL: str | None = os.environ.get("BENCHMARK_SERVICE_BASE_URL")
-BENCHMARK_CATALOG_URL: str = os.environ.get("BENCHMARK_CATALOG_URL", "").rstrip("/")
-
-
-def list_benchmark_service_names() -> list[str]:
-    """Return configured hosted benchmark service names."""
-    names = (name.strip() for name in os.environ.get("BENCHMARK_SERVICE_NAMES", "").split(","))
-    return list(dict.fromkeys(name for name in names if name))
 
 
 def create_benchmark_service_url(benchmark_name: str) -> str:

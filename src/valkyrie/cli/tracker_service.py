@@ -37,13 +37,17 @@ from valkyrie.cli.exceptions import TrackerServiceError
 load_dotenv()
 
 TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
+BENCHMARK_CATALOG_URL = os.environ.get("BENCHMARK_CATALOG_URL", "").rstrip("/")
 _CONFIG_LOCATION = Path("~/.config/valkyrie/valkyrie.yaml")
 _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_DEFAULT_REGION",
     "S3_BUCKET",
+}
+_SANDBOX_PROVIDER_SECRET_CONFIG_KEYS = {
     "SANDBOX_PROVIDER_SECRET_NAME",
+    "DAYTONA_SECRET_NAME",
 }
 
 
@@ -56,6 +60,13 @@ def _response_error_detail(response: Response) -> Any:
     if isinstance(body, dict):
         return body.get("detail", response.text)
     return response.text
+
+
+def _benchmark_catalog_services_url() -> str:
+    if BENCHMARK_CATALOG_URL.endswith("/benchmark-services"):
+        return BENCHMARK_CATALOG_URL
+
+    return f"{BENCHMARK_CATALOG_URL}/benchmark-services"
 
 
 class TrackerService:
@@ -183,6 +194,8 @@ class TrackerService:
             harness_config: dict[str, str] = yaml.safe_load(f) or {}
 
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
+        if not (_SANDBOX_PROVIDER_SECRET_CONFIG_KEYS & harness_config.keys()):
+            missing.add("SANDBOX_PROVIDER_SECRET_NAME")
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
@@ -217,7 +230,8 @@ class TrackerService:
             "s3_bucket": flat["s3_bucket"],
             "log_group": flat["log_group"],
             "log_retention_policy": int(flat["log_retention_policy"]),
-            "sandbox_provider_secret_name": flat["sandbox_provider_secret_name"],
+            "sandbox_provider_secret_name": flat.get("sandbox_provider_secret_name")
+            or flat.get("daytona_secret_name", ""),
         }
 
     def health_check(self) -> Response:
@@ -239,14 +253,21 @@ class TrackerService:
 
     def list_benchmark_services(self) -> BenchmarkServicesResponse:
         """List hosted benchmark services visible to the configured tenant."""
+        if not BENCHMARK_CATALOG_URL:
+            return BenchmarkServicesResponse(services=[])
+
         try:
-            response = self._client.get(f"{self._base_url}/benchmark-services")
+            response = self._client.get(_benchmark_catalog_services_url())
 
             if response.status_code != 200:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to list benchmark services: {details}")
 
-            return BenchmarkServicesResponse.model_validate(response.json())
+            catalog_services = [
+                BenchmarkServiceEntry.model_validate(service) for service in response.json().get("services", [])
+            ]
+
+            return self.check_benchmark_services(catalog_services)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to list benchmark services: {e}") from e
 
@@ -615,29 +636,29 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch runs: {e}") from e
 
-    def fetch_agent_outputs(self, benchmark_id: UUID, task_ids: list[str] | None = None) -> Response:
+    def fetch_run_outputs(self, benchmark_id: UUID, task_ids: list[str] | None = None) -> Response:
         """
-        Fetch agent outputs for a benchmark by its benchmark id.
+        Fetch run outputs for a benchmark by its benchmark id.
 
         Args:
             benchmark_id: Benchmark id
             task_ids: Optional list of task ids to filter outputs
 
         Returns:
-            httpx Response with agent outputs
+            httpx Response with run outputs
         """
         try:
             params: dict[str, Any] = {}
             if task_ids:
                 params["task_ids"] = task_ids
-            response = self._client.get(f"{self._base_url}/fetch-agent-outputs/{benchmark_id}", params=params)
+            response = self._client.get(f"{self._base_url}/fetch-run-outputs/{benchmark_id}", params=params)
             if response.status_code != 200:
                 details = _response_error_detail(response)
-                raise TrackerServiceError(f"Failed to fetch agent outputs: {details}")
+                raise TrackerServiceError(f"Failed to fetch run outputs: {details}")
 
             return response
         except httpx.HTTPError as e:
-            raise TrackerServiceError(f"Failed to fetch agent outputs: {e}") from e
+            raise TrackerServiceError(f"Failed to fetch run outputs: {e}") from e
 
     def fetch_benchmark_metadata(self, benchmark_id: UUID) -> FetchBenchmarkMetadataResponse:
         """
