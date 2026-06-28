@@ -132,6 +132,25 @@ def test_start_benchmark_sets_provider_secret(...) -> None:
     assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
 ```
 
+A `return` always gets a blank line above it — it concludes a step, so never sandwich it against the line before.
+
+```python
+# Avoid: return sandwiched against the assignments.
+def get(self, url: str) -> httpx.Response:
+    self.url = url
+    self.params = params
+    self.json = json
+    return httpx.Response(200, json={"status": "success"})
+
+# Prefer: blank line before the return.
+def get(self, url: str) -> httpx.Response:
+    self.url = url
+    self.params = params
+    self.json = json
+
+    return httpx.Response(200, json={"status": "success"})
+```
+
 When you do add an inline comment, put it on its own line directly above the code it describes, with a blank line above the comment. Never trail a comment on the end of a code line.
 
 ```python
