@@ -7,6 +7,7 @@ tracker-client behavior or CLI rendering that can regress without requiring live
 """
 
 from datetime import datetime
+from functools import partial
 import json
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -68,6 +69,31 @@ class FakeClient:
 
     def close(self) -> None:
         pass
+
+
+def _handle_catalog_service_request(requests: list[httpx.Request], request: httpx.Request) -> httpx.Response:
+    requests.append(request)
+
+    if request.method == "GET":
+        return httpx.Response(
+            200,
+            json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
+        )
+
+    return httpx.Response(
+        200,
+        json={
+            "services": [
+                {
+                    "name": "swebench",
+                    "url": "https://swebench.benchmarks.vals.ai",
+                    "healthy": True,
+                    "latency_ms": 12,
+                    "error": None,
+                }
+            ]
+        },
+    )
 
 
 class MockTrackerService:
@@ -139,32 +165,7 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypa
     """
 
     requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-
-        if request.method == "GET":
-            return httpx.Response(
-                200,
-                json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
-            )
-
-        return httpx.Response(
-            200,
-            json={
-                "services": [
-                    {
-                        "name": "swebench",
-                        "url": "https://swebench.benchmarks.vals.ai",
-                        "healthy": True,
-                        "latency_ms": 12,
-                        "error": None,
-                    }
-                ]
-            },
-        )
-
-    transport = httpx.MockTransport(handler)
+    transport = httpx.MockTransport(partial(_handle_catalog_service_request, requests))
     original_client = httpx.Client
 
     def build_client(
