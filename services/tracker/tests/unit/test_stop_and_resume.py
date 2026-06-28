@@ -537,6 +537,9 @@ class TestStopAndResume:
     ):
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(
+            update={"sandbox_provider": "modal", "sandbox_provider_secret_name": "ModalSecrets"}
+        )
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -568,9 +571,55 @@ class TestStopAndResume:
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
         assert captured_request_json["concurrency"] == 20
+        assert captured_request_json["sandbox_provider"] == "modal"
+        assert captured_request_json["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.concurrency == 20
+
+    async def test_force_stop_uses_stored_provider_secret(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        """Force stop should use the provider secret stored with the run.
+
+        Test cases:
+        - A modal run is force-stopped with its stored provider and secret.
+        - The current harness config secret is not used for the stored run.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(
+            update={"sandbox_provider": "modal", "sandbox_provider_secret_name": "ModalSecrets"}
+        )
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        captured: dict[str, str | None] = {}
+
+        async def _mock_force_stop_sandboxes(
+            _benchmark_row: Benchmark,
+            _session: Session,
+            sandbox_provider_secret_name: str,
+            _aws: Any,
+            _org: Org,
+            *,
+            sandbox_provider: str,
+        ) -> None:
+            captured["sandbox_provider_secret_name"] = sandbox_provider_secret_name
+            captured["sandbox_provider"] = sandbox_provider
+
+        monkeypatch.setattr("main.force_stop_sandboxes", _mock_force_stop_sandboxes)
+
+        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true")
+
+        assert response.status_code == 200
+        assert captured == {
+            "sandbox_provider_secret_name": "ModalSecrets",
+            "sandbox_provider": "modal",
+        }
 
     async def test_retry_or_resume_applies_secrets_to_stored_contract(
         self,
@@ -933,6 +982,7 @@ class TestStopAndResume:
             harness_config.sandbox_provider_secret_name,
             harness_config.aws,
             self._test_org,
+            sandbox_provider="daytona",
         )
 
         database_session.refresh(benchmark_row)
