@@ -44,6 +44,14 @@ make diff
 make hotswap
 ```
 
+## Benchmark Catalog
+
+`BENCHMARK_CATALOG_URL` points the Valkyrie CLI at a benchmark catalog API. Set it to see the catalog of benchmarks hosted at that endpoint when running `valkyrie config service list`.
+
+```bash
+export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com
+```
+
 ## Teardown
 
 - Don't do this
