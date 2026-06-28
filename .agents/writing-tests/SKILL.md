@@ -290,34 +290,25 @@ tests/integration/<feature-submodule>/test_<feature_2>.py
 
 ## Running the suites
 
-Tests are split two ways: by directory (`tests/unit`, `tests/integration`) and by an `integration` marker. Register the marker in `pyproject.toml` so an unknown-marker typo is caught instead of silently mislabeling a test:
+A test's suite is determined by where it lives — by directory, not by any marker. Unit tests live under `tests/unit/` and integration tests live under the `tests/integration/` submodule. Placing a test in that directory is what makes it an integration test; there is no `@pytest.mark.integration` decorator to add.
 
-```toml
-[tool.pytest.ini_options]
-markers = [
-    "integration: tests that hit real APIs and require TEST_* credentials",
-]
-```
-
-Run the unit suite through the make target, which runs `tests/unit` with coverage:
+Run a suite by pointing pytest at its directory:
 
 ```bash
-make unit-test   # uv run pytest tests/unit --cov=src/valkyrie --cov-report=term-missing
+uv run pytest tests/unit          # unit suite
+uv run pytest tests/integration   # integration suite (requires TEST_* keys)
+uv run pytest                     # everything
 ```
 
-Select the integration suite with the marker:
+Every test runs on every PR and before merge, so write each one to be ready for that. Do not park a test behind `skip`/`xfail` to keep it from running — those get forgotten and rot over time.
+
+Coverage is available through `pytest-cov`. Point it at the package under test, `src/agentic_harness`:
 
 ```bash
-# Integration tests only — requires TEST_* keys to be set.
-pytest -m integration
-
-# Everything.
-pytest
+uv run pytest tests/unit --cov=src/agentic_harness --cov-report=term-missing
 ```
 
-Markers are for selecting suites, not for parking tests. Every test runs on every PR and before merge, so write each one to be ready for that. Do not use markers (`skip`, `xfail`, or a custom marker) to keep a test from running — those get forgotten and rot over time.
-
-Coverage is tracked with `pytest-cov` (wired into `make unit-test`). New code must ship with tests, and coverage should not regress in a PR.
+New code must ship with tests, and coverage should not regress in a PR.
 
 Full instructions for running the suites and the environment variables each one requires live in `services/tracker/README.md`. Treat that file as the source of truth for setup, and update it whenever the run steps or required variables change.
 
@@ -461,7 +452,7 @@ When creating integration tests, follow these rubrics.
 2. **Use real flows that mirror what end users do.** Drive the test through the same paths a user would take when using the application.
 
    ```python
-   @pytest.mark.integration
+   # Lives under tests/integration/ — that location makes it an integration test; no decorator.
    def test_deploy_command_runs_against_live_api(
        api_client: ApiClient, unique_service_name: str
    ) -> None:
