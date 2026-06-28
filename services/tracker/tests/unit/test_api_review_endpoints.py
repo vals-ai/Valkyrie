@@ -149,7 +149,7 @@ def test_benchmark_services_endpoint_uses_short_health_timeout(monkeypatch: pyte
     """Service listing should not wait long on slow benchmark health checks.
 
     Test cases:
-    - The endpoint passes a 500 ms timeout into the shared health-check HTTP client.
+    - The endpoint passes a 1 second timeout into the shared health-check HTTP client.
     """
     import tracker.api.benchmark_services as benchmark_services_api
 
@@ -177,7 +177,7 @@ def test_benchmark_services_endpoint_uses_short_health_timeout(monkeypatch: pyte
     )
 
     assert response.status_code == 200
-    assert captured_timeouts == [0.5]
+    assert captured_timeouts == [1.0]
 
 
 def test_benchmark_services_endpoint_returns_empty_services(monkeypatch: pytest.MonkeyPatch) -> None:

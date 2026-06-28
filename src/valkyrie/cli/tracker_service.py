@@ -78,6 +78,7 @@ class TrackerService:
         self,
         base_url: str = TRACKER_URL,
         timeout: int = 120,
+        require_config: bool = True,
     ):
         """
         Initialize tracker service client.
@@ -85,12 +86,13 @@ class TrackerService:
         Args:
             base_url: Base URL of tracker service
             timeout: Request timeout in seconds
+            require_config: Whether to require full harness config values
         """
         self._config = self._load_config()
         self._api_key = self._config.get("api_key")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._config_values = self.parse_config_keys()
+        self._config_values = self.parse_config_keys() if require_config else {}
         self._client = httpx.Client(timeout=timeout, headers=self._build_auth_headers())
 
     def __enter__(self) -> "TrackerService":

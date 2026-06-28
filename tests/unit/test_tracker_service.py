@@ -607,10 +607,12 @@ def test_service_list_merges_hosted_and_custom_services(
 
     monkeypatch.setattr(cli_main, "TrackerService", FakeTrackerService)
     monkeypatch.setattr(cli_main, "paginate_services", capture_paginated_services)
+    FakeTrackerService.require_config_values = []
 
     result = CliRunner().invoke(cli, ["config", "service", "list"])
 
     assert result.exit_code == 0, result.output
+    assert FakeTrackerService.require_config_values == [False]
     by_name = {service.name: service for service in captured_services}
     assert list(by_name) == ["swebench", "fab", "custombench"]
     assert by_name["swebench"].url == "http://local-swebench"

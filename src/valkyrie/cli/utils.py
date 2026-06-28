@@ -906,17 +906,6 @@ def resolve_webhook_config(
     return None, None
 
 
-def merge_benchmark_services(
-    hosted_services: list[BenchmarkServiceHealth],
-    custom_services: list[BenchmarkServiceHealth],
-) -> list[BenchmarkServiceHealth]:
-    """Merge hosted and custom services, with custom URLs overriding hosted services."""
-    services_by_name = {service.name: service for service in hosted_services}
-    for service in custom_services:
-        services_by_name[service.name] = service
-    return list(services_by_name.values())
-
-
 def _service_source_domain(service: BenchmarkServiceHealth) -> str:
     host = urlparse(service.url).netloc or service.url
     return host.removeprefix(f"{service.name}.")

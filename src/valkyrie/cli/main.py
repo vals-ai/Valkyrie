@@ -316,7 +316,7 @@ def service_list() -> None:
     custom_entries = [BenchmarkServiceEntry(name=name, url=url) for name, url in services.items()]
 
     try:
-        with TrackerService() as tracker:
+        with TrackerService(require_config=False) as tracker:
             services_by_name = {service.name: service for service in tracker.catalog_benchmark_services()}
             services_by_name.update({service.name: service for service in custom_entries})
             services_list = (

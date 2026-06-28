@@ -12,13 +12,13 @@ from tracker.auth import get_current_org
 from tracker.database.models import Org
 from tracker.types import BenchmarkServiceHealth, BenchmarkServicesRequest, BenchmarkServicesResponse
 
-HEALTH_CHECK_TIMEOUT_SECONDS = 0.5
+HEALTH_CHECK_TIMEOUT_SECONDS = 1.0
 
 router = APIRouter(prefix="/benchmark-services")
 
 
 async def _ping_service(client: httpx.AsyncClient, name: str, url: str) -> BenchmarkServiceHealth:
-    """Ping <url>/health with 2s timeout. Returns dict matching BenchmarkServiceHealth shape."""
+    """Ping <url>/health and return the service health shape."""
     health_url = f"{url}/health"
     start = time.monotonic()
     try:

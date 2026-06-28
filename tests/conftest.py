@@ -13,6 +13,10 @@ from valkyrie.cli import main as cli_main
 
 class FakeTrackerService:
     start_response: dict[str, object] = {}
+    require_config_values: list[bool] = []
+
+    def __init__(self, *, require_config: bool = True) -> None:
+        self.require_config_values.append(require_config)
 
     @staticmethod
     def benchmark_service_health(
