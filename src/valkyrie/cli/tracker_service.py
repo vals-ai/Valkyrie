@@ -234,7 +234,9 @@ class TrackerService:
             return provider_name, secret_name
 
         # Report valid provider names when the selected provider is unknown.
-        raise TrackerServiceError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {', '.join(providers)}")
+        raise TrackerServiceError(
+            f"Unknown sandbox provider '{provider_name}'. Configured providers: {', '.join(providers)}"
+        )
 
     def _build_harness_config_payload(self, sandbox_provider_secret_name: str) -> dict[str, Any]:
         """Build the Valkyrie config in a way that can be packed into a object"""
