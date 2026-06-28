@@ -288,17 +288,15 @@ def test_paginate_services_renders_latency_as_response_status(monkeypatch: pytes
 
     paginate_services(
         [
-            BenchmarkServiceHealth(
-                name="swebench",
-                url="https://swebench.benchmarks.vals.ai",
-                healthy=True,
+            FakeTrackerService.benchmark_service_health(
+                "swebench",
+                "https://swebench.benchmarks.vals.ai",
                 latency_ms=23,
             ),
-            BenchmarkServiceHealth(
-                name="vcb",
-                url="http://localhost:9000",
+            FakeTrackerService.benchmark_service_health(
+                "vcb",
+                "http://localhost:9000",
                 healthy=False,
-                latency_ms=None,
                 error="[Errno -2] Name or service not known",
             ),
         ]
