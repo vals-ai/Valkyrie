@@ -231,6 +231,16 @@ def test_dispatch_sends_payload(monkeypatch: pytest.MonkeyPatch) -> None:
 
 Avoid `# type: ignore` and `# noqa` / `# ruff: noqa`. Fix the underlying issue instead — add the annotation, cast the value, or restructure the code. Reach for an ignore only when a rule is genuinely wrong for a line, and when you must, scope it to the specific rule (`# type: ignore[reason]`, `# noqa: RULE`) and add a short comment explaining why.
 
+## When not to write tests
+
+Not every change needs a test. An unnecessary test adds maintenance cost, slows the suite, and creates noise in PRs without protecting any behavior. Do not write a test when:
+
+1. **There is no logic of yours to verify.** Trivial pass-throughs, constants, getters/setters, and one-line delegations have nothing meaningful to assert, and neither does third-party behavior — do not test the framework, the standard library, Pydantic, or an HTTP client. Assume dependencies work and test only how your code uses them (see unit rule 2).
+2. **The test would not catch a real bug.** A change-detector that restates the implementation line for line breaks on every refactor without ever finding a defect, and a test written purely to raise the coverage number protects nothing. Assert on observable behavior; coverage is a signal, not the goal.
+3. **The coverage already exists or the code is throwaway.** If an existing test exercises the path, extend it instead of adding a near-duplicate (see unit rules 9–10); if the code is a prototype or spike that will not ship, add tests once it becomes real.
+
+Choosing the wrong layer also counts as an unnecessary test. Do not write an integration test when no real API call or external dependency is involved — that behavior belongs in a unit test. Conversely, every real API call does need integration coverage (see the integration rubrics), so do not rely on a mocked unit test to prove a live call works.
+
 ## Test location
 
 Before creating tests, determine whether there are existing test modules that cover related functionality. Related tests should be coupled together.
