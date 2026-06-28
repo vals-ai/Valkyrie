@@ -1,4 +1,3 @@
-from collections.abc import Callable
 from datetime import datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -36,59 +35,6 @@ class FakeTrackerService:
 
     def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(status="success")
-
-
-class MockCatalogClient:
-    """Records catalog and tracker health-check calls for service-list tests."""
-
-    def __init__(self) -> None:
-        self.headers: object = None
-        self.get_url: str | None = None
-        self.post_url: str | None = None
-        self.json: dict[str, object] | None = None
-
-    def get(self, url: str, *, params: dict[str, object] | None = None) -> httpx.Response:
-        self.get_url = url
-
-        return httpx.Response(
-            200,
-            json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
-        )
-
-    def post(
-        self,
-        url: str,
-        *,
-        params: dict[str, object] | None = None,
-        json: dict[str, object],
-    ) -> httpx.Response:
-        self.post_url = url
-        self.json = json
-
-        return httpx.Response(
-            200,
-            json={
-                "services": [
-                    {
-                        "name": "swebench",
-                        "url": "https://swebench.benchmarks.vals.ai",
-                        "healthy": True,
-                        "latency_ms": 12,
-                        "error": None,
-                    }
-                ]
-            },
-        )
-
-    def close(self) -> None:
-        pass
-
-
-@pytest.fixture
-def mock_catalog_client_factory() -> Callable[[], MockCatalogClient]:
-    """Build fresh catalog client mocks for service-list tests."""
-
-    return MockCatalogClient
 
 
 @pytest.fixture

@@ -6,10 +6,9 @@ Covers tracker client request construction, config handling, and CLI output help
 tracker-client behavior or CLI rendering that can regress without requiring live services.
 """
 
-from collections.abc import Callable
 from datetime import datetime
+import json
 from pathlib import Path
-from typing import Protocol
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -69,15 +68,6 @@ class FakeClient:
 
     def close(self) -> None:
         pass
-
-
-class CatalogClientRecorder(Protocol):
-    """Tracks requests made through the catalog client mock."""
-
-    headers: object
-    get_url: str | None
-    post_url: str | None
-    json: dict[str, object] | None
 
 
 class MockTrackerService:
@@ -140,10 +130,7 @@ def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
     return {}
 
 
-def test_tracker_service_lists_catalog_services_through_health_endpoint(
-    monkeypatch: pytest.MonkeyPatch,
-    mock_catalog_client_factory: Callable[[], CatalogClientRecorder],
-) -> None:
+def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     """Catalog service listing should use catalog auth and the existing tracker health-check endpoint.
 
     Test cases:
@@ -151,12 +138,42 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(
     - Catalog URL is unset, so hosted entries are empty without calling the tracker API.
     """
 
-    client = mock_catalog_client_factory()
+    requests: list[httpx.Request] = []
 
-    def build_client(**_kwargs: object) -> CatalogClientRecorder:
-        client.headers = _kwargs.get("headers")
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
 
-        return client
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
+            )
+
+        return httpx.Response(
+            200,
+            json={
+                "services": [
+                    {
+                        "name": "swebench",
+                        "url": "https://swebench.benchmarks.vals.ai",
+                        "healthy": True,
+                        "latency_ms": 12,
+                        "error": None,
+                    }
+                ]
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.Client
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+
+        return original_client(transport=transport, timeout=timeout, headers=headers)
 
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(lambda: {"api_key": "catalog-key"}))
     monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
@@ -166,10 +183,12 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(
     tracker = TrackerService(base_url="http://tracker")
     response = tracker.list_benchmark_services()
 
-    assert client.headers == {"X-Api-Key": "catalog-key"}
-    assert client.get_url == "https://catalog.example/benchmark-services"
-    assert client.post_url == "http://tracker/benchmark-services"
-    assert client.json == {
+    assert requests[0].headers["X-Api-Key"] == "catalog-key"
+    assert [str(request.url) for request in requests] == [
+        "https://catalog.example/benchmark-services",
+        "http://tracker/benchmark-services",
+    ]
+    assert json.loads(requests[1].content) == {
         "services": [
             {
                 "name": "swebench",
@@ -181,22 +200,14 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(
     }
     assert [(service.name, service.latency_ms) for service in response.services] == [("swebench", 12)]
 
-    empty_client = mock_catalog_client_factory()
-
-    def build_empty_client(**_kwargs: object) -> CatalogClientRecorder:
-        empty_client.headers = _kwargs.get("headers")
-
-        return empty_client
-
+    requests.clear()
     monkeypatch.setattr(tracker_service_module, "BENCHMARK_CATALOG_URL", "")
-    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_empty_client)
 
     tracker_without_catalog = TrackerService(base_url="http://tracker")
     empty_response = tracker_without_catalog.list_benchmark_services()
 
     assert empty_response.services == []
-    assert empty_client.get_url is None
-    assert empty_client.post_url is None
+    assert requests == []
 
 
 def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
