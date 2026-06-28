@@ -302,10 +302,10 @@ uv run pytest                     # everything
 
 Every test runs on every PR and before merge, so write each one to be ready for that. Do not park a test behind `skip`/`xfail` to keep it from running — those get forgotten and rot over time.
 
-Coverage is available through `pytest-cov`. Point it at the package under test, `src/agentic_harness`:
+Coverage is available through `pytest-cov`. Point it at the package under test, `src/valkyrie`:
 
 ```bash
-uv run pytest tests/unit --cov=src/agentic_harness --cov-report=term-missing
+uv run pytest tests/unit --cov=src/valkyrie --cov-report=term-missing
 ```
 
 New code must ship with tests, and coverage should not regress in a PR.
