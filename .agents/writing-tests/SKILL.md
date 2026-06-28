@@ -210,6 +210,18 @@ def test_token_encodes_seeded_value(monkeypatch: pytest.MonkeyPatch) -> None:
     assert generate_token() == "2026-01-01-abc123"
 ```
 
+When the code under test sleeps (a retry or backoff loop, for example), patch `time.sleep` in the unit test so it returns immediately. The test still exercises the retry logic, but runs instantly instead of waiting out real delays. (This applies only to unit tests, where the wait is the *code's* delay; integration tests wait on a real system and must poll instead — see the integration rubrics.)
+
+```python
+def test_fetch_retries_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Skip the real backoff delay so the test does not actually wait.
+    monkeypatch.setattr("valkyrie.client.time.sleep", lambda _seconds: None)
+
+    result = fetch_with_retry(attempts=3)
+
+    assert result.status == "ok"
+```
+
 ### Fixture scope
 
 Default to `scope="function"` so each test gets a fresh instance and tests stay isolated. Widen the scope only for resources that are expensive to build and safe to share read-only across tests (for example, a session-scoped API key or a read-only client). Never share mutable state across tests through a widened fixture — that reintroduces cross-test coupling.
@@ -606,7 +618,7 @@ When creating integration tests, follow these rubrics.
        return value
    ```
 
-6. **Wait on conditions, not on `sleep`, and fix flakes rather than masking them.** Real systems are eventually consistent, but an arbitrary `sleep()` is both slow and flaky. Poll the actual condition with a bounded timeout instead. If a test is flaky, fix the root cause — do not paper over it with blanket reruns (`pytest-rerunfailures`), which hide real bugs and let failures merge.
+6. **Wait on conditions, not on `sleep`, and fix flakes rather than masking them.** Real systems are eventually consistent, but an arbitrary `sleep()` is both slow and flaky. Poll the actual condition with a bounded timeout instead. The wait here is real, so you cannot mock it away (unlike a unit test, where you patch `time.sleep`; see Determinism). If a test is flaky, fix the root cause — do not paper over it with blanket reruns (`pytest-rerunfailures`), which hide real bugs and let failures merge.
 
    ```python
    def wait_for_service_ready(api_client: ApiClient, name: str, timeout_seconds: float = 30.0) -> None:
