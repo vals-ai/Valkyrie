@@ -18,12 +18,11 @@ import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
+from conftest import FakeTrackerService
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
-    BenchmarkServiceEntry,
     BenchmarkServiceHealth,
-    BenchmarkServicesResponse,
     BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
@@ -94,58 +93,6 @@ def _handle_catalog_service_request(requests: list[httpx.Request], request: http
             ]
         },
     )
-
-
-class MockTrackerService:
-    """Provides hosted and custom service rows for CLI service-list tests."""
-
-    def __enter__(self) -> "MockTrackerService":
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        pass
-
-    def list_benchmark_services(self) -> BenchmarkServicesResponse:
-        return BenchmarkServicesResponse(
-            services=[
-                BenchmarkServiceHealth(
-                    name="swebench",
-                    url="https://swebench.benchmarks.vals.ai",
-                    healthy=True,
-                    latency_ms=10,
-                ),
-                BenchmarkServiceHealth(
-                    name="fab",
-                    url="https://fab.benchmarks.vals.ai",
-                    healthy=True,
-                    latency_ms=20,
-                ),
-            ]
-        )
-
-    def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
-        assert [(service.name, service.url) for service in services] == [
-            ("swebench", "http://local-swebench"),
-            ("custombench", "http://custombench"),
-        ]
-
-        return BenchmarkServicesResponse(
-            services=[
-                BenchmarkServiceHealth(
-                    name="swebench",
-                    url="http://local-swebench",
-                    healthy=False,
-                    latency_ms=None,
-                    error="timeout",
-                ),
-                BenchmarkServiceHealth(
-                    name="custombench",
-                    url="http://custombench",
-                    healthy=True,
-                    latency_ms=5,
-                ),
-            ]
-        )
 
 
 def empty_config() -> dict[str, object]:
@@ -660,7 +607,7 @@ def test_service_list_merges_hosted_and_custom_services(
     def capture_paginated_services(services: list[BenchmarkServiceHealth]) -> None:
         captured_services.extend(services)
 
-    monkeypatch.setattr(cli_main, "TrackerService", MockTrackerService)
+    monkeypatch.setattr(cli_main, "TrackerService", FakeTrackerService)
     monkeypatch.setattr(cli_main, "paginate_services", capture_paginated_services)
 
     result = CliRunner().invoke(cli, ["config", "service", "list"])

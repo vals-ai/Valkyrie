@@ -6,12 +6,25 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 from tracker.database.models import AgentContractRequest
+from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth, BenchmarkServicesResponse
 
 from valkyrie.cli import main as cli_main
 
 
 class FakeTrackerService:
     start_response: dict[str, object] = {}
+
+    @staticmethod
+    def benchmark_service_health(
+        name: str,
+        url: str,
+        *,
+        healthy: bool = True,
+        latency_ms: int | None = None,
+        error: str | None = None,
+    ) -> BenchmarkServiceHealth:
+
+        return BenchmarkServiceHealth(name=name, url=url, healthy=healthy, latency_ms=latency_ms, error=error)
 
     @staticmethod
     def get_benchmark_auth(_benchmark_name: str) -> None:
@@ -35,6 +48,27 @@ class FakeTrackerService:
 
     def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(status="success")
+
+    def list_benchmark_services(self) -> BenchmarkServicesResponse:
+        return BenchmarkServicesResponse(
+            services=[
+                self.benchmark_service_health("swebench", "https://swebench.benchmarks.vals.ai", latency_ms=10),
+                self.benchmark_service_health("fab", "https://fab.benchmarks.vals.ai", latency_ms=20),
+            ]
+        )
+
+    def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
+        assert [(service.name, service.url) for service in services] == [
+            ("swebench", "http://local-swebench"),
+            ("custombench", "http://custombench"),
+        ]
+
+        return BenchmarkServicesResponse(
+            services=[
+                self.benchmark_service_health("swebench", "http://local-swebench", healthy=False, error="timeout"),
+                self.benchmark_service_health("custombench", "http://custombench", latency_ms=5),
+            ]
+        )
 
 
 @pytest.fixture
