@@ -445,14 +445,10 @@ def test_run_label_cli_options_and_client_requests(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
     monkeypatch.setattr(TrackerService, "_build_harness_config_payload", harness_config_payload)
 
-    def provider_name(_tracker: TrackerService, _provider: str | None = None) -> str:
-        return "daytona"
+    def provider_config(_tracker: TrackerService, _provider: str | None = None) -> tuple[str, str]:
+        return "daytona", "DaytonaSecrets"
 
-    def provider_secret_name(_tracker: TrackerService, _provider: str | None = None) -> str:
-        return "DaytonaSecrets"
-
-    monkeypatch.setattr(TrackerService, "_sandbox_provider_name", provider_name)
-    monkeypatch.setattr(TrackerService, "_sandbox_provider_secret_name", provider_secret_name)
+    monkeypatch.setattr(TrackerService, "_sandbox_provider", provider_config)
     monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
 
     tracker = TrackerService(base_url="http://tracker")

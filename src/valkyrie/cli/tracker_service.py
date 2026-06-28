@@ -211,27 +211,13 @@ class TrackerService:
         """Automate building the headers from the config keys"""
         return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
 
-    def _sandbox_provider_secret_name(self, provider: str | None = None) -> str:
-        provider_name = self._sandbox_provider_name(provider)
-        providers = _sandbox_providers(self._config)
-        if providers:
-            return providers[provider_name]
-
-        flat = {key.lower(): value for key, value in self._config_values.items()}
-        secret_name = flat.get("daytona_secret_name")
-        if not secret_name:
-            raise TrackerServiceError(
-                "Missing sandbox provider config. Run `valkyrie config provider set <provider> <secret-name>`."
-            )
-        return secret_name
-
-    def _sandbox_provider_name(self, provider: str | None = None) -> str:
+    def _sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
         providers = _sandbox_providers(self._config)
         if providers:
             provider_name = provider if provider is not None else self._config.get("default_sandbox_provider")
             provider_name = str(provider_name or next(iter(providers)))
             if provider_name in providers:
-                return provider_name
+                return provider_name, providers[provider_name]
             configured = ", ".join(providers)
             raise TrackerServiceError(f"Unknown sandbox provider '{provider_name}'. Configured providers: {configured}")
 
@@ -239,12 +225,17 @@ class TrackerService:
             raise TrackerServiceError(
                 f"Unknown sandbox provider '{provider}'. Configure it with `valkyrie config provider set`."
             )
-        return "daytona"
+        flat = {key.lower(): value for key, value in self._config_values.items()}
+        secret_name = flat.get("daytona_secret_name")
+        if not secret_name:
+            raise TrackerServiceError(
+                "Missing sandbox provider config. Run `valkyrie config provider set <provider> <secret-name>`."
+            )
+        return "daytona", secret_name
 
-    def _build_harness_config_payload(self, provider: str | None = None) -> dict[str, Any]:
+    def _build_harness_config_payload(self, sandbox_provider_secret_name: str) -> dict[str, Any]:
         """Build the Valkyrie config in a way that can be packed into a object"""
         flat = {key.lower(): value for key, value in self._config_values.items()}
-        provider_secret_name = self._sandbox_provider_secret_name(provider)
         return {
             "aws": {
                 "aws_access_key_id": flat["aws_access_key_id"],
@@ -254,7 +245,7 @@ class TrackerService:
             "s3_bucket": flat["s3_bucket"],
             "log_group": flat["log_group"],
             "log_retention_policy": int(flat["log_retention_policy"]),
-            "sandbox_provider_secret_name": provider_secret_name,
+            "sandbox_provider_secret_name": sandbox_provider_secret_name,
         }
 
     def health_check(self) -> Response:
@@ -324,7 +315,7 @@ class TrackerService:
             TrackerServiceError: If start run fails
         """
         try:
-            provider_name = self._sandbox_provider_name(provider)
+            provider_name, sandbox_provider_secret_name = self._sandbox_provider(provider)
             payload = StartBenchmarkRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
@@ -334,7 +325,9 @@ class TrackerService:
                 slice_str=slice_str,
                 lambda_function=lambda_function,
                 dataset=dataset,
-                harness_config=HarnessConfig.model_validate(self._build_harness_config_payload(provider)),
+                harness_config=HarnessConfig.model_validate(
+                    self._build_harness_config_payload(sandbox_provider_secret_name)
+                ),
                 custom_benchmark_service=self.get_benchmark_service_url(benchmark_name)
                 if not ignore_custom_services
                 else None,
