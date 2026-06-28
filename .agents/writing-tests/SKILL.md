@@ -381,6 +381,28 @@ When creating unit tests, follow these rubrics.
 
    A plain helper function is fine — and clearer than a fixture — when the setup is a pure transform that takes arguments and returns a value with no teardown (for example, `_write_yaml(tmp_path, content)`). Use a fixture when the setup is shared, stateful, or needs teardown. Rule of thumb: parameterized, throwaway setup → helper; shared lifecycle → fixture.
 
+   When the same object is constructed in many tests — for example Click's `CliRunner` — expose it as a fixture instead of reinstantiating it in every test. Tests then receive it as a parameter, and the fixture's scope (see "Fixture scope") controls how often it is rebuilt: keep the default function scope unless construction is expensive and the object is safe to share.
+
+   ```python
+   # Avoid: every test rebuilds the same runner.
+   def test_cli_prints_help() -> None:
+       runner = CliRunner()
+       result = runner.invoke(cli, ["--help"])
+
+       assert result.exit_code == 0
+
+   # Prefer (in conftest.py): construct it once and inject it.
+   @pytest.fixture
+   def cli_runner() -> CliRunner:
+       return CliRunner()
+
+   # Tests receive the runner as a parameter.
+   def test_cli_prints_help(cli_runner: CliRunner) -> None:
+       result = cli_runner.invoke(cli, ["--help"])
+
+       assert result.exit_code == 0
+   ```
+
 7. **Keep tests isolated to the functionality under test.** Focus on the change you made, not on features or behavior that already existed and is covered elsewhere.
 
 8. **Follow the conventions of nearby tests.** Read other tests in the same module to learn the established patterns and format. Do not invent new formats or conventions when an existing one works.
