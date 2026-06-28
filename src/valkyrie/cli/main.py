@@ -46,7 +46,6 @@ from valkyrie.cli.utils import (
     format_run_start_details,
     format_start_benchmark_response,
     format_table,
-    merge_benchmark_services,
     paginate_agents,
     paginate_benchmarks,
     paginate_services,
@@ -318,12 +317,14 @@ def service_list() -> None:
 
     try:
         with TrackerService() as tracker:
-            hosted_services = tracker.list_benchmark_services().services
-            custom_services = tracker.check_benchmark_services(custom_entries).services if custom_entries else []
+            services_by_name = {service.name: service for service in tracker.catalog_benchmark_services()}
+            services_by_name.update({service.name: service for service in custom_entries})
+            services_list = (
+                tracker.check_benchmark_services(list(services_by_name.values())).services if services_by_name else []
+            )
     except TrackerServiceError as e:
         raise click.ClickException(str(e)) from e
 
-    services_list = merge_benchmark_services(hosted_services, custom_services)
     if not services_list:
         click.echo(click.style("No benchmark services configured.", fg="yellow"))
         return

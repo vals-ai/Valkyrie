@@ -145,6 +145,41 @@ def test_benchmark_services_endpoint_reuses_ping_client(monkeypatch: pytest.Monk
     assert ping_mock.await_count == 2
 
 
+def test_benchmark_services_endpoint_uses_short_health_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Service listing should not wait long on slow benchmark health checks.
+
+    Test cases:
+    - The endpoint passes a 500 ms timeout into the shared health-check HTTP client.
+    """
+    import tracker.api.benchmark_services as benchmark_services_api
+
+    captured_timeouts: list[float] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            captured_timeouts.append(timeout)
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_exc_info: object) -> None:
+            return None
+
+    async def fake_ping(_client: httpx.AsyncClient, name: str, url: str):
+        return {"name": name, "url": url, "healthy": True, "latency_ms": 1, "error": None}
+
+    monkeypatch.setattr(benchmark_services_api.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(benchmark_services_api, "_ping_service", AsyncMock(side_effect=fake_ping))
+
+    response = client.post(
+        "/benchmark-services",
+        json={"services": [{"name": "swebench", "url": "http://swebench"}]},
+    )
+
+    assert response.status_code == 200
+    assert captured_timeouts == [0.5]
+
+
 def test_benchmark_services_endpoint_returns_empty_services(monkeypatch: pytest.MonkeyPatch) -> None:
     import tracker.api.benchmark_services as benchmark_services_api
 

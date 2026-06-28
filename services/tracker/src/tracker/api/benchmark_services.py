@@ -12,7 +12,7 @@ from tracker.auth import get_current_org
 from tracker.database.models import Org
 from tracker.types import BenchmarkServiceHealth, BenchmarkServicesRequest, BenchmarkServicesResponse
 
-HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
+HEALTH_CHECK_TIMEOUT_SECONDS = 0.5
 
 router = APIRouter(prefix="/benchmark-services")
 

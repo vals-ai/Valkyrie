@@ -251,10 +251,10 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Health check failed: {e}") from e
 
-    def list_benchmark_services(self) -> BenchmarkServicesResponse:
-        """List hosted benchmark services visible to the configured tenant."""
+    def catalog_benchmark_services(self) -> list[BenchmarkServiceEntry]:
+        """List catalog benchmark services visible to the configured tenant."""
         if not BENCHMARK_CATALOG_URL:
-            return BenchmarkServicesResponse(services=[])
+            return []
 
         try:
             response = self._client.get(_benchmark_catalog_services_url())
@@ -263,13 +263,16 @@ class TrackerService:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to list benchmark services: {details}")
 
-            catalog_services = [
-                BenchmarkServiceEntry.model_validate(service) for service in response.json().get("services", [])
-            ]
-
-            return self.check_benchmark_services(catalog_services)
+            return [BenchmarkServiceEntry.model_validate(service) for service in response.json().get("services", [])]
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to list benchmark services: {e}") from e
+
+    def list_benchmark_services(self) -> BenchmarkServicesResponse:
+        """List hosted benchmark services visible to the configured tenant."""
+        services = self.catalog_benchmark_services()
+        if not services:
+            return BenchmarkServicesResponse(services=[])
+        return self.check_benchmark_services(services)
 
     def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
         """Health-check caller-provided benchmark services."""

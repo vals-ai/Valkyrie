@@ -50,22 +50,25 @@ class FakeTrackerService:
         return SimpleNamespace(status="success")
 
     def list_benchmark_services(self) -> BenchmarkServicesResponse:
-        return BenchmarkServicesResponse(
-            services=[
-                self.benchmark_service_health("swebench", "https://swebench.benchmarks.vals.ai", latency_ms=10),
-                self.benchmark_service_health("fab", "https://fab.benchmarks.vals.ai", latency_ms=20),
-            ]
-        )
+        return self.check_benchmark_services(self.catalog_benchmark_services())
+
+    def catalog_benchmark_services(self) -> list[BenchmarkServiceEntry]:
+        return [
+            BenchmarkServiceEntry(name="swebench", url="https://swebench.benchmarks.vals.ai"),
+            BenchmarkServiceEntry(name="fab", url="https://fab.benchmarks.vals.ai"),
+        ]
 
     def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
         assert [(service.name, service.url) for service in services] == [
             ("swebench", "http://local-swebench"),
+            ("fab", "https://fab.benchmarks.vals.ai"),
             ("custombench", "http://custombench"),
         ]
 
         return BenchmarkServicesResponse(
             services=[
                 self.benchmark_service_health("swebench", "http://local-swebench", healthy=False, error="timeout"),
+                self.benchmark_service_health("fab", "https://fab.benchmarks.vals.ai", latency_ms=20),
                 self.benchmark_service_health("custombench", "http://custombench", latency_ms=5),
             ]
         )
