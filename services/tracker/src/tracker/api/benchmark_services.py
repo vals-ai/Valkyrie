@@ -25,24 +25,6 @@ HEALTH_CHECK_TIMEOUT_SECONDS = 1.0
 router = APIRouter(prefix="/benchmark-services")
 
 
-def _benchmark_catalog_services_url() -> str:
-    if BENCHMARK_CATALOG_URL.endswith("/benchmark-services"):
-        return BENCHMARK_CATALOG_URL
-
-    return f"{BENCHMARK_CATALOG_URL}/benchmark-services"
-
-
-def _response_error_detail(response: httpx.Response) -> object:
-    try:
-        body = response.json()
-    except ValueError:
-        return response.text
-
-    if isinstance(body, dict):
-        return body.get("detail", response.text)
-    return response.text
-
-
 async def _ping_service(client: httpx.AsyncClient, name: str, url: str) -> BenchmarkServiceHealth:
     """Ping <url>/health and return the service health shape."""
     health_url = f"{url}/health"
@@ -76,12 +58,17 @@ async def catalog_benchmark_services(
 
     try:
         async with httpx.AsyncClient(timeout=CATALOG_REQUEST_TIMEOUT_SECONDS) as client:
-            response = await client.get(_benchmark_catalog_services_url(), headers=headers)
+            response = await client.get(f"{BENCHMARK_CATALOG_URL}/benchmark-services", headers=headers)
     except httpx.HTTPError as e:
         raise HTTPException(status_code=502, detail=f"Failed to list benchmark services: {e}") from e
 
     if response.status_code != 200:
-        raise HTTPException(status_code=response.status_code, detail=_response_error_detail(response))
+        try:
+            body = response.json()
+            detail = body.get("detail", response.text) if isinstance(body, dict) else response.text
+        except ValueError:
+            detail = response.text
+        raise HTTPException(status_code=response.status_code, detail=detail)
 
     return BenchmarkServiceCatalogResponse(
         services=[BenchmarkServiceEntry.model_validate(service) for service in response.json().get("services", [])]

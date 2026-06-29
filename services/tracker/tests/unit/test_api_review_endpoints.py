@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
+import tracker.api.benchmark_services as benchmark_services_api
 from main import app
 from tests.conftest import TEST_ORG_ID
 from tracker.database.models import (
@@ -32,8 +33,6 @@ def test_benchmark_services_endpoint_fetches_catalog(monkeypatch: pytest.MonkeyP
     - The endpoint forwards the caller API key to the catalog API.
     - Catalog responses are returned as benchmark service entries.
     """
-    import tracker.api.benchmark_services as benchmark_services_api
-
     requests: list[httpx.Request] = []
 
     async def handle_request(request: httpx.Request) -> httpx.Response:
@@ -124,8 +123,6 @@ def test_agent_download_url_returns_404_for_missing_agent(monkeypatch: pytest.Mo
 
 
 async def test_ping_service_appends_health_path() -> None:
-    import tracker.api.benchmark_services as benchmark_services_api
-
     fake_client = SimpleNamespace(requested_url=None)
 
     async def fake_get(url: str) -> httpx.Response:
@@ -146,8 +143,6 @@ async def test_ping_service_appends_health_path() -> None:
 
 
 async def test_ping_service_reports_request_errors() -> None:
-    import tracker.api.benchmark_services as benchmark_services_api
-
     async def fake_get(url: str) -> httpx.Response:
         raise httpx.ConnectError("boom", request=httpx.Request("GET", url))
 
@@ -165,8 +160,6 @@ async def test_ping_service_reports_request_errors() -> None:
 
 
 def test_benchmark_services_endpoint_reuses_ping_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    import tracker.api.benchmark_services as benchmark_services_api
-
     async def fake_ping(_client: httpx.AsyncClient, name: str, url: str):
         return {"name": name, "url": url, "healthy": True, "latency_ms": 1, "error": None}
 
@@ -195,8 +188,6 @@ def test_benchmark_services_endpoint_uses_short_health_timeout(monkeypatch: pyte
     Test cases:
     - The endpoint passes a 1 second timeout into the shared health-check HTTP client.
     """
-    import tracker.api.benchmark_services as benchmark_services_api
-
     captured_timeouts: list[float] = []
 
     class FakeAsyncClient:
@@ -225,8 +216,6 @@ def test_benchmark_services_endpoint_uses_short_health_timeout(monkeypatch: pyte
 
 
 def test_benchmark_services_endpoint_returns_empty_services(monkeypatch: pytest.MonkeyPatch) -> None:
-    import tracker.api.benchmark_services as benchmark_services_api
-
     ping_mock = AsyncMock()
     monkeypatch.setattr(benchmark_services_api, "_ping_service", ping_mock)
 
