@@ -5,16 +5,42 @@ from __future__ import annotations
 import asyncio
 import time
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request
 import httpx
 
 from tracker.auth import get_current_org
+from tracker.config import BENCHMARK_CATALOG_URL
 from tracker.database.models import Org
-from tracker.types import BenchmarkServiceHealth, BenchmarkServicesRequest, BenchmarkServicesResponse
+from tracker.types import (
+    BenchmarkServiceCatalogResponse,
+    BenchmarkServiceEntry,
+    BenchmarkServiceHealth,
+    BenchmarkServicesRequest,
+    BenchmarkServicesResponse,
+)
 
+CATALOG_REQUEST_TIMEOUT_SECONDS = 10.0
 HEALTH_CHECK_TIMEOUT_SECONDS = 1.0
 
 router = APIRouter(prefix="/benchmark-services")
+
+
+def _benchmark_catalog_services_url() -> str:
+    if BENCHMARK_CATALOG_URL.endswith("/benchmark-services"):
+        return BENCHMARK_CATALOG_URL
+
+    return f"{BENCHMARK_CATALOG_URL}/benchmark-services"
+
+
+def _response_error_detail(response: httpx.Response) -> object:
+    try:
+        body = response.json()
+    except ValueError:
+        return response.text
+
+    if isinstance(body, dict):
+        return body.get("detail", response.text)
+    return response.text
 
 
 async def _ping_service(client: httpx.AsyncClient, name: str, url: str) -> BenchmarkServiceHealth:
@@ -33,6 +59,33 @@ async def _ping_service(client: httpx.AsyncClient, name: str, url: str) -> Bench
         )
     except (httpx.TimeoutException, httpx.RequestError) as e:
         return BenchmarkServiceHealth(name=name, url=url, healthy=False, latency_ms=None, error=str(e))
+
+
+@router.get("", response_model=BenchmarkServiceCatalogResponse)
+async def catalog_benchmark_services(
+    request: Request,
+    _org: Org = Depends(get_current_org),
+) -> BenchmarkServiceCatalogResponse:
+    """Fetch catalog benchmark services visible to the caller."""
+    if not BENCHMARK_CATALOG_URL:
+        return BenchmarkServiceCatalogResponse(services=[])
+
+    headers: dict[str, str] = {}
+    if api_key := request.headers.get("x-api-key"):
+        headers["X-Api-Key"] = api_key
+
+    try:
+        async with httpx.AsyncClient(timeout=CATALOG_REQUEST_TIMEOUT_SECONDS) as client:
+            response = await client.get(_benchmark_catalog_services_url(), headers=headers)
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to list benchmark services: {e}") from e
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=response.status_code, detail=_response_error_detail(response))
+
+    return BenchmarkServiceCatalogResponse(
+        services=[BenchmarkServiceEntry.model_validate(service) for service in response.json().get("services", [])]
+    )
 
 
 @router.post("", response_model=BenchmarkServicesResponse)

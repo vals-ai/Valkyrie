@@ -179,6 +179,7 @@ class TrackerStack(Stack):
                 **db_env,
                 "REDIS_URL": redis_url,
                 "AUTH_REQUIRED": os.environ.get("AUTH_REQUIRED", "false"),
+                "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL", ""),
                 "DESCOPE_PROJECT_ID": os.environ.get("DESCOPE_PROJECT_ID", ""),
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },

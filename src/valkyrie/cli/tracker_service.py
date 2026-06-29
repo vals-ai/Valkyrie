@@ -37,7 +37,6 @@ from valkyrie.cli.exceptions import TrackerServiceError
 load_dotenv()
 
 TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
-BENCHMARK_CATALOG_URL = os.environ.get("BENCHMARK_CATALOG_URL", "").rstrip("/")
 _CONFIG_LOCATION = Path("~/.config/valkyrie/valkyrie.yaml")
 _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
@@ -60,13 +59,6 @@ def _response_error_detail(response: Response) -> Any:
     if isinstance(body, dict):
         return body.get("detail", response.text)
     return response.text
-
-
-def _benchmark_catalog_services_url() -> str:
-    if BENCHMARK_CATALOG_URL.endswith("/benchmark-services"):
-        return BENCHMARK_CATALOG_URL
-
-    return f"{BENCHMARK_CATALOG_URL}/benchmark-services"
 
 
 class TrackerService:
@@ -254,12 +246,9 @@ class TrackerService:
             raise TrackerServiceError(f"Health check failed: {e}") from e
 
     def catalog_benchmark_services(self) -> list[BenchmarkServiceEntry]:
-        """List catalog benchmark services visible to the configured tenant."""
-        if not BENCHMARK_CATALOG_URL:
-            return []
-
+        """List catalog benchmark services visible to the configured tenant from tracker."""
         try:
-            response = self._client.get(_benchmark_catalog_services_url())
+            response = self._client.get(f"{self._base_url}/benchmark-services")
 
             if response.status_code != 200:
                 details = _response_error_detail(response)

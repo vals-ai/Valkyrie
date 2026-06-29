@@ -25,6 +25,50 @@ from tracker.database.models import (
 client = TestClient(app)
 
 
+def test_benchmark_services_endpoint_fetches_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tracker should own catalog lookup so clients only need the tracker API.
+
+    Test cases:
+    - The endpoint forwards the caller API key to the catalog API.
+    - Catalog responses are returned as benchmark service entries.
+    """
+    import tracker.api.benchmark_services as benchmark_services_api
+
+    requests: list[httpx.Request] = []
+
+    async def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
+
+    def build_client(*, timeout: float) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=timeout)
+
+    monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
+    monkeypatch.setattr(benchmark_services_api.httpx, "AsyncClient", build_client)
+
+    response = client.get("/benchmark-services", headers={"X-Api-Key": "tenant-key"})
+
+    assert response.status_code == 200
+    assert [str(request.url) for request in requests] == ["https://catalog.example/benchmark-services"]
+    assert requests[0].headers["X-Api-Key"] == "tenant-key"
+    assert response.json() == {
+        "services": [
+            {
+                "name": "swebench",
+                "url": "https://swebench.benchmarks.vals.ai",
+                "auth_header_name": None,
+                "auth_secret_name": None,
+            }
+        ]
+    }
+
+
 def test_list_agents_uses_harness_config(monkeypatch: pytest.MonkeyPatch) -> None:
     import tracker.api.agents as agents_api
 

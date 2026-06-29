@@ -46,7 +46,7 @@ make hotswap
 
 ## Benchmark Catalog
 
-`BENCHMARK_CATALOG_URL` points the Valkyrie CLI at a benchmark catalog API. Set it to see the catalog of benchmarks hosted at that endpoint when running `valkyrie config service list`.
+`BENCHMARK_CATALOG_URL` points tracker-service at a benchmark catalog API. Set it for deployed tracker-service so `valkyrie config service list` can show the catalog of benchmarks hosted at that endpoint.
 
 ```bash
 export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com

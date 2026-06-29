@@ -103,12 +103,12 @@ def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
     return {}
 
 
-def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Catalog service listing should use catalog auth and the existing tracker health-check endpoint.
+def test_tracker_service_lists_catalog_services_through_tracker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catalog service listing should use tracker-owned catalog lookup and health checks.
 
     Test cases:
-    - Catalog URL is set, so hosted entries are fetched from the catalog and health-checked by the tracker.
-    - Catalog URL is unset, so hosted entries are empty without calling the tracker API.
+    - Hosted entries are fetched from the tracker service catalog endpoint.
+    - Hosted entries are health-checked by the existing tracker endpoint.
     """
 
     requests: list[httpx.Request] = []
@@ -125,7 +125,6 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypa
 
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(lambda: {"api_key": "catalog-key"}))
     monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
-    monkeypatch.setattr(tracker_service_module, "BENCHMARK_CATALOG_URL", "https://catalog.example")
     monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
 
     tracker = TrackerService(base_url="http://tracker")
@@ -133,7 +132,7 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypa
 
     assert requests[0].headers["X-Api-Key"] == "catalog-key"
     assert [str(request.url) for request in requests] == [
-        "https://catalog.example/benchmark-services",
+        "http://tracker/benchmark-services",
         "http://tracker/benchmark-services",
     ]
     assert json.loads(requests[1].content) == {
@@ -147,15 +146,6 @@ def test_tracker_service_lists_catalog_services_through_health_endpoint(monkeypa
         ]
     }
     assert [(service.name, service.latency_ms) for service in response.services] == [("swebench", 12)]
-
-    requests.clear()
-    monkeypatch.setattr(tracker_service_module, "BENCHMARK_CATALOG_URL", "")
-
-    tracker_without_catalog = TrackerService(base_url="http://tracker")
-    empty_response = tracker_without_catalog.list_benchmark_services()
-
-    assert empty_response.services == []
-    assert requests == []
 
 
 def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
