@@ -8,6 +8,7 @@ tracker-client behavior or CLI rendering that can regress without requiring live
 
 from datetime import datetime
 from functools import partial
+from collections.abc import Callable
 import json
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -639,7 +640,7 @@ def test_service_list_merges_hosted_and_custom_services(
     def capture_paginated_services(
         services: list[BenchmarkServiceEntry],
         *,
-        check_services,
+        check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]],
     ) -> None:
         captured_services.extend(check_services(services))
 
