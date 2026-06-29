@@ -208,7 +208,7 @@ async def create_sandbox(
     try:
         async with creation_semaphore:
             start = time.monotonic()
-            sandbox = await _create_sandbox(provider, sandbox_name, _provider_source(source), resources, labels, env_vars)
+            sandbox = await _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
     except Exception as e:
         incr("valkyrie.sandbox.create.errors", tags={"error_class": type(e).__name__})
         raise
@@ -576,6 +576,7 @@ async def run_agent(
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
+    runtime_source: SandboxSource | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -588,6 +589,7 @@ async def run_agent(
         cwd: Working directory to run the agent in
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
+        runtime_source: Optional source used to adapt agent commands to the task runtime
 
     Returns:
         AgentCausedExitReason if the agent was terminated abnormally but recoverably
@@ -597,6 +599,8 @@ async def run_agent(
         SandboxError: If the agent fails to run or times out
     """
     log_output(f"Running agent {contract.name}")
+    if runtime_source is not None:
+        sandbox = runtime_sandbox(sandbox, runtime_source)
 
     await install_agent_dependencies(sandbox, contract, log_output)
 
