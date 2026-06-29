@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -49,27 +50,29 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
-def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, ErrorResult | None]:
+def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, str | None]:
     """Fetches a task's evaluation result or error message depending on its status."""
-    eval_row: EvaluationResult | None = None
-    error_message: str | None = None
+    if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
+        return None, None
+
+    result_model = EvaluationResult if task.status == TaskStatus.FINISHED else ErrorResult
+    result_filters = (
+        result_model.task == task.id,
+        result_model.org_id == org.id,
+    )
+    result_order = desc(result_model.created_at)
 
     if task.status == TaskStatus.FINISHED:
-        eval_row = session.exec(
-            select(EvaluationResult)
-            .where(EvaluationResult.task == task.id)
-            .where(EvaluationResult.org_id == org.id)
-            .order_by(desc(EvaluationResult.created_at))
-        ).first()
-    elif task.status == TaskStatus.ERROR:
-        error_message = session.exec(
-            select(ErrorResult.error_message)
-            .where(ErrorResult.task == task.id)
-            .where(ErrorResult.org_id == org.id)
-            .order_by(desc(ErrorResult.created_at))
-        ).first()
+        result_select = select(EvaluationResult)
+    else:
+        result_select = select(ErrorResult.error_message)
 
-    return eval_row, error_message
+    result = session.exec(result_select.where(*result_filters).order_by(result_order)).first()
+
+    if task.status == TaskStatus.FINISHED:
+        return cast(EvaluationResult | None, result), None
+
+    return None, cast(str | None, result)
 
 
 @router.get(
