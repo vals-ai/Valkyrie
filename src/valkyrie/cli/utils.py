@@ -590,6 +590,10 @@ def format_no_benchmarks_found(
             click.echo(f"  • Started By: {', '.join(started_by)}")
 
 
+def _clear_pager() -> None:
+    click.echo("\033[2J\033[3J\033[1;1H", nl=False, color=True)
+
+
 def paginate_benchmarks(
     tracker: TrackerService,
     agent_name: str | None,
@@ -638,7 +642,7 @@ def paginate_benchmarks(
         total_count = response.total_count or 0
         total_pages = max(1, (total_count + limit - 1) // limit)
 
-        click.clear()
+        _clear_pager()
 
         if total_count == 0:
             format_no_benchmarks_found(agent_name, benchmark_name, model, dataset, label, status, started_by)
@@ -829,7 +833,7 @@ def paginate_agents(agents: list[tuple[str, datetime | None]], limit: int = 10) 
     total_pages = max(1, (total_count + limit - 1) // limit)
 
     while True:
-        click.clear()
+        _clear_pager()
 
         if total_count == 0:
             click.echo(click.style("No agents found.", fg="yellow"))
@@ -912,10 +916,6 @@ def _service_source_domain(service: BenchmarkServiceHealth) -> str:
     return host.removeprefix(f"{service.name}.")
 
 
-def _unchecked_service(service: BenchmarkServiceEntry | BenchmarkServiceHealth) -> BenchmarkServiceHealth:
-    return BenchmarkServiceHealth(name=service.name, url=service.url, healthy=False, latency_ms=None)
-
-
 def _health_checked_page(
     services: Sequence[BenchmarkServiceEntry | BenchmarkServiceHealth],
     cache: dict[str, BenchmarkServiceHealth],
@@ -927,9 +927,13 @@ def _health_checked_page(
         cache.update({service.name: service for service in check_services(entries)})
 
     for service in missing:
-        cache.setdefault(
-            service.name, service if isinstance(service, BenchmarkServiceHealth) else _unchecked_service(service)
-        )
+        if isinstance(service, BenchmarkServiceHealth):
+            cache.setdefault(service.name, service)
+        else:
+            cache.setdefault(
+                service.name,
+                BenchmarkServiceHealth(name=service.name, url=service.url, healthy=False, latency_ms=None),
+            )
 
     return [cache[service.name] for service in services]
 
@@ -946,20 +950,21 @@ def paginate_services(
         services: List of benchmark service health entries
         limit: Number of items per page
     """
-    current_page = 1
-    offset = 0
     total_count = len(services)
+    if total_count == 0:
+        _clear_pager()
+        click.echo(click.style("No benchmark services found.", fg="yellow"))
+        return
+
+    current_page = 1
     total_pages = max(1, (total_count + limit - 1) // limit)
     health_cache: dict[str, BenchmarkServiceHealth] = {}
 
     while True:
-        click.clear()
+        _clear_pager()
 
-        if total_count == 0:
-            click.echo(click.style("No benchmark services found.", fg="yellow"))
-            break
-
-        page_services = _health_checked_page(services[offset : offset + limit], health_cache, check_services)
+        page_start = (current_page - 1) * limit
+        page_services = _health_checked_page(services[page_start : page_start + limit], health_cache, check_services)
         rows = [
             {
                 "Benchmark": service.name,
@@ -985,9 +990,7 @@ def paginate_services(
 
         if char == "l" and current_page < total_pages:
             current_page += 1
-            offset += limit
         elif char == "h" and current_page > 1:
             current_page -= 1
-            offset -= limit
         elif char == "q" or char == "\x03":
             break

@@ -299,12 +299,16 @@ def test_paginate_services_renders_latency_as_response_status(monkeypatch: pytes
     assert [row["Latency"] for row in captured_rows] == ["23 ms", "-"]
 
 
-def test_paginate_services_health_checks_visible_pages_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_paginate_services_health_checks_visible_pages_only(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """Service pagination should defer health checks until a page is visible.
 
     Test cases:
     - The first page is health-checked before rendering.
     - Moving forward checks only the next page, and moving back reuses cached results.
+    - Each page render clears the previous table output.
     """
     service_entries = [
         BenchmarkServiceEntry(name="one", url="https://one.example"),
@@ -332,7 +336,6 @@ def test_paginate_services_health_checks_visible_pages_only(monkeypatch: pytest.
     ) -> None:
         rendered_pages.append([row["Benchmark"] for row in rows])
 
-    monkeypatch.setattr(cli_main.click, "clear", lambda: None)
     monkeypatch.setattr("valkyrie.cli.utils.click.getchar", lambda: next(keys))
     monkeypatch.setattr("valkyrie.cli.utils.format_table", fake_format_table)
 
@@ -340,6 +343,7 @@ def test_paginate_services_health_checks_visible_pages_only(monkeypatch: pytest.
 
     assert checked_pages == [["one", "two"], ["three"]]
     assert rendered_pages == [["one", "two"], ["three"], ["one", "two"]]
+    assert capsys.readouterr().out.count("\033[2J\033[3J\033[1;1H") == 3
 
 
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
