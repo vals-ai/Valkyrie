@@ -417,7 +417,7 @@ class TestParseYamlContract:
               - artifacts/turns.jsonl
               - path: artifacts/result.json
                 source: /logs/{task_id}/result.json
-            allowlist:
+            egress_allowlist:
               - https://api.openai.com
               - https://github.com
             secrets:
@@ -432,7 +432,7 @@ class TestParseYamlContract:
         artifact = cast(OutputArtifact, result.output_artifacts[1])
         assert artifact.path == "artifacts/result.json"
         assert artifact.source == "/logs/{task_id}/result.json"
-        assert result.allowlist == ["https://api.openai.com", "https://github.com"]
+        assert result.egress_allowlist == ["https://api.openai.com", "https://github.com"]
         assert result.secrets == {"API_KEY": "MySecretName"}
 
     def test_model_from_agent_config(self, tmp_path: Path) -> None:

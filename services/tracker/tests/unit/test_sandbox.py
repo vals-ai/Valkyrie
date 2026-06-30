@@ -318,14 +318,14 @@ class TestAgentOutputTelemetry:
         Restricts egress immediately before the agent runs and restores it afterward.
 
         Test cases:
-        - The sandbox allowlist comes from the agent contract.
+        - The sandbox egress allowlist comes from the agent contract.
         - Egress rules are cleared after the streamed agent command returns.
         """
         contract = AgentContractRequest(
             name="test-agent",
             install_cmd="",
             run_cmd="echo done",
-            allowlist=["https://api.openai.com", "https://github.com"],
+            egress_allowlist=["https://api.openai.com", "https://github.com"],
         )
         call_order: list[str] = []
 
@@ -343,8 +343,8 @@ class TestAgentOutputTelemetry:
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
 
-        async def modify_egress_rules(allowlist: list[str]) -> None:
-            assert allowlist == ["https://api.openai.com", "https://github.com"]
+        async def modify_egress_rules(egress_allowlist: list[str]) -> None:
+            assert egress_allowlist == ["https://api.openai.com", "https://github.com"]
             call_order.append("block")
 
         async def clear_egress_rules() -> None:

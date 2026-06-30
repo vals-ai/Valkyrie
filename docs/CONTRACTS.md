@@ -26,7 +26,7 @@ output_artifacts:
   - artifacts/summary.json
   - artifacts/turns.jsonl
 
-allowlist:
+egress_allowlist:
   - https://api.openai.com
   - https://github.com
 
@@ -173,12 +173,12 @@ benchmarks/run_id/task_0/artifacts/config.json
 benchmarks/run_id/task_0/artifacts/result.json
 ```
 
-### `allowlist: list`
+### `egress_allowlist: list`
 
-URLs the agent may reach while `run_cmd` is running. Valkyrie applies these egress rules after setup and clears them before evaluation.
+URLs the agent may reach while `run_cmd` is running. Use this to allow model provider requests while denying other outbound requests from the agent sandbox.
 
 ```yaml
-allowlist:
+egress_allowlist:
   - https://api.openai.com
   - https://github.com
 ```

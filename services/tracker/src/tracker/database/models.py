@@ -127,7 +127,7 @@ class AgentContractRequest(BaseModel):
     run_cmd: str = ""
     final_output: str | None = None
     output_artifacts: list[OutputArtifactSpec] = []
-    allowlist: list[str] = []
+    egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}
     kwargs: dict[str, str] = {}
 
