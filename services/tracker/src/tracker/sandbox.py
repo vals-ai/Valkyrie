@@ -1,7 +1,9 @@
 """Sandbox management utilities for the tracker service."""
 
 import base64
+import ipaddress
 import shlex
+import socket
 import time
 import uuid
 from asyncio import Semaphore
@@ -10,6 +12,7 @@ from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
+from urllib.parse import urlparse
 
 import logfire
 import sentry_sdk
@@ -72,6 +75,65 @@ bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
+
+
+def _add_unique_network(networks: list[str], seen_networks: set[str], network: str) -> None:
+    if network not in seen_networks:
+        networks.append(network)
+        seen_networks.add(network)
+
+
+def _network_for_ip(address: str) -> str:
+    ip_address = ipaddress.ip_address(address)
+    prefix_length = 32 if ip_address.version == 4 else 128
+
+    return f"{ip_address}/{prefix_length}"
+
+
+def _resolve_egress_allowlist(egress_allowlist: list[str]) -> list[str]:
+    networks: list[str] = []
+    seen_networks: set[str] = set()
+
+    for entry in egress_allowlist:
+        value = entry.strip()
+        if not value:
+            raise ValueError("egress_allowlist entries cannot be empty")
+
+        try:
+            _add_unique_network(networks, seen_networks, str(ipaddress.ip_network(value, strict=False)))
+            continue
+        except ValueError:
+            pass
+
+        parsed = urlparse(value if "://" in value else f"//{value}")
+        if not parsed.hostname:
+            raise ValueError(f"egress_allowlist entry is not a valid URL, host, or CIDR: {entry}")
+
+        for address_info in socket.getaddrinfo(parsed.hostname, None, type=socket.SOCK_STREAM):
+            socket_address = address_info[4]
+            address = socket_address[0]
+            if isinstance(address, str):
+                _add_unique_network(networks, seen_networks, _network_for_ip(address))
+
+    return networks
+
+
+async def _resolve_sandbox_dns_networks(sandbox: Sandbox) -> list[str]:
+    result = await _exec(sandbox, "cat /etc/resolv.conf")
+    networks: list[str] = []
+    seen_networks: set[str] = set()
+
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 2 or parts[0] != "nameserver":
+            continue
+
+        try:
+            _add_unique_network(networks, seen_networks, _network_for_ip(parts[1]))
+        except ValueError:
+            continue
+
+    return networks
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -596,7 +658,12 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     if contract.egress_allowlist:
-        await sandbox.modify_egress_rules(contract.egress_allowlist)
+        await sandbox.modify_egress_rules(
+            [
+                *_resolve_egress_allowlist(contract.egress_allowlist),
+                *await _resolve_sandbox_dns_networks(sandbox),
+            ]
+        )
 
     # Run the agent without including task directory dependencies
     try:
