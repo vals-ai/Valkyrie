@@ -7,7 +7,7 @@ import uuid
 from asyncio import Semaphore
 from collections import deque
 from collections.abc import Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
@@ -605,7 +605,8 @@ async def run_agent(
         )
     finally:
         if contract.egress_allowlist:
-            await sandbox.clear_egress_rules()
+            with suppress(Exception):
+                await sandbox.clear_egress_rules()
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         log_output(

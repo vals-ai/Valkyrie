@@ -56,6 +56,47 @@ async def test_sandbox(
         yield sandbox
 
 
+@pytest.fixture
+def egress_allowlist_probe_command() -> str:
+    """Command that checks an allowlisted host and a blocked host during run_agent."""
+    script = """
+import socket
+
+
+def can_connect(host):
+    try:
+        address = socket.getaddrinfo(host, 80, type=socket.SOCK_STREAM)[0][4][0]
+        with socket.create_connection((address, 80), timeout=3):
+            return True
+    except OSError as exc:
+        print(f"{host} blocked: {type(exc).__name__}", flush=True)
+        return False
+
+
+allowed = can_connect("example.com")
+blocked = can_connect("www.python.org")
+print(f"allowed={allowed} blocked={blocked}", flush=True)
+raise SystemExit(0 if allowed and not blocked else 1)
+"""
+
+    return f"python -c {shlex.quote(script)}"
+
+
+@pytest.fixture
+def restored_egress_probe_command() -> str:
+    """Command that verifies unrestricted egress returns after run_agent cleanup."""
+    script = """
+import socket
+
+
+address = socket.getaddrinfo("www.python.org", 80, type=socket.SOCK_STREAM)[0][4][0]
+with socket.create_connection((address, 80), timeout=3):
+    print("restored=True", flush=True)
+"""
+
+    return f"python -c {shlex.quote(script)}"
+
+
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
 
@@ -235,6 +276,8 @@ class TestSandboxOperations:
         test_sandbox: Sandbox,
         aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
+        egress_allowlist_probe_command: str,
+        restored_egress_probe_command: str,
     ) -> None:
         """Verify real provider egress rules are scoped to the agent command.
 
@@ -247,29 +290,10 @@ class TestSandboxOperations:
         def log_callback(message: str) -> None:
             logged_messages.append(message)
 
-        agent_script = """
-import socket
-
-
-def can_connect(host):
-    try:
-        address = socket.getaddrinfo(host, 80, type=socket.SOCK_STREAM)[0][4][0]
-        with socket.create_connection((address, 80), timeout=3):
-            return True
-    except OSError as exc:
-        print(f"{host} blocked: {type(exc).__name__}", flush=True)
-        return False
-
-
-allowed = can_connect("example.com")
-blocked = can_connect("www.python.org")
-print(f"allowed={allowed} blocked={blocked}", flush=True)
-raise SystemExit(0 if allowed and not blocked else 1)
-"""
         contract = AgentContractRequest(
             name="test_agent",
             install_cmd="true",
-            run_cmd=f"python -c {shlex.quote(agent_script)}",
+            run_cmd=egress_allowlist_probe_command,
             egress_allowlist=["http://example.com"],
         )
 
@@ -289,15 +313,7 @@ raise SystemExit(0 if allowed and not blocked else 1)
         output = "\n".join(logged_messages)
         assert "allowed=True blocked=False" in output
 
-        restored_script = """
-import socket
-
-
-address = socket.getaddrinfo("www.python.org", 80, type=socket.SOCK_STREAM)[0][4][0]
-with socket.create_connection((address, 80), timeout=3):
-    print("restored=True", flush=True)
-"""
-        restored_result = await test_sandbox.exec(f"python -c {shlex.quote(restored_script)}")
+        restored_result = await test_sandbox.exec(restored_egress_probe_command)
         assert restored_result.exit_code == 0
         assert "restored=True" in restored_result.stdout
 

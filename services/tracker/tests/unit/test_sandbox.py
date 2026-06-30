@@ -338,13 +338,13 @@ class TestAgentOutputTelemetry:
         )
         call_order: list[str] = []
 
-        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+        async def mock_exec(_sandbox: Any, command: str) -> ExecResult:
             if command.startswith("mkdir -p"):
                 call_order.append("mkdir")
                 return ExecResult(exit_code=0)
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        async def mock_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             call_order.append("run")
             return None, 0.0
 
@@ -362,8 +362,8 @@ class TestAgentOutputTelemetry:
         mock_sandbox.modify_egress_rules = AsyncMock(side_effect=modify_egress_rules)
         mock_sandbox.clear_egress_rules = AsyncMock(side_effect=clear_egress_rules)
 
-        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+        monkeypatch.setattr(sandbox_module, "_exec", mock_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", mock_stream_command_output)
 
         await run_agent(
             mock_sandbox,
