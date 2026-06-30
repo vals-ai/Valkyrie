@@ -309,6 +309,67 @@ class TestAgentOutputTelemetry:
 
         assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
 
+    async def test_run_agent_blocks_egress_only_during_agent_command(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        """
+        Restricts egress immediately before the agent runs and restores it afterward.
+
+        Test cases:
+        - The sandbox allowlist comes from the agent contract.
+        - Egress rules are cleared after the streamed agent command returns.
+        """
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="echo done",
+            allowlist=["https://api.openai.com", "https://github.com"],
+        )
+        call_order: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command.startswith("mkdir -p"):
+                call_order.append("mkdir")
+                return ExecResult(exit_code=0)
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            call_order.append("run")
+            return None, 0.0
+
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        async def modify_egress_rules(allowlist: list[str]) -> None:
+            assert allowlist == ["https://api.openai.com", "https://github.com"]
+            call_order.append("block")
+
+        async def clear_egress_rules() -> None:
+            call_order.append("clear")
+
+        mock_sandbox.modify_egress_rules = AsyncMock(side_effect=modify_egress_rules)
+        mock_sandbox.clear_egress_rules = AsyncMock(side_effect=clear_egress_rules)
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/testbed",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            benchmark_id="benchmark-123",
+        )
+
+        assert call_order == ["mkdir", "block", "run", "clear"]
+
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
         deps_before_sleep = _install_agent_dependencies.retry.before_sleep

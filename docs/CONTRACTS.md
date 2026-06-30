@@ -26,6 +26,10 @@ output_artifacts:
   - artifacts/summary.json
   - artifacts/turns.jsonl
 
+allowlist:
+  - https://api.openai.com
+  - https://github.com
+
 secrets:
   ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
 
@@ -168,6 +172,18 @@ benchmarks/run_id/task_0/artifacts/turns.jsonl
 benchmarks/run_id/task_0/artifacts/config.json
 benchmarks/run_id/task_0/artifacts/result.json
 ```
+
+### `allowlist: list`
+
+URLs the agent may reach while `run_cmd` is running. Valkyrie applies these egress rules after setup and clears them before evaluation.
+
+```yaml
+allowlist:
+  - https://api.openai.com
+  - https://github.com
+```
+
+Omit this field, or set it to an empty list, to keep unrestricted sandbox egress.
 
 ### `secrets: dict`
 

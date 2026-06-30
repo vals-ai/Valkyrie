@@ -595,10 +595,17 @@ async def run_agent(
     # Create cwd if it does not already exist
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
+    if contract.allowlist:
+        await sandbox.modify_egress_rules(contract.allowlist)
+
     # Run the agent without including task directory dependencies
-    exit_reason, agent_run_time = await stream_command_output(
-        sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
-    )
+    try:
+        exit_reason, agent_run_time = await stream_command_output(
+            sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
+        )
+    finally:
+        if contract.allowlist:
+            await sandbox.clear_egress_rules()
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         log_output(
