@@ -39,7 +39,6 @@ _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
-_resolve_egress_allowlist = getattr(sandbox_module, "_resolve_egress_allowlist")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 
 
@@ -209,43 +208,6 @@ class TestOutputArtifacts:
 
 
 class TestAgentOutputTelemetry:
-    def test_resolve_egress_allowlist_converts_urls_and_cidrs(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """
-        Converts URL hosts into CIDR rules while preserving explicit network entries.
-
-        Test cases:
-        - A URL host resolves to IPv4 and IPv6 single-host CIDR rules.
-        - Explicit IPv4 and IPv6 entries pass through as normalized CIDR strings.
-        """
-
-        def fake_getaddrinfo(
-            host: str, *_args: object, **_kwargs: object
-        ) -> list[tuple[object, object, object, object, tuple[str, int]]]:
-            assert host == "api.openai.com"
-
-            return [
-                (object(), object(), object(), object(), ("203.0.113.10", 0)),
-                (object(), object(), object(), object(), ("2001:db8::10", 0)),
-                (object(), object(), object(), object(), ("203.0.113.10", 0)),
-            ]
-
-        monkeypatch.setattr(sandbox_module.socket, "getaddrinfo", fake_getaddrinfo)
-
-        resolved = _resolve_egress_allowlist(
-            [
-                "https://api.openai.com/v1/responses",
-                "198.51.100.20/32",
-                "2001:db8::20",
-            ]
-        )
-
-        assert resolved == [
-            "203.0.113.10/32",
-            "2001:db8::10/128",
-            "198.51.100.20/32",
-            "2001:db8::20/128",
-        ]
-
     async def test_run_agent_uploads_declared_output_artifacts(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -391,7 +353,7 @@ class TestAgentOutputTelemetry:
         mock_sandbox.name = "task-alias"
 
         async def modify_egress_rules(egress_allowlist: list[str]) -> None:
-            assert egress_allowlist == ["203.0.113.10/32", "198.51.100.20/32", "169.254.20.10/32"]
+            assert egress_allowlist == ["https://api.openai.com", "https://github.com"]
             call_order.append("block")
 
         async def clear_egress_rules() -> None:
@@ -400,17 +362,7 @@ class TestAgentOutputTelemetry:
         mock_sandbox.modify_egress_rules = AsyncMock(side_effect=modify_egress_rules)
         mock_sandbox.clear_egress_rules = AsyncMock(side_effect=clear_egress_rules)
 
-        def resolve_egress_allowlist(egress_allowlist: list[str]) -> list[str]:
-            assert egress_allowlist == ["https://api.openai.com", "https://github.com"]
-
-            return ["203.0.113.10/32", "198.51.100.20/32"]
-
-        async def resolve_sandbox_dns_networks(_sandbox: Any) -> list[str]:
-            return ["169.254.20.10/32"]
-
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "_resolve_egress_allowlist", resolve_egress_allowlist)
-        monkeypatch.setattr(sandbox_module, "_resolve_sandbox_dns_networks", resolve_sandbox_dns_networks)
         monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
 
         await run_agent(

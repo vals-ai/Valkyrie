@@ -175,7 +175,7 @@ benchmarks/run_id/task_0/artifacts/result.json
 
 ### `egress_allowlist: list`
 
-URLs the agent may reach while `run_cmd` is running. Use this to allow model provider requests while denying other outbound requests from the agent sandbox; Valkyrie resolves each host into provider network rules at run time.
+URLs the agent may reach while `run_cmd` is running. Use this to allow model provider requests while denying other outbound requests from the agent sandbox; the sandbox provider resolves each host into its network rules at run time.
 
 ```yaml
 egress_allowlist:
