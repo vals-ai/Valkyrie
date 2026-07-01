@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from botocore.exceptions import ClientError
 from tracker.exceptions import S3Error
+from tracker.types import AWSCredentials
 
 from valkyrie.cli.s3_client import download_s3_path, list_agents, push_agent
 
@@ -151,19 +152,19 @@ def patch_push_s3(monkeypatch: pytest.MonkeyPatch, client: FakePushS3Client) -> 
 
 @pytest.mark.asyncio
 async def test_push_agent_with_version_uploads_immutable_copy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """--version uploads the mutable latest key first, then copies it to agents/{name}/{version}.zip."""
+    """--version uploads the immutable key first, then updates the mutable latest key from it."""
     (tmp_path / "agent.py").write_text("print('hi')")
     client = FakePushS3Client(existing_keys=set())
     patch_push_s3(monkeypatch, client)
 
     await push_agent("my-agent", tmp_path, version="0.5.0")
 
-    assert client.multipart_starts == ["agents/my-agent.zip"]
+    assert client.multipart_starts == ["agents/my-agent/0.5.0.zip"]
     assert client.copy_calls == [
         {
             "Bucket": "test-bucket",
-            "CopySource": {"Bucket": "test-bucket", "Key": "agents/my-agent.zip"},
-            "Key": "agents/my-agent/0.5.0.zip",
+            "CopySource": {"Bucket": "test-bucket", "Key": "agents/my-agent/0.5.0.zip"},
+            "Key": "agents/my-agent.zip",
         }
     ]
 
@@ -201,10 +202,10 @@ async def test_push_agent_refuses_overwriting_released_version(monkeypatch: pyte
 
 
 class FakeListS3Client:
-    """Stubs list_objects_v2 for list_agents tests."""
+    """Stubs paginated S3 listing for list_agents tests."""
 
-    def __init__(self, keys: list[str]) -> None:
-        self._keys = keys
+    def __init__(self, pages: list[list[str]]) -> None:
+        self._pages = pages
 
     def client(self, _name: str) -> "FakeListS3Client":
         return self
@@ -220,19 +221,50 @@ class FakeListS3Client:
     ) -> None:
         return None
 
-    async def list_objects_v2(self, **_kwargs: Any) -> dict[str, Any]:
-        return {
-            "Contents": [{"Key": key, "LastModified": datetime(2026, 1, 1, tzinfo=timezone.utc)} for key in self._keys]
-        }
+    def get_paginator(self, _name: str) -> "FakeListS3Client":
+        return self
+
+    async def paginate(self, **_kwargs: Any) -> Any:
+        for keys in self._pages:
+            yield {
+                "Contents": [{"Key": key, "LastModified": datetime(2026, 1, 1, tzinfo=timezone.utc)} for key in keys]
+            }
 
 
 @pytest.mark.asyncio
 async def test_list_agents_excludes_nested_versioned_keys(monkeypatch: pytest.MonkeyPatch) -> None:
     """Immutable bundles at agents/{name}/{version}.zip are not listed as phantom agents."""
-    client = FakeListS3Client(["agents/my-agent.zip", "agents/my-agent/0.5.0.zip"])
+    client = FakeListS3Client([["agents/my-agent.zip", "agents/my-agent/0.5.0.zip"]])
     monkeypatch.setattr("valkyrie.cli.s3_client._fetch_bucket_name", lambda: "test-bucket")
-    monkeypatch.setattr("valkyrie.cli.s3_client._s3_client", lambda: client)
+    monkeypatch.setattr(
+        "valkyrie.cli.s3_client._aws_credentials",
+        lambda: AWSCredentials(
+            aws_access_key_id="test",
+            aws_secret_access_key="test",
+            aws_default_region="us-east-1",
+        ),
+    )
+    monkeypatch.setattr("tracker.aws.s3._s3_client", lambda _aws: client)
 
     agents = await list_agents()
 
     assert [name for name, _ in agents] == ["my-agent"]
+
+
+@pytest.mark.asyncio
+async def test_list_agents_reads_all_s3_pages(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeListS3Client([["agents/first.zip"], ["agents/second.zip"]])
+    monkeypatch.setattr("valkyrie.cli.s3_client._fetch_bucket_name", lambda: "test-bucket")
+    monkeypatch.setattr(
+        "valkyrie.cli.s3_client._aws_credentials",
+        lambda: AWSCredentials(
+            aws_access_key_id="test",
+            aws_secret_access_key="test",
+            aws_default_region="us-east-1",
+        ),
+    )
+    monkeypatch.setattr("tracker.aws.s3._s3_client", lambda _aws: client)
+
+    agents = await list_agents()
+
+    assert [name for name, _ in agents] == ["first", "second"]

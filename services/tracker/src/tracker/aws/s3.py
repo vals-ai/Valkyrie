@@ -320,7 +320,7 @@ async def list_agents(aws: "AWSCredentials", s3_bucket: str) -> list[tuple[str, 
         async for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/"):
             for s3_object in page.get("Contents", []):
                 tail = s3_object["Key"][len("agents/") :]
-                if not tail.endswith(".zip"):
+                if "/" in tail or not tail.endswith(".zip"):
                     continue
                 agents.append((tail[: -len(".zip")], s3_object.get("LastModified")))
 

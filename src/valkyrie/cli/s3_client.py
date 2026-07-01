@@ -16,6 +16,7 @@ from tracker.aws.s3 import (
     copy_s3_object,
     get_benchmark_contract_s3_key,
     get_contract_s3_key,
+    list_agents as list_s3_agents,
     s3_object_exists,
 )
 from tracker.database.models import AgentContractRequest
@@ -202,6 +203,7 @@ async def push_agent(agent_name: str | None, agent_path: Path, version: str | No
         async with _s3_client() as s3_client:
             key = get_contract_s3_key(agent_name)
             versioned_key = f"agents/{agent_name}/{version}.zip" if version is not None else None
+            upload_key = versioned_key or key
 
             # Refuse to overwrite a released bundle before mutating the latest key.
             # cast: the aioboto3 stubs surface the entered client as Unknown.
@@ -217,7 +219,7 @@ async def push_agent(agent_name: str | None, agent_path: Path, version: str | No
 
             multipart = await s3_client.create_multipart_upload(
                 Bucket=bucket_name,
-                Key=key,
+                Key=upload_key,
                 Metadata={"uploaded_at": now},
             )
             upload_id = multipart["UploadId"]
@@ -236,7 +238,7 @@ async def push_agent(agent_name: str | None, agent_path: Path, version: str | No
 
                     response = await s3_client.upload_part(
                         Bucket=bucket_name,
-                        Key=key,
+                        Key=upload_key,
                         PartNumber=part_number,
                         UploadId=upload_id,
                         Body=chunk,
@@ -258,7 +260,7 @@ async def push_agent(agent_name: str | None, agent_path: Path, version: str | No
                 # Complete the multipart upload
                 await s3_client.complete_multipart_upload(
                     Bucket=bucket_name,
-                    Key=key,
+                    Key=upload_key,
                     UploadId=upload_id,
                     MultipartUpload={"Parts": parts},
                 )
@@ -266,7 +268,7 @@ async def push_agent(agent_name: str | None, agent_path: Path, version: str | No
                 # Abort the upload on error
                 await s3_client.abort_multipart_upload(
                     Bucket=bucket_name,
-                    Key=key,
+                    Key=upload_key,
                     UploadId=upload_id,
                 )
                 raise
@@ -274,8 +276,8 @@ async def push_agent(agent_name: str | None, agent_path: Path, version: str | No
             if versioned_key is not None:
                 await s3_client.copy_object(
                     Bucket=bucket_name,
-                    CopySource={"Bucket": bucket_name, "Key": key},
-                    Key=versioned_key,
+                    CopySource={"Bucket": bucket_name, "Key": versioned_key},
+                    Key=key,
                 )
                 click.echo(f"Published immutable bundle s3://{bucket_name}/{versioned_key}")
 
@@ -321,27 +323,7 @@ async def list_agents() -> list[tuple[str, datetime | None]]:
 
     click.echo(f"\r\033[KListing agents from bucket '{bucket_name}'...", nl=False)
 
-    async with _s3_client() as s3_client:
-        response = await s3_client.list_objects_v2(
-            Bucket=bucket_name,
-            Prefix="agents/",
-        )
-
-        agents: list[tuple[str, datetime | None]] = []
-        if "Contents" in response:
-            for obj in response["Contents"]:
-                # Extract agent name from a value like "agents/agent_name.zip".
-                # Exclude nested immutable bundles at "agents/{name}/{version}.zip".
-                key = obj["Key"]
-                match = re.match(r"agents/([^/]+?)\.zip$", cast(str, key))
-                if not match:
-                    continue
-
-                agent_name = match.group(1)
-                last_modified = cast(datetime, obj["LastModified"])
-                agents.append((agent_name, last_modified))
-
-        return agents
+    return await list_s3_agents(_aws_credentials(), bucket_name)
 
 
 @handle_s3_error(message="Failed to download agent from S3")
