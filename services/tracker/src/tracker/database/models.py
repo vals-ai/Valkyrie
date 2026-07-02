@@ -229,7 +229,7 @@ class Benchmark(SQLModel, table=True):
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
     finished_at: datetime | None = None
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
-    run_by_email: str | None = Field(default=None)
+    label: str | None = Field(default=None, index=True)
 
     error_message: str | None = Field(default=None)
     webhook_secret_name: str | None = Field(default=None)
@@ -275,6 +275,12 @@ class Benchmark(SQLModel, table=True):
     ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
+        # TODO: Remove this fallback after legacy benchmark rows have been migrated for a few weeks.
+        if self.arguments.sandbox_provider_secret_name:
+            harness_config = harness_config.model_copy(
+                update={"sandbox_provider_secret_name": self.arguments.sandbox_provider_secret_name}
+            )
+
         return StartBenchmarkRequest(
             contract=self.arguments.contract,
             benchmark_name=self.name,
@@ -285,7 +291,6 @@ class Benchmark(SQLModel, table=True):
             dataset=self.arguments.dataset,
             harness_config=harness_config,
             sandbox_provider=self.arguments.sandbox_provider,
-            sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,
@@ -325,7 +330,11 @@ class Benchmark(SQLModel, table=True):
 
         task_state_counts = self.fetch_task_state_counts(session)
         total_tasks = sum(task_state_counts.values())
-        finished_tasks = task_state_counts.get(TaskStatus.FINISHED, 0) + task_state_counts.get(TaskStatus.ERROR, 0)
+        finished_tasks = (
+            task_state_counts.get(TaskStatus.FINISHED, 0)
+            + task_state_counts.get(TaskStatus.ERROR, 0)
+            + task_state_counts.get(TaskStatus.STOPPED, 0)
+        )
 
         return BenchmarkTableRow(
             id=self.id,
@@ -340,8 +349,8 @@ class Benchmark(SQLModel, table=True):
             total_tasks=total_tasks,
             finished_tasks=finished_tasks,
             task_state_counts={k.value: v for k, v in task_state_counts.items()},
-            run_by_email=self.run_by_email,
             final_score=(self.final_evaluation.final_score if self.final_evaluation else None),
+            label=self.label,
         )
 
     def fetch_task_state_counts(self, session: Session) -> dict[TaskStatus, int]:

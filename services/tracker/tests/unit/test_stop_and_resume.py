@@ -344,6 +344,46 @@ class TestStopAndResume:
             "task_2": TaskStatus.PENDING,
         }
 
+    async def test_error_retry_with_task_ids_only_resets_requested_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        process_benchmark_env: None,
+    ):
+        """Explicit retry task ids on errored runs must not pull in every ERROR task.
+
+        Test cases:
+            - Terminal ERROR retry with --task-ids resets only the requested error task.
+            - Other ERROR rows stay ERROR for a later full retry.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.ERROR
+        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                Task(org_id=TEST_ORG_ID, task_id="task_requested", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+                Task(org_id=TEST_ORG_ID, task_id="task_other", benchmark=benchmark_row.id, status=TaskStatus.ERROR),
+            ]
+        )
+        database_session.commit()
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(),
+            retry=True,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=["task_requested"],
+            org=self._test_org,
+        )
+
+        task_statuses = {
+            task.task_id: task.status
+            for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+        assert verified_task_ids == ["task_requested"]
+        assert task_statuses == {"task_requested": TaskStatus.PENDING, "task_other": TaskStatus.ERROR}
+
     async def test_resume_runs_lazily_added_task_and_recomputes_final_score(
         self,
         contract: AgentContractRequest,
@@ -595,6 +635,9 @@ class TestStopAndResume:
     ):
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(
+            update={"sandbox_provider": "modal", "sandbox_provider_secret_name": "ModalSecrets"}
+        )
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -626,9 +669,55 @@ class TestStopAndResume:
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
         assert captured_request_json["concurrency"] == 20
+        assert captured_request_json["sandbox_provider"] == "modal"
+        assert captured_request_json["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.concurrency == 20
+
+    async def test_force_stop_uses_stored_provider_secret(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        """Force stop should use the provider secret stored with the run.
+
+        Test cases:
+        - A modal run is force-stopped with its stored provider and secret.
+        - The current harness config secret is not used for the stored run.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(
+            update={"sandbox_provider": "modal", "sandbox_provider_secret_name": "ModalSecrets"}
+        )
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        captured: dict[str, str | None] = {}
+
+        async def _mock_force_stop_sandboxes(
+            _benchmark_row: Benchmark,
+            _session: Session,
+            sandbox_provider_secret_name: str,
+            _aws: Any,
+            _org: Org,
+            *,
+            sandbox_provider: str,
+        ) -> None:
+            captured["sandbox_provider_secret_name"] = sandbox_provider_secret_name
+            captured["sandbox_provider"] = sandbox_provider
+
+        monkeypatch.setattr("main.force_stop_sandboxes", _mock_force_stop_sandboxes)
+
+        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true")
+
+        assert response.status_code == 200
+        assert captured == {
+            "sandbox_provider_secret_name": "ModalSecrets",
+            "sandbox_provider": "modal",
+        }
 
     async def test_retry_or_resume_applies_secrets_to_stored_contract(
         self,
@@ -991,6 +1080,7 @@ class TestStopAndResume:
             harness_config.sandbox_provider_secret_name,
             harness_config.aws,
             self._test_org,
+            sandbox_provider="daytona",
         )
 
         database_session.refresh(benchmark_row)

@@ -68,7 +68,7 @@ def client(monkeypatch, database_session: Session):
     main_mod.app.dependency_overrides.clear()
 
 
-def _seed(session: Session, n: int, run_by_email: str | None = None, start_status=None) -> list[Benchmark]:
+def _seed(session: Session, n: int, started_by_email: str | None = None, start_status=None) -> list[Benchmark]:
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
     rows = []
     for i in range(n):
@@ -80,7 +80,7 @@ def _seed(session: Session, n: int, run_by_email: str | None = None, start_statu
             name=f"bench-{i}",
             started_at=base + timedelta(minutes=i),
             status=status,
-            run_by_email=run_by_email,
+            started_by_email=started_by_email,
             arguments=BenchmarkArguments(
                 contract=AgentContractRequest(name="a", install_cmd="i", run_cmd="r"),
                 concurrency=1,
@@ -145,16 +145,9 @@ def test_legacy_offset_limit_still_works(client, database_session):
     assert data["total_count"] == 3
 
 
-def test_table_row_includes_run_by_email(client, database_session):
-    _seed(database_session, 1, run_by_email="emailtest@x.com")
+def test_table_row_includes_started_by_email(client, database_session):
+    _seed(database_session, 1, started_by_email="emailtest@x.com")
 
     resp = client.get("/fetch-benchmarks", headers={"x-api-key": "fake-key"})
     data = resp.json()
-    assert data["benchmarks"][0]["run_by_email"] == "emailtest@x.com"
-
-
-def test_table_row_run_by_email_null_when_unattributed(client, database_session):
-    _seed(database_session, 1, run_by_email=None)
-    resp = client.get("/fetch-benchmarks", headers={"x-api-key": "fake-key"})
-    data = resp.json()
-    assert data["benchmarks"][0]["run_by_email"] is None
+    assert data["benchmarks"][0]["started_by_email"] == "emailtest@x.com"

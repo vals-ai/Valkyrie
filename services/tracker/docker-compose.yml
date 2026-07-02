@@ -54,6 +54,7 @@ services:
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - AWS_REGION
       - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
+      - BENCHMARK_CATALOG_URL=${BENCHMARK_CATALOG_URL:-}
       - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:
@@ -86,6 +87,7 @@ services:
       - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
       - AWS_REGION
       - BENCHMARK_SERVICE_BASE_URL=${BENCHMARK_SERVICE_BASE_URL:-benchmarks.vals.ai}
+      - BENCHMARK_CATALOG_URL=${BENCHMARK_CATALOG_URL:-}
       - DAYTONA_HAPPY_EYEBALLS_DELAY=none
     depends_on:
       postgres:

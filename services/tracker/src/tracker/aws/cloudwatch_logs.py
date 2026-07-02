@@ -1,3 +1,4 @@
+import re
 import time
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
@@ -14,6 +15,18 @@ if TYPE_CHECKING:
     from tracker.types import AWSCredentials
 
 _created_streams: set[str] = set()
+
+
+def _sanitize_log_stream_name(task_id: str) -> str:
+    """Make a task_id safe to use as a CloudWatch logStreamName.
+
+    AWS requires log stream names to match the regex ``[^:*]*`` (no ``:`` or
+    ``*``). Some task ids carry these characters (e.g. model-suffixed ids like
+    ``provider/model:fast``), which makes ``CreateLogStream`` raise
+    ``InvalidParameterException`` and silently drops the run's logs. Replace the
+    forbidden characters so logging degrades gracefully instead of failing.
+    """
+    return re.sub(r"[:*]", "_", task_id)
 
 
 @lru_cache(maxsize=32)
@@ -62,7 +75,7 @@ def get_benchmark_log_url(benchmark_id: str, region: str, log_group: str, task_i
     base = f"https://{safe_region}.console.aws.amazon.com/cloudwatch/home?region={safe_region}"
     encoded_log_group = f"{safe_log_group}$252F{safe_benchmark_id}"
     if task_id:
-        safe_task_id = quote(task_id, safe="-_.")
+        safe_task_id = quote(_sanitize_log_stream_name(task_id), safe="-_.")
         return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}/log-events/{safe_task_id}"
 
     return f"{base}#logsV2:log-groups/log-group/{encoded_log_group}"
@@ -121,21 +134,22 @@ def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSCredential
 
     client = _cloudwatch_client(aws)
     log_group_name = f"{log_group}/{benchmark_id}"
+    stream_name = _sanitize_log_stream_name(task_id)
 
     if stream_key not in _created_streams:
         try:
-            client.create_log_stream(logGroupName=log_group_name, logStreamName=task_id)  # pyright: ignore[reportUnknownMemberType]
+            client.create_log_stream(logGroupName=log_group_name, logStreamName=stream_name)  # pyright: ignore[reportUnknownMemberType]
         except ClientError as e:
             if e.response.get("Error", {}).get("Code") != "ResourceAlreadyExistsException":
                 raise
         except BotoCoreError as e:
-            raise CloudWatchError(f"Failed to create log stream '{task_id}': {e}") from e
+            raise CloudWatchError(f"Failed to create log stream '{stream_name}': {e}") from e
         _created_streams.add(stream_key)
 
     try:
         client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
             logGroupName=log_group_name,
-            logStreamName=task_id,
+            logStreamName=stream_name,
             logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],
         )
     except (ClientError, BotoCoreError) as e:

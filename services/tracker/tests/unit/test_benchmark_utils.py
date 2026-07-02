@@ -28,7 +28,7 @@ from tracker.database.models import (
 from tracker.exceptions import TrackerServiceError
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
-    _parse_log_retention_policy,
+    _parse_log_retention_policy,  # pyright: ignore[reportPrivateUsage]
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
@@ -301,16 +301,18 @@ class TestBenchmarkUtils:
             concurrency=5,
             task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
             slice_str=":10",
-            harness_config=harness_config,
-            sandbox_provider_secret_name="ignored-request-secret",
+            harness_config=harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
+            sandbox_provider="modal",
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_starter)
-        assert benchmark_row.arguments.sandbox_provider_secret_name == harness_config.sandbox_provider_secret_name
+        assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
         recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
         assert recreated_start_benchmark_request == original_start_benchmark_request.model_copy(
-            update={"sandbox_provider_secret_name": harness_config.sandbox_provider_secret_name}
+            update={
+                "harness_config": harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
+            }
         )
 
         # Assert we have 5 tasks in the database
@@ -575,6 +577,7 @@ def _make_benchmark(
     *,
     started_by_email: str | None,
     name: str = "swebench",
+    label: str | None = None,
 ) -> Benchmark:
     bench = Benchmark(
         org_id=TEST_ORG_ID,
@@ -582,6 +585,7 @@ def _make_benchmark(
         arguments=BenchmarkArguments(contract=contract, concurrency=1),
         started_by_email=started_by_email,
         started_by_id="K-" + (started_by_email or "none"),
+        label=label,
     )
     session.add(bench)
     session.commit()
@@ -644,7 +648,7 @@ def test_fetch_filtered_started_by_none_skips_filter(database_session: Session, 
     _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
     _make_benchmark(database_session, contract, started_by_email=None)
 
-    rows, total, _ = fetch_filtered_benchmark_rows(
+    _, total, _ = fetch_filtered_benchmark_rows(
         FetchBenchmarksRequest(started_by=None, limit=10),
         database_session,
         org,
@@ -695,6 +699,29 @@ def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: S
     )
     assert total == 1
     assert rows[0].org_id == TEST_ORG_ID
+
+
+def test_fetch_filtered_by_label(database_session: Session, contract: AgentContractRequest):
+    """Label filtering should ignore case while preserving stored label casing.
+
+    Test cases:
+    - A mixed-case label returns when queried with different casing.
+    - Unlabeled and differently labeled runs are excluded.
+    """
+    org = database_session.get(Org, TEST_ORG_ID)
+    assert org is not None
+    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai", label="Nightly")
+    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai", label="manual")
+    _make_benchmark(database_session, contract, started_by_email="carol@vals.ai", label=None)
+
+    rows, total, _ = fetch_filtered_benchmark_rows(
+        FetchBenchmarksRequest(label="nightLY", limit=10),
+        database_session,
+        org,
+    )
+
+    assert total == 1
+    assert rows[0].label == "Nightly"
 
 
 def test_parse_log_retention_policy_rejects_invalid_value():

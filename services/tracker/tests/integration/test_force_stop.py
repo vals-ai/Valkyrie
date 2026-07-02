@@ -114,6 +114,7 @@ class TestForceStop:
                 daytona_secret_name,
                 aws_credentials,
                 Org(id=TEST_ORG_ID, name="default"),
+                sandbox_provider="daytona",
             )
 
         created_sandbox_name: list[str] = []
@@ -214,6 +215,7 @@ class TestForceStop:
                 daytona_secret_name,
                 aws_credentials,
                 Org(id=TEST_ORG_ID, name="default"),
+                sandbox_provider="daytona",
             )
         finally:
             release_sandboxes.set()

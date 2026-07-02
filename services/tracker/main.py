@@ -267,6 +267,12 @@ async def start_benchmark(
     # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
     header_harness_config = try_fetch_harness_config(http_request)
     effective_harness_config = header_harness_config or request.harness_config
+    # TODO: Drop the top-level fallback after legacy clients have aged out.
+    provider_secret_name = request.harness_config.sandbox_provider_secret_name or request.sandbox_provider_secret_name
+    if provider_secret_name:
+        effective_harness_config = effective_harness_config.model_copy(
+            update={"sandbox_provider_secret_name": provider_secret_name}
+        )
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
@@ -314,7 +320,6 @@ async def start_benchmark(
 
     # Create benchmark row only after pre-flight checks pass.
     benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
-    benchmark_row.run_by_email = http_request.headers.get("x-harness-run-by-email")
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))
@@ -443,6 +448,8 @@ async def fetch_benchmark(
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
+        label=benchmark_row.label,
+        final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
     )
 
 
@@ -642,8 +649,17 @@ async def stop_benchmark(
     await initiate_stop_benchmark(benchmark_row, session, force, org)
 
     if force:
+        # TODO: Drop the row fallback after legacy benchmark rows have aged out.
+        provider_secret_name = (
+            benchmark_row.arguments.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name
+        )
         await force_stop_sandboxes(
-            benchmark_row, session, harness_config.sandbox_provider_secret_name, harness_config.aws, org
+            benchmark_row,
+            session,
+            provider_secret_name,
+            harness_config.aws,
+            org,
+            sandbox_provider=benchmark_row.arguments.sandbox_provider,
         )
 
     return StopBenchmarkResponse(
@@ -767,6 +783,7 @@ async def fetch_benchmarks(
     started_by: list[str] | None = Query(default=None),
     model: str | None = Query(default=None),
     dataset: str | None = Query(default=None),
+    label: str | None = Query(default=None),
     started_after: datetime | None = Query(default=None),
     started_before: datetime | None = Query(default=None),
     order_by: Order = Query(default=Order.DESC),
@@ -791,6 +808,7 @@ async def fetch_benchmarks(
         started_by=started_by,
         model=model,
         dataset=dataset,
+        label=label,
         started_after=started_after,
         started_before=started_before,
         order_by=order_by,
@@ -828,8 +846,8 @@ async def fetch_benchmark_metadata(
     return benchmark_row.benchmark_metadata
 
 
-@app.get("/fetch-agent-outputs/{benchmark_id}", response_model=None)
-async def fetch_agent_outputs(
+@app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
+async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
@@ -837,10 +855,10 @@ async def fetch_agent_outputs(
     task_ids: list[str] | None = Query(default=None),
 ) -> StreamingResponse:
     """
-    Stream a tar file with agent outputs to the client.
+    Stream a tar file with run outputs to the client.
 
     Usage:
-    curl -X GET http://<endpoint>/fetch-agent-outputs/<benchmark_id>
+    curl -X GET http://<endpoint>/fetch-run-outputs/<benchmark_id>
 
     Returns:
         StreamingResponse

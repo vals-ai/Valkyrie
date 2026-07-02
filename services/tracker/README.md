@@ -31,6 +31,14 @@ make logs     # Tail container logs
 
 No `.env` file is required for local development (Docker Compose reads AWS credentials from your shell environment).
 
+Optional catalog config for local tracker-service use:
+
+```env
+BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com
+```
+
+Tracker-service reads this when running `valkyrie config service list` to show the catalog of benchmarks hosted at that endpoint.
+
 ## Tests
 
 ```bash

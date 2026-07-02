@@ -127,6 +127,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
     return Benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,
+        label=request.label,
         custom_benchmark_service=request.custom_benchmark_service,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
@@ -1396,6 +1397,10 @@ async def stream_benchmark_results(
                     s3_bucket_url=create_benchmark_url(
                         str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
                     ),
+                    label=fresh_benchmark.label,
+                    final_score=fresh_benchmark.final_evaluation.final_score
+                    if fresh_benchmark.final_evaluation
+                    else None,
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
@@ -1630,6 +1635,10 @@ def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: l
             filters.append(col(Task.task_id).in_(rerun_task_ids))
         return filters
 
+    if retry and rerun_task_ids:
+        filters.append(col(Task.task_id).in_(rerun_task_ids))
+        return filters
+
     retry_statuses = [TaskStatus.STOPPED]
     if retry:
         retry_statuses.append(TaskStatus.ERROR)
@@ -1678,6 +1687,9 @@ def fetch_filtered_benchmark_rows(
             query = query.where(or_(dataset_value == "default", dataset_value.is_(None)))
         else:
             query = query.where(dataset_value == request.dataset)
+
+    if request.label is not None:
+        query = query.where(func.lower(Benchmark.label) == request.label.lower())
 
     if request.benchmark_name:
         if len(request.benchmark_name) == 1:
@@ -1776,6 +1788,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 id=b.id,
                 name=b.name,
                 agent_name=b.arguments.contract.name,
+                label=b.label,
                 model=b.arguments.contract.model,
                 dataset=b.arguments.dataset or "default",
                 started_by_email=b.started_by_email,
@@ -1789,7 +1802,6 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                     + counts.get(TaskStatus.STOPPED, 0)
                 ),
                 task_state_counts={k.value: v for k, v in counts.items()},
-                run_by_email=b.run_by_email,
                 final_score=b.final_evaluation.final_score if b.final_evaluation else None,
             )
         )

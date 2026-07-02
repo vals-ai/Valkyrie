@@ -6,7 +6,7 @@ import shutil
 import tarfile
 import tempfile
 import urllib.request
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -20,6 +20,8 @@ from httpx import Response
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
+    BenchmarkServiceEntry,
+    BenchmarkServiceHealth,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
@@ -42,7 +44,6 @@ class ConfigValue(str, Enum):
     AWS_SECRET_ACCESS_KEY = "AWS_SECRET_ACCESS_KEY"
     AWS_DEFAULT_REGION = "AWS_DEFAULT_REGION"
     S3_BUCKET = "S3_BUCKET"
-    SANDBOX_PROVIDER_SECRET_NAME = "SANDBOX_PROVIDER_SECRET_NAME"
     LOG_GROUP = "LOG_GROUP"
     LOG_RETENTION_POLICY = "LOG_RETENTION_POLICY"
 
@@ -252,7 +253,11 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo("┌─ Run Status " + "─" * 66)
     click.echo(f"│ {'Benchmark:':<12} {benchmark_response.benchmark_name}")
     click.echo(f"│ {'Run ID:':<12} {benchmark_response.benchmark_id}")
+    if benchmark_response.label:
+        click.echo(f"│ {'Label:':<12} {benchmark_response.label}")
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
+    if benchmark_response.final_score is not None:
+        click.echo(f"│ {'Final score:':<12} {benchmark_response.final_score:.1f}%")
     click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
     analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
     if analysis_line is not None:
@@ -382,16 +387,14 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
     click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
-    click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {rid} --connect", fg="cyan"))
     click.echo(
         f"│ {'Get results:':<17} " + click.style(f"valkyrie run results {rid} --path ./results-{rid}.json", fg="cyan")
     )
     click.echo(f"│ {'Stop:':<17} " + click.style(f"valkyrie run stop {rid}", fg="cyan"))
     click.echo(f"│ {'Resume:':<17} " + click.style(f"valkyrie run resume {rid}", fg="cyan"))
     click.echo(f"│ {'Retry:':<17} " + click.style(f"valkyrie run retry {rid}", fg="cyan"))
-    click.echo(f"│ {'Agent outputs:':<17} " + click.style(f"valkyrie agent outputs {rid} --output-dir .", fg="cyan"))
+    click.echo(f"│ {'Run outputs:':<17} " + click.style(f"valkyrie run outputs {rid} --output-dir .", fg="cyan"))
     click.echo("└" + "─" * 79)
-    click.echo()
 
 
 def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
@@ -400,7 +403,7 @@ def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
     click.echo(
         f"│ {'Get results:':<17} " + click.style(f"valkyrie run results {rid} --path ./results-{rid}.json", fg="cyan")
     )
-    click.echo(f"│ {'Agent outputs:':<17} " + click.style(f"valkyrie agent outputs {rid} --output-dir .", fg="cyan"))
+    click.echo(f"│ {'Run outputs:':<17} " + click.style(f"valkyrie run outputs {rid} --output-dir .", fg="cyan"))
     if s3_url:
         click.echo(f"│ {'S3 view:':<17} " + click.style(s3_url, fg="cyan"))
     click.echo("└" + "─" * 79)
@@ -508,6 +511,7 @@ def format_fetch_benchmarks_response(
                 "ID": str(benchmark.id),
                 "Benchmark": benchmark.name,
                 "Agent": benchmark.agent_name,
+                "Label": benchmark.label or "-",
                 "Started By": benchmark.started_by_email or "—",
                 "Model": benchmark.model or "-",
                 "Dataset": benchmark.dataset or "default",
@@ -527,6 +531,7 @@ def format_fetch_benchmarks_response(
             "ID",
             "Benchmark",
             "Agent",
+            "Label",
             "Started By",
             "Model",
             "Dataset",
@@ -547,6 +552,7 @@ def format_no_benchmarks_found(
     benchmark_name: str | None,
     model: str | None,
     dataset: str | None,
+    label: str | None,
     status: str | None,
     started_by: list[str] | None = None,
 ) -> None:
@@ -558,13 +564,14 @@ def format_no_benchmarks_found(
         benchmark_name: Benchmark name filter
         model: Model name filter
         dataset: Dataset name filter
+        label: Run label filter
         status: Status filter
         started_by: Optional list of starter emails filter
     """
     click.echo()
     click.echo(click.style("No runs found matching the specified filters.", fg="yellow"))
     click.echo()
-    if any([agent_name, benchmark_name, model, dataset, status, started_by]):
+    if any([agent_name, benchmark_name, model, dataset, label, status, started_by]):
         click.echo("Filters applied:")
         if agent_name:
             click.echo(f"  • Agent: {agent_name}")
@@ -574,10 +581,16 @@ def format_no_benchmarks_found(
             click.echo(f"  • Model: {model}")
         if dataset:
             click.echo(f"  • Dataset: {dataset}")
+        if label:
+            click.echo(f"  • Label: {label}")
         if status:
             click.echo(f"  • Status: {status}")
         if started_by:
             click.echo(f"  • Started By: {', '.join(started_by)}")
+
+
+def _clear_pager() -> None:
+    click.echo("\033[2J\033[3J\033[1;1H", nl=False, color=True)
 
 
 def paginate_benchmarks(
@@ -586,6 +599,7 @@ def paginate_benchmarks(
     benchmark_name: str | None,
     model: str | None,
     dataset: str | None,
+    label: str | None,
     status: str | None,
     order_by: str,
     limit: int = 5,
@@ -600,6 +614,7 @@ def paginate_benchmarks(
         benchmark_name: Optional benchmark name filter
         model: Optional model name filter
         dataset: Optional dataset name filter
+        label: Optional run label filter
         status: Optional status filter
         order_by: Order (asc/desc)
         limit: Number of items per page
@@ -614,6 +629,7 @@ def paginate_benchmarks(
             benchmark_name=[benchmark_name] if benchmark_name else None,
             model=model,
             dataset=dataset,
+            label=label,
             status=[BenchmarkStatus(status)] if status else None,
             started_by=started_by,
             order_by=Order(order_by),
@@ -625,10 +641,10 @@ def paginate_benchmarks(
         total_count = response.total_count or 0
         total_pages = max(1, (total_count + limit - 1) // limit)
 
-        click.clear()
+        _clear_pager()
 
         if total_count == 0:
-            format_no_benchmarks_found(agent_name, benchmark_name, model, dataset, status, started_by)
+            format_no_benchmarks_found(agent_name, benchmark_name, model, dataset, label, status, started_by)
             break
 
         format_fetch_benchmarks_response(response, current_page, total_pages)
@@ -648,30 +664,30 @@ def paginate_benchmarks(
             break
 
 
-def download_agent_outputs(agent_outputs_response: Response, output_dir: Path) -> None:
+def download_run_outputs(run_outputs_response: Response, output_dir: Path) -> None:
     """
-    Download agent outputs from a response and extract them to a directory.
+    Download run outputs from a response and extract them to a directory.
 
     Args:
-        agent_outputs_response: Response with agent outputs
-        output_dir: Directory to save agent outputs
+        run_outputs_response: Response with run outputs
+        output_dir: Directory to save run outputs
     """
 
     # Create the output directory if it doesn't exist
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Download the agent outputs to a temporary file
+    # Download the run outputs to a temporary file
     with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_file:
         tmp_path = Path(tmp_file.name)
         click.echo("\r\033[KDownloading...", nl=False)
 
-        for chunk in agent_outputs_response.iter_bytes():
+        for chunk in run_outputs_response.iter_bytes():
             tmp_file.write(chunk)
 
     click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False)
 
-    # Extract the agent outputs to the output directory
+    # Extract the run outputs to the output directory
     with tarfile.open(tmp_path, "r") as tar:
         tar.extractall(output_dir)
 
@@ -816,7 +832,7 @@ def paginate_agents(agents: list[tuple[str, datetime | None]], limit: int = 10) 
     total_pages = max(1, (total_count + limit - 1) // limit)
 
     while True:
-        click.clear()
+        _clear_pager()
 
         if total_count == 0:
             click.echo(click.style("No agents found.", fg="yellow"))
@@ -894,29 +910,77 @@ def resolve_webhook_config(
     return None, None
 
 
-def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:
+def _service_source_domain(service: BenchmarkServiceHealth) -> str:
+    host = urlparse(service.url).netloc or service.url
+    return host.removeprefix(f"{service.name}.")
+
+
+def _health_checked_page(
+    services: Sequence[BenchmarkServiceEntry | BenchmarkServiceHealth],
+    cache: dict[str, BenchmarkServiceHealth],
+    check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]] | None,
+) -> list[BenchmarkServiceHealth]:
+    missing = [service for service in services if service.name not in cache]
+    if missing and check_services is not None:
+        entries = [BenchmarkServiceEntry(name=service.name, url=service.url) for service in missing]
+        cache.update({service.name: service for service in check_services(entries)})
+
+    for service in missing:
+        if isinstance(service, BenchmarkServiceHealth):
+            cache.setdefault(service.name, service)
+        else:
+            cache.setdefault(
+                service.name,
+                BenchmarkServiceHealth(name=service.name, url=service.url, healthy=False, latency_ms=None),
+            )
+
+    return [cache[service.name] for service in services]
+
+
+def paginate_services(
+    services: Sequence[BenchmarkServiceEntry | BenchmarkServiceHealth],
+    limit: int = 10,
+    check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]] | None = None,
+) -> None:
     """
     Interactive paginated display of services with vim-style navigation.
 
     Args:
-        services: List of tuples (benchmark_name, service_url)
+        services: List of benchmark service health entries
         limit: Number of items per page
     """
-    current_page = 1
-    offset = 0
     total_count = len(services)
+    if total_count == 0:
+        _clear_pager()
+        click.echo(click.style("No benchmark services found.", fg="yellow"))
+        return
+
+    current_page = 1
     total_pages = max(1, (total_count + limit - 1) // limit)
+    health_cache: dict[str, BenchmarkServiceHealth] = {}
 
     while True:
-        click.clear()
+        _clear_pager()
 
-        if total_count == 0:
-            click.echo(click.style("No custom services have been added.", fg="yellow"))
-            break
-
-        page_services = services[offset : offset + limit]
-        rows = [{"Benchmark": name, "Service URL": url} for name, url in page_services]
-        format_table(rows, ["Benchmark", "Service URL"], current_page, total_pages, total_count, "service")
+        page_start = (current_page - 1) * limit
+        page_services = _health_checked_page(services[page_start : page_start + limit], health_cache, check_services)
+        rows = [
+            {
+                "Benchmark": service.name,
+                "Service URL": service.url,
+                "Source": _service_source_domain(service),
+                "Latency": f"{service.latency_ms} ms" if service.latency_ms is not None else "-",
+            }
+            for service in page_services
+        ]
+        format_table(
+            rows,
+            ["Benchmark", "Service URL", "Source", "Latency"],
+            current_page,
+            total_pages,
+            total_count,
+            "service",
+        )
 
         if total_pages <= 1:
             break
@@ -925,9 +989,7 @@ def paginate_services(services: list[tuple[str, str]], limit: int = 10) -> None:
 
         if char == "l" and current_page < total_pages:
             current_page += 1
-            offset += limit
         elif char == "h" and current_page > 1:
             current_page -= 1
-            offset -= limit
         elif char == "q" or char == "\x03":
             break
