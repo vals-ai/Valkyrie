@@ -331,9 +331,7 @@ class TestAgentOutputTelemetry:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(
-            sandbox: Any, command: str, _log_output: Any
-        ) -> tuple[None, float]:
+        async def fake_stream_command_output(sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
             observed_sandboxes.append(sandbox)
             assert command == "cd /workspace && PYTHONSAFEPATH=1 echo done"
             return None, 0.0
