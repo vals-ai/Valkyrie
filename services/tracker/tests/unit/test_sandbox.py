@@ -5,7 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from benchmark_service import ExecResult, ImageSource, Resources, SnapshotSource
+from benchmark_service import ComposeSandbox, ComposeSource, ExecResult, ImageSource, Resources, SnapshotSource
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
@@ -309,6 +309,61 @@ class TestAgentOutputTelemetry:
 
         assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
 
+    async def test_run_agent_wraps_compose_runtime_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        """Compose runtime sources should route agent setup and execution through the wrapper.
+
+        Test cases:
+        - The mkdir and stream execution helpers receive a ComposeSandbox when runtime_source is compose.
+        """
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="echo done",
+        )
+        observed_sandboxes: list[Any] = []
+
+        async def fake_exec(sandbox: Any, command: str) -> ExecResult:
+            observed_sandboxes.append(sandbox)
+            assert command == "mkdir -p /workspace"
+            return ExecResult(exit_code=0)
+
+        async def fake_stream_command_output(
+            sandbox: Any, command: str, _log_output: Any
+        ) -> tuple[None, float]:
+            observed_sandboxes.append(sandbox)
+            assert command == "cd /workspace && PYTHONSAFEPATH=1 echo done"
+            return None, 0.0
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        mock_sandbox.state = "started"
+
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/workspace",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            runtime_source=ComposeSource(
+                outer=ImageSource(image="docker:28.3.3-dind"),
+                compose_command="docker compose -f /harbor/compose.yaml",
+            ),
+        )
+
+        assert observed_sandboxes
+        assert all(isinstance(sandbox, ComposeSandbox) for sandbox in observed_sandboxes)
+
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
         deps_before_sleep = _install_agent_dependencies.retry.before_sleep
@@ -326,7 +381,36 @@ class TestAgentOutputTelemetry:
             metric_source_name(ImageSource(image="registry.local:5000/vals/swebench@sha256:abcdef"))
             == "registry.local:5000/vals/swebench"
         )
+        assert (
+            metric_source_name(
+                ComposeSource(
+                    outer=ImageSource(image="public.ecr.aws/vals/harbor:task@sha256:abcdef"),
+                    compose_command="docker compose -f /harbor/compose.yaml",
+                )
+            )
+            == "public.ecr.aws/vals/harbor"
+        )
         assert metric_source_name(SnapshotSource(snapshot="base-python")) == "snapshot"
+
+    def test_compose_runtime_sandbox_wraps_only_compose_sources(self) -> None:
+        """Compose sources should adapt only the runtime sandbox surface.
+
+        Test cases:
+        - ComposeSource returns a ComposeSandbox wrapper around the outer sandbox.
+        - ImageSource returns the original sandbox unchanged.
+        """
+        runtime_sandbox = getattr(sandbox_module, "runtime_sandbox")
+        outer_sandbox = Mock()
+        compose_source = ComposeSource(
+            outer=ImageSource(image="docker:28.3.3-dind"),
+            compose_command="docker compose -f /harbor/compose.yaml",
+        )
+
+        wrapped = runtime_sandbox(outer_sandbox, compose_source)
+        unwrapped = runtime_sandbox(outer_sandbox, compose_source.outer)
+
+        assert isinstance(wrapped, ComposeSandbox)
+        assert unwrapped is outer_sandbox
 
     def test_sandbox_span_helpers_set_safe_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         span_attributes: dict[str, str | int] = {}
@@ -386,6 +470,39 @@ class TestAgentOutputTelemetry:
         assert request.resources == resources
         assert request.auto_stop_interval == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
         assert request.create_timeout == sandbox_module.SANDBOX_CREATE_TIMEOUT
+
+    async def test_create_sandbox_unwraps_compose_source_before_provider_create(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Compose sources should create the outer sandbox through the provider.
+
+        Test cases:
+        - Provider receives the compose outer image source instead of ComposeSource.
+        - Sandbox create span attributes use the provider source.
+        """
+        span_calls: list[tuple[str, str, int]] = []
+
+        def fake_create_span_attrs(sandbox_name: str, source: Any, resources: Any) -> None:
+            span_calls.append((sandbox_name, source.image, resources.vcpu))
+
+        monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
+
+        mock_sandbox = AsyncMock()
+        provider = AsyncMock()
+        provider.create_sandbox = AsyncMock(return_value=mock_sandbox)
+
+        resources = Resources(vcpu=2, memory=4, disk=5)
+        compose_source = ComposeSource(
+            outer=ImageSource(image="docker:28.3.3-dind"),
+            compose_command="docker compose -f /harbor/compose.yaml",
+        )
+        sandbox = await _create_sandbox(provider, "task-alias", compose_source, resources)
+
+        assert sandbox is mock_sandbox
+        assert span_calls == [("task-alias", "docker:28.3.3-dind", 2)]
+        request = provider.create_sandbox.await_args.args[0]
+        assert request.source == compose_source.outer
+        assert request.resources == resources
 
     async def test_delete_sandbox_raises_provider_errors(self) -> None:
         mock_sandbox = AsyncMock()
