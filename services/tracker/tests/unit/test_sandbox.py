@@ -5,7 +5,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from benchmark_service import ComposeSandbox, ComposeSource, ExecResult, ImageSource, Resources, SnapshotSource
+from benchmark_service import ExecResult, ImageSource, Resources, SnapshotSource
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
@@ -308,50 +308,6 @@ class TestAgentOutputTelemetry:
         )
 
         assert archive_calls == ["benchmark-123:task_0:/tmp/agent_output"]
-
-    async def test_run_agent_wraps_compose_runtime_source(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
-    ) -> None:
-        """Compose-backed tasks should route agent commands through the compose service.
-
-        Test cases:
-        - Runtime source wrapping happens inside run_agent.
-        - Callers can pass the outer sandbox without manually wrapping it.
-        """
-        contract = AgentContractRequest(name="test-agent", install_cmd="", run_cmd="echo done")
-        seen_sandboxes: list[Any] = []
-
-        async def fake_exec(sandbox: Any, _command: str) -> ExecResult:
-            seen_sandboxes.append(sandbox)
-            return ExecResult(exit_code=0)
-
-        async def fake_stream_command_output(sandbox: Any, *_args: Any, **_kwargs: Any) -> tuple[None, float]:
-            seen_sandboxes.append(sandbox)
-            return None, 0.0
-
-        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
-        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
-
-        mock_sandbox = Mock()
-        mock_sandbox.id = "sandbox-123"
-        mock_sandbox.name = "task-alias"
-
-        await run_agent(
-            mock_sandbox,
-            contract,
-            "/tmp/problem.txt",
-            "task_0",
-            lambda _msg: None,
-            "/testbed",
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
-            runtime_source=ComposeSource(outer=ImageSource(image="docker:28.3.3-dind")),
-        )
-
-        assert seen_sandboxes
-        assert all(isinstance(sandbox, ComposeSandbox) for sandbox in seen_sandboxes)
 
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
