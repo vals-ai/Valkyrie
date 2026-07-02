@@ -76,6 +76,11 @@ def write_valkyrie_config(config_path: Path, **overrides: object) -> Path:
 class FakeTrackerService:
     start_response: dict[str, object] = {}
     start_calls: list[dict[str, object]] = []
+    init_calls: int = 0
+    provider_validations: list[str | None] = []
+
+    def __init__(self) -> None:
+        self.__class__.init_calls += 1
 
     @staticmethod
     def get_benchmark_auth(_benchmark_name: str) -> None:
@@ -101,6 +106,11 @@ class FakeTrackerService:
     def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(status="success")
 
+    @classmethod
+    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str]:
+        cls.provider_validations.append(provider)
+        return provider or "daytona", "DaytonaSecrets"
+
     def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
         return provider or "daytona", "DaytonaSecrets"
 
@@ -110,6 +120,8 @@ def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[
     started_run_id = uuid4()
     streamed_run_ids: list[str] = []
     FakeTrackerService.start_calls = []
+    FakeTrackerService.init_calls = 0
+    FakeTrackerService.provider_validations = []
     FakeTrackerService.start_response = {
         "benchmark_name": "swebench",
         "agent_name": "agent",

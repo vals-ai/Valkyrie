@@ -192,12 +192,20 @@ def test_tracker_service_accepts_legacy_daytona_secret_config(tmp_path: Path, mo
 
 
 def test_tracker_service_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing provider config should point users to the provider setup command.
+
+    Test cases:
+    - A config without legacy or named provider secrets fails with actionable remediation.
+    """
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
 
-    with pytest.raises(TrackerServiceError, match="DAYTONA_SECRET_NAME"):
+    with pytest.raises(TrackerServiceError) as error:
         TrackerService(base_url="http://tracker")
+
+    assert "Missing sandbox provider config" in str(error.value)
+    assert "valkyrie config provider set <provider> <secret-name>" in str(error.value)
 
 
 def test_tracker_service_uses_first_named_provider_as_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -414,6 +422,7 @@ def test_run_start_provider_option_reaches_tracker(connect_stream_testbed: tuple
 
     Test cases:
     - `--provider modal` is forwarded as the runtime provider selection.
+    - Provider prevalidation avoids constructing a throwaway tracker client.
     """
     runner = CliRunner()
 
@@ -423,6 +432,8 @@ def test_run_start_provider_option_reaches_tracker(connect_stream_testbed: tuple
     )
 
     assert result.exit_code == 0, result.output
+    assert FakeTrackerService.provider_validations == ["modal"]
+    assert FakeTrackerService.init_calls == 1
     assert FakeTrackerService.start_calls[-1]["kwargs"]["provider"] == "modal"
 
 

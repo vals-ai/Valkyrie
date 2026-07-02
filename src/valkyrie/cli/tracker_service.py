@@ -41,6 +41,7 @@ _REQUIRED_CONFIG_KEYS = {
     "AWS_DEFAULT_REGION",
     "S3_BUCKET",
 }
+_PROVIDER_SETUP_COMMAND = "valkyrie config provider set <provider> <secret-name>"
 
 
 def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
@@ -60,6 +61,34 @@ def _response_error_detail(response: Response) -> Any:
     if isinstance(body, dict):
         return body.get("detail", response.text)
     return response.text
+
+
+def _resolve_sandbox_provider_config(
+    config: dict[str, Any], config_values: dict[str, str], provider: str | None = None
+) -> tuple[str, str]:
+    providers = _sandbox_providers(config)
+
+    # Fall back to the legacy Daytona secret when named providers are not configured.
+    if not providers:
+        if provider is not None:
+            raise TrackerServiceError(
+                f"Unknown sandbox provider '{provider}'. Configure it with `{_PROVIDER_SETUP_COMMAND}`."
+            )
+        secret_name = config_values.get("DAYTONA_SECRET_NAME")
+        if not secret_name:
+            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
+        return "daytona", secret_name
+
+    # Use the requested provider, configured default, or first configured provider.
+    provider_name = str(provider or config.get("default_sandbox_provider") or next(iter(providers)))
+    secret_name = providers.get(provider_name)
+    if secret_name is not None:
+        return provider_name, secret_name
+
+    # Report valid provider names when the selected provider is unknown.
+    raise TrackerServiceError(
+        f"Unknown sandbox provider '{provider_name}'. Configured providers: {', '.join(providers)}"
+    )
 
 
 class TrackerService:
@@ -187,13 +216,13 @@ class TrackerService:
             harness_config: dict[str, Any] = yaml.safe_load(f) or {}
 
         missing = _REQUIRED_CONFIG_KEYS - harness_config.keys()
-        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
-            missing.add("DAYTONA_SECRET_NAME")
         if missing:
             raise TrackerServiceError(
                 f"Missing required config keys: {', '.join(sorted(missing))}. "
                 "Run `valkyrie config init` to initialize the Valkyrie config or `valkyrie config set` to update an existing config"
             )
+        if not (_sandbox_providers(harness_config) or "DAYTONA_SECRET_NAME" in harness_config):
+            raise TrackerServiceError(f"Missing sandbox provider config. Run `{_PROVIDER_SETUP_COMMAND}`.")
 
         # Keys that are managed separately and should not be sent as harness headers
         _SKIP_HEADER_KEYS = {"webhook", "api_key", "default_sandbox_provider"}
@@ -207,36 +236,27 @@ class TrackerService:
 
         return config_keys
 
+    @classmethod
+    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str]:
+        """Validate sandbox provider config without opening a tracker client.
+
+        Arguments
+        - provider: Optional provider name supplied by the CLI.
+
+        Returns
+        - The resolved provider name and cloud secret name.
+
+        Raises
+        - TrackerServiceError: If provider config is missing or the provider is unknown.
+        """
+        return _resolve_sandbox_provider_config(cls._load_config(), cls.parse_config_keys(), provider)
+
     def _build_harness_headers(self) -> dict[str, str]:
         """Automate building the headers from the config keys"""
         return {f"X-Harness-{re.sub(r'_', '-', key).title()}": value for key, value in self._config_values.items()}
 
     def resolve_sandbox_provider(self, provider: str | None = None) -> tuple[str, str]:
-        providers = _sandbox_providers(self._config)
-
-        # Fall back to the legacy Daytona secret when named providers are not configured.
-        if not providers:
-            if provider is not None:
-                raise TrackerServiceError(
-                    f"Unknown sandbox provider '{provider}'. Configure it with `valkyrie config provider set`."
-                )
-            secret_name = self._config_values.get("DAYTONA_SECRET_NAME")
-            if not secret_name:
-                raise TrackerServiceError(
-                    "Missing sandbox provider config. Run `valkyrie config provider set <provider> <secret-name>`."
-                )
-            return "daytona", secret_name
-
-        # Use the requested provider, configured default, or first configured provider.
-        provider_name = str(provider or self._config.get("default_sandbox_provider") or next(iter(providers)))
-        secret_name = providers.get(provider_name)
-        if secret_name is not None:
-            return provider_name, secret_name
-
-        # Report valid provider names when the selected provider is unknown.
-        raise TrackerServiceError(
-            f"Unknown sandbox provider '{provider_name}'. Configured providers: {', '.join(providers)}"
-        )
+        return _resolve_sandbox_provider_config(self._config, self._config_values, provider)
 
     def _build_harness_config_payload(self, sandbox_provider_secret_name: str) -> dict[str, Any]:
         """Build the Valkyrie config in a way that can be packed into a object"""
