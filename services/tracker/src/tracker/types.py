@@ -258,6 +258,10 @@ class BenchmarkServicesResponse(BaseModel):
     services: list[BenchmarkServiceHealth]
 
 
+class BenchmarkServiceCatalogResponse(BaseModel):
+    services: list[BenchmarkServiceEntry]
+
+
 class BenchmarkServicesRequest(BaseModel):
     services: list[BenchmarkServiceEntry] = Field(default_factory=list)
 

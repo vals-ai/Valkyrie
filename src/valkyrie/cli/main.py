@@ -12,7 +12,13 @@ import yaml
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 from tracker.database.models import BenchmarkStatus, RetryMode
 from tracker.exceptions import S3Error
-from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
+from tracker.types import (
+    BenchmarkServiceEntry,
+    FinalViewResponse,
+    Order,
+    RetrieveResultsResponse,
+    StartBenchmarkResponse,
+)
 
 from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
@@ -405,7 +411,7 @@ def service_remove(name: str) -> None:
 
 @service.command("list")
 def service_list() -> None:
-    """List all custom benchmark service URL overrides."""
+    """List hosted and custom benchmark services."""
     if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -413,13 +419,23 @@ def service_list() -> None:
         current: dict[str, Any] = yaml.safe_load(f) or {}
 
     services: dict[str, str] = current.get("custom_benchmark_services") or {}
-    if not services:
-        click.echo(click.style("No custom service URLs configured.", fg="yellow"))
-        return
+    custom_entries = [BenchmarkServiceEntry(name=name, url=url) for name, url in services.items()]
 
-    # Create a table of all the services that the user has inside of their config
-    services_list = list(services.items())
-    paginate_services(services_list)
+    try:
+        with TrackerService(require_config=False) as tracker:
+            services_by_name = {service.name: service for service in tracker.catalog_benchmark_services()}
+            services_by_name.update({service.name: service for service in custom_entries})
+            services_list = list(services_by_name.values())
+            if not services_list:
+                click.echo(click.style("No benchmark services configured.", fg="yellow"))
+                return
+
+            paginate_services(
+                services_list,
+                check_services=lambda entries: tracker.check_benchmark_services(entries).services,
+            )
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e)) from e
 
 
 @config.group()

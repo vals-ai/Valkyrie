@@ -15,6 +15,9 @@ from dotenv import load_dotenv
 from httpx._models import Response
 from tracker.database.models import AgentContractRequest, RetryMode
 from tracker.types import (
+    BenchmarkServiceEntry,
+    BenchmarkServicesRequest,
+    BenchmarkServicesResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarkTasksRequest,
@@ -100,6 +103,7 @@ class TrackerService:
         self,
         base_url: str = TRACKER_URL,
         timeout: int = 120,
+        require_config: bool = True,
     ):
         """
         Initialize tracker service client.
@@ -107,12 +111,13 @@ class TrackerService:
         Args:
             base_url: Base URL of tracker service
             timeout: Request timeout in seconds
+            require_config: Whether to require full harness config values
         """
         self._config = self._load_config()
         self._api_key = self._config.get("api_key")
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
-        self._config_values = self.parse_config_keys()
+        self._config_values = self.parse_config_keys() if require_config else {}
         self._client = httpx.Client(timeout=timeout, headers=self._build_auth_headers())
 
     def __enter__(self) -> "TrackerService":
@@ -289,6 +294,40 @@ class TrackerService:
             return response
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Health check failed: {e}") from e
+
+    def catalog_benchmark_services(self) -> list[BenchmarkServiceEntry]:
+        """List catalog benchmark services visible to the configured tenant from tracker."""
+        try:
+            response = self._client.get(f"{self._base_url}/benchmark-services")
+
+            if response.status_code != 200:
+                details = _response_error_detail(response)
+                raise TrackerServiceError(f"Failed to list benchmark services: {details}")
+
+            return [BenchmarkServiceEntry.model_validate(service) for service in response.json().get("services", [])]
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to list benchmark services: {e}") from e
+
+    def list_benchmark_services(self) -> BenchmarkServicesResponse:
+        """List hosted benchmark services visible to the configured tenant."""
+        services = self.catalog_benchmark_services()
+        if not services:
+            return BenchmarkServicesResponse(services=[])
+        return self.check_benchmark_services(services)
+
+    def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
+        """Health-check caller-provided benchmark services."""
+        try:
+            payload = BenchmarkServicesRequest(services=services)
+            response = self._client.post(f"{self._base_url}/benchmark-services", json=payload.model_dump())
+
+            if response.status_code != 200:
+                details = _response_error_detail(response)
+                raise TrackerServiceError(f"Failed to check benchmark services: {details}")
+
+            return BenchmarkServicesResponse.model_validate(response.json())
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to check benchmark services: {e}") from e
 
     @classmethod
     def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
