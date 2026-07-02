@@ -17,7 +17,7 @@ Valkyrie supports **hosted** and **self-hosted** modes.
 Both modes require you to provide certain credentials and configuration:  
 - AWS API Key: Authentication for an AWS account with S3, CloudWatch, and Secrets Manager access (to store benchmarking logs and results)
 - S3 Bucket Name: The S3 bucket to be used for storing benchmark artifacts and agents
-- Sandbox provider config: AWS Secrets Manager entry for the sandbox provider. [Setup docs](docs/PROVIDER.md)
+- Sandbox provider config: named AWS Secrets Manager entries for sandbox providers. [Setup docs](docs/PROVIDER.md)
 - **Hosted mode only:** Vals API Key
 
 See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for more details.
@@ -43,6 +43,16 @@ To upsert a single key:
 ```bash
 valkyrie config set <KEY> <VALUE>
 ```
+
+To configure sandbox providers:
+
+```bash
+valkyrie config provider set daytona DaytonaSecrets
+valkyrie config provider set modal ModalSecrets
+valkyrie config provider default modal
+```
+
+The first configured provider is used by default unless you set one with `valkyrie config provider default <name>`. Use `valkyrie run start --provider <name>` to select another configured provider for one run.
 
 ## Agent Management
 
@@ -118,7 +128,7 @@ valkyrie run start --agent <agent id> --benchmark <benchmark id>
 
 You can pass `--concurrency` to control the number of tasks that run in parallel, and `--task-ids` or `--slice` to run only a subset of tasks. Specific agents may take additional parameters as well, most commonly, a parameter to set the model. 
 
-To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. This will map the value stored in AWS SECRET NAME to ENVIRONMENT_VARIABLE inside the agent container. 
+To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. This will map the value stored in AWS SECRET NAME to ENVIRONMENT_VARIABLE inside the agent container.
 
 Here is an example of how to run the first ten tasks of SWE-Bench Verified:
 ```bash
@@ -275,7 +285,7 @@ valkyrie run outputs <id> --output-dir ./outputs
 valkyrie run outputs <id> --task-ids astropy__astropy-7606,django__django-10880
 ```
 
-Valkyrie run outputs downloads the files produced during a run, while Valkyrie run results downloads the scores and evaluation. 
+Valkyrie run outputs downloads the files produced during a run, while Valkyrie run results downloads the scores and evaluation.
 
 ### Download a specific file or folder from a run
 
