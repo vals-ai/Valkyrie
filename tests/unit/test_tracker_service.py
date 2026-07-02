@@ -8,6 +8,7 @@ tracker-client behavior or CLI rendering that can regress without requiring live
 
 from datetime import datetime
 from functools import partial
+from collections.abc import Callable
 import json
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -22,6 +23,7 @@ from conftest import FakeTrackerService
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
+    BenchmarkServiceEntry,
     BenchmarkServiceHealth,
     BenchmarkTableRow,
     FetchBenchmarkResponse,
@@ -295,6 +297,53 @@ def test_paginate_services_renders_latency_as_response_status(monkeypatch: pytes
     assert captured_headers == ["Benchmark", "Service URL", "Source", "Latency"]
     assert [row["Source"] for row in captured_rows] == ["benchmarks.vals.ai", "localhost:9000"]
     assert [row["Latency"] for row in captured_rows] == ["23 ms", "-"]
+
+
+def test_paginate_services_health_checks_visible_pages_only(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Service pagination should defer health checks until a page is visible.
+
+    Test cases:
+    - The first page is health-checked before rendering.
+    - Moving forward checks only the next page, and moving back reuses cached results.
+    - Each page render clears the previous table output.
+    """
+    service_entries = [
+        BenchmarkServiceEntry(name="one", url="https://one.example"),
+        BenchmarkServiceEntry(name="two", url="https://two.example"),
+        BenchmarkServiceEntry(name="three", url="https://three.example"),
+    ]
+    checked_pages: list[list[str]] = []
+    rendered_pages: list[list[str]] = []
+    keys = iter(["l", "h", "q"])
+
+    def check_services(entries: list[BenchmarkServiceEntry]) -> list[BenchmarkServiceHealth]:
+        checked_pages.append([entry.name for entry in entries])
+        return [
+            FakeTrackerService.benchmark_service_health(entry.name, entry.url, latency_ms=len(checked_pages))
+            for entry in entries
+        ]
+
+    def fake_format_table(
+        rows: list[dict[str, str]],
+        _headers: list[str],
+        _current_page: int,
+        _total_pages: int,
+        _total_count: int,
+        _item_name: str,
+    ) -> None:
+        rendered_pages.append([row["Benchmark"] for row in rows])
+
+    monkeypatch.setattr("valkyrie.cli.utils.click.getchar", lambda: next(keys))
+    monkeypatch.setattr("valkyrie.cli.utils.format_table", fake_format_table)
+
+    paginate_services(service_entries, limit=2, check_services=check_services)
+
+    assert checked_pages == [["one", "two"], ["three"]]
+    assert rendered_pages == [["one", "two"], ["three"], ["one", "two"]]
+    assert capsys.readouterr().out.count("\033[2J\033[3J\033[1;1H") == 3
 
 
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -592,8 +641,12 @@ def test_service_list_merges_hosted_and_custom_services(
 
     captured_services: list[BenchmarkServiceHealth] = []
 
-    def capture_paginated_services(services: list[BenchmarkServiceHealth]) -> None:
-        captured_services.extend(services)
+    def capture_paginated_services(
+        services: list[BenchmarkServiceEntry],
+        *,
+        check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]],
+    ) -> None:
+        captured_services.extend(check_services(services))
 
     monkeypatch.setattr(cli_main, "TrackerService", FakeTrackerService)
     monkeypatch.setattr(cli_main, "paginate_services", capture_paginated_services)
