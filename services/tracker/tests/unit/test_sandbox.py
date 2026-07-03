@@ -1,4 +1,5 @@
 import asyncio
+import shlex
 from collections import deque
 from collections.abc import Mapping
 from typing import Any
@@ -361,6 +362,53 @@ class TestAgentOutputTelemetry:
 
         assert observed_sandboxes
         assert all(isinstance(sandbox, ComposeSandbox) for sandbox in observed_sandboxes)
+
+    async def test_run_agent_shell_wraps_agent_timeout_command(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        """Task timeouts should apply to the full shell-form agent command.
+
+        Test cases:
+        - A command with environment assignment and shell chaining is passed to timeout through sh -c.
+        """
+        run_cmd = "FOO=bar python run.py && echo done"
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd=run_cmd,
+        )
+        observed_commands: list[str] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            assert command == "mkdir -p /workspace"
+            return ExecResult(exit_code=0)
+
+        async def fake_stream_command_output(_sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+            observed_commands.append(command)
+            return None, 0.0
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/workspace",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            agent_timeout=2.5,
+        )
+
+        assert observed_commands == [f"cd /workspace && PYTHONSAFEPATH=1 timeout 2.5 sh -c {shlex.quote(run_cmd)}"]
 
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep

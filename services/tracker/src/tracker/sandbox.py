@@ -611,7 +611,7 @@ async def run_agent(
 
     # Apply timeout if specified
     if agent_timeout is not None:
-        run_cmd = f"timeout {agent_timeout} {run_cmd}"
+        run_cmd = f"timeout {agent_timeout:g} sh -c {shlex.quote(run_cmd)}"
 
     # Create cwd if it does not already exist
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
