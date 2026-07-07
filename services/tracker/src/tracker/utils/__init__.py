@@ -1,17 +1,19 @@
 """Back-compat re-export shim for the former tracker/utils.py.
 
 Everything now lives in focused submodules; these re-exports keep
-`from tracker.utils import X` working for all existing callers.
+`from tracker.utils import X` working for all existing callers. Names are
+listed in ``__all__`` so they read as an intentional public API (and the
+linter treats them as used).
 """
 
-from tracker.utils.harness_config import (  # noqa: F401
+from tracker.utils.harness_config import (
     _build_harness_config,
     _parse_harness_headers,
     _parse_log_retention_policy,
     fetch_harness_config,
     try_fetch_harness_config,
 )
-from tracker.utils.orchestration import (  # noqa: F401
+from tracker.utils.orchestration import (
     catch_errors_during_cleanup,
     commit_benchmark_error,
     create_task_rows,
@@ -21,7 +23,7 @@ from tracker.utils.orchestration import (  # noqa: F401
     process_benchmark,
     set_benchmark_final_status,
 )
-from tracker.utils.reporting import (  # noqa: F401
+from tracker.utils.reporting import (
     BenchmarkContext,
     TaskCounts,
     YieldingWriter,
@@ -35,7 +37,7 @@ from tracker.utils.reporting import (  # noqa: F401
     stream_benchmark_results,
     upload_final_view,
 )
-from tracker.utils.resources import (  # noqa: F401
+from tracker.utils.resources import (
     create_benchmark_service_client,
     create_benchmark_service_client_from_request,
     fetch_benchmark_row,
@@ -43,14 +45,14 @@ from tracker.utils.resources import (  # noqa: F401
     fetch_task_row,
     start_benchmark_request_to_benchmark,
 )
-from tracker.utils.run_control import (  # noqa: F401
+from tracker.utils.run_control import (
     force_stop_sandboxes,
     initiate_stop_benchmark,
     reset_to_in_progress_status,
     sandbox_generator,
     stop_sandbox,
 )
-from tracker.utils.task_execution import (  # noqa: F401
+from tracker.utils.task_execution import (
     TaskMonitor,
     TrackedTask,
     TrackedTaskStatus,
@@ -61,3 +63,51 @@ from tracker.utils.task_execution import (  # noqa: F401
     process_task,
     save_eval_resume_state,
 )
+
+__all__ = [
+    "BenchmarkContext",
+    "TaskCounts",
+    "TaskMonitor",
+    "TrackedTask",
+    "TrackedTaskStatus",
+    "YieldingWriter",
+    "_build_harness_config",
+    "_parse_harness_headers",
+    "_parse_log_retention_policy",
+    "buffer_logs",
+    "build_benchmark_table_rows",
+    "catch_errors_during_cleanup",
+    "commit_benchmark_error",
+    "commit_task_error",
+    "commit_task_status_transition",
+    "create_benchmark_service_client",
+    "create_benchmark_service_client_from_request",
+    "create_final_view",
+    "create_task_rows",
+    "decode_cursor",
+    "encode_cursor",
+    "fetch_average_task_breakdown",
+    "fetch_benchmark_row",
+    "fetch_evaluation_results",
+    "fetch_filtered_benchmark_rows",
+    "fetch_final_score_inputs",
+    "fetch_harness_config",
+    "fetch_sandbox_provider_config",
+    "fetch_task_row",
+    "force_stop_sandboxes",
+    "handle_early_exit",
+    "has_runnable_tasks",
+    "has_stopped_tasks",
+    "initiate_stop_benchmark",
+    "process_benchmark",
+    "process_task",
+    "reset_to_in_progress_status",
+    "sandbox_generator",
+    "save_eval_resume_state",
+    "set_benchmark_final_status",
+    "start_benchmark_request_to_benchmark",
+    "stop_sandbox",
+    "stream_benchmark_results",
+    "try_fetch_harness_config",
+    "upload_final_view",
+]
