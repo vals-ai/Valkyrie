@@ -65,7 +65,7 @@ class TestBenchmarkUtils:
         def fetch_secret(name: str, _aws: AWSCredentials) -> dict[str, str]:
             return secrets[name]
 
-        monkeypatch.setattr("tracker.utils.fetch_aws_secret", fetch_secret)
+        monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", fetch_secret)
 
         provider_config = fetch_sandbox_provider_config("provider-secret", harness_config.aws, "daytona")
         assert provider_config.model_dump(mode="json") == {
@@ -481,8 +481,8 @@ class TestBenchmarkUtils:
             span_records.append(record)
             return MockSpan(record)
 
-        monkeypatch.setattr("tracker.utils.logger.info", fake_info)
-        monkeypatch.setattr("tracker.utils.logfire.span", fake_span)
+        monkeypatch.setattr("tracker.utils.task_execution.logger.info", fake_info)
+        monkeypatch.setattr("tracker.utils.task_execution.logfire.span", fake_span)
 
         task_row = Task(
             org_id=TEST_ORG_ID,
