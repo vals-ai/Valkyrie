@@ -30,8 +30,11 @@ class TestPtyRetry:
     @pytest.mark.parametrize(
         "fail_target,error",
         [
-            ("tracker.utils.run_agent", SandboxSetupError("Failed to create command stream")),
-            ("tracker.utils.upload_agent_artifacts", SandboxSetupError("Command failed with exit code 35")),
+            ("tracker.utils.task_execution.run_agent", SandboxSetupError("Failed to create command stream")),
+            (
+                "tracker.utils.task_execution.upload_agent_artifacts",
+                SandboxSetupError("Command failed with exit code 35"),
+            ),
         ],
     )
     async def test_process_task_retries_on_sandbox_setup_error(
@@ -110,13 +113,14 @@ class TestPtyRetry:
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"status": "success", "score": 1.0}
 
-        is_run_agent_target = fail_target == "tracker.utils.run_agent"
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.buffer_logs", Mock())
-        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+        is_run_agent_target = fail_target == "tracker.utils.task_execution.run_agent"
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
         if not is_run_agent_target:
-            monkeypatch.setattr("tracker.utils.run_agent", _mock_run_agent)
+            monkeypatch.setattr("tracker.utils.task_execution.run_agent", _mock_run_agent)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
@@ -221,13 +225,14 @@ class TestPtyRetry:
             span_records.append(record)
             return _MockSpan(record)
 
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.buffer_logs", Mock())
-        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
-        monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _mock_upload_agent_artifacts)
-        monkeypatch.setattr("tracker.utils.run_agent", _mock_run_agent)
-        monkeypatch.setattr("tracker.utils.logger.info", _mock_logger_info)
-        monkeypatch.setattr("tracker.utils.logfire.span", _mock_span)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _mock_upload_agent_artifacts)
+        monkeypatch.setattr("tracker.utils.task_execution.run_agent", _mock_run_agent)
+        monkeypatch.setattr("tracker.utils.task_execution.logger.info", _mock_logger_info)
+        monkeypatch.setattr("tracker.utils.task_execution.logfire.span", _mock_span)
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 

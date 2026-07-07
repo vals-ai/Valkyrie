@@ -8,7 +8,7 @@ from uuid import UUID
 import pytest
 from sqlmodel import Session
 
-import tracker.utils as utils_module
+import tracker.utils.task_execution as utils_module
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task

@@ -11,7 +11,7 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 from websockets.http11 import Response
 
-import tracker.utils as utils_module
+import tracker.utils.task_execution as utils_module
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Org, Task, TaskStatus

@@ -520,9 +520,10 @@ class TestStopAndResume:
             on_eval_resume_state({"artifact_prefix": "s3://bucket/run", "job_id": "job-1"})
             return {"score": 1.0}
 
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.buffer_logs", Mock())
-        monkeypatch.setattr("tracker.utils.create_sandbox", _unexpected_create_sandbox)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _unexpected_create_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
 
         benchmark_service = request.benchmark_service
@@ -596,8 +597,9 @@ class TestStopAndResume:
             database_session.commit()
             raise RuntimeError("evaluation interrupted")
 
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
 
         benchmark_service = request.benchmark_service
@@ -945,8 +947,9 @@ class TestStopAndResume:
             harness_config=harness_config,
         )
 
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
         monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
@@ -990,7 +993,8 @@ class TestStopAndResume:
         database_session.add(task_row)
         database_session.commit()
 
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
 
         tracked_task = TrackedTask(asyncio.sleep(0), org=self._test_org)
         tracked_task._status = TrackedTaskStatus.WAITING  # type: ignore[attr-defined]
@@ -1044,7 +1048,8 @@ class TestStopAndResume:
         database_session.add_all(tasks)
         database_session.commit()
 
-        monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
 
         # Set benchmark status to STOPPING
         await initiate_stop_benchmark(benchmark_row, database_session, force=True, org=self._test_org)
@@ -1068,7 +1073,7 @@ class TestStopAndResume:
             return mock_provider
 
         monkeypatch.setattr(
-            "tracker.utils.fetch_sandbox_provider_config",
+            "tracker.utils.resources.fetch_sandbox_provider_config",
             _provider_config,
         )
         monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", _sandbox_provider)

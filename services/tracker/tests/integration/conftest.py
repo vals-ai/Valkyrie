@@ -51,7 +51,8 @@ def setup_app_dependencies(
     def get_test_session() -> Generator[Session, None, None]:
         yield database_session
 
-    monkeypatch.setattr("tracker.utils.engine", database_session.bind)
+    monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+    monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
     monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: FAKE_HARNESS_CONFIG)
 
