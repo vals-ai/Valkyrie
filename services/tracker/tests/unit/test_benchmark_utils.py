@@ -28,7 +28,6 @@ from tracker.database.models import (
 from tracker.exceptions import TrackerServiceError
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
-    _parse_log_retention_policy,  # pyright: ignore[reportPrivateUsage]
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
@@ -40,6 +39,7 @@ from tracker.utils import (
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
+from tracker.utils.harness_config import _parse_log_retention_policy
 
 
 class TestBenchmarkUtils:

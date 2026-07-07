@@ -80,7 +80,7 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
-    monkeypatch.setattr("tracker.utils.orchestration.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
+    monkeypatch.setattr("tracker.utils.run_orchestration.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
 
 
 @pytest.fixture(autouse=True)
@@ -166,9 +166,9 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.create_benchmark_log_group", _mock_create_benchmark_log_group)
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.write_benchmark_log_event", _mock_write_benchmark_log_event)
-    monkeypatch.setattr("tracker.utils.orchestration.create_benchmark_log_group", _mock_create_benchmark_log_group)
+    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", _mock_create_benchmark_log_group)
     monkeypatch.setattr("tracker.utils.task_execution.write_benchmark_log_event", _mock_write_benchmark_log_event)
-    monkeypatch.setattr("tracker.utils.orchestration.upload_final_view", _mock_upload_final_view)
+    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", _mock_upload_final_view)
     monkeypatch.setattr("tracker.aws.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
     monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", _mock_fetch_aws_secret)
 
@@ -233,7 +233,7 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
         return VerifyTaskIdsResponse(task_ids=task_ids)
 
     monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-    monkeypatch.setattr("tracker.utils.orchestration.engine", database_session.bind)
+    monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
     monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)

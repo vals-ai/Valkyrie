@@ -65,7 +65,7 @@ class TestTracker:
         }
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.orchestration.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monitor = TaskMonitor(benchmark_row.id, task_tracking.copy(), org=self._test_org)
 
         # Change task status to running and add a task to the object

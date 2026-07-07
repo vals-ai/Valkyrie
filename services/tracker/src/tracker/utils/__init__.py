@@ -1,13 +1,10 @@
 """Back-compat re-export shim for the former tracker/utils.py."""
 
 from tracker.utils.harness_config import (
-    _build_harness_config,
-    _parse_harness_headers,
-    _parse_log_retention_policy,
     fetch_harness_config,
     try_fetch_harness_config,
 )
-from tracker.utils.orchestration import (
+from tracker.utils.run_orchestration import (
     catch_errors_during_cleanup,
     commit_benchmark_error,
     create_task_rows,
@@ -65,9 +62,6 @@ __all__ = [
     "TrackedTask",
     "TrackedTaskStatus",
     "YieldingWriter",
-    "_build_harness_config",
-    "_parse_harness_headers",
-    "_parse_log_retention_policy",
     "buffer_logs",
     "build_benchmark_table_rows",
     "catch_errors_during_cleanup",
