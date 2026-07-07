@@ -31,7 +31,10 @@ class TestPtyRetry:
         "fail_target,error",
         [
             ("tracker.utils.task_execution.run_agent", SandboxSetupError("Failed to create command stream")),
-            ("tracker.utils.task_execution.upload_agent_artifacts", SandboxSetupError("Command failed with exit code 35")),
+            (
+                "tracker.utils.task_execution.upload_agent_artifacts",
+                SandboxSetupError("Command failed with exit code 35"),
+            ),
         ],
     )
     async def test_process_task_retries_on_sandbox_setup_error(
