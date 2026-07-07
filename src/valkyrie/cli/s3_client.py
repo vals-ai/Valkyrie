@@ -23,9 +23,9 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 from tracker.types import AWSCredentials
 
-from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
+from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes, read_agent_name
 from valkyrie.cli.utils import load_config, run_with_spinner
-from valkyrie.schemas import AgentConfig
+from valkyrie.schemas import AgentConfig, validate_agent_name
 
 _S3_DOWNLOAD_CONCURRENCY = 8
 
@@ -101,22 +101,6 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
     branch = match.group(2)
     subfolder = match.group(3)
 
-    # Extract agent name from the url if an alias is not provided
-    if agent_name is None:
-        if subfolder:
-            agent_name = subfolder.split("/")[-1]
-        else:
-            agent_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
-
-    # Resolve the agent name to a guaranteed str
-    if agent_name is None:
-        if subfolder:
-            resolved_name: str = subfolder.split("/")[-1]
-        else:
-            resolved_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
-    else:
-        resolved_name = agent_name
-
     # Clone the repo to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / "temp_repo"
@@ -156,21 +140,18 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
         if subfolder and not agent_path.exists():
             raise RuntimeError(f"Subfolder '{subfolder}' not found in repository")
 
+        resolved_name = validate_agent_name(agent_name) if agent_name else read_agent_name(agent_path)
         await push_agent(resolved_name, agent_path)
 
     return resolved_name
 
 
 @handle_s3_error(message="Failed to push agent to S3")
-async def push_agent(agent_name: str | None, agent_path: Path):
+async def push_agent(agent_name: str, agent_path: Path):
     """Zip and push an agent to S3 at agents/{agent_name}.zip"""
 
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
-
-    # If agent_name is not provided, use the directory name
-    if agent_name is None:
-        agent_name = agent_path.name
 
     with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
         # Get file size for progress bar

@@ -20,7 +20,7 @@ from tracker.types import (
     StartBenchmarkResponse,
 )
 
-from valkyrie.cli.bundler import get_contract
+from valkyrie.cli.bundler import get_contract, read_agent_name
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.logging import configure_cli_logging
 from valkyrie.cli.s3_client import (
@@ -53,7 +53,7 @@ from valkyrie.cli.utils import (
     resolve_webhook_config,
     stream_benchmark_status,
 )
-from valkyrie.schemas import AgentConfig
+from valkyrie.schemas import AgentConfig, validate_agent_name
 
 
 @click.group()
@@ -773,7 +773,6 @@ def start(
 
         # If the user specified an agent on their machine we upload it first
         if agent_path.is_dir():
-            asyncio.run(push_agent(agent_path.stem, agent_path))
             contract_file = next(
                 (
                     agent_path / f"contract{ext}"
@@ -783,7 +782,7 @@ def start(
                 agent_path / "contract.yaml",
             )
             contract = get_contract(contract_file, agent_config)
-            contract.name = agent_path.stem
+            asyncio.run(push_agent(contract.name, agent_path))
         else:
             contract = asyncio.run(get_contract_from_s3(agent, agent_config))
             contract.name = agent
@@ -1451,7 +1450,7 @@ def install(github_url: str, name: str | None):
     "-n",
     type=str,
     required=False,
-    help="Agent name (defaults to path stem)",
+    help="Agent name (defaults to the contract name)",
 )
 def push(agent_path: Path, name: str | None):
     """Push a local agent to S3.
@@ -1461,7 +1460,7 @@ def push(agent_path: Path, name: str | None):
         valkyrie agent push ./agents/my-agent --name my-agent
     """
     try:
-        agent_name = name or agent_path.stem
+        agent_name = validate_agent_name(name) if name else read_agent_name(agent_path)
         asyncio.run(push_agent(agent_name, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
     except S3Error as e:
