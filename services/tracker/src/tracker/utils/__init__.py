@@ -1,10 +1,4 @@
-"""Back-compat re-export shim for the former tracker/utils.py.
-
-Everything now lives in focused submodules; these re-exports keep
-`from tracker.utils import X` working for all existing callers. Names are
-listed in ``__all__`` so they read as an intentional public API (and the
-linter treats them as used).
-"""
+"""Back-compat re-export shim for the former tracker/utils.py."""
 
 from tracker.utils.harness_config import (
     _build_harness_config,
