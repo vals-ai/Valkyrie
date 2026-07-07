@@ -1,3 +1,5 @@
+"""Run-level coordination: creating task rows, running all tasks, and finalizing the run."""
+
 import asyncio
 import traceback
 from asyncio import Semaphore, gather

@@ -1,3 +1,5 @@
+"""Factory helpers that construct clients, provider configs, and validated DB rows."""
+
 from uuid import UUID
 
 from benchmark_service import (

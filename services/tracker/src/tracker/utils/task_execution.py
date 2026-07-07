@@ -1,3 +1,5 @@
+"""Logic for executing, tracking, and transitioning the status of a single task."""
+
 import asyncio
 import json
 import time

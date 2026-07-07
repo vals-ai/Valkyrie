@@ -1,3 +1,5 @@
+"""Read-only queries that fetch and shape run data for API responses and listings."""
+
 import asyncio
 import base64
 import io

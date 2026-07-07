@@ -1,3 +1,5 @@
+"""Helpers that turn X-Harness-* request headers into a HarnessConfig."""
+
 from fastapi import HTTPException, Request
 
 from tracker.types import (
