@@ -252,23 +252,34 @@ class Benchmark(SQLModel, table=True):
         return fetch_evaluation_results(self.id, session, self.org_id)
 
     def fetch_tasks_with_errors(self, session: Session) -> dict[str, str] | None:
-        statement = (
-            select(Task.task_id, Task.error_message)
+        error_rows = session.exec(
+            select(Task.task_id, ErrorResult.error_message)
+            .outerjoin(ErrorResult, col(ErrorResult.task) == col(Task.id))
             .where(Task.benchmark == self.id)
             .where(Task.org_id == self.org_id)
             .where(Task.status == TaskStatus.ERROR)
-        )
-        tasks = session.exec(statement).all()
+            .order_by(col(Task.id), col(ErrorResult.created_at).desc())
+        ).all()
 
-        if not tasks:
+        if not error_rows:
             return None
 
-        return {task_id: (error_message or "No error message was provided") for task_id, error_message in tasks}
+        errors_by_task_id: dict[str, str] = {}
+        for task_id, error_message in error_rows:
+            errors_by_task_id.setdefault(task_id, error_message or "No error message was provided")
+
+        return errors_by_task_id
 
     def start_benchmark_request(
         self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
     ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
+
+        # TODO: Remove this fallback after legacy benchmark rows have been migrated for a few weeks.
+        if self.arguments.sandbox_provider_secret_name:
+            harness_config = harness_config.model_copy(
+                update={"sandbox_provider_secret_name": self.arguments.sandbox_provider_secret_name}
+            )
 
         return StartBenchmarkRequest(
             contract=self.arguments.contract,
@@ -280,7 +291,6 @@ class Benchmark(SQLModel, table=True):
             dataset=self.arguments.dataset,
             harness_config=harness_config,
             sandbox_provider=self.arguments.sandbox_provider,
-            sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
             custom_benchmark_service=self.custom_benchmark_service,
             webhook_secret_name=self.webhook_secret_name,
             webhook_intervals=self.webhook_intervals,
@@ -401,7 +411,6 @@ class Task(SQLModel, table=True):
     task_id: str
     status: TaskStatus = Field(default=TaskStatus.PENDING)
     started_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
-    error_message: str | None = Field(default=None)
     finished_at: datetime | None = None
     eval_resume_state: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     benchmark: UUID = Field(foreign_key="benchmark.id")
@@ -434,10 +443,18 @@ class TaskBreakdown(SQLModel, table=True):
     sandbox_run_duration: float | None = Field(default=None)
 
 
-class EvaluationResult(SQLModel, table=True):
+class ResultBase(SQLModel):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
+
+
+class EvaluationResult(ResultBase, table=True):
     instance_id: str | None = Field(default=None, unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
+
+
+class ErrorResult(ResultBase, table=True):
+    error_message: str = Field(nullable=False)

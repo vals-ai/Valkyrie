@@ -20,6 +20,7 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     Org,
     RetryMode,
@@ -39,7 +40,27 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
 )
 
+UTC = ZoneInfo("UTC")
 client = TestClient(app)
+
+
+def _created_at(day: int) -> datetime:
+    return datetime(2026, 6, day, tzinfo=UTC)
+
+
+def _evaluation_result(
+    task: Task,
+    instance_id: str,
+    result: dict[str, Any],
+    created_at: datetime,
+) -> EvaluationResult:
+    return EvaluationResult(
+        org_id=task.org_id, task=task.id, created_at=created_at, instance_id=instance_id, result=result
+    )
+
+
+def _error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
+    return ErrorResult(org_id=task.org_id, task=task.id, created_at=created_at, error_message=error_message)
 
 
 class TestStopAndResume:
@@ -207,6 +228,83 @@ class TestStopAndResume:
         assert verified_task_ids == [task_row.task_id]
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
+
+    async def test_retry_preserves_previous_task_history_for_export(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        """Retried tasks should keep prior attempts visible in exported results.
+
+        Test cases:
+        - Previous error messages are saved before retry clears the task row.
+        - Previous evaluation results are saved and history exports newest first.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+
+        task_error = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_error",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+        )
+        task_result = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_result",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all([task_error, task_result])
+        database_session.flush()
+        for result_row in (
+            _evaluation_result(task_error, "older-task-error-result", {"score": 0.25}, _created_at(1)),
+            _error_result(task_error, "retry failed before", _created_at(2)),
+            _evaluation_result(task_result, "previous-task-result", {"score": 0.5}, _created_at(1)),
+        ):
+            database_session.add(result_row)
+        database_session.commit()
+
+        async def _mock_request_verify_task_ids(
+            *_args: Any, task_ids: list[str], **_kwargs: Any
+        ) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(),
+            retry=True,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=["task_error", "task_result"],
+            org=self._test_org,
+        )
+
+        assert verified_task_ids == ["task_error", "task_result"]
+
+        for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all():
+            task.status = TaskStatus.FINISHED
+            database_session.add(task)
+            database_session.add(_evaluation_result(task, f"current-{task.task_id}", {"score": 1.0}, _created_at(3)))
+        database_session.commit()
+
+        response = client.get("/retrieve-results", params={"benchmark_id": str(benchmark_row.id)})
+
+        assert response.status_code == 200
+        evaluation_results = response.json()["evaluation_results"]
+        error_history = evaluation_results["task_error"]["history"]
+        result_history = evaluation_results["task_result"]["history"]
+        assert evaluation_results["task_error"]["attempts"] == 3
+        assert evaluation_results["task_result"]["attempts"] == 2
+        assert [entry.get("error_message") for entry in error_history] == ["retry failed before", None]
+        assert error_history[0]["created_at"] > error_history[1]["created_at"]
+        assert error_history[1]["result"] == {"score": 0.25}
+        assert len(result_history) == 1
+        assert result_history[0]["result"] == {"score": 0.5}
 
     async def test_reset_lazily_creates_rows_for_unregistered_task_ids(
         self,
@@ -537,6 +635,9 @@ class TestStopAndResume:
     ):
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(
+            update={"sandbox_provider": "modal", "sandbox_provider_secret_name": "ModalSecrets"}
+        )
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -568,9 +669,55 @@ class TestStopAndResume:
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
         assert captured_request_json["concurrency"] == 20
+        assert captured_request_json["sandbox_provider"] == "modal"
+        assert captured_request_json["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.concurrency == 20
+
+    async def test_force_stop_uses_stored_provider_secret(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        """Force stop should use the provider secret stored with the run.
+
+        Test cases:
+        - A modal run is force-stopped with its stored provider and secret.
+        - The current harness config secret is not used for the stored run.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(
+            update={"sandbox_provider": "modal", "sandbox_provider_secret_name": "ModalSecrets"}
+        )
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        captured: dict[str, str | None] = {}
+
+        async def _mock_force_stop_sandboxes(
+            _benchmark_row: Benchmark,
+            _session: Session,
+            sandbox_provider_secret_name: str,
+            _aws: Any,
+            _org: Org,
+            *,
+            sandbox_provider: str,
+        ) -> None:
+            captured["sandbox_provider_secret_name"] = sandbox_provider_secret_name
+            captured["sandbox_provider"] = sandbox_provider
+
+        monkeypatch.setattr("main.force_stop_sandboxes", _mock_force_stop_sandboxes)
+
+        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true")
+
+        assert response.status_code == 200
+        assert captured == {
+            "sandbox_provider_secret_name": "ModalSecrets",
+            "sandbox_provider": "modal",
+        }
 
     async def test_retry_or_resume_applies_secrets_to_stored_contract(
         self,
@@ -933,6 +1080,7 @@ class TestStopAndResume:
             harness_config.sandbox_provider_secret_name,
             harness_config.aws,
             self._test_org,
+            sandbox_provider="daytona",
         )
 
         database_session.refresh(benchmark_row)

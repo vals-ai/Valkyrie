@@ -25,6 +25,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     FinalEvaluation,
     Org,
@@ -225,6 +226,64 @@ class TestFastapiServer:
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
         assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
 
+    async def test_start_benchmark_keeps_selected_provider_secret_with_harness_headers(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ):
+        """Start requests should keep the provider secret chosen by the client.
+
+        Test cases:
+        - Harness headers provide AWS config without a provider secret.
+        - The selected provider secret from the request body is stored and queued.
+        """
+        captured_request_json: dict[str, Any] = {}
+        selected_harness_config = harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"})
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=10,
+            task_ids=None,
+            harness_config=selected_harness_config,
+            sandbox_provider="modal",
+        )
+
+        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_request_json.update(kwargs["start_benchmark_request_json"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post(
+            "/start-benchmark",
+            json=request.model_dump(),
+            headers={
+                "x-harness-aws-access-key-id": harness_config.aws.aws_access_key_id,
+                "x-harness-aws-secret-access-key": harness_config.aws.aws_secret_access_key,
+                "x-harness-aws-default-region": harness_config.aws.aws_default_region,
+                "x-harness-s3-bucket": harness_config.s3_bucket,
+                "x-harness-log-group": harness_config.log_group,
+                "x-harness-log-retention-policy": str(harness_config.log_retention_policy),
+            },
+        )
+
+        assert response.status_code == 200
+        benchmark_row = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+        assert benchmark_row
+        assert benchmark_row.arguments.sandbox_provider == "modal"
+        assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
+        assert captured_request_json["sandbox_provider"] == "modal"
+        assert captured_request_json["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
+
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
         """
         Test fetch benchmark of the fastapi server.
@@ -287,7 +346,13 @@ class TestFastapiServer:
                 database_session.add(evaluation_result_row)
             else:
                 task_row.status = TaskStatus.ERROR
-                task_row.error_message = "Error occured during task execution or evaluation"
+                database_session.add(
+                    ErrorResult(
+                        org_id=TEST_ORG_ID,
+                        task=task_row.id,
+                        error_message="Error occured during task execution or evaluation",
+                    )
+                )
 
             database_session.add(task_row)
 
@@ -434,7 +499,7 @@ class TestFastapiServer:
         assert len(response_json.get("evaluation_results")) == 10
 
         # Test case 8. Task errors field is populated when we encounter an error
-        # Add some new tasks with the status error (One with erro message and one without)
+        # Add some new tasks with the status error (one with ErrorResult and one without)
         error_message = "Error occured during task execution or evaluation"
         task_rows = [
             Task(
@@ -442,11 +507,18 @@ class TestFastapiServer:
                 task_id=f"task_{i}",
                 benchmark=benchmark_row.id,
                 status=TaskStatus.ERROR,
-                error_message=error_message if i == 22 else None,
             )
             for i in range(22, 24)
         ]
         database_session.add_all(task_rows)
+        database_session.flush()
+        database_session.add(
+            ErrorResult(
+                org_id=TEST_ORG_ID,
+                task=task_rows[0].id,
+                error_message=error_message,
+            )
+        )
         database_session.commit()
 
         response = client.get("/retrieve-results", params=query_params)

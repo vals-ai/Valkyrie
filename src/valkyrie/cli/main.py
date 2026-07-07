@@ -12,7 +12,13 @@ import yaml
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 from tracker.database.models import BenchmarkStatus, RetryMode
 from tracker.exceptions import S3Error
-from tracker.types import FinalViewResponse, Order, RetrieveResultsResponse, StartBenchmarkResponse
+from tracker.types import (
+    BenchmarkServiceEntry,
+    FinalViewResponse,
+    Order,
+    RetrieveResultsResponse,
+    StartBenchmarkResponse,
+)
 
 from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
@@ -87,7 +93,6 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
     "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
     "AWS_DEFAULT_REGION": None,  # What region your secrets are in
     "S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
-    "SANDBOX_PROVIDER_SECRET_NAME": None,  # AWS Secrets Manager name for sandbox provider config
     "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
     "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
 }
@@ -187,7 +192,7 @@ def set(key: str, value: str) -> None:
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
-        current: dict[str, str] = yaml.safe_load(f) or {}
+        current: dict[str, Any] = yaml.safe_load(f) or {}
 
     try:
         config_value = ConfigValue.from_str(key)
@@ -217,7 +222,7 @@ def config_remove(key: str) -> None:
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
     with open(CONFIG_LOCATION) as f:
-        current: dict[str, str] = yaml.safe_load(f) or {}
+        current: dict[str, Any] = yaml.safe_load(f) or {}
 
     try:
         config_value = ConfigValue.from_str(key)
@@ -238,6 +243,113 @@ def config_remove(key: str) -> None:
         yaml.dump(current, f, default_flow_style=False)
 
     click.echo(click.style(f"  {key} removed.", fg="green"))
+
+
+@config.group()
+def provider() -> None:
+    """Manage sandbox provider secret mappings."""
+    pass
+
+
+@provider.command("set")
+@click.argument("name")
+@click.argument("secret_name")
+def provider_set(name: str, secret_name: str) -> None:
+    """Set a named sandbox provider secret.
+
+    Example: valkyrie config provider set daytona DaytonaSecrets
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    providers = harness_config.get("sandbox_providers")
+    if not isinstance(providers, dict):
+        providers = {}
+
+    providers[name] = secret_name
+    harness_config["sandbox_providers"] = providers
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(harness_config, f, default_flow_style=False, sort_keys=False)
+
+    click.echo(click.style(f"Provider '{name}' has been set.", fg="green"))
+
+
+@provider.command("default")
+@click.argument("name")
+def provider_default(name: str) -> None:
+    """Set the default sandbox provider.
+
+    Example: valkyrie config provider default modal
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    providers = harness_config.get("sandbox_providers")
+    if not isinstance(providers, dict) or name not in providers:
+        raise click.ClickException(f"Provider '{name}' not configured.")
+
+    harness_config["default_sandbox_provider"] = name
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(harness_config, f, default_flow_style=False, sort_keys=False)
+
+    click.echo(click.style(f"Provider '{name}' is now the default.", fg="green"))
+
+
+@provider.command("remove")
+@click.argument("name")
+def provider_remove(name: str) -> None:
+    """Remove a named sandbox provider secret.
+
+    Example: valkyrie config provider remove modal
+    """
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    providers = harness_config.get("sandbox_providers") or {}
+    if name not in providers:
+        raise click.ClickException(f"Provider '{name}' not configured.")
+
+    del providers[name]
+    if providers:
+        harness_config["sandbox_providers"] = providers
+    else:
+        harness_config.pop("sandbox_providers", None)
+    if harness_config.get("default_sandbox_provider") == name:
+        harness_config.pop("default_sandbox_provider", None)
+
+    with open(CONFIG_LOCATION, "w") as f:
+        yaml.dump(harness_config, f, default_flow_style=False, sort_keys=False)
+
+    click.echo(click.style(f"Provider '{name}' has been removed.", fg="green"))
+
+
+@provider.command("list")
+def provider_list() -> None:
+    """List all configured sandbox providers."""
+    if not CONFIG_LOCATION.exists():
+        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
+
+    with open(CONFIG_LOCATION) as f:
+        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+
+    providers: dict[str, str] = harness_config.get("sandbox_providers") or {}
+    if not providers:
+        click.echo(click.style("No sandbox providers configured.", fg="yellow"))
+        return
+
+    for name, secret_name in providers.items():
+        click.echo(f"{name}: {secret_name}")
 
 
 @config.group()
@@ -299,7 +411,7 @@ def service_remove(name: str) -> None:
 
 @service.command("list")
 def service_list() -> None:
-    """List all custom benchmark service URL overrides."""
+    """List hosted and custom benchmark services."""
     if not CONFIG_LOCATION.exists():
         raise click.ClickException("Config not found. Run `valkyrie config init` first.")
 
@@ -307,13 +419,23 @@ def service_list() -> None:
         current: dict[str, Any] = yaml.safe_load(f) or {}
 
     services: dict[str, str] = current.get("custom_benchmark_services") or {}
-    if not services:
-        click.echo(click.style("No custom service URLs configured.", fg="yellow"))
-        return
+    custom_entries = [BenchmarkServiceEntry(name=name, url=url) for name, url in services.items()]
 
-    # Create a table of all the services that the user has inside of their config
-    services_list = list(services.items())
-    paginate_services(services_list)
+    try:
+        with TrackerService(require_config=False) as tracker:
+            services_by_name = {service.name: service for service in tracker.catalog_benchmark_services()}
+            services_by_name.update({service.name: service for service in custom_entries})
+            services_list = list(services_by_name.values())
+            if not services_list:
+                click.echo(click.style("No benchmark services configured.", fg="yellow"))
+                return
+
+            paginate_services(
+                services_list,
+                check_services=lambda entries: tracker.check_benchmark_services(entries).services,
+            )
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e)) from e
 
 
 @config.group()
@@ -530,6 +652,13 @@ def tasks(
     help="Dataset name to use from the benchmark service (defaults to 'default')",
 )
 @click.option(
+    "--provider",
+    type=str,
+    required=False,
+    default=None,
+    help="Named sandbox provider from config (e.g., daytona, modal)",
+)
+@click.option(
     "--label",
     "-l",
     type=str,
@@ -594,6 +723,7 @@ def start(
     task_ids_file: str | None,
     slice_str: str | None,
     dataset: str | None,
+    provider: str | None,
     label: str | None,
     kwargs: tuple[tuple[str, str]],
     secrets: tuple[tuple[str, str]],
@@ -609,6 +739,11 @@ def start(
         valkyrie run start --agent agents/claude_code --benchmark swebench
     """
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
+
+    try:
+        TrackerService.validate_sandbox_provider(provider)
+    except TrackerServiceError as e:
+        raise click.ClickException(str(e))
 
     service_headers: dict[str, str] = {}
     auth_credential = TrackerService.get_benchmark_auth(benchmark)
@@ -674,6 +809,7 @@ def start(
                 lambda_function,
                 dataset,
                 service_headers=service_headers or None,
+                provider=provider,
                 webhook_secret_name=webhook_secret if webhook_intervals else None,
                 webhook_intervals=webhook_intervals,
             )

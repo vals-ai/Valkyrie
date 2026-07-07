@@ -1,4 +1,15 @@
+"""Tests for tracker client and related CLI rendering behavior.
+
+Run: uv run pytest tests/unit/test_tracker_service.py
+
+Covers tracker client request construction, config handling, and CLI output helpers. Add cases here for
+tracker-client behavior or CLI rendering that can regress without requiring live services.
+"""
+
 from datetime import datetime
+from functools import partial
+from collections.abc import Callable
+import json
 from pathlib import Path
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
@@ -8,62 +19,93 @@ import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
+from conftest import FakeClient, FakeTrackerService, empty_config, empty_config_keys, write_valkyrie_config
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
+    BenchmarkServiceEntry,
+    BenchmarkServiceHealth,
     BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
 )
 
-from valkyrie.cli import tracker_service as tracker_service_module
 from valkyrie.cli import main as cli_main
-from valkyrie.cli.main import list_benchmarks, start
+from valkyrie.cli import tracker_service as tracker_service_module
+from valkyrie.cli.main import cli, list_benchmarks, start
 from valkyrie.cli.tracker_service import TrackerService, TrackerServiceError
-from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response
+from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response, paginate_services
 
 
-class FakeClient:
-    def __init__(self) -> None:
-        self.params: dict[str, object] | None = None
-        self.json: dict[str, object] | None = None
-        self.url: str | None = None
+def _handle_catalog_service_request(requests: list[httpx.Request], request: httpx.Request) -> httpx.Response:
+    requests.append(request)
 
-    def post(
-        self,
-        url: str,
+    if request.method == "GET":
+        return httpx.Response(
+            200,
+            json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
+        )
+
+    return httpx.Response(
+        200,
+        json={
+            "services": [
+                {
+                    "name": "swebench",
+                    "url": "https://swebench.benchmarks.vals.ai",
+                    "healthy": True,
+                    "latency_ms": 12,
+                    "error": None,
+                }
+            ]
+        },
+    )
+
+
+def test_tracker_service_lists_catalog_services_through_tracker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catalog service listing should use tracker-owned catalog lookup and health checks.
+
+    Test cases:
+    - Hosted entries are fetched from the tracker service catalog endpoint.
+    - Hosted entries are health-checked by the existing tracker endpoint.
+    """
+
+    requests: list[httpx.Request] = []
+    transport = httpx.MockTransport(partial(_handle_catalog_service_request, requests))
+    original_client = httpx.Client
+
+    def build_client(
         *,
-        params: dict[str, object] | None = None,
-        json: dict[str, object],
-    ) -> httpx.Response:
-        self.url = url
-        self.params = params
-        self.json = json
-        return httpx.Response(200, json={"status": "success"})
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
 
-    def get(
-        self,
-        url: str,
-        *,
-        params: dict[str, object] | None = None,
-    ) -> httpx.Response:
-        self.url = url
-        self.params = params
-        if "/fetch-run-outputs/" in url:
-            return httpx.Response(200, content=b"tar")
-        return httpx.Response(200, json={"benchmarks": [], "total_count": 0})
+        return original_client(transport=transport, timeout=timeout, headers=headers)
 
-    def close(self) -> None:
-        pass
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(lambda: {"api_key": "catalog-key"}))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
 
+    tracker = TrackerService(base_url="http://tracker")
+    response = tracker.list_benchmark_services()
 
-def empty_config() -> dict[str, object]:
-    return {}
-
-
-def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
-    return {}
+    assert requests[0].headers["X-Api-Key"] == "catalog-key"
+    assert [str(request.url) for request in requests] == [
+        "http://tracker/benchmark-services",
+        "http://tracker/benchmark-services",
+    ]
+    assert json.loads(requests[1].content) == {
+        "services": [
+            {
+                "name": "swebench",
+                "url": "https://swebench.benchmarks.vals.ai",
+                "auth_header_name": None,
+                "auth_secret_name": None,
+            }
+        ]
+    }
+    assert [(service.name, service.latency_ms) for service in response.services] == [("swebench", 12)]
 
 
 def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,7 +198,7 @@ def test_fetch_run_outputs_raises_tracker_error_for_http_error(monkeypatch: pyte
         tracker.fetch_run_outputs(uuid4())
 
 
-def harness_config_payload(_tracker: TrackerService) -> dict[str, object]:
+def harness_config_payload(_tracker: TrackerService, _provider: str | None = None) -> dict[str, object]:
     return {
         "aws": {
             "aws_access_key_id": "aws-key",
@@ -168,6 +210,98 @@ def harness_config_payload(_tracker: TrackerService) -> dict[str, object]:
         "log_retention_policy": 365,
         "sandbox_provider_secret_name": "DaytonaSecrets",
     }
+
+
+def test_paginate_services_renders_latency_as_response_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Service list should show response latency when available and dash when not.
+
+    Test cases:
+    - Responding services render measured latency.
+    - Non-responding services render a dash without healthy/error columns.
+    """
+    captured_rows: list[dict[str, str]] = []
+    captured_headers: list[str] = []
+
+    def fake_format_table(
+        rows: list[dict[str, str]],
+        headers: list[str],
+        _current_page: int,
+        _total_pages: int,
+        _total_count: int,
+        _item_name: str,
+    ) -> None:
+        captured_rows.extend(rows)
+        captured_headers.extend(headers)
+
+    monkeypatch.setattr(cli_main.click, "clear", lambda: None)
+    monkeypatch.setattr("valkyrie.cli.utils.format_table", fake_format_table)
+
+    paginate_services(
+        [
+            FakeTrackerService.benchmark_service_health(
+                "swebench",
+                "https://swebench.benchmarks.vals.ai",
+                latency_ms=23,
+            ),
+            FakeTrackerService.benchmark_service_health(
+                "vcb",
+                "http://localhost:9000",
+                healthy=False,
+                error="[Errno -2] Name or service not known",
+            ),
+        ]
+    )
+
+    assert captured_headers == ["Benchmark", "Service URL", "Source", "Latency"]
+    assert [row["Source"] for row in captured_rows] == ["benchmarks.vals.ai", "localhost:9000"]
+    assert [row["Latency"] for row in captured_rows] == ["23 ms", "-"]
+
+
+def test_paginate_services_health_checks_visible_pages_only(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Service pagination should defer health checks until a page is visible.
+
+    Test cases:
+    - The first page is health-checked before rendering.
+    - Moving forward checks only the next page, and moving back reuses cached results.
+    - Each page render clears the previous table output.
+    """
+    service_entries = [
+        BenchmarkServiceEntry(name="one", url="https://one.example"),
+        BenchmarkServiceEntry(name="two", url="https://two.example"),
+        BenchmarkServiceEntry(name="three", url="https://three.example"),
+    ]
+    checked_pages: list[list[str]] = []
+    rendered_pages: list[list[str]] = []
+    keys = iter(["l", "h", "q"])
+
+    def check_services(entries: list[BenchmarkServiceEntry]) -> list[BenchmarkServiceHealth]:
+        checked_pages.append([entry.name for entry in entries])
+        return [
+            FakeTrackerService.benchmark_service_health(entry.name, entry.url, latency_ms=len(checked_pages))
+            for entry in entries
+        ]
+
+    def fake_format_table(
+        rows: list[dict[str, str]],
+        _headers: list[str],
+        _current_page: int,
+        _total_pages: int,
+        _total_count: int,
+        _item_name: str,
+    ) -> None:
+        rendered_pages.append([row["Benchmark"] for row in rows])
+
+    monkeypatch.setattr("valkyrie.cli.utils.click.getchar", lambda: next(keys))
+    monkeypatch.setattr("valkyrie.cli.utils.format_table", fake_format_table)
+
+    paginate_services(service_entries, limit=2, check_services=check_services)
+
+    assert checked_pages == [["one", "two"], ["three"]]
+    assert rendered_pages == [["one", "two"], ["three"], ["one", "two"]]
+    assert capsys.readouterr().out.count("\033[2J\033[3J\033[1;1H") == 3
 
 
 def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -205,67 +339,8 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
     }
 
 
-def test_tracker_service_accepts_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Tracker config should accept a sandbox provider secret key.
-
-    Test cases:
-    - SANDBOX_PROVIDER_SECRET_NAME satisfies provider secret config.
-    - Harness payload carries the neutral provider secret field.
-    """
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "SANDBOX_PROVIDER_SECRET_NAME": "DaytonaSecrets",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            }
-        )
-    )
-
-    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
-    client = FakeClient()
-
-    def build_client(**_kwargs: object) -> FakeClient:
-        return client
-
-    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
-
-    tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
-        benchmark_name="swebench",
-        concurrency=1,
-        ignore_custom_services=True,
-        task_ids=None,
-        slice_str=None,
-    )
-
-    assert client.json is not None
-    harness_config = client.json["harness_config"]
-    assert isinstance(harness_config, dict)
-    assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
-
-
 def test_tracker_service_accepts_legacy_daytona_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "DAYTONA_SECRET_NAME": "DaytonaSecrets",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            }
-        )
-    )
+    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", DAYTONA_SECRET_NAME="DaytonaSecrets")
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
     client = FakeClient()
@@ -292,24 +367,198 @@ def test_tracker_service_accepts_legacy_daytona_secret_config(tmp_path: Path, mo
 
 
 def test_tracker_service_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_path = tmp_path / "valkyrie.yaml"
-    config_path.write_text(
-        yaml.safe_dump(
-            {
-                "AWS_ACCESS_KEY_ID": "aws-key",
-                "AWS_SECRET_ACCESS_KEY": "aws-secret",
-                "AWS_DEFAULT_REGION": "us-east-1",
-                "S3_BUCKET": "bucket",
-                "LOG_GROUP": "benchmarks",
-                "LOG_RETENTION_POLICY": 365,
-            }
-        )
-    )
+    """Missing provider config should point users to the provider setup command.
+
+    Test cases:
+    - A config without legacy or named provider secrets fails with actionable remediation.
+    """
+    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
 
     monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
 
-    with pytest.raises(TrackerServiceError, match="SANDBOX_PROVIDER_SECRET_NAME"):
+    with pytest.raises(TrackerServiceError) as error:
         TrackerService(base_url="http://tracker")
+
+    assert "Missing sandbox provider config" in str(error.value)
+    assert "valkyrie config provider set <provider> <secret-name>" in str(error.value)
+
+
+def test_tracker_service_uses_first_named_provider_as_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Named sandbox providers should provide a deterministic default.
+
+    Test cases:
+    - sandbox_providers satisfies provider config requirements.
+    - The first configured provider supplies the default secret name.
+    """
+    config_path = write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
+    )
+
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+    )
+
+    assert client.json is not None
+    harness_config = client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
+
+
+def test_tracker_service_uses_configured_default_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A configured default provider should be used when runtime provider is omitted.
+
+    Test cases:
+    - default_sandbox_provider selects the modal provider and secret.
+    """
+    client = FakeClient()
+    config_path = write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
+        default_sandbox_provider="modal",
+    )
+
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", lambda **_kwargs: client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+    )
+
+    assert client.json is not None
+    assert client.json["sandbox_provider"] == "modal"
+    harness_config = client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "ModalSecrets"
+
+
+def test_start_benchmark_uses_runtime_provider_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime provider selection should choose a configured provider secret.
+
+    Test cases:
+    - provider='modal' resolves to the modal cloud secret.
+    - StartBenchmarkRequest carries the selected secret in the harness config.
+    """
+    client = FakeClient()
+    config_path = write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
+    )
+
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", lambda **_kwargs: client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+        provider="modal",
+    )
+
+    assert client.json is not None
+    assert client.json["sandbox_provider"] == "modal"
+    harness_config = client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "ModalSecrets"
+
+
+def test_start_benchmark_allows_configured_provider_names_without_tracker_enum(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provider names should be validated by create-benchmark-service, not tracker.
+
+    Test cases:
+    - A provider configured in Valkyrie is forwarded in the request body.
+    - Tracker does not need code changes for a newly configured provider name.
+    """
+    client = FakeClient()
+    config_path = write_valkyrie_config(
+        tmp_path / "valkyrie.yaml",
+        sandbox_providers={"future": "FutureSecrets"},
+    )
+
+    monkeypatch.setattr(tracker_service_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", lambda **_kwargs: client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=True,
+        task_ids=None,
+        slice_str=None,
+        provider="future",
+    )
+
+    assert client.json is not None
+    assert client.json["sandbox_provider"] == "future"
+    harness_config = client.json["harness_config"]
+    assert isinstance(harness_config, dict)
+    assert harness_config["sandbox_provider_secret_name"] == "FutureSecrets"
+
+
+def test_config_provider_commands_manage_named_provider_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Config provider commands should manage the sandbox_providers map.
+
+    Test cases:
+    - provider set creates named provider secrets without flat provider fields.
+    - provider default writes a configured provider name and rejects unknown providers.
+    - provider remove deletes only the requested provider.
+    """
+    config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
+    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
+    runner = CliRunner()
+
+    result = runner.invoke(cli_main.cli, ["config", "provider", "set", "daytona", "DaytonaSecrets"])
+    assert result.exit_code == 0
+    result = runner.invoke(cli_main.cli, ["config", "provider", "set", "modal", "ModalSecrets"])
+    assert result.exit_code == 0
+
+    config = yaml.safe_load(config_path.read_text())
+    assert config["sandbox_providers"] == {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}
+
+    result = runner.invoke(cli_main.cli, ["config", "provider", "default", "modal"])
+    assert result.exit_code == 0
+    config = yaml.safe_load(config_path.read_text())
+    assert config["default_sandbox_provider"] == "modal"
+
+    result = runner.invoke(cli_main.cli, ["config", "provider", "default", "future"])
+    assert result.exit_code != 0
+    assert "not configured" in result.output
+
+    result = runner.invoke(cli_main.cli, ["config", "provider", "remove", "daytona"])
+    assert result.exit_code == 0
+
+    config = yaml.safe_load(config_path.read_text())
+    assert config["sandbox_providers"] == {"modal": "ModalSecrets"}
+    assert config["default_sandbox_provider"] == "modal"
 
 
 def _command_option_flags(command: click.Command, param_name: str) -> set[str]:
@@ -343,6 +592,26 @@ def test_run_commands_connect_after_success(connect_stream_testbed: tuple[UUID, 
     assert streamed_run_ids == [str(started_run_id), str(resume_run_id), str(retry_run_id)]
 
 
+def test_run_start_provider_option_reaches_tracker(connect_stream_testbed: tuple[UUID, list[str]]) -> None:
+    """The CLI provider option should reach the tracker start request.
+
+    Test cases:
+    - `--provider modal` is forwarded as the runtime provider selection.
+    - Provider prevalidation avoids constructing a throwaway tracker client.
+    """
+    runner = CliRunner()
+
+    result = runner.invoke(
+        cli_main.cli,
+        ["run", "start", "--agent", "agent", "--benchmark", "swebench", "--provider", "modal"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert FakeTrackerService.provider_validations == ["modal"]
+    assert FakeTrackerService.init_calls == 1
+    assert FakeTrackerService.start_calls[-1]["kwargs"]["provider"] == "modal"
+
+
 def test_run_label_cli_options_and_client_requests(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run labels should be accepted by start and sent as list filters.
 
@@ -361,6 +630,11 @@ def test_run_label_cli_options_and_client_requests(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
     monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
     monkeypatch.setattr(TrackerService, "_build_harness_config_payload", harness_config_payload)
+
+    def provider_config(_tracker: TrackerService, _provider: str | None = None) -> tuple[str, str]:
+        return "daytona", "DaytonaSecrets"
+
+    monkeypatch.setattr(TrackerService, "resolve_sandbox_provider", provider_config)
     monkeypatch.setattr("valkyrie.cli.tracker_service.httpx.Client", build_client)
 
     tracker = TrackerService(base_url="http://tracker")
@@ -436,3 +710,52 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
     list_output = capsys.readouterr().out
     assert "Label" in list_output
     assert "nightly" in list_output
+
+
+def test_service_list_merges_hosted_and_custom_services(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Service list should show hosted services plus local custom overrides.
+
+    Test cases:
+    - Local custom services override hosted services with the same benchmark name.
+    - Custom-only services are health-checked and included with the hosted rows.
+    """
+    config_path = tmp_path / "valkyrie.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "api_key": "test-key",
+                "custom_benchmark_services": {
+                    "swebench": "http://local-swebench",
+                    "custombench": "http://custombench",
+                },
+            },
+            sort_keys=False,
+        )
+    )
+    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
+
+    captured_services: list[BenchmarkServiceHealth] = []
+
+    def capture_paginated_services(
+        services: list[BenchmarkServiceEntry],
+        *,
+        check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]],
+    ) -> None:
+        captured_services.extend(check_services(services))
+
+    monkeypatch.setattr(cli_main, "TrackerService", FakeTrackerService)
+    monkeypatch.setattr(cli_main, "paginate_services", capture_paginated_services)
+    FakeTrackerService.require_config_values = []
+
+    result = CliRunner().invoke(cli, ["config", "service", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert FakeTrackerService.require_config_values == [False]
+    by_name = {service.name: service for service in captured_services}
+    assert list(by_name) == ["swebench", "fab", "custombench"]
+    assert by_name["swebench"].url == "http://local-swebench"
+    assert by_name["fab"].url == "https://fab.benchmarks.vals.ai"
+    assert by_name["custombench"].url == "http://custombench"

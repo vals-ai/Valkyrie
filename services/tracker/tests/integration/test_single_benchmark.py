@@ -6,6 +6,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    ErrorResult,
     FinalEvaluation,
     Task,
     TaskStatus,
@@ -78,10 +79,12 @@ def test_get_benchmark_tasks_filters_by_status(client, database_session):
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
-    database_session.add(Task(org_id=b.org_id, benchmark=b.id, task_id="ok", status=TaskStatus.FINISHED))
-    database_session.add(
-        Task(org_id=b.org_id, benchmark=b.id, task_id="err", status=TaskStatus.ERROR, error_message="boom")
-    )
+    finished_task = Task(org_id=b.org_id, benchmark=b.id, task_id="ok", status=TaskStatus.FINISHED)
+    error_task = Task(org_id=b.org_id, benchmark=b.id, task_id="err", status=TaskStatus.ERROR)
+    database_session.add_all([finished_task, error_task])
+    database_session.flush()
+    database_session.add(ErrorResult(org_id=b.org_id, task=finished_task.id, error_message="old boom"))
+    database_session.add(ErrorResult(org_id=b.org_id, task=error_task.id, error_message="boom"))
     database_session.commit()
 
     resp = client.get(
@@ -92,6 +95,15 @@ def test_get_benchmark_tasks_filters_by_status(client, database_session):
     assert len(data["tasks"]) == 1
     assert data["tasks"][0]["task_id"] == "err"
     assert data["tasks"][0]["error_message"] == "boom"
+
+    resp = client.get(
+        f"/benchmarks/{b.id}/tasks?status=FINISHED",
+        headers={"Authorization": "Bearer fake"},
+    )
+    data = resp.json()
+    assert len(data["tasks"]) == 1
+    assert data["tasks"][0]["task_id"] == "ok"
+    assert data["tasks"][0]["error_message"] is None
 
 
 def test_get_benchmark_tasks_sort_by_status_surfaces_errors_first(client, database_session):

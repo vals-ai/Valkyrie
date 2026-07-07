@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+from typing import cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select
+from sqlmodel import Session, desc, select
 
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
     Benchmark,
+    ErrorResult,
     EvaluationResult,
     Org,
     Task,
+    TaskStatus,
 )
 from tracker.database.session import get_session
 from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
@@ -47,6 +50,31 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
+def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, str | None]:
+    """Fetches a task's evaluation result or error message depending on its status."""
+    if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
+        return None, None
+
+    result_model = EvaluationResult if task.status == TaskStatus.FINISHED else ErrorResult
+    result_filters = (
+        result_model.task == task.id,
+        result_model.org_id == org.id,
+    )
+    result_order = desc(result_model.created_at)
+
+    if task.status == TaskStatus.FINISHED:
+        result_select = select(EvaluationResult)
+    else:
+        result_select = select(ErrorResult.error_message)
+
+    result = session.exec(result_select.where(*result_filters).order_by(result_order)).first()
+
+    if task.status == TaskStatus.FINISHED:
+        return cast(EvaluationResult | None, result), None
+
+    return None, cast(str | None, result)
+
+
 @router.get(
     "/{benchmark_id}/tasks/{task_id}",
     response_model=SingleTaskResponse,
@@ -60,9 +88,7 @@ def get_single_task(
     """Fetch a single task's status + evaluation result for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
-    eval_row = session.exec(
-        select(EvaluationResult).where(EvaluationResult.task == task.id).where(EvaluationResult.org_id == org.id)
-    ).first()
+    eval_row, error_message = _fetch_result_objects(session, task, org)
 
     return SingleTaskResponse(
         id=task.id,
@@ -70,7 +96,7 @@ def get_single_task(
         status=task.status,
         started_at=task.started_at,
         finished_at=task.finished_at,
-        error_message=task.error_message,
+        error_message=error_message,
         evaluation_result=eval_row.result if eval_row else None,
         agent_caused_exit_reason=(
             eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None
