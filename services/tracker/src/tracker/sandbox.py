@@ -7,7 +7,7 @@ import uuid
 from asyncio import Semaphore
 from collections import deque
 from collections.abc import Callable
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
@@ -339,6 +339,39 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
         raise SandboxError(str(e)) from e
 
 
+async def _stream_command_output_with_egress_allowlist(
+    sandbox: Sandbox,
+    command: str,
+    on_output: Callable[[str], None],
+    allowed_addresses: list[str],
+) -> tuple[AgentCausedExitReason | None, float]:
+    if not allowed_addresses:
+        return await stream_command_output(sandbox, command, on_output)
+
+    pending_error: BaseException | None = None
+    try:
+        try:
+            await sandbox.modify_egress_rules(allowed_addresses)
+        except SandboxNotFoundError:
+            raise
+        except ValueError as e:
+            raise SandboxSetupError(f"Failed to apply egress rules: {e}") from e
+        except ProviderSandboxError as e:
+            raise SandboxError(str(e)) from e
+        return await stream_command_output(sandbox, command, on_output)
+    except BaseException as e:
+        pending_error = e
+        raise
+    finally:
+        try:
+            # Clearing restores unrestricted egress because sandboxes have no baseline restriction today.
+            await sandbox.clear_egress_rules()
+        except Exception as e:
+            logger.warning("failed to clear egress rules for sandbox %s", sandbox.id, exc_info=True)
+            if pending_error is None:
+                raise SandboxSetupError("Failed to clear egress rules") from e
+
+
 async def stream_command_output(
     sandbox: Sandbox,
     command: str,
@@ -595,18 +628,13 @@ async def run_agent(
     # Create cwd if it does not already exist
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
-    if contract.egress_allowlist:
-        await sandbox.modify_egress_rules(contract.egress_allowlist)
-
     # Run the agent without including task directory dependencies
-    try:
-        exit_reason, agent_run_time = await stream_command_output(
-            sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
-        )
-    finally:
-        if contract.egress_allowlist:
-            with suppress(Exception):
-                await sandbox.clear_egress_rules()
+    exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+        sandbox,
+        f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+        log_output,
+        contract.egress_allowlist,
+    )
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         log_output(

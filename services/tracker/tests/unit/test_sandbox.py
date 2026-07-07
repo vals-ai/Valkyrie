@@ -379,6 +379,77 @@ class TestAgentOutputTelemetry:
 
         assert call_order == ["mkdir", "block", "run", "clear"]
 
+    async def test_run_agent_cleans_up_egress_failures(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        """
+        Keeps stale egress rules from leaking into later sandbox commands.
+
+        Test cases:
+        - Cleanup runs when egress rule application fails partway through.
+        - Cleanup failure after a clean agent run raises SandboxSetupError.
+        """
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="",
+            run_cmd="echo done",
+            egress_allowlist=["https://api.openai.com"],
+        )
+
+        async def mock_exec(_sandbox: Any, _command: str) -> ExecResult:
+            return ExecResult(exit_code=0)
+
+        async def mock_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            return None, 0.0
+
+        warning_calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+        def mock_warning(message: str, *args: object, **kwargs: object) -> None:
+            warning_calls.append((message, args, kwargs))
+
+        monkeypatch.setattr(sandbox_module, "_exec", mock_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", mock_stream_command_output)
+        monkeypatch.setattr(sandbox_module.logger, "warning", mock_warning)
+
+        async def run_with(mock_sandbox: Any) -> None:
+            await run_agent(
+                mock_sandbox,
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                lambda _msg: None,
+                "/testbed",
+                aws=harness_config.aws,
+                s3_bucket=harness_config.s3_bucket,
+                benchmark_id="benchmark-123",
+            )
+
+        apply_failure_sandbox = AsyncMock()
+        apply_failure_sandbox.id = "sandbox-apply"
+        apply_failure_sandbox.name = "apply-failure"
+        apply_failure_sandbox.modify_egress_rules = AsyncMock(side_effect=ValueError("dns failed"))
+        apply_failure_sandbox.clear_egress_rules = AsyncMock()
+
+        with pytest.raises(SandboxSetupError, match="Failed to apply egress rules"):
+            await run_with(apply_failure_sandbox)
+
+        apply_failure_sandbox.clear_egress_rules.assert_awaited_once()
+
+        clear_failure_sandbox = AsyncMock()
+        clear_failure_sandbox.id = "sandbox-clear"
+        clear_failure_sandbox.name = "clear-failure"
+        clear_failure_sandbox.modify_egress_rules = AsyncMock()
+        clear_failure_sandbox.clear_egress_rules = AsyncMock(side_effect=RuntimeError("clear failed"))
+
+        with pytest.raises(SandboxSetupError, match="Failed to clear egress rules"):
+            await run_with(clear_failure_sandbox)
+
+        assert warning_calls == [
+            ("failed to clear egress rules for sandbox %s", ("sandbox-clear",), {"exc_info": True})
+        ]
+
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
         deps_before_sleep = _install_agent_dependencies.retry.before_sleep

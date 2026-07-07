@@ -177,6 +177,8 @@ benchmarks/run_id/task_0/artifacts/result.json
 
 URLs the agent may reach while `run_cmd` is running. Use this to allow model provider requests while denying other outbound requests from the agent sandbox; the sandbox provider resolves each host into its network rules at run time.
 
+This is scoped to the agent command window and is meant for evaluation hygiene, not exfiltration-proof containment. Egress is restored after `run_cmd`, root agents can modify sandbox host files, and CDN-backed hosts may share the same allowed edge IPs with other services.
+
 ```yaml
 egress_allowlist:
   - https://api.openai.com
