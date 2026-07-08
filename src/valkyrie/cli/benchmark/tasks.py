@@ -2,7 +2,7 @@ from pathlib import Path
 
 import click
 
-from valkyrie.cli.benchmark.group import benchmark
+from valkyrie.cli.benchmark import benchmark
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import check_tracker_service_health

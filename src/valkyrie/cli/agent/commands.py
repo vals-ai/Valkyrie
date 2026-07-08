@@ -4,7 +4,7 @@ from pathlib import Path
 import click
 from tracker.exceptions import S3Error
 
-from valkyrie.cli.agent.group import agent
+from valkyrie.cli.agent import agent
 from valkyrie.cli.s3_client import download_agent, install_agent, list_agents, push_agent, remove_agent
 from valkyrie.cli.utils import paginate_agents
 

@@ -3,7 +3,7 @@ from tracker.database.models import BenchmarkStatus
 from tracker.types import Order
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.group import run
+from valkyrie.cli.run import run
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import check_tracker_service_health, paginate_benchmarks
 

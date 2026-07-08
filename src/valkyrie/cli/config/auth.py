@@ -3,7 +3,7 @@ from typing import Any
 import click
 import yaml
 
-from valkyrie.cli.config.group import config
+from valkyrie.cli.config import config
 from valkyrie.cli.utils import CONFIG_LOCATION, format_table
 
 

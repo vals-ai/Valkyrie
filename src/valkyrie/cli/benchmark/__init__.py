@@ -1,4 +1,10 @@
-from valkyrie.cli.benchmark.group import benchmark
-from valkyrie.cli.benchmark.tasks import tasks
+import click
 
-__all__ = ["benchmark", "tasks"]
+
+@click.group()
+def benchmark():
+    """Benchmark command group"""
+    pass
+
+
+__all__ = ["benchmark"]

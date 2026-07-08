@@ -6,7 +6,7 @@ import click
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.group import run
+from valkyrie.cli.run import run
 from valkyrie.cli.s3_client import download_s3_path
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import check_tracker_service_health, download_run_outputs, resolve_task_ids

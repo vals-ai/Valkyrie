@@ -1,4 +1,10 @@
-from valkyrie.cli.agent.group import agent
-from valkyrie.cli.agent.commands import agent_remove, download, install, list_installed_agents, push
+import click
 
-__all__ = ["agent", "agent_remove", "download", "install", "list_installed_agents", "push"]
+
+@click.group()
+def agent():
+    """Agent command group"""
+    pass
+
+
+__all__ = ["agent"]

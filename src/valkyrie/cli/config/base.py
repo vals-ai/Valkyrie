@@ -4,7 +4,7 @@ from typing import Any
 import click
 import yaml
 
-from valkyrie.cli.config.group import config
+from valkyrie.cli.config import config
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import CONFIG_LOCATION, ConfigValue
