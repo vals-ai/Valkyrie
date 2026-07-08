@@ -5,6 +5,8 @@ description: Conventions and rubrics for generating unit and integration tests i
 
 # Generating Tests for Valkyrie
 
+**Read this entire reference before writing tests. Apply every section and rubric below; do not skip any.**
+
 ## Overview
 
 This is a set of musts when generating tests for Valkyrie. There are two types of tests you can add:
@@ -13,6 +15,8 @@ This is a set of musts when generating tests for Valkyrie. There are two types o
 2. **Unit tests** — These tests target and mock parts of the codebase. They do not rely on API calls or API keys, so they can be run from anywhere, including from a fresh checkout of the codebase. Integration tests, by contrast, may require additional setup before they can run.
 
 Aim for roughly a **70% unit / 30% integration** split. Unit tests are fast and run everywhere, so they carry the bulk of coverage; integration tests are slower and need credentials, so keep them targeted at the real API paths that matter. Skew toward more unit tests, but never drop integration coverage for an API call (see the integration rubrics).
+
+Keep tests **proportional to the change**. A one-line bug fix gets one narrow regression test, not a broad new suite; a new subsystem warrants fuller coverage. Test volume should track the size and risk of what changed.
 
 For every test, write a docstring in the following format:
 
@@ -46,16 +50,14 @@ def test_parse_command_argument_handles_optional_flags() -> None:
 
 ### Module docstrings
 
-Every `test_*.py` module needs a module-level docstring at the top of the file. It must contain the pytest command to run that file, followed by 2-3 sentences describing what the module tests and what kinds of tests belong in it. This gives anyone opening the file an immediate way to run it and a clear sense of its scope.
+Every `test_*.py` module needs a module-level docstring at the top of the file. It must contain the pytest command to run that file, followed by one or two short sentences describing what the module tests. Keep it tight: a one-line summary plus the run command is usually enough. Do not pad it with "add cases here…" / "keep X elsewhere" boilerplate.
 
 ```python
 """Tests for command-argument parsing.
 
 Run: pytest tests/unit/cli/command_1/test_command_argument.py
 
-Covers parsing of CLI command arguments — flag resolution, default values, and
-validation errors. Add cases here for any new argument behavior or new flags on
-the command_argument parser; keep provider- or transport-level concerns elsewhere.
+Covers CLI command-argument parsing: flag resolution, defaults, and validation errors.
 """
 ```
 
@@ -241,6 +243,26 @@ def test_writes_config_to_disk(tmp_path: Path, capsys: pytest.CaptureFixture[str
     assert "wrote config" in capsys.readouterr().out
 ```
 
+### Prefer generator fixtures with `finally` cleanup
+
+When a fixture provides a resource that needs teardown — a generator, context manager, client, or connection — yield it from a fixture and tear it down in a `finally` block. This keeps tests flat (no nested `with` blocks drifting rightward) and guarantees cleanup even when the test raises.
+
+```python
+@pytest.fixture
+def sandbox() -> Iterator[Sandbox]:
+    sb = create_sandbox()
+
+    try:
+        yield sb
+    finally:
+        # Runs even if the test fails.
+        sb.cleanup()
+
+def test_upload(sandbox: Sandbox) -> None:
+    sandbox.upload_file("/tmp/x", b"data")
+    assert sandbox.exists("/tmp/x")
+```
+
 ### Linting and typing
 
 Tests are held to the same standard as application code: `ruff` and `basedpyright` must both pass before a test is merged. Run them through the make targets:
@@ -277,6 +299,27 @@ def test_dispatch_sends_payload(monkeypatch: pytest.MonkeyPatch) -> None:
 
 Avoid `# type: ignore` and `# noqa` / `# ruff: noqa`. Fix the underlying issue instead — add the annotation, cast the value, or restructure the code. Reach for an ignore only when a rule is genuinely wrong for a line, and when you must, scope it to the specific rule (`# type: ignore[reason]`, `# noqa: RULE`) and add a short comment explaining why.
 
+### Unused arguments
+
+`ruff`'s `ARG` rules flag unused function and method arguments, and tests are held to the same lint bar. Which of three cases applies decides the fix:
+
+1. **Genuinely dead** — the argument is needed by nothing. Remove it.
+2. **Intentionally unused but signature-bound** — a stub or lambda that replaces a real callable via `monkeypatch` must match that callable's signature even for parameters it ignores. Prefix those with an underscore (`_task`, `_output_root`); `ruff` ignores underscore-prefixed arguments.
+3. **A fixture used only for its side effect** — a fixture that gates or primes the test (validating credentials, setting up state) but whose value the test never reads. Apply it with `@pytest.mark.usefixtures("...")` instead of taking it as an unused parameter. Do not underscore a fixture parameter: pytest injects fixtures by name, so `_fixture` would not resolve.
+
+```python
+# 2. Signature-bound stub: underscore the params the stub ignores.
+def _stub_load_status(run_id: str, _output_root: Path) -> BuildStatusSummary:
+    return BuildStatusSummary(run_id=run_id, total=0, statuses={})
+
+# 3. Side-effect-only fixture: usefixtures, not an unused parameter.
+@pytest.mark.usefixtures("aws_credentials")
+def test_list_builds_reads_manifests() -> None:
+    ...
+```
+
+**Exception — mock methods that mirror a real signature.** A `Mock*` client or protocol stand-in must keep the exact parameter names of the interface it replaces, because the code under test calls it by keyword (for example a boto3 client's `describe_images(repositoryName=..., maxResults=..., nextToken=...)`). Parameters the mock ignores are interface fidelity, not dead code — do not strip or rename them even though `ARG` flags them, and prefer explicit typed parameters over collapsing them into `**kwargs`, which loses the signature the mock exists to document.
+
 ## When not to write tests
 
 Not every change needs a test. An unnecessary test adds maintenance cost, slows the suite, and creates noise in PRs without protecting any behavior. Do not write a test when:
@@ -286,6 +329,77 @@ Not every change needs a test. An unnecessary test adds maintenance cost, slows 
 3. **The coverage already exists or the code is throwaway.** If an existing test exercises the path, extend it instead of adding a near-duplicate (see unit rules 9–10); if the code is a prototype or spike that will not ship, add tests once it becomes real.
 
 Choosing the wrong layer also counts as an unnecessary test. Do not write an integration test when no real API call or external dependency is involved — that behavior belongs in a unit test. Conversely, every real API call does need integration coverage (see the integration rubrics), so do not rely on a mocked unit test to prove a live call works.
+
+## Test behavior, not implementation lines
+
+Assert the observable outcome of the finished behavior, not that a specific line ran or that an intermediate variable exists. Do not write "this line of code exists"-style assertions; write "when this functionality completes, it leads to this result."
+
+```python
+# Avoid: asserting an internal attribute was set or a line was reached.
+# Prefer: assert the outcome the feature promises.
+def test_run_start_creates_sandbox() -> None:
+    result = start_run(cfg)
+
+    # The behavior led to this object being instantiated.
+    assert isinstance(result.sandbox, Sandbox)
+```
+
+### Do not mock the work and then assert the wiring
+
+The most common form of this mistake: replace the function that does the real work with a fake that records how it was called, then assert on that record. The test now only proves "this line called that function with these arguments" — it restates the implementation, breaks on every refactor, and cannot catch a real bug because the behavior it was checking has been mocked away. This pattern often survives from TDD, where a collaborator was stubbed to make the first failing test pass; once the real behavior exists, replace the stub-and-assert-call test with an outcome test, or delete it (see "Remove TDD scaffolding once behavior is confirmed").
+
+```python
+# Avoid: the real work is mocked out, and the test asserts only that it was called.
+def test_build_status_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, Path]] = []
+    monkeypatch.setattr(build_status_command, "load_build_status", lambda *args: calls.append(args))
+
+    run_cli(["build-status", "--run-id", "run-1"])
+
+    # Only proves the CLI forwarded these arguments — a change-detector.
+    assert calls == [("run-1", Path("/tmp/harbor"))]
+
+# Prefer: drive the command and assert the observable result (its output contract, a
+# created resource, a raised error). If the command is thin glue over a helper that is
+# already tested elsewhere, do not write this test at all.
+def test_build_status_command_reports_counts(capsys: pytest.CaptureFixture[str]) -> None:
+    run_cli(["build-status", "--run-id", "run-1"])
+
+    status = json.loads(capsys.readouterr().out)
+    assert status["run_id"] == "run-1"
+    assert status["succeeded"] == 3
+```
+
+Two specific forms to reject outright:
+
+- **Call-order or call-count assertions on internal collaborators** — e.g. asserting the order in which AWS clients were constructed (`assert client_calls == ["cloudformation", "codebuild", "s3"]`) or that a helper was invoked N times. These assert *how* the code is wired, not *what* it produces.
+- **Asserting a mock recorded exact arguments** as the test's only assertion, when the behavior those arguments drive has itself been mocked out.
+
+When you do need to check that a real external call was made correctly (e.g. the exact payload sent to a boto3 client that you are deliberately faking at the boundary), assert on the one payload that represents the contract — not on construction order, call counts, or every intermediate call.
+
+### Assert the contract in output, not the formatting
+
+CLI or API output assertions are fine when the output is a real contract — machine-readable JSON, an exit code, a documented message. Assert the fields that matter, not the entire payload verbatim, and never assert incidental human formatting.
+
+```python
+# Avoid: brittle — restates the whole dict and checks table formatting.
+assert json.loads(out) == {"run_id": "run-1", "succeeded": 3, "failed": 0, "pending": 0, "elapsed_ms": 812}
+assert "Run ID" in out
+assert "731" in out
+
+# Prefer: assert the meaningful fields of the contract.
+status = json.loads(out)
+assert status["run_id"] == "run-1"
+assert status["succeeded"] == 3
+```
+
+When several tests only vary the input and expected output of the same call, `parametrize` them instead of copy-pasting the full assertion (see unit rule 11).
+
+## Remove TDD scaffolding once behavior is confirmed
+
+Tests written before implementation to drive TDD are scaffolding. Once the real functionality is in place and verified to match, delete or replace placeholder and now-obsolete assertions instead of leaving them behind — for example, a test that asserts "value `x` is no longer in object `y`" that only reflected a mid-development state. Keep the tests that describe the shipped behavior; drop the ones that only described the path to it.
+
+A common leftover is the stub-and-assert-call test: a collaborator was mocked to make the first failing test pass, and the test still only checks that the collaborator was called. Replace it with an outcome assertion or delete it — see "Do not mock the work and then assert the wiring."
 
 ## Test location
 
@@ -333,6 +447,40 @@ Integration test path:
 tests/integration/<feature-submodule>/test_<feature_1>.py
 tests/integration/<feature-submodule>/test_<feature_2>.py
 ```
+
+## Organizing conftest fixtures hierarchically
+
+Just as tests mirror the source submodule layout (see "Test location"), the fixtures that support them should be broken up the same way. Do not let a single top-level `conftest.py` grow into a catch-all. Pytest discovers `conftest.py` by walking the directory tree, so a fixture defined in a `conftest.py` is available to that directory and everything beneath it. Place each fixture at the shallowest level where it is actually shared, and no higher.
+
+```
+tests/
+  conftest.py                 # cross-cutting only: api_key, settings, event loop
+  unit/
+    conftest.py               # unit-wide mocks and Mock* constructors
+    cli/
+      conftest.py             # cli_runner and other CLI-only fixtures
+  integration/
+    conftest.py               # live clients, cleanup, unique-name fixtures
+```
+
+Guidelines:
+
+- Put a fixture in the **lowest** `conftest.py` that covers every test using it. A fixture used only by CLI tests belongs in `tests/unit/cli/conftest.py`, not the root. This keeps each `conftest.py` small and makes it obvious which fixtures belong to which area.
+- Only promote a fixture upward when a second sibling area needs it. Widening scope prematurely turns the root `conftest.py` back into a junk drawer.
+- A deeper `conftest.py` can override a fixture name from a shallower one when a subtree needs different setup; prefer this to adding conditionals inside one shared fixture.
+- Do not create empty or pass-through `conftest.py` files just to mirror a directory — add one only when that level actually introduces a fixture.
+
+When you instead need to split fixtures **within a single scope** by topic (not by directory), one `conftest.py` per folder is the limit — you cannot add a second. Move the fixtures into a `fixtures/` package of plain modules and register them from the rootdir `conftest.py`:
+
+```python
+# tests/conftest.py
+pytest_plugins = [
+    "tests.fixtures.db",
+    "tests.fixtures.api",
+]
+```
+
+Rule of thumb: split by **directory** → nested `conftest.py`; split by **topic** within one scope → a `fixtures/` package wired in via `pytest_plugins`.
 
 ## Running the suites
 
@@ -523,6 +671,48 @@ When creating unit tests, follow these rubrics.
     _STARTED_AT = datetime(2026, 6, 24, tzinfo=timezone.utc)
     ```
 
+14. **Mock at the right boundary: `pytest-httpx` for external APIs, FastAPI overrides for internal services.** Mock outbound calls to external/third-party APIs with `pytest-httpx` (`httpx_mock`). Mock internal FastAPI services with dependency overrides (`app.dependency_overrides`), not raw HTTP mocks, so the internal contract is exercised through the app.
+
+    ```python
+    # External API → pytest-httpx.
+    def test_fetch_user(httpx_mock: HTTPXMock) -> None:
+        httpx_mock.add_response(url="https://api.vendor.com/users/1", json={"id": 1})
+
+        assert get_user(1).id == 1
+
+    # Internal FastAPI service → dependency override.
+    def test_create_order(client: TestClient) -> None:
+        app.dependency_overrides[get_db] = lambda: fake_db
+
+        assert client.post("/orders", json={...}).status_code == 201
+    ```
+
+15. **Shorten repetitive mock setup with `functools.partial`.** When the same mock is configured repeatedly with only one or two varying arguments, bind the constants with `partial` instead of repeating the full call.
+
+    ```python
+    from functools import partial
+
+    add_ok = partial(httpx_mock.add_response, url=API_URL, status_code=200)
+    add_ok(json={"page": 1})
+    add_ok(json={"page": 2})
+    ```
+
+16. **Extract inlined logic to module-level helpers, and use factories for many-param objects.** Do not inline large blocks of setup or logic inside a test body; move them to module-level helpers (or `conftest.py`) that the test calls, so the test reads as intent, not machinery. When a constructor needs many fields, write a factory helper with sensible defaults so each test sets only the fields that matter, instead of spreading a long constructor call across every test.
+
+    ```python
+    # Module-level factory with defaults — tests override only what matters.
+    def _make_task(**overrides: object) -> Task:
+        defaults = dict(id="t1", status="PENDING", model="gpt-4", dataset="d1", retries=0)
+        return Task(**{**defaults, **overrides})
+
+    def test_error_task_is_retryable() -> None:
+        task = _make_task(status="ERROR")
+
+        assert task.is_retryable()
+    ```
+
+17. **Collapse duplication as you add tests.** After adding a test, check whether it overlaps an existing one. Fold independent rejection or input/output variations into an existing `@pytest.mark.parametrize` case list instead of writing a new function, and delete any test whose code path a new guard or refactor has made unreachable — for example, a lower-layer test for an input that an upper layer now rejects.
+
 ## Integration tests
 
 When creating integration tests, follow these rubrics.
@@ -637,3 +827,7 @@ When creating integration tests, follow these rubrics.
    ```
 
 7. **Cover every API call with at least one integration test.** Each piece of functionality that makes a real API call must have a designated integration test proving it works end to end against the live service. A unit test that mocks the call is not a substitute — it verifies wiring, not that the request actually succeeds. When you add or change a code path that hits an API, add or extend the integration test that exercises it.
+
+8. **Gate only the tests that actually need credentials.** Not every integration test needs a key — some real dependencies are reachable anonymously (public/unauthenticated endpoints). Those credential-free tests should run everywhere. Depend on the fail-fast credential fixture (rubric 5) only from the tests that genuinely need it, so a missing key fails just those tests loudly instead of reddening the whole suite. A fixture that only gates on a credential should be applied with `@pytest.mark.usefixtures(...)`, not taken as an unused parameter.
+
+9. **Do not duplicate coverage a smoke or dispatch workflow already owns.** Some flows are exercised end to end by a separate CI/smoke workflow (a manually dispatched job that provisions credentials, runs a real build, and tears it down). Do not re-run those costly or destructive paths in the pytest integration suite — reference where they are covered instead. Reserve the pytest suite for read paths and cheap, self-cleaning round-trips.
