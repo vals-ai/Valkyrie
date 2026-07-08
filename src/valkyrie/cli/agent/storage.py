@@ -1,14 +1,12 @@
 import asyncio
 import io
 import re
-import shutil
 import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Coroutine, TypeVar, cast
+from typing import cast
 
-import aioboto3
 import click
 import yaml
 from botocore.exceptions import ClientError
@@ -22,75 +20,10 @@ from tracker.aws.s3 import (
 from tracker.aws.s3 import list_agents as list_s3_agents
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
-from tracker.types import AWSCredentials
 
 from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
-from valkyrie.cli.config.state import load_config
+from valkyrie.cli.s3_config import aws_credentials, fetch_bucket_name, s3_client
 from valkyrie.schemas import AgentConfig
-
-T = TypeVar("T")
-
-
-async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
-    """Run an async coroutine with an animated spinner."""
-    spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-    frame_index = 0
-
-    max_width = shutil.get_terminal_size().columns - 2
-    display_message = message if len(message) <= max_width else message[: max_width - 1] + "…"
-
-    async def show_spinner() -> None:
-        nonlocal frame_index
-        while not task.done():
-            frame = spinner_frames[frame_index % len(spinner_frames)]
-            click.echo(f"\r{frame} {display_message}", nl=False)
-            frame_index += 1
-            await asyncio.sleep(0.1)
-        click.echo("\r\033[K", nl=False)
-
-    task = asyncio.create_task(coro)
-    spinner_task = asyncio.create_task(show_spinner())
-
-    try:
-        result = await task
-    finally:
-        spinner_task.cancel()
-        try:
-            await spinner_task
-        except asyncio.CancelledError:
-            click.echo("\r\033[K", nl=False)
-
-    return result
-
-
-def _fetch_bucket_name() -> str:
-    config = load_config()
-    bucket_name = config.get("S3_BUCKET")
-    if not bucket_name:
-        raise click.ClickException("S3_BUCKET key not found. Add it using 'valkyrie config set' first.")
-
-    return bucket_name
-
-
-def _aws_credentials() -> AWSCredentials:
-    """Build AWS credentials from the valkyrie config."""
-    config = load_config()
-    return AWSCredentials(
-        aws_access_key_id=config["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=config["AWS_SECRET_ACCESS_KEY"],
-        aws_default_region=config["AWS_DEFAULT_REGION"],
-    )
-
-
-def _s3_client():
-    """Create an aioboto3 S3 client using credentials from the valkyrie config."""
-    config = load_config()
-    session = aioboto3.Session(
-        aws_access_key_id=config.get("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=config.get("AWS_SECRET_ACCESS_KEY"),
-        region_name=config.get("AWS_DEFAULT_REGION"),
-    )
-    return session.client("s3")
 
 
 async def _run_git_command(repo_path: Path | None, *args: str) -> None:
@@ -134,21 +67,12 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
     branch = match.group(2)
     subfolder = match.group(3)
 
-    # Extract agent name from the url if an alias is not provided
-    if agent_name is None:
-        if subfolder:
-            agent_name = subfolder.split("/")[-1]
-        else:
-            agent_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
-
-    # Resolve the agent name to a guaranteed str
-    if agent_name is None:
-        if subfolder:
-            resolved_name: str = subfolder.split("/")[-1]
-        else:
-            resolved_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
-    else:
+    if agent_name:
         resolved_name = agent_name
+    elif subfolder:
+        resolved_name = subfolder.split("/")[-1]
+    else:
+        resolved_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
 
     # Clone the repo to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -179,8 +103,11 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
             # Initialize submodules for the checked-out content only
             await _run_git_command(temp_path, "submodule", "update", "--init", "--recursive")
 
-        # Clone with a loading spinner
-        await run_with_spinner(clone_repo(), f"Installing agent from {github_url}")
+        click.echo(f"Installing agent from {github_url}...", nl=False)
+        try:
+            await clone_repo()
+        finally:
+            click.echo("\r\033[K", nl=False)
 
         # Push the agent to S3 after its installed
         click.echo("Preparing upload...", nl=False)
@@ -199,7 +126,7 @@ async def push_agent(agent_name: str | None, agent_path: Path):
     """Zip and push an agent to S3 at agents/{agent_name}.zip"""
 
     # fetch bucket name from config
-    bucket_name = _fetch_bucket_name()
+    bucket_name = fetch_bucket_name()
 
     # If agent_name is not provided, use the directory name
     if agent_name is None:
@@ -211,12 +138,12 @@ async def push_agent(agent_name: str | None, agent_path: Path):
         file_size = file_stream.tell()
         file_stream.seek(0)  # Seek back to start
 
-        async with _s3_client() as s3_client:
+        async with s3_client() as client:
             # Initiate multipart upload
             key = get_contract_s3_key(agent_name)
             now = datetime.now(timezone.utc).isoformat()
 
-            multipart = await s3_client.create_multipart_upload(
+            multipart = await client.create_multipart_upload(
                 Bucket=bucket_name,
                 Key=key,
                 Metadata={"uploaded_at": now},
@@ -235,7 +162,7 @@ async def push_agent(agent_name: str | None, agent_path: Path):
                     if not chunk:
                         break
 
-                    response = await s3_client.upload_part(
+                    response = await client.upload_part(
                         Bucket=bucket_name,
                         Key=key,
                         PartNumber=part_number,
@@ -257,7 +184,7 @@ async def push_agent(agent_name: str | None, agent_path: Path):
                 click.echo()
 
                 # Complete the multipart upload
-                await s3_client.complete_multipart_upload(
+                await client.complete_multipart_upload(
                     Bucket=bucket_name,
                     Key=key,
                     UploadId=upload_id,
@@ -265,7 +192,7 @@ async def push_agent(agent_name: str | None, agent_path: Path):
                 )
             except Exception:
                 # Abort the upload on error
-                await s3_client.abort_multipart_upload(
+                await client.abort_multipart_upload(
                     Bucket=bucket_name,
                     Key=key,
                     UploadId=upload_id,
@@ -275,8 +202,8 @@ async def push_agent(agent_name: str | None, agent_path: Path):
 
 async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
-    aws = _aws_credentials()
-    bucket_name = _fetch_bucket_name()
+    aws = aws_credentials()
+    bucket_name = fetch_bucket_name()
     source_key = get_contract_s3_key(agent_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
 
@@ -291,17 +218,17 @@ async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""
 
     # fetch bucket name from config
-    bucket_name = _fetch_bucket_name()
+    bucket_name = fetch_bucket_name()
 
-    async with _s3_client() as s3_client:
+    async with s3_client() as client:
         key = get_contract_s3_key(agent_name)
 
         try:
             # Check if agent exists and raise if we cannot find it
-            await s3_client.head_object(Bucket=bucket_name, Key=key)
+            await client.head_object(Bucket=bucket_name, Key=key)
 
             # Remove the agent if it exists
-            await s3_client.delete_object(Bucket=bucket_name, Key=key)
+            await client.delete_object(Bucket=bucket_name, Key=key)
         except ClientError as e:
             if e.response["Error"]["Code"] == "404":
                 raise S3Error(f"Agent '{agent_name}' could not be found.")
@@ -310,21 +237,21 @@ async def remove_agent(agent_name: str):
 
 async def list_agents() -> list[tuple[str, datetime | None]]:
     """List all agents in the S3 bucket's agents/ folder with the dates that they were added."""
-    bucket_name = _fetch_bucket_name()
+    bucket_name = fetch_bucket_name()
 
     click.echo(f"\r\033[KListing agents from bucket '{bucket_name}'...", nl=False)
 
-    return await list_s3_agents(_aws_credentials(), bucket_name)
+    return await list_s3_agents(aws_credentials(), bucket_name)
 
 
 @handle_s3_error(message="Failed to download agent from S3")
 async def download_agent(agent_name: str, output_dir: Path | None) -> None:
     """Download an agent zip from S3, extract it, and show progress"""
-    bucket_name = _fetch_bucket_name()
+    bucket_name = fetch_bucket_name()
 
-    async with _s3_client() as s3_client:
+    async with s3_client() as client:
         try:
-            response = await s3_client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
+            response = await client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
         except ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
@@ -370,11 +297,11 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
 
     Reads the ``ingest_lambda`` field directly from the agent's ``contract.yaml``.
     """
-    bucket_name = _fetch_bucket_name()
+    bucket_name = fetch_bucket_name()
 
-    async with _s3_client() as s3_client:
+    async with s3_client() as client:
         try:
-            response = await s3_client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
+            response = await client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
             zip_bytes: bytes = cast(bytes, await response["Body"].read())
         except ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
@@ -399,11 +326,11 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
 
 async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:
     """Download agent zip from S3 and extract the contract into a temp dir, returning the contract request"""
-    bucket_name = _fetch_bucket_name()
+    bucket_name = fetch_bucket_name()
 
-    async with _s3_client() as s3_client:
+    async with s3_client() as client:
         try:
-            response = await s3_client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
+            response = await client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
             zip_bytes: bytes = await response["Body"].read()
         except ClientError as e:
             if e.response["Error"]["Code"] in ("404", "NoSuchKey"):

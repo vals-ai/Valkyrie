@@ -3,6 +3,7 @@ from pathlib import Path
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -51,12 +52,7 @@ def tasks(
     """
     Save task IDs for a benchmark dataset.
     """
-    service_headers: dict[str, str] = {}
-    auth_credential = TrackerService.get_benchmark_auth(benchmark_name)
-    if auth_credential:
-        service_headers["Authorization"] = str(auth_credential)
-    for name, value in headers:
-        service_headers[name] = value
+    service_headers = benchmark_service_headers(benchmark_name, headers)
 
     try:
         with TrackerService() as tracker:
