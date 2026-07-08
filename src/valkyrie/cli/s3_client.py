@@ -1,11 +1,12 @@
 import asyncio
 import io
 import re
+import shutil
 import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, Coroutine, TypeVar, cast
 
 import aioboto3
 import click
@@ -24,10 +25,43 @@ from tracker.exceptions import S3Error
 from tracker.types import AWSCredentials
 
 from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
-from valkyrie.cli.utils import load_config, run_with_spinner
+from valkyrie.cli.config.state import load_config
 from valkyrie.schemas import AgentConfig
 
 _S3_DOWNLOAD_CONCURRENCY = 8
+T = TypeVar("T")
+
+
+async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
+    """Run an async coroutine with an animated spinner."""
+    spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    frame_index = 0
+
+    max_width = shutil.get_terminal_size().columns - 2
+    display_message = message if len(message) <= max_width else message[: max_width - 1] + "…"
+
+    async def show_spinner() -> None:
+        nonlocal frame_index
+        while not task.done():
+            frame = spinner_frames[frame_index % len(spinner_frames)]
+            click.echo(f"\r{frame} {display_message}", nl=False)
+            frame_index += 1
+            await asyncio.sleep(0.1)
+        click.echo("\r\033[K", nl=False)
+
+    task = asyncio.create_task(coro)
+    spinner_task = asyncio.create_task(show_spinner())
+
+    try:
+        result = await task
+    finally:
+        spinner_task.cancel()
+        try:
+            await spinner_task
+        except asyncio.CancelledError:
+            click.echo("\r\033[K", nl=False)
+
+    return result
 
 
 def _fetch_bucket_name() -> str:

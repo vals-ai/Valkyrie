@@ -1,14 +1,18 @@
 import asyncio
+import tarfile
+import tempfile
 from pathlib import Path
 from uuid import UUID
 
 import click
+from httpx import Response
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.health import check_tracker_service_health
+from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.s3_client import download_s3_path
 from valkyrie.cli.tracker_service import TrackerService
-from valkyrie.cli.utils import check_tracker_service_health, download_run_outputs, resolve_task_ids
 
 
 @click.command(
@@ -98,3 +102,36 @@ def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
     except Exception as e:
         click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)
         raise click.Abort()
+
+
+def download_run_outputs(run_outputs_response: Response, output_dir: Path) -> None:
+    """Download run outputs from a response and extract them to a directory."""
+    output_dir = output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_file:
+        tmp_path = Path(tmp_file.name)
+        click.echo("\r\033[KDownloading...", nl=False)
+
+        for chunk in run_outputs_response.iter_bytes():
+            tmp_file.write(chunk)
+
+    click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False)
+
+    with tarfile.open(tmp_path, "r") as tar:
+        tar.extractall(output_dir)
+
+    nested_tars = list(output_dir.rglob("*.tar.gz"))
+    if nested_tars:
+        click.echo(f"\r\033[KUnpacking {len(nested_tars)} nested tar.gz files...", nl=False)
+
+        for nested_tar in nested_tars:
+            extract_dir = nested_tar.parent / nested_tar.stem.replace(".tar", "")
+            extract_dir.mkdir(parents=True, exist_ok=True)
+
+            with tarfile.open(nested_tar, "r:gz") as tar:
+                tar.extractall(extract_dir)
+
+            nested_tar.unlink()
+
+    tmp_path.unlink()

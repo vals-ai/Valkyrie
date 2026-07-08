@@ -1,9 +1,7 @@
-from typing import Any
-
 import click
-import yaml
 
-from valkyrie.cli.utils import CONFIG_LOCATION, format_table
+from valkyrie.cli.config.state import load_config, write_config
+from valkyrie.cli.table import format_table
 
 
 @click.group()
@@ -20,19 +18,14 @@ def auth_set(name: str, credential: str) -> None:
 
     Example: valkyrie config auth set swebench my-secret-credential
     """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+    harness_config = load_config()
 
     if "benchmark_auth" not in harness_config:
         harness_config["benchmark_auth"] = {}
 
     harness_config["benchmark_auth"][name] = credential
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(harness_config, f, default_flow_style=False)
+    write_config(harness_config)
 
     click.echo(click.style(f"Auth for '{name}' has been set.", fg="green"))
 
@@ -44,11 +37,7 @@ def auth_remove(name: str) -> None:
 
     Example: valkyrie config auth remove swebench
     """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        current: dict[str, Any] = yaml.safe_load(f) or {}
+    current = load_config()
 
     auth_credentials = current.get("benchmark_auth") or {}
     if name not in auth_credentials:
@@ -57,8 +46,7 @@ def auth_remove(name: str) -> None:
     del auth_credentials[name]
     current["benchmark_auth"] = auth_credentials
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(current, f, default_flow_style=False)
+    write_config(current)
 
     click.echo(click.style(f"Auth for '{name}' has been removed.", fg="green"))
 
@@ -66,11 +54,7 @@ def auth_remove(name: str) -> None:
 @auth.command("list")
 def auth_list() -> None:
     """List all configured benchmark auth credentials."""
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        current: dict[str, Any] = yaml.safe_load(f) or {}
+    current = load_config()
 
     auth_credentials: dict[str, str] = current.get("benchmark_auth") or {}
     if not auth_credentials:

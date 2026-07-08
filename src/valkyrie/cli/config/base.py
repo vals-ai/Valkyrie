@@ -2,11 +2,10 @@ import os
 from typing import Any
 
 import click
-import yaml
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_service import TrackerService
-from valkyrie.cli.utils import CONFIG_LOCATION, ConfigValue
+from valkyrie.cli.config.state import CONFIG_LOCATION, ConfigValue, load_config, read_config_if_exists, write_config
 
 
 _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
@@ -28,11 +27,10 @@ def init() -> None:
 
     current_config: dict[str, Any] = {}
     if CONFIG_LOCATION.exists():
-        with open(CONFIG_LOCATION) as f:
-            try:
-                current_config = yaml.safe_load(f) or {}
-            except Exception:
-                pass
+        try:
+            current_config = read_config_if_exists()
+        except Exception:
+            pass
 
     mode = click.prompt(
         "Setup mode",
@@ -91,10 +89,7 @@ def init() -> None:
     if mode != "hosted":
         current_config.pop("api_key", None)
 
-    CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(current_config, f, default_flow_style=False)
+    write_config(current_config)
 
     click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
 
@@ -109,11 +104,7 @@ def set(key: str, value: str) -> None:
     Example: valkyrie config set AWS_DEFAULT_REGION us-west-2
     """
 
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        current: dict[str, Any] = yaml.safe_load(f) or {}
+    current = load_config()
 
     try:
         config_value = ConfigValue.from_str(key)
@@ -124,8 +115,7 @@ def set(key: str, value: str) -> None:
 
     current[config_value.value] = value
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(current, f, default_flow_style=False)
+    write_config(current)
 
     click.echo(click.style(f"  {key} updated.", fg="green"))
 
@@ -139,11 +129,7 @@ def config_remove(key: str) -> None:
     Example: valkyrie config remove AWS_DEFAULT_REGION
     """
 
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        current: dict[str, Any] = yaml.safe_load(f) or {}
+    current = load_config()
 
     try:
         config_value = ConfigValue.from_str(key)
@@ -160,7 +146,6 @@ def config_remove(key: str) -> None:
     if config_value.value in current:
         del current[config_value.value]
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(current, f, default_flow_style=False)
+    write_config(current)
 
     click.echo(click.style(f"  {key} removed.", fg="green"))

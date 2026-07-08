@@ -7,9 +7,9 @@ import click
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.health import check_tracker_service_health
 from valkyrie.cli.s3_client import get_ingest_lambda_from_s3
 from valkyrie.cli.tracker_service import TrackerService
-from valkyrie.cli.utils import check_tracker_service_health
 
 
 @click.command(

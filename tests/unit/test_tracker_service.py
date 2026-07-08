@@ -32,12 +32,14 @@ from tracker.types import (
 )
 
 from valkyrie.cli import main as cli_main
-import valkyrie.cli.config.providers as config_providers
+import valkyrie.cli.config.state as config_state
 import valkyrie.cli.config.services as config_services
 from valkyrie.cli import tracker_service as tracker_service_module
 from valkyrie.cli.run import list_benchmarks, start
+from valkyrie.cli.run.list import format_fetch_benchmarks_response
+from valkyrie.cli.run.status import format_benchmark_status
 from valkyrie.cli.tracker_service import TrackerService, TrackerServiceError
-from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response, paginate_services
+from valkyrie.cli.config.services import paginate_services
 
 
 def _handle_catalog_service_request(requests: list[httpx.Request], request: httpx.Request) -> httpx.Response:
@@ -235,7 +237,7 @@ def test_paginate_services_renders_latency_as_response_status(monkeypatch: pytes
         captured_rows.extend(rows)
         captured_headers.extend(headers)
 
-    monkeypatch.setattr("valkyrie.cli.utils.format_table", fake_format_table)
+    monkeypatch.setattr("valkyrie.cli.config.services.format_table", fake_format_table)
 
     paginate_services(
         [
@@ -295,8 +297,8 @@ def test_paginate_services_health_checks_visible_pages_only(
     ) -> None:
         rendered_pages.append([row["Benchmark"] for row in rows])
 
-    monkeypatch.setattr("valkyrie.cli.utils.click.getchar", lambda: next(keys))
-    monkeypatch.setattr("valkyrie.cli.utils.format_table", fake_format_table)
+    monkeypatch.setattr("valkyrie.cli.config.services.click.getchar", lambda: next(keys))
+    monkeypatch.setattr("valkyrie.cli.config.services.format_table", fake_format_table)
 
     paginate_services(service_entries, limit=2, check_services=check_services)
 
@@ -534,7 +536,7 @@ def test_config_provider_commands_manage_named_provider_secrets(
     - provider remove deletes only the requested provider.
     """
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
-    monkeypatch.setattr(config_providers, "CONFIG_LOCATION", config_path)
+    monkeypatch.setattr(config_state, "CONFIG_LOCATION", config_path)
     runner = CliRunner()
 
     result = runner.invoke(cli_main.cli, ["config", "provider", "set", "daytona", "DaytonaSecrets"])
@@ -736,7 +738,7 @@ def test_service_list_merges_hosted_and_custom_services(
             sort_keys=False,
         )
     )
-    monkeypatch.setattr(config_services, "CONFIG_LOCATION", config_path)
+    monkeypatch.setattr(config_state, "CONFIG_LOCATION", config_path)
 
     captured_services: list[BenchmarkServiceHealth] = []
 

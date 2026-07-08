@@ -1,9 +1,6 @@
-from typing import Any
-
 import click
-import yaml
 
-from valkyrie.cli.utils import CONFIG_LOCATION
+from valkyrie.cli.config.state import load_config, write_config
 
 
 @click.group()
@@ -20,11 +17,7 @@ def provider_set(name: str, secret_name: str) -> None:
 
     Example: valkyrie config provider set daytona DaytonaSecrets
     """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+    harness_config = load_config()
 
     providers = harness_config.get("sandbox_providers")
     if not isinstance(providers, dict):
@@ -33,8 +26,7 @@ def provider_set(name: str, secret_name: str) -> None:
     providers[name] = secret_name
     harness_config["sandbox_providers"] = providers
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(harness_config, f, default_flow_style=False, sort_keys=False)
+    write_config(harness_config, sort_keys=False)
 
     click.echo(click.style(f"Provider '{name}' has been set.", fg="green"))
 
@@ -46,11 +38,7 @@ def provider_default(name: str) -> None:
 
     Example: valkyrie config provider default modal
     """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+    harness_config = load_config()
 
     providers = harness_config.get("sandbox_providers")
     if not isinstance(providers, dict) or name not in providers:
@@ -58,8 +46,7 @@ def provider_default(name: str) -> None:
 
     harness_config["default_sandbox_provider"] = name
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(harness_config, f, default_flow_style=False, sort_keys=False)
+    write_config(harness_config, sort_keys=False)
 
     click.echo(click.style(f"Provider '{name}' is now the default.", fg="green"))
 
@@ -71,11 +58,7 @@ def provider_remove(name: str) -> None:
 
     Example: valkyrie config provider remove modal
     """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+    harness_config = load_config()
 
     providers = harness_config.get("sandbox_providers") or {}
     if name not in providers:
@@ -89,8 +72,7 @@ def provider_remove(name: str) -> None:
     if harness_config.get("default_sandbox_provider") == name:
         harness_config.pop("default_sandbox_provider", None)
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(harness_config, f, default_flow_style=False, sort_keys=False)
+    write_config(harness_config, sort_keys=False)
 
     click.echo(click.style(f"Provider '{name}' has been removed.", fg="green"))
 
@@ -98,11 +80,7 @@ def provider_remove(name: str) -> None:
 @provider.command("list")
 def provider_list() -> None:
     """List all configured sandbox providers."""
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+    harness_config = load_config()
 
     providers: dict[str, str] = harness_config.get("sandbox_providers") or {}
     if not providers:

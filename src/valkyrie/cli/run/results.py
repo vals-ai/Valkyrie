@@ -5,8 +5,9 @@ import click
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.health import check_tracker_service_health
+from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_service import TrackerService
-from valkyrie.cli.utils import check_tracker_service_health, download_final_view, resolve_task_ids
 
 
 @click.command(
@@ -91,3 +92,23 @@ def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, tas
 
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
+
+
+def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
+    if not path.parent.exists():
+        raise click.ClickException(f"'{path.parent}' directory does not exist! Please create it first.")
+
+    if path.exists():
+        if not click.confirm(f"File '{path}' already exists. Overwrite?"):
+            raise click.Abort()
+
+    with open(path, "w") as output_file:
+        output_file.write(
+            final_view.model_dump_json(
+                indent=4,
+                exclude_none=True,
+                exclude={"benchmark_arguments": {"contract": {"env"}}},
+            )
+        )
+
+    click.echo(click.style(f"Results saved to '{path}'", fg="green", bold=True))

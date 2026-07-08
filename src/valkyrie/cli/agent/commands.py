@@ -1,11 +1,12 @@
 import asyncio
+from datetime import datetime
 from pathlib import Path
 
 import click
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.s3_client import download_agent, install_agent, list_agents, push_agent, remove_agent
-from valkyrie.cli.utils import paginate_agents
+from valkyrie.cli.table import format_table, local_time
 
 
 @click.command(name="install", help="Installs agent from a github project to the users aws environment")
@@ -130,3 +131,53 @@ def list_installed_agents():
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
+
+
+def _clear_pager() -> None:
+    click.echo("\033[2J\033[3J\033[1;1H", nl=False, color=True)
+
+
+def _format_agents_response(
+    agents: list[tuple[str, datetime | None]],
+    current_page: int,
+    total_pages: int,
+    total_count: int,
+) -> None:
+    rows = [
+        {"Agent": name, "Last Modified": local_time(last_modified) if last_modified else "-"}
+        for name, last_modified in agents
+    ]
+
+    format_table(rows, ["Agent", "Last Modified"], current_page, total_pages, total_count, "agent")
+
+
+def paginate_agents(agents: list[tuple[str, datetime | None]], limit: int = 10) -> None:
+    """Interactively page through installed agents."""
+    current_page = 1
+    offset = 0
+    total_count = len(agents)
+    total_pages = max(1, (total_count + limit - 1) // limit)
+
+    while True:
+        _clear_pager()
+
+        if total_count == 0:
+            click.echo(click.style("No agents found.", fg="yellow"))
+            break
+
+        page_agents = agents[offset : offset + limit]
+        _format_agents_response(page_agents, current_page, total_pages, total_count)
+
+        if total_pages <= 1:
+            break
+
+        char = click.getchar()
+
+        if char == "l" and current_page < total_pages:
+            current_page += 1
+            offset += limit
+        elif char == "h" and current_page > 1:
+            current_page -= 1
+            offset -= limit
+        elif char == "q" or char == "\x03":
+            break

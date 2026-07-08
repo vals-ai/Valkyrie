@@ -6,9 +6,11 @@ from tracker.database.models import RetryMode
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.health import check_tracker_service_health
+from valkyrie.cli.run.status import stream_benchmark_status
+from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.s3_client import update_benchmark_agent_version
 from valkyrie.cli.tracker_service import TrackerService
-from valkyrie.cli.utils import check_tracker_service_health, resolve_task_ids, stream_benchmark_status
 
 
 @click.command(

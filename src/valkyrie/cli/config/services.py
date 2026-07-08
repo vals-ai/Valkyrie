@@ -1,12 +1,13 @@
-from typing import Any
+from collections.abc import Callable, Sequence
+from urllib.parse import urlparse
 
 import click
-import yaml
-from tracker.types import BenchmarkServiceEntry
+from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth
 
+from valkyrie.cli.config.state import load_config, write_config
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.table import format_table
 from valkyrie.cli.tracker_service import TrackerService
-from valkyrie.cli.utils import CONFIG_LOCATION, paginate_services
 
 
 @click.group()
@@ -23,19 +24,14 @@ def service_set(name: str, url: str) -> None:
 
     Example: valkyrie config service set swebench https://my-tunnel.ngrok.io
     """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        harness_config: dict[str, Any] = yaml.safe_load(f) or {}
+    harness_config = load_config()
 
     if "custom_benchmark_services" not in harness_config:
         harness_config["custom_benchmark_services"] = {}
 
     harness_config["custom_benchmark_services"][name] = url
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(harness_config, f, default_flow_style=False)
+    write_config(harness_config)
 
     click.echo(click.style(f"Service '{name}' has been set.", fg="green"))
 
@@ -47,11 +43,7 @@ def service_remove(name: str) -> None:
 
     Example: valkyrie config service remove swebench
     """
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        current: dict[str, Any] = yaml.safe_load(f) or {}
+    current = load_config()
 
     services = current.get("custom_benchmark_services") or {}
     if name not in services:
@@ -60,8 +52,7 @@ def service_remove(name: str) -> None:
     del services[name]
     current["custom_benchmark_services"] = services
 
-    with open(CONFIG_LOCATION, "w") as f:
-        yaml.dump(current, f, default_flow_style=False)
+    write_config(current)
 
     click.echo(click.style(f"Service '{name}' has been removed.", fg="green"))
 
@@ -69,11 +60,7 @@ def service_remove(name: str) -> None:
 @service.command("list")
 def service_list() -> None:
     """List hosted and custom benchmark services."""
-    if not CONFIG_LOCATION.exists():
-        raise click.ClickException("Config not found. Run `valkyrie config init` first.")
-
-    with open(CONFIG_LOCATION) as f:
-        current: dict[str, Any] = yaml.safe_load(f) or {}
+    current = load_config()
 
     services: dict[str, str] = current.get("custom_benchmark_services") or {}
     custom_entries = [BenchmarkServiceEntry(name=name, url=url) for name, url in services.items()]
@@ -93,3 +80,86 @@ def service_list() -> None:
             )
     except TrackerServiceError as e:
         raise click.ClickException(str(e)) from e
+
+
+def _clear_pager() -> None:
+    click.echo("\033[2J\033[3J\033[1;1H", nl=False, color=True)
+
+
+def _service_source_domain(service: BenchmarkServiceHealth) -> str:
+    host = urlparse(service.url).netloc or service.url
+    return host.removeprefix(f"{service.name}.")
+
+
+def _health_checked_page(
+    services: Sequence[BenchmarkServiceEntry | BenchmarkServiceHealth],
+    cache: dict[str, BenchmarkServiceHealth],
+    check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]] | None,
+) -> list[BenchmarkServiceHealth]:
+    missing = [service for service in services if service.name not in cache]
+    if missing and check_services is not None:
+        entries = [BenchmarkServiceEntry(name=service.name, url=service.url) for service in missing]
+        cache.update({service.name: service for service in check_services(entries)})
+
+    for service in missing:
+        if isinstance(service, BenchmarkServiceHealth):
+            cache.setdefault(service.name, service)
+        else:
+            cache.setdefault(
+                service.name,
+                BenchmarkServiceHealth(name=service.name, url=service.url, healthy=False, latency_ms=None),
+            )
+
+    return [cache[service.name] for service in services]
+
+
+def paginate_services(
+    services: Sequence[BenchmarkServiceEntry | BenchmarkServiceHealth],
+    limit: int = 10,
+    check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]] | None = None,
+) -> None:
+    """Interactively page through benchmark service rows."""
+    total_count = len(services)
+    if total_count == 0:
+        _clear_pager()
+        click.echo(click.style("No benchmark services found.", fg="yellow"))
+        return
+
+    current_page = 1
+    total_pages = max(1, (total_count + limit - 1) // limit)
+    health_cache: dict[str, BenchmarkServiceHealth] = {}
+
+    while True:
+        _clear_pager()
+
+        page_start = (current_page - 1) * limit
+        page_services = _health_checked_page(services[page_start : page_start + limit], health_cache, check_services)
+        rows = [
+            {
+                "Benchmark": service.name,
+                "Service URL": service.url,
+                "Source": _service_source_domain(service),
+                "Latency": f"{service.latency_ms} ms" if service.latency_ms is not None else "-",
+            }
+            for service in page_services
+        ]
+        format_table(
+            rows,
+            ["Benchmark", "Service URL", "Source", "Latency"],
+            current_page,
+            total_pages,
+            total_count,
+            "service",
+        )
+
+        if total_pages <= 1:
+            break
+
+        char = click.getchar()
+
+        if char == "l" and current_page < total_pages:
+            current_page += 1
+        elif char == "h" and current_page > 1:
+            current_page -= 1
+        elif char == "q" or char == "\x03":
+            break
