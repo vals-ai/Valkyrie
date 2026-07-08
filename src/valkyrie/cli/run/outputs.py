@@ -6,13 +6,12 @@ import click
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run import run
 from valkyrie.cli.s3_client import download_s3_path
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import check_tracker_service_health, download_run_outputs, resolve_task_ids
 
 
-@run.command(
+@click.command(
     name="outputs",
     help="Fetch run outputs by run id. \n\nExample:\nvalkyrie run outputs 123e4567-e89b-12d3-a456-426614174000 --output-dir ./run_outputs",
 )
@@ -66,7 +65,7 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
         raise click.Abort()
 
 
-@run.command(name="output", help="Download files from a benchmark run by its ID.")
+@click.command(name="output", help="Download files from a benchmark run by its ID.")
 @click.argument("benchmark_id", type=UUID)
 @click.argument("subpath", type=str, default="", required=False)
 @click.option(

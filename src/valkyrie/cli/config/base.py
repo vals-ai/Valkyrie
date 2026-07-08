@@ -4,7 +4,6 @@ from typing import Any
 import click
 import yaml
 
-from valkyrie.cli.config import config
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import CONFIG_LOCATION, ConfigValue
@@ -20,7 +19,7 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
 }
 
 
-@config.command()
+@click.command()
 def init() -> None:
     """
     Initializes a config we can trust to have references to dependencies to run Valkyrie,
@@ -100,7 +99,7 @@ def init() -> None:
     click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
 
 
-@config.command()
+@click.command()
 @click.argument("key")
 @click.argument("value")
 def set(key: str, value: str) -> None:
@@ -131,7 +130,7 @@ def set(key: str, value: str) -> None:
     click.echo(click.style(f"  {key} updated.", fg="green"))
 
 
-@config.command(name="remove")
+@click.command(name="remove")
 @click.argument("key")
 def config_remove(key: str) -> None:
     """

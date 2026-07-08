@@ -5,12 +5,11 @@ import click
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run import run
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import check_tracker_service_health, download_final_view, resolve_task_ids
 
 
-@run.command(
+@click.command(
     name="results",
     help=(
         "Retrieve run results by its run id. \n\n"

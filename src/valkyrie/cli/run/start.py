@@ -7,7 +7,6 @@ from tracker.types import StartBenchmarkResponse
 
 from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
-from valkyrie.cli.run import run
 from valkyrie.cli.s3_client import get_contract_from_s3, push_agent
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import (
@@ -22,7 +21,7 @@ from valkyrie.cli.utils import (
 from valkyrie.schemas import AgentConfig
 
 
-@run.command(
+@click.command(
     help="Start a run. \n\nExample:\nvalkyrie run start --agent agents/claude_code --benchmark swebench --concurrency 5"
 )
 @click.option(

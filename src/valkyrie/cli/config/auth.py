@@ -3,11 +3,10 @@ from typing import Any
 import click
 import yaml
 
-from valkyrie.cli.config import config
 from valkyrie.cli.utils import CONFIG_LOCATION, format_table
 
 
-@config.group()
+@click.group()
 def auth() -> None:
     """Manage benchmark service auth credentials."""
     pass

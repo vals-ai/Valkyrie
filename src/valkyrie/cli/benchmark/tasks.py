@@ -2,13 +2,12 @@ from pathlib import Path
 
 import click
 
-from valkyrie.cli.benchmark import benchmark
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import check_tracker_service_health
 
 
-@benchmark.command(
+@click.command(
     name="tasks",
     help="Save task IDs for a benchmark dataset. \n\nExample:\nvalkyrie benchmark tasks swebench --dataset default",
 )

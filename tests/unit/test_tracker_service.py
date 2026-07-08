@@ -35,7 +35,7 @@ from valkyrie.cli import main as cli_main
 import valkyrie.cli.config.providers as config_providers
 import valkyrie.cli.config.services as config_services
 from valkyrie.cli import tracker_service as tracker_service_module
-from valkyrie.cli.main import cli, list_benchmarks, start
+from valkyrie.cli.run import list_benchmarks, start
 from valkyrie.cli.tracker_service import TrackerService, TrackerServiceError
 from valkyrie.cli.utils import format_benchmark_status, format_fetch_benchmarks_response, paginate_services
 
@@ -235,7 +235,6 @@ def test_paginate_services_renders_latency_as_response_status(monkeypatch: pytes
         captured_rows.extend(rows)
         captured_headers.extend(headers)
 
-    monkeypatch.setattr(cli_main.click, "clear", lambda: None)
     monkeypatch.setattr("valkyrie.cli.utils.format_table", fake_format_table)
 
     paginate_services(
@@ -752,7 +751,7 @@ def test_service_list_merges_hosted_and_custom_services(
     monkeypatch.setattr(config_services, "paginate_services", capture_paginated_services)
     FakeTrackerService.require_config_values = []
 
-    result = CliRunner().invoke(cli, ["config", "service", "list"])
+    result = CliRunner().invoke(cli_main.cli, ["config", "service", "list"])
 
     assert result.exit_code == 0, result.output
     assert FakeTrackerService.require_config_values == [False]

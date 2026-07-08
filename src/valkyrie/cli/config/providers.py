@@ -3,11 +3,10 @@ from typing import Any
 import click
 import yaml
 
-from valkyrie.cli.config import config
 from valkyrie.cli.utils import CONFIG_LOCATION
 
 
-@config.group()
+@click.group()
 def provider() -> None:
     """Manage sandbox provider secret mappings."""
     pass

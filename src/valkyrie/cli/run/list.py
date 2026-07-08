@@ -3,12 +3,11 @@ from tracker.database.models import BenchmarkStatus
 from tracker.types import Order
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run import run
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import check_tracker_service_health, paginate_benchmarks
 
 
-@run.command(
+@click.command(
     name="list",
     help="List runs by providing filter values. \n\nExample:\nvalkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC",
 )

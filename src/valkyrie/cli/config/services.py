@@ -4,13 +4,12 @@ import click
 import yaml
 from tracker.types import BenchmarkServiceEntry
 
-from valkyrie.cli.config import config
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import CONFIG_LOCATION, paginate_services
 
 
-@config.group()
+@click.group()
 def service() -> None:
     """Manage custom benchmark service URL overrides."""
     pass

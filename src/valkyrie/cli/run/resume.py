@@ -6,13 +6,12 @@ from tracker.database.models import RetryMode
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run import run
 from valkyrie.cli.s3_client import update_benchmark_agent_version
 from valkyrie.cli.tracker_service import TrackerService
 from valkyrie.cli.utils import check_tracker_service_health, resolve_task_ids, stream_benchmark_status
 
 
-@run.command(
+@click.command(
     help="Resume a run by its run id. \n\nExample:\nvalkyrie run resume 123e4567-e89b-12d3-a456-426614174000 --retry --concurrency 20"
 )
 @click.argument("run_id", type=UUID)
@@ -151,4 +150,3 @@ retry_command = click.Command(
     help="Retry a run by its run id. \n\nExample:\nvalkyrie run retry 123e4567-e89b-12d3-a456-426614174000 --concurrency 20",
     short_help="Retry a run by its run id.",
 )
-run.add_command(retry_command)

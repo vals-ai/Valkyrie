@@ -4,12 +4,11 @@ from pathlib import Path
 import click
 from tracker.exceptions import S3Error
 
-from valkyrie.cli.agent import agent
 from valkyrie.cli.s3_client import download_agent, install_agent, list_agents, push_agent, remove_agent
 from valkyrie.cli.utils import paginate_agents
 
 
-@agent.command(name="install", help="Installs agent from a github project to the users aws environment")
+@click.command(name="install", help="Installs agent from a github project to the users aws environment")
 @click.argument("github_url", type=str)
 @click.option(
     "--name",
@@ -38,7 +37,7 @@ def install(github_url: str, name: str | None):
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@agent.command(name="push", help="Pushes agent to the users aws environment from the local filesystem")
+@click.command(name="push", help="Pushes agent to the users aws environment from the local filesystem")
 @click.argument("agent_path", type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True))
 @click.option(
     "--name",
@@ -64,7 +63,7 @@ def push(agent_path: Path, name: str | None):
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@agent.command(name="remove", help="Remove an installed agent")
+@click.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
 def agent_remove(agent_name: str):
     """Remove an agent from S3.
@@ -85,7 +84,7 @@ def agent_remove(agent_name: str):
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@agent.command(name="download", help="Download an installed agent")
+@click.command(name="download", help="Download an installed agent")
 @click.argument("agent_name", type=str)
 @click.option(
     "--output-dir",
@@ -110,7 +109,7 @@ def download(agent_name: str, output_dir: Path | None):
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@agent.command(name="list", help="List installed agents")
+@click.command(name="list", help="List installed agents")
 def list_installed_agents():
     """List all installed agents in S3.
 
