@@ -11,7 +11,7 @@ from sqlmodel import Session, update
 from tests.conftest import TEST_ORG_ID
 from tracker.database.models import Benchmark, BenchmarkStatus, FinalEvaluation, Org, Task, TaskStatus
 from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
-from tracker.utils.run_orchestration import reconcile_stuck_benchmarks
+from tracker.utils.run_orchestration import benchmark_reconciliation_loop, reconcile_stuck_benchmarks
 
 
 class TestTracker:
@@ -301,3 +301,63 @@ class TestTracker:
         monkeypatch.setattr("tracker.utils.run_orchestration.catch_errors_during_cleanup", lambda *_args, **_kwargs: None)
 
         assert reconcile_stuck_benchmarks(database_session) == 0
+
+    async def test_reconcile_stuck_benchmarks_continues_after_one_failure(
+        self, database_session: Session, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        benchmark_one = Benchmark(org_id=TEST_ORG_ID, name="one", status=BenchmarkStatus.IN_PROGRESS)
+        benchmark_two = Benchmark(org_id=TEST_ORG_ID, name="two", status=BenchmarkStatus.IN_PROGRESS)
+        database_session.add(benchmark_one)
+        database_session.add(benchmark_two)
+        database_session.flush()
+
+        stale_at = self._stale_time()
+        task_one = Task(org_id=TEST_ORG_ID, task_id="task_1", benchmark=benchmark_one.id, status=TaskStatus.FINISHED)
+        task_two = Task(org_id=TEST_ORG_ID, task_id="task_2", benchmark=benchmark_two.id, status=TaskStatus.ERROR)
+        database_session.add(task_one)
+        database_session.add(task_two)
+        database_session.flush()
+        database_session.exec(update(Task).where(Task.id == task_one.id).values(started_at=stale_at, finished_at=stale_at))
+        database_session.exec(update(Task).where(Task.id == task_two.id).values(started_at=stale_at, finished_at=stale_at))
+        database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_one.id, final_score=1.0))
+        database_session.commit()
+
+        called: list[Any] = []
+
+        def _fake_set_benchmark_final_status(benchmark_row: Benchmark, *_args: Any, **_kwargs: Any) -> None:
+            called.append(str(benchmark_row.id))
+            raise RuntimeError("boom")
+
+        def _fake_catch_errors_during_cleanup(benchmark_id: str, *_args: Any, **_kwargs: Any) -> None:
+            called.append(benchmark_id)
+
+        monkeypatch.setattr("tracker.utils.run_orchestration.set_benchmark_final_status", _fake_set_benchmark_final_status)
+        monkeypatch.setattr("tracker.utils.run_orchestration.catch_errors_during_cleanup", _fake_catch_errors_during_cleanup)
+
+        assert reconcile_stuck_benchmarks(database_session) == 1
+        assert called == [str(benchmark_one.id), benchmark_two.id]
+
+    async def test_benchmark_reconciliation_loop_uses_to_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        called: list[str] = []
+
+        def _fake_reconcile_once() -> int:
+            called.append("reconcile")
+            return 1
+
+        async def _fake_to_thread(func: Any, /, *args: Any, **kwargs: Any) -> int:
+            called.append("to_thread")
+            return func(*args, **kwargs)
+
+        async def _fake_sleep(_seconds: float) -> None:
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr("tracker.utils.run_orchestration._reconcile_stuck_benchmarks_once", _fake_reconcile_once)
+        monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.sleep", _fake_sleep)
+
+        with pytest.raises(asyncio.CancelledError):
+            await benchmark_reconciliation_loop()
+
+        assert called == ["to_thread", "reconcile"]

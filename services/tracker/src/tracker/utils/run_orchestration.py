@@ -163,39 +163,49 @@ def reconcile_stuck_benchmarks(session: Session, *, grace_period: timedelta = _B
     ).all()
     reconciled = 0
     for benchmark_row in stale_benchmarks:
-        org = session.get(Org, benchmark_row.org_id)
-        if org is None:
-            continue
+        try:
+            org = session.get(Org, benchmark_row.org_id)
+            if org is None:
+                continue
 
-        task_rows = session.exec(
-            select(Task.status, Task.started_at, Task.finished_at)
-            .where(Task.benchmark == benchmark_row.id)
-            .where(Task.org_id == org.id)
-        ).all()
-        if not task_rows:
-            continue
-        if any(status in _RUNNABLE_TASK_STATUSES for status, *_ in task_rows):
-            continue
+            task_rows = session.exec(
+                select(Task.status, Task.started_at, Task.finished_at)
+                .where(Task.benchmark == benchmark_row.id)
+                .where(Task.org_id == org.id)
+            ).all()
+            if not task_rows:
+                continue
+            if any(status in _RUNNABLE_TASK_STATUSES for status, *_ in task_rows):
+                continue
 
-        latest_task_activity = max(finished_at or started_at for _status, started_at, finished_at in task_rows)
-        if latest_task_activity.tzinfo is None:
-            latest_task_activity = latest_task_activity.replace(tzinfo=ZoneInfo("UTC"))
-        if datetime.now(ZoneInfo("UTC")) - latest_task_activity < grace_period:
-            continue
+            latest_task_activity = max(
+                finished_at or started_at for _status, started_at, finished_at in task_rows
+            )
+            if latest_task_activity.tzinfo is None:
+                latest_task_activity = latest_task_activity.replace(tzinfo=ZoneInfo("UTC"))
+            if datetime.now(ZoneInfo("UTC")) - latest_task_activity < grace_period:
+                continue
 
-        if benchmark_row.final_evaluation is not None:
-            set_benchmark_final_status(benchmark_row, session, org)
-        else:
-            catch_errors_during_cleanup(benchmark_row.id, session, org)
-        reconciled += 1
+            if benchmark_row.final_evaluation is not None:
+                set_benchmark_final_status(benchmark_row, session, org)
+            else:
+                catch_errors_during_cleanup(benchmark_row.id, session, org)
+            reconciled += 1
+        except Exception:
+            session.rollback()
+            logger.exception("benchmark reconciliation failed for benchmark %s", benchmark_row.id)
     return reconciled
+
+
+def _reconcile_stuck_benchmarks_once() -> int:
+    with Session(bind=engine) as session:
+        return reconcile_stuck_benchmarks(session)
 
 
 async def benchmark_reconciliation_loop() -> None:
     while True:
         try:
-            with Session(bind=engine) as session:
-                reconcile_stuck_benchmarks(session)
+            await asyncio.to_thread(_reconcile_stuck_benchmarks_once)
         except asyncio.CancelledError:
             raise
         except Exception:
