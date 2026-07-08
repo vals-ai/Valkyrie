@@ -1,4 +1,5 @@
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
@@ -10,8 +11,8 @@ import yaml
 from tracker.database.models import AgentContractRequest
 from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth, BenchmarkServicesResponse
 
-import valkyrie.cli.run.resume as run_resume
-import valkyrie.cli.run.start as run_start
+run_resume = import_module("valkyrie.cli.run.resume")
+run_start = import_module("valkyrie.cli.run.start")
 
 
 class FakeClient:
