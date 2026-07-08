@@ -6,7 +6,7 @@ from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth
 
 from valkyrie.cli.config.state import load_config, write_config
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.display import format_table
+from valkyrie.cli.display import format_table, paginate_cli_pages
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -82,10 +82,6 @@ def service_list() -> None:
         raise click.ClickException(str(e)) from e
 
 
-def _clear_pager() -> None:
-    click.echo("\033[2J\033[3J\033[1;1H", nl=False, color=True)
-
-
 def _service_source_domain(service: BenchmarkServiceHealth) -> str:
     host = urlparse(service.url).netloc or service.url
     return host.removeprefix(f"{service.name}.")
@@ -119,21 +115,18 @@ def paginate_services(
     check_services: Callable[[list[BenchmarkServiceEntry]], list[BenchmarkServiceHealth]] | None = None,
 ) -> None:
     """Interactively page through benchmark service rows."""
-    total_count = len(services)
-    if total_count == 0:
-        _clear_pager()
-        click.echo(click.style("No benchmark services found.", fg="yellow"))
-        return
-
-    current_page = 1
-    total_pages = max(1, (total_count + limit - 1) // limit)
     health_cache: dict[str, BenchmarkServiceHealth] = {}
 
-    while True:
-        _clear_pager()
+    def load_page(offset: int, page_limit: int) -> tuple[int, list[BenchmarkServiceHealth]]:
+        page_services = _health_checked_page(services[offset : offset + page_limit], health_cache, check_services)
+        return len(services), page_services
 
-        page_start = (current_page - 1) * limit
-        page_services = _health_checked_page(services[page_start : page_start + limit], health_cache, check_services)
+    def render_page(
+        page_services: list[BenchmarkServiceHealth],
+        current_page: int,
+        total_pages: int,
+        total_count: int,
+    ) -> None:
         rows = [
             {
                 "Benchmark": service.name,
@@ -152,14 +145,9 @@ def paginate_services(
             "service",
         )
 
-        if total_pages <= 1:
-            break
-
-        char = click.getchar()
-
-        if char == "l" and current_page < total_pages:
-            current_page += 1
-        elif char == "h" and current_page > 1:
-            current_page -= 1
-        elif char == "q" or char == "\x03":
-            break
+    paginate_cli_pages(
+        load_page,
+        render_page,
+        limit=limit,
+        render_empty=lambda: click.echo(click.style("No benchmark services found.", fg="yellow")),
+    )

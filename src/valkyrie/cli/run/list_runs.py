@@ -3,7 +3,7 @@ from tracker.database.models import BenchmarkStatus
 from tracker.types import FetchBenchmarksRequest, FetchBenchmarksResponse, Order
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.display import format_table, short_local_time
+from valkyrie.cli.display import format_table, paginate_cli_pages, short_local_time
 from valkyrie.cli.run.progress import BenchmarkFormatter
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -192,10 +192,6 @@ def format_no_benchmarks_found(
             click.echo(f"  • Started By: {', '.join(started_by)}")
 
 
-def _clear_pager() -> None:
-    click.echo("\033[2J\033[3J\033[1;1H", nl=False, color=True)
-
-
 def paginate_benchmarks(
     tracker: TrackerService,
     agent_name: str | None,
@@ -209,10 +205,8 @@ def paginate_benchmarks(
     started_by: list[str] | None = None,
 ) -> None:
     """Interactively page through runs."""
-    current_page = 1
-    offset = 0
 
-    while True:
+    def load_page(offset: int, page_limit: int) -> tuple[int, FetchBenchmarksResponse]:
         request = FetchBenchmarksRequest(
             agent_name=[agent_name] if agent_name else None,
             benchmark_name=[benchmark_name] if benchmark_name else None,
@@ -222,32 +216,25 @@ def paginate_benchmarks(
             status=[BenchmarkStatus(status)] if status else None,
             started_by=started_by,
             order_by=Order(order_by),
-            limit=limit,
+            limit=page_limit,
             offset=offset,
         )
-
         response = tracker.fetch_benchmarks(request)
-        total_count = response.total_count or 0
-        total_pages = max(1, (total_count + limit - 1) // limit)
+        return response.total_count or 0, response
 
-        _clear_pager()
-
-        if total_count == 0:
-            format_no_benchmarks_found(agent_name, benchmark_name, model, dataset, label, status, started_by)
-            break
-
+    def render_page(
+        response: FetchBenchmarksResponse,
+        current_page: int,
+        total_pages: int,
+        _total_count: int,
+    ) -> None:
         format_fetch_benchmarks_response(response, current_page, total_pages)
 
-        if total_pages <= 1:
-            break
-
-        char = click.getchar()
-
-        if char == "l" and current_page < total_pages:
-            current_page += 1
-            offset += limit
-        elif char == "h" and current_page > 1:
-            current_page -= 1
-            offset -= limit
-        elif char == "q" or char == "\x03":
-            break
+    paginate_cli_pages(
+        load_page,
+        render_page,
+        limit=limit,
+        render_empty=lambda: format_no_benchmarks_found(
+            agent_name, benchmark_name, model, dataset, label, status, started_by
+        ),
+    )
