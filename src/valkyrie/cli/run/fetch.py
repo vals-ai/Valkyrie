@@ -3,7 +3,6 @@ from uuid import UUID
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_health import check_tracker_service_health
 from valkyrie.cli.run.progress import format_benchmark_status, stream_benchmark_status
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -28,9 +27,6 @@ def fetch(run_id: UUID, connect: bool):
 
     try:
         with TrackerService() as tracker:
-            if not check_tracker_service_health(tracker):
-                return
-
             if connect:
                 stream_benchmark_status(tracker, run_id)
             else:

@@ -36,6 +36,7 @@ import valkyrie.cli.config.state as config_state
 import valkyrie.cli.config.benchmark_services as config_benchmark_services
 from valkyrie.cli import tracker_client as tracker_client_module
 from valkyrie.cli.config.benchmark_services import paginate_services
+from valkyrie.cli.exceptions import TrackerNotFoundError
 from valkyrie.cli.run import list_runs, start
 from valkyrie.cli.run.list_runs import format_fetch_benchmarks_response
 from valkyrie.cli.run.progress import format_benchmark_status
@@ -148,6 +149,31 @@ def test_fetch_run_outputs_omits_empty_task_ids(monkeypatch: pytest.MonkeyPatch)
     assert response.content == b"tar"
     assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
     assert client.params == {}
+
+
+def test_tracker_client_checks_health_on_context_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Commands should fail before making tracker requests when the tracker is unhealthy.
+
+    Test cases:
+    - Entering the tracker context calls /health and raises a typed tracker error.
+    """
+    original_client = httpx.Client
+    transport = httpx.MockTransport(lambda _request: httpx.Response(503, json={"detail": "not ready"}))
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    with pytest.raises(TrackerNotFoundError, match="Tracker service failed to respond"):
+        with TrackerService(base_url="http://tracker"):
+            pass
 
 
 def test_fetch_run_outputs_raises_tracker_error_for_non_ok_response(monkeypatch: pytest.MonkeyPatch) -> None:

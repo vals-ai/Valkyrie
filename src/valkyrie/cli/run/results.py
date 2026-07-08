@@ -5,7 +5,6 @@ import click
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_health import check_tracker_service_health
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -48,7 +47,13 @@ from valkyrie.cli.tracker_client import TrackerService
     default=None,
     help="Path or http(s) URL to a text file with one task ID per line",
 )
-def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, task_ids_file: str | None):
+def results(
+    run_id: UUID,
+    path: Path | None,
+    s3: bool,
+    task_ids: str | None,
+    task_ids_file: str | None,
+):
     """
     Retrieve the results of a run by its run id.
 
@@ -61,9 +66,6 @@ def results(run_id: UUID, path: Path | None, s3: bool, task_ids: str | None, tas
 
     try:
         with TrackerService() as tracker:
-            if not check_tracker_service_health(tracker):
-                return
-
             if s3:
                 if tracker.check_results_exist_in_s3(run_id):
                     if not click.confirm("Results already exist in S3. Overwrite?"):

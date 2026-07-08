@@ -12,7 +12,6 @@ from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.artifacts import download_s3_path
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
-from valkyrie.cli.tracker_health import check_tracker_service_health
 
 
 @click.command(
@@ -43,9 +42,6 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
     """
     try:
         with TrackerService() as tracker:
-            if not check_tracker_service_health(tracker):
-                return
-
             metadata = tracker.fetch_benchmark_metadata(run_id)
 
             if output_dir is None:

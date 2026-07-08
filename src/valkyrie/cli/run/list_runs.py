@@ -6,7 +6,6 @@ from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.display import format_table, short_local_time
 from valkyrie.cli.run.progress import BenchmarkFormatter
 from valkyrie.cli.tracker_client import TrackerService
-from valkyrie.cli.tracker_health import check_tracker_service_health
 
 
 @click.command(
@@ -87,9 +86,6 @@ def list_runs(
 
     try:
         with TrackerService() as tracker:
-            if not check_tracker_service_health(tracker):
-                return
-
             paginate_benchmarks(
                 tracker,
                 agent_name,

@@ -181,17 +181,10 @@ def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[
     def stream_benchmark_status(_tracker: FakeTrackerService, run_id: object) -> None:
         streamed_run_ids.append(str(run_id))
 
-    def check_tracker_service_health(_tracker: FakeTrackerService) -> bool:
-        is_healthy = True
-
-        return is_healthy
-
     monkeypatch.setattr(run_start, "TrackerService", FakeTrackerService)
     monkeypatch.setattr(run_start, "get_contract_from_s3", get_contract_from_s3)
-    monkeypatch.setattr(run_start, "check_tracker_service_health", check_tracker_service_health)
     monkeypatch.setattr(run_start, "stream_benchmark_status", stream_benchmark_status)
     monkeypatch.setattr(run_resume, "TrackerService", FakeTrackerService)
-    monkeypatch.setattr(run_resume, "check_tracker_service_health", check_tracker_service_health)
     monkeypatch.setattr(run_resume, "stream_benchmark_status", stream_benchmark_status)
 
     return started_run_id, streamed_run_ids

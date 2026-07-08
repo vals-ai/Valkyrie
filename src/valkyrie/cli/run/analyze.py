@@ -7,7 +7,6 @@ import click
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_health import check_tracker_service_health
 from valkyrie.cli.agent.storage import get_ingest_lambda_from_s3
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -27,9 +26,6 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
     """Trigger Docent ingestion + error analysis for a finished run."""
     try:
         with TrackerService() as tracker:
-            if not check_tracker_service_health(tracker):
-                raise click.ClickException("Tracker service is unhealthy.")
-
             # Resolve the analyzer Lambda from the agent's current pushed contract.
             metadata = tracker.fetch_benchmark_metadata(run_id)
             contract_name = metadata.benchmark_arguments.contract.name

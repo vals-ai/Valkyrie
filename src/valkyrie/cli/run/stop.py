@@ -3,7 +3,6 @@ from uuid import UUID
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_health import check_tracker_service_health
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -32,9 +31,6 @@ def stop(run_id: UUID, force: bool):
 
     try:
         with TrackerService() as tracker:
-            if not check_tracker_service_health(tracker):
-                return
-
             _ = tracker.stop_benchmark(run_id, force)
 
             if force:

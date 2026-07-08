@@ -32,7 +32,7 @@ from tracker.types import (
     StopBenchmarkResponse,
 )
 
-from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
 
 load_dotenv()
 
@@ -122,6 +122,7 @@ class TrackerService:
 
     def __enter__(self) -> "TrackerService":
         """Context manager entry."""
+        self.require_health()
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
@@ -294,6 +295,21 @@ class TrackerService:
             return response
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Health check failed: {e}") from e
+
+    def require_health(self) -> None:
+        """Raise if the tracker service cannot handle CLI requests."""
+        try:
+            response = self.health_check()
+        except TrackerServiceError as e:
+            raise TrackerNotFoundError(str(e)) from e
+
+        if response.status_code == 200:
+            return
+
+        detail = _response_error_detail(response)
+        if not isinstance(detail, str):
+            detail = json.dumps(detail, indent=4, default=str)
+        raise TrackerNotFoundError(f"Tracker service failed to respond!\n{detail}")
 
     def catalog_benchmark_services(self) -> list[BenchmarkServiceEntry]:
         """List catalog benchmark services visible to the configured tenant from tracker."""

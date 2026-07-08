@@ -6,7 +6,6 @@ from tracker.database.models import RetryMode
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_health import check_tracker_service_health
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import update_benchmark_agent_version
@@ -100,9 +99,6 @@ def resume(
 
     try:
         with TrackerService() as tracker:
-            if not check_tracker_service_health(tracker):
-                return
-
             # Resolve service headers from config using the benchmark name
             benchmark_info = tracker.fetch_benchmark(run_id)
             service_headers: dict[str, str] = {}

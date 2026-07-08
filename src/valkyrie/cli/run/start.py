@@ -7,7 +7,6 @@ from tracker.types import StartBenchmarkResponse
 
 from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
-from valkyrie.cli.tracker_health import check_tracker_service_health
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
@@ -345,9 +344,6 @@ def start(
             contract.secrets.update({key: value for key, value in secrets})
 
         with TrackerService() as tracker:
-            if not check_tracker_service_health(tracker):
-                return
-
             click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False)
 
             response = tracker.start_benchmark(
