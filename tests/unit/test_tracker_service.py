@@ -32,6 +32,8 @@ from tracker.types import (
 )
 
 from valkyrie.cli import main as cli_main
+import valkyrie.cli.config.providers as config_providers
+import valkyrie.cli.config.services as config_services
 from valkyrie.cli import tracker_service as tracker_service_module
 from valkyrie.cli.main import cli, list_benchmarks, start
 from valkyrie.cli.tracker_service import TrackerService, TrackerServiceError
@@ -533,7 +535,7 @@ def test_config_provider_commands_manage_named_provider_secrets(
     - provider remove deletes only the requested provider.
     """
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
-    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
+    monkeypatch.setattr(config_providers, "CONFIG_LOCATION", config_path)
     runner = CliRunner()
 
     result = runner.invoke(cli_main.cli, ["config", "provider", "set", "daytona", "DaytonaSecrets"])
@@ -735,7 +737,7 @@ def test_service_list_merges_hosted_and_custom_services(
             sort_keys=False,
         )
     )
-    monkeypatch.setattr(cli_main, "CONFIG_LOCATION", config_path)
+    monkeypatch.setattr(config_services, "CONFIG_LOCATION", config_path)
 
     captured_services: list[BenchmarkServiceHealth] = []
 
@@ -746,8 +748,8 @@ def test_service_list_merges_hosted_and_custom_services(
     ) -> None:
         captured_services.extend(check_services(services))
 
-    monkeypatch.setattr(cli_main, "TrackerService", FakeTrackerService)
-    monkeypatch.setattr(cli_main, "paginate_services", capture_paginated_services)
+    monkeypatch.setattr(config_services, "TrackerService", FakeTrackerService)
+    monkeypatch.setattr(config_services, "paginate_services", capture_paginated_services)
     FakeTrackerService.require_config_values = []
 
     result = CliRunner().invoke(cli, ["config", "service", "list"])

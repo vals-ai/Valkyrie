@@ -10,7 +10,8 @@ import yaml
 from tracker.database.models import AgentContractRequest
 from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth, BenchmarkServicesResponse
 
-from valkyrie.cli import main as cli_main
+import valkyrie.cli.run.resume as run_resume
+import valkyrie.cli.run.start as run_start
 
 
 class FakeClient:
@@ -184,9 +185,12 @@ def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[
 
         return is_healthy
 
-    monkeypatch.setattr(cli_main, "TrackerService", FakeTrackerService)
-    monkeypatch.setattr(cli_main, "get_contract_from_s3", get_contract_from_s3)
-    monkeypatch.setattr(cli_main, "check_tracker_service_health", check_tracker_service_health)
-    monkeypatch.setattr(cli_main, "stream_benchmark_status", stream_benchmark_status)
+    monkeypatch.setattr(run_start, "TrackerService", FakeTrackerService)
+    monkeypatch.setattr(run_start, "get_contract_from_s3", get_contract_from_s3)
+    monkeypatch.setattr(run_start, "check_tracker_service_health", check_tracker_service_health)
+    monkeypatch.setattr(run_start, "stream_benchmark_status", stream_benchmark_status)
+    monkeypatch.setattr(run_resume, "TrackerService", FakeTrackerService)
+    monkeypatch.setattr(run_resume, "check_tracker_service_health", check_tracker_service_health)
+    monkeypatch.setattr(run_resume, "stream_benchmark_status", stream_benchmark_status)
 
     return started_run_id, streamed_run_ids
