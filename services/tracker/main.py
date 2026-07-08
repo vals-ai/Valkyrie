@@ -1,5 +1,6 @@
 import io
 import logging
+import asyncio
 import tarfile
 import traceback
 from collections.abc import AsyncIterator
@@ -105,6 +106,7 @@ from tracker.utils import (
     force_stop_sandboxes,
     initiate_stop_benchmark,
     process_benchmark,
+    benchmark_reconciliation_loop,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
     stream_benchmark_results,
@@ -136,6 +138,8 @@ app.include_router(filter_options_router)
 app.include_router(single_benchmark_router)
 app.include_router(single_task_router)
 
+_benchmark_reconciliation_task: asyncio.Task[None] | None = None
+
 
 # Preserve health check log suppression after configure_logging() replaced handlers
 class HealthCheckFilter(logging.Filter):
@@ -144,6 +148,25 @@ class HealthCheckFilter(logging.Filter):
 
 
 logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
+
+
+@app.on_event("startup")
+async def _start_benchmark_reconciliation_loop() -> None:
+    global _benchmark_reconciliation_task
+    if _benchmark_reconciliation_task is None or _benchmark_reconciliation_task.done():
+        _benchmark_reconciliation_task = asyncio.create_task(benchmark_reconciliation_loop())
+
+
+@app.on_event("shutdown")
+async def _stop_benchmark_reconciliation_loop() -> None:
+    global _benchmark_reconciliation_task
+    if _benchmark_reconciliation_task is None:
+        return
+    _benchmark_reconciliation_task.cancel()
+    try:
+        await _benchmark_reconciliation_task
+    except asyncio.CancelledError:
+        pass
 
 
 def bind_benchmark_id(benchmark_id: UUID) -> UUID:

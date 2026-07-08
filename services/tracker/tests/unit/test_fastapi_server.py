@@ -4,7 +4,7 @@ import logging
 import tarfile
 from datetime import timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 from uuid import UUID, uuid4
 
 import httpx
@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
+import main as tracker_main
 from main import app
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity, get_current_starter
@@ -85,6 +86,25 @@ class TestFastapiServer:
 
         assert response.status_code == 200
         assert response.json() == {"task_ids": ["task_1", "task_2"]}
+
+    async def test_startup_schedules_benchmark_reconciliation_loop(self, monkeypatch: MonkeyPatch):
+        scheduled = []
+
+        monkeypatch.setattr(tracker_main, "_benchmark_reconciliation_task", None)
+        task = Mock()
+        task.done.return_value = False
+        task.cancel.return_value = None
+
+        def _create_task(coro):
+            scheduled.append(coro)
+            coro.close()
+            return task
+
+        monkeypatch.setattr(tracker_main.asyncio, "create_task", _create_task)
+
+        await tracker_main._start_benchmark_reconciliation_loop()
+
+        assert len(scheduled) == 1
 
     async def test_start_benchmark(
         self,

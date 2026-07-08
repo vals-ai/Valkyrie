@@ -3,8 +3,10 @@
 import asyncio
 import traceback
 from asyncio import Semaphore, gather
+from datetime import datetime, timedelta
 from typing import Any, Sequence, cast
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import logfire
 import sentry_sdk
@@ -51,6 +53,8 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+_BENCHMARK_RECONCILIATION_INTERVAL_SECONDS = 5 * 60
+_BENCHMARK_RECONCILIATION_GRACE_PERIOD = timedelta(minutes=20)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
@@ -151,6 +155,52 @@ def has_stopped_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> b
         ).first()
         is not None
     )
+
+
+def reconcile_stuck_benchmarks(session: Session, *, grace_period: timedelta = _BENCHMARK_RECONCILIATION_GRACE_PERIOD) -> int:
+    stale_benchmarks = session.exec(
+        select(Benchmark).where(Benchmark.status == BenchmarkStatus.IN_PROGRESS)
+    ).all()
+    reconciled = 0
+    for benchmark_row in stale_benchmarks:
+        org = session.get(Org, benchmark_row.org_id)
+        if org is None:
+            continue
+
+        task_rows = session.exec(
+            select(Task.status, Task.started_at, Task.finished_at)
+            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.org_id == org.id)
+        ).all()
+        if not task_rows:
+            continue
+        if any(status in _RUNNABLE_TASK_STATUSES for status, *_ in task_rows):
+            continue
+
+        latest_task_activity = max(finished_at or started_at for _status, started_at, finished_at in task_rows)
+        if latest_task_activity.tzinfo is None:
+            latest_task_activity = latest_task_activity.replace(tzinfo=ZoneInfo("UTC"))
+        if datetime.now(ZoneInfo("UTC")) - latest_task_activity < grace_period:
+            continue
+
+        if benchmark_row.final_evaluation is not None:
+            set_benchmark_final_status(benchmark_row, session, org)
+        else:
+            catch_errors_during_cleanup(benchmark_row.id, session, org)
+        reconciled += 1
+    return reconciled
+
+
+async def benchmark_reconciliation_loop() -> None:
+    while True:
+        try:
+            with Session(bind=engine) as session:
+                reconcile_stuck_benchmarks(session)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("benchmark reconciliation loop failed")
+        await asyncio.sleep(_BENCHMARK_RECONCILIATION_INTERVAL_SECONDS)
 
 
 def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:

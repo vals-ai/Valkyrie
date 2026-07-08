@@ -5,12 +5,14 @@ from tracker.utils.harness_config import (
     try_fetch_harness_config,
 )
 from tracker.utils.run_orchestration import (
+    benchmark_reconciliation_loop,
     catch_errors_during_cleanup,
     commit_benchmark_error,
     create_task_rows,
     fetch_final_score_inputs,
     has_runnable_tasks,
     has_stopped_tasks,
+    reconcile_stuck_benchmarks,
     process_benchmark,
     set_benchmark_final_status,
 )
@@ -62,6 +64,7 @@ __all__ = [
     "TrackedTask",
     "TrackedTaskStatus",
     "YieldingWriter",
+    "benchmark_reconciliation_loop",
     "buffer_logs",
     "build_benchmark_table_rows",
     "catch_errors_during_cleanup",
@@ -86,6 +89,7 @@ __all__ = [
     "handle_early_exit",
     "has_runnable_tasks",
     "has_stopped_tasks",
+    "reconcile_stuck_benchmarks",
     "initiate_stop_benchmark",
     "process_benchmark",
     "process_task",
