@@ -1,4 +1,4 @@
-"""Shared CLI table and time formatting helpers."""
+"""Shared CLI display helpers."""
 
 from datetime import datetime
 

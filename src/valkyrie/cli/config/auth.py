@@ -1,7 +1,7 @@
 import click
 
 from valkyrie.cli.config.state import load_config, write_config
-from valkyrie.cli.table import format_table
+from valkyrie.cli.display import format_table
 
 
 @click.group()

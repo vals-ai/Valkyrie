@@ -5,9 +5,9 @@ import click
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.health import check_tracker_service_health
+from valkyrie.cli.tracker_health import check_tracker_service_health
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.tracker_client import TrackerService
 
 
 @click.command(

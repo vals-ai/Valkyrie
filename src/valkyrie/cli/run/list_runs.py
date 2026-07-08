@@ -3,10 +3,10 @@ from tracker.database.models import BenchmarkStatus
 from tracker.types import FetchBenchmarksRequest, FetchBenchmarksResponse, Order
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.health import check_tracker_service_health
-from valkyrie.cli.run.status import BenchmarkFormatter
-from valkyrie.cli.table import format_table, short_local_time
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.display import format_table, short_local_time
+from valkyrie.cli.run.progress import BenchmarkFormatter
+from valkyrie.cli.tracker_client import TrackerService
+from valkyrie.cli.tracker_health import check_tracker_service_health
 
 
 @click.command(
@@ -65,7 +65,7 @@ from valkyrie.cli.tracker_service import TrackerService
     default=None,
     help="Comma-separated list of starter emails (e.g., alice@vals.ai,bob@vals.ai). Case-insensitive.",
 )
-def list_benchmarks(
+def list_runs(
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,

@@ -3,8 +3,8 @@ from pathlib import Path
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.health import check_tracker_service_health
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.tracker_health import check_tracker_service_health
+from valkyrie.cli.tracker_client import TrackerService
 
 
 @click.command(

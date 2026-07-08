@@ -11,7 +11,7 @@ from tracker.types import BenchmarkDetails, FetchBenchmarkResponse, StartBenchma
 
 from valkyrie.cli.run.outputs import download_run_outputs
 from valkyrie.cli.run.start import format_start_benchmark_response
-from valkyrie.cli.run.status import _stream_next_steps, format_benchmark_status
+from valkyrie.cli.run.progress import _stream_next_steps, format_benchmark_status
 
 
 def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixture[str]) -> None:

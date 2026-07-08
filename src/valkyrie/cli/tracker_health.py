@@ -4,7 +4,7 @@ import json
 
 import click
 
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.tracker_client import TrackerService
 
 
 def check_tracker_service_health(tracker: TrackerService) -> bool:

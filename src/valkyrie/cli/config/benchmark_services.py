@@ -6,8 +6,8 @@ from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth
 
 from valkyrie.cli.config.state import load_config, write_config
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.table import format_table
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.display import format_table
+from valkyrie.cli.tracker_client import TrackerService
 
 
 @click.group()

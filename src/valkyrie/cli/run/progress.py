@@ -1,4 +1,4 @@
-"""Run status rendering and streaming helpers."""
+"""Run progress rendering and streaming helpers."""
 
 from uuid import UUID
 
@@ -6,8 +6,8 @@ import click
 from tracker.database.models import DocentReadingStatus, TaskStatus
 from tracker.types import BenchmarkDetails, FetchBenchmarkResponse
 
-from valkyrie.cli.table import local_time
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.display import local_time
+from valkyrie.cli.tracker_client import TrackerService
 
 
 class BenchmarkFormatter:

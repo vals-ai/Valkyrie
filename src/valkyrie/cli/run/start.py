@@ -7,12 +7,12 @@ from tracker.types import StartBenchmarkResponse
 
 from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
-from valkyrie.cli.health import check_tracker_service_health
-from valkyrie.cli.run.status import stream_benchmark_status
+from valkyrie.cli.tracker_health import check_tracker_service_health
+from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.s3_client import get_contract_from_s3, push_agent
-from valkyrie.cli.table import local_time
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
+from valkyrie.cli.display import local_time
+from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.schemas import AgentConfig
 
 

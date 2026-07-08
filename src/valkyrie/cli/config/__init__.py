@@ -1,9 +1,9 @@
 import click
 
 from valkyrie.cli.config.auth import auth
-from valkyrie.cli.config.base import config_remove, init, set
+from valkyrie.cli.config.benchmark_services import service
 from valkyrie.cli.config.providers import provider
-from valkyrie.cli.config.services import service
+from valkyrie.cli.config.settings import config_remove, init, set
 
 
 @click.group()

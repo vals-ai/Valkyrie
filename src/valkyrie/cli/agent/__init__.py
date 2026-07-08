@@ -1,6 +1,6 @@
 import click
 
-from valkyrie.cli.agent.commands import agent_remove, download, install, list_installed_agents, push
+from valkyrie.cli.agent.lifecycle import agent_remove, download, install, list_installed_agents, push
 
 
 @click.group()

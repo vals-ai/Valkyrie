@@ -9,10 +9,10 @@ from httpx import Response
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.health import check_tracker_service_health
+from valkyrie.cli.run.artifacts import download_s3_path
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.s3_client import download_s3_path
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.tracker_client import TrackerService
+from valkyrie.cli.tracker_health import check_tracker_service_health
 
 
 @click.command(

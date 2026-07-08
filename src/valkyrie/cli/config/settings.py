@@ -4,7 +4,7 @@ from typing import Any
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.tracker_service import TrackerService
+from valkyrie.cli.tracker_client import TrackerService
 from valkyrie.cli.config.state import CONFIG_LOCATION, ConfigValue, load_config, read_config_if_exists, write_config
 
 

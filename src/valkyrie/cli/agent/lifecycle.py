@@ -5,8 +5,8 @@ from pathlib import Path
 import click
 from tracker.exceptions import S3Error
 
-from valkyrie.cli.s3_client import download_agent, install_agent, list_agents, push_agent, remove_agent
-from valkyrie.cli.table import format_table, local_time
+from valkyrie.cli.agent.storage import download_agent, install_agent, list_agents, push_agent, remove_agent
+from valkyrie.cli.display import format_table, local_time
 
 
 @click.command(name="install", help="Installs agent from a github project to the users aws environment")
