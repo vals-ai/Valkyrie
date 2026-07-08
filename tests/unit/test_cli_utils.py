@@ -9,12 +9,9 @@ import pytest
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import BenchmarkDetails, FetchBenchmarkResponse, StartBenchmarkResponse
 
-from valkyrie.cli.utils import (
-    _stream_next_steps,
-    download_run_outputs,
-    format_benchmark_status,
-    format_start_benchmark_response,
-)
+from valkyrie.cli.run.outputs import download_run_outputs
+from valkyrie.cli.run.start import format_start_benchmark_response
+from valkyrie.cli.run.progress import _stream_next_steps, format_benchmark_status
 
 
 def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixture[str]) -> None:
