@@ -157,10 +157,10 @@ def has_stopped_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> b
     )
 
 
-def reconcile_stuck_benchmarks(session: Session, *, grace_period: timedelta = _BENCHMARK_RECONCILIATION_GRACE_PERIOD) -> int:
-    stale_benchmarks = session.exec(
-        select(Benchmark).where(Benchmark.status == BenchmarkStatus.IN_PROGRESS)
-    ).all()
+def reconcile_stuck_benchmarks(
+    session: Session, *, grace_period: timedelta = _BENCHMARK_RECONCILIATION_GRACE_PERIOD
+) -> int:
+    stale_benchmarks = session.exec(select(Benchmark).where(Benchmark.status == BenchmarkStatus.IN_PROGRESS)).all()
     reconciled = 0
     for benchmark_row in stale_benchmarks:
         try:
@@ -178,9 +178,7 @@ def reconcile_stuck_benchmarks(session: Session, *, grace_period: timedelta = _B
             if any(status in _RUNNABLE_TASK_STATUSES for status, *_ in task_rows):
                 continue
 
-            latest_task_activity = max(
-                finished_at or started_at for _status, started_at, finished_at in task_rows
-            )
+            latest_task_activity = max(finished_at or started_at for _status, started_at, finished_at in task_rows)
             if latest_task_activity.tzinfo is None:
                 latest_task_activity = latest_task_activity.replace(tzinfo=ZoneInfo("UTC"))
             if datetime.now(ZoneInfo("UTC")) - latest_task_activity < grace_period:
