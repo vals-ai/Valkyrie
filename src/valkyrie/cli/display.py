@@ -91,7 +91,7 @@ def paginate_cli_pages(
         offset = (current_page - 1) * limit
         total_count, page = load_page(offset, limit)
         total_pages = max(1, (total_count + limit - 1) // limit)
-        if current_page > total_pages:
+        while current_page > total_pages:
             current_page = total_pages
             offset = (current_page - 1) * limit
             total_count, page = load_page(offset, limit)
