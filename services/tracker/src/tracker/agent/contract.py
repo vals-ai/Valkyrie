@@ -21,7 +21,11 @@ def read_agent_name(agent_dir: Path) -> str:
             data = yaml.safe_load(contract_file.read_text())
             if not isinstance(data, dict):
                 raise BundlerError(f"Invalid contract file '{contract_file}': expected a mapping")
-            return AgentContract(**data).name
+            try:
+                return AgentContract(**data).name
+            except Exception as e:
+                raise BundlerError(f"Invalid contract file '{contract_file}': {e}") from e
+
     raise BundlerError(f"No contract file found in agent directory '{agent_dir}'")
 
 
