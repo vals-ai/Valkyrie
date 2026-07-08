@@ -9,6 +9,7 @@ import pytest
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import BenchmarkDetails, FetchBenchmarkResponse, StartBenchmarkResponse
 
+from valkyrie.cli.display import paginate_cli_pages
 from valkyrie.cli.run.outputs import download_run_outputs
 from valkyrie.cli.run.start import format_start_benchmark_response
 from valkyrie.cli.run.progress import _stream_next_steps, format_benchmark_status
@@ -101,3 +102,44 @@ def test_download_run_outputs_extracts_archive_and_nested_tars(tmp_path: Path) -
     assert (tmp_path / "task" / "output.txt").read_bytes() == b"run output"
     assert (tmp_path / "task" / "artifacts" / "nested.txt").read_bytes() == b"nested contents"
     assert not (tmp_path / "task" / "artifacts.tar.gz").exists()
+
+
+def test_paginate_cli_pages_clears_between_pages_and_handles_filtered_totals(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Shared table pagination should clear each render and recover when totals shrink.
+
+    Test cases:
+    - Moving forward clears the previous table before rendering the next page.
+    - If a filtered/refetched total invalidates the current page, pagination reloads a valid page.
+    """
+    load_offsets: list[int] = []
+    rendered_pages: list[tuple[list[str], int, int, int]] = []
+
+    def load_page(offset: int, _limit: int) -> tuple[int, list[str]]:
+        load_offsets.append(offset)
+        if load_offsets == [0]:
+            return 4, ["one", "two"]
+        if offset == 2:
+            return 1, []
+        return 1, ["filtered"]
+
+    def render_page(page: list[str], current_page: int, total_pages: int, total_count: int) -> None:
+        rendered_pages.append((page, current_page, total_pages, total_count))
+        print(f"page={current_page}/{total_pages}:{','.join(page)}")
+
+    monkeypatch.setattr("valkyrie.cli.display.click.getchar", lambda: "l")
+
+    paginate_cli_pages(
+        load_page,
+        render_page,
+        limit=2,
+        render_empty=lambda: print("empty"),
+    )
+
+    output = capsys.readouterr().out
+    assert load_offsets == [0, 2, 0]
+    assert rendered_pages == [(["one", "two"], 1, 2, 4), (["filtered"], 1, 1, 1)]
+    assert output.count("\033[2J\033[3J\033[1;1H") == 2
+    assert "empty" not in output
