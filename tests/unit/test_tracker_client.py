@@ -176,6 +176,41 @@ def test_tracker_client_checks_health_on_context_entry(monkeypatch: pytest.Monke
             pass
 
 
+@pytest.mark.parametrize(
+    ("response", "expected_payload", "error_match"),
+    [
+        pytest.param(httpx.Response(200, json={"ok": True}), {"ok": True}, None, id="success-json"),
+        pytest.param(
+            httpx.Response(404, json={"detail": "missing run"}),
+            None,
+            "Failed request: missing run",
+            id="failed-json-detail",
+        ),
+        pytest.param(
+            httpx.Response(500, text="plain failure"), None, "Failed request: plain failure", id="failed-text"
+        ),
+    ],
+)
+def test_parse_response_returns_json_and_raises_tracker_errors(
+    response: httpx.Response,
+    expected_payload: dict[str, bool] | None,
+    error_match: str | None,
+) -> None:
+    """Tracker response parsing should normalize success and failure bodies.
+
+    Test cases:
+    - Successful JSON responses are returned unchanged.
+    - Failed JSON and text responses raise the tracker error with useful detail.
+    """
+    if error_match is not None:
+        with pytest.raises(TrackerServiceError, match=error_match):
+            tracker_client_module._parse_response(response, "Failed request")
+
+        return
+
+    assert tracker_client_module._parse_response(response, "Failed request") == expected_payload
+
+
 def test_fetch_run_outputs_raises_tracker_error_for_non_ok_response(monkeypatch: pytest.MonkeyPatch) -> None:
     class ErrorClient(FakeClient):
         def get(

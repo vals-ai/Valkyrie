@@ -1,8 +1,12 @@
 """Shared CLI display helpers."""
 
+from collections.abc import Callable
 from datetime import datetime
+from typing import TypeVar
 
 import click
+
+Page = TypeVar("Page")
 
 
 def local_time(dt: datetime) -> str:
@@ -67,3 +71,48 @@ def format_table(
         click.echo(f"{total_text}{' ' * padding}{nav_text}")
     else:
         click.echo(total_text)
+
+
+def _clear_pager() -> None:
+    click.echo("\033[2J\033[3J\033[1;1H", nl=False, color=True)
+
+
+def paginate_cli_pages(
+    load_page: Callable[[int, int], tuple[int, Page]],
+    render_page: Callable[[Page, int, int, int], None],
+    *,
+    limit: int,
+    render_empty: Callable[[], None],
+) -> None:
+    """Page through CLI rows with h/l/q navigation."""
+    current_page = 1
+
+    while True:
+        offset = (current_page - 1) * limit
+        total_count, page = load_page(offset, limit)
+        total_pages = max(1, (total_count + limit - 1) // limit)
+        while current_page > total_pages:
+            current_page = total_pages
+            offset = (current_page - 1) * limit
+            total_count, page = load_page(offset, limit)
+            total_pages = max(1, (total_count + limit - 1) // limit)
+
+        _clear_pager()
+
+        if total_count == 0:
+            render_empty()
+            break
+
+        render_page(page, current_page, total_pages, total_count)
+
+        if total_pages <= 1:
+            break
+
+        char = click.getchar()
+
+        if char == "l" and current_page < total_pages:
+            current_page += 1
+        elif char == "h" and current_page > 1:
+            current_page -= 1
+        elif char == "q" or char == "\x03":
+            break
