@@ -597,7 +597,7 @@ class TestPushCommand:
         async def fake_push(agent_name: str, agent_path: Path) -> None:
             pushed["name"] = agent_name
 
-        monkeypatch.setattr("valkyrie.cli.main.push_agent", fake_push)
+        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", fake_push)
 
         result = CliRunner().invoke(agent, ["push", str(tmp_path)])
 
@@ -611,7 +611,7 @@ class TestPushCommand:
         async def fake_push(agent_name: str, agent_path: Path) -> None:
             pushed["name"] = agent_name
 
-        monkeypatch.setattr("valkyrie.cli.main.push_agent", fake_push)
+        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", fake_push)
 
         result = CliRunner().invoke(agent, ["push", str(tmp_path), "--name", "override"])
 
