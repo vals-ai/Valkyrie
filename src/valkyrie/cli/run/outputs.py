@@ -61,8 +61,7 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
             click.echo(click.style(f"\r\033[K✓ Run outputs extracted to: {output_dir}", fg="green"))
 
     except TrackerServiceError as e:
-        click.echo(click.style(f"✗ Error: {e}", fg="red"), err=True)
-        raise click.Abort()
+        raise click.ClickException(str(e))
 
 
 @click.command(name="output", help="Download files from a benchmark run by its ID.")
