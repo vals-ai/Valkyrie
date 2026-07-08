@@ -115,3 +115,10 @@ def test_read_agent_name_malformed_contract(tmp_path):
 
     with pytest.raises(BundlerError, match="expected a mapping"):
         read_agent_name(tmp_path)
+
+
+def test_read_agent_name_missing_required_fields(tmp_path):
+    (tmp_path / "contract.yaml").write_text("name: my_agent\n")
+
+    with pytest.raises(BundlerError, match="Invalid contract file"):
+        read_agent_name(tmp_path)

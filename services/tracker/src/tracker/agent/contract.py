@@ -23,7 +23,7 @@ def read_agent_name(agent_dir: Path) -> str:
                 raise BundlerError(f"Invalid contract file '{contract_file}': expected a mapping")
             try:
                 return AgentContract(**data).name
-            except Exception as e:
+            except PydanticValidationError as e:
                 raise BundlerError(f"Invalid contract file '{contract_file}': {e}") from e
 
     raise BundlerError(f"No contract file found in agent directory '{agent_dir}'")
