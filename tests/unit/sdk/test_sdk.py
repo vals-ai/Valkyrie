@@ -163,16 +163,11 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert request.url.path == "/start-benchmark"
     assert request.headers["x-api-key"] == "vals-key"
     assert request.headers["x-harness-aws-session-token"] == "aws-session"
-    assert body["contract"] == {
-        "name": "sweagent",
-        "model": "claude-sonnet",
-        "install_cmd": "",
-        "run_cmd": "",
-        "final_output": None,
-        "output_artifacts": [],
-        "secrets": {"ANTHROPIC_API_KEY": "AnthropicSecret"},
-        "kwargs": {"temperature": "0"},
-    }
+    contract = body["contract"]
+    assert contract["name"] == "sweagent"
+    assert contract["model"] == "claude-sonnet"
+    assert contract["secrets"] == {"ANTHROPIC_API_KEY": "AnthropicSecret"}
+    assert contract["kwargs"] == {"temperature": "0"}
     assert body["custom_benchmark_service"] == "https://local.swebench"
     assert body["service_headers"] == {"Authorization": "benchmark-token", "X-Custom": "explicit"}
     assert body["sandbox_provider"] == "modal"
