@@ -59,6 +59,7 @@ class AgentContract(BaseModel):
     install_cmd: str
     final_output: Path | None = None
     output_artifacts: list[OutputArtifactSpec] = []
+    egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}
     ingest_lambda: str | None = None
     defaults: dict[str, Parameter] = {}
