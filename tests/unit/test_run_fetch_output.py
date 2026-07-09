@@ -258,6 +258,18 @@ def test_fetch_jsonl_reports_keyboard_interrupt_as_json(monkeypatch: pytest.Monk
     assert [record["event"] for record in records] == ["snapshot", "interrupted"]
 
 
+def test_fetch_jsonl_reports_clean_stream_exhaustion_as_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = uuid4()
+    tracker = StubFetchTracker(make_response(run_id), make_metadata(run_id))
+
+    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
+
+    assert result.exit_code != 0
+    records = [json.loads(line) for line in result.stdout.splitlines()]
+    assert [record["event"] for record in records] == ["snapshot", "disconnect"]
+    assert "ended without a terminal event" in result.stderr
+
+
 @pytest.mark.parametrize(
     ("args", "expected_error"),
     [

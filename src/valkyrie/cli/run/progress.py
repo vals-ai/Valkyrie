@@ -228,6 +228,13 @@ def stream_benchmark_status(
                     click.echo("\n")
                     click.echo(click.style("Disconnected from stream.", fg="yellow"))
                 break
+        else:
+            if output_format == "jsonl":
+                click.echo(format_run_snapshot_json(latest, metadata, event="disconnect"))
+            else:
+                click.echo("\n")
+                click.echo(click.style("Disconnected from stream.", fg="yellow"))
+            raise click.ClickException("Run stream ended without a terminal event.")
 
     except KeyboardInterrupt:
         if output_format == "jsonl":
