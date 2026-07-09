@@ -178,7 +178,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         f"/bundle/{contract_name}/setup.sh",
         (
             "#!/bin/sh\n"
-            "printf '%s:%s:%s' \"$RUN_ID\" \"$TRACKER_COMPOSE_SECRET\" \"$(pwd)\" "
+            'printf \'%s:%s:%s\' "$RUN_ID" "$TRACKER_COMPOSE_SECRET" "$(pwd)" '
             "> /workspace/install-proof.txt\n"
         ).encode(),
     )
@@ -193,7 +193,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
             f"test \"$RUN_ID\" = '{_COMPOSE_RUN_ID}' && "
             f"test \"$TASK_ID\" = '{_COMPOSE_TASK_ID}' && "
             f"test \"$TRACKER_COMPOSE_SECRET\" = '{_COMPOSE_SECRET}' && "
-            "case \"$IDENTITY\" in *compose-agent*) true;; *) exit 1;; esac"
+            'case "$IDENTITY" in *compose-agent*) true;; *) exit 1;; esac'
         ),
     )
     aws = AWSCredentials(
