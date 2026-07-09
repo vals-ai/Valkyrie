@@ -593,18 +593,31 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to check S3 results: {e}") from e
 
-    def stop_benchmark(self, benchmark_id: UUID, force: bool) -> StopBenchmarkResponse:
+    def stop_benchmark(
+        self,
+        benchmark_id: UUID,
+        force: bool,
+        task_ids: list[str] | None = None,
+        service_headers: dict[str, str] | None = None,
+    ) -> StopBenchmarkResponse:
         """
         Stop a benchmark by its benchmark id.
 
         Args:
             benchmark_id: Benchmark id
+            force: Whether to stop active sandboxes immediately
+            task_ids: Optional task IDs to stop without affecting other tasks
+            service_headers: Optional headers for benchmark service authentication
 
         Returns:
             StopBenchmarkResponse with status and message
         """
         try:
-            response = self._client.post(f"{self._base_url}/stop-benchmark/{benchmark_id}", params={"force": force})
+            response = self._client.post(
+                f"{self._base_url}/stop-benchmark/{benchmark_id}",
+                params={"force": force},
+                json={"task_ids": task_ids, "service_headers": service_headers or {}},
+            )
 
             return StopBenchmarkResponse.model_validate(_parse_response(response, "Failed to stop run"))
         except httpx.HTTPError as e:

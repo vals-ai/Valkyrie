@@ -209,9 +209,18 @@ valkyrie run results <id> --task-ids-file https://example.com/subset.txt
 ```bash
 valkyrie run stop <id>
 
+# Stop only selected tasks
+valkyrie run stop <id> --task-ids task-a,task-b
+valkyrie run stop <id> --task-ids-file ./task-ids.txt
+
 # Force stop all in-flight tasks immediately
 valkyrie run stop <id> --force
+
+# Force stop only selected tasks and remove their sandboxes
+valkyrie run stop <id> --task-ids task-a,task-b --force
 ```
+
+`--task-ids` and `--task-ids-file` are mutually exclusive. Without either option, `stop` keeps its existing full-run behavior.
 
 ### Resume / Retry a run
 

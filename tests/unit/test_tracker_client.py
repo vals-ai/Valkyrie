@@ -151,6 +151,44 @@ def test_fetch_run_outputs_omits_empty_task_ids(monkeypatch: pytest.MonkeyPatch)
     assert client.params == {}
 
 
+def test_stop_benchmark_sends_task_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send selected task IDs and benchmark-service headers in stop requests.
+
+    Test cases:
+    - Force remains a query parameter.
+    - Task IDs and service headers are sent in the request body.
+    """
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    run_id = uuid4()
+    tracker = TrackerService(base_url="http://tracker")
+
+    tracker.stop_benchmark(
+        run_id,
+        force=True,
+        task_ids=["task-a", "task-b"],
+        service_headers={"Authorization": "secret"},
+    )
+
+    assert client.url == f"http://tracker/stop-benchmark/{run_id}"
+    assert client.params == {"force": True}
+    assert client.json == {
+        "task_ids": ["task-a", "task-b"],
+        "service_headers": {"Authorization": "secret"},
+    }
+
+    tracker.stop_benchmark(run_id, force=False)
+
+    assert client.json == {"task_ids": None, "service_headers": {}}
+
+
 def test_tracker_client_checks_health_on_context_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Commands should fail before making tracker requests when the tracker is unhealthy.
 

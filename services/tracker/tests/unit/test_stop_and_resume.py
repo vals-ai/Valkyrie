@@ -1,14 +1,24 @@
+"""Tests for stopping, resuming, and retrying benchmark runs.
+
+Run: uv run pytest tests/unit/test_stop_and_resume.py
+
+Covers task state transitions, sandbox cleanup, and run-control API behavior.
+"""
+
 import asyncio
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 from zoneinfo import ZoneInfo
 
 import pytest
+from benchmark_service import ImageSource, Resources, SandboxQuery
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.sandbox import DaytonaProviderConfig
-from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
+from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse, VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
@@ -32,6 +42,7 @@ from tracker.utils import (
     TaskMonitor,
     TrackedTask,
     TrackedTaskStatus,
+    commit_task_status_transition,
     force_stop_sandboxes,
     initiate_stop_benchmark,
     process_benchmark,
@@ -41,6 +52,8 @@ from tracker.utils import (
 )
 
 UTC = ZoneInfo("UTC")
+_ORIGINAL_ATTEMPT_AT = datetime(2026, 7, 8)
+_RESUMED_ATTEMPT_AT = datetime(2026, 7, 9)
 client = TestClient(app)
 
 
@@ -63,9 +76,476 @@ def _error_result(task: Task, error_message: str, created_at: datetime) -> Error
     return ErrorResult(org_id=task.org_id, task=task.id, created_at=created_at, error_message=error_message)
 
 
+class MockSubsetSandboxProvider:
+    """Expose task-labeled sandboxes and record deletions."""
+
+    def __init__(self, task_ids: list[str]) -> None:
+        self.sandboxes_by_task: dict[str, Mock] = {}
+        self.deleted_sandbox_ids: list[str] = []
+        for task_id in task_ids:
+            sandbox = Mock()
+            sandbox.id = f"sandbox-{task_id}"
+            sandbox.name = task_id
+            self.sandboxes_by_task[task_id] = sandbox
+
+    async def list_sandboxes(self, query: SandboxQuery) -> AsyncGenerator[Mock, None]:
+        task_id = query.labels.get("Task")
+        if task_id is not None and task_id in self.sandboxes_by_task:
+            yield self.sandboxes_by_task[task_id]
+
+    async def delete_sandbox(self, sandbox_id: str) -> None:
+        self.deleted_sandbox_ids.append(sandbox_id)
+
+
+class MockKicker:
+    """Accept task dispatch without starting another worker."""
+
+    def with_labels(self, **_labels: str) -> "MockKicker":
+        return self
+
+    async def kiq(self, **_kwargs: Any) -> None:
+        return None
+
+
 class TestStopAndResume:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+
+    @pytest.mark.parametrize(
+        ("selected_task_ids", "expected_stopped_task_ids"),
+        [
+            (["task_pending"], {"task_pending"}),
+            (["task_pending", "task_evaluating"], {"task_pending", "task_evaluating"}),
+        ],
+    )
+    async def test_stop_selected_tasks_keeps_unselected_tasks_running(
+        self,
+        selected_task_ids: list[str],
+        expected_stopped_task_ids: set[str],
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """Stop only selected tasks and keep the benchmark active for remaining work.
+
+        Test cases:
+        - A single selected task is stopped.
+        - Multiple selected tasks are stopped.
+        - Unselected runnable tasks and benchmark status remain unchanged.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="task_pending",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.PENDING,
+                ),
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="task_evaluating",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.EVALUATING,
+                ),
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="task_unselected",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.PENDING,
+                ),
+            ]
+        )
+        database_session.commit()
+
+        captured_headers: list[dict[str, str]] = []
+
+        async def verify_task_ids(
+            service_client: BenchmarkServiceClient,
+            task_ids: list[str],
+            **_kwargs: Any,
+        ) -> VerifyTaskIdsResponse:
+            captured_headers.append(service_client._headers)
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+
+        response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}?force=false",
+            headers={"X-Api-Key": "tracker-secret"},
+            json={
+                "task_ids": selected_task_ids,
+                "service_headers": {"Authorization": "benchmark-secret"},
+            },
+        )
+
+        assert response.status_code == 200, response.text
+
+        task_statuses = {
+            task.task_id: task.status
+            for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+        assert {task_id for task_id, status in task_statuses.items() if status == TaskStatus.STOPPED} == (
+            expected_stopped_task_ids
+        )
+        assert task_statuses["task_unselected"] == TaskStatus.PENDING
+        assert captured_headers == [
+            {
+                "Authorization": "benchmark-secret",
+                "X-Descope-Api-Key": "tracker-secret",
+            }
+        ]
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+    async def test_stop_selected_tasks_rejects_empty_list(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ) -> None:
+        """Reject an explicit empty task list instead of widening to a full stop.
+
+        Test cases:
+        - A JSON `task_ids: []` request returns 400 and leaves run state unchanged.
+        """
+        benchmark_row = example_benchmark_object
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_pending",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add(benchmark_row)
+        database_session.add(task_row)
+        database_session.commit()
+
+        response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}",
+            json={"task_ids": []},
+        )
+
+        assert response.status_code == 400
+        assert "cannot be empty" in response.json()["detail"]
+
+        database_session.refresh(task_row)
+        database_session.refresh(benchmark_row)
+        assert task_row.status == TaskStatus.PENDING
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+    async def test_stop_selected_tasks_rejects_invalid_ids(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """Reject task IDs outside the dataset or outside the current run.
+
+        Test cases:
+        - A dataset-invalid task ID propagates benchmark-service validation failure.
+        - A dataset-valid task without a run row is rejected without changing state.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_pending",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add(benchmark_row)
+        database_session.add(task_row)
+        database_session.commit()
+
+        async def reject_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", reject_task_ids)
+
+        invalid_response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}",
+            json={"task_ids": ["task_invalid"]},
+        )
+
+        assert invalid_response.status_code == 400
+        assert "not valid for this dataset" in invalid_response.json()["detail"]
+
+        async def accept_task_ids(
+            *_args: Any,
+            task_ids: list[str],
+            **_kwargs: Any,
+        ) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", accept_task_ids)
+
+        missing_response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}",
+            json={"task_ids": ["task_not_in_run"]},
+        )
+
+        assert missing_response.status_code == 400
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.PENDING
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+    async def test_force_stop_sandboxes_scopes_selected_tasks(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """Force-stop selected task sandboxes without affecting unselected work.
+
+        Test cases:
+        - Only the selected active task moves to STOPPED.
+        - Only the selected task sandbox is deleted.
+        - The benchmark remains active for an unselected in-progress task.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.add_all(
+            [
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="task_selected",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.IN_PROGRESS,
+                ),
+                Task(
+                    org_id=TEST_ORG_ID,
+                    task_id="task_unselected",
+                    benchmark=benchmark_row.id,
+                    status=TaskStatus.IN_PROGRESS,
+                ),
+            ]
+        )
+        database_session.commit()
+        provider = MockSubsetSandboxProvider(["task_selected", "task_unselected"])
+
+        def get_sandbox_provider(*_args: Any, **_kwargs: Any) -> MockSubsetSandboxProvider:
+            return provider
+
+        async def verify_task_ids(
+            *_args: Any,
+            task_ids: list[str],
+            **_kwargs: Any,
+        ) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+
+        response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}?force=true",
+            json={"task_ids": ["task_selected"]},
+        )
+
+        assert response.status_code == 200, response.text
+
+        task_statuses = {
+            task.task_id: task.status
+            for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+        assert task_statuses == {
+            "task_selected": TaskStatus.STOPPED,
+            "task_unselected": TaskStatus.IN_PROGRESS,
+        }
+        assert provider.deleted_sandbox_ids == ["sandbox-task_selected"]
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+
+    @pytest.mark.parametrize(
+        "next_status",
+        [TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING, TaskStatus.FINISHED],
+    )
+    def test_stopped_task_status_is_sticky(
+        self,
+        next_status: TaskStatus,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ) -> None:
+        """Prevent worker transitions from reviving a stopped task.
+
+        Test cases:
+        - BUILDING, IN_PROGRESS, EVALUATING, and FINISHED cannot replace STOPPED.
+        """
+        database_session.add(example_benchmark_object)
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_stopped",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.STOPPED,
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        transitioned = commit_task_status_transition(task_row.id, database_session, self._test_org, next_status)
+
+        database_session.refresh(task_row)
+        assert transitioned is False
+        assert task_row.status == TaskStatus.STOPPED
+
+    def test_stale_task_attempt_cannot_transition(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ) -> None:
+        """Prevent an old worker from changing a newly resumed task attempt.
+
+        Test cases:
+        - A transition carrying the previous `started_at` token is rejected.
+        """
+        database_session.add(example_benchmark_object)
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_resumed",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add(task_row)
+        database_session.commit()
+        stale_started_at = task_row.started_at
+        task_row.started_at = stale_started_at + timedelta(seconds=1)
+        database_session.add(task_row)
+        database_session.commit()
+
+        transitioned = commit_task_status_transition(
+            task_row.id,
+            database_session,
+            self._test_org,
+            TaskStatus.BUILDING,
+            expected_started_at=stale_started_at,
+        )
+
+        database_session.refresh(task_row)
+        assert transitioned is False
+        assert task_row.status == TaskStatus.PENDING
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_stale_worker_cannot_continue_after_force_stop_resume(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        """Keep an old worker from continuing after force stop and immediate resume.
+
+        Test cases:
+        - Force stop occurs while task retrieval is in flight.
+        - The task is immediately resumed with a new attempt token.
+        - The stale worker cannot enter BUILDING or create a sandbox.
+        """
+        start_request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=1,
+            task_ids=["task_selected"],
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(start_request, self._test_starter)
+        selected_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_selected",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+            started_at=_ORIGINAL_ATTEMPT_AT,
+        )
+        database_session.add(benchmark_row)
+        database_session.add(selected_task)
+        database_session.commit()
+        database_session.expire_all()
+        selected_task = database_session.exec(
+            select(Task).where(Task.benchmark == benchmark_row.id).where(Task.task_id == "task_selected")
+        ).one()
+        original_started_at = selected_task.started_at
+
+        retrieval_started = asyncio.Event()
+        continue_retrieval = asyncio.Event()
+        sandbox_created = False
+
+        async def delayed_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            retrieval_started.set()
+            await continue_retrieval.wait()
+
+            return RetrieveTaskResponse(
+                source=ImageSource(image="test-image:latest"),
+                problem_path="/tmp/problem_statement.txt",
+                cwd="/testbed",
+                resources=Resources(vcpu=2, memory=4, disk=5),
+            )
+
+        @asynccontextmanager
+        async def record_sandbox_creation(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_created
+            sandbox_created = True
+            raise AssertionError("stopped task attempted to create a sandbox")
+            yield AsyncMock()
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", delayed_retrieve_task)
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", record_sandbox_creation)
+        monkeypatch.setattr(
+            BenchmarkServiceClient, "get_sandbox_provider", lambda *_args, **_kwargs: MockSubsetSandboxProvider([])
+        )
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: MockKicker())
+        monkeypatch.setattr(
+            "tracker.utils.run_control.datetime",
+            SimpleNamespace(now=lambda _timezone: _RESUMED_ATTEMPT_AT),
+        )
+
+        benchmark_service = benchmark_row.benchmark_service()
+        process_future = asyncio.create_task(
+            process_task(
+                selected_task,
+                start_request,
+                benchmark_service,
+                benchmark_row.id,
+                selected_task.task_id,
+                harness_config,
+                self._test_org,
+                sandbox_provider_config=DaytonaProviderConfig(
+                    DAYTONA_API_KEY="key",
+                    DAYTONA_API_URL="url",
+                    DAYTONA_TARGET="target",
+                ),
+                creation_semaphore=asyncio.Semaphore(1),
+            )
+        )
+
+        await asyncio.wait_for(retrieval_started.wait(), timeout=2)
+        stop_response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}?force=true",
+            json={"task_ids": [selected_task.task_id]},
+        )
+        resume_response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={"task_ids": [selected_task.task_id]},
+        )
+        continue_retrieval.set()
+
+        assert stop_response.status_code == 200, stop_response.text
+        assert resume_response.status_code == 200, resume_response.text
+
+        try:
+            result = await asyncio.wait_for(process_future, timeout=5)
+        finally:
+            await benchmark_service.close()
+
+        database_session.refresh(selected_task)
+        database_session.refresh(benchmark_row)
+        assert result == {selected_task.task_id: None}
+        assert selected_task.status == TaskStatus.PENDING
+        assert original_started_at == _ORIGINAL_ATTEMPT_AT
+        assert selected_task.started_at == _RESUMED_ATTEMPT_AT
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert sandbox_created is False
 
     async def test_stop_and_resume(
         self,
@@ -697,7 +1177,7 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        captured: dict[str, str | None] = {}
+        captured: dict[str, object] = {}
 
         async def _mock_force_stop_sandboxes(
             _benchmark_row: Benchmark,
@@ -707,9 +1187,11 @@ class TestStopAndResume:
             _org: Org,
             *,
             sandbox_provider: str,
+            task_ids: list[str] | None = None,
         ) -> None:
             captured["sandbox_provider_secret_name"] = sandbox_provider_secret_name
             captured["sandbox_provider"] = sandbox_provider
+            captured["task_ids"] = task_ids
 
         monkeypatch.setattr("main.force_stop_sandboxes", _mock_force_stop_sandboxes)
 
@@ -719,6 +1201,7 @@ class TestStopAndResume:
         assert captured == {
             "sandbox_provider_secret_name": "ModalSecrets",
             "sandbox_provider": "modal",
+            "task_ids": None,
         }
 
     async def test_retry_or_resume_applies_secrets_to_stored_contract(
