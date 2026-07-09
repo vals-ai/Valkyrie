@@ -320,7 +320,6 @@ def start(
 
         # If the user specified an agent on their machine we upload it first
         if agent_path.is_dir():
-            asyncio.run(push_agent(agent_path.stem, agent_path))
             contract_file = next(
                 (
                     agent_path / f"contract{ext}"
@@ -330,7 +329,7 @@ def start(
                 agent_path / "contract.yaml",
             )
             contract = get_contract(contract_file, agent_config)
-            contract.name = agent_path.stem
+            asyncio.run(push_agent(contract.name, agent_path))
         else:
             contract = asyncio.run(get_contract_from_s3(agent, agent_config))
             contract.name = agent

@@ -6,7 +6,9 @@ import click
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.agent.storage import download_agent, install_agent, list_agents, push_agent, remove_agent
+from valkyrie.cli.bundler import read_agent_name
 from valkyrie.cli.display import format_table, local_time, paginate_cli_pages
+from valkyrie.schemas import validate_agent_name
 
 
 @click.command(name="install", help="Installs agent from a github project to the users aws environment")
@@ -16,7 +18,7 @@ from valkyrie.cli.display import format_table, local_time, paginate_cli_pages
     "-n",
     type=str,
     required=False,
-    help="Agent name (defaults to repository name or subfolder name)",
+    help="Agent name (defaults to the contract name)",
 )
 def install(github_url: str, name: str | None):
     """Install an agent from a GitHub repository or a subfolder within a repository.
@@ -45,7 +47,7 @@ def install(github_url: str, name: str | None):
     "-n",
     type=str,
     required=False,
-    help="Agent name (defaults to path stem)",
+    help="Agent name (defaults to the contract name)",
 )
 def push(agent_path: Path, name: str | None):
     """Push a local agent to S3.
@@ -55,7 +57,7 @@ def push(agent_path: Path, name: str | None):
         valkyrie agent push ./agents/my-agent --name my-agent
     """
     try:
-        agent_name = name or agent_path.stem
+        agent_name = validate_agent_name(name) if name else read_agent_name(agent_path)
         asyncio.run(push_agent(agent_name, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
     except S3Error as e:

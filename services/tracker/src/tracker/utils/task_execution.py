@@ -475,6 +475,7 @@ async def process_task(
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
                     benchmark_id=str(benchmark_id),
+                    runtime_source=task_data.source,
                 )
                 logger.info(
                     "agent.run.complete",
