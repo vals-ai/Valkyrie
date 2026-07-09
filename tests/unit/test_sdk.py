@@ -8,13 +8,14 @@ Covers config validation, request construction, response parsing, streaming, and
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import assert_type
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
 from pydantic import ValidationError
 from tracker.database.models import AgentContractRequest
-from tracker.types import FetchBenchmarksRequest
+from tracker.types import FetchBenchmarksRequest, FinalViewResponse, S3UploadResultsResponse
 
 from valkyrie.sdk import (
     ValkyrieAPIError,
@@ -294,6 +295,8 @@ async def test_fetch_list_stop_and_s3_results_are_typed() -> None:
     assert fetched.benchmark_id == run_id
     assert listed.total_count == 0
     assert stopped.status == "success"
+    assert_type(inline_results, FinalViewResponse)
+    assert_type(results, S3UploadResultsResponse)
     assert inline_results.benchmark_id == run_id
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert paths == [

@@ -36,6 +36,8 @@ async with ValkyrieClient(config=config) as client:
 
 Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses `TRACKER_SERVICE_URL` or the hosted tracker URL.
 
+The SDK sends AWS credentials in `X-Harness-*` headers. Only connect to trusted trackers and use HTTPS outside local development.
+
 ## Run lifecycle
 
 Start a run with an uploaded agent name or `AgentContractRequest`:

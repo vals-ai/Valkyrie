@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 from uuid import UUID
 
 import httpx
@@ -145,6 +145,33 @@ class RunsResource:
                         yield snapshot
         except httpx.HTTPError as exc:
             raise ValkyrieTransportError(f"Valkyrie stream failed: {exc}") from exc
+
+    @overload
+    async def results(
+        self,
+        run_id: UUID,
+        *,
+        task_ids: Sequence[str] | None = None,
+        upload_to_s3: Literal[False] = False,
+    ) -> FinalViewResponse: ...
+
+    @overload
+    async def results(
+        self,
+        run_id: UUID,
+        *,
+        task_ids: Sequence[str] | None = None,
+        upload_to_s3: Literal[True],
+    ) -> S3UploadResultsResponse: ...
+
+    @overload
+    async def results(
+        self,
+        run_id: UUID,
+        *,
+        task_ids: Sequence[str] | None = None,
+        upload_to_s3: bool,
+    ) -> RetrieveResultsResponse: ...
 
     async def results(
         self,
