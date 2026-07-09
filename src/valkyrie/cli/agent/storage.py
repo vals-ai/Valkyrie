@@ -1,11 +1,12 @@
 import asyncio
 import io
 import re
+import shutil
 import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, Coroutine, TypeVar, cast
 
 import aioboto3
 import click
@@ -23,11 +24,43 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 from tracker.types import AWSCredentials
 
-from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes
-from valkyrie.cli.utils import load_config, run_with_spinner
-from valkyrie.schemas import AgentConfig
+from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes, read_agent_name
+from valkyrie.cli.config.state import load_config
+from valkyrie.schemas import AgentConfig, validate_agent_name
 
-_S3_DOWNLOAD_CONCURRENCY = 8
+T = TypeVar("T")
+
+
+async def run_with_spinner(coro: Coroutine[Any, Any, T], message: str) -> T:
+    """Run an async coroutine with an animated spinner."""
+    spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    frame_index = 0
+
+    max_width = shutil.get_terminal_size().columns - 2
+    display_message = message if len(message) <= max_width else message[: max_width - 1] + "…"
+
+    async def show_spinner() -> None:
+        nonlocal frame_index
+        while not task.done():
+            frame = spinner_frames[frame_index % len(spinner_frames)]
+            click.echo(f"\r{frame} {display_message}", nl=False)
+            frame_index += 1
+            await asyncio.sleep(0.1)
+        click.echo("\r\033[K", nl=False)
+
+    task = asyncio.create_task(coro)
+    spinner_task = asyncio.create_task(show_spinner())
+
+    try:
+        result = await task
+    finally:
+        spinner_task.cancel()
+        try:
+            await spinner_task
+        except asyncio.CancelledError:
+            click.echo("\r\033[K", nl=False)
+
+    return result
 
 
 def _fetch_bucket_name() -> str:
@@ -101,22 +134,6 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
     branch = match.group(2)
     subfolder = match.group(3)
 
-    # Extract agent name from the url if an alias is not provided
-    if agent_name is None:
-        if subfolder:
-            agent_name = subfolder.split("/")[-1]
-        else:
-            agent_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
-
-    # Resolve the agent name to a guaranteed str
-    if agent_name is None:
-        if subfolder:
-            resolved_name: str = subfolder.split("/")[-1]
-        else:
-            resolved_name = base_url.rstrip("/").split("/")[-1].replace(".git", "")
-    else:
-        resolved_name = agent_name
-
     # Clone the repo to a temporary directory
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir) / "temp_repo"
@@ -156,21 +173,18 @@ async def install_agent(agent_name: str | None, github_url: str) -> str:
         if subfolder and not agent_path.exists():
             raise RuntimeError(f"Subfolder '{subfolder}' not found in repository")
 
+        resolved_name = validate_agent_name(agent_name) if agent_name else read_agent_name(agent_path)
         await push_agent(resolved_name, agent_path)
 
     return resolved_name
 
 
 @handle_s3_error(message="Failed to push agent to S3")
-async def push_agent(agent_name: str | None, agent_path: Path):
+async def push_agent(agent_name: str, agent_path: Path):
     """Zip and push an agent to S3 at agents/{agent_name}.zip"""
 
     # fetch bucket name from config
     bucket_name = _fetch_bucket_name()
-
-    # If agent_name is not provided, use the directory name
-    if agent_name is None:
-        agent_name = agent_path.name
 
     with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
         # Get file size for progress bar
@@ -326,39 +340,6 @@ async def download_agent(agent_name: str, output_dir: Path | None) -> None:
     finally:
         # Clean up temporary zip file
         tmp_path.unlink()
-
-
-@handle_s3_error(message="Failed to download from S3")
-async def download_s3_path(s3_path: str, output_dir: Path) -> int:
-    """Download all objects under an S3 path prefix into output_dir. Returns count of files downloaded."""
-    bucket_name = _fetch_bucket_name()
-    prefix = s3_path.rstrip("/") + "/" if not Path(s3_path).suffix else s3_path
-
-    async with _s3_client() as s3_client:
-        paginator = s3_client.get_paginator("list_objects_v2")
-        keys: list[str] = []
-        async for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
-            for obj in page.get("Contents", []):
-                keys.append(cast(str, obj["Key"]))
-
-        if not keys:
-            raise S3Error(f"No files found at '{s3_path}' in bucket '{bucket_name}'")
-
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        async def download_object(key: str) -> None:
-            relative = key.removeprefix(prefix).lstrip("/")
-            dest = output_dir / relative if relative else output_dir / Path(key).name
-            dest.parent.mkdir(parents=True, exist_ok=True)
-
-            response = await s3_client.get_object(Bucket=bucket_name, Key=key)
-            dest.write_bytes(cast(bytes, await response["Body"].read()))
-
-        for start in range(0, len(keys), _S3_DOWNLOAD_CONCURRENCY):
-            batch = keys[start : start + _S3_DOWNLOAD_CONCURRENCY]
-            await asyncio.gather(*(download_object(key) for key in batch))
-
-        return len(keys)
 
 
 async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:

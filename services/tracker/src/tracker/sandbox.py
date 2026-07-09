@@ -356,6 +356,47 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
         raise SandboxError(str(e)) from e
 
 
+async def _apply_egress_allowlist(sandbox: Sandbox, allowed_addresses: list[str]) -> None:
+    try:
+        await sandbox.modify_egress_rules(allowed_addresses)
+    except SandboxNotFoundError:
+        raise
+    except ValueError as e:
+        raise SandboxSetupError(f"Failed to apply egress rules: {e}") from e
+    except ProviderSandboxError as e:
+        raise SandboxError(str(e)) from e
+
+
+async def _clear_egress_allowlist(sandbox: Sandbox, fail_on_error: bool) -> None:
+    try:
+        # Clearing restores unrestricted egress because sandboxes have no baseline restriction today.
+        await sandbox.clear_egress_rules()
+    except Exception as e:
+        logger.warning("failed to clear egress rules for sandbox %s", sandbox.id, exc_info=True)
+        if fail_on_error:
+            raise SandboxSetupError("Failed to clear egress rules") from e
+
+
+async def _stream_command_output_with_egress_allowlist(
+    sandbox: Sandbox,
+    command: str,
+    on_output: Callable[[str], None],
+    allowed_addresses: list[str],
+) -> tuple[AgentCausedExitReason | None, float]:
+    if not allowed_addresses:
+        return await stream_command_output(sandbox, command, on_output)
+
+    command_completed = False
+    try:
+        await _apply_egress_allowlist(sandbox, allowed_addresses)
+        result = await stream_command_output(sandbox, command, on_output)
+        command_completed = True
+        return result
+    finally:
+        # After a clean agent run, stale egress rules would affect evaluation; otherwise preserve the original error.
+        await _clear_egress_allowlist(sandbox, fail_on_error=command_completed)
+
+
 async def stream_command_output(
     sandbox: Sandbox,
     command: str,
@@ -617,8 +658,11 @@ async def run_agent(
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
 
     # Run the agent without including task directory dependencies
-    exit_reason, agent_run_time = await stream_command_output(
-        sandbox, f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}", log_output
+    exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+        sandbox,
+        f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+        log_output,
+        contract.egress_allowlist,
     )
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:

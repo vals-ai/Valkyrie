@@ -46,10 +46,8 @@ def _zip_directory_to_file(directory: Path, output_path: Path) -> None:
 
 
 @contextmanager
-def get_agent_zip_stream(agent_name: str | None, agent_path: Path) -> Generator[BinaryIO, None, None]:
+def get_agent_zip_stream(agent_name: str, agent_path: Path) -> Generator[BinaryIO, None, None]:
     """Yield a readable file handle to a freshly-built zip of the agent at `agent_path`."""
-    agent_name = agent_name or agent_path.name
-
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         bundle_dir = temp_path / agent_name

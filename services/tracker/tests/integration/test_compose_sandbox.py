@@ -1,4 +1,7 @@
-"""Integration tests for compose-backed sandbox operations."""
+"""Integration tests for compose-backed sandbox operations.
+
+Run: pytest services/tracker/tests/integration/test_compose_sandbox.py
+"""
 
 import asyncio
 import uuid
@@ -8,10 +11,16 @@ import pytest
 from benchmark_service import ComposeSource, ImageSource, Sandbox, SandboxProvider
 from benchmark_service.schemas import RetrieveTaskResponse
 
-from tracker.sandbox import create_sandbox, runtime_sandbox
+from tracker.database.models import AgentContractRequest
+from tracker.sandbox import create_sandbox, run_agent, runtime_sandbox
+from tracker.types import AWSCredentials
 
 _DIND_IMAGE = "docker:28.3.3-dind"
 _COMPOSE_SERVICE_IMAGE = "alpine:3.20"
+_COMPOSE_RUN_ID = "compose-run-id"
+_COMPOSE_TASK_ID = "compose-task-id"
+_COMPOSE_SECRET = "compose-secret"
+_COMPOSE_IDENTITY = '{"agent_name":"compose-agent","benchmark_name":"compose-benchmark"}'
 
 
 def _compose_task_response(compose_command: str) -> RetrieveTaskResponse:
@@ -55,6 +64,7 @@ async def _wait_for_compose_service(sandbox: Sandbox, compose_command: str) -> N
 
 
 async def _start_compose_runtime(sandbox: Sandbox, source: ComposeSource, compose_file: str) -> None:
+    await _exec_required(sandbox, "mkdir -p /bundle", timeout=30)
     await _exec_required(sandbox, "dockerd-entrypoint.sh dockerd > /var/log/dockerd.log 2>&1 &", timeout=10)
     await _wait_for_docker(sandbox)
     await sandbox.upload_file(
@@ -66,6 +76,8 @@ async def _start_compose_runtime(sandbox: Sandbox, source: ComposeSource, compos
                 f"    image: {_COMPOSE_SERVICE_IMAGE}",
                 "    command: sh -lc 'while true; do sleep 3600; done'",
                 "    working_dir: /workspace",
+                "    volumes:",
+                "      - /bundle:/bundle",
             ]
         ).encode(),
     )
@@ -83,6 +95,12 @@ async def compose_sandbox(
     project_name = f"tracker-compose-{uuid.uuid4().hex[:8]}"
     compose_file = f"/tmp/{project_name}.compose.yaml"
     task_data = _compose_task_response(f"docker compose -p {project_name} -f {compose_file}")
+    env_vars = {
+        "RUN_ID": _COMPOSE_RUN_ID,
+        "TASK_ID": _COMPOSE_TASK_ID,
+        "IDENTITY": _COMPOSE_IDENTITY,
+        "TRACKER_COMPOSE_SECRET": _COMPOSE_SECRET,
+    }
 
     assert isinstance(task_data.source, ComposeSource)
     assert isinstance(task_data.source.outer, ImageSource)
@@ -93,12 +111,18 @@ async def compose_sandbox(
         task_data.source,
         task_data.resources,
         creation_semaphore,
+        env_vars=env_vars,
     ) as outer_sandbox:
         try:
             await _start_compose_runtime(outer_sandbox, task_data.source, compose_file)
             yield runtime_sandbox(outer_sandbox, task_data.source), outer_sandbox, task_data
         finally:
             await outer_sandbox.exec(f"{task_data.source.compose_command} down -v --remove-orphans", timeout=120)
+            containers = await outer_sandbox.exec(
+                f"docker ps -a --filter label=com.docker.compose.project={project_name} -q",
+                timeout=30,
+            )
+            assert containers.stdout.strip() == ""
 
 
 async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
@@ -109,6 +133,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
     Test cases:
     - The benchmark-service retrieve-task response creates the Daytona outer DinD sandbox.
     - Exec, streaming command, upload, download, file deletion, and temporary file cleanup work through compose.
+    - Runtime env vars, agent install, agent run, and a benchmark-style evaluation command run inside `main`.
     """
     sandbox, outer_sandbox, task_data = compose_sandbox
 
@@ -146,3 +171,61 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         timeout=30,
     )
     assert temp_files.stdout.strip() == ""
+
+    contract_name = "compose_contract"
+    await outer_sandbox.exec(f"mkdir -p /bundle/{contract_name}", timeout=30)
+    await outer_sandbox.upload_file(
+        f"/bundle/{contract_name}/setup.sh",
+        (
+            "#!/bin/sh\n"
+            "printf '%s:%s:%s' \"$RUN_ID\" \"$TRACKER_COMPOSE_SECRET\" \"$(pwd)\" "
+            "> /workspace/install-proof.txt\n"
+        ).encode(),
+    )
+
+    logs: list[str] = []
+    contract = AgentContractRequest(
+        name=contract_name,
+        install_cmd="sh setup.sh",
+        run_cmd=(
+            "printf 'agent-run' > /workspace/agent-run.txt && "
+            f"test \"$RUN_ID\" = '{_COMPOSE_RUN_ID}' && "
+            f"test \"$TASK_ID\" = '{_COMPOSE_TASK_ID}' && "
+            f"test \"$TRACKER_COMPOSE_SECRET\" = '{_COMPOSE_SECRET}' && "
+            "case \"$IDENTITY\" in *compose-agent*) true;; *) exit 1;; esac"
+        ),
+    )
+    aws = AWSCredentials(
+        aws_access_key_id="test",
+        aws_secret_access_key="test",
+        aws_default_region="us-east-1",
+    )
+
+    exit_reason, agent_run_time = await run_agent(
+        outer_sandbox,
+        contract,
+        task_data.problem_path,
+        _COMPOSE_TASK_ID,
+        logs.append,
+        task_data.cwd,
+        aws=aws,
+        s3_bucket="unused",
+        runtime_source=task_data.source,
+    )
+
+    assert exit_reason is None
+    assert agent_run_time >= 0
+    assert any("Installing dependencies" in message for message in logs)
+
+    install_proof = await sandbox.exec("cat /workspace/install-proof.txt", timeout=30)
+    assert install_proof.stdout == f"{_COMPOSE_RUN_ID}:{_COMPOSE_SECRET}:/bundle/{contract_name}"
+
+    run_proof = await sandbox.exec("cat /workspace/agent-run.txt", timeout=30)
+    assert run_proof.stdout == "agent-run"
+
+    evaluation = await sandbox.exec(
+        "test -s /workspace/agent-run.txt && printf '{\"score\":1}' > /workspace/evaluation.json",
+        timeout=30,
+    )
+    assert evaluation.exit_code == 0
+    assert await sandbox.download_file("/workspace/evaluation.json") == b'{"score":1}'
