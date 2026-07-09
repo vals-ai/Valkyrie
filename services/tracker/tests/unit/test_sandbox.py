@@ -1,3 +1,8 @@
+"""Tests for tracker sandbox orchestration.
+
+Run: pytest services/tracker/tests/unit/test_sandbox.py
+"""
+
 import asyncio
 from collections import deque
 from collections.abc import Mapping
@@ -29,7 +34,9 @@ from tracker.types import AWSCredentials
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
+_apply_egress_allowlist = getattr(sandbox_module, "_apply_egress_allowlist")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
+_stream_command_output_with_egress_allowlist = getattr(sandbox_module, "_stream_command_output_with_egress_allowlist")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 
 
@@ -534,6 +541,111 @@ class TestUploadAgentArtifacts:
 
         if not retryable:
             assert not isinstance(exc_info.value, SandboxSetupError)
+
+
+class TestEgressAllowlist:
+    """Tracker-side egress rule handling around the agent command."""
+
+    async def test_stream_command_output_scopes_egress_rules(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Apply egress rules only around a command that has an allowlist.
+
+        Test cases:
+        - A non-empty allowlist applies rules before streaming output.
+        - Egress rules are cleared after the command completes.
+        """
+        events: list[str] = []
+
+        async def mock_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            events.append("stream")
+
+            return None, 2.5
+
+        async def mock_modify_egress_rules(allowed_addresses: list[str]) -> None:
+            events.append(f"modify:{','.join(allowed_addresses)}")
+
+        async def mock_clear_egress_rules() -> None:
+            events.append("clear")
+
+        monkeypatch.setattr(sandbox_module, "stream_command_output", mock_stream_command_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.modify_egress_rules = mock_modify_egress_rules
+        mock_sandbox.clear_egress_rules = mock_clear_egress_rules
+
+        def ignore_output(_message: str) -> None:
+            pass
+
+        result = await _stream_command_output_with_egress_allowlist(
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=ignore_output,
+            allowed_addresses=["https://api.openai.com"],
+        )
+
+        assert result == (None, 2.5)
+        assert events == ["modify:https://api.openai.com", "stream", "clear"]
+
+    async def test_stream_command_output_skips_egress_rules_without_allowlist(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Run commands normally when the contract has no egress allowlist.
+
+        Test cases:
+        - Empty allowlists call the existing stream_command_output path.
+        - Provider egress methods are not called.
+        """
+        async def mock_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            return None, 1.0
+
+        monkeypatch.setattr(sandbox_module, "stream_command_output", mock_stream_command_output)
+
+        mock_sandbox = Mock()
+        mock_sandbox.modify_egress_rules = AsyncMock()
+        mock_sandbox.clear_egress_rules = AsyncMock()
+
+        def ignore_output(_message: str) -> None:
+            pass
+
+        result = await _stream_command_output_with_egress_allowlist(
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=ignore_output,
+            allowed_addresses=[],
+        )
+
+        assert result == (None, 1.0)
+        mock_sandbox.modify_egress_rules.assert_not_awaited()
+        mock_sandbox.clear_egress_rules.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("provider_error", "expected_error", "message"),
+        [
+            (ValueError("bad allowlist"), SandboxSetupError, "Failed to apply egress rules: bad allowlist"),
+            (ProviderSandboxError("provider failed"), SandboxError, "provider failed"),
+        ],
+    )
+    async def test_apply_egress_allowlist_maps_provider_errors(
+        self,
+        provider_error: Exception,
+        expected_error: type[Exception],
+        message: str,
+    ) -> None:
+        """Map provider egress failures onto tracker sandbox exceptions.
+
+        Test cases:
+        - Provider validation errors become SandboxSetupError.
+        - Provider sandbox errors become SandboxError.
+        """
+        mock_sandbox = Mock()
+        mock_sandbox.modify_egress_rules = AsyncMock(side_effect=provider_error)
+
+        with pytest.raises(expected_error, match=message):
+            await _apply_egress_allowlist(mock_sandbox, ["https://api.openai.com"])
 
 
 class TestStreamCommandOutputAgentFailure:
