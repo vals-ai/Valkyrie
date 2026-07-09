@@ -220,8 +220,6 @@ valkyrie run stop <id> --force
 valkyrie run stop <id> --task-ids task-a,task-b --force
 ```
 
-`--task-ids` and `--task-ids-file` are mutually exclusive. Without either option, `stop` keeps its existing full-run behavior.
-
 ### Resume / Retry a run
 
 ```bash
