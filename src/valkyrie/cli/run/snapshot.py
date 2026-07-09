@@ -6,7 +6,7 @@ from typing import Literal
 from uuid import UUID
 
 from tracker.database.models import TaskStatus
-from tracker.types import FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
+from tracker.types import BenchmarkTableRow, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_client import TrackerService
@@ -77,3 +77,39 @@ def format_run_snapshot_json(
 ) -> str:
     """Serialize one compact JSON or JSONL record."""
     return json.dumps(build_run_snapshot(response, metadata, event=event), sort_keys=True, separators=(",", ":"))
+
+
+def build_run_summary(run: BenchmarkTableRow) -> dict[str, object]:
+    """Build a stable allowlisted run summary for list output."""
+    progress_percent = (run.finished_tasks / run.total_tasks * 100) if run.total_tasks else 0.0
+    return {
+        "run_id": str(run.id),
+        "benchmark_name": run.name,
+        "agent_name": run.agent_name,
+        "model": run.model,
+        "dataset": run.dataset or "default",
+        "label": run.label,
+        "started_by_email": run.started_by_email,
+        "started_at": _utc_isoformat(run.started_at),
+        "finished_at": _utc_isoformat(run.finished_at) if run.finished_at is not None else None,
+        "status": run.status.value,
+        "total_tasks": run.total_tasks,
+        "finished_tasks": run.finished_tasks,
+        "task_state_counts": {
+            task_status.value: run.task_state_counts.get(task_status.value, 0) for task_status in TaskStatus
+        },
+        "progress_percent": round(progress_percent, 4),
+        "final_score": run.final_score,
+    }
+
+
+def format_run_list_json(runs: list[BenchmarkTableRow], *, observed_at: datetime | None = None) -> str:
+    """Serialize a complete set of matching runs as one compact JSON document."""
+    payload = {
+        "schema_version": 1,
+        "kind": "run_list",
+        "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
+        "returned_count": len(runs),
+        "runs": [build_run_summary(run) for run in runs],
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))

@@ -1,11 +1,14 @@
 import click
 from tracker.database.models import BenchmarkStatus
-from tracker.types import FetchBenchmarksRequest, FetchBenchmarksResponse, Order
+from tracker.types import BenchmarkTableRow, FetchBenchmarksRequest, FetchBenchmarksResponse, Order
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.display import format_table, paginate_cli_pages, short_local_time
 from valkyrie.cli.run.progress import BenchmarkFormatter
+from valkyrie.cli.run.snapshot import format_run_list_json
 from valkyrie.cli.tracker_client import TrackerService
+
+_MACHINE_PAGE_LIMIT = 500
 
 
 @click.command(
@@ -64,6 +67,20 @@ from valkyrie.cli.tracker_client import TrackerService
     default=None,
     help="Comma-separated list of starter emails (e.g., alice@vals.ai,bob@vals.ai). Case-insensitive.",
 )
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"], case_sensitive=False),
+    default="text",
+    show_default=True,
+    help="Output format. Machine-readable JSON requires --all.",
+)
+@click.option(
+    "--all",
+    "all_runs",
+    is_flag=True,
+    help="Fetch every matching run without interactive paging. Requires --format json.",
+)
 def list_runs(
     agent_name: str | None,
     benchmark_name: str | None,
@@ -73,6 +90,8 @@ def list_runs(
     status: str | None,
     order_by: str = "desc",
     started_by: str | None = None,
+    output_format: str = "text",
+    all_runs: bool = False,
 ):
     """
     List runs based on the request parameters.
@@ -84,21 +103,89 @@ def list_runs(
     """
     started_by_list: list[str] = [s.strip() for s in started_by.split(",") if s.strip()] if started_by else []
 
+    if output_format == "json" and not all_runs:
+        raise click.UsageError("--format json requires --all.")
+    if all_runs and output_format != "json":
+        raise click.UsageError("--all requires --format json.")
+
     try:
         with TrackerService() as tracker:
-            paginate_benchmarks(
-                tracker,
-                agent_name,
-                benchmark_name,
-                model,
-                dataset,
-                label,
-                status,
-                order_by,
-                started_by=started_by_list or None,
-            )
+            if output_format == "json":
+                request = _build_fetch_benchmarks_request(
+                    agent_name,
+                    benchmark_name,
+                    model,
+                    dataset,
+                    label,
+                    status,
+                    order_by,
+                    started_by_list or None,
+                    cursor="",
+                    limit=_MACHINE_PAGE_LIMIT,
+                )
+                click.echo(format_run_list_json(fetch_all_benchmarks(tracker, request)))
+            else:
+                paginate_benchmarks(
+                    tracker,
+                    agent_name,
+                    benchmark_name,
+                    model,
+                    dataset,
+                    label,
+                    status,
+                    order_by,
+                    started_by=started_by_list or None,
+                )
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
+
+
+def _build_fetch_benchmarks_request(
+    agent_name: str | None,
+    benchmark_name: str | None,
+    model: str | None,
+    dataset: str | None,
+    label: str | None,
+    status: str | None,
+    order_by: str,
+    started_by: list[str] | None,
+    *,
+    cursor: str | None = None,
+    limit: int = 5,
+    offset: int = 0,
+) -> FetchBenchmarksRequest:
+    """Build a list request shared by human and machine output modes."""
+    return FetchBenchmarksRequest(
+        agent_name=[agent_name] if agent_name else None,
+        benchmark_name=[benchmark_name] if benchmark_name else None,
+        model=model,
+        dataset=dataset,
+        label=label,
+        status=[BenchmarkStatus(status)] if status else None,
+        started_by=started_by,
+        order_by=Order(order_by),
+        cursor=cursor,
+        limit=limit,
+        offset=offset,
+    )
+
+
+def fetch_all_benchmarks(tracker: TrackerService, request: FetchBenchmarksRequest) -> list[BenchmarkTableRow]:
+    """Exhaust cursor pagination before writing any machine-readable output."""
+    benchmarks: list[BenchmarkTableRow] = []
+    cursor = request.cursor
+    seen_cursors: set[str] = set()
+
+    while cursor is not None:
+        if cursor in seen_cursors:
+            raise TrackerServiceError("Tracker returned a repeated run-list cursor.")
+        seen_cursors.add(cursor)
+
+        response = tracker.fetch_benchmarks(request.model_copy(update={"cursor": cursor}))
+        benchmarks.extend(response.benchmarks)
+        cursor = response.next_cursor
+
+    return benchmarks
 
 
 def format_fetch_benchmarks_response(
@@ -207,15 +294,15 @@ def paginate_benchmarks(
     """Interactively page through runs."""
 
     def load_page(offset: int, page_limit: int) -> tuple[int, FetchBenchmarksResponse]:
-        request = FetchBenchmarksRequest(
-            agent_name=[agent_name] if agent_name else None,
-            benchmark_name=[benchmark_name] if benchmark_name else None,
-            model=model,
-            dataset=dataset,
-            label=label,
-            status=[BenchmarkStatus(status)] if status else None,
-            started_by=started_by,
-            order_by=Order(order_by),
+        request = _build_fetch_benchmarks_request(
+            agent_name,
+            benchmark_name,
+            model,
+            dataset,
+            label,
+            status,
+            order_by,
+            started_by,
             limit=page_limit,
             offset=offset,
         )

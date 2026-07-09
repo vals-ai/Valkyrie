@@ -272,6 +272,11 @@ valkyrie run list \
   --order-by DESC \
   --started-by alice@vals.ai,bob@vals.ai \
   --label swebench_claude_code
+
+# Dump every matching run as one machine-readable JSON document
+valkyrie run list --format json --all \
+  --model openai/gpt-5 \
+  --status IN_PROGRESS
 ```
 
 | Option | Description |
@@ -283,8 +288,12 @@ valkyrie run list \
 | `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
 | `--order-by` | Order results (`desc` or `asc`) |
 | `--started-by` | Comma-separated list of starter emails (case-insensitive) |
+| `--format json` | Emit one versioned, allowlisted JSON document instead of a table (requires `--all`) |
+| `--all` | Fetch every matching run without interactive paging (requires `--format json`) |
 
 Supports paginated navigation ([h] previous, [l] next, [q] quit).
+Machine output exhausts cursor pagination before writing stdout and excludes stored agent secrets, kwargs, and raw
+error messages.
 
 ### Download run outputs
 
