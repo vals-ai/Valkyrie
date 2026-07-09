@@ -739,6 +739,7 @@ class TestStopAndResume:
             "ANTHROPIC_API_KEY": "old-secret",
             "OPENAI_API_KEY": "openai-secret",
         }
+        benchmark_row.arguments.contract.secret_bundles = ["providerApiKeys"]
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -775,8 +776,10 @@ class TestStopAndResume:
             "OPENAI_API_KEY": "openai-secret",
             "GEMINI_API_KEY": "gemini-secret",
         }
+        assert captured_request_json["contract"]["secret_bundles"] == ["providerApiKeys"]
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.contract.secrets == captured_request_json["contract"]["secrets"]
+        assert benchmark_row.arguments.contract.secret_bundles == ["providerApiKeys"]
 
     async def test_running_retry_noops_without_error_tasks(
         self,

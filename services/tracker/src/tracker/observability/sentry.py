@@ -68,6 +68,7 @@ def init_sentry(service_name: str, environment: str) -> None:
             # Sampling happens upstream in OTel; pass everything through.
             traces_sample_rate=1.0,
             instrumenter=INSTRUMENTER.OTEL,
+            include_local_variables=False,
             enable_logs=True,
             send_default_pii=False,
             before_send=_before_send,

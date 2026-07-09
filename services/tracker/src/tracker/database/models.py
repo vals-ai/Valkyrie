@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import BaseModel, Field as PydanticField, field_serializer, field_validator
 from sqlalchemy import Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -128,6 +128,7 @@ class AgentContractRequest(BaseModel):
     final_output: str | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     secrets: dict[str, str] = {}
+    secret_bundles: list[str] = PydanticField(default_factory=list, exclude_if=lambda value: not value)
     kwargs: dict[str, str] = {}
 
     @field_validator("output_artifacts")

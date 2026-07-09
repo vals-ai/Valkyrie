@@ -186,6 +186,33 @@ valkyrie run start --agent agents/my_agent -s API_KEY myAwsSecretName
 
 CLI secrets are merged with contract defaults. If both define the same key, the CLI value wins.
 
+### `secret_bundles: list`
+
+Optional AWS Secrets Manager secrets whose JSON fields Valkyrie expands into sandbox environment variables. The raw
+JSON bundle is never injected into the sandbox.
+
+```yaml
+secret_bundles:
+  - providerApiKeys
+secrets:
+  TAVILY_API_KEY: providerApiKeys
+```
+
+Each bundle must contain a JSON object with valid environment variable names as keys and strings as values. Bundles are
+resolved once per task and merged in declaration order, so later bundles override earlier bundles. Explicit `secrets`
+mappings are resolved afterward and override bundle values; CLI `-s` overrides are part of those explicit mappings and
+therefore win as well. Valkyrie-owned variables such as `RUN_ID`, `TASK_ID`, and `IDENTITY` are set last and cannot be
+overridden by a bundle.
+
+During a mixed-version rollout, keep every existing per-key mapping alongside the bundle as shown above. Older Valkyrie
+clients and workers ignore contract fields they do not recognize, while the explicit mapping continues to resolve the
+same JSON key. Remove those compatibility mappings only after the minimum compatible client is enforced and every
+tracker and worker is upgraded.
+
+Opting into a bundle grants the sandbox access to every current and future field in that AWS secret. Use bundles only
+for credentials intentionally shared by all opted-in agents. Keep narrower infrastructure or service credentials in
+explicit `secrets` mappings.
+
 ### `kwargs: dict`
 
 Define typed parameters with defaults that get substituted into `run_cmd`:

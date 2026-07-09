@@ -59,6 +59,8 @@ output_artifacts:
     source: /tmp/logs
 secrets:
   API_KEY: API key
+secret_bundles:
+  - ProviderSecretBundle
 """,
         )
 
@@ -72,6 +74,7 @@ secrets:
     assert contract.output_artifacts[0].path == "logs"
     assert contract.output_artifacts[0].source == "/tmp/logs"
     assert contract.secrets == {"API_KEY": "API key"}
+    assert contract.secret_bundles == ["ProviderSecretBundle"]
 
 
 def test_get_contract_from_zip_bytes_reports_missing_contract():

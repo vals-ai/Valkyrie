@@ -11,7 +11,8 @@ from sqlmodel import Session
 import tracker.utils.task_execution as utils_module
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
+from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.exceptions import SecretsError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
 
@@ -81,7 +82,12 @@ async def test_process_task_injects_tracker_owned_attribution_env(
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
 ) -> None:
-    contract = contract.model_copy(update={"secrets": {"UNRELATED_SECRET": "secret-name"}})
+    contract = contract.model_copy(
+        update={
+            "secrets": {"UNRELATED_SECRET": "secret-name"},
+            "secret_bundles": ["provider-bundle"],
+        }
+    )
     run_starter = RequestIdentity(
         org=_TEST_ORG,
         access_key_id="access-key-id",
@@ -101,8 +107,14 @@ async def test_process_task_injects_tracker_owned_attribution_env(
         }
     )
     captured_env_vars: list[dict[str, str]] = []
+    captured_secret_bundles: list[list[str] | None] = []
 
-    def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+    def _mock_resolve_secrets(
+        *_args: Any,
+        secret_bundles: list[str] | None = None,
+        **_kwargs: Any,
+    ) -> dict[str, str]:
+        captured_secret_bundles.append(secret_bundles)
         return {
             "RUN_ID": "secret-run-id",
             "TASK_ID": "secret-task-id",
@@ -123,6 +135,7 @@ async def test_process_task_injects_tracker_owned_attribution_env(
     result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
     assert result == {"task_0": {"status": "success", "score": 1.0}}
+    assert captured_secret_bundles == [["provider-bundle"]]
     assert len(captured_env_vars) == 1
     env_vars = captured_env_vars[0]
     assert env_vars["RUN_ID"] == str(benchmark_id)
@@ -136,6 +149,37 @@ async def test_process_task_injects_tracker_owned_attribution_env(
     assert env_vars["UNRELATED_SECRET"] == "secret-value"
     assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
     assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+
+
+async def test_process_task_does_not_capture_expected_secret_errors(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    contract = contract.model_copy(update={"secret_bundles": ["provider-bundle"]})
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+    )
+
+    def _raise_secret_error(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        raise SecretsError("Secret bundle 'provider-bundle' must contain only string values")
+
+    def _fail_capture(*_args: Any, **_kwargs: Any) -> None:
+        pytest.fail("expected secret errors must not be captured with traceback locals")
+
+    monkeypatch.setattr(utils_module, "resolve_secrets", _raise_secret_error)
+    monkeypatch.setattr(utils_module.logfire, "exception", _fail_capture)
+    monkeypatch.setattr(utils_module.sentry_sdk, "capture_exception", _fail_capture)
+
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    assert result == {"task_0": None}
+    database_session.refresh(task_row)
+    assert task_row.status == TaskStatus.ERROR
 
 
 async def test_process_task_omits_identity_email_when_unavailable(

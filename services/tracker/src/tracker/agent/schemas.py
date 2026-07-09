@@ -60,6 +60,7 @@ class AgentContract(BaseModel):
     final_output: Path | None = None
     output_artifacts: list[OutputArtifactSpec] = []
     secrets: dict[str, str] = {}
+    secret_bundles: list[str] = []
     ingest_lambda: str | None = None
     defaults: dict[str, Parameter] = {}
     kwargs: dict[str, Parameter] = {}

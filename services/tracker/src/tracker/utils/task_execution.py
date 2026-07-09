@@ -40,7 +40,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import engine
-from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerServiceError
+from tracker.exceptions import OutputArtifactError, SandboxSetupError, SecretsError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
@@ -404,7 +404,11 @@ async def process_task(
             identity["email"] = benchmark_started_by_email
 
         env_vars = {
-            **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+            **resolve_secrets(
+                start_benchmark_request.contract.secrets,
+                harness_config.aws,
+                secret_bundles=start_benchmark_request.contract.secret_bundles,
+            ),
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
@@ -558,7 +562,7 @@ async def process_task(
             return {task_id: None}
         log_output(f"\n[ERROR] {e}")
         raise
-    except OutputArtifactError as e:
+    except (OutputArtifactError, SecretsError) as e:
         if task_is_stopped():
             return {task_id: None}
         error_message = str(e)

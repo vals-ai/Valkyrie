@@ -1,6 +1,7 @@
 """AWS Secrets Manager utilities."""
 
 import json
+import re
 from functools import lru_cache
 from typing import Any
 
@@ -12,6 +13,8 @@ from tracker.logging import get_logger
 from tracker.types import AWSCredentials
 
 logger = get_logger(__name__)
+
+_ENV_VAR_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 @lru_cache(maxsize=32)
@@ -58,26 +61,71 @@ def fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, Any] | 
         return secret_string
 
 
-def resolve_secrets(secrets: dict[str, str], aws: AWSCredentials) -> dict[str, str]:
-    """Resolve AWS secret references to actual values
+def resolve_secrets(
+    secrets: dict[str, str],
+    aws: AWSCredentials,
+    *,
+    secret_bundles: list[str] | None = None,
+) -> dict[str, str]:
+    """Resolve AWS secret references and optional JSON bundles to environment variables.
 
     Args:
         secrets: Mapping of {ENV_VAR_NAME: aws_secret_name}.
         aws: User's AWS credentials for accessing Secrets Manager.
+        secret_bundles: AWS secret names whose JSON fields should be expanded into
+            environment variables, in declaration order.
 
     Returns:
         Mapping of {ENV_VAR_NAME: actual_secret_value}.
 
     Raises:
-        SecretsError: If a secret cannot be fetched or a key is missing.
+        SecretsError: If a secret cannot be fetched, a key is missing, or a bundle
+            is not a string-to-string JSON object with valid environment variable names.
     """
-    if not secrets:
-        return {}
+    bundle_names = secret_bundles or []
+
+    # Keep the established path unchanged for every existing contract. In particular,
+    # repeated references are fetched in declaration order and retain their legacy errors.
+    if not bundle_names:
+        if not secrets:
+            return {}
+
+        legacy_resolved: dict[str, str] = {}
+
+        for env_name, secret_name in secrets.items():
+            secret_value = fetch_aws_secret(secret_name, aws)
+
+            if isinstance(secret_value, dict):
+                if env_name not in secret_value:
+                    raise SecretsError(f"Key '{env_name}' not found in JSON secret '{secret_name}'")
+                legacy_resolved[env_name] = str(secret_value[env_name])
+            else:
+                legacy_resolved[env_name] = secret_value
+
+        return legacy_resolved
 
     resolved: dict[str, str] = {}
+    fetched: dict[str, dict[str, Any] | str] = {}
+
+    def fetch_once(secret_name: str) -> dict[str, Any] | str:
+        if secret_name not in fetched:
+            fetched[secret_name] = fetch_aws_secret(secret_name, aws)
+        return fetched[secret_name]
+
+    for bundle_name in bundle_names:
+        bundle = fetch_once(bundle_name)
+        if not isinstance(bundle, dict):
+            raise SecretsError(f"Secret bundle '{bundle_name}' must contain a JSON object")
+
+        for env_name, secret_value in bundle.items():
+            if _ENV_VAR_NAME_PATTERN.fullmatch(env_name) is None:
+                raise SecretsError(f"Secret bundle '{bundle_name}' contains an invalid environment variable name")
+            if not isinstance(secret_value, str):
+                raise SecretsError(f"Secret bundle '{bundle_name}' must contain only string values")
+            resolved[env_name] = secret_value
 
     for env_name, secret_name in secrets.items():
-        secret_value = fetch_aws_secret(secret_name, aws)
+        secret_value = fetch_once(secret_name)
 
         if isinstance(secret_value, dict):
             if env_name not in secret_value:

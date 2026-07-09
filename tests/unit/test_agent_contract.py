@@ -318,6 +318,19 @@ class TestRunCmdValidation:
         assert contract.run_cmd == "agent {problem_statement_path}"
 
 
+class TestSecretBundleSerialization:
+    def test_empty_secret_bundles_are_omitted_from_request_serialization(self) -> None:
+        request = AgentContractRequest(name="test-agent")
+
+        assert request.secret_bundles == []
+        assert "secret_bundles" not in request.model_dump()
+
+    def test_nonempty_secret_bundles_are_serialized(self) -> None:
+        request = AgentContractRequest(name="test-agent", secret_bundles=["providerApiKeys"])
+
+        assert request.model_dump()["secret_bundles"] == ["providerApiKeys"]
+
+
 class TestParseYamlContract:
     """End-to-end: YAML file -> AgentContractRequest with kwargs resolved."""
 
@@ -401,7 +414,7 @@ class TestParseYamlContract:
         with pytest.raises(ValueError, match="is required but was not provided"):
             _parse_yaml_contract(path, AgentConfig())
 
-    def test_secrets_final_output_and_output_artifacts_passed_through(self, tmp_path: Path) -> None:
+    def test_secrets_bundles_final_output_and_output_artifacts_passed_through(self, tmp_path: Path) -> None:
         """
         Validates that secrets, final_output, and output_artifacts from YAML are carried to the request.
 
@@ -421,6 +434,8 @@ class TestParseYamlContract:
                 source: /logs/{task_id}/result.json
             secrets:
               API_KEY: MySecretName
+            secret_bundles:
+              - ProviderSecretBundle
         """,
         )
 
@@ -432,6 +447,7 @@ class TestParseYamlContract:
         assert artifact.path == "artifacts/result.json"
         assert artifact.source == "/logs/{task_id}/result.json"
         assert result.secrets == {"API_KEY": "MySecretName"}
+        assert result.secret_bundles == ["ProviderSecretBundle"]
 
     def test_model_from_agent_config(self, tmp_path: Path) -> None:
         """

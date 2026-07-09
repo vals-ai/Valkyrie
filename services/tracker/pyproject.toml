@@ -14,6 +14,7 @@ dependencies = [
     "daytona>=0.189.0",
     "starlette>=1.0.1",
     "sqlmodel>=0.0.38",
+    "pydantic>=2.12",
     "psycopg2-binary>=2.9.11",
     "httpx>=0.28.1",
     "logfire[fastapi,httpx]>=3.0.0",
