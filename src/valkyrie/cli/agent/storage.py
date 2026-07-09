@@ -9,21 +9,23 @@ from typing import cast
 
 import click
 import yaml
-from botocore.exceptions import ClientError
 from tracker import handle_s3_error
 from tracker.aws.s3 import (
     copy_s3_object,
+    delete_from_s3,
+    download_from_s3,
     get_benchmark_contract_s3_key,
     get_contract_s3_key,
     s3_object_exists,
 )
 from tracker.aws.s3 import list_agents as list_s3_agents
+from tracker.agent.bundler import get_agent_zip_stream
+from tracker.agent.contract import get_contract_from_zip_bytes, read_agent_name
+from tracker.agent.schemas import AgentConfig, validate_agent_name
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
-from valkyrie.cli.bundler import get_agent_zip_stream, get_contract_from_zip_bytes, read_agent_name
 from valkyrie.cli.s3_config import aws_credentials, fetch_bucket_name, s3_client
-from valkyrie.schemas import AgentConfig, validate_agent_name
 
 
 async def _run_git_command(repo_path: Path | None, *args: str) -> None:
@@ -203,26 +205,28 @@ async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> 
     await copy_s3_object(source_key, dest_key, aws, bucket_name)
 
 
+async def _download_agent_zip(agent_name: str) -> bytes:
+    aws = aws_credentials()
+    bucket_name = fetch_bucket_name()
+    key = get_contract_s3_key(agent_name)
+
+    if not await s3_object_exists(key, aws, bucket_name):
+        raise S3Error(f"Agent '{agent_name}' not found in S3.")
+
+    return await download_from_s3(key, aws, bucket_name)
+
+
 @handle_s3_error(message="Failed to remove agent from S3")
 async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""
-
-    # fetch bucket name from config
+    aws = aws_credentials()
     bucket_name = fetch_bucket_name()
+    key = get_contract_s3_key(agent_name)
 
-    async with s3_client() as client:
-        key = get_contract_s3_key(agent_name)
+    if not await s3_object_exists(key, aws, bucket_name):
+        raise S3Error(f"Agent '{agent_name}' could not be found.")
 
-        try:
-            # Check if agent exists and raise if we cannot find it
-            await client.head_object(Bucket=bucket_name, Key=key)
-
-            # Remove the agent if it exists
-            await client.delete_object(Bucket=bucket_name, Key=key)
-        except ClientError as e:
-            if e.response["Error"]["Code"] == "404":
-                raise S3Error(f"Agent '{agent_name}' could not be found.")
-            raise
+    await delete_from_s3(key, aws, bucket_name)
 
 
 async def list_agents() -> list[tuple[str, datetime | None]]:
@@ -237,16 +241,7 @@ async def list_agents() -> list[tuple[str, datetime | None]]:
 @handle_s3_error(message="Failed to download agent from S3")
 async def download_agent(agent_name: str, output_dir: Path | None) -> None:
     """Download an agent zip from S3, extract it, and show progress"""
-    bucket_name = fetch_bucket_name()
-
-    async with s3_client() as client:
-        try:
-            response = await client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
-            zip_bytes: bytes = cast(bytes, await response["Body"].read())
-        except ClientError as e:
-            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
-                raise S3Error(f"Agent '{agent_name}' not found in S3.")
-            raise
+    zip_bytes = await _download_agent_zip(agent_name)
 
     # Extract to the specified output directory or current directory
     extract_dir = Path(output_dir) if output_dir else Path.cwd()
@@ -287,16 +282,7 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
 
     Reads the ``ingest_lambda`` field directly from the agent's ``contract.yaml``.
     """
-    bucket_name = fetch_bucket_name()
-
-    async with s3_client() as client:
-        try:
-            response = await client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
-            zip_bytes: bytes = cast(bytes, await response["Body"].read())
-        except ClientError as e:
-            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
-                raise S3Error(f"Agent '{agent_name}' not found in S3.")
-            raise
+    zip_bytes = await _download_agent_zip(agent_name)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -316,15 +302,6 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
 
 async def get_contract_from_s3(agent_name: str, agent_config: AgentConfig) -> AgentContractRequest:
     """Download agent zip from S3 and extract the contract into a temp dir, returning the contract request"""
-    bucket_name = fetch_bucket_name()
-
-    async with s3_client() as client:
-        try:
-            response = await client.get_object(Bucket=bucket_name, Key=get_contract_s3_key(agent_name))
-            zip_bytes: bytes = await response["Body"].read()
-        except ClientError as e:
-            if e.response["Error"]["Code"] in ("404", "NoSuchKey"):
-                raise S3Error(f"Agent '{agent_name}' not found in S3.")
-            raise
+    zip_bytes = await _download_agent_zip(agent_name)
 
     return get_contract_from_zip_bytes(agent_name, zip_bytes, agent_config)  # type: ignore

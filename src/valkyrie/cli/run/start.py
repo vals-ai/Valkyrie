@@ -3,9 +3,10 @@ from pathlib import Path
 from typing import Any
 
 import click
+from tracker.agent.contract import get_contract
+from tracker.agent.schemas import AgentConfig
 from tracker.types import StartBenchmarkResponse
 
-from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
@@ -13,7 +14,6 @@ from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
 from valkyrie.cli.display import local_time
 from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService
-from valkyrie.schemas import AgentConfig
 
 
 COLUMN_WIDTH = 14

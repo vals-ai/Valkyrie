@@ -1,5 +1,5 @@
-import aioboto3
 import click
+from tracker.aws.s3 import s3_client as tracker_s3_client
 from tracker.types import AWSCredentials
 
 from valkyrie.cli.config.state import load_config
@@ -25,11 +25,5 @@ def aws_credentials() -> AWSCredentials:
 
 
 def s3_client():
-    """Create an aioboto3 S3 client using credentials from the valkyrie config."""
-    config = load_config()
-    session = aioboto3.Session(
-        aws_access_key_id=config.get("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=config.get("AWS_SECRET_ACCESS_KEY"),
-        region_name=config.get("AWS_DEFAULT_REGION"),
-    )
-    return session.client("s3")
+    """Create an async S3 client using credentials from the valkyrie config."""
+    return tracker_s3_client(aws_credentials())
