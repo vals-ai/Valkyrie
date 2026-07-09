@@ -6,7 +6,7 @@ import time
 import uuid
 from asyncio import Semaphore
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
@@ -363,18 +363,13 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
 
 
 @_EGRESS_RETRY
-async def _modify_egress_rules(sandbox: Sandbox, allowed_addresses: list[str]) -> None:
-    await sandbox.modify_egress_rules(allowed_addresses)
-
-
-@_EGRESS_RETRY
-async def _clear_egress_rules(sandbox: Sandbox) -> None:
-    await sandbox.clear_egress_rules()
+async def _run_egress_operation(operation: Callable[[], Awaitable[None]]) -> None:
+    await operation()
 
 
 async def _apply_egress_allowlist(sandbox: Sandbox, allowed_addresses: list[str]) -> None:
     try:
-        await _modify_egress_rules(sandbox, allowed_addresses)
+        await _run_egress_operation(lambda: sandbox.modify_egress_rules(allowed_addresses))
     except SandboxNotFoundError:
         raise
     except ValueError as e:
@@ -386,7 +381,7 @@ async def _apply_egress_allowlist(sandbox: Sandbox, allowed_addresses: list[str]
 async def _clear_egress_allowlist(sandbox: Sandbox, fail_on_error: bool) -> None:
     try:
         # Clearing restores unrestricted egress because sandboxes have no baseline restriction today.
-        await _clear_egress_rules(sandbox)
+        await _run_egress_operation(sandbox.clear_egress_rules)
     except Exception as e:
         logger.warning("failed to clear egress rules for sandbox %s", sandbox.id, exc_info=True)
         if fail_on_error:
