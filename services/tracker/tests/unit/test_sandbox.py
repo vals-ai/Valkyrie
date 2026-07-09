@@ -599,6 +599,7 @@ class TestEgressAllowlist:
         - Empty allowlists call the existing stream_command_output path.
         - Provider egress methods are not called.
         """
+
         async def mock_stream_command_output(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             return None, 1.0
 
