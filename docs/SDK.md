@@ -2,7 +2,9 @@
 
 Use Valkyrie's async Python SDK to manage runs without invoking the CLI. The SDK currently requires Python 3.12.x.
 
-## Installation
+## Installation from source
+
+The SDK is part of the Valkyrie Python package. A standalone PyPI package is not available yet; publishing one is tracked separately. Until then, install it from the repository:
 
 ```bash
 git clone https://github.com/vals-ai/Valkyrie.git
@@ -10,9 +12,9 @@ cd Valkyrie
 uv sync
 ```
 
-The source checkout is currently required so `uv` can install the bundled tracker package.
+The source checkout lets `uv` install the bundled tracker dependency alongside the SDK.
 
-## Configuration
+## Quickstart
 
 The SDK reads the same config as the CLI. See [Hosted vs Self-Hosted Mode](HOSTED_MODE.md) for setup.
 
@@ -90,6 +92,7 @@ except ValkyrieSDKError as exc:
 | Exception | Description |
 | --- | --- |
 | `ValkyrieConfigError` | Invalid SDK configuration |
+| `ValkyrieRunError` | Invalid input for a run operation |
 | `ValkyrieAPIError` | Non-success API response |
 | `ValkyrieTransportError` | Connection or timeout failure |
 | `ValkyrieStreamError` | Invalid streaming event |

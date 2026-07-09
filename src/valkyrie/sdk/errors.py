@@ -11,6 +11,10 @@ class ValkyrieConfigError(ValkyrieSDKError):
     """The supplied Valkyrie configuration is missing or invalid."""
 
 
+class ValkyrieRunError(ValkyrieSDKError):
+    """A run operation received invalid client-side input."""
+
+
 class ValkyrieTransportError(ValkyrieSDKError):
     """A request could not reach the Valkyrie service."""
 

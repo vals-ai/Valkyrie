@@ -22,7 +22,7 @@ from tracker.types import (
     StopBenchmarkResponse,
 )
 
-from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieStreamError, ValkyrieTransportError
+from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, ValkyrieTransportError
 
 if TYPE_CHECKING:
     from valkyrie.sdk.client import ValkyrieClient
@@ -55,11 +55,11 @@ class RunsResource:
     ) -> StartBenchmarkResponse:
         """Start a run from an uploaded agent name or complete contract."""
         if concurrency < 1:
-            raise ValueError("concurrency must be greater than 0")
+            raise ValkyrieRunError("concurrency must be greater than 0")
         if not benchmark.strip():
-            raise ValueError("benchmark must not be blank")
+            raise ValkyrieRunError("benchmark must not be blank")
         if task_ids and slice_str:
-            raise ValueError("task_ids and slice_str are mutually exclusive")
+            raise ValkyrieRunError("task_ids and slice_str are mutually exclusive")
 
         contract = self._normalize_contract(agent, model=model, agent_kwargs=agent_kwargs, secrets=secrets)
         provider_name, provider_secret_name = self._sdk.config.resolve_sandbox_provider(provider)
@@ -251,7 +251,7 @@ class RunsResource:
     ) -> RetryOrResumeBenchmarkResponse:
         """Send a retry or resume request."""
         if concurrency is not None and concurrency < 1:
-            raise ValueError("concurrency must be greater than 0")
+            raise ValkyrieRunError("concurrency must be greater than 0")
 
         run = await self.fetch(run_id)
         effective_headers = self._service_headers(run.benchmark_name, service_headers)
@@ -278,7 +278,7 @@ class RunsResource:
         """Merge configured and explicit service headers."""
         headers: dict[str, str] = {}
         if credential := self._sdk.config.benchmark_auth.get(benchmark):
-            headers["Authorization"] = credential
+            headers["Authorization"] = credential.get_secret_value()
         headers.update(explicit_headers or {})
         return headers
 
@@ -290,9 +290,9 @@ class RunsResource:
         if resolved is None:
             return None
         if len(resolved) > 3:
-            raise ValueError("a maximum of 3 webhook intervals is allowed")
+            raise ValkyrieRunError("a maximum of 3 webhook intervals is allowed")
         if any(value < 5 or value > 100 or value % 5 != 0 for value in resolved):
-            raise ValueError("webhook intervals must be divisible by 5 and between 5 and 100")
+            raise ValkyrieRunError("webhook intervals must be divisible by 5 and between 5 and 100")
         return resolved
 
     @staticmethod
@@ -306,7 +306,7 @@ class RunsResource:
         """Build an agent contract request."""
         if isinstance(agent, str):
             if not agent.strip():
-                raise ValueError("agent must not be blank")
+                raise ValkyrieRunError("agent must not be blank")
             contract = AgentContractRequest(name=agent)
         else:
             contract = agent

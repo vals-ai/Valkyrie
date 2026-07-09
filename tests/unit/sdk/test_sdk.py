@@ -1,15 +1,14 @@
 """Tests for the public async Valkyrie SDK.
 
-Run: uv run pytest tests/unit/test_sdk.py
+Run: uv run pytest tests/unit/sdk
 
 Covers config validation, request construction, response parsing, streaming, and SDK errors without live services.
 """
 
 import json
-from collections.abc import Callable
 from pathlib import Path
 from typing import assert_type
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -22,64 +21,11 @@ from valkyrie.sdk import (
     ValkyrieClient,
     ValkyrieConfig,
     ValkyrieConfigError,
+    ValkyrieRunError,
+    ValkyrieSDKError,
     ValkyrieStreamError,
     ValkyrieTransportError,
 )
-
-
-def config_values(**overrides: object) -> dict[str, object]:
-    values: dict[str, object] = {
-        "api_key": "vals-key",
-        "AWS_ACCESS_KEY_ID": "aws-key",
-        "AWS_SECRET_ACCESS_KEY": "aws-secret",
-        "AWS_DEFAULT_REGION": "us-west-2",
-        "AWS_SESSION_TOKEN": "aws-session",
-        "S3_BUCKET": "runs-bucket",
-        "LOG_GROUP": "benchmarks",
-        "LOG_RETENTION_POLICY": 30,
-        "sandbox_providers": {"modal": "ModalSecret", "daytona": "DaytonaSecret"},
-        "default_sandbox_provider": "modal",
-        "custom_benchmark_services": {"swebench": "https://local.swebench/"},
-        "benchmark_auth": {"swebench": "benchmark-token"},
-        "webhook": "SlackWebhook",
-    }
-    values.update(overrides)
-    return values
-
-
-def sdk_config(**overrides: object) -> ValkyrieConfig:
-    return ValkyrieConfig.model_validate(config_values(**overrides))
-
-
-def fetch_response(run_id: UUID, *, status: str = "IN_PROGRESS") -> dict[str, object]:
-    return {
-        "benchmark_name": "swebench",
-        "benchmark_id": str(run_id),
-        "details": {
-            "status": status,
-            "started_at": "2026-07-08T12:00:00Z",
-            "total_tasks": 2,
-            "finished_tasks": 0,
-            "task_breakdown": {status: 2},
-            "docent_reading_status": "IDLE",
-            "docent_reading_url": None,
-        },
-        "s3_bucket_url": "s3://runs-bucket/benchmarks/run",
-        "label": "nightly",
-        "final_score": None,
-    }
-
-
-def make_client(
-    handler: Callable[[httpx.Request], httpx.Response],
-    *,
-    config: ValkyrieConfig | None = None,
-) -> ValkyrieClient:
-    return ValkyrieClient(
-        config or sdk_config(),
-        base_url="https://tracker.test",
-        transport=httpx.MockTransport(handler),
-    )
 
 
 def test_config_loads_existing_yaml_shape_and_builds_headers(tmp_path: Path) -> None:
@@ -105,7 +51,40 @@ default_sandbox_provider: daytona
     assert config.request_headers()["X-Harness-Aws-Access-Key-Id"] == "aws-key"
 
 
-def test_config_rejects_missing_required_values_and_invalid_provider() -> None:
+def test_config_redacts_secrets_and_unwraps_them_for_requests(sdk_config) -> None:
+    config = sdk_config()
+
+    rendered_config = f"{config!r}\n{config.model_dump_json(by_alias=True)}"
+    for secret in ("vals-key", "aws-key", "aws-secret", "aws-session", "benchmark-token"):
+        assert secret not in rendered_config
+
+    headers = config.request_headers()
+    assert headers["X-Api-Key"] == "vals-key"
+    assert headers["X-Harness-Aws-Access-Key-Id"] == "aws-key"
+    assert headers["X-Harness-Aws-Secret-Access-Key"] == "aws-secret"
+    assert headers["X-Harness-Aws-Session-Token"] == "aws-session"
+
+    harness = config.harness_config("ModalSecret")
+    assert harness.aws.aws_access_key_id == "aws-key"
+    assert harness.aws.aws_secret_access_key == "aws-secret"
+    assert harness.aws.aws_session_token == "aws-session"
+
+
+def test_config_omits_optional_secret_headers(sdk_config) -> None:
+    config = sdk_config(api_key=None, AWS_SESSION_TOKEN=None)
+
+    headers = config.request_headers()
+
+    assert "X-Api-Key" not in headers
+    assert "X-Harness-Aws-Session-Token" not in headers
+    assert config.harness_config("ModalSecret").aws.aws_session_token is None
+
+
+def test_run_error_is_a_public_sdk_error() -> None:
+    assert issubclass(ValkyrieRunError, ValkyrieSDKError)
+
+
+def test_config_rejects_missing_required_values_and_invalid_provider(config_values, sdk_config) -> None:
     values = config_values()
     values.pop("S3_BUCKET")
     with pytest.raises(ValidationError):
@@ -114,6 +93,8 @@ def test_config_rejects_missing_required_values_and_invalid_provider() -> None:
         sdk_config(sandbox_providers={})
     with pytest.raises(ValidationError):
         sdk_config(LOG_GROUP=" ")
+    with pytest.raises(ValidationError):
+        sdk_config(AWS_SECRET_ACCESS_KEY=" ")
 
     config = sdk_config()
     with pytest.raises(ValkyrieConfigError, match="Unknown sandbox provider"):
@@ -140,7 +121,7 @@ def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
         ValkyrieClient.from_config(incomplete_path)
 
 
-async def test_start_normalizes_agent_and_builds_configured_payload() -> None:
+async def test_start_normalizes_agent_and_builds_configured_payload(make_client) -> None:
     requests: list[httpx.Request] = []
     run_id = uuid4()
 
@@ -200,7 +181,36 @@ async def test_start_normalizes_agent_and_builds_configured_payload() -> None:
     assert body["webhook_intervals"] == [25, 100]
 
 
-async def test_start_overlays_a_supplied_contract_without_mutating_it() -> None:
+async def test_start_can_omit_optional_run_configuration(make_client, sdk_config) -> None:
+    captured_body: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_name": "swebench",
+                "agent_name": "sweagent",
+                "benchmark_id": str(uuid4()),
+                "concurrency": 5,
+                "started_at": "2026-07-08T12:00:00Z",
+                "task_count": 1,
+                "cloudwatch_url": "https://logs.test",
+                "s3_bucket_url": "s3://runs-bucket/run",
+            },
+        )
+
+    client = make_client(handler, config=sdk_config(webhook=None, benchmark_auth={}))
+    async with client:
+        await client.runs.start("sweagent", "swebench", ignore_custom_services=True)
+
+    assert captured_body["custom_benchmark_service"] is None
+    assert captured_body["service_headers"] == {}
+    assert captured_body["webhook_secret_name"] is None
+    assert captured_body["webhook_intervals"] is None
+
+
+async def test_start_overlays_a_supplied_contract_without_mutating_it(make_client) -> None:
     captured_body: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -240,7 +250,7 @@ async def test_start_overlays_a_supplied_contract_without_mutating_it() -> None:
     assert contract.kwargs == {"keep": "yes"}
 
 
-async def test_fetch_list_stop_and_s3_results_are_typed() -> None:
+async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_response) -> None:
     run_id = uuid4()
     paths: list[str] = []
 
@@ -309,7 +319,9 @@ async def test_fetch_list_stop_and_s3_results_are_typed() -> None:
 
 
 @pytest.mark.parametrize(("method_name", "retry"), [("resume", "false"), ("retry", "true")])
-async def test_resume_and_retry_resolve_run_service_auth(method_name: str, retry: str) -> None:
+async def test_resume_and_retry_resolve_run_service_auth(
+    method_name: str, retry: str, make_client, fetch_response
+) -> None:
     run_id = uuid4()
     requests: list[httpx.Request] = []
 
@@ -343,7 +355,26 @@ async def test_resume_and_retry_resolve_run_service_auth(method_name: str, retry
     }
 
 
-async def test_stream_yields_snapshots_and_stops_on_complete() -> None:
+async def test_resume_without_optional_overrides_uses_empty_payload(make_client, fetch_response, sdk_config) -> None:
+    run_id = uuid4()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/fetch-benchmark":
+            return httpx.Response(200, json=fetch_response(run_id))
+        return httpx.Response(200, json={"status": "success"})
+
+    client = make_client(handler, config=sdk_config(benchmark_auth={}))
+    async with client:
+        await client.runs.resume(run_id)
+
+    request = requests[1]
+    assert "concurrency" not in request.url.params
+    assert json.loads(request.content) == {"task_ids": [], "service_headers": {}, "secrets": {}}
+
+
+async def test_stream_yields_snapshots_and_stops_on_complete(make_client, fetch_response) -> None:
     run_id = uuid4()
     event = json.dumps(fetch_response(run_id))
     timeout: dict[str, float | None] = {}
@@ -360,10 +391,39 @@ async def test_stream_yields_snapshots_and_stops_on_complete() -> None:
     assert timeout == {"connect": 120, "read": None, "write": 120, "pool": 120}
 
 
-async def test_stream_converts_error_and_malformed_events() -> None:
+async def test_stream_parses_eof_after_ignoring_empty_events(make_client, fetch_response) -> None:
+    run_id = uuid4()
+    event = json.dumps(fetch_response(run_id))
+    responses = iter(
+        [
+            httpx.Response(
+                200,
+                text=f"\n: keepalive\n\nevent: message\n\nevent: message\ndata: {event}",
+            ),
+            httpx.Response(200, text=""),
+            httpx.Response(200, text="event: disconnect"),
+        ]
+    )
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return next(responses)
+
+    client = make_client(handler)
+    async with client:
+        snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
+        empty_snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
+        disconnected_snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
+
+    assert [snapshot.benchmark_id for snapshot in snapshots] == [run_id]
+    assert empty_snapshots == []
+    assert disconnected_snapshots == []
+
+
+async def test_stream_converts_error_and_malformed_events(make_client) -> None:
     responses = iter(
         [
             httpx.Response(200, text='event: error\ndata: {"error":"run missing"}\n\n'),
+            httpx.Response(200, text="event: error\ndata: plain error\n\n"),
             httpx.Response(200, text="data: not-json\n\n"),
         ]
     )
@@ -375,11 +435,31 @@ async def test_stream_converts_error_and_malformed_events() -> None:
     async with client:
         with pytest.raises(ValkyrieStreamError, match="run missing"):
             _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
+        with pytest.raises(ValkyrieStreamError, match="plain error"):
+            _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
         with pytest.raises(ValkyrieStreamError, match="Invalid Valkyrie run stream event"):
             _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
 
 
-async def test_api_and_transport_failures_use_sdk_exceptions() -> None:
+async def test_stream_converts_status_and_transport_failures(make_client) -> None:
+    def status_error(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "run missing"})
+
+    client = make_client(status_error)
+    async with client:
+        with pytest.raises(ValkyrieAPIError, match="run missing"):
+            _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
+
+    def transport_error(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadError("stream interrupted", request=request)
+
+    client = make_client(transport_error)
+    async with client:
+        with pytest.raises(ValkyrieTransportError, match="stream interrupted"):
+            _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
+
+
+async def test_api_and_transport_failures_use_sdk_exceptions(make_client) -> None:
     def api_error(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(403, json={"detail": "invalid API key"})
 
@@ -407,7 +487,7 @@ async def test_api_and_transport_failures_use_sdk_exceptions() -> None:
             await client.runs.fetch(uuid4())
 
 
-async def test_start_validates_inputs_before_request() -> None:
+async def test_start_validates_inputs_before_request(make_client, sdk_config) -> None:
     request_count = 0
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -417,16 +497,21 @@ async def test_start_validates_inputs_before_request() -> None:
 
     client = make_client(handler)
     async with client:
-        with pytest.raises(ValueError, match="concurrency"):
+        with pytest.raises(ValkyrieSDKError, match="concurrency") as exc_info:
             await client.runs.start("agent", "swebench", concurrency=0)
-        with pytest.raises(ValueError, match="agent must not be blank"):
+        assert isinstance(exc_info.value, ValkyrieRunError)
+        with pytest.raises(ValkyrieSDKError, match="agent must not be blank") as exc_info:
             await client.runs.start(" ", "swebench")
-        with pytest.raises(ValueError, match="benchmark must not be blank"):
+        assert isinstance(exc_info.value, ValkyrieRunError)
+        with pytest.raises(ValkyrieSDKError, match="benchmark must not be blank") as exc_info:
             await client.runs.start("agent", " ")
-        with pytest.raises(ValueError, match="mutually exclusive"):
+        assert isinstance(exc_info.value, ValkyrieRunError)
+        with pytest.raises(ValkyrieSDKError, match="mutually exclusive") as exc_info:
             await client.runs.start("agent", "swebench", task_ids=["task"], slice_str=":1")
-        with pytest.raises(ValueError, match="concurrency"):
+        assert isinstance(exc_info.value, ValkyrieRunError)
+        with pytest.raises(ValkyrieSDKError, match="concurrency") as exc_info:
             await client.runs.retry(uuid4(), concurrency=0)
+        assert isinstance(exc_info.value, ValkyrieRunError)
 
     no_webhook_client = make_client(handler, config=sdk_config(webhook=None))
     async with no_webhook_client:
@@ -435,9 +520,11 @@ async def test_start_validates_inputs_before_request() -> None:
 
     invalid_interval_client = make_client(handler)
     async with invalid_interval_client:
-        with pytest.raises(ValueError, match="divisible by 5"):
+        with pytest.raises(ValkyrieSDKError, match="divisible by 5") as exc_info:
             await invalid_interval_client.runs.start("agent", "swebench", webhook_intervals=[23])
-        with pytest.raises(ValueError, match="maximum of 3"):
+        assert isinstance(exc_info.value, ValkyrieRunError)
+        with pytest.raises(ValkyrieSDKError, match="maximum of 3") as exc_info:
             await invalid_interval_client.runs.start("agent", "swebench", webhook_intervals=[5, 10, 15, 20])
+        assert isinstance(exc_info.value, ValkyrieRunError)
 
     assert request_count == 0
