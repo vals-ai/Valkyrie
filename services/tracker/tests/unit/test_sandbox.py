@@ -36,6 +36,7 @@ _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
 _apply_egress_allowlist = getattr(sandbox_module, "_apply_egress_allowlist")
+_clear_egress_allowlist = getattr(sandbox_module, "_clear_egress_allowlist")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
 _stream_command_output_with_egress_allowlist = getattr(sandbox_module, "_stream_command_output_with_egress_allowlist")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
@@ -751,6 +752,29 @@ class TestEgressAllowlist:
 
         assert result == (None, 2.5)
         assert events == ["modify:https://api.openai.com", "stream", "clear"]
+
+    async def test_clear_egress_allowlist_retries_provider_conflicts(self) -> None:
+        """Retry transient provider failures while clearing egress rules.
+
+        Test cases:
+        - The first provider sandbox error is retried.
+        - The cleanup succeeds without raising after the second clear attempt.
+        """
+        attempts = 0
+
+        async def mock_clear_egress_rules() -> None:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ProviderSandboxError("operation already in progress")
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.clear_egress_rules = mock_clear_egress_rules
+
+        await _clear_egress_allowlist(mock_sandbox, fail_on_error=True)
+
+        assert attempts == 2
 
     async def test_stream_command_output_skips_egress_rules_without_allowlist(
         self,
