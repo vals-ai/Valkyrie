@@ -493,7 +493,7 @@ class TestBenchmarkUtils:
         database_session.add(task_row)
         database_session.commit()
 
-        commit_task_error(task_row, database_session, "agent failed")
+        commit_task_error(task_row, database_session, task_row.started_at, "agent failed")
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR

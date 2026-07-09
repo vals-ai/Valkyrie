@@ -54,6 +54,7 @@ from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
     ENVIRONMENT,
+    TOKENIZED_RETRY_BATCHES_ENABLED,
     create_benchmark_service_url,
 )
 from tracker.database.models import (
@@ -98,6 +99,7 @@ from tracker.utils import (
     commit_benchmark_error,
     create_benchmark_service_client,
     create_final_view,
+    create_task_rows,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
     fetch_harness_config,
@@ -110,6 +112,7 @@ from tracker.utils import (
     stream_benchmark_results,
     upload_final_view,
 )
+from tracker.utils.run_orchestration import TaskBatch
 
 configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
@@ -330,6 +333,7 @@ async def start_benchmark(
             run_starter.access_key_id,
         )
 
+    task_batch: list[str] | TaskBatch = verify_response.task_ids
     try:
         await copy_agent_to_benchmark(
             str(benchmark_row.id),
@@ -337,6 +341,12 @@ async def start_benchmark(
             request.harness_config.aws,
             request.harness_config.s3_bucket,
         )
+        if TOKENIZED_RETRY_BATCHES_ENABLED and verify_response.task_ids:
+            task_rows = create_task_rows(verify_response.task_ids, benchmark_row, session, run_starter.org)
+            task_batch = {
+                "kind": "start",
+                "attempts": {task_id: task.started_at.isoformat() for task_id, task in task_rows},
+            }
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
         commit_benchmark_error(benchmark_row, session, error_message)
@@ -353,7 +363,7 @@ async def start_benchmark(
         .kiq(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verify_response.task_ids,
+            verified_task_ids=task_batch,
         )
     )
 
@@ -726,7 +736,7 @@ async def retry_or_resume_benchmark(
         http_request.headers.get("x-api-key"),
     )
 
-    verified_task_ids = await reset_to_in_progress_status(
+    task_attempts = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
         benchmark_service=benchmark_row.benchmark_service(service_headers=effective_service_headers),
@@ -736,7 +746,7 @@ async def retry_or_resume_benchmark(
         org=org,
     )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not task_attempts:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
@@ -757,6 +767,12 @@ async def retry_or_resume_benchmark(
     resume_request_json = benchmark_row.start_benchmark_request(
         harness_config, service_headers=effective_service_headers
     ).model_dump()
+    task_batch: list[str] | TaskBatch = list(task_attempts)
+    if TOKENIZED_RETRY_BATCHES_ENABLED and task_attempts:
+        task_batch = {
+            "kind": "retry",
+            "attempts": {task_id: started_at.isoformat() for task_id, started_at in task_attempts.items()},
+        }
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
@@ -766,7 +782,7 @@ async def retry_or_resume_benchmark(
         .kiq(
             start_benchmark_request_json=resume_request_json,
             benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verified_task_ids,
+            verified_task_ids=task_batch,
         )
     )
 

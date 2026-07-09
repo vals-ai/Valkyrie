@@ -317,18 +317,27 @@ class MonitoringStackTest(unittest.TestCase):
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, {}, clear=True):
                 tracker_template, worker_template = _service_templates(stage_name)
 
-                expected_env = assertions.Match.array_with(
-                    [
-                        {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
-                        {"Name": "ENVIRONMENT", "Value": expected_environment},
-                        {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
-                    ]
-                )
+                expected_items = [
+                    {"Name": "BROKER_ENVIRONMENT", "Value": expected_environment},
+                    {"Name": "ENVIRONMENT", "Value": expected_environment},
+                    {"Name": "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE", "Value": expected_namespace},
+                ]
                 tracker_template.has_resource_properties(
                     "AWS::ECS::TaskDefinition",
                     {
                         "ContainerDefinitions": assertions.Match.array_with(
-                            [assertions.Match.object_like({"Environment": expected_env})]
+                            [
+                                assertions.Match.object_like(
+                                    {
+                                        "Environment": assertions.Match.array_with(
+                                            [
+                                                *expected_items,
+                                                {"Name": "TOKENIZED_RETRY_BATCHES_ENABLED", "Value": "false"},
+                                            ]
+                                        )
+                                    }
+                                )
+                            ]
                         )
                     },
                 )
@@ -336,10 +345,31 @@ class MonitoringStackTest(unittest.TestCase):
                     "AWS::ECS::TaskDefinition",
                     {
                         "ContainerDefinitions": assertions.Match.array_with(
-                            [assertions.Match.object_like({"Environment": expected_env})]
+                            [assertions.Match.object_like({"Environment": assertions.Match.array_with(expected_items)})]
                         )
                     },
                 )
+
+    def test_tracker_can_enable_tokenized_retry_batches(self) -> None:
+        with mock.patch.dict(os.environ, {"TOKENIZED_RETRY_BATCHES_ENABLED": "true"}, clear=True):
+            tracker_template, _ = _service_templates(PROD)
+
+        tracker_template.has_resource_properties(
+            "AWS::ECS::TaskDefinition",
+            {
+                "ContainerDefinitions": assertions.Match.array_with(
+                    [
+                        assertions.Match.object_like(
+                            {
+                                "Environment": assertions.Match.array_with(
+                                    [{"Name": "TOKENIZED_RETRY_BATCHES_ENABLED", "Value": "true"}]
+                                )
+                            }
+                        )
+                    ]
+                )
+            },
+        )
 
 
 if __name__ == "__main__":

@@ -1,5 +1,6 @@
 import asyncio
 from asyncio import Semaphore, gather
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, Mock
 
@@ -54,13 +55,19 @@ class TestTracker:
         database_session.commit()
 
         tasks_to_track: list[str] = ["task_id_1"]
+        expected_attempts: dict[str, datetime] = {}
         for task_id in tasks_to_track:
             task_row = Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id)
             database_session.add(task_row)
             database_session.commit()
+            expected_attempts[task_id] = task_row.started_at
 
         task_tracking: dict[str, TrackedTask] = {
-            task_id: TrackedTask(coro=self._mock_coro(task_id=task_id), org=self._test_org)
+            task_id: TrackedTask(
+                coro=self._mock_coro(task_id=task_id),
+                org=self._test_org,
+                expected_started_at=expected_attempts[task_id],
+            )
             for task_id in tasks_to_track
         }
 
@@ -79,7 +86,7 @@ class TestTracker:
         task_tracking["task_id_1"]._task = Mock(cancel=cancel_mock, done=lambda: False)  # type: ignore
 
         # Test case 1. Validate task returns true if the task is not stopped
-        assert monitor._validate_task("task_id_1")  # type: ignore
+        assert monitor._validate_task("task_id_1", expected_attempts["task_id_1"])  # type: ignore
 
         # Change the task status to stopped to make sure that it gets invalidated inside of the validate task method
         task_row = monitor._fetch_task_row("task_id_1")  # type: ignore
@@ -91,7 +98,7 @@ class TestTracker:
 
         # Test case 2. Validate task returns false if the task status has been set to stopped
         # NOTE: ensures that the database change gets picked up by the session
-        assert not monitor._validate_task("task_id_1")  # type: ignore
+        assert not monitor._validate_task("task_id_1", expected_attempts["task_id_1"])  # type: ignore
 
         # Test case 3. Running tasks stay tracked until they are done
         await monitor.track_tasks()
@@ -124,7 +131,7 @@ class TestTracker:
         mock_task_row_2 = MagicMock(spec=Task)
         mock_task_row_2.task_id = "task_id_2"
 
-        tracked_task = TrackedTask(coro=mock_coro, org=self._test_org)
+        tracked_task = TrackedTask(coro=mock_coro, org=self._test_org, expected_started_at=datetime.now(UTC))
 
         # Test case 1. When first created, it is in the waiting state
         assert tracked_task.status == TrackedTaskStatus.WAITING
@@ -133,7 +140,9 @@ class TestTracker:
         # Create another task that tracks the status of the first task
         # Allows us to test that the task status changes to running once the semaphore is aquired.
         tracked_task_2 = TrackedTask(
-            coro=self._validate_task_state_before_run(tracked_task, "task_id_2"), org=self._test_org
+            coro=self._validate_task_state_before_run(tracked_task, "task_id_2"),
+            org=self._test_org,
+            expected_started_at=datetime.now(UTC),
         )
 
         mock_task_row_2 = MagicMock(spec=Task)
@@ -160,7 +169,11 @@ class TestTracker:
         mock_task_row_3 = MagicMock(spec=Task)
         mock_task_row_3.task_id = "task_id_3"
 
-        tracked_task = TrackedTask(coro=self._mock_coro(task_id="task_id_3"), org=self._test_org)
+        tracked_task = TrackedTask(
+            coro=self._mock_coro(task_id="task_id_3"),
+            org=self._test_org,
+            expected_started_at=datetime.now(UTC),
+        )
         semaphore = Semaphore(value=1)
         run_task = asyncio.create_task(tracked_task.run(semaphore, mock_task_row_3))
 
@@ -190,8 +203,16 @@ class TestTracker:
         mock_task_row_5 = MagicMock(spec=Task)
         mock_task_row_5.task_id = "task_id_5"
 
-        running_task = TrackedTask(coro=self._mock_coro(task_id="task_id_4"), org=self._test_org)
-        waiting_task = TrackedTask(coro=self._mock_coro(task_id="task_id_5"), org=self._test_org)
+        running_task = TrackedTask(
+            coro=self._mock_coro(task_id="task_id_4"),
+            org=self._test_org,
+            expected_started_at=datetime.now(UTC),
+        )
+        waiting_task = TrackedTask(
+            coro=self._mock_coro(task_id="task_id_5"),
+            org=self._test_org,
+            expected_started_at=datetime.now(UTC),
+        )
 
         semaphore = Semaphore(value=1)
 

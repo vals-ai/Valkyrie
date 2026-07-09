@@ -122,7 +122,7 @@ def test_cleanup_sweeps_running_docent_status_to_error(
     org = database_session.get(Org, TEST_ORG_ID)
     assert org is not None
 
-    catch_errors_during_cleanup(example_benchmark_object.id, database_session, org)
+    catch_errors_during_cleanup(example_benchmark_object.id, database_session, org, {}, {})
 
     database_session.refresh(example_benchmark_object)
     assert example_benchmark_object.docent_reading_status == DocentReadingStatus.ERROR

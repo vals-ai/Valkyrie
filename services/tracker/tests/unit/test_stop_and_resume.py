@@ -39,9 +39,17 @@ from tracker.utils import (
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
 )
+from tracker.utils.run_orchestration import TaskBatch
 
 UTC = ZoneInfo("UTC")
 client = TestClient(app)
+
+
+def _retry_batch(attempts: dict[str, datetime]) -> TaskBatch:
+    return {
+        "kind": "retry",
+        "attempts": {task_id: value.isoformat() for task_id, value in attempts.items()},
+    }
 
 
 def _created_at(day: int) -> datetime:
@@ -149,7 +157,7 @@ class TestStopAndResume:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        verified_task_ids = await reset_to_in_progress_status(
+        task_attempts = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
             benchmark_service=start_benchmark_request.benchmark_service,
@@ -159,14 +167,14 @@ class TestStopAndResume:
             org=self._test_org,
         )
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
-        assert len(verified_task_ids) == 3
-        assert set(verified_task_ids) == set(pending_task_ids)
+        assert len(task_attempts) == 3
+        assert set(task_attempts) == set(pending_task_ids)
 
         # Run process_benchmark to complete the remaining tasks (the 3 tasks that are pending)
         await process_benchmark(
             start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
             benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verified_task_ids,
+            verified_task_ids=_retry_batch(task_attempts),
         )
 
         database_session.refresh(benchmark_row)
@@ -214,7 +222,7 @@ class TestStopAndResume:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
-        verified_task_ids = await reset_to_in_progress_status(
+        task_attempts = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
@@ -225,7 +233,7 @@ class TestStopAndResume:
         )
 
         database_session.refresh(task_row)
-        assert verified_task_ids == [task_row.task_id]
+        assert list(task_attempts) == [task_row.task_id]
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
 
@@ -274,7 +282,7 @@ class TestStopAndResume:
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
-        verified_task_ids = await reset_to_in_progress_status(
+        task_attempts = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
@@ -284,7 +292,7 @@ class TestStopAndResume:
             org=self._test_org,
         )
 
-        assert verified_task_ids == ["task_error", "task_result"]
+        assert list(task_attempts) == ["task_error", "task_result"]
 
         for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all():
             task.status = TaskStatus.FINISHED
@@ -322,7 +330,7 @@ class TestStopAndResume:
         )
         database_session.commit()
 
-        verified_task_ids = await reset_to_in_progress_status(
+        task_attempts = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
@@ -337,7 +345,7 @@ class TestStopAndResume:
             for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         }
 
-        assert set(verified_task_ids) == {"task_0", "task_1", "task_2"}
+        assert set(task_attempts) == {"task_0", "task_1", "task_2"}
         assert task_statuses == {
             "task_0": TaskStatus.PENDING,
             "task_1": TaskStatus.PENDING,
@@ -367,7 +375,7 @@ class TestStopAndResume:
         )
         database_session.commit()
 
-        verified_task_ids = await reset_to_in_progress_status(
+        task_attempts = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
@@ -381,7 +389,7 @@ class TestStopAndResume:
             task.task_id: task.status
             for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
         }
-        assert verified_task_ids == ["task_requested"]
+        assert list(task_attempts) == ["task_requested"]
         assert task_statuses == {"task_requested": TaskStatus.PENDING, "task_other": TaskStatus.ERROR}
 
     async def test_resume_runs_lazily_added_task_and_recomputes_final_score(
@@ -442,7 +450,7 @@ class TestStopAndResume:
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _capturing_final_score)
 
         # Resume with a new task id — should be lazily created as PENDING
-        verified_task_ids = await reset_to_in_progress_status(
+        task_attempts = await reset_to_in_progress_status(
             benchmark_row=benchmark_row,
             session=database_session,
             benchmark_service=start_benchmark_request.benchmark_service,
@@ -451,13 +459,13 @@ class TestStopAndResume:
             rerun_task_ids=[new_task_id],
             org=self._test_org,
         )
-        assert verified_task_ids == [new_task_id]
+        assert list(task_attempts) == [new_task_id]
 
         # Run the worker — the new task should make it through evaluation
         await process_benchmark(
             start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
             benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verified_task_ids,
+            verified_task_ids=_retry_batch(task_attempts),
         )
 
         database_session.refresh(benchmark_row)
@@ -650,7 +658,7 @@ class TestStopAndResume:
             *_args: Any, benchmark_service: BenchmarkServiceClient, **_kwargs: Any
         ):
             observed_headers.update(benchmark_service._headers)
-            return ["task_0"]
+            return {"task_0": datetime.now(UTC)}
 
         class _MockKicker:
             def with_labels(self, **_kwargs: Any) -> "_MockKicker":
@@ -745,7 +753,7 @@ class TestStopAndResume:
         captured_request_json: dict[str, Any] = {}
 
         async def _mock_reset_to_in_progress_status(*_args: Any, **_kwargs: Any):
-            return ["task_0"]
+            return {"task_0": datetime.now(UTC)}
 
         class _MockKicker:
             def with_labels(self, **_kwargs: Any) -> "_MockKicker":
@@ -859,22 +867,24 @@ class TestStopAndResume:
         async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=["task_error"])
 
-        captured_task_ids: list[str] = []
+        captured_batches: list[TaskBatch] = []
 
         class _MockKicker:
             def with_labels(self, **_kwargs: Any) -> "_MockKicker":
                 return self
 
             async def kiq(self, **kwargs: Any) -> None:
-                captured_task_ids.extend(kwargs["verified_task_ids"])
+                captured_batches.append(kwargs["verified_task_ids"])
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
         monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+        monkeypatch.setattr("main.TOKENIZED_RETRY_BATCHES_ENABLED", True)
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
         assert response.status_code == 200
-        assert captured_task_ids == ["task_error"]
+        assert len(captured_batches) == 1
+        assert set(captured_batches[0]["attempts"]) == {"task_error"}
 
         task_statuses = {
             task.task_id: task.status
@@ -912,7 +922,7 @@ class TestStopAndResume:
         async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=task_ids)
 
-        captured_retry_task_ids: list[str] = []
+        captured_retry_batches: list[TaskBatch] = []
         final_score_inputs: list[dict[str, Any]] = []
         sandbox_count = 0
 
@@ -921,7 +931,7 @@ class TestStopAndResume:
                 return self
 
             async def kiq(self, **kwargs: Any) -> None:
-                captured_retry_task_ids.extend(kwargs["verified_task_ids"])
+                captured_retry_batches.append(kwargs["verified_task_ids"])
 
         @asynccontextmanager
         async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
@@ -953,16 +963,18 @@ class TestStopAndResume:
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
         monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+        monkeypatch.setattr("main.TOKENIZED_RETRY_BATCHES_ENABLED", True)
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
         assert response.status_code == 200
-        assert captured_retry_task_ids == ["task_retry"]
+        assert len(captured_retry_batches) == 1
+        assert set(captured_retry_batches[0]["attempts"]) == {"task_retry"}
 
         await process_benchmark(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=captured_retry_task_ids,
+            verified_task_ids=captured_retry_batches[0],
         )
 
         database_session.refresh(benchmark_row)
@@ -996,7 +1008,7 @@ class TestStopAndResume:
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
 
-        tracked_task = TrackedTask(asyncio.sleep(0), org=self._test_org)
+        tracked_task = TrackedTask(asyncio.sleep(0), org=self._test_org, expected_started_at=task_row.started_at)
         tracked_task._status = TrackedTaskStatus.WAITING  # type: ignore[attr-defined]
 
         cancel_mock = Mock()

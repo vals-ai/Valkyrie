@@ -39,6 +39,7 @@ AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+TOKENIZED_RETRY_BATCHES_ENABLED = os.environ.get("TOKENIZED_RETRY_BATCHES_ENABLED", "false").lower() == "true"
 
 
 def _build_database_url() -> str:

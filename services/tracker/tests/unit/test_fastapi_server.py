@@ -155,6 +155,47 @@ class TestFastapiServer:
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
 
+    async def test_start_benchmark_enqueues_attempt_tokens(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ) -> None:
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=2,
+            task_ids=["task_0", "task_1"],
+            harness_config=harness_config,
+        )
+        captured_batches: list[dict[str, Any]] = []
+
+        async def verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_0", "task_1"])
+
+        class Kicker:
+            def with_labels(self, **_kwargs: Any) -> "Kicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_batches.append(kwargs["verified_task_ids"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+        monkeypatch.setattr("main.TOKENIZED_RETRY_BATCHES_ENABLED", True)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: Kicker())
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        benchmark_id = UUID(response.json()["benchmark_id"])
+        tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark_id)).all()
+        assert len(captured_batches) == 1
+        assert captured_batches[0] == {
+            "kind": "start",
+            "attempts": {task.task_id: task.started_at.isoformat() for task in tasks},
+        }
+
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
         self,
         contract: AgentContractRequest,

@@ -154,7 +154,7 @@ async def reset_to_in_progress_status(
     retry_mode: RetryMode,
     rerun_task_ids: list[str],
     org: Org,
-) -> list[str]:
+) -> dict[str, datetime]:
     """
     Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
 
@@ -168,10 +168,19 @@ async def reset_to_in_progress_status(
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
     try:
+        benchmark_row = session.exec(
+            select(Benchmark)
+            .where(Benchmark.id == benchmark_row.id)
+            .where(Benchmark.org_id == org.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one()
         existing_rows = session.exec(
             select(Task)
             .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
             .order_by(asc(Task.started_at))
+            .with_for_update()
+            .execution_options(populate_existing=True)
         ).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
 
@@ -187,7 +196,7 @@ async def reset_to_in_progress_status(
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
-            return []
+            return {}
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
@@ -200,7 +209,6 @@ async def reset_to_in_progress_status(
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
             benchmark_row.status = BenchmarkStatus.IN_PROGRESS
             session.add(benchmark_row)
-            session.commit()
 
         for task in existing_rows:
             task.status = (
@@ -214,12 +222,15 @@ async def reset_to_in_progress_status(
                 task.eval_resume_state = None
             session.add(task)
 
+        task_attempts = {task.task_id: task.started_at for task in existing_rows}
         for task_id in new_task_ids:
-            session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
+            task = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
+            session.add(task)
+            task_attempts[task_id] = task.started_at
 
         session.commit()
 
-        return verify_response.task_ids
+        return {task_id: task_attempts[task_id] for task_id in verify_response.task_ids}
     except (TrackerServiceError, BenchmarkServiceError):
         raise
     except Exception as e:

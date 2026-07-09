@@ -182,6 +182,9 @@ class TrackerStack(Stack):
                 "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL", ""),
                 "DESCOPE_PROJECT_ID": os.environ.get("DESCOPE_PROJECT_ID", ""),
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
+                "TOKENIZED_RETRY_BATCHES_ENABLED": (
+                    "true" if os.environ.get("TOKENIZED_RETRY_BATCHES_ENABLED", "false").lower() == "true" else "false"
+                ),
             },
             secrets={
                 **db_secrets,
