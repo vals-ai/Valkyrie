@@ -1,6 +1,5 @@
 """Sandbox management utilities for the tracker service."""
 
-import base64
 import shlex
 import time
 import uuid
@@ -440,7 +439,7 @@ async def archive_and_upload_output(
 
 
 OUTPUT_ARTIFACTS_SANDBOX_ROOT = PurePosixPath("/tmp/valkyrie")
-OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES = MAX_OUTPUT_ARTIFACT_BYTES
 
 
 def _output_artifact_path(artifact: OutputArtifactSpec) -> str:
@@ -495,7 +494,7 @@ async def upload_output_artifacts(
     aws: AWSCredentials,
     s3_bucket: str,
 ) -> None:
-    """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
+    """Upload declared output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
 
     for artifact in artifacts:
@@ -525,12 +524,8 @@ async def upload_output_artifacts(
                 f"Output artifacts are too large: {total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
             )
 
-        b64_result = await _exec(sandbox, f"base64 {quoted_path}")
-        if b64_result.exit_code != _SUCCESS_EXIT_CODE:
-            raise OutputArtifactError(f"Failed to read output artifact: {sandbox_path}")
-
         s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
-        file_content = base64.b64decode(b64_result.stdout)
+        file_content = await sandbox.download_file(sandbox_path)
         await upload_to_s3(file_content, s3_key, aws, s3_bucket)
 
         logger.info(
