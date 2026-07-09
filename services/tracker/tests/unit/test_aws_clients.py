@@ -4,6 +4,7 @@ import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker.aws import cloudwatch_logs
+from tracker.aws import s3 as s3_module
 from tracker.aws.cloudwatch_logs import (
     _sanitize_log_stream_name,
     get_benchmark_log_url,
@@ -22,6 +23,34 @@ _AWS = AWSCredentials(
 
 
 class TestS3DecoratorClient:
+    async def test_upload_to_s3_writes_bytes_to_bucket(self, monkeypatch: pytest.MonkeyPatch):
+        """S3 uploads should write the requested bytes to the requested bucket and key.
+
+        Test cases:
+        - Uploading bytes calls put_object with the expected bucket, key, and body.
+        """
+        put_calls: list[dict[str, object]] = []
+
+        class MockS3Client:
+            async def __aenter__(self) -> "MockS3Client":
+                return self
+
+            async def __aexit__(self, *_exc_info: object) -> None:
+                return None
+
+            async def put_object(self, **kwargs: object) -> None:
+                put_calls.append(kwargs)
+
+        class MockSession:
+            def client(self, _service_name: str, **_kwargs: object) -> MockS3Client:
+                return MockS3Client()
+
+        monkeypatch.setattr(s3_module, "_s3_session", lambda _aws: MockSession())
+
+        await s3_module.upload_to_s3(b"payload", "path/file.txt", _AWS, "bucket")
+
+        assert put_calls == [{"Bucket": "bucket", "Key": "path/file.txt", "Body": b"payload"}]
+
     async def test_s3_error_with_client(self):
         """Test that ClientError is caught buy the decorator"""
 
