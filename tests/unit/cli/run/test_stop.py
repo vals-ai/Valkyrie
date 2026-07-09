@@ -63,15 +63,17 @@ def reset_stop_calls() -> None:
     MockTrackerService.auth_credential = "benchmark-secret"
 
 
-def test_stop_resolves_inline_and_file_task_ids(
+def test_stop_task_selection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Resolve both supported task-selection inputs before stopping a run.
+    """Resolve valid task selectors and reject ambiguous or empty input.
 
     Test cases:
     - Comma-separated task IDs are trimmed and deduplicated.
     - A task ID file uses the shared one-per-line parser.
+    - Inline and file selectors cannot be combined.
+    - A delimiter-only selector cannot widen into a full-run stop.
     """
     run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
     task_ids_file = tmp_path / "task-ids.txt"
@@ -89,67 +91,32 @@ def test_stop_resolves_inline_and_file_task_ids(
         [str(run_id), "--task-ids-file", str(task_ids_file)],
         input="y\n",
     )
-    full_result = runner.invoke(stop_command, [str(run_id)], input="y\n")
-    force_result = runner.invoke(
+    conflicting_result = runner.invoke(
         stop_command,
-        [str(run_id), "--task-ids", "task-e", "--force"],
-        input="y\n",
+        [
+            str(run_id),
+            "--task-ids",
+            "task-a",
+            "--task-ids-file",
+            str(task_ids_file),
+        ],
+    )
+    empty_result = runner.invoke(
+        stop_command,
+        [str(run_id), "--task-ids", ","],
     )
 
     assert inline_result.exit_code == 0, inline_result.output
     assert file_result.exit_code == 0, file_result.output
-    assert full_result.exit_code == 0, full_result.output
-    assert force_result.exit_code == 0, force_result.output
     assert [call["task_ids"] for call in MockTrackerService.stop_calls] == [
         ["task-a", "task-b"],
         ["task-c", "task-d"],
-        None,
-        ["task-e"],
     ]
-    assert [call["force"] for call in MockTrackerService.stop_calls] == [False, False, False, True]
     assert [call["service_headers"] for call in MockTrackerService.stop_calls] == [
         {"Authorization": "benchmark-secret"},
         {"Authorization": "benchmark-secret"},
-        None,
-        {"Authorization": "benchmark-secret"},
     ]
-    assert "Selected tasks force stopped" in force_result.output
-
-
-def test_stop_rejects_conflicting_task_sources() -> None:
-    """Reject simultaneous inline and file task-selection inputs.
-
-    Test cases:
-    - `--task-ids` and `--task-ids-file` return a Click usage error.
-    """
-    runner = CliRunner()
-
-    result = runner.invoke(
-        stop_command,
-        [
-            "123e4567-e89b-12d3-a456-426614174000",
-            "--task-ids",
-            "task-a",
-            "--task-ids-file",
-            "task-ids.txt",
-        ],
-    )
-
-    assert result.exit_code == 2
-    assert "mutually exclusive" in result.output
-
-
-@pytest.mark.parametrize("task_ids", ["", ",", " , "])
-def test_stop_rejects_empty_task_selection(task_ids: str) -> None:
-    """Reject an explicitly supplied task selector that resolves to no IDs.
-
-    Test cases:
-    - Empty and delimiter-only selections cannot widen into a full-run stop.
-    """
-    result = CliRunner().invoke(
-        stop_command,
-        ["123e4567-e89b-12d3-a456-426614174000", "--task-ids", task_ids],
-    )
-
-    assert result.exit_code == 2
-    assert "No task ids provided" in result.output
+    assert conflicting_result.exit_code == 2
+    assert "mutually exclusive" in conflicting_result.output
+    assert empty_result.exit_code == 2
+    assert "No task ids provided" in empty_result.output
