@@ -1,13 +1,14 @@
 """Run progress rendering and streaming helpers."""
 
+from typing import Literal
 from uuid import UUID
 
 import click
-from tracker.database.models import DocentReadingStatus, TaskStatus
+from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
 
-from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.display import local_time
+from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -135,28 +136,44 @@ def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
     click.echo("└" + "─" * 79)
 
 
-def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID, *, show_identity: bool = False) -> None:
+def _completion_event(response: FetchBenchmarkResponse) -> Literal["complete", "error", "stopped"]:
+    if response.details.status == BenchmarkStatus.ERROR:
+        return "error"
+    if response.details.status == BenchmarkStatus.STOPPED:
+        return "stopped"
+    return "complete"
+
+
+def stream_benchmark_status(
+    tracker: TrackerService,
+    benchmark_id: UUID,
+    *,
+    show_identity: bool = False,
+    output_format: Literal["text", "jsonl"] = "text",
+) -> None:
     """Stream and display live run status updates."""
     initial = tracker.fetch_benchmark(benchmark_id)
     s3_url = initial.s3_bucket_url
-    if show_identity:
-        try:
-            metadata = tracker.fetch_benchmark_metadata(benchmark_id)
-        except TrackerServiceError:
-            metadata = None
-        format_run_identity(initial, metadata)
-    click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
+    metadata = fetch_run_metadata(tracker, benchmark_id) if show_identity or output_format == "jsonl" else None
+    if output_format == "jsonl":
+        click.echo(format_run_snapshot_json(initial, metadata, event="snapshot"))
+    else:
+        if show_identity:
+            format_run_identity(initial, metadata)
+        click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
 
-    initial_details = initial.details
-    bar, progress_pct = BenchmarkFormatter.create_progress_bar(
-        initial_details.finished_tasks, initial_details.total_tasks
-    )
-    status_color = BenchmarkFormatter.STATUS_COLORS[initial_details.status.value]
-    status_text = click.style(initial_details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
-    click.echo(
-        f"[{bar}] {initial_details.finished_tasks}/{initial_details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
-    )
-    click.echo(BenchmarkFormatter.format_task_breakdown(initial_details.task_breakdown), nl=False)
+        initial_details = initial.details
+        bar, progress_pct = BenchmarkFormatter.create_progress_bar(
+            initial_details.finished_tasks, initial_details.total_tasks
+        )
+        status_color = BenchmarkFormatter.STATUS_COLORS[initial_details.status.value]
+        status_text = click.style(initial_details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
+        click.echo(
+            f"[{bar}] {initial_details.finished_tasks}/{initial_details.total_tasks} ({progress_pct:.1f}%) • {status_text}"
+        )
+        click.echo(BenchmarkFormatter.format_task_breakdown(initial_details.task_breakdown), nl=False)
+
+    latest = initial
 
     try:
         for event in tracker.stream_benchmark(benchmark_id):
@@ -166,6 +183,11 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID, *, show
                     continue
 
                 response = FetchBenchmarkResponse.model_validate_json(data_json)
+                latest = response
+                if output_format == "jsonl":
+                    click.echo(format_run_snapshot_json(response, metadata, event="update"))
+                    continue
+
                 details = response.details
 
                 bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
@@ -180,26 +202,38 @@ def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID, *, show
                 click.echo(f"\033[F\033[K{progress_line}\n\033[K{breakdown_text}", nl=False)
 
             elif event.startswith("event: complete"):
-                click.echo("\n")
-                click.echo(click.style("✓ Run completed!", fg="green", bold=True))
-                click.echo("┌─ Next Steps " + "─" * 66)
-                _stream_next_steps(benchmark_id, s3_url)
+                if output_format == "jsonl":
+                    click.echo(format_run_snapshot_json(latest, metadata, event=_completion_event(latest)))
+                else:
+                    click.echo("\n")
+                    click.echo(click.style("✓ Run completed!", fg="green", bold=True))
+                    click.echo("┌─ Next Steps " + "─" * 66)
+                    _stream_next_steps(benchmark_id, s3_url)
                 break
 
             elif event.startswith("event: error"):
-                click.echo("\n")
-                click.echo(click.style("✗ Run errored.", fg="red", bold=True))
-                click.echo("┌─ Next Steps " + "─" * 66)
-                _stream_next_steps(benchmark_id, s3_url)
+                if output_format == "jsonl":
+                    click.echo(format_run_snapshot_json(latest, metadata, event="error"))
+                else:
+                    click.echo("\n")
+                    click.echo(click.style("✗ Run errored.", fg="red", bold=True))
+                    click.echo("┌─ Next Steps " + "─" * 66)
+                    _stream_next_steps(benchmark_id, s3_url)
                 break
 
             elif event.startswith("event: disconnect"):
-                click.echo("\n")
-                click.echo(click.style("Disconnected from stream.", fg="yellow"))
+                if output_format == "jsonl":
+                    click.echo(format_run_snapshot_json(latest, metadata, event="disconnect"))
+                else:
+                    click.echo("\n")
+                    click.echo(click.style("Disconnected from stream.", fg="yellow"))
                 break
 
     except KeyboardInterrupt:
-        click.echo("\n")
-        click.echo(click.style("Streaming stopped.", fg="yellow"))
-        click.echo("┌─ Next Steps " + "─" * 66)
-        _stream_next_steps(benchmark_id, s3_url)
+        if output_format == "jsonl":
+            click.echo(format_run_snapshot_json(latest, metadata, event="interrupted"))
+        else:
+            click.echo("\n")
+            click.echo(click.style("Streaming stopped.", fg="yellow"))
+            click.echo("┌─ Next Steps " + "─" * 66)
+            _stream_next_steps(benchmark_id, s3_url)

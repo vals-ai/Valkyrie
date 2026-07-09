@@ -179,10 +179,18 @@ valkyrie run fetch <id> --connect
 
 # One-time status check
 valkyrie run fetch <id>
+
+# One-time machine-readable snapshot
+valkyrie run fetch <id> --format json
+
+# Machine-readable stream (one JSON object per line)
+valkyrie run fetch <id> --connect --format jsonl
 ```
 
 Connected fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
-progress updates.
+progress updates. Machine-readable output uses a versioned, allowlisted schema and does not include stored agent
+secrets or kwargs. JSONL records use `snapshot`, `update`, `complete`, `error`, `stopped`, `disconnect`, or
+`interrupted` events. Terminal consumers should inspect both `event` and `status`.
 
 ### Download results
 
