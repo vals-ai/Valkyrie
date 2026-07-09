@@ -192,10 +192,23 @@ valkyrie run status --ids <id-1>,<id-2> --format json
 
 Connected text fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
 progress updates. Machine-readable output uses a versioned, allowlisted schema and does not include stored agent
-secrets or kwargs. JSONL begins with a `snapshot` record, followed by `update` records and a final `complete`, `error`,
-`stopped`, `disconnect`, or `interrupted` event. Identity fields can be null when `metadata_available` is false;
-timestamps are UTC ISO 8601 strings. Agents should parse stdout as JSON/JSONL and always inspect the process exit
-code; unexpected stream exhaustion emits `disconnect` and exits nonzero.
+secrets or kwargs. JSONL begins with a `snapshot` record, followed by zero or more `update` records. Recognized stream
+termination emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`; unexpected clean exhaustion emits
+`disconnect` and exits nonzero. Transport or malformed-protocol failures can exit nonzero without a final record, so
+stderr and the process exit code remain authoritative for command failures.
+
+Exit code 0 means the CLI handled the response or stream event; it does not mean the benchmark itself succeeded.
+Agents must inspect each run's `status` and each JSONL record's `event`. Optional values such as model, starter, label,
+finish time, and score can be null. In fetch output, `metadata_available: false` specifically means identity metadata
+could not be loaded. All timestamps are UTC ISO 8601 strings, and non-finite scores are normalized to null.
+
+The version 1 machine document shapes are:
+
+- Fetch JSON/JSONL record: `schema_version`, `event`, `observed_at`, run identity, status/progress counts, score, and
+  metadata availability.
+- Run list document: `schema_version`, `kind: "run_list"`, `observed_at`, `returned_count`, and allowlisted `runs`.
+- Batch status document: `schema_version`, `kind: "run_status"`, `observed_at`, request/return counts,
+  `missing_run_ids`, and lightweight `runs` containing status and task counts.
 
 Batch status preserves the requested ID order, ignores duplicate IDs, and requests up to 50 IDs at a time. A missing
 or inaccessible ID is listed in `missing_run_ids` and makes the command exit nonzero after emitting the JSON document.

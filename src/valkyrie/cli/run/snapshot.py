@@ -1,7 +1,9 @@
 """Safe machine-readable snapshots for benchmark runs."""
 
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
+from math import isfinite
 from typing import Literal
 from uuid import UUID
 
@@ -31,6 +33,15 @@ def _utc_isoformat(value: datetime) -> str:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _finite_score_or_none(value: float | None) -> float | None:
+    return value if value is None or isfinite(value) else None
+
+
+def _format_json(payload: Mapping[str, object]) -> str:
+    """Serialize strict compact JSON; NaN and Infinity are never valid machine output."""
+    return json.dumps(payload, allow_nan=False, sort_keys=True, separators=(",", ":"))
 
 
 def build_run_snapshot(
@@ -66,7 +77,7 @@ def build_run_snapshot(
         },
         "progress_percent": round(progress_percent, 4),
         "max_concurrency": arguments.concurrency if arguments is not None else None,
-        "final_score": response.final_score,
+        "final_score": _finite_score_or_none(response.final_score),
         "s3_bucket_url": response.s3_bucket_url,
         "docent_reading_status": details.docent_reading_status.value,
         "docent_reading_url": details.docent_reading_url,
@@ -81,7 +92,7 @@ def format_run_snapshot_json(
     event: RunEvent,
 ) -> str:
     """Serialize one compact JSON or JSONL record."""
-    return json.dumps(build_run_snapshot(response, metadata, event=event), sort_keys=True, separators=(",", ":"))
+    return _format_json(build_run_snapshot(response, metadata, event=event))
 
 
 def build_run_summary(run: BenchmarkTableRow) -> dict[str, object]:
@@ -104,7 +115,7 @@ def build_run_summary(run: BenchmarkTableRow) -> dict[str, object]:
             task_status.value: run.task_state_counts.get(task_status.value, 0) for task_status in TaskStatus
         },
         "progress_percent": round(progress_percent, 4),
-        "final_score": run.final_score,
+        "final_score": _finite_score_or_none(run.final_score),
     }
 
 
@@ -117,7 +128,7 @@ def format_run_list_json(runs: list[BenchmarkTableRow], *, observed_at: datetime
         "returned_count": len(runs),
         "runs": [build_run_summary(run) for run in runs],
     }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return _format_json(payload)
 
 
 def build_run_status(entry: BenchmarkStatusEntry) -> dict[str, object]:
@@ -153,4 +164,4 @@ def format_run_status_json(
         "missing_run_ids": [str(run_id) for run_id in missing_run_ids],
         "runs": [build_run_status(entry) for entry in entries],
     }
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return _format_json(payload)

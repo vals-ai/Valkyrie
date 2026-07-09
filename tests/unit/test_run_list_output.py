@@ -133,6 +133,21 @@ def test_list_json_all_emits_empty_document(monkeypatch: pytest.MonkeyPatch) -> 
     assert payload["runs"] == []
 
 
+@pytest.mark.parametrize("final_score", [float("nan"), float("inf"), float("-inf")])
+def test_list_json_all_normalizes_non_finite_scores(
+    monkeypatch: pytest.MonkeyPatch,
+    final_score: float,
+) -> None:
+    row = make_row(0).model_copy(update={"final_score": final_score})
+    tracker = StubListTracker({"": FetchBenchmarksResponse(benchmarks=[row], next_cursor=None)})
+
+    result = invoke_with_tracker(monkeypatch, tracker, ["--format", "json", "--all"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["runs"][0]["final_score"] is None
+    assert not any(token in result.stdout for token in ["NaN", "Infinity"])
+
+
 def test_list_json_all_does_not_emit_partial_output_after_later_page_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

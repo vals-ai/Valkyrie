@@ -161,6 +161,21 @@ def test_fetch_json_outputs_one_clean_object(monkeypatch: pytest.MonkeyPatch) ->
     assert tracker.metadata_calls == 1
 
 
+@pytest.mark.parametrize("final_score", [float("nan"), float("inf"), float("-inf")])
+def test_fetch_json_normalizes_non_finite_scores(
+    monkeypatch: pytest.MonkeyPatch,
+    final_score: float,
+) -> None:
+    run_id = uuid4()
+    tracker = StubFetchTracker(make_response(run_id, final_score=final_score), make_metadata(run_id))
+
+    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["final_score"] is None
+    assert not any(token in result.stdout for token in ["NaN", "Infinity"])
+
+
 def test_fetch_json_uses_null_identity_when_metadata_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     tracker = StubFetchTracker(make_response(run_id), TrackerServiceError("metadata unavailable"))
