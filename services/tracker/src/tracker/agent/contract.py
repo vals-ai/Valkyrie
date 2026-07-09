@@ -13,6 +13,22 @@ from tracker.database.models import AgentContractRequest
 from tracker.exceptions import BundlerError, ContractValidationError
 
 
+def read_agent_name(agent_dir: Path) -> str:
+    """Read and validate the agent name from a directory's contract.yaml/.yml."""
+    for ext in (".yaml", ".yml"):
+        contract_file = agent_dir / f"contract{ext}"
+        if contract_file.exists():
+            data = yaml.safe_load(contract_file.read_text())
+            if not isinstance(data, dict):
+                raise BundlerError(f"Invalid contract file '{contract_file}': expected a mapping")
+            try:
+                return AgentContract(**data).name
+            except PydanticValidationError as e:
+                raise BundlerError(f"Invalid contract file '{contract_file}': {e}") from e
+
+    raise BundlerError(f"No contract file found in agent directory '{agent_dir}'")
+
+
 def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config: AgentConfig) -> AgentContractRequest:
     """Extract contract from zip bytes into a temp dir and load it. Looks for contract.yaml/.yml."""
     try:
