@@ -156,9 +156,9 @@ Guardrails:
 - Artifact destination paths are relative to the task's S3 prefix. String entries use the same path under `/tmp/valkyrie`; object entries use their explicit `source`.
 - Object `source` paths must be absolute sandbox paths. Glob sources must include a non-root directory prefix such as `/logs` or `/app/results/...`.
 - Each declared artifact is required. Missing files or unresolved glob sources fail the task clearly.
-- Individual files cannot exceed 50 MiB.
+- Individual files cannot exceed 100 MiB.
 - At most 10 output artifacts can be declared.
-- The total uploaded sidecar bytes per task cannot exceed 50 MiB.
+- The total uploaded sidecar bytes per task cannot exceed 100 MiB.
 
 For the examples above, task `task_0` in run `run_id` uploads to matching task-scoped keys such as:
 
