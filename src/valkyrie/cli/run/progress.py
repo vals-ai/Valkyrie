@@ -4,8 +4,9 @@ from uuid import UUID
 
 import click
 from tracker.database.models import DocentReadingStatus, TaskStatus
-from tracker.types import BenchmarkDetails, FetchBenchmarkResponse
+from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
 
+from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.display import local_time
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -85,6 +86,31 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo("└" + "─" * 79)
 
 
+def format_run_identity(
+    benchmark_response: FetchBenchmarkResponse,
+    metadata: FetchBenchmarkMetadataResponse | None,
+) -> None:
+    """Display stable run identity before connected progress updates."""
+    click.echo("┌─ Run Details " + "─" * 65)
+    click.echo(f"│ {'Benchmark:':<17} {benchmark_response.benchmark_name}")
+    if metadata is not None:
+        arguments = metadata.benchmark_arguments
+        click.echo(f"│ {'Agent:':<17} {arguments.contract.name}")
+        click.echo(f"│ {'Model:':<17} {arguments.contract.model or '-'}")
+        click.echo(f"│ {'Dataset:':<17} {arguments.dataset or 'default'}")
+    click.echo(f"│ {'Run ID:':<17} {benchmark_response.benchmark_id}")
+    if benchmark_response.label:
+        click.echo(f"│ {'Label:':<17} {benchmark_response.label}")
+    if metadata is not None:
+        if metadata.started_by_email:
+            click.echo(f"│ {'Started by:':<17} {metadata.started_by_email}")
+        click.echo(f"│ {'Max concurrency:':<17} {metadata.benchmark_arguments.concurrency}")
+    else:
+        click.echo(f"│ {'Metadata:':<17} unavailable")
+    click.echo(f"│ {'Started at:':<17} {local_time(benchmark_response.details.started_at)}")
+    click.echo("└" + "─" * 79)
+
+
 def _format_docent_analysis(details: BenchmarkDetails, run_id: UUID) -> str | None:
     status = details.docent_reading_status
     if status == DocentReadingStatus.DONE and details.docent_reading_url:
@@ -109,10 +135,16 @@ def _stream_next_steps(benchmark_id: UUID, s3_url: str | None = None) -> None:
     click.echo("└" + "─" * 79)
 
 
-def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID) -> None:
+def stream_benchmark_status(tracker: TrackerService, benchmark_id: UUID, *, show_identity: bool = False) -> None:
     """Stream and display live run status updates."""
     initial = tracker.fetch_benchmark(benchmark_id)
     s3_url = initial.s3_bucket_url
+    if show_identity:
+        try:
+            metadata = tracker.fetch_benchmark_metadata(benchmark_id)
+        except TrackerServiceError:
+            metadata = None
+        format_run_identity(initial, metadata)
     click.echo(click.style("Streaming run updates (Ctrl+C to stop)...", fg="cyan"))
 
     initial_details = initial.details

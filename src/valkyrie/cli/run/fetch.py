@@ -28,7 +28,7 @@ def fetch(run_id: UUID, connect: bool):
     try:
         with TrackerService() as tracker:
             if connect:
-                stream_benchmark_status(tracker, run_id)
+                stream_benchmark_status(tracker, run_id, show_identity=True)
             else:
                 response = tracker.fetch_benchmark(run_id)
                 format_benchmark_status(response)

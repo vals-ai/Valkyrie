@@ -181,6 +181,9 @@ valkyrie run fetch <id> --connect
 valkyrie run fetch <id>
 ```
 
+Connected fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
+progress updates.
+
 ### Download results
 
 To view results, you should use the following command to download results to disk:
