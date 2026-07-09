@@ -18,6 +18,7 @@ from tracker.types import (
     BenchmarkServiceEntry,
     BenchmarkServicesRequest,
     BenchmarkServicesResponse,
+    BenchmarkStatusResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarkTasksRequest,
@@ -683,6 +684,17 @@ class TrackerService:
             return FetchBenchmarksResponse.model_validate(_parse_response(response, "Failed to fetch runs"))
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch runs: {e}") from e
+
+    def fetch_benchmark_statuses(self, benchmark_ids: list[UUID]) -> BenchmarkStatusResponse:
+        """Fetch lightweight status and task counts for multiple runs."""
+        try:
+            response = self._client.get(
+                f"{self._base_url}/benchmarks/status",
+                params={"ids": ",".join(str(benchmark_id) for benchmark_id in benchmark_ids)},
+            )
+            return BenchmarkStatusResponse.model_validate(_parse_response(response, "Failed to fetch run statuses"))
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to fetch run statuses: {e}") from e
 
     def fetch_run_outputs(self, benchmark_id: UUID, task_ids: list[str] | None = None) -> Response:
         """

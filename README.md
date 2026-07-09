@@ -185,12 +185,22 @@ valkyrie run fetch <id> --format json
 
 # Machine-readable stream (one JSON object per line)
 valkyrie run fetch <id> --connect --format jsonl
+
+# Lightweight status for several known run IDs
+valkyrie run status --ids <id-1>,<id-2> --format json
 ```
 
-Connected fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
+Connected text fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
 progress updates. Machine-readable output uses a versioned, allowlisted schema and does not include stored agent
-secrets or kwargs. JSONL records use `snapshot`, `update`, `complete`, `error`, `stopped`, `disconnect`, or
-`interrupted` events. Terminal consumers should inspect both `event` and `status`.
+secrets or kwargs. JSONL begins with a `snapshot` record, followed by `update` records and a final `complete`, `error`,
+`stopped`, `disconnect`, or `interrupted` event. Identity fields can be null when `metadata_available` is false;
+timestamps are UTC ISO 8601 strings. Agents should parse stdout as JSON/JSONL and always inspect the process exit
+code; unexpected stream exhaustion emits `disconnect` and exits nonzero.
+
+Batch status preserves the requested ID order, ignores duplicate IDs, and requests up to 50 IDs at a time. A missing
+or inaccessible ID is listed in `missing_run_ids` and makes the command exit nonzero after emitting the JSON document.
+Its `finished_tasks` count includes terminal `FINISHED`, `ERROR`, and `STOPPED` tasks. Use `run list --format json --all`
+when benchmark, agent, model, or dataset identity is also needed.
 
 ### Download results
 
