@@ -187,6 +187,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
     contract = AgentContractRequest(
         name=contract_name,
         install_cmd="sh setup.sh",
+        egress_allowlist=["example.com"],
         run_cmd=(
             "printf 'agent-run' > /workspace/agent-run.txt && "
             f"test \"$RUN_ID\" = '{_COMPOSE_RUN_ID}' && "
