@@ -52,6 +52,33 @@ make hotswap
 export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com
 ```
 
+## Daytona cleanup schedule
+
+Production includes an hourly EventBridge Scheduler target that launches a small, one-off Fargate task. The schedule is
+disabled and the command is in dry-run mode by default. It only considers sandboxes carrying the explicit Valkyrie,
+production, target, and `clean-up=true` metadata added by the tracker.
+
+The task reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` JSON fields from an existing Secrets Manager
+secret. Configure the production deploy with GitHub repository variables:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DAYTONA_CLEANUP_SECRET_NAME` | `DaytonaSecrets` | Existing JSON secret used by the cleanup task |
+| `DAYTONA_CLEANUP_ENABLED` | `false` | Enables the hourly production schedule |
+| `DAYTONA_CLEANUP_DRY_RUN` | `true` | Reports eligible sandboxes without deleting them |
+
+Safe rollout:
+
+1. Set `DAYTONA_CLEANUP_SECRET_NAME` to the intended service-owned secret and validate its fields and KMS access.
+2. Deploy with the default disabled, dry-run configuration.
+3. Run the isolated live cleanup integration test against approved test credentials.
+4. Run the production task manually in dry-run mode and inspect `/valkyrie/daytona-cleanup` logs.
+5. Set `DAYTONA_CLEANUP_ENABLED=true` while leaving dry-run enabled, then observe a scheduled invocation.
+6. Set `DAYTONA_CLEANUP_DRY_RUN=false` and redeploy the same revision.
+
+Legacy sandboxes without the new ownership labels are intentionally excluded and require a separately audited cleanup.
+The scheduler dead-letter queue captures invocation failures; cleanup process failures are reported in its CloudWatch log.
+
 ## Teardown
 
 - Don't do this

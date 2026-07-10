@@ -1,0 +1,58 @@
+name: Infrastructure checks
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/deploy.yaml"
+      - ".github/workflows/infra-tests.yaml"
+  push:
+    branches: [dev]
+    paths:
+      - "infra/**"
+      - ".github/workflows/deploy.yaml"
+      - ".github/workflows/infra-tests.yaml"
+
+permissions:
+  contents: read
+
+jobs:
+  infra-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "infra/uv.lock"
+
+      - name: Install locked dependencies
+        run: uv sync --frozen
+
+      - name: Check formatting
+        run: uv run ruff format --check .
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Type check
+        run: uv run basedpyright
+
+      - name: Run CDK assertion tests
+        env:
+          JSII_SILENCE_WARNING_DEPRECATED_NODE_VERSION: "1"
+        run: uv run python -m unittest discover -s tests -p "test_*.py"

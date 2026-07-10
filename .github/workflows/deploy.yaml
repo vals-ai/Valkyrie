@@ -77,6 +77,9 @@ jobs:
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          DAYTONA_CLEANUP_SECRET_NAME: ${{ vars.DAYTONA_CLEANUP_SECRET_NAME }}
+          DAYTONA_CLEANUP_ENABLED: ${{ vars.DAYTONA_CLEANUP_ENABLED }}
+          DAYTONA_CLEANUP_DRY_RUN: ${{ vars.DAYTONA_CLEANUP_DRY_RUN }}
         run: |
           cd infra
           uv run cdk deploy --all -c stage=${{ steps.deploy-stage.outputs.stage }} --require-approval never
