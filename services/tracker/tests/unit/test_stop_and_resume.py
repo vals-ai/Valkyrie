@@ -507,16 +507,24 @@ class TestStopAndResume:
             raise AssertionError("eval resume should not create a sandbox")
             yield
 
+        sandbox_provider_config = DaytonaProviderConfig(
+            DAYTONA_API_KEY="key",
+            DAYTONA_API_URL="url",
+            DAYTONA_TARGET="target",
+        )
+
         async def _mock_resume_evaluation(
             _self: BenchmarkServiceClient,
             task_id: str,
             *_args: Any,
             eval_resume_state: dict[str, Any],
             on_eval_resume_state: Any,
+            sandbox_provider: DaytonaProviderConfig,
             **_kwargs: Any,
         ) -> dict[str, Any]:
             assert task_id == "task_0"
             assert eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
+            assert sandbox_provider is sandbox_provider_config
             on_eval_resume_state({"artifact_prefix": "s3://bucket/run", "job_id": "job-1"})
             return {"score": 1.0}
 
@@ -536,11 +544,7 @@ class TestStopAndResume:
                 task_row.task_id,
                 harness_config,
                 self._test_org,
-                sandbox_provider_config=DaytonaProviderConfig(
-                    DAYTONA_API_KEY="key",
-                    DAYTONA_API_URL="url",
-                    DAYTONA_TARGET="target",
-                ),
+                sandbox_provider_config=sandbox_provider_config,
                 creation_semaphore=asyncio.Semaphore(1),
             )
         finally:

@@ -355,6 +355,7 @@ async def process_task(
                     on_message=log_output,
                     on_eval_resume_state=on_eval_resume_state,
                     dataset=start_benchmark_request.dataset,
+                    sandbox_provider=sandbox_provider_config,
                 )
                 resume_eval_duration = time.perf_counter() - resume_eval_start_time
                 evaluation_result_row = EvaluationResult(
