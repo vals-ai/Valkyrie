@@ -1,5 +1,6 @@
 """Agent contract schemas (declarative YAML contract + AgentConfig)."""
 
+import re
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
@@ -10,7 +11,17 @@ from tracker.database.models import OutputArtifact, OutputArtifactSpec
 from tracker.exceptions import ContractValidationError
 
 
-__all__ = ["AgentConfig", "AgentContract", "OutputArtifact", "OutputArtifactSpec", "Parameter"]
+__all__ = ["AgentConfig", "AgentContract", "OutputArtifact", "OutputArtifactSpec", "Parameter", "validate_agent_name"]
+
+
+_AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def validate_agent_name(name: str) -> str:
+    """Validate an agent name before it is used as an S3 key and bundle folder name."""
+    if not name or not _AGENT_NAME_PATTERN.match(name) or name in {".", ".."}:
+        raise ValueError(f"Invalid agent name {name!r}: use only letters, digits, dots, dashes, or underscores.")
+    return name
 
 
 class Defaults(str, Enum):
@@ -48,11 +59,17 @@ class AgentContract(BaseModel):
     install_cmd: str
     final_output: Path | None = None
     output_artifacts: list[OutputArtifactSpec] = []
+    egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}
     ingest_lambda: str | None = None
     defaults: dict[str, Parameter] = {}
     kwargs: dict[str, Parameter] = {}
     run_cmd: str
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        return validate_agent_name(v)
 
     @field_validator("run_cmd")
     @classmethod
