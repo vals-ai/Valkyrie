@@ -8,12 +8,10 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from benchmark_service import SandboxError
 from daytona import (
     AsyncSandbox,
     DaytonaConnectionError,
-    DaytonaError,
-    DaytonaNotFoundError,
-    DaytonaValidationError,
     ListSandboxesQuery,
 )
 
@@ -51,7 +49,7 @@ class FakeDaytona:
         self,
         sandboxes: list[AsyncSandbox],
         *,
-        delete_effects: dict[str, list[BaseException | None]] | None = None,
+        delete_effects: dict[str, BaseException | bool] | None = None,
     ) -> None:
         self.sandboxes = sandboxes
         self.delete_effects = delete_effects or {}
@@ -63,18 +61,12 @@ class FakeDaytona:
         for sandbox in self.sandboxes:
             yield sandbox
 
-    async def delete(self, sandbox: AsyncSandbox, timeout: float = 60) -> None:
-        del timeout
-        self.delete_calls.append(sandbox.id)
-        effects = self.delete_effects.get(sandbox.id, [])
-        if effects:
-            effect = effects.pop(0)
-            if effect is not None:
-                raise effect
-
-
-async def _no_sleep(_delay: float) -> None:
-    return None
+    async def force_delete_sandbox(self, instance_id: str) -> bool:
+        self.delete_calls.append(instance_id)
+        effect = self.delete_effects.get(instance_id, True)
+        if isinstance(effect, BaseException):
+            raise effect
+        return effect
 
 
 async def test_cleanup_deletes_only_explicitly_owned_old_sandboxes() -> None:
@@ -103,11 +95,11 @@ async def test_cleanup_deletes_only_explicitly_owned_old_sandboxes() -> None:
 
     report = await cleanup_old_sandboxes(
         client,
+        client,
         now=NOW,
         environment=ENVIRONMENT,
         target=TARGET,
         dry_run=False,
-        sleep=_no_sleep,
     )
 
     assert client.delete_calls == ["eligible"]
@@ -133,11 +125,11 @@ async def test_cleanup_dry_run_reports_eligibility_without_deleting() -> None:
 
     report = await cleanup_old_sandboxes(
         client,
+        client,
         now=NOW,
         environment=ENVIRONMENT,
         target=TARGET,
         dry_run=True,
-        sleep=_no_sleep,
     )
 
     assert client.delete_calls == []
@@ -146,64 +138,34 @@ async def test_cleanup_dry_run_reports_eligibility_without_deleting() -> None:
     assert report.succeeded
 
 
-async def test_cleanup_retries_transient_deletes_and_continues_after_failures() -> None:
+async def test_cleanup_uses_provider_delete_outcomes_and_continues_after_failures() -> None:
     client = FakeDaytona(
         [
-            _sandbox("retried", created_at=NOW - timedelta(hours=49)),
+            _sandbox("deleted", created_at=NOW - timedelta(hours=49)),
             _sandbox("gone", created_at=NOW - timedelta(hours=49)),
-            _sandbox("generic-gone", created_at=NOW - timedelta(hours=49)),
-            _sandbox("generic-code-gone", created_at=NOW - timedelta(hours=49)),
             _sandbox("failed", created_at=NOW - timedelta(hours=49)),
-            _sandbox("persistent", created_at=NOW - timedelta(hours=49)),
             _sandbox("after-failure", created_at=NOW - timedelta(hours=49)),
         ],
         delete_effects={
-            "retried": [DaytonaConnectionError("temporary"), None],
-            "gone": [DaytonaNotFoundError("gone")],
-            "generic-gone": [DaytonaError("gone", status_code=404)],
-            "generic-code-gone": [DaytonaError("gone", error_code="NOT_FOUND")],
-            "failed": [DaytonaValidationError("invalid state")],
-            "persistent": [
-                DaytonaConnectionError("temporary"),
-                DaytonaConnectionError("temporary"),
-                DaytonaConnectionError("temporary"),
-            ],
+            "gone": False,
+            "failed": SandboxError("invalid state"),
         },
     )
-    sleep_calls: list[float] = []
-
-    async def capture_sleep(delay: float) -> None:
-        sleep_calls.append(delay)
 
     report = await cleanup_old_sandboxes(
+        client,
         client,
         now=NOW,
         environment=ENVIRONMENT,
         target=TARGET,
         dry_run=False,
-        sleep=capture_sleep,
     )
 
-    assert client.delete_calls == [
-        "retried",
-        "retried",
-        "gone",
-        "generic-gone",
-        "generic-code-gone",
-        "failed",
-        "persistent",
-        "persistent",
-        "persistent",
-        "after-failure",
-    ]
-    assert sleep_calls == [1.0, 1.0, 4.0]
-    assert report.eligible == 7
+    assert client.delete_calls == ["deleted", "gone", "failed", "after-failure"]
+    assert report.eligible == 4
     assert report.deletion_requested == 2
-    assert report.already_absent == 3
-    assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [
-        ("failed", "DaytonaValidationError"),
-        ("persistent", "DaytonaConnectionError"),
-    ]
+    assert report.already_absent == 1
+    assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [("failed", "SandboxError")]
     assert not report.succeeded
 
 
@@ -219,10 +181,10 @@ async def test_cleanup_materializes_listing_before_any_deletion() -> None:
     with pytest.raises(DaytonaConnectionError, match="pagination failed"):
         await cleanup_old_sandboxes(
             client,
+            client,
             now=NOW,
             environment=ENVIRONMENT,
             target=TARGET,
-            sleep=_no_sleep,
         )
 
     assert client.delete_calls == []
@@ -233,11 +195,11 @@ async def test_cleanup_normalizes_offset_aware_creation_timestamps() -> None:
 
     report = await cleanup_old_sandboxes(
         client,
+        client,
         now=NOW,
         environment=ENVIRONMENT,
         target=TARGET,
         dry_run=False,
-        sleep=_no_sleep,
     )
 
     assert client.delete_calls == ["offset"]
@@ -249,10 +211,10 @@ async def test_cleanup_requires_timezone_aware_now() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         await cleanup_old_sandboxes(
             FakeDaytona([]),
+            FakeDaytona([]),
             now=NOW.replace(tzinfo=None),
             environment=ENVIRONMENT,
             target=TARGET,
-            sleep=_no_sleep,
         )
 
 
@@ -263,18 +225,31 @@ async def test_run_cleanup_uses_fixed_production_contract(
     expected_dry_run: bool,
 ) -> None:
     client = FakeDaytona([_sandbox("eligible", created_at=NOW - timedelta(hours=49))])
-    received_configs: list[object] = []
+    received_daytona_configs: list[object] = []
+    received_provider_configs: list[cleanup_module.DaytonaProviderConfig] = []
+    closed_contexts: list[str] = []
 
     class ClientContext:
         async def __aenter__(self) -> FakeDaytona:
             return client
 
         async def __aexit__(self, *_exc: object) -> None:
-            return None
+            closed_contexts.append("daytona")
+
+    class ProviderContext:
+        async def __aenter__(self) -> FakeDaytona:
+            return client
+
+        async def __aexit__(self, *_exc: object) -> None:
+            closed_contexts.append("provider")
 
     def fake_daytona(*, config: object) -> ClientContext:
-        received_configs.append(config)
+        received_daytona_configs.append(config)
         return ClientContext()
+
+    def fake_create_provider(config: cleanup_module.DaytonaProviderConfig) -> ProviderContext:
+        received_provider_configs.append(config)
+        return ProviderContext()
 
     monkeypatch.setenv("DAYTONA_API_KEY", "test-key")
     monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.example.test/api")
@@ -282,14 +257,21 @@ async def test_run_cleanup_uses_fixed_production_contract(
     monkeypatch.setenv("DAYTONA_CLEANUP_DRY_RUN", dry_run_value)
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.setattr(cleanup_module, "AsyncDaytona", fake_daytona)
+    monkeypatch.setattr(cleanup_module.DaytonaProviderConfig, "create_provider", fake_create_provider)
 
     report = await cleanup_module.run_cleanup(now=NOW)
 
-    assert len(received_configs) == 1
-    config = received_configs[0]
-    assert getattr(config, "api_key") == "test-key"
-    assert getattr(config, "api_url") == "https://daytona.example.test/api"
-    assert getattr(config, "target") == TARGET
+    assert len(received_daytona_configs) == 1
+    daytona_config = received_daytona_configs[0]
+    assert getattr(daytona_config, "api_key") == "test-key"
+    assert getattr(daytona_config, "api_url") == "https://daytona.example.test/api"
+    assert getattr(daytona_config, "target") == TARGET
+    assert len(received_provider_configs) == 1
+    provider_config = received_provider_configs[0]
+    assert provider_config.DAYTONA_API_KEY == "test-key"
+    assert provider_config.DAYTONA_API_URL == "https://daytona.example.test/api"
+    assert provider_config.DAYTONA_TARGET == TARGET
+    assert closed_contexts == ["provider", "daytona"]
     assert client.query is not None
     assert client.query.labels == {"ManagedBy": "Valkyrie", "Environment": "production"}
     assert client.query.created_at_before == NOW - timedelta(hours=48)
