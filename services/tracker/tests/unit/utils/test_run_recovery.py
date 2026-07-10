@@ -29,6 +29,7 @@ from tests.factories import make_error_result, make_evaluation_result
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity
+from tracker.aws.runtime import AwsRuntime
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -440,7 +441,6 @@ class TestRunRecovery:
         def _capture_lambda_payload(_client: Any, _function_name: str, payload: dict[str, Any]) -> None:
             captured_lambda_payloads.append(payload)
 
-        monkeypatch.setattr("tracker.utils.run_orchestration.lambda_client", Mock(return_value=object()))
         monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", _capture_lambda_payload)
 
         start_benchmark_request = StartBenchmarkRequest(
@@ -904,7 +904,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 task_row.task_id,
-                harness_config,
+                AwsRuntime.from_harness_config(harness_config),
                 self._test_org,
                 sandbox_provider_config=sandbox_provider_config,
                 creation_semaphore=asyncio.Semaphore(1),
@@ -977,7 +977,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 task_row.task_id,
-                harness_config,
+                AwsRuntime.from_harness_config(harness_config),
                 self._test_org,
                 sandbox_provider_config=DaytonaProviderConfig(
                     DAYTONA_API_KEY="key",
@@ -1499,7 +1499,7 @@ class TestRunRecovery:
             benchmark_row,
             database_session,
             harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
+            AwsRuntime.from_harness_config(harness_config),
             self._test_org,
             sandbox_provider="daytona",
         )

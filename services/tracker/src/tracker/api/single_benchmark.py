@@ -12,6 +12,7 @@ from sqlmodel import Session, col, desc, func, select
 from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.runtime import AwsRuntime
 from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
@@ -72,13 +73,12 @@ def get_single_benchmark(
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
     if harness_config:
-        region = harness_config.aws.aws_default_region
-        s3_bucket_url = create_benchmark_url(str(benchmark.id), region, harness_config.s3_bucket)
-        if harness_config.log_group:
+        aws_resources = AwsRuntime.from_harness_config(harness_config).resources
+        s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
+        if aws_resources.log_group:
             cloudwatch_url = get_benchmark_log_url(
                 benchmark_id=str(benchmark.id),
-                region=region,
-                log_group=harness_config.log_group,
+                resources=aws_resources,
             )
 
     return SingleBenchmarkResponse(

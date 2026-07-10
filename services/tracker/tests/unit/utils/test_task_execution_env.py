@@ -16,6 +16,7 @@ from sqlmodel import Session
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.auth import RequestIdentity
+from tracker.aws.runtime import AwsRuntime
 from tracker.database.models import AgentContractRequest
 from tracker.types import HarnessConfig
 
@@ -41,6 +42,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AwsRuntime,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"UNRELATED_SECRET": "secret-name"}})
         run_starter = RequestIdentity(
@@ -80,7 +82,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1
@@ -104,6 +106,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
+        aws_runtime: AwsRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract,
@@ -122,7 +125,7 @@ class TestProcessTaskEnvironment:
             partial(_capture_sandbox_environment, captured_env_vars),
         )
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, aws_runtime)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert len(captured_env_vars) == 1

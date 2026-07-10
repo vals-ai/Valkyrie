@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import tracker.aws.s3 as s3_module
+from tracker.aws.runtime import AwsRuntime
 from tracker.aws.s3 import copy_agent_to_benchmark
 from tracker.types import HarnessConfig
 
@@ -38,21 +39,20 @@ class TestCopyAgentToBenchmark:
         monkeypatch.setattr(s3_module, "get_contract_s3_key", get_contract_s3_key)
         monkeypatch.setattr(s3_module, "s3_object_exists", exists_mock)
         monkeypatch.setattr(s3_module, "copy_s3_object", copy_mock)
+        aws_runtime = AwsRuntime.from_harness_config(harness_config)
 
         await copy_agent_to_benchmark(
             benchmark_id="bench-123",
             contract_name="my_agent",
-            aws=harness_config.aws,
-            s3_bucket="test-bucket",
+            runtime=aws_runtime,
         )
 
-        exists_mock.assert_awaited_once_with("benchmarks/bench-123/my_agent.zip", harness_config.aws, "test-bucket")
+        exists_mock.assert_awaited_once_with("benchmarks/bench-123/my_agent.zip", aws_runtime)
         if destination_exists:
             copy_mock.assert_not_awaited()
         else:
             copy_mock.assert_awaited_once_with(
                 "agents/my_agent.zip",
                 "benchmarks/bench-123/my_agent.zip",
-                harness_config.aws,
-                "test-bucket",
+                aws_runtime,
             )

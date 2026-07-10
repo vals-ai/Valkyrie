@@ -10,6 +10,7 @@ from sqlmodel import Session, desc, select
 
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.runtime import AwsRuntime
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
     Benchmark,
@@ -117,26 +118,25 @@ async def get_task_artifacts(
 ) -> TaskArtifactsResponse:
     """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    aws_runtime = AwsRuntime.from_harness_config(harness_config)
 
     cloudwatch_url: str | None = None
-    if harness_config.log_group and harness_config.aws.aws_default_region:
+    if aws_runtime.resources.log_group and aws_runtime.resources.region:
         log_stream_suffix = f"{int(task.started_at.timestamp() * 1_000_000):x}"
         cloudwatch_url = get_benchmark_log_url(
             benchmark_id=str(benchmark_id),
-            region=harness_config.aws.aws_default_region,
-            log_group=harness_config.log_group,
+            resources=aws_runtime.resources,
             task_id=f"{task.task_id}_{log_stream_suffix}",
         )
 
     agent_output_url: str | None = None
     ttl_seconds: int | None = None
     key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
-    if await s3_object_exists(key, aws=harness_config.aws, s3_bucket=harness_config.s3_bucket):
+    if await s3_object_exists(key, aws_runtime):
         ttl_seconds = 300
         agent_output_url = await create_presigned_url(
             s3_key=key,
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            runtime=aws_runtime,
             expiration=ttl_seconds,
         )
 

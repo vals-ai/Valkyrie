@@ -11,21 +11,16 @@ import click
 import yaml
 from tracker import handle_s3_error
 from tracker.aws.s3 import (
-    copy_s3_object,
-    delete_from_s3,
-    download_from_s3,
     get_benchmark_contract_s3_key,
     get_contract_s3_key,
-    s3_object_exists,
 )
-from tracker.aws.s3 import list_agents as list_s3_agents
 from tracker.agent.bundler import get_agent_zip_stream
 from tracker.agent.contract import get_contract_from_zip_bytes, read_agent_name
 from tracker.agent.schemas import AgentConfig, validate_agent_name
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import S3Error
 
-from valkyrie.cli.s3_config import aws_credentials, fetch_bucket_name, s3_client
+from valkyrie.cli import s3_config as cli_s3
 
 
 async def _run_git_command(repo_path: Path | None, *args: str) -> None:
@@ -122,7 +117,7 @@ async def push_agent(agent_name: str, agent_path: Path):
     """Zip and push an agent to S3 at agents/{agent_name}.zip"""
 
     # fetch bucket name from config
-    bucket_name = fetch_bucket_name()
+    bucket_name = cli_s3.fetch_bucket_name()
 
     with get_agent_zip_stream(agent_name=agent_name, agent_path=agent_path) as file_stream:
         # Get file size for progress bar
@@ -130,7 +125,7 @@ async def push_agent(agent_name: str, agent_path: Path):
         file_size = file_stream.tell()
         file_stream.seek(0)  # Seek back to start
 
-        async with s3_client() as client:
+        async with cli_s3.s3_client() as client:
             # Initiate multipart upload
             key = get_contract_s3_key(agent_name)
             now = datetime.now(timezone.utc).isoformat()
@@ -194,48 +189,45 @@ async def push_agent(agent_name: str, agent_path: Path):
 
 async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
-    aws = aws_credentials()
-    bucket_name = fetch_bucket_name()
+    bucket_name = cli_s3.fetch_bucket_name()
     source_key = get_contract_s3_key(agent_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
 
-    if not await s3_object_exists(source_key, aws, bucket_name):
+    if not await cli_s3.s3_object_exists(source_key, bucket_name):
         raise S3Error(f"Agent '{agent_name}.zip' not found in S3.")
 
-    await copy_s3_object(source_key, dest_key, aws, bucket_name)
+    await cli_s3.copy_s3_object(source_key, dest_key, bucket_name)
 
 
 async def _download_agent_zip(agent_name: str) -> bytes:
-    aws = aws_credentials()
-    bucket_name = fetch_bucket_name()
+    bucket_name = cli_s3.fetch_bucket_name()
     key = get_contract_s3_key(agent_name)
 
-    if not await s3_object_exists(key, aws, bucket_name):
+    if not await cli_s3.s3_object_exists(key, bucket_name):
         raise S3Error(f"Agent '{agent_name}' not found in S3.")
 
-    return await download_from_s3(key, aws, bucket_name)
+    return await cli_s3.download_from_s3(key, bucket_name)
 
 
 @handle_s3_error(message="Failed to remove agent from S3")
 async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""
-    aws = aws_credentials()
-    bucket_name = fetch_bucket_name()
+    bucket_name = cli_s3.fetch_bucket_name()
     key = get_contract_s3_key(agent_name)
 
-    if not await s3_object_exists(key, aws, bucket_name):
+    if not await cli_s3.s3_object_exists(key, bucket_name):
         raise S3Error(f"Agent '{agent_name}' could not be found.")
 
-    await delete_from_s3(key, aws, bucket_name)
+    await cli_s3.delete_from_s3(key, bucket_name)
 
 
 async def list_agents() -> list[tuple[str, datetime | None]]:
     """List all agents in the S3 bucket's agents/ folder with the dates that they were added."""
-    bucket_name = fetch_bucket_name()
+    bucket_name = cli_s3.fetch_bucket_name()
 
     click.echo(f"\r\033[KListing agents from bucket '{bucket_name}'...", nl=False)
 
-    return await list_s3_agents(aws_credentials(), bucket_name)
+    return await cli_s3.list_agents(bucket_name)
 
 
 @handle_s3_error(message="Failed to download agent from S3")
