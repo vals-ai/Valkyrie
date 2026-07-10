@@ -1,6 +1,6 @@
 # Python SDK
 
-Use Valkyrie's async Python SDK to manage runs without invoking the CLI. The SDK requires Python 3.12+.
+Use Valkyrie's async Python SDK to manage runs from Python. The SDK requires Python 3.12 or newer.
 
 ## Installation
 
@@ -10,7 +10,7 @@ Install the standalone package from PyPI:
 pip install valkyrie-sdk
 ```
 
-The package does not install the Valkyrie CLI or Tracker service dependencies.
+The package does not install the Valkyrie CLI or tracker service.
 
 ## Quickstart
 
@@ -26,7 +26,8 @@ async with ValkyrieClient.from_config() as client:
 Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses
 `TRACKER_SERVICE_URL` or the hosted tracker URL.
 
-The SDK sends AWS credentials in `X-Harness-*` headers. Only connect to trusted trackers and use HTTPS outside local development.
+The SDK sends AWS credentials in `X-Harness-*` headers. Only connect to trusted trackers, and use
+HTTPS outside local development.
 
 ## Examples
 
@@ -38,7 +39,7 @@ python docs/sdk/examples/run_lifecycle.py --help
 python docs/sdk/examples/manage_run.py --help
 ```
 
-See [RELEASING.md](RELEASING.md) for maintainer release operations.
+Maintainers can follow [RELEASING.md](RELEASING.md) to publish the package.
 
 ## Run lifecycle
 
@@ -64,7 +65,7 @@ async for update in client.runs.stream(run.benchmark_id):
     print(update.details.status)
 ```
 
-Manage the remaining run lifecycle:
+Use the other run methods:
 
 ```python
 page = await client.runs.list()
@@ -88,5 +89,3 @@ except ValkyrieAPIError as exc:
 except ValkyrieSDKError as exc:
     print(exc)
 ```
-
-The public error types distinguish configuration, run input, API, transport, and stream failures.

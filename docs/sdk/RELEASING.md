@@ -2,7 +2,7 @@
 
 `valkyrie-sdk` is versioned independently in `packages/valkyrie-sdk/pyproject.toml`.
 
-## One-time configuration
+## One-time setup
 
 1. Create protected GitHub environments with a required `@vals-ai/valkyrie` reviewer, no
    self-review, and no administrator bypass:
@@ -11,8 +11,8 @@
    - `pypi`: allow only `prod`.
 
 2. Create `valkyrie-sdk` under the Vals AI PyPI organization.
-3. Configure a Trusted Publisher on PyPI and TestPyPI with owner `vals-ai`, repository `Valkyrie`,
-   workflow `publish-sdk.yml`, and the matching environment name.
+3. Add a Trusted Publisher on PyPI and TestPyPI using owner `vals-ai`, repository `Valkyrie`,
+   workflow `publish-sdk.yml`, and the matching environment.
 
 ## Release
 
@@ -22,10 +22,10 @@
    and hashes before approving the environment.
 4. Install and smoke-test the exact TestPyPI version. Install dependencies from PyPI and the SDK
    from TestPyPI with `--no-deps`.
-5. Promote the tested commit to `prod`, then verify and approve the `pypi` environment.
-6. Confirm the PyPI wheel, source distribution, installation, and attestations.
+5. Merge the tested commit into `prod`, then verify and approve the `pypi` environment.
+6. Install the package from PyPI and check its wheel, source distribution, and attestations.
 
 ## Rules
 
-Published files are immutable. Never use global `skip-existing`; if a release is incomplete or its
-integrity is uncertain, yank it and publish a new patch version.
+PyPI releases cannot be overwritten. Do not use global `skip-existing`. If a release is incomplete,
+yank it and publish a new patch version.
