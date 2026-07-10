@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
 
 import valkyrie.sdk as sdk
@@ -57,18 +58,29 @@ EXPECTED_SIGNATURES = {
 }
 
 
-def signature_text(callable_object: object) -> str:
+def signature_text(callable_object: Callable[..., object]) -> str:
     parts: list[str] = []
     keyword_only = False
-    for parameter in inspect.signature(callable_object).parameters.values():
+    parameters = list(inspect.signature(callable_object).parameters.values())
+    for index, parameter in enumerate(parameters):
         if parameter.kind is inspect.Parameter.KEYWORD_ONLY and not keyword_only:
             parts.append("*")
             keyword_only = True
-        part = parameter.name
+        if parameter.kind is inspect.Parameter.VAR_POSITIONAL:
+            part = f"*{parameter.name}"
+            keyword_only = True
+        elif parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            part = f"**{parameter.name}"
+        else:
+            part = parameter.name
         if parameter.default is not inspect.Parameter.empty:
             value = str(parameter.default) if isinstance(parameter.default, Path) else repr(parameter.default)
             part += f"={value}"
         parts.append(part)
+        if parameter.kind is inspect.Parameter.POSITIONAL_ONLY and (
+            index + 1 == len(parameters) or parameters[index + 1].kind is not inspect.Parameter.POSITIONAL_ONLY
+        ):
+            parts.append("/")
     return ", ".join(parts)
 
 
@@ -83,6 +95,13 @@ def test_public_exports_and_constants_are_stable() -> None:
 def test_public_signatures_are_stable() -> None:
     for callable_object, expected in EXPECTED_SIGNATURES.items():
         assert signature_text(callable_object) == expected
+
+
+def test_signature_text_preserves_parameter_kinds() -> None:
+    def sample(value: object, /, other: object, *, flag: bool = False) -> None:
+        pass
+
+    assert signature_text(sample) == "value, /, other, *, flag=False"
 
 
 def test_sdk_loads_from_workspace_member() -> None:

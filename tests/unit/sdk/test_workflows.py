@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,7 +9,14 @@ import yaml
 
 ROOT = Path(__file__).parents[3]
 WORKFLOWS = ROOT / ".github" / "workflows"
-SHA_PIN = re.compile(r"^[^@]+@[0-9a-f]{40}$")
+APPROVED_ACTIONS = {
+    "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
+    "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+    "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990",
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b",
+}
 
 
 def load(name: str) -> dict[str, Any]:
@@ -33,7 +39,8 @@ def test_external_actions_are_immutable_and_fail_closed() -> None:
     build = publish_workflow["jobs"]["build"]
 
     jobs = [*package_workflow["jobs"].values(), *publish_workflow["jobs"].values()]
-    assert all(SHA_PIN.fullmatch(step["uses"]) for job in jobs for step in actions(job))
+    assert all(job["runs-on"] == "ubuntu-24.04" for job in jobs)
+    assert all(step["uses"] in APPROVED_ACTIONS for job in jobs for step in actions(job))
     for job in (package, build):
         assert job["permissions"] == {"contents": "read"}
         assert action(job, "actions/checkout@")["with"]["persist-credentials"] is False
@@ -55,6 +62,11 @@ def test_publish_is_oidc_only_and_ref_guarded() -> None:
     assert "refs/heads/dev" in target_script and "refs/heads/prod" in target_script
     assert not any(line.lstrip().startswith(("password:", "user:", "token:")) for line in contents.splitlines())
     assert "skip-existing" not in contents
+    assert "repository-url: ${{" not in contents
+    assert "repository-url: https://test.pypi.org/legacy/" in contents
+    publish_actions = [step["uses"] for step in actions(publish)]
+    assert sum(item.startswith("actions/download-artifact@") for item in publish_actions) == 1
+    assert sum(item.startswith("pypa/gh-action-pypi-publish@") for item in publish_actions) == 2
 
 
 def test_workflows_verify_the_exact_artifacts() -> None:
