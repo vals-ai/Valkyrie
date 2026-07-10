@@ -60,6 +60,7 @@ AWS_SESSION_TOKEN=              # Optional, required when using temporary creden
 TEST_AWS_S3_BUCKET=             # S3 bucket for agent artifacts (e.g. agentic-harness)
 TEST_LOG_GROUP=                 # CloudWatch log group (e.g. valkyrie-test-log-group)
 TEST_DAYTONA_SECRET_NAME=       # AWS Secrets Manager secret containing Daytona provider config (e.g. AgenticHarnessSecrets)
+TEST_GATEWAY_USAGE_LEDGER_TABLE_NAME=  # DynamoDB table read by the Model Gateway route integration test
 
 # Benchmark service
 BENCHMARK_SERVICE_BASE_URL=     # Use the domain of the benchmark service
