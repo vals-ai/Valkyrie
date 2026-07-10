@@ -19,6 +19,17 @@ from tracker.types import (
     StartBenchmarkResponse,
     StopBenchmarkResponse,
 )
+from valkyrie.sdk.models import (
+    FetchBenchmarkResponse as SDKFetchBenchmarkResponse,
+    FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
+    FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
+    FinalViewResponse as SDKFinalViewResponse,
+    RetryOrResumeBenchmarkResponse as SDKRetryResponse,
+    S3UploadResultsResponse as SDKS3ResultsResponse,
+    StartBenchmarkRequest as SDKStartBenchmarkRequest,
+    StartBenchmarkResponse as SDKStartBenchmarkResponse,
+    StopBenchmarkResponse as SDKStopBenchmarkResponse,
+)
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
 
@@ -28,19 +39,28 @@ def load_fixture(name: str) -> dict[str, Any]:
 
 
 @pytest.mark.parametrize(
-    ("name", "key", "model"),
+    ("name", "key", "tracker_model", "sdk_model"),
     [
-        ("start.json", "request", StartBenchmarkRequest),
-        ("start.json", "response", StartBenchmarkResponse),
-        ("fetch.json", "response", FetchBenchmarkResponse),
-        ("list.json", "request", FetchBenchmarksRequest),
-        ("list.json", "response", FetchBenchmarksResponse),
-        ("results.json", "inline", FinalViewResponse),
-        ("results.json", "s3", S3UploadResultsResponse),
-        ("stop.json", "response", StopBenchmarkResponse),
-        ("retry_resume.json", "response", RetryOrResumeBenchmarkResponse),
+        ("start.json", "request", StartBenchmarkRequest, SDKStartBenchmarkRequest),
+        ("start.json", "response", StartBenchmarkResponse, SDKStartBenchmarkResponse),
+        ("fetch.json", "response", FetchBenchmarkResponse, SDKFetchBenchmarkResponse),
+        ("list.json", "request", FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
+        ("list.json", "response", FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
+        ("results.json", "inline", FinalViewResponse, SDKFinalViewResponse),
+        ("results.json", "s3", S3UploadResultsResponse, SDKS3ResultsResponse),
+        ("stop.json", "response", StopBenchmarkResponse, SDKStopBenchmarkResponse),
+        ("retry_resume.json", "response", RetryOrResumeBenchmarkResponse, SDKRetryResponse),
     ],
 )
-def test_tracker_accepts_canonical_sdk_fixture(name: str, key: str, model: type[BaseModel]) -> None:
-    validated = model.model_validate(load_fixture(name)[key])
-    assert isinstance(validated, model)
+def test_sdk_and_tracker_accept_canonical_fixture(
+    name: str,
+    key: str,
+    tracker_model: type[BaseModel],
+    sdk_model: type[BaseModel],
+) -> None:
+    payload = load_fixture(name)[key]
+    tracker_value = tracker_model.model_validate(payload)
+    sdk_value = sdk_model.model_validate(payload)
+
+    assert isinstance(tracker_value, tracker_model)
+    assert isinstance(sdk_value, sdk_model)

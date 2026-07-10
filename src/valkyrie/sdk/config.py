@@ -5,9 +5,9 @@ from typing import TypeVar, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
-from tracker.types import AWSCredentials, HarnessConfig
 
 from valkyrie.sdk.errors import ValkyrieConfigError
+from valkyrie.sdk.models import AWSCredentials, HarnessConfig
 
 DEFAULT_CONFIG_PATH = Path("~/.config/valkyrie/valkyrie.yaml")
 ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")

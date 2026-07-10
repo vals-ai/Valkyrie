@@ -8,21 +8,21 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 from uuid import UUID
 
 import httpx
-from tracker.database.models import AgentContractRequest, RetryMode
-from tracker.types import (
+from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, ValkyrieTransportError
+from valkyrie.sdk.models import (
+    AgentContractRequest,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
     RetrieveResultsResponse,
+    RetryMode,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
 )
-
-from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, ValkyrieTransportError
 
 if TYPE_CHECKING:
     from valkyrie.sdk.client import ValkyrieClient

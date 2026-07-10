@@ -13,10 +13,12 @@ from uuid import uuid4
 import httpx
 import pytest
 from pydantic import ValidationError
-from tracker.database.models import AgentContractRequest
-from tracker.types import FetchBenchmarksRequest, FinalViewResponse, S3UploadResultsResponse
 
 from valkyrie.sdk import (
+    AgentContractRequest,
+    FetchBenchmarksRequest,
+    FinalViewResponse,
+    S3UploadResultsResponse,
     ValkyrieAPIError,
     ValkyrieClient,
     ValkyrieConfig,
