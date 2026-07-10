@@ -50,7 +50,7 @@ Trusted Publisher on both indexes:
 | Environment | `testpypi` or `pypi` |
 
 A pending publisher does not reserve the project name. Prefer creating the project directly under
-the organization. Protect `prod` from direct/force pushes and require CODEOWNERS review.
+the organization. Protect `prod` from direct/force pushes and require pull-request review.
 
 ## Failure policy
 
