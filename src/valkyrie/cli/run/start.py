@@ -91,9 +91,7 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
     if not connect:
-        click.echo(
-            f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan")
-        )
+        click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
     click.echo(
         f"│ {'Get results:':<17} "
         + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
