@@ -245,36 +245,22 @@ async def test_cleanup_normalizes_offset_aware_creation_timestamps() -> None:
     assert report.succeeded
 
 
-@pytest.mark.parametrize(
-    ("now", "max_age", "environment", "target", "message"),
-    [
-        (NOW.replace(tzinfo=None), timedelta(hours=48), ENVIRONMENT, TARGET, "timezone-aware"),
-        (NOW, timedelta(0), ENVIRONMENT, TARGET, "max_age must be positive"),
-        (NOW, timedelta(hours=-1), ENVIRONMENT, TARGET, "max_age must be positive"),
-        (NOW, timedelta(hours=48), "", TARGET, "environment must not be empty"),
-        (NOW, timedelta(hours=48), ENVIRONMENT, "", "target must not be empty"),
-    ],
-)
-async def test_cleanup_rejects_unsafe_boundaries(
-    now: datetime,
-    max_age: timedelta,
-    environment: str,
-    target: str,
-    message: str,
-) -> None:
-    with pytest.raises(ValueError, match=message):
+async def test_cleanup_requires_timezone_aware_now() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
         await cleanup_old_sandboxes(
             FakeDaytona([]),
-            now=now,
-            environment=environment,
-            target=target,
-            max_age=max_age,
+            now=NOW.replace(tzinfo=None),
+            environment=ENVIRONMENT,
+            target=TARGET,
             sleep=_no_sleep,
         )
 
 
-async def test_run_cleanup_requires_explicit_config_and_defaults_to_dry_run(
+@pytest.mark.parametrize(("dry_run_value", "expected_dry_run"), [("true", True), ("false", False)])
+async def test_run_cleanup_uses_fixed_production_contract(
     monkeypatch: pytest.MonkeyPatch,
+    dry_run_value: str,
+    expected_dry_run: bool,
 ) -> None:
     client = FakeDaytona([_sandbox("eligible", created_at=NOW - timedelta(hours=49))])
     received_configs: list[object] = []
@@ -290,12 +276,11 @@ async def test_run_cleanup_requires_explicit_config_and_defaults_to_dry_run(
         received_configs.append(config)
         return ClientContext()
 
-    monkeypatch.setenv("ENVIRONMENT", ENVIRONMENT)
     monkeypatch.setenv("DAYTONA_API_KEY", "test-key")
     monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.example.test/api")
     monkeypatch.setenv("DAYTONA_TARGET", TARGET)
-    monkeypatch.delenv("DAYTONA_CLEANUP_DRY_RUN", raising=False)
-    monkeypatch.delenv("DAYTONA_CLEANUP_MAX_AGE_HOURS", raising=False)
+    monkeypatch.setenv("DAYTONA_CLEANUP_DRY_RUN", dry_run_value)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
     monkeypatch.setattr(cleanup_module, "AsyncDaytona", fake_daytona)
 
     report = await cleanup_module.run_cleanup(now=NOW)
@@ -305,28 +290,8 @@ async def test_run_cleanup_requires_explicit_config_and_defaults_to_dry_run(
     assert getattr(config, "api_key") == "test-key"
     assert getattr(config, "api_url") == "https://daytona.example.test/api"
     assert getattr(config, "target") == TARGET
-    assert report.dry_run
-    assert client.delete_calls == []
-
-
-async def test_run_cleanup_rejects_non_48_hour_production_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ENVIRONMENT", ENVIRONMENT)
-    monkeypatch.setenv("DAYTONA_API_KEY", "test-key")
-    monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.example.test/api")
-    monkeypatch.setenv("DAYTONA_TARGET", TARGET)
-    monkeypatch.setenv("DAYTONA_CLEANUP_MAX_AGE_HOURS", "47")
-
-    with pytest.raises(ValueError, match="exactly 48 hours"):
-        await cleanup_module.run_cleanup(now=NOW)
-
-
-@pytest.mark.parametrize("name", ["DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"])
-async def test_run_cleanup_rejects_missing_daytona_config(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
-    monkeypatch.setenv("ENVIRONMENT", "dev")
-    monkeypatch.setenv("DAYTONA_API_KEY", "test-key")
-    monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.example.test/api")
-    monkeypatch.setenv("DAYTONA_TARGET", TARGET)
-    monkeypatch.delenv(name, raising=False)
-
-    with pytest.raises(ValueError, match=f"{name} must be set"):
-        await cleanup_module.run_cleanup(now=NOW)
+    assert client.query is not None
+    assert client.query.labels == {"ManagedBy": "Valkyrie", "Environment": "production"}
+    assert client.query.created_at_before == NOW - timedelta(hours=48)
+    assert report.dry_run is expected_dry_run
+    assert client.delete_calls == ([] if expected_dry_run else ["eligible"])

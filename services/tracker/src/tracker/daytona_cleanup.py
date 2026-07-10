@@ -1,9 +1,8 @@
-"""Delete Valkyrie-managed Daytona sandboxes older than the configured cutoff."""
+"""Delete Valkyrie-managed Daytona sandboxes older than 48 hours."""
 
 from __future__ import annotations
 
 import asyncio
-import math
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
@@ -35,7 +34,8 @@ from tracker.sandbox_labels import (
 
 logger = get_logger(__name__)
 
-DEFAULT_MAX_AGE = timedelta(hours=48)
+_MAX_SANDBOX_AGE = timedelta(hours=48)
+_PRODUCTION_ENVIRONMENT = "production"
 _DELETE_RETRY_DELAYS_SECONDS = (1.0, 4.0)
 
 
@@ -153,21 +153,14 @@ async def cleanup_old_sandboxes(
     now: datetime,
     environment: str,
     target: str,
-    max_age: timedelta = DEFAULT_MAX_AGE,
     dry_run: bool = True,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> CleanupReport:
-    """Delete owned sandboxes strictly older than ``max_age`` and return an audit summary."""
+    """Delete owned sandboxes strictly older than 48 hours and return an audit summary."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
-    if not environment:
-        raise ValueError("environment must not be empty")
-    if not target:
-        raise ValueError("target must not be empty")
-    if max_age <= timedelta(0):
-        raise ValueError("max_age must be positive")
 
-    cutoff = now.astimezone(UTC) - max_age
+    cutoff = now.astimezone(UTC) - _MAX_SANDBOX_AGE
     scanned = eligible = deletion_requested = already_absent = 0
     exempted = unmanaged = target_mismatch = not_old = invalid_metadata = 0
     failures: list[CleanupFailure] = []
@@ -267,56 +260,21 @@ async def cleanup_old_sandboxes(
     )
 
 
-def _boolean_environment(name: str, *, default: bool) -> bool:
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    normalized = value.strip().casefold()
-    if normalized == "true":
-        return True
-    if normalized == "false":
-        return False
-    raise ValueError(f"{name} must be 'true' or 'false'")
-
-
-def _max_age_environment() -> timedelta:
-    raw_value = os.environ.get("DAYTONA_CLEANUP_MAX_AGE_HOURS", "48")
-    try:
-        hours = float(raw_value)
-    except ValueError as exc:
-        raise ValueError("DAYTONA_CLEANUP_MAX_AGE_HOURS must be a positive number") from exc
-    if not math.isfinite(hours) or hours <= 0:
-        raise ValueError("DAYTONA_CLEANUP_MAX_AGE_HOURS must be a positive finite number")
-    return timedelta(hours=hours)
-
-
-def _required_environment(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise ValueError(f"{name} must be set")
-    return value
-
-
 async def run_cleanup(*, now: datetime | None = None) -> CleanupReport:
-    """Build the environment-configured Daytona client and perform one cleanup sweep."""
-    dry_run = _boolean_environment("DAYTONA_CLEANUP_DRY_RUN", default=True)
-    environment = _required_environment("ENVIRONMENT")
-    api_key = _required_environment("DAYTONA_API_KEY")
-    api_url = _required_environment("DAYTONA_API_URL")
-    target = _required_environment("DAYTONA_TARGET")
-    max_age = _max_age_environment()
-    if environment == "production" and max_age != DEFAULT_MAX_AGE:
-        raise ValueError("production Daytona cleanup age must remain exactly 48 hours")
-
-    config = DaytonaConfig(api_key=api_key, api_url=api_url, target=target)
+    """Build the production Daytona client and perform one cleanup sweep."""
+    target = os.environ["DAYTONA_TARGET"]
+    config = DaytonaConfig(
+        api_key=os.environ["DAYTONA_API_KEY"],
+        api_url=os.environ["DAYTONA_API_URL"],
+        target=target,
+    )
     async with AsyncDaytona(config=config) as client:
         return await cleanup_old_sandboxes(
             client,
             now=now or datetime.now(UTC),
-            environment=environment,
+            environment=_PRODUCTION_ENVIRONMENT,
             target=target,
-            max_age=max_age,
-            dry_run=dry_run,
+            dry_run=os.environ["DAYTONA_CLEANUP_DRY_RUN"] != "false",
         )
 
 
