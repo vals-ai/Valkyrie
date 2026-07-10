@@ -160,38 +160,75 @@ def has_stopped_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> b
 def reconcile_stuck_benchmarks(
     session: Session, *, grace_period: timedelta = _BENCHMARK_RECONCILIATION_GRACE_PERIOD
 ) -> int:
-    stale_benchmarks = session.exec(select(Benchmark).where(Benchmark.status == BenchmarkStatus.IN_PROGRESS)).all()
+    benchmark_ids = session.exec(select(Benchmark.id).where(Benchmark.status == BenchmarkStatus.IN_PROGRESS)).all()
+    session.rollback()
     reconciled = 0
-    for benchmark_row in stale_benchmarks:
+    for benchmark_id in benchmark_ids:
         try:
+            benchmark_row = session.exec(
+                select(Benchmark)
+                .where(Benchmark.id == benchmark_id)
+                .where(Benchmark.status == BenchmarkStatus.IN_PROGRESS)
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            ).one_or_none()
+            if benchmark_row is None:
+                session.rollback()
+                continue
+
             org = session.get(Org, benchmark_row.org_id)
             if org is None:
+                session.rollback()
                 continue
 
             task_rows = session.exec(
-                select(Task.status, Task.started_at, Task.finished_at)
+                select(Task)
                 .where(Task.benchmark == benchmark_row.id)
                 .where(Task.org_id == org.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             ).all()
             if not task_rows:
+                session.rollback()
                 continue
-            if any(status in _RUNNABLE_TASK_STATUSES for status, *_ in task_rows):
+            now = datetime.now(ZoneInfo("UTC"))
+            unstamped_stopped_tasks = [
+                task for task in task_rows if task.status == TaskStatus.STOPPED and task.finished_at is None
+            ]
+            if unstamped_stopped_tasks:
+                for task in unstamped_stopped_tasks:
+                    task.finished_at = now
+                    session.add(task)
+                session.commit()
                 continue
 
-            latest_task_activity = max(finished_at or started_at for _status, started_at, finished_at in task_rows)
+            task_statuses = {task.status for task in task_rows}
+            if task_statuses.intersection(_RUNNABLE_TASK_STATUSES):
+                session.rollback()
+                continue
+
+            latest_task_activity = max(task.finished_at or task.started_at for task in task_rows)
             if latest_task_activity.tzinfo is None:
                 latest_task_activity = latest_task_activity.replace(tzinfo=ZoneInfo("UTC"))
-            if datetime.now(ZoneInfo("UTC")) - latest_task_activity < grace_period:
+            if now - latest_task_activity < grace_period:
+                session.rollback()
                 continue
 
+            # An IN_PROGRESS run can only have a FinalEvaluation from legacy non-atomic
+            # finalization or a retry that retained an older score. It is not safe to publish.
             if benchmark_row.final_evaluation is not None:
+                final_evaluation = benchmark_row.final_evaluation
+                benchmark_row.final_evaluation = None
+                session.delete(final_evaluation)
+
+            if TaskStatus.STOPPED in task_statuses and TaskStatus.FINISHED not in task_statuses:
                 set_benchmark_final_status(benchmark_row, session, org)
             else:
                 catch_errors_during_cleanup(benchmark_row.id, session, org)
             reconciled += 1
         except Exception:
             session.rollback()
-            logger.exception("benchmark reconciliation failed for benchmark %s", benchmark_row.id)
+            logger.exception("benchmark reconciliation failed for benchmark %s", benchmark_id)
     return reconciled
 
 
@@ -360,11 +397,37 @@ async def process_benchmark(
             if has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
+            finalization_benchmark_status = benchmark_row.status
             evaluation_results = fetch_final_score_inputs(session, benchmark_row, org)
+            finalization_task_starts = dict(
+                session.exec(
+                    select(Task.id, Task.started_at).where(Task.benchmark == benchmark_id).where(Task.org_id == org.id)
+                ).all()
+            )
 
         if not any(result is not None for result in evaluation_results.values()):
             with Session(bind=engine) as session:
-                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                benchmark_row = session.exec(
+                    select(Benchmark)
+                    .where(Benchmark.id == benchmark_id)
+                    .where(Benchmark.org_id == org.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                ).one()
+                current_task_starts = dict(
+                    session.exec(
+                        select(Task.id, Task.started_at)
+                        .where(Task.benchmark == benchmark_id)
+                        .where(Task.org_id == org.id)
+                    ).all()
+                )
+                if (
+                    benchmark_row.status != finalization_benchmark_status
+                    or current_task_starts != finalization_task_starts
+                    or has_runnable_tasks(session, benchmark_row, org)
+                ):
+                    finalization_deferred = True
+                    return
                 if has_stopped_tasks(session, benchmark_row, org):
                     set_benchmark_final_status(benchmark_row, session, org)
                     return
@@ -375,13 +438,6 @@ async def process_benchmark(
             evaluation_results=evaluation_results, dataset=start_benchmark_request.dataset
         )
 
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
-            if has_runnable_tasks(session, benchmark_row, org):
-                finalization_deferred = True
-                return
-
         # Create the final evaluation row and add it to the database
         final_evaluation_row = FinalEvaluation(
             org_id=org.id,
@@ -391,14 +447,32 @@ async def process_benchmark(
         )
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            benchmark_row = session.exec(
+                select(Benchmark)
+                .where(Benchmark.id == benchmark_id)
+                .where(Benchmark.org_id == org.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            ).one()
+            if benchmark_row.status != finalization_benchmark_status or has_runnable_tasks(session, benchmark_row, org):
+                finalization_deferred = True
+                return
+            current_task_starts = dict(
+                session.exec(
+                    select(Task.id, Task.started_at).where(Task.benchmark == benchmark_id).where(Task.org_id == org.id)
+                ).all()
+            )
+            if current_task_starts != finalization_task_starts:
+                finalization_deferred = True
+                return
+
             # Delete existing final evaluation if re-running
             if benchmark_row.final_evaluation:
                 session.delete(benchmark_row.final_evaluation)
                 session.flush()
 
             session.add(final_evaluation_row)
-            session.commit()
+            session.flush()
 
             set_benchmark_final_status(benchmark_row, session, org)
 
@@ -493,7 +567,7 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
         session.add(ErrorResult(org_id=org.id, task=task.id, error_message="Undetected exit of task"))
         task.status = TaskStatus.ERROR
         session.add(task)
-    session.commit()
+    session.flush()
 
     # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
     # helper uses try/finally so this only fires when the worker process was

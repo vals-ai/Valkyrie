@@ -51,7 +51,7 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
             .where(col(Task.benchmark) == benchmark_row.id)
             .where(col(Task.org_id) == org.id)
             .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
-            .values(status=TaskStatus.STOPPED)
+            .values(status=TaskStatus.STOPPED, finished_at=func.now())
         )
         session.commit()
 
@@ -110,7 +110,7 @@ async def force_stop_sandboxes(
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.org_id) == org.id)
         .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
-        .values(status=TaskStatus.STOPPED)
+        .values(status=TaskStatus.STOPPED, finished_at=func.now())
     )
 
     session.commit()
@@ -167,7 +167,12 @@ async def reset_to_in_progress_status(
 
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
+    benchmark_id = benchmark_row.id
     try:
+        if benchmark_row.status == BenchmarkStatus.STOPPING:
+            raise TrackerServiceError(f"Run {benchmark_row.id} cannot be retried while it is stopping")
+        expected_benchmark_status = benchmark_row.status
+
         existing_rows = session.exec(
             select(Task)
             .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
@@ -187,20 +192,49 @@ async def reset_to_in_progress_status(
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
+            session.rollback()
             return []
 
         # Verify the task ids are still valid before priming to resume
         # Raises if any task ids are invalid
         all_requested_task_ids = [task.task_id for task in existing_rows] + new_task_ids
+        expected_existing_row_ids = {task.id for task in existing_rows}
+        dataset = benchmark_row.arguments.dataset
+        session.rollback()
         verify_response = await benchmark_service.verify_task_ids(
-            task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
+            task_ids=all_requested_task_ids, slice_str=None, dataset=dataset
         )
 
-        # Can already be in progress when retrying errored tasks while the run is ongoing.
-        if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
-            benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-            session.add(benchmark_row)
-            session.commit()
+        benchmark_row = session.exec(
+            select(Benchmark)
+            .where(Benchmark.id == benchmark_id)
+            .where(Benchmark.org_id == org.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).one()
+        if benchmark_row.status != expected_benchmark_status:
+            raise TrackerServiceError(f"Run {benchmark_id} changed while retry task IDs were being verified")
+
+        locked_existing_rows = session.exec(
+            select(Task)
+            .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
+            .order_by(asc(Task.started_at))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        ).all()
+        if {task.id for task in locked_existing_rows} != expected_existing_row_ids:
+            raise TrackerServiceError(f"Retryable tasks for run {benchmark_id} changed during verification")
+        existing_rows = locked_existing_rows
+
+        # Publish the reopened benchmark and its runnable tasks atomically so
+        # reconciliation cannot observe terminal tasks from the previous run.
+        if benchmark_row.final_evaluation is not None:
+            final_evaluation = benchmark_row.final_evaluation
+            benchmark_row.final_evaluation = None
+            session.delete(final_evaluation)
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.finished_at = None
+        session.add(benchmark_row)
 
         for task in existing_rows:
             task.status = (
@@ -223,7 +257,7 @@ async def reset_to_in_progress_status(
     except (TrackerServiceError, BenchmarkServiceError):
         raise
     except Exception as e:
-        raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
+        raise TrackerServiceError(f"Unexpected error resuming run {benchmark_id}: {str(e)}") from e
 
 
 def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:

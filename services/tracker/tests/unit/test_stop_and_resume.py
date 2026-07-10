@@ -22,6 +22,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    FinalEvaluation,
     Org,
     RetryMode,
     Task,
@@ -136,13 +137,12 @@ class TestStopAndResume:
                 select(Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.FINISHED)
             ).all()
         )
-        stopped_count = len(
-            database_session.exec(
-                select(Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.STOPPED)
-            ).all()
-        )
+        stopped_tasks = database_session.exec(
+            select(Task).where(Task.benchmark == benchmark_row.id).where(Task.status == TaskStatus.STOPPED)
+        ).all()
         assert finished_count == 2
-        assert stopped_count == 3
+        assert len(stopped_tasks) == 3
+        assert all(task.finished_at is not None for task in stopped_tasks)
 
         # Set benchmark to stopped (simulating first run completion of all tasks)
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -198,6 +198,7 @@ class TestStopAndResume:
     ):
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.finished_at = datetime.now(UTC)
         task_row = Task(
             org_id=TEST_ORG_ID,
             task_id="task_0",
@@ -207,6 +208,7 @@ class TestStopAndResume:
         )
         database_session.add(benchmark_row)
         database_session.add(task_row)
+        database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=0.5))
         database_session.commit()
 
         async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
@@ -225,7 +227,16 @@ class TestStopAndResume:
         )
 
         database_session.refresh(task_row)
+        database_session.refresh(benchmark_row)
         assert verified_task_ids == [task_row.task_id]
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.finished_at is None
+        assert (
+            database_session.exec(
+                select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
+            ).one_or_none()
+            is None
+        )
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
 
@@ -981,6 +992,89 @@ class TestStopAndResume:
         assert final_score_inputs
         assert set(final_score_inputs[-1]) == {"task_retry", "task_original"}
         assert benchmark_row.final_evaluation is not None
+
+    async def test_old_finalizer_cannot_publish_after_retry_cycle(
+        self,
+        contract: AgentContractRequest,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        process_benchmark_env: None,
+        harness_config: HarnessConfig,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        finished_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_finished",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        retry_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_retry",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.ERROR,
+        )
+        database_session.add(benchmark_row)
+        database_session.add_all([finished_task, retry_task])
+        database_session.flush()
+        database_session.add(
+            EvaluationResult(
+                org_id=TEST_ORG_ID,
+                task=finished_task.id,
+                instance_id="old-finalizer-result",
+                result={"score": 1.0},
+            )
+        )
+        database_session.commit()
+
+        final_score_started = asyncio.Event()
+        release_final_score = asyncio.Event()
+
+        async def delayed_final_score(*_args: Any, **_kwargs: Any) -> FinalScoreResponse:
+            final_score_started.set()
+            await release_final_score.wait()
+            return FinalScoreResponse(tasks_evaluated=[finished_task.task_id], final_score=1.0, metadata={})
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", delayed_final_score)
+        request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=1,
+            task_ids=[finished_task.task_id, retry_task.task_id],
+            harness_config=harness_config,
+        )
+        old_finalizer = asyncio.create_task(
+            process_benchmark(
+                start_benchmark_request_json=request.model_dump(),
+                benchmark_id_str=str(benchmark_row.id),
+                verified_task_ids=[],
+            )
+        )
+        await asyncio.wait_for(final_score_started.wait(), timeout=1)
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(),
+            retry=True,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=[retry_task.task_id],
+            org=self._test_org,
+        )
+        assert verified_task_ids == [retry_task.task_id]
+        database_session.refresh(retry_task)
+        retry_task.status = TaskStatus.FINISHED
+        database_session.add(retry_task)
+        database_session.commit()
+
+        release_final_score.set()
+        await asyncio.wait_for(old_finalizer, timeout=1)
+
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.final_evaluation is None
 
     async def test_task_monitor_cancels_waiting_stopped_task(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch

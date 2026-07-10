@@ -229,8 +229,8 @@ class TestTracker:
     def _stale_time(self) -> datetime:
         return datetime.now(ZoneInfo("UTC")) - timedelta(minutes=30)
 
-    async def test_reconcile_stuck_benchmark_uses_final_status_when_final_evaluation_exists(
-        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
+    async def test_reconcile_stuck_benchmark_discards_untrusted_final_evaluation(
+        self, example_benchmark_object: Benchmark, database_session: Session
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
@@ -245,32 +245,31 @@ class TestTracker:
         database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=1.0))
         database_session.commit()
 
-        called: dict[str, bool] = {"set": False, "cleanup": False}
-
-        def _fake_set_benchmark_final_status(*_args: Any, **_kwargs: Any) -> None:
-            called["set"] = True
-
-        def _fake_catch_errors_during_cleanup(*_args: Any, **_kwargs: Any) -> None:
-            called["cleanup"] = True
-
-        monkeypatch.setattr(
-            "tracker.utils.run_orchestration.set_benchmark_final_status", _fake_set_benchmark_final_status
-        )
-        monkeypatch.setattr(
-            "tracker.utils.run_orchestration.catch_errors_during_cleanup", _fake_catch_errors_during_cleanup
-        )
-
         assert reconcile_stuck_benchmarks(database_session) == 1
-        assert called == {"set": True, "cleanup": False}
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.ERROR
+        assert benchmark_row.final_evaluation is None
 
-    async def test_reconcile_stuck_benchmark_uses_cleanup_when_final_evaluation_is_missing(
-        self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("task_status", "expected_calls"),
+        [
+            (TaskStatus.ERROR, {"set": False, "cleanup": True}),
+            (TaskStatus.STOPPED, {"set": True, "cleanup": False}),
+        ],
+    )
+    async def test_reconcile_stuck_benchmark_without_final_evaluation(
+        self,
+        task_status: TaskStatus,
+        expected_calls: dict[str, bool],
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         database_session.add(benchmark_row)
         stale_at = self._stale_time()
-        task_row = Task(org_id=TEST_ORG_ID, task_id="task_1", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        task_row = Task(org_id=TEST_ORG_ID, task_id="task_1", benchmark=benchmark_row.id, status=task_status)
         database_session.add(task_row)
         database_session.flush()
         database_session.exec(
@@ -294,7 +293,7 @@ class TestTracker:
         )
 
         assert reconcile_stuck_benchmarks(database_session) == 1
-        assert called == {"set": False, "cleanup": True}
+        assert called == expected_calls
 
     async def test_reconcile_stuck_benchmark_skips_recent_terminal_tasks(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
@@ -318,6 +317,37 @@ class TestTracker:
 
         assert reconcile_stuck_benchmarks(database_session) == 0
 
+    async def test_reconcile_stamps_legacy_stopped_task_before_grace_period(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_1",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.STOPPED,
+            started_at=self._stale_time(),
+        )
+        database_session.add(benchmark_row)
+        database_session.add(task_row)
+        database_session.commit()
+        monkeypatch.setattr(
+            "tracker.utils.run_orchestration.set_benchmark_final_status",
+            Mock(side_effect=AssertionError("freshly observed stop must wait")),
+        )
+
+        assert reconcile_stuck_benchmarks(database_session) == 0
+
+        database_session.refresh(task_row)
+        assert task_row.finished_at is not None
+        assert datetime.now(ZoneInfo("UTC")) - task_row.finished_at.replace(tzinfo=ZoneInfo("UTC")) < timedelta(
+            minutes=1
+        )
+
     async def test_reconcile_stuck_benchmarks_continues_after_one_failure(
         self, database_session: Session, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -339,27 +369,21 @@ class TestTracker:
         database_session.exec(
             update(Task).where(Task.id == task_two.id).values(started_at=stale_at, finished_at=stale_at)
         )
-        database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_one.id, final_score=1.0))
         database_session.commit()
 
         called: list[Any] = []
 
-        def _fake_set_benchmark_final_status(benchmark_row: Benchmark, *_args: Any, **_kwargs: Any) -> None:
-            called.append(str(benchmark_row.id))
-            raise RuntimeError("boom")
-
-        def _fake_catch_errors_during_cleanup(benchmark_id: str, *_args: Any, **_kwargs: Any) -> None:
+        def _fake_catch_errors_during_cleanup(benchmark_id: Any, *_args: Any, **_kwargs: Any) -> None:
             called.append(benchmark_id)
+            if benchmark_id == benchmark_one.id:
+                raise RuntimeError("boom")
 
-        monkeypatch.setattr(
-            "tracker.utils.run_orchestration.set_benchmark_final_status", _fake_set_benchmark_final_status
-        )
         monkeypatch.setattr(
             "tracker.utils.run_orchestration.catch_errors_during_cleanup", _fake_catch_errors_during_cleanup
         )
 
         assert reconcile_stuck_benchmarks(database_session) == 1
-        assert called == [str(benchmark_one.id), benchmark_two.id]
+        assert called == [benchmark_one.id, benchmark_two.id]
 
     async def test_benchmark_reconciliation_loop_uses_to_thread(self, monkeypatch: pytest.MonkeyPatch) -> None:
         called: list[str] = []
