@@ -4,21 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
+from benchmark_service.sandbox.daytona import DaytonaProviderConfig
 from daytona import (
     AsyncDaytona,
     AsyncSandbox,
-    DaytonaConflictError,
-    DaytonaConnectionError,
     DaytonaConfig,
-    DaytonaError,
-    DaytonaNotFoundError,
-    DaytonaRateLimitError,
-    DaytonaTimeoutError,
     ListSandboxesQuery,
 )
 
@@ -36,15 +31,18 @@ logger = get_logger(__name__)
 
 _MAX_SANDBOX_AGE = timedelta(hours=48)
 _PRODUCTION_ENVIRONMENT = "production"
-_DELETE_RETRY_DELAYS_SECONDS = (1.0, 4.0)
 
 
-class DaytonaCleanupClient(Protocol):
-    """Subset of ``AsyncDaytona`` used by the cleanup engine."""
+class DaytonaListClient(Protocol):
+    """Subset of ``AsyncDaytona`` needed for metadata-aware cleanup listing."""
 
     def list(self, query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]: ...
 
-    async def delete(self, sandbox: AsyncSandbox, timeout: float = 60) -> None: ...
+
+class SandboxForceDeleteProvider(Protocol):
+    """Core sandbox-provider deletion operation used by the cleanup engine."""
+
+    async def force_delete_sandbox(self, instance_id: str) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -98,63 +96,14 @@ def _parse_created_at(value: str | None) -> datetime | None:
     return created_at.astimezone(UTC)
 
 
-def _is_retryable_delete_error(exc: BaseException) -> bool:
-    if isinstance(
-        exc,
-        (DaytonaConflictError, DaytonaConnectionError, DaytonaRateLimitError, DaytonaTimeoutError),
-    ):
-        return True
-    return isinstance(exc, DaytonaError) and exc.status_code is not None and exc.status_code >= 500
-
-
-def _is_not_found_error(exc: DaytonaError) -> bool:
-    return (
-        isinstance(exc, DaytonaNotFoundError)
-        or exc.status_code == 404
-        or (exc.error_code or "").strip().casefold() == "not_found"
-    )
-
-
-async def _delete_with_retry(
-    client: DaytonaCleanupClient,
-    sandbox: AsyncSandbox,
-    *,
-    sleep: Callable[[float], Awaitable[None]],
-) -> bool:
-    """Delete a sandbox, returning false when another actor already removed it."""
-    for attempt in range(len(_DELETE_RETRY_DELAYS_SECONDS) + 1):
-        try:
-            await client.delete(sandbox)
-            return True
-        except DaytonaError as exc:
-            if _is_not_found_error(exc):
-                return False
-            if not _is_retryable_delete_error(exc) or attempt == len(_DELETE_RETRY_DELAYS_SECONDS):
-                raise
-            delay = _DELETE_RETRY_DELAYS_SECONDS[attempt]
-            logger.warning(
-                "Retrying Daytona sandbox deletion",
-                extra={
-                    "sandbox_id": sandbox.id,
-                    "sandbox_name": sandbox.name,
-                    "attempt": attempt + 1,
-                    "delay_seconds": delay,
-                    "error_type": type(exc).__name__,
-                },
-            )
-            await sleep(delay)
-
-    raise AssertionError("delete retry loop exhausted without returning or raising")
-
-
 async def cleanup_old_sandboxes(
-    client: DaytonaCleanupClient,
+    client: DaytonaListClient,
+    delete_provider: SandboxForceDeleteProvider,
     *,
     now: datetime,
     environment: str,
     target: str,
     dry_run: bool = True,
-    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
 ) -> CleanupReport:
     """Delete owned sandboxes strictly older than 48 hours and return an audit summary."""
     if now.tzinfo is None:
@@ -216,7 +165,7 @@ async def cleanup_old_sandboxes(
             continue
 
         try:
-            was_deleted = await _delete_with_retry(client, sandbox, sleep=sleep)
+            was_deleted = await delete_provider.force_delete_sandbox(sandbox.id)
         except Exception as exc:
             failures.append(
                 CleanupFailure(
@@ -262,18 +211,26 @@ async def cleanup_old_sandboxes(
 
 async def run_cleanup(*, now: datetime | None = None) -> CleanupReport:
     """Build the production Daytona client and perform one cleanup sweep."""
-    target = os.environ["DAYTONA_TARGET"]
-    config = DaytonaConfig(
-        api_key=os.environ["DAYTONA_API_KEY"],
-        api_url=os.environ["DAYTONA_API_URL"],
-        target=target,
+    provider_config = DaytonaProviderConfig(
+        DAYTONA_API_KEY=os.environ["DAYTONA_API_KEY"],
+        DAYTONA_API_URL=os.environ["DAYTONA_API_URL"],
+        DAYTONA_TARGET=os.environ["DAYTONA_TARGET"],
     )
-    async with AsyncDaytona(config=config) as client:
+    daytona_config = DaytonaConfig(
+        api_key=provider_config.DAYTONA_API_KEY,
+        api_url=provider_config.DAYTONA_API_URL,
+        target=provider_config.DAYTONA_TARGET,
+    )
+    async with (
+        AsyncDaytona(config=daytona_config) as client,
+        provider_config.create_provider() as delete_provider,
+    ):
         return await cleanup_old_sandboxes(
             client,
+            delete_provider,
             now=now or datetime.now(UTC),
             environment=_PRODUCTION_ENVIRONMENT,
-            target=target,
+            target=provider_config.DAYTONA_TARGET,
             dry_run=os.environ["DAYTONA_CLEANUP_DRY_RUN"] != "false",
         )
 

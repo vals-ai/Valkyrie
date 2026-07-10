@@ -95,6 +95,7 @@ async def test_cleanup_deletes_eligible_sandbox_and_preserves_exemption(
         )
         report = await cleanup_old_sandboxes(
             daytona,
+            sandbox_provider,
             now=datetime.now(UTC) + timedelta(hours=49),
             environment=test_environment,
             target=provider_config.DAYTONA_TARGET,
