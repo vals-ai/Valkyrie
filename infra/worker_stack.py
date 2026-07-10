@@ -44,17 +44,6 @@ _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
 )
 
 
-def _environment_flag(name: str, *, default: bool) -> bool:
-    value = os.environ.get(name, "").strip().casefold()
-    if not value:
-        return default
-    if value == "true":
-        return True
-    if value == "false":
-        return False
-    raise RuntimeError(f"{name} must be 'true' or 'false'")
-
-
 class WorkerStack(Stack):
     """Worker stack: Taskiq worker as a Fargate service.
 
@@ -218,11 +207,9 @@ class WorkerStack(Stack):
         image: aws_ecs.ContainerImage,
         log_retention: aws_logs.RetentionDays,
     ) -> None:
-        cleanup_enabled = _environment_flag("DAYTONA_CLEANUP_ENABLED", default=False)
-        cleanup_dry_run = _environment_flag("DAYTONA_CLEANUP_DRY_RUN", default=True)
-        cleanup_secret_name = (
-            os.environ.get("DAYTONA_CLEANUP_SECRET_NAME", "").strip() or DEFAULT_DAYTONA_CLEANUP_SECRET_NAME
-        )
+        cleanup_enabled = os.environ.get("DAYTONA_CLEANUP_ENABLED") == "true"
+        cleanup_dry_run = os.environ.get("DAYTONA_CLEANUP_DRY_RUN") != "false"
+        cleanup_secret_name = os.environ.get("DAYTONA_CLEANUP_SECRET_NAME") or DEFAULT_DAYTONA_CLEANUP_SECRET_NAME
 
         cleanup_log_group = aws_logs.LogGroup(
             self,
@@ -251,8 +238,6 @@ class WorkerStack(Stack):
                 log_group=cleanup_log_group,
             ),
             environment={
-                "ENVIRONMENT": "production",
-                "DAYTONA_CLEANUP_MAX_AGE_HOURS": "48",
                 "DAYTONA_CLEANUP_DRY_RUN": str(cleanup_dry_run).lower(),
                 "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
             },

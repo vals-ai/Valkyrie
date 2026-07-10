@@ -524,8 +524,6 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertEqual(
             environment,
             {
-                "ENVIRONMENT": "production",
-                "DAYTONA_CLEANUP_MAX_AGE_HOURS": "48",
                 "DAYTONA_CLEANUP_DRY_RUN": "true",
                 "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
             },
@@ -557,10 +555,18 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "false")
         self.assertIn("test/daytona-cleanup", str(container["Secrets"]))
 
-    def test_invalid_daytona_cleanup_rollout_flag_fails_synthesis(self) -> None:
-        with mock.patch.dict(os.environ, {"DAYTONA_CLEANUP_ENABLED": "sometimes"}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "DAYTONA_CLEANUP_ENABLED must be 'true' or 'false'"):
-                _service_templates(PROD)
+    def test_unrecognized_daytona_cleanup_rollout_flags_fail_closed(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"DAYTONA_CLEANUP_ENABLED": "sometimes", "DAYTONA_CLEANUP_DRY_RUN": "sometimes"},
+            clear=True,
+        ):
+            _, worker_template = _service_templates(PROD)
+
+        worker_template.has_resource_properties("AWS::Scheduler::Schedule", {"State": "DISABLED"})
+        container = _cleanup_container(worker_template)
+        environment = {entry["Name"]: entry["Value"] for entry in container["Environment"]}
+        self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "true")
 
 
 if __name__ == "__main__":
