@@ -109,6 +109,21 @@ def test_config_rejects_missing_required_values_and_invalid_provider(config_valu
         config.resolve_sandbox_provider("unknown")
 
 
+def test_config_rejects_unknown_keys_and_accepts_legacy_daytona(config_values, sdk_config) -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        sdk_config(S3_BUKET="typo")
+
+    mixed_config = sdk_config(DAYTONA_SECRET_NAME="LegacyDaytonaSecret")
+    assert mixed_config.resolve_sandbox_provider("daytona") == ("daytona", "DaytonaSecret")
+
+    legacy_values = config_values()
+    legacy_values.pop("sandbox_providers")
+    legacy_values.pop("default_sandbox_provider")
+    legacy_values["DAYTONA_SECRET_NAME"] = "LegacyDaytonaSecret"
+    legacy_config = ValkyrieConfig.model_validate(legacy_values)
+    assert legacy_config.resolve_sandbox_provider() == ("daytona", "LegacyDaytonaSecret")
+
+
 def test_from_config_wraps_file_and_yaml_errors(tmp_path: Path) -> None:
     with pytest.raises(ValkyrieConfigError, match="Could not read"):
         ValkyrieClient.from_config(tmp_path / "missing.yaml")

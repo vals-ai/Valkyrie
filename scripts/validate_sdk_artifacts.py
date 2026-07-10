@@ -7,21 +7,21 @@ import tarfile
 import tomllib
 import zipfile
 from collections.abc import Sequence
+from dataclasses import dataclass
 from email.parser import Parser
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 from packaging.requirements import Requirement
 from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
+from packaging.version import InvalidVersion, Version
 
 EXPECTED_NAME = "valkyrie-sdk"
+EXPECTED_LICENSE = "AGPL-3.0-only"
+EXPECTED_LICENSE_FILES = frozenset({"LICENSE"})
+FORBIDDEN_REQUIREMENTS = frozenset({"tracker", "valkyrie"})
 PACKAGE_PYPROJECT = Path(__file__).parents[1] / "packages" / "valkyrie-sdk" / "pyproject.toml"
-EXPECTED_PYTHON = SpecifierSet(">=3.12")
-EXPECTED_REQUIREMENTS = {
-    "httpx": SpecifierSet(">=0.28.1,<1"),
-    "pydantic": SpecifierSet(">=2,<3"),
-    "pyyaml": SpecifierSet(">=6.0.3,<7"),
-}
 REQUIRED_WHEEL_MEMBERS = {
     "valkyrie/sdk/__init__.py",
     "valkyrie/sdk/client.py",
@@ -43,32 +43,74 @@ class ArtifactError(RuntimeError):
     """An SDK distribution contains unexpected or incomplete content."""
 
 
-def _expected_version() -> str:
+@dataclass(frozen=True)
+class ExpectedMetadata:
+    """Package metadata read from the SDK's pyproject."""
+
+    version: Version
+    python: SpecifierSet
+    requirements: frozenset[Requirement]
+
+
+def _expected_metadata() -> ExpectedMetadata:
     with PACKAGE_PYPROJECT.open("rb") as package_file:
         project = tomllib.load(package_file)["project"]
-    version = project.get("version")
-    if not isinstance(version, str):
-        raise ArtifactError("SDK pyproject must define a string project.version")
-    return version
+
+    string_fields = ("version", "requires-python")
+    values = {field: project.get(field) for field in string_fields}
+    invalid_fields = [field for field, value in values.items() if not isinstance(value, str)]
+    if invalid_fields:
+        raise ArtifactError(f"SDK pyproject must define string project fields: {', '.join(invalid_fields)}")
+
+    dependencies = project.get("dependencies")
+    if not isinstance(dependencies, list) or not all(isinstance(value, str) for value in dependencies):
+        raise ArtifactError("SDK pyproject must define project.dependencies as a list of strings")
+    if project.get("optional-dependencies"):
+        raise ArtifactError("SDK artifact validation does not support project.optional-dependencies")
+
+    requirements = frozenset(Requirement(value) for value in cast(list[str], dependencies))
+    forbidden = sorted(
+        canonicalize_name(requirement.name)
+        for requirement in requirements
+        if canonicalize_name(requirement.name) in FORBIDDEN_REQUIREMENTS
+    )
+    if forbidden:
+        raise ArtifactError(f"SDK pyproject declares forbidden runtime dependencies: {forbidden}")
+
+    try:
+        version = Version(str(values["version"]))
+    except InvalidVersion as exc:
+        raise ArtifactError(f"SDK pyproject has an invalid project.version: {values['version']!r}") from exc
+
+    return ExpectedMetadata(
+        version=version,
+        python=SpecifierSet(str(values["requires-python"])),
+        requirements=requirements,
+    )
 
 
-def _validate_metadata(raw_metadata: str) -> None:
+def _validate_metadata(raw_metadata: str) -> ExpectedMetadata:
+    expected = _expected_metadata()
     metadata = Parser().parsestr(raw_metadata)
     if canonicalize_name(metadata["Name"] or "") != canonicalize_name(EXPECTED_NAME):
         raise ArtifactError(f"unexpected project name: {metadata['Name']!r}")
-    if metadata["Version"] != _expected_version():
+    try:
+        actual_version = Version(metadata["Version"] or "")
+    except InvalidVersion as exc:
+        raise ArtifactError(f"invalid project version: {metadata['Version']!r}") from exc
+    if actual_version != expected.version:
         raise ArtifactError(f"unexpected project version: {metadata['Version']!r}")
-    if metadata["License-Expression"] != "AGPL-3.0-only":
-        raise ArtifactError("missing AGPL-3.0-only license expression")
-    if "LICENSE" not in metadata.get_all("License-File", []):
-        raise ArtifactError("missing LICENSE metadata")
-    if SpecifierSet(metadata["Requires-Python"] or "") != EXPECTED_PYTHON:
+    if metadata["License-Expression"] != EXPECTED_LICENSE:
+        raise ArtifactError(f"unexpected license expression: {metadata['License-Expression']!r}")
+    if frozenset(metadata.get_all("License-File", [])) != EXPECTED_LICENSE_FILES:
+        raise ArtifactError(f"unexpected license files: {metadata.get_all('License-File', [])}")
+    if SpecifierSet(metadata["Requires-Python"] or "") != expected.python:
         raise ArtifactError(f"unexpected Python requirement: {metadata['Requires-Python']!r}")
 
-    requirements = [Requirement(value) for value in metadata.get_all("Requires-Dist", [])]
-    actual = {canonicalize_name(requirement.name): requirement.specifier for requirement in requirements}
-    if actual != EXPECTED_REQUIREMENTS:
-        raise ArtifactError(f"unexpected runtime dependencies: {actual}")
+    requirements = frozenset(Requirement(value) for value in metadata.get_all("Requires-Dist", []))
+    if requirements != expected.requirements:
+        raise ArtifactError(f"unexpected runtime dependencies: {sorted(map(str, requirements))}")
+    return expected
 
 
 def validate_wheel(path: Path) -> None:
@@ -92,7 +134,11 @@ def validate_wheel(path: Path) -> None:
         if f"{dist_info}licenses/LICENSE" not in members:
             raise ArtifactError("wheel does not contain its LICENSE file")
 
-        _validate_metadata(archive.read(metadata_members[0]).decode())
+        expected = _validate_metadata(archive.read(metadata_members[0]).decode())
+        normalized_name = canonicalize_name(EXPECTED_NAME).replace("-", "_")
+        expected_dist_info = f"{normalized_name}-{expected.version}.dist-info/"
+        if dist_info != expected_dist_info:
+            raise ArtifactError(f"unexpected wheel metadata directory: {dist_info!r}")
 
 
 def validate_sdist(path: Path) -> None:

@@ -9,11 +9,22 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 from services.tracker.main import app
+from tracker.database.models import (
+    AgentContractRequest,
+    BenchmarkArguments,
+    FinalEvaluation,
+    OutputArtifact,
+)
 from tracker.types import (
+    AWSCredentials,
+    AverageTaskBreakdown,
+    BenchmarkDetails,
+    BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
+    HarnessConfig,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
@@ -21,10 +32,19 @@ from tracker.types import (
     StopBenchmarkResponse,
 )
 from valkyrie.sdk.models import (
+    AWSCredentials as SDKAWSCredentials,
+    AgentContractRequest as SDKAgentContractRequest,
+    AverageTaskBreakdown as SDKAverageTaskBreakdown,
+    BenchmarkArguments as SDKBenchmarkArguments,
+    BenchmarkDetails as SDKBenchmarkDetails,
+    BenchmarkTableRow as SDKBenchmarkTableRow,
     FetchBenchmarkResponse as SDKFetchBenchmarkResponse,
     FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
+    FinalEvaluation as SDKFinalEvaluation,
     FinalViewResponse as SDKFinalViewResponse,
+    HarnessConfig as SDKHarnessConfig,
+    OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
     StartBenchmarkRequest as SDKStartBenchmarkRequest,
@@ -51,6 +71,26 @@ RESPONSE_MODELS = {
     "/stop-benchmark/{benchmark_id}": "StopBenchmarkResponse",
     "/retry-or-resume-benchmark/{benchmark_id}": "RetryOrResumeBenchmarkResponse",
 }
+MODEL_PAIRS = (
+    (OutputArtifact, SDKOutputArtifact),
+    (AgentContractRequest, SDKAgentContractRequest),
+    (AWSCredentials, SDKAWSCredentials),
+    (HarnessConfig, SDKHarnessConfig),
+    (StartBenchmarkRequest, SDKStartBenchmarkRequest),
+    (BenchmarkDetails, SDKBenchmarkDetails),
+    (StartBenchmarkResponse, SDKStartBenchmarkResponse),
+    (FetchBenchmarkResponse, SDKFetchBenchmarkResponse),
+    (FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
+    (BenchmarkTableRow, SDKBenchmarkTableRow),
+    (FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
+    (BenchmarkArguments, SDKBenchmarkArguments),
+    (FinalEvaluation, SDKFinalEvaluation),
+    (AverageTaskBreakdown, SDKAverageTaskBreakdown),
+    (FinalViewResponse, SDKFinalViewResponse),
+    (S3UploadResultsResponse, SDKS3ResultsResponse),
+    (StopBenchmarkResponse, SDKStopBenchmarkResponse),
+    (RetryOrResumeBenchmarkResponse, SDKRetryResponse),
+)
 
 
 def load_fixture(name: str) -> dict[str, Any]:
@@ -85,6 +125,13 @@ def test_sdk_and_tracker_accept_canonical_fixture(
     assert isinstance(sdk_value, sdk_model)
     assert tracker_value.model_dump(mode="json", warnings=False) == payload
     assert sdk_value.model_dump(mode="json") == payload
+
+
+@pytest.mark.parametrize(("tracker_model", "sdk_model"), MODEL_PAIRS)
+def test_sdk_and_tracker_wire_models_have_the_same_fields(
+    tracker_model: type[BaseModel], sdk_model: type[BaseModel]
+) -> None:
+    assert tracker_model.model_fields.keys() == sdk_model.model_fields.keys()
 
 
 def test_fetch_stream_fixture_matches_tracker_and_sdk_response_models() -> None:

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 from valkyrie.sdk.errors import ValkyrieConfigError
 from valkyrie.sdk.models import AWSCredentials, HarnessConfig
@@ -16,7 +16,7 @@ ConfigT = TypeVar("ConfigT", bound="ValkyrieConfig")
 class ValkyrieConfig(BaseModel):
     """Validated SDK configuration using ``valkyrie.yaml`` field aliases."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="allow")
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     api_key: SecretStr | None = Field(default=None, repr=False)
     aws_access_key_id: SecretStr = Field(alias="AWS_ACCESS_KEY_ID", repr=False)
@@ -31,6 +31,20 @@ class ValkyrieConfig(BaseModel):
     custom_benchmark_services: dict[str, str] = Field(default_factory=dict)
     benchmark_auth: dict[str, SecretStr] = Field(default_factory=dict, repr=False)
     webhook: str | None = Field(default=None, repr=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_daytona_provider(cls, value: object) -> object:
+        """Accept the legacy CLI secret while keeping all other unknown keys strict."""
+        if not isinstance(value, dict):
+            return value
+
+        config = dict(cast(dict[object, object], value))
+        legacy_secret = config.pop("DAYTONA_SECRET_NAME", None)
+        providers = config.get("sandbox_providers")
+        if (not isinstance(providers, dict) or not providers) and isinstance(legacy_secret, str):
+            config["sandbox_providers"] = {"daytona": legacy_secret}
+        return config
 
     @field_validator(
         "aws_default_region",
