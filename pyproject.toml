@@ -68,6 +68,7 @@ packages = ["src/valkyrie"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+pythonpath = ["."]
 
 # Async test configuration
 asyncio_mode = "auto"
