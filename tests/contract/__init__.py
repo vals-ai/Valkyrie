@@ -1,0 +1,1 @@
+"""Cross-package contract tests."""
