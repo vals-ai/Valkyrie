@@ -43,6 +43,7 @@ from tracker.utils import (
     TrackedTask,
     TrackedTaskStatus,
     force_stop_sandboxes,
+    handle_early_exit,
     initiate_stop_benchmark,
     process_benchmark,
     process_task,
@@ -241,6 +242,7 @@ class TestStopAndResume:
         Test cases:
         - Force stop occurs while task retrieval is in flight.
         - The task is immediately resumed with a new attempt token.
+        - A stale early-exit write cannot stop the resumed attempt.
         - The stale worker cannot enter BUILDING or create a sandbox.
         """
         start_request = StartBenchmarkRequest(
@@ -346,6 +348,29 @@ class TestStopAndResume:
         assert selected_task.started_at == _RESUMED_ATTEMPT_AT
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
         assert sandbox_created is False
+
+        selected_task.status = TaskStatus.IN_PROGRESS
+        selected_task.started_at = _ORIGINAL_ATTEMPT_AT
+        benchmark_row.status = BenchmarkStatus.STOPPING
+        database_session.add_all([selected_task, benchmark_row])
+        database_session.commit()
+        with Session(bind=database_session.get_bind()) as stale_session:
+            stale_task = stale_session.get(Task, selected_task.id)
+            assert stale_task is not None
+            benchmark_row.status = BenchmarkStatus.STOPPED
+            database_session.add(benchmark_row)
+            database_session.commit()
+            late_resume_response = client.post(
+                f"/retry-or-resume-benchmark/{benchmark_row.id}",
+                json={"task_ids": [selected_task.task_id]},
+            )
+            handle_early_exit(stale_task, stale_session)
+
+        assert late_resume_response.status_code == 200, late_resume_response.text
+
+        database_session.refresh(selected_task)
+        assert selected_task.status == TaskStatus.PENDING
+        assert selected_task.started_at == _RESUMED_ATTEMPT_AT
 
     async def test_stop_and_resume(
         self,

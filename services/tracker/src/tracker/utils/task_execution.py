@@ -208,8 +208,13 @@ class TaskMonitor:
             await asyncio.sleep(self._TRACK_INTERVAL)
 
 
-def handle_early_exit(task_row: Task, task_session: Session) -> None:
-    _commit_task_status(task_row, task_session, TaskStatus.STOPPED)
+def handle_early_exit(task_row: Task, task_session: Session) -> bool:
+    return _commit_task_status(
+        task_row,
+        task_session,
+        TaskStatus.STOPPED,
+        expected_started_at=task_row.started_at,
+    )
 
 
 def buffer_logs(
@@ -273,22 +278,13 @@ def _commit_task_status(
         span_attributes["has_error_message"] = True
 
     with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
-        if to_status == TaskStatus.STOPPED:
-            task.status = to_status
-            session.add(task)
-            session.commit()
-            return True
-
         values: dict[str, TaskStatus | datetime] = {"status": to_status}
         if to_status in [TaskStatus.FINISHED, TaskStatus.ERROR]:
             values["finished_at"] = datetime.now(ZoneInfo("UTC"))
 
-        task_update = (
-            update(Task)
-            .where(col(Task.id) == task.id)
-            .where(col(Task.org_id) == task.org_id)
-            .where(col(Task.status) != TaskStatus.STOPPED)
-        )
+        task_update = update(Task).where(col(Task.id) == task.id).where(col(Task.org_id) == task.org_id)
+        if to_status != TaskStatus.STOPPED:
+            task_update = task_update.where(col(Task.status) != TaskStatus.STOPPED)
         if expected_started_at is not None:
             task_update = task_update.where(col(Task.started_at) == expected_started_at)
 
