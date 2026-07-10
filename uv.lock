@@ -2289,12 +2289,15 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "basedpyright" },
+    { name = "check-wheel-contents" },
     { name = "docstr-coverage" },
+    { name = "packaging" },
     { name = "pyinstaller" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "twine" },
 ]
 
 [package.metadata]
@@ -2311,12 +2314,15 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright" },
+    { name = "check-wheel-contents", specifier = ">=0.6,<1" },
     { name = "docstr-coverage", specifier = ">=2.3.2" },
+    { name = "packaging", specifier = ">=24,<26" },
     { name = "pyinstaller" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff" },
+    { name = "twine", specifier = ">=6.2,<7" },
 ]
 
 [[package]]

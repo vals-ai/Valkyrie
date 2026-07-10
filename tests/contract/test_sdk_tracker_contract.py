@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
+from services.tracker.main import app
 from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
@@ -64,3 +65,135 @@ def test_sdk_and_tracker_accept_canonical_fixture(
 
     assert isinstance(tracker_value, tracker_model)
     assert isinstance(sdk_value, sdk_model)
+    assert tracker_value.model_dump(mode="json", warnings=False) == payload
+    assert sdk_value.model_dump(mode="json") == payload
+
+
+def test_fetch_stream_fixture_matches_tracker_and_sdk_response_models() -> None:
+    event = load_fixture("fetch.json")["sse"]
+
+    assert event["event"] == ""
+    tracker_value = FetchBenchmarkResponse.model_validate(event["data"])
+    sdk_value = SDKFetchBenchmarkResponse.model_validate(event["data"])
+    assert tracker_value.model_dump(mode="json") == event["data"]
+    assert sdk_value.model_dump(mode="json") == event["data"]
+
+
+def test_tracker_routes_match_the_sdk_http_contract() -> None:
+    schema = app.openapi()
+    routes: dict[tuple[str, str], set[tuple[str, str]]] = {
+        ("/start-benchmark", "post"): set(),
+        ("/fetch-benchmark", "get"): {("benchmark_id", "query"), ("connect", "query")},
+        ("/fetch-benchmarks", "get"): {
+            ("agent_name", "query"),
+            ("benchmark_name", "query"),
+            ("model", "query"),
+            ("dataset", "query"),
+            ("label", "query"),
+            ("status", "query"),
+            ("started_by", "query"),
+            ("started_after", "query"),
+            ("started_before", "query"),
+            ("order_by", "query"),
+            ("cursor", "query"),
+            ("limit", "query"),
+            ("offset", "query"),
+        },
+        ("/retrieve-results", "get"): {("benchmark_id", "query"), ("s3", "query"), ("task_ids", "query")},
+        ("/stop-benchmark/{benchmark_id}", "post"): {("benchmark_id", "path"), ("force", "query")},
+        ("/retry-or-resume-benchmark/{benchmark_id}", "post"): {
+            ("benchmark_id", "path"),
+            ("retry", "query"),
+            ("retry_mode", "query"),
+            ("concurrency", "query"),
+        },
+    }
+
+    for (path, method), expected_parameters in routes.items():
+        assert set(schema["paths"][path]) == {method}
+        operation = schema["paths"][path][method]
+        actual_parameters = {(parameter["name"], parameter["in"]) for parameter in operation.get("parameters", [])}
+        assert actual_parameters == expected_parameters
+
+    start = schema["paths"]["/start-benchmark"]["post"]
+    assert start["requestBody"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/StartBenchmarkRequest"
+    }
+    retry = schema["paths"]["/retry-or-resume-benchmark/{benchmark_id}"]["post"]
+    retry_schema_ref = retry["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    retry_schema = schema["components"]["schemas"][retry_schema_ref.rsplit("/", 1)[-1]]
+    retry_fixture = load_fixture("retry_resume.json")
+    assert set(retry_schema["properties"]) == set(retry_fixture["body"])
+    assert {name: value["default"] for name, value in retry_schema["properties"].items()} == {
+        "task_ids": [],
+        "service_headers": {},
+        "secrets": {},
+    }
+    assert retry_schema["properties"]["task_ids"]["type"] == "array"
+    assert retry_schema["properties"]["service_headers"]["type"] == "object"
+    assert retry_schema["properties"]["secrets"]["type"] == "object"
+
+    retry_parameters = {parameter["name"]: parameter for parameter in retry["parameters"]}
+    assert retry_parameters["retry"]["schema"]["default"] == retry_fixture["query"]["retry"]
+    assert retry_parameters["retry_mode"]["schema"]["default"] == retry_fixture["query"]["retry_mode"]
+    assert {option.get("type") for option in retry_parameters["concurrency"]["schema"]["anyOf"]} == {
+        "integer",
+        "null",
+    }
+    assert isinstance(retry_fixture["query"]["concurrency"], int)
+
+    fetch = schema["paths"]["/fetch-benchmark"]["get"]
+    fetch_parameters = {parameter["name"]: parameter for parameter in fetch["parameters"]}
+    assert fetch_parameters["connect"]["required"] is False
+    assert fetch_parameters["connect"]["schema"] == {
+        "type": "boolean",
+        "default": False,
+        "title": "Connect",
+    }
+    assert "default" not in retry_parameters["concurrency"]["schema"]
+
+    for path, method, parameter_name in (
+        ("/fetch-benchmark", "get", "benchmark_id"),
+        ("/retrieve-results", "get", "benchmark_id"),
+        ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id"),
+        ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id"),
+    ):
+        operation = schema["paths"][path][method]
+        parameter = next(item for item in operation["parameters"] if item["name"] == parameter_name)
+        assert parameter["required"] is True
+        assert parameter["schema"]["format"] == "uuid"
+
+    response_schemas = {
+        ("/start-benchmark", "post"): {"$ref": "#/components/schemas/StartBenchmarkResponse"},
+        ("/fetch-benchmark", "get"): {},
+        ("/fetch-benchmarks", "get"): {"$ref": "#/components/schemas/FetchBenchmarksResponse"},
+        ("/retrieve-results", "get"): {
+            "anyOf": [
+                {"$ref": "#/components/schemas/FinalViewResponse"},
+                {"$ref": "#/components/schemas/S3UploadResultsResponse"},
+            ],
+            "title": "Response Retrieve Results",
+        },
+        ("/stop-benchmark/{benchmark_id}", "post"): {"$ref": "#/components/schemas/StopBenchmarkResponse"},
+        ("/retry-or-resume-benchmark/{benchmark_id}", "post"): {
+            "$ref": "#/components/schemas/RetryOrResumeBenchmarkResponse"
+        },
+    }
+    for (path, method), expected in response_schemas.items():
+        response = schema["paths"][path][method]["responses"]["200"]
+        assert response["content"]["application/json"]["schema"] == expected
+
+
+def test_final_evaluation_preserves_tracker_runtime_string_ids() -> None:
+    payload = load_fixture("results.json")["inline"]
+    tracker_evaluation = FinalViewResponse.model_validate(payload).final_evaluation
+    sdk_evaluation = SDKFinalViewResponse.model_validate(payload).final_evaluation
+
+    assert tracker_evaluation is not None
+    assert sdk_evaluation is not None
+    for field in ("id", "org_id", "benchmark"):
+        tracker_value = getattr(tracker_evaluation, field)
+        sdk_value = getattr(sdk_evaluation, field)
+        assert isinstance(tracker_value, str)
+        assert type(sdk_value) is type(tracker_value)
+    assert sdk_evaluation.model_dump() == tracker_evaluation.model_dump(warnings=False)

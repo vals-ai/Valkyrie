@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import tarfile
+import tomllib
 import zipfile
 from collections.abc import Sequence
 from email.parser import Parser
@@ -14,7 +15,7 @@ from packaging.specifiers import SpecifierSet
 from packaging.utils import canonicalize_name
 
 EXPECTED_NAME = "valkyrie-sdk"
-EXPECTED_VERSION = "0.1.0"
+PACKAGE_PYPROJECT = Path(__file__).parents[1] / "packages" / "valkyrie-sdk" / "pyproject.toml"
 EXPECTED_PYTHON = SpecifierSet(">=3.12,<3.13")
 EXPECTED_REQUIREMENTS = {
     "httpx": SpecifierSet(">=0.28.1,<1"),
@@ -42,11 +43,20 @@ class ArtifactError(RuntimeError):
     """An SDK distribution contains unexpected or incomplete content."""
 
 
+def _expected_version() -> str:
+    with PACKAGE_PYPROJECT.open("rb") as package_file:
+        project = tomllib.load(package_file)["project"]
+    version = project.get("version")
+    if not isinstance(version, str):
+        raise ArtifactError("SDK pyproject must define a string project.version")
+    return version
+
+
 def _validate_metadata(raw_metadata: str) -> None:
     metadata = Parser().parsestr(raw_metadata)
     if canonicalize_name(metadata["Name"] or "") != canonicalize_name(EXPECTED_NAME):
         raise ArtifactError(f"unexpected project name: {metadata['Name']!r}")
-    if metadata["Version"] != EXPECTED_VERSION:
+    if metadata["Version"] != _expected_version():
         raise ArtifactError(f"unexpected project version: {metadata['Version']!r}")
     if metadata["License-Expression"] != "AGPL-3.0-only":
         raise ArtifactError("missing AGPL-3.0-only license expression")
@@ -99,9 +109,13 @@ def validate_sdist(path: Path) -> None:
         relative_members = {PurePosixPath(member.name).relative_to(root).as_posix() for member in files}
 
         for member in relative_members:
-            if member not in {".gitignore", "LICENSE", "README.md", "pyproject.toml", "PKG-INFO"} and not member.startswith(
-                "src/valkyrie/sdk/"
-            ):
+            if member not in {
+                ".gitignore",
+                "LICENSE",
+                "README.md",
+                "pyproject.toml",
+                "PKG-INFO",
+            } and not member.startswith("src/valkyrie/sdk/"):
                 raise ArtifactError(f"forbidden sdist member: {member}")
 
         missing = REQUIRED_SDIST_MEMBERS - relative_members

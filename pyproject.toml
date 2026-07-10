@@ -3,7 +3,7 @@ name = "valkyrie"
 version = "0.1.0"
 description = "Valkyrie - An agentic harness that interfaces with benchmarks hosted by Vals AI"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 
 dependencies = [
   "click>=8.1.0",
@@ -21,13 +21,16 @@ valk = "valkyrie.cli.entry:main"
 
 [dependency-groups]
 dev = [
+  "check-wheel-contents>=0.6,<1",
   "pytest",
   "pytest-asyncio",
   "ruff",
   "basedpyright",
+  "packaging>=24,<26",
   "pyinstaller",
   "pytest-cov>=7.1.0",
   "docstr-coverage>=2.3.2",
+  "twine>=6.2,<7",
 ]
 
 [tool.ruff]

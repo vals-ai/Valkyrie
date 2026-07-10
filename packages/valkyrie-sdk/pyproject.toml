@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/vals-ai/Valkyrie/tree/dev/docs/sdk"
+Documentation = "https://github.com/vals-ai/Valkyrie/tree/prod/docs/sdk"
 Issues = "https://github.com/vals-ai/Valkyrie/issues"
 Repository = "https://github.com/vals-ai/Valkyrie"
 
@@ -29,7 +29,7 @@ test = [
 ]
 
 [build-system]
-requires = ["hatchling>=1.27,<2"]
+requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]

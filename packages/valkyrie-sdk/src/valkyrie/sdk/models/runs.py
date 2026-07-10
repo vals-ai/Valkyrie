@@ -191,9 +191,9 @@ class BenchmarkArguments(ResponseModel):
 class FinalEvaluation(ResponseModel):
     """Final aggregate evaluation stored for a run."""
 
-    id: UUID = Field(default_factory=uuid4)
-    org_id: UUID
-    benchmark: UUID
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    org_id: str
+    benchmark: str
     final_score: float
     properties: dict[str, Any] = Field(default_factory=dict)
 

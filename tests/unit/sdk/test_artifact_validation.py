@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import validate_sdk_artifacts
 from scripts.validate_sdk_artifacts import ArtifactError, validate_sdist, validate_wheel
 
 METADATA = """Metadata-Version: 2.4
@@ -66,6 +67,16 @@ def test_valid_artifacts_are_accepted(tmp_path: Path) -> None:
 
     validate_wheel(wheel)
     validate_sdist(sdist)
+
+
+def test_expected_version_comes_from_the_sdk_pyproject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    pyproject = tmp_path / "pyproject.toml"
+    pyproject.write_text('[project]\nname = "valkyrie-sdk"\nversion = "0.1.1"\n', encoding="utf-8")
+    monkeypatch.setattr(validate_sdk_artifacts, "PACKAGE_PYPROJECT", pyproject)
+    wheel = tmp_path / "valkyrie_sdk-0.1.1-py3-none-any.whl"
+    write_wheel(wheel, metadata=METADATA.replace("Version: 0.1.0", "Version: 0.1.1"))
+
+    validate_wheel(wheel)
 
 
 @pytest.mark.parametrize(

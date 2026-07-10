@@ -10,5 +10,5 @@ pip install valkyrie-sdk
 from valkyrie.sdk import ValkyrieClient
 ```
 
-See the [SDK guide](https://github.com/vals-ai/Valkyrie/tree/dev/docs/sdk) and
-[examples](https://github.com/vals-ai/Valkyrie/tree/dev/docs/sdk/examples).
+See the [SDK guide](https://github.com/vals-ai/Valkyrie/tree/prod/docs/sdk) and
+[examples](https://github.com/vals-ai/Valkyrie/tree/prod/docs/sdk/examples).

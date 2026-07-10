@@ -79,6 +79,63 @@ EXPECTED_PARAMETERS = {
     ),
 }
 
+EXPECTED_KEYWORD_ONLY = {
+    ValkyrieClient: {"base_url", "timeout", "transport"},
+    ValkyrieClient.from_config: {"base_url", "timeout", "transport"},
+    RunsResource.start: set(EXPECTED_PARAMETERS[RunsResource.start][3:]),
+    RunsResource.fetch: set(),
+    RunsResource.list: set(),
+    RunsResource.stream: set(),
+    RunsResource.results: {"task_ids", "upload_to_s3"},
+    RunsResource.stop: {"force"},
+    RunsResource.resume: {"concurrency", "task_ids", "secrets", "service_headers", "from_scratch"},
+    RunsResource.retry: {"concurrency", "task_ids", "secrets", "service_headers", "from_scratch"},
+}
+
+EXPECTED_DEFAULTS = {
+    ValkyrieClient: {"base_url": None, "timeout": 120, "transport": None},
+    ValkyrieClient.from_config: {
+        "path": DEFAULT_CONFIG_PATH,
+        "base_url": None,
+        "timeout": 120,
+        "transport": None,
+    },
+    RunsResource.start: {
+        "model": None,
+        "concurrency": 5,
+        "task_ids": None,
+        "slice_str": None,
+        "dataset": None,
+        "label": None,
+        "lambda_function": None,
+        "provider": None,
+        "agent_kwargs": None,
+        "secrets": None,
+        "service_headers": None,
+        "webhook_intervals": None,
+        "ignore_custom_services": False,
+    },
+    RunsResource.fetch: {},
+    RunsResource.list: {"request": None},
+    RunsResource.stream: {},
+    RunsResource.results: {"task_ids": None, "upload_to_s3": False},
+    RunsResource.stop: {"force": False},
+    RunsResource.resume: {
+        "concurrency": None,
+        "task_ids": None,
+        "secrets": None,
+        "service_headers": None,
+        "from_scratch": False,
+    },
+    RunsResource.retry: {
+        "concurrency": None,
+        "task_ids": None,
+        "secrets": None,
+        "service_headers": None,
+        "from_scratch": False,
+    },
+}
+
 
 def test_public_exports_and_constants_are_stable() -> None:
     assert sdk.__all__ == EXPECTED_ALL
@@ -94,14 +151,19 @@ def test_public_callable_parameter_order_is_stable() -> None:
 
 
 def test_public_keyword_only_defaults_are_stable() -> None:
-    start = inspect.signature(RunsResource.start).parameters
-    assert start["concurrency"].default == 5
-    assert start["ignore_custom_services"].default is False
-    assert start["model"].kind is inspect.Parameter.KEYWORD_ONLY
-    results = inspect.signature(RunsResource.results).parameters
-    assert results["upload_to_s3"].default is False
-    stop = inspect.signature(RunsResource.stop).parameters
-    assert stop["force"].default is False
+    for callable_object, expected_names in EXPECTED_PARAMETERS.items():
+        parameters = inspect.signature(callable_object).parameters
+        expected_defaults = EXPECTED_DEFAULTS[callable_object]
+        keyword_only = EXPECTED_KEYWORD_ONLY[callable_object]
+        for name in expected_names:
+            expected_kind = (
+                inspect.Parameter.KEYWORD_ONLY if name in keyword_only else inspect.Parameter.POSITIONAL_OR_KEYWORD
+            )
+            assert parameters[name].kind is expected_kind
+            if name in expected_defaults:
+                assert parameters[name].default == expected_defaults[name]
+            else:
+                assert parameters[name].default is inspect.Parameter.empty
 
 
 def test_sdk_loads_from_workspace_member() -> None:
@@ -122,3 +184,21 @@ def test_type_checkers_use_the_supported_python_version() -> None:
         with pyproject_path.open("rb") as pyproject_file:
             pyproject = tomllib.load(pyproject_file)
         assert pyproject["tool"]["basedpyright"]["pythonVersion"] == "3.12"
+
+
+def test_sdk_build_backend_is_reproducibly_pinned() -> None:
+    pyproject_path = Path(__file__).parents[3] / "packages" / "valkyrie-sdk" / "pyproject.toml"
+    with pyproject_path.open("rb") as pyproject_file:
+        pyproject = tomllib.load(pyproject_file)
+
+    assert pyproject["build-system"]["requires"] == ["hatchling==1.27.0"]
+
+
+def test_root_and_sdk_distributions_support_the_same_python_versions() -> None:
+    root = Path(__file__).parents[3]
+    with (root / "pyproject.toml").open("rb") as root_file:
+        root_project = tomllib.load(root_file)
+    with (root / "packages" / "valkyrie-sdk" / "pyproject.toml").open("rb") as sdk_file:
+        sdk_project = tomllib.load(sdk_file)
+
+    assert root_project["project"]["requires-python"] == sdk_project["project"]["requires-python"]

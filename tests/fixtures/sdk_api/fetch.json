@@ -19,7 +19,7 @@
     "final_score": null
   },
   "sse": {
-    "event": "message",
+    "event": "",
     "data": {
       "benchmark_name": "swebench",
       "benchmark_id": "11111111-1111-4111-8111-111111111111",

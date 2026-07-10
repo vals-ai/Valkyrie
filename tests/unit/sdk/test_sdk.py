@@ -7,7 +7,7 @@ Covers config validation, request construction, response parsing, streaming, and
 
 import json
 from pathlib import Path
-from typing import assert_type
+from typing import Any, assert_type
 from uuid import uuid4
 
 import httpx
@@ -28,6 +28,12 @@ from valkyrie.sdk import (
     ValkyrieStreamError,
     ValkyrieTransportError,
 )
+
+FIXTURES = Path(__file__).parents[2] / "fixtures" / "sdk_api"
+
+
+def load_sdk_fixture(name: str) -> dict[str, Any]:
+    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
 def test_config_loads_existing_yaml_shape_and_builds_headers(tmp_path: Path) -> None:
@@ -371,20 +377,52 @@ async def test_resume_without_optional_overrides_uses_empty_payload(make_client,
     assert json.loads(request.content) == {"task_ids": [], "service_headers": {}, "secrets": {}}
 
 
-async def test_stream_yields_snapshots_and_stops_on_complete(make_client, fetch_response) -> None:
+async def test_resume_request_matches_canonical_wire_fixture(make_client, sdk_config) -> None:
+    fixture = load_sdk_fixture("retry_resume.json")
     run_id = uuid4()
-    event = json.dumps(fetch_response(run_id))
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/fetch-benchmark":
+            response = load_sdk_fixture("fetch.json")["response"]
+            response["benchmark_id"] = str(run_id)
+            return httpx.Response(200, json=response)
+        return httpx.Response(200, json=fixture["response"])
+
+    client = make_client(handler, config=sdk_config(benchmark_auth={}))
+    async with client:
+        await client.runs.resume(
+            run_id,
+            concurrency=fixture["query"]["concurrency"],
+            task_ids=fixture["body"]["task_ids"],
+        )
+
+    request = requests[1]
+    assert dict(request.url.params) == {
+        "retry": str(fixture["query"]["retry"]).lower(),
+        "retry_mode": fixture["query"]["retry_mode"],
+        "concurrency": str(fixture["query"]["concurrency"]),
+    }
+    assert json.loads(request.content) == fixture["body"]
+
+
+async def test_stream_yields_snapshots_and_stops_on_complete(make_client, fetch_response) -> None:
+    event = load_sdk_fixture("fetch.json")["sse"]
+    run_id = event["data"]["benchmark_id"]
+    event_prefix = f"event: {event['event']}\n" if event["event"] else ""
+    wire_event = f"{event_prefix}data: {json.dumps(event['data'])}\n\nevent: complete\n\n"
     timeout: dict[str, float | None] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         timeout.update(request.extensions["timeout"])
-        return httpx.Response(200, text=f"data: {event}\n\nevent: complete\n\n")
+        return httpx.Response(200, text=wire_event)
 
     client = make_client(handler)
     async with client:
         snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
 
-    assert [snapshot.benchmark_id for snapshot in snapshots] == [run_id]
+    assert [str(snapshot.benchmark_id) for snapshot in snapshots] == [run_id]
     assert timeout == {"connect": 120, "read": None, "write": 120, "pool": 120}
 
 

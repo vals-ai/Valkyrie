@@ -27,7 +27,7 @@ request base. The initial release is `0.1.0`.
 From the repository root:
 
 ```bash
-uv sync --group dev
+uv sync --locked --group dev
 uv run pytest tests/unit/sdk tests/contract -q
 uv run ruff check scripts packages/valkyrie-sdk/src tests/unit/sdk tests/contract
 uv run basedpyright
@@ -35,6 +35,7 @@ uv build --package valkyrie-sdk --no-sources --out-dir dist/sdk
 uv run python scripts/validate_sdk_artifacts.py dist/sdk/*
 uv run --package valkyrie-sdk --group test twine check --strict dist/sdk/*
 uv run --package valkyrie-sdk --group test check-wheel-contents dist/sdk/*.whl
+uv run python scripts/verify_sdk_install.py --dist dist/sdk
 ```
 
 CI repeats these checks in isolated Python 3.12 environments for the wheel, the sdist, and the root
