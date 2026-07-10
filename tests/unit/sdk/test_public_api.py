@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import inspect
+import tomllib
+from pathlib import Path
 
 import valkyrie.sdk as sdk
 from valkyrie.sdk.client import DEFAULT_BASE_URL, ValkyrieClient
@@ -100,3 +102,23 @@ def test_public_keyword_only_defaults_are_stable() -> None:
     assert results["upload_to_s3"].default is False
     stop = inspect.signature(RunsResource.stop).parameters
     assert stop["force"].default is False
+
+
+def test_sdk_loads_from_workspace_member() -> None:
+    sdk_file = Path(sdk.__file__).resolve()
+    assert "packages/valkyrie-sdk/src/valkyrie/sdk" in sdk_file.as_posix()
+
+
+def test_sdk_package_has_local_vcs_ignore_boundary() -> None:
+    package_root = Path(__file__).parents[3] / "packages" / "valkyrie-sdk"
+    ignore_file = package_root / ".gitignore"
+
+    assert ignore_file.read_text(encoding="utf-8") == ".ruff_cache/\n__pycache__/\ndist/\n"
+
+
+def test_type_checkers_use_the_supported_python_version() -> None:
+    root = Path(__file__).parents[3]
+    for pyproject_path in (root / "pyproject.toml", root / "packages" / "valkyrie-sdk" / "pyproject.toml"):
+        with pyproject_path.open("rb") as pyproject_file:
+            pyproject = tomllib.load(pyproject_file)
+        assert pyproject["tool"]["basedpyright"]["pythonVersion"] == "3.12"

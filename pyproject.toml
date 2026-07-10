@@ -9,6 +9,7 @@ dependencies = [
   "click>=8.1.0",
   "httpx>=0.28.1",
   "python-dotenv",
+  "valkyrie-sdk>=0.1.0,<1",
   "tracker",
   "aioboto3>=7.0.0",
   "pyyaml>=6.0.3",
@@ -40,6 +41,7 @@ indent-style = "space"
 [tool.basedpyright]
 venvPath="."
 venv=".venv"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 
 reportExplicitAny = false
@@ -51,7 +53,7 @@ reportGeneralTypeIssues = false
 reportTypedDictNotRequiredAccess = false
 enableTypeIgnoreComments = true
 
-include = ["src"]
+include = ["src", "packages/valkyrie-sdk/src"]
 
 [build-system]
 requires = ["hatchling"]
@@ -86,5 +88,9 @@ show_missing = true
 [tool.uv]
 prerelease = "allow"
 
+[tool.uv.workspace]
+members = ["packages/valkyrie-sdk"]
+
 [tool.uv.sources]
 tracker = { path = "services/tracker", editable = true }
+valkyrie-sdk = { workspace = true }
