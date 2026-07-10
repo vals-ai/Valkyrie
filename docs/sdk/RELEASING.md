@@ -1,158 +1,65 @@
 # Releasing the Valkyrie SDK
 
-The SDK is versioned independently from the Valkyrie service and CLI. Its version is defined in
-`packages/valkyrie-sdk/pyproject.toml`; repository `v*` tags do not publish the SDK.
+`valkyrie-sdk` is versioned independently from the service and CLI. Its version lives in
+`packages/valkyrie-sdk/pyproject.toml`; repository `v*` tags do not publish it.
 
-## Choose and set the version
+## Release checklist
 
-Use semantic versioning:
+1. Bump the package and lockfile with `uv version --package valkyrie-sdk --bump patch|minor|major`.
+2. Run the local checks:
 
-- Patch for compatible fixes and package-documentation changes.
-- Minor for backward-compatible public features.
-- Major for breaking public API changes.
+   ```bash
+   uv sync --locked --group dev
+   uv run pytest tests/unit/sdk tests/contract -q
+   uv run ruff check scripts packages/valkyrie-sdk/src tests/unit/sdk tests/contract
+   uv run basedpyright
+   uv build --package valkyrie-sdk --no-sources --out-dir dist/sdk
+   uv run python scripts/validate_sdk_artifacts.py dist/sdk/*
+   uv run twine check --strict dist/sdk/*
+   uv run check-wheel-contents dist/sdk/*.whl
+   uv run python scripts/verify_sdk_install.py --dist dist/sdk
+   ```
 
-Update the workspace member and lockfile together:
+3. Run **Publish Valkyrie SDK** from `dev` with the `testpypi` target and approve the `testpypi`
+   environment after checking the source SHA, version, filenames, and hashes.
+4. Promote the commit to `prod`. A package change builds the same verified payload and waits for
+   approval in the `pypi` environment.
+5. Install the released version in a clean environment and verify both PyPI files and attestations.
 
-```bash
-uv version --package valkyrie-sdk --bump patch
-uv version --package valkyrie-sdk --bump minor
-uv version --package valkyrie-sdk --bump major
-```
+TestPyPI does not mirror dependencies. Install runtime dependencies from PyPI, then install the
+exact TestPyPI SDK version with `--no-deps`.
 
-Every change under `packages/valkyrie-sdk` must use a version greater than the version on the pull
-request base. The initial release is `0.1.0`.
+## One-time configuration
 
-## Verify locally
+Create `testpypi` and `pypi` GitHub environments with a required `@vals-ai/valkyrie` reviewer,
+self-review and administrator bypass disabled, and these branch rules:
 
-From the repository root:
+| Environment | Allowed branches |
+| --- | --- |
+| `testpypi` | `dev`, `prod` |
+| `pypi` | `prod` |
 
-```bash
-uv sync --locked --group dev
-uv run pytest tests/unit/sdk tests/contract -q
-uv run ruff check scripts packages/valkyrie-sdk/src tests/unit/sdk tests/contract
-uv run basedpyright
-uv build --package valkyrie-sdk --no-sources --out-dir dist/sdk
-uv run python scripts/validate_sdk_artifacts.py dist/sdk/*
-uv run --package valkyrie-sdk --group test twine check --strict dist/sdk/*
-uv run --package valkyrie-sdk --group test check-wheel-contents dist/sdk/*.whl
-uv run python scripts/verify_sdk_install.py --dist dist/sdk
-```
+Create `valkyrie-sdk` under the Vals AI PyPI organization, assign the release team, and configure a
+Trusted Publisher on both indexes:
 
-CI repeats these checks in isolated Python 3.12 environments for the wheel, the sdist, and the root
-Valkyrie wheel installed alongside the SDK wheel.
+| Field | Value |
+| --- | --- |
+| Owner | `vals-ai` |
+| Repository | `Valkyrie` |
+| Workflow | `publish-sdk.yml` |
+| Environment | `testpypi` or `pypi` |
 
-## One-time TestPyPI setup
+A pending publisher does not reserve the project name. Prefer creating the project directly under
+the organization. Protect `prod` from direct/force pushes and require CODEOWNERS review.
 
-Create the `testpypi` GitHub Environment with:
+## Failure policy
 
-- Deployment branches limited to `dev` and `prod`.
-- A required reviewer from `@vals-ai/valkyrie`.
-- Self-review disabled.
-- Administrator bypass disabled.
+Published versions and files are immutable. Normal releases fail if the version already exists;
+never enable global `skip-existing`.
 
-On TestPyPI, configure a Trusted Publisher for:
+For a partial upload, compare the existing filename and SHA-256 against the approved Actions
+artifact. A release owner may upload only the missing matching file. If integrity is uncertain,
+yank the incomplete release, bump the patch version, rebuild, and publish again.
 
-- Project: `valkyrie-sdk`
-- Owner: `vals-ai`
-- Repository: `Valkyrie`
-- Workflow: `publish-sdk.yml`
-- Environment: `testpypi`
-
-The project can be created directly first or through a pending publisher. A pending publisher does
-not reserve the project name.
-
-## Rehearse on TestPyPI
-
-After the release commit reaches `dev`, manually run **Publish Valkyrie SDK** from the `dev` ref with
-the `testpypi` target. Review the source commit, version, filenames, and SHA-256 values before
-approving the environment.
-
-TestPyPI does not mirror runtime dependencies. Install dependencies from PyPI, then install only the
-SDK artifact from TestPyPI:
-
-```bash
-python -m venv /tmp/valkyrie-sdk-testpypi
-/tmp/valkyrie-sdk-testpypi/bin/python -m pip install \
-  "httpx>=0.28.1,<1" "pydantic>=2,<3" "PyYAML>=6.0.3,<7"
-/tmp/valkyrie-sdk-testpypi/bin/python -m pip install \
-  --index-url https://test.pypi.org/simple \
-  --no-deps \
-  valkyrie-sdk==0.1.0
-/tmp/valkyrie-sdk-testpypi/bin/python -c \
-  "from valkyrie.sdk import ValkyrieClient; print(ValkyrieClient)"
-```
-
-Replace `0.1.0` with the version being rehearsed.
-
-## One-time PyPI setup
-
-A Vals AI PyPI organization owner or manager should create `valkyrie-sdk` directly under the
-organization, assign the SDK release team, and add this Trusted Publisher:
-
-- Project: `valkyrie-sdk`
-- Owner: `vals-ai`
-- Repository: `Valkyrie`
-- Workflow: `publish-sdk.yml`
-- Environment: `pypi`
-
-Direct organization creation reserves the name. If it is unavailable, create a pending publisher,
-perform the first upload immediately, then transfer the project to the Vals AI organization and
-verify organization ownership.
-
-Create the `pypi` GitHub Environment with:
-
-- Deployment branches limited to `prod`.
-- A required reviewer from `@vals-ai/valkyrie`.
-- Self-review disabled.
-- Administrator bypass disabled.
-
-Protect `prod` from direct and force pushes and require CODEOWNERS review for publishing workflow,
-package metadata, and release-script changes.
-
-## Publish to PyPI
-
-Promote the verified commit through the normal `dev` to `prod` process. A `prod` push that changes
-the SDK package automatically builds and verifies the artifacts, then waits for `pypi` environment
-approval. Production publication also checks `github.ref == 'refs/heads/prod'`; a manual run from
-another ref cannot publish to PyPI.
-
-Before approval, verify:
-
-- Project name and SDK version.
-- Source commit.
-- Wheel and sdist filenames.
-- SHA-256 hashes.
-- Target index is `pypi`.
-
-After upload:
-
-```bash
-python -m venv /tmp/valkyrie-sdk-pypi
-/tmp/valkyrie-sdk-pypi/bin/python -m pip install valkyrie-sdk==0.1.0
-/tmp/valkyrie-sdk-pypi/bin/python -c \
-  "from valkyrie.sdk import ValkyrieClient; print(ValkyrieClient)"
-```
-
-Verify the PyPI project belongs to the Vals AI organization and that both files and their
-attestations match the approved release summary.
-
-## Duplicate or partial uploads
-
-PyPI releases are immutable. Normal publication fails if any file already exists for the version;
-do not enable a global skip-existing option.
-
-If only one artifact uploaded:
-
-1. Compare every existing PyPI filename and SHA-256 hash with the approved GitHub Actions manifest.
-2. Upload a missing file only when every existing hash matches the approved artifact and a release
-   owner explicitly authorizes recovery.
-3. If integrity cannot be proven, yank the incomplete release, increment the patch version, rebuild,
-   and publish the new version.
-
-Never replace an uploaded file or reuse a version for different bytes.
-
-Trusted Publishing references:
-
-- [PyPI Trusted Publishers](https://docs.pypi.org/trusted-publishers/)
-- [Creating a project through OIDC](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
-- [PyPA GitHub Actions publishing guide](https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/)
+See [PyPI Trusted Publishers](https://docs.pypi.org/trusted-publishers/) and the
+[PyPA publishing guide](https://packaging.python.org/en/latest/guides/publishing-package-distribution-releases-using-github-actions-ci-cd-workflows/).

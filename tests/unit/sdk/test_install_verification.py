@@ -26,6 +26,7 @@ def test_verification_covers_both_artifacts_public_api_examples_and_namespace(tm
     assert (
         sum("test_public_api.py::test_public_exports_and_constants_are_stable" in command for command in rendered) == 2
     )
+    assert sum("test_public_api.py::test_public_signatures_are_stable" in command for command in rendered) == 2
     assert any("docs/sdk/examples/run_lifecycle.py --help" in command for command in rendered)
     assert any("docs/sdk/examples/manage_run.py --help" in command for command in rendered)
     assert any("uv build --package valkyrie" in command for command in rendered)

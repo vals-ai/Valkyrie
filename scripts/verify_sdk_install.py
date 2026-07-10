@@ -54,8 +54,7 @@ def _artifact_commands(*, artifact: Path, label: str, workspace: Path, temporary
     )
     public_tests = (
         str(sdk_tests / "test_public_api.py") + "::test_public_exports_and_constants_are_stable",
-        str(sdk_tests / "test_public_api.py") + "::test_public_callable_parameter_order_is_stable",
-        str(sdk_tests / "test_public_api.py") + "::test_public_keyword_only_defaults_are_stable",
+        str(sdk_tests / "test_public_api.py") + "::test_public_signatures_are_stable",
     )
     commands = [
         Command(("uv", "venv", str(environment), "--python", "3.12"), workspace),

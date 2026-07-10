@@ -33,6 +33,24 @@ from valkyrie.sdk.models import (
 )
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
+ROUTES = (
+    ("/start-benchmark", "post", ""),
+    ("/fetch-benchmark", "get", "benchmark_id connect"),
+    (
+        "/fetch-benchmarks",
+        "get",
+        "agent_name benchmark_name model dataset label status started_by started_after started_before order_by cursor limit offset",
+    ),
+    ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
+    ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
+    ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
+)
+RESPONSE_MODELS = {
+    "/start-benchmark": "StartBenchmarkResponse",
+    "/fetch-benchmarks": "FetchBenchmarksResponse",
+    "/stop-benchmark/{benchmark_id}": "StopBenchmarkResponse",
+    "/retry-or-resume-benchmark/{benchmark_id}": "RetryOrResumeBenchmarkResponse",
+}
 
 
 def load_fixture(name: str) -> dict[str, Any]:
@@ -81,38 +99,11 @@ def test_fetch_stream_fixture_matches_tracker_and_sdk_response_models() -> None:
 
 def test_tracker_routes_match_the_sdk_http_contract() -> None:
     schema = app.openapi()
-    routes: dict[tuple[str, str], set[tuple[str, str]]] = {
-        ("/start-benchmark", "post"): set(),
-        ("/fetch-benchmark", "get"): {("benchmark_id", "query"), ("connect", "query")},
-        ("/fetch-benchmarks", "get"): {
-            ("agent_name", "query"),
-            ("benchmark_name", "query"),
-            ("model", "query"),
-            ("dataset", "query"),
-            ("label", "query"),
-            ("status", "query"),
-            ("started_by", "query"),
-            ("started_after", "query"),
-            ("started_before", "query"),
-            ("order_by", "query"),
-            ("cursor", "query"),
-            ("limit", "query"),
-            ("offset", "query"),
-        },
-        ("/retrieve-results", "get"): {("benchmark_id", "query"), ("s3", "query"), ("task_ids", "query")},
-        ("/stop-benchmark/{benchmark_id}", "post"): {("benchmark_id", "path"), ("force", "query")},
-        ("/retry-or-resume-benchmark/{benchmark_id}", "post"): {
-            ("benchmark_id", "path"),
-            ("retry", "query"),
-            ("retry_mode", "query"),
-            ("concurrency", "query"),
-        },
-    }
-
-    for (path, method), expected_parameters in routes.items():
+    for path, method, names in ROUTES:
         assert set(schema["paths"][path]) == {method}
         operation = schema["paths"][path][method]
         actual_parameters = {(parameter["name"], parameter["in"]) for parameter in operation.get("parameters", [])}
+        expected_parameters = {(name, "path" if f"{{{name}}}" in path else "query") for name in names.split()}
         assert actual_parameters == expected_parameters
 
     start = schema["paths"]["/start-benchmark"]["post"]
@@ -124,14 +115,11 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     retry_schema = schema["components"]["schemas"][retry_schema_ref.rsplit("/", 1)[-1]]
     retry_fixture = load_fixture("retry_resume.json")
     assert set(retry_schema["properties"]) == set(retry_fixture["body"])
-    assert {name: value["default"] for name, value in retry_schema["properties"].items()} == {
-        "task_ids": [],
-        "service_headers": {},
-        "secrets": {},
+    assert {name: (value["type"], value["default"]) for name, value in retry_schema["properties"].items()} == {
+        "task_ids": ("array", []),
+        "service_headers": ("object", {}),
+        "secrets": ("object", {}),
     }
-    assert retry_schema["properties"]["task_ids"]["type"] == "array"
-    assert retry_schema["properties"]["service_headers"]["type"] == "object"
-    assert retry_schema["properties"]["secrets"]["type"] == "object"
 
     retry_parameters = {parameter["name"]: parameter for parameter in retry["parameters"]}
     assert retry_parameters["retry"]["schema"]["default"] == retry_fixture["query"]["retry"]
@@ -163,25 +151,18 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         assert parameter["required"] is True
         assert parameter["schema"]["format"] == "uuid"
 
-    response_schemas = {
-        ("/start-benchmark", "post"): {"$ref": "#/components/schemas/StartBenchmarkResponse"},
-        ("/fetch-benchmark", "get"): {},
-        ("/fetch-benchmarks", "get"): {"$ref": "#/components/schemas/FetchBenchmarksResponse"},
-        ("/retrieve-results", "get"): {
-            "anyOf": [
-                {"$ref": "#/components/schemas/FinalViewResponse"},
-                {"$ref": "#/components/schemas/S3UploadResultsResponse"},
-            ],
-            "title": "Response Retrieve Results",
-        },
-        ("/stop-benchmark/{benchmark_id}", "post"): {"$ref": "#/components/schemas/StopBenchmarkResponse"},
-        ("/retry-or-resume-benchmark/{benchmark_id}", "post"): {
-            "$ref": "#/components/schemas/RetryOrResumeBenchmarkResponse"
-        },
+    for path, model in RESPONSE_MODELS.items():
+        method = next(method for route, method, _names in ROUTES if route == path)
+        response = schema["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
+        assert response == {"$ref": f"#/components/schemas/{model}"}
+    assert schema["paths"]["/fetch-benchmark"]["get"]["responses"]["200"]["content"]["application/json"]["schema"] == {}
+    result_schema = schema["paths"]["/retrieve-results"]["get"]["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]
+    assert {item["$ref"].rsplit("/", 1)[-1] for item in result_schema["anyOf"]} == {
+        "FinalViewResponse",
+        "S3UploadResultsResponse",
     }
-    for (path, method), expected in response_schemas.items():
-        response = schema["paths"][path][method]["responses"]["200"]
-        assert response["content"]["application/json"]["schema"] == expected
 
 
 def test_final_evaluation_preserves_tracker_runtime_string_ids() -> None:

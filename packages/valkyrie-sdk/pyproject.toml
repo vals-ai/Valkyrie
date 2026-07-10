@@ -3,7 +3,7 @@ name = "valkyrie-sdk"
 version = "0.1.0"
 description = "Async Python SDK for managing Valkyrie benchmark runs"
 readme = "README.md"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = [

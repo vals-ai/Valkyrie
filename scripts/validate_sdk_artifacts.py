@@ -16,7 +16,7 @@ from packaging.utils import canonicalize_name
 
 EXPECTED_NAME = "valkyrie-sdk"
 PACKAGE_PYPROJECT = Path(__file__).parents[1] / "packages" / "valkyrie-sdk" / "pyproject.toml"
-EXPECTED_PYTHON = SpecifierSet(">=3.12,<3.13")
+EXPECTED_PYTHON = SpecifierSet(">=3.12")
 EXPECTED_REQUIREMENTS = {
     "httpx": SpecifierSet(">=0.28.1,<1"),
     "pydantic": SpecifierSet(">=2,<3"),

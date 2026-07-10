@@ -1,6 +1,6 @@
 # Python SDK
 
-Use Valkyrie's async Python SDK to manage runs without invoking the CLI. The SDK currently requires Python 3.12.x.
+Use Valkyrie's async Python SDK to manage runs without invoking the CLI. The SDK requires Python 3.12+.
 
 ## Installation
 
@@ -23,44 +23,22 @@ async with ValkyrieClient.from_config() as client:
     runs = await client.runs.list()
 ```
 
-Services can validate the same YAML-shaped mapping in memory instead of reading a local file:
-
-```python
-from valkyrie.sdk import ValkyrieClient, ValkyrieConfig
-
-config = ValkyrieConfig.model_validate(config_values)
-
-async with ValkyrieClient(config=config) as client:
-    runs = await client.runs.list()
-```
-
-Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses `TRACKER_SERVICE_URL` or the hosted tracker URL.
+Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses
+`TRACKER_SERVICE_URL` or the hosted tracker URL.
 
 The SDK sends AWS credentials in `X-Harness-*` headers. Only connect to trusted trackers and use HTTPS outside local development.
 
-## Executable examples
+## Examples
 
-The examples use the default Valkyrie config and require explicit command-line arguments before they can start or modify a run:
-
-- [`run_lifecycle.py`](examples/run_lifecycle.py) starts a run, streams updates, fetches its final state, lists visible runs, and retrieves results when the run finishes.
-- [`manage_run.py`](examples/manage_run.py) stops, resumes, or retries an existing run through explicit subcommands.
-
-After installing `valkyrie-sdk`, run them from a Valkyrie source checkout:
+- [`run_lifecycle.py`](examples/run_lifecycle.py): start, stream, and retrieve a run.
+- [`manage_run.py`](examples/manage_run.py): stop, resume, or retry a run.
 
 ```bash
 python docs/sdk/examples/run_lifecycle.py --help
 python docs/sdk/examples/manage_run.py --help
 ```
 
-## Source development
-
-Contributors can install the full uv workspace from the repository root:
-
-```bash
-uv sync --group dev
-```
-
-See [RELEASING.md](RELEASING.md) for package verification and release operations.
+See [RELEASING.md](RELEASING.md) for maintainer release operations.
 
 ## Run lifecycle
 
@@ -96,7 +74,7 @@ await client.runs.resume(run.benchmark_id, concurrency=20)
 await client.runs.retry(run.benchmark_id, task_ids=["task-1"])
 ```
 
-## Error handling
+## Errors
 
 All SDK exceptions inherit from `ValkyrieSDKError`:
 
@@ -111,10 +89,4 @@ except ValkyrieSDKError as exc:
     print(exc)
 ```
 
-| Exception | Description |
-| --- | --- |
-| `ValkyrieConfigError` | Invalid SDK configuration |
-| `ValkyrieRunError` | Invalid input for a run operation |
-| `ValkyrieAPIError` | Non-success API response |
-| `ValkyrieTransportError` | Connection or timeout failure |
-| `ValkyrieStreamError` | Invalid streaming event |
+The public error types distinguish configuration, run input, API, transport, and stream failures.
