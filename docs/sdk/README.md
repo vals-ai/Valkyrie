@@ -16,7 +16,7 @@ The source checkout lets `uv` install the bundled tracker dependency alongside t
 
 ## Quickstart
 
-The SDK reads the same config as the CLI. See [Hosted vs Self-Hosted Mode](HOSTED_MODE.md) for setup.
+The SDK reads the same config as the CLI. See [Hosted vs Self-Hosted Mode](../HOSTED_MODE.md) for setup.
 
 ```python
 from valkyrie.sdk import ValkyrieClient
@@ -39,6 +39,20 @@ async with ValkyrieClient(config=config) as client:
 Pass `base_url` to `ValkyrieClient` for a self-hosted tracker. Otherwise, the SDK uses `TRACKER_SERVICE_URL` or the hosted tracker URL.
 
 The SDK sends AWS credentials in `X-Harness-*` headers. Only connect to trusted trackers and use HTTPS outside local development.
+
+## Executable examples
+
+The examples use the default Valkyrie config and require explicit command-line arguments before they can start or modify a run:
+
+- [`run_lifecycle.py`](examples/run_lifecycle.py) starts a run, streams updates, fetches its final state, lists visible runs, and retrieves results when the run finishes.
+- [`manage_run.py`](examples/manage_run.py) stops, resumes, or retries an existing run through explicit subcommands.
+
+Run them from the repository root:
+
+```bash
+uv run python docs/sdk/examples/run_lifecycle.py --help
+uv run python docs/sdk/examples/manage_run.py --help
+```
 
 ## Run lifecycle
 
