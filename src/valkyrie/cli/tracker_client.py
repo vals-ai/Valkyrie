@@ -18,6 +18,7 @@ from tracker.types import (
     BenchmarkServiceEntry,
     BenchmarkServicesRequest,
     BenchmarkServicesResponse,
+    BenchmarkStatusResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarkTasksRequest,
@@ -34,8 +35,6 @@ from tracker.types import (
 
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
 
-load_dotenv()
-
 TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
 _CONFIG_LOCATION = Path("~/.config/valkyrie/valkyrie.yaml")
 _REQUIRED_CONFIG_KEYS = {
@@ -45,6 +44,16 @@ _REQUIRED_CONFIG_KEYS = {
     "S3_BUCKET",
 }
 _PROVIDER_SETUP_COMMAND = "valkyrie config provider set <provider> <secret-name>"
+
+
+def _resolve_tracker_url(base_url: str | None) -> str:
+    """Load local environment values after CLI logging has been configured."""
+    if base_url is not None:
+        return base_url.rstrip("/")
+
+    load_dotenv()
+    resolved_url = os.environ.get("TRACKER_SERVICE_URL", TRACKER_URL)
+    return resolved_url.rstrip("/")
 
 
 def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
@@ -109,7 +118,7 @@ class TrackerService:
 
     def __init__(
         self,
-        base_url: str = TRACKER_URL,
+        base_url: str | None = None,
         timeout: int = 120,
         require_config: bool = True,
     ):
@@ -123,7 +132,7 @@ class TrackerService:
         """
         self._config = self._load_config()
         self._api_key = self._config.get("api_key")
-        self._base_url = base_url.rstrip("/")
+        self._base_url = _resolve_tracker_url(base_url)
         self._timeout = timeout
         self._config_values = self.parse_config_keys() if require_config else {}
         self._client = httpx.Client(timeout=timeout, headers=self._build_auth_headers())
@@ -349,11 +358,12 @@ class TrackerService:
             raise TrackerServiceError(f"Failed to check benchmark services: {e}") from e
 
     @classmethod
-    def init_org(cls, api_key: str, base_url: str = TRACKER_URL) -> dict[str, str | bool]:
+    def init_org(cls, api_key: str, base_url: str | None = None) -> dict[str, str | bool]:
         """Validate a Descope API key and create/confirm the org. Does not require a full config."""
+        tracker_url = _resolve_tracker_url(base_url)
         try:
             with httpx.Client(timeout=120, headers={"X-Api-Key": api_key}) as client:
-                response = client.post(f"{base_url.rstrip('/')}/init")
+                response = client.post(f"{tracker_url}/init")
 
                 return _parse_response(response, "Failed to initialize org")
         except httpx.HTTPError as e:
@@ -674,6 +684,17 @@ class TrackerService:
             return FetchBenchmarksResponse.model_validate(_parse_response(response, "Failed to fetch runs"))
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch runs: {e}") from e
+
+    def fetch_benchmark_statuses(self, benchmark_ids: list[UUID]) -> BenchmarkStatusResponse:
+        """Fetch lightweight status and task counts for multiple runs."""
+        try:
+            response = self._client.get(
+                f"{self._base_url}/benchmarks/status",
+                params={"ids": ",".join(str(benchmark_id) for benchmark_id in benchmark_ids)},
+            )
+            return BenchmarkStatusResponse.model_validate(_parse_response(response, "Failed to fetch run statuses"))
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to fetch run statuses: {e}") from e
 
     def fetch_run_outputs(self, benchmark_id: UUID, task_ids: list[str] | None = None) -> Response:
         """

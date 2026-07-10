@@ -1,6 +1,7 @@
 """CLI views/commands for Valkyrie."""
 
 import click
+from dotenv import load_dotenv
 
 from valkyrie.cli.agent import agent
 from valkyrie.cli.benchmark import benchmark
@@ -12,6 +13,8 @@ from valkyrie.cli.run import run
 @click.group()
 def cli():
     """Valkyrie CLI."""
+    configure_cli_logging()
+    load_dotenv()
     configure_cli_logging()
 
 
