@@ -75,7 +75,7 @@ def format_agent_start_details(
     click.echo()
 
 
-def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse) -> None:
+def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse, connect: bool = False) -> None:
     """Format and display the start run response."""
     run_id = start_benchmark_response.benchmark_id
 
@@ -90,6 +90,10 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
     click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
+    if not connect:
+        click.echo(
+            f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan")
+        )
     click.echo(
         f"│ {'Get results:':<17} "
         + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
@@ -375,13 +379,8 @@ def start(
                 return
 
             start_response = StartBenchmarkResponse.model_validate(response.json())
-            format_start_benchmark_response(start_response)
+            format_start_benchmark_response(start_response, connect)
             if connect:
                 stream_benchmark_status(tracker, start_response.benchmark_id)
-            else:
-                click.echo(
-                    f"{'Track progress:':<17} "
-                    + click.style(f"valkyrie run fetch {start_response.benchmark_id} --connect", fg="cyan")
-                )
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))
