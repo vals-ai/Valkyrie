@@ -549,6 +549,7 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertEqual(scheduler_actions, {"lambda:InvokeFunction", "sqs:SendMessage"})
 
         cleanup_function = _cleanup_function(worker_template)
+        self.assertNotIn("VpcConfig", cleanup_function)
         environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
         self.assertEqual(
             environment,

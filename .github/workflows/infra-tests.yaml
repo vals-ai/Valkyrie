@@ -5,6 +5,9 @@ on:
     paths:
       - "infra/**"
       - "services/tracker/Dockerfile.lambda"
+      - "services/tracker/pyproject.toml"
+      - "services/tracker/uv.lock"
+      - "services/tracker/src/tracker/**"
       - ".github/workflows/deploy.yaml"
       - ".github/workflows/infra-tests.yaml"
   push:
@@ -12,6 +15,9 @@ on:
     paths:
       - "infra/**"
       - "services/tracker/Dockerfile.lambda"
+      - "services/tracker/pyproject.toml"
+      - "services/tracker/uv.lock"
+      - "services/tracker/src/tracker/**"
       - ".github/workflows/deploy.yaml"
       - ".github/workflows/infra-tests.yaml"
 
