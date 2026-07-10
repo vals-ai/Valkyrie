@@ -188,6 +188,12 @@ valkyrie run fetch <id> --connect --format jsonl
 
 # Lightweight status for several known run IDs
 valkyrie run status --ids <id-1>,<id-2> --format json
+
+# Show stored run and current task error messages
+valkyrie run errors <id>
+
+# Machine-readable error messages
+valkyrie run errors <id> --format json
 ```
 
 Connected text fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
@@ -209,15 +215,22 @@ The version 1 machine document shapes are:
 - Run list document: `schema_version`, `kind: "run_list"`, `observed_at`, `returned_count`, and allowlisted `runs`.
 - Batch status document: `schema_version`, `kind: "run_status"`, `observed_at`, request/return counts,
   `missing_run_ids`, and lightweight `runs` containing status and task counts.
+- Run errors document: `schema_version`, `kind: "run_errors"`, `observed_at`, run identity and status, the stored
+  run-level `error_message`, and a complete task-ID-to-error mapping for tasks currently in `ERROR`.
 
 Batch status preserves the requested ID order, ignores duplicate IDs, and requests up to 50 IDs at a time. A missing
 or inaccessible ID is listed in `missing_run_ids` and makes the command exit nonzero after emitting the JSON document.
 Its `finished_tasks` count includes terminal `FINISHED`, `ERROR`, and `STOPPED` tasks. Use `run list --format json --all`
 when benchmark, agent, model, or dataset identity is also needed.
 
+Text error output groups tasks only when their complete stored messages are identical and shows a short task-ID sample
+for repeated messages. JSON always includes every current task error. A successful command exits zero even when the run
+itself failed. Error messages can contain sensitive provider- or user-generated data, so review the output before
+sharing it or sending it to logs.
+
 ### Download results
 
-To view results, you should use the following command to download results to disk:
+Use `run errors` for focused inline diagnostics. To download the complete scores, evaluations, and result metadata, use:
 ```bash
 # default path: ./<benchmark>.json)
 valkyrie run results <id> --path ./results.json
