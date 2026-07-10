@@ -54,30 +54,36 @@ export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.co
 
 ## Daytona cleanup schedule
 
-Production includes an hourly EventBridge Scheduler target that launches a small, one-off Fargate task. The schedule is
-disabled and the command is in dry-run mode by default. It only considers sandboxes carrying the explicit Valkyrie,
-production, target, and `clean-up=true` metadata added by the tracker.
+Production includes an hourly EventBridge Scheduler target that asynchronously invokes a container-image Lambda. The
+schedule is disabled and the function is in dry-run mode by default. The Lambda is not attached to the VPC, has a
+14-minute timeout, and reserves one concurrent execution so cleanup sweeps cannot overlap.
 
-The task reads `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` JSON fields from an existing Secrets Manager
-secret. Configure the production deploy with GitHub repository variables:
+The sweep covers every sandbox visible through the `AgenticHarnessSecrets` credentials and their configured target that
+is strictly older than 48 hours. This includes sandboxes provisioned by Harbor and benchmark services outside the
+Valkyrie tracker lifecycle. Only a case-insensitive `clean-up=false` label exempts a sandbox; a missing label remains
+eligible.
+
+At invocation time, the Lambda reads the `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` JSON fields from the
+fixed `AgenticHarnessSecrets` Secrets Manager secret. Configure rollout with GitHub repository variables:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DAYTONA_CLEANUP_SECRET_NAME` | `DaytonaSecrets` | Existing JSON secret used by the cleanup task |
 | `DAYTONA_CLEANUP_ENABLED` | `false` | Enables the hourly production schedule |
 | `DAYTONA_CLEANUP_DRY_RUN` | `true` | Reports eligible sandboxes without deleting them |
 
 Safe rollout:
 
-1. Set `DAYTONA_CLEANUP_SECRET_NAME` to the intended service-owned secret and validate its fields and KMS access.
+1. Validate that `AgenticHarnessSecrets` contains the three required Daytona fields and points at the intended target.
 2. Deploy with the default disabled, dry-run configuration.
 3. Run the isolated live cleanup integration test against approved test credentials.
-4. Run the production task manually in dry-run mode and inspect `/valkyrie/daytona-cleanup` logs.
+4. Invoke the Lambda once in dry-run mode and inspect `/valkyrie/daytona-cleanup` logs.
 5. Set `DAYTONA_CLEANUP_ENABLED=true` while leaving dry-run enabled, then observe a scheduled invocation.
 6. Set `DAYTONA_CLEANUP_DRY_RUN=false` and redeploy the same revision.
 
-Legacy sandboxes without the new ownership labels are intentionally excluded and require a separately audited cleanup.
-The scheduler dead-letter queue captures invocation failures; cleanup process failures are reported in its CloudWatch log.
+The encrypted dead-letter queue receives both Scheduler delivery failures and Lambda asynchronous handler failures;
+their message formats identify which stage failed. Individual sandbox deletion failures are also reported in CloudWatch,
+and make the invocation fail after the sweep so the failure reaches the queue without preventing later candidates from
+being attempted.
 
 ## Teardown
 

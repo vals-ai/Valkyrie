@@ -15,8 +15,10 @@ from aws_cdk import (
 
 from constants import (
     DAYTONA_CLEANUP_DLQ_NAME,
+    DAYTONA_CLEANUP_FUNCTION_NAME,
     DAYTONA_CLEANUP_LOG_GROUP_NAME,
     DAYTONA_CLEANUP_SCHEDULE_NAME,
+    DAYTONA_CLEANUP_SECRET_NAME,
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
     SLACK_WORKSPACE_ID_ENV,
     TRACKER_LOG_GROUP_NAME,
@@ -68,13 +70,12 @@ def _has_logical_id_prefix(template: assertions.Template, resource_type: str, pr
     return any(logical_id.startswith(prefix) for logical_id in template.find_resources(resource_type))
 
 
-def _cleanup_container(template: assertions.Template) -> dict[str, Any]:
-    for resource in template.find_resources("AWS::ECS::TaskDefinition").values():
+def _cleanup_function(template: assertions.Template) -> dict[str, Any]:
+    for resource in template.find_resources("AWS::Lambda::Function").values():
         properties = cast(dict[str, Any], resource.get("Properties", {}))
-        for container in cast(list[dict[str, Any]], properties.get("ContainerDefinitions", [])):
-            if container.get("Name") == "DaytonaCleanupContainer":
-                return container
-    raise AssertionError("Daytona cleanup container not found")
+        if properties.get("FunctionName") == DAYTONA_CLEANUP_FUNCTION_NAME:
+            return properties
+    raise AssertionError("Daytona cleanup Lambda function not found")
 
 
 def _resource_with_logical_id_prefix(
@@ -374,6 +375,8 @@ class MonitoringStackTest(unittest.TestCase):
             _, worker_template = _service_templates(DEV)
 
         worker_template.resource_count_is("AWS::Scheduler::Schedule", 0)
+        worker_template.resource_count_is("AWS::Lambda::Function", 0)
+        worker_template.resource_count_is("AWS::Lambda::EventInvokeConfig", 0)
         self.assertFalse(
             _has_resource_property(
                 worker_template,
@@ -405,15 +408,6 @@ class MonitoringStackTest(unittest.TestCase):
                 "Target": assertions.Match.object_like(
                     {
                         "DeadLetterConfig": assertions.Match.any_value(),
-                        "EcsParameters": assertions.Match.object_like(
-                            {
-                                "LaunchType": "FARGATE",
-                                "TaskCount": 1,
-                                "NetworkConfiguration": assertions.Match.object_like(
-                                    {"AwsvpcConfiguration": assertions.Match.object_like({"AssignPublicIp": "ENABLED"})}
-                                ),
-                            }
-                        ),
                         "RetryPolicy": {
                             "MaximumEventAgeInSeconds": 1800,
                             "MaximumRetryAttempts": 1,
@@ -422,12 +416,36 @@ class MonitoringStackTest(unittest.TestCase):
                 ),
             },
         )
+
+        _, schedule = _resource_with_logical_id_prefix(
+            worker_template,
+            "AWS::Scheduler::Schedule",
+            "DaytonaCleanupSchedule",
+        )
+        schedule_target = cast(dict[str, Any], cast(dict[str, Any], schedule["Properties"])["Target"])
+        self.assertNotIn("EcsParameters", schedule_target)
+
         worker_template.has_resource_properties(
-            "AWS::ECS::TaskDefinition",
+            "AWS::Lambda::Function",
             {
-                "Cpu": "256",
-                "Memory": "512",
-                "RuntimePlatform": {"CpuArchitecture": "ARM64", "OperatingSystemFamily": "LINUX"},
+                "Architectures": ["arm64"],
+                "Description": "Delete Daytona sandboxes older than 48 hours unless they opt out",
+                "FunctionName": DAYTONA_CLEANUP_FUNCTION_NAME,
+                "MemorySize": 512,
+                "PackageType": "Image",
+                "ReservedConcurrentExecutions": 1,
+                "Timeout": 14 * 60,
+            },
+        )
+        worker_template.has_resource_properties(
+            "AWS::Lambda::EventInvokeConfig",
+            {
+                "DestinationConfig": {
+                    "OnFailure": {"Destination": assertions.Match.any_value()},
+                },
+                "MaximumEventAgeInSeconds": 1800,
+                "MaximumRetryAttempts": 0,
+                "Qualifier": "$LATEST",
             },
         )
         worker_template.has_resource_properties(
@@ -442,48 +460,63 @@ class MonitoringStackTest(unittest.TestCase):
                 "SqsManagedSseEnabled": True,
             },
         )
-        worker_template.has_resource_properties(
-            "AWS::EC2::SecurityGroup",
-            {
-                "GroupDescription": "Outbound-only network access for the Daytona cleanup task",
-                "SecurityGroupEgress": assertions.Match.any_value(),
-            },
+        self.assertFalse(_has_logical_id_prefix(worker_template, "AWS::ECS::TaskDefinition", "DaytonaCleanupTaskDef"))
+        self.assertFalse(
+            _has_logical_id_prefix(worker_template, "AWS::EC2::SecurityGroup", "DaytonaCleanupSecurityGroup")
         )
 
-        _, cleanup_security_group = _resource_with_logical_id_prefix(
-            worker_template,
-            "AWS::EC2::SecurityGroup",
-            "DaytonaCleanupSecurityGroup",
-        )
-        self.assertNotIn("SecurityGroupIngress", cast(dict[str, Any], cleanup_security_group["Properties"]))
-
-        cleanup_task_role_id, cleanup_task_role = _resource_with_logical_id_prefix(
+        cleanup_function_role_id, cleanup_function_role = _resource_with_logical_id_prefix(
             worker_template,
             "AWS::IAM::Role",
-            "DaytonaCleanupTaskDefTaskRole",
+            "DaytonaCleanupFunctionServiceRole",
         )
-        self.assertNotIn("Policies", cast(dict[str, Any], cleanup_task_role["Properties"]))
-        for policy in worker_template.find_resources("AWS::IAM::Policy").values():
-            policy_properties = cast(dict[str, Any], policy["Properties"])
-            self.assertNotIn({"Ref": cleanup_task_role_id}, policy_properties.get("Roles", []))
+        cleanup_function_role_properties = cast(dict[str, Any], cleanup_function_role["Properties"])
+        self.assertEqual(
+            cleanup_function_role_properties["AssumeRolePolicyDocument"]["Statement"][0]["Principal"],
+            {"Service": "lambda.amazonaws.com"},
+        )
+        self.assertIn("AWSLambdaBasicExecutionRole", str(cleanup_function_role_properties["ManagedPolicyArns"]))
 
-        _, execution_policy = _resource_with_logical_id_prefix(
+        _, cleanup_function_policy = _resource_with_logical_id_prefix(
             worker_template,
             "AWS::IAM::Policy",
-            "DaytonaCleanupTaskDefExecutionRoleDefaultPolicy",
+            "DaytonaCleanupFunctionServiceRoleDefaultPolicy",
         )
-        execution_statements = cast(
+        cleanup_function_policy_properties = cast(dict[str, Any], cleanup_function_policy["Properties"])
+        self.assertIn({"Ref": cleanup_function_role_id}, cleanup_function_policy_properties["Roles"])
+        cleanup_function_statements = cast(
             list[dict[str, Any]],
-            cast(dict[str, Any], execution_policy["Properties"])["PolicyDocument"]["Statement"],
+            cleanup_function_policy_properties["PolicyDocument"]["Statement"],
         )
         secret_statement = next(
-            statement for statement in execution_statements if "secretsmanager:GetSecretValue" in statement["Action"]
+            statement
+            for statement in cleanup_function_statements
+            if "secretsmanager:GetSecretValue" in statement["Action"]
         )
         self.assertEqual(
             set(secret_statement["Action"]),
             {"secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"},
         )
         self.assertNotEqual(secret_statement["Resource"], "*")
+        self.assertIn(DAYTONA_CLEANUP_SECRET_NAME, str(secret_statement["Resource"]))
+
+        cleanup_function_actions: set[str] = set()
+        for statement in cleanup_function_statements:
+            actions = statement["Action"]
+            if isinstance(actions, str):
+                cleanup_function_actions.add(actions)
+            else:
+                cleanup_function_actions.update(cast(list[str], actions))
+        self.assertEqual(
+            cleanup_function_actions,
+            {
+                "secretsmanager:GetSecretValue",
+                "secretsmanager:DescribeSecret",
+                "sqs:SendMessage",
+                "sqs:GetQueueAttributes",
+                "sqs:GetQueueUrl",
+            },
+        )
 
         scheduler_role_id, scheduler_role = _resource_with_logical_id_prefix(
             worker_template,
@@ -513,34 +546,27 @@ class MonitoringStackTest(unittest.TestCase):
                 scheduler_actions.add(actions)
             else:
                 scheduler_actions.update(cast(list[str], actions))
-        self.assertEqual(scheduler_actions, {"iam:PassRole", "ecs:RunTask", "sqs:SendMessage"})
+        self.assertEqual(scheduler_actions, {"lambda:InvokeFunction", "sqs:SendMessage"})
 
-        container = _cleanup_container(worker_template)
-        self.assertEqual(
-            container["Command"],
-            ["uv", "run", "--no-sync", "python", "-m", "tracker.daytona_cleanup"],
-        )
-        environment = {entry["Name"]: entry["Value"] for entry in container["Environment"]}
+        cleanup_function = _cleanup_function(worker_template)
+        environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
         self.assertEqual(
             environment,
             {
                 "DAYTONA_CLEANUP_DRY_RUN": "true",
+                "DAYTONA_CLEANUP_SECRET_NAME": DAYTONA_CLEANUP_SECRET_NAME,
                 "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+                "ENVIRONMENT": "production",
             },
         )
-        self.assertEqual(
-            {entry["Name"] for entry in container["Secrets"]},
-            {"DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"},
-        )
-        self.assertTrue({"DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET"}.isdisjoint(environment))
 
-    def test_prod_daytona_cleanup_rollout_flags_and_secret_name_are_configurable(self) -> None:
+    def test_prod_daytona_cleanup_rollout_flags_are_configurable(self) -> None:
         with mock.patch.dict(
             os.environ,
             {
                 "DAYTONA_CLEANUP_ENABLED": "true",
                 "DAYTONA_CLEANUP_DRY_RUN": "false",
-                "DAYTONA_CLEANUP_SECRET_NAME": "test/daytona-cleanup",
+                "DAYTONA_CLEANUP_SECRET_NAME": "ignored",
             },
             clear=True,
         ):
@@ -550,10 +576,10 @@ class MonitoringStackTest(unittest.TestCase):
             "AWS::Scheduler::Schedule",
             {"State": "ENABLED"},
         )
-        container = _cleanup_container(worker_template)
-        environment = {entry["Name"]: entry["Value"] for entry in container["Environment"]}
+        cleanup_function = _cleanup_function(worker_template)
+        environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
         self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "false")
-        self.assertIn("test/daytona-cleanup", str(container["Secrets"]))
+        self.assertEqual(environment["DAYTONA_CLEANUP_SECRET_NAME"], DAYTONA_CLEANUP_SECRET_NAME)
 
     def test_unrecognized_daytona_cleanup_rollout_flags_fail_closed(self) -> None:
         with mock.patch.dict(
@@ -564,8 +590,8 @@ class MonitoringStackTest(unittest.TestCase):
             _, worker_template = _service_templates(PROD)
 
         worker_template.has_resource_properties("AWS::Scheduler::Schedule", {"State": "DISABLED"})
-        container = _cleanup_container(worker_template)
-        environment = {entry["Name"]: entry["Value"] for entry in container["Environment"]}
+        cleanup_function = _cleanup_function(worker_template)
+        environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
         self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "true")
 
 

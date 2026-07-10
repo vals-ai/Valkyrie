@@ -14,6 +14,8 @@ from aws_cdk import (
     aws_ec2,
     aws_ecs,
     aws_iam,
+    aws_lambda,
+    aws_lambda_destinations,
     aws_logs,
     aws_rds,
     aws_s3,
@@ -26,9 +28,10 @@ from aws_cdk import (
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
     DAYTONA_CLEANUP_DLQ_NAME,
+    DAYTONA_CLEANUP_FUNCTION_NAME,
     DAYTONA_CLEANUP_LOG_GROUP_NAME,
     DAYTONA_CLEANUP_SCHEDULE_NAME,
-    DEFAULT_DAYTONA_CLEANUP_SECRET_NAME,
+    DAYTONA_CLEANUP_SECRET_NAME,
     POSTGRES_DB,
     WORKER_LOG_GROUP_NAME,
     WORKER_SCALING_CPU_PERCENT,
@@ -192,9 +195,6 @@ class WorkerStack(Stack):
         if stage.is_prod:
             self._add_daytona_cleanup_schedule(
                 stage=stage,
-                vpc=vpc,
-                cluster=cluster,
-                image=worker_image,
                 log_retention=stage_config.service_log_retention,
             )
 
@@ -202,14 +202,10 @@ class WorkerStack(Stack):
         self,
         *,
         stage: Stage,
-        vpc: aws_ec2.IVpc,
-        cluster: aws_ecs.ICluster,
-        image: aws_ecs.ContainerImage,
         log_retention: aws_logs.RetentionDays,
     ) -> None:
         cleanup_enabled = os.environ.get("DAYTONA_CLEANUP_ENABLED") == "true"
         cleanup_dry_run = os.environ.get("DAYTONA_CLEANUP_DRY_RUN") != "false"
-        cleanup_secret_name = os.environ.get("DAYTONA_CLEANUP_SECRET_NAME") or DEFAULT_DAYTONA_CLEANUP_SECRET_NAME
 
         cleanup_log_group = aws_logs.LogGroup(
             self,
@@ -221,49 +217,7 @@ class WorkerStack(Stack):
         cleanup_credentials = aws_secretsmanager.Secret.from_secret_name_v2(
             self,
             "DaytonaCleanupCredentials",
-            cleanup_secret_name,
-        )
-        cleanup_task = aws_ecs.FargateTaskDefinition(
-            self,
-            "DaytonaCleanupTaskDef",
-            cpu=256,
-            memory_limit_mib=512,
-            runtime_platform=_ARM64_PLATFORM,
-        )
-        cleanup_task.add_container(
-            "DaytonaCleanupContainer",
-            image=image,
-            logging=aws_ecs.LogDriver.aws_logs(
-                stream_prefix="DaytonaCleanup",
-                log_group=cleanup_log_group,
-            ),
-            environment={
-                "DAYTONA_CLEANUP_DRY_RUN": str(cleanup_dry_run).lower(),
-                "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
-            },
-            secrets={
-                "DAYTONA_API_KEY": aws_ecs.Secret.from_secrets_manager(
-                    cleanup_credentials,
-                    field="DAYTONA_API_KEY",
-                ),
-                "DAYTONA_API_URL": aws_ecs.Secret.from_secrets_manager(
-                    cleanup_credentials,
-                    field="DAYTONA_API_URL",
-                ),
-                "DAYTONA_TARGET": aws_ecs.Secret.from_secrets_manager(
-                    cleanup_credentials,
-                    field="DAYTONA_TARGET",
-                ),
-            },
-            command=["uv", "run", "--no-sync", "python", "-m", "tracker.daytona_cleanup"],
-        )
-
-        cleanup_security_group = aws_ec2.SecurityGroup(
-            self,
-            "DaytonaCleanupSecurityGroup",
-            vpc=vpc,
-            description="Outbound-only network access for the Daytona cleanup task",
-            allow_all_outbound=True,
+            DAYTONA_CLEANUP_SECRET_NAME,
         )
         cleanup_dlq = aws_sqs.Queue(
             self,
@@ -274,13 +228,38 @@ class WorkerStack(Stack):
             retention_period=Duration.days(14),
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
-        cleanup_target = aws_scheduler_targets.EcsRunFargateTask(
-            cluster,
-            task_definition=cleanup_task,
-            assign_public_ip=True,
-            security_groups=[cleanup_security_group],
-            vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
-            task_count=1,
+        cleanup_function = aws_lambda.DockerImageFunction(
+            self,
+            "DaytonaCleanupFunction",
+            code=aws_lambda.DockerImageCode.from_image_asset(
+                "../services/tracker",
+                file="Dockerfile.lambda",
+                platform=Platform.LINUX_ARM64,
+            ),
+            architecture=aws_lambda.Architecture.ARM_64,
+            function_name=stage.phys(DAYTONA_CLEANUP_FUNCTION_NAME),
+            description="Delete Daytona sandboxes older than 48 hours unless they opt out",
+            memory_size=512,
+            timeout=Duration.minutes(14),
+            reserved_concurrent_executions=1,
+            environment={
+                "DAYTONA_CLEANUP_DRY_RUN": str(cleanup_dry_run).lower(),
+                "DAYTONA_CLEANUP_SECRET_NAME": DAYTONA_CLEANUP_SECRET_NAME,
+                "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+                "ENVIRONMENT": "production",
+            },
+            log_group=cleanup_log_group,
+            retry_attempts=0,
+            max_event_age=Duration.minutes(30),
+            on_failure=cast(
+                aws_lambda.IDestination,
+                aws_lambda_destinations.SqsDestination(cleanup_dlq),
+            ),
+        )
+        cleanup_credentials.grant_read(cleanup_function)
+
+        cleanup_target = aws_scheduler_targets.LambdaInvoke(
+            cast(aws_lambda.IFunction, cleanup_function),
             dead_letter_queue=cleanup_dlq,
             retry_attempts=1,
             max_event_age=Duration.minutes(30),
@@ -292,5 +271,5 @@ class WorkerStack(Stack):
             target=cast(aws_scheduler.IScheduleTarget, cleanup_target),
             enabled=cleanup_enabled,
             schedule_name=stage.phys(DAYTONA_CLEANUP_SCHEDULE_NAME),
-            description="Delete explicitly managed Daytona sandboxes older than 48 hours",
+            description="Delete Daytona sandboxes older than 48 hours unless they opt out",
         )

@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - "infra/**"
+      - "services/tracker/Dockerfile.lambda"
       - ".github/workflows/deploy.yaml"
       - ".github/workflows/infra-tests.yaml"
   push:
     branches: [dev]
     paths:
       - "infra/**"
+      - "services/tracker/Dockerfile.lambda"
       - ".github/workflows/deploy.yaml"
       - ".github/workflows/infra-tests.yaml"
 
@@ -56,3 +58,19 @@ jobs:
         env:
           JSII_SILENCE_WARNING_DEPRECATED_NODE_VERSION: "1"
         run: uv run python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Enable ARM64 container builds
+        uses: docker/setup-qemu-action@v3
+
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the cleanup Lambda image
+        working-directory: services/tracker
+        run: >-
+          docker buildx build
+          --platform linux/arm64
+          --file Dockerfile.lambda
+          --load
+          --tag valkyrie-daytona-cleanup:test
+          .
