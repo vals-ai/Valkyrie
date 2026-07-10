@@ -1,8 +1,8 @@
 """Start a Valkyrie run and follow it through result retrieval.
 
-Run from the repository root:
+After installing valkyrie-sdk, run:
 
-    uv run python docs/sdk/examples/run_lifecycle.py AGENT BENCHMARK --model MODEL
+    python docs/sdk/examples/run_lifecycle.py AGENT BENCHMARK --model MODEL
 """
 
 from __future__ import annotations

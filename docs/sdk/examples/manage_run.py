@@ -1,10 +1,10 @@
 """Stop, resume, or retry an existing Valkyrie run.
 
-Run from the repository root:
+After installing valkyrie-sdk, run:
 
-    uv run python docs/sdk/examples/manage_run.py stop RUN_ID
-    uv run python docs/sdk/examples/manage_run.py resume RUN_ID --concurrency 10
-    uv run python docs/sdk/examples/manage_run.py retry RUN_ID --task-id TASK_ID
+    python docs/sdk/examples/manage_run.py stop RUN_ID
+    python docs/sdk/examples/manage_run.py resume RUN_ID --concurrency 10
+    python docs/sdk/examples/manage_run.py retry RUN_ID --task-id TASK_ID
 """
 
 from __future__ import annotations

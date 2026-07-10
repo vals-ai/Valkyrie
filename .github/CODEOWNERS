@@ -1,0 +1,6 @@
+/.github/CODEOWNERS @vals-ai/valkyrie
+/.github/workflows/publish-sdk.yml @vals-ai/valkyrie
+/packages/valkyrie-sdk/pyproject.toml @vals-ai/valkyrie
+/scripts/check_sdk_version.py @vals-ai/valkyrie
+/scripts/prepare_sdk_release.py @vals-ai/valkyrie
+/scripts/validate_sdk_artifacts.py @vals-ai/valkyrie

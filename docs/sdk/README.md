@@ -2,17 +2,15 @@
 
 Use Valkyrie's async Python SDK to manage runs without invoking the CLI. The SDK currently requires Python 3.12.x.
 
-## Installation from source
+## Installation
 
-The SDK is part of the Valkyrie Python package. A standalone PyPI package is not available yet; publishing one is tracked separately. Until then, install it from the repository:
+Install the standalone package from PyPI:
 
 ```bash
-git clone https://github.com/vals-ai/Valkyrie.git
-cd Valkyrie
-uv sync
+pip install valkyrie-sdk
 ```
 
-The source checkout lets `uv` install the bundled tracker dependency alongside the SDK.
+The package does not install the Valkyrie CLI or Tracker service dependencies.
 
 ## Quickstart
 
@@ -47,12 +45,22 @@ The examples use the default Valkyrie config and require explicit command-line a
 - [`run_lifecycle.py`](examples/run_lifecycle.py) starts a run, streams updates, fetches its final state, lists visible runs, and retrieves results when the run finishes.
 - [`manage_run.py`](examples/manage_run.py) stops, resumes, or retries an existing run through explicit subcommands.
 
-Run them from the repository root:
+After installing `valkyrie-sdk`, run them from a Valkyrie source checkout:
 
 ```bash
-uv run python docs/sdk/examples/run_lifecycle.py --help
-uv run python docs/sdk/examples/manage_run.py --help
+python docs/sdk/examples/run_lifecycle.py --help
+python docs/sdk/examples/manage_run.py --help
 ```
+
+## Source development
+
+Contributors can install the full uv workspace from the repository root:
+
+```bash
+uv sync --group dev
+```
+
+See [RELEASING.md](RELEASING.md) for package verification and release operations.
 
 ## Run lifecycle
 
