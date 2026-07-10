@@ -12,7 +12,7 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from benchmark_service.schemas import VerifyTaskIdsResponse
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
@@ -36,6 +36,7 @@ from tracker.auth import (
     resolve_descope_identity,
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
+from tracker.aws.runtime import AwsRuntime
 from tracker.aws.secrets import resolve_secrets
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
@@ -131,7 +132,20 @@ def _operation_id(route: APIRoute) -> str:
 
 app = FastAPI(generate_unique_id_function=_operation_id, redirect_slashes=False)
 
-logfire.instrument_fastapi(app, excluded_urls="/health$")
+
+def _exclude_request_arguments_from_telemetry(
+    _request: Request | WebSocket,
+    _attributes: dict[str, Any],
+) -> None:
+    """Keep parsed request values, which can contain credentials, out of telemetry."""
+    return None
+
+
+logfire.instrument_fastapi(
+    app,
+    excluded_urls="/health$",
+    request_attributes_mapper=_exclude_request_arguments_from_telemetry,
+)
 
 app.add_middleware(RequestContextMiddleware)
 
@@ -234,12 +248,11 @@ def init_org(
     return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
-async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentContractRequest:
+async def _resolve_contract_from_s3(request: StartBenchmarkRequest, aws_runtime: AwsRuntime) -> AgentContractRequest:
     """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
     zip_bytes = await download_from_s3(
         get_contract_s3_key(request.contract.name),
-        request.harness_config.aws,
-        request.harness_config.s3_bucket,
+        aws_runtime,
     )
     agent_config = AgentConfig(model=request.contract.model, kwargs=dict(request.contract.kwargs))
     resolved = get_contract_from_zip_bytes(request.contract.name, zip_bytes, agent_config)
@@ -280,12 +293,13 @@ async def start_benchmark(
         effective_harness_config = effective_harness_config.model_copy(
             update={"sandbox_provider_secret_name": provider_secret_name}
         )
+    aws_runtime = AwsRuntime.from_harness_config(effective_harness_config)
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
         resolved = resolve_secrets(
             {request.service_auth_header_name: request.service_auth_secret_name},
-            effective_harness_config.aws,
+            aws_runtime.clients,
         )
         service_headers.update(resolved)
 
@@ -300,7 +314,7 @@ async def start_benchmark(
     )
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
-        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})
+        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, aws_runtime)})
 
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
@@ -343,8 +357,7 @@ async def start_benchmark(
         await copy_agent_to_benchmark(
             str(benchmark_row.id),
             request.contract.name,
-            request.harness_config.aws,
-            request.harness_config.s3_bucket,
+            aws_runtime,
         )
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -373,12 +386,8 @@ async def start_benchmark(
         concurrency=request.concurrency,
         started_at=benchmark_row.started_at,
         task_count=len(verify_response.task_ids),
-        cloudwatch_url=get_benchmark_log_url(
-            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group
-        ),
-        s3_bucket_url=create_benchmark_url(
-            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
-        ),
+        cloudwatch_url=get_benchmark_log_url(str(benchmark_row.id), aws_runtime.resources),
+        s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
     )
 
 
@@ -432,12 +441,13 @@ async def fetch_benchmark(
     - 404 Not Found if benchmark is not found
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    aws_runtime = AwsRuntime.from_harness_config(harness_config)
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
     if connect:
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, session, harness_config, org),
+            stream_benchmark_results(benchmark_id, session, aws_runtime, org),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -452,9 +462,7 @@ async def fetch_benchmark(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
-        s3_bucket_url=create_benchmark_url(
-            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
-        ),
+        s3_bucket_url=create_benchmark_url(str(benchmark_row.id), aws_runtime.resources),
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
         error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
@@ -478,6 +486,7 @@ async def analyze_benchmark(
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    aws_runtime = AwsRuntime.from_harness_config(harness_config)
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
@@ -508,7 +517,7 @@ async def analyze_benchmark(
     payload: dict[str, Any] = {
         "benchmark_id": str(benchmark_id),
         "benchmark_name": benchmark_row.name,
-        "s3_bucket": harness_config.s3_bucket,
+        "s3_bucket": aws_runtime.resources.s3_bucket,
         "contract": {"name": benchmark_row.arguments.contract.name},
     }
 
@@ -517,7 +526,7 @@ async def analyze_benchmark(
             benchmark_id=benchmark_row.id,
             lambda_function=body.lambda_function,
             payload=payload,
-            aws=harness_config.aws,
+            clients=aws_runtime.clients,
         ),
         media_type="text/event-stream",
         headers={
@@ -553,6 +562,7 @@ async def retrieve_results(
     """
     benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
     assert_org(benchmark_row, org)
+    aws_runtime = AwsRuntime.from_harness_config(harness_config)
 
     final_view = create_final_view(benchmark_row, session, org)
 
@@ -590,13 +600,11 @@ async def retrieve_results(
         )
 
     if s3:
-        s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
+        s3_key = await upload_final_view(benchmark_row, final_view, aws_runtime)
 
-        https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"
-        presigned_url = await create_presigned_url(
-            s3_key, harness_config.aws, harness_config.s3_bucket, expiration=86400
-        )
-        console_url = create_console_url(s3_key, harness_config.aws.aws_default_region, harness_config.s3_bucket)
+        https_url = f"s3://{aws_runtime.resources.s3_bucket}/{s3_key}"
+        presigned_url = await create_presigned_url(s3_key, aws_runtime, expiration=86400)
+        console_url = create_console_url(s3_key, aws_runtime.resources)
 
         return S3UploadResultsResponse(s3_url=https_url, presigned_url=presigned_url, console_url=console_url)
 
@@ -619,10 +627,11 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    get_scoped(Benchmark, benchmark_id, session, org)
+    aws_runtime = AwsRuntime.from_harness_config(harness_config)
 
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
-    exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
+    exists = await s3_object_exists(s3_key, aws_runtime)
     return {"exists": exists}
 
 
@@ -691,6 +700,7 @@ async def stop_benchmark(
     await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
     if force:
+        aws_runtime = AwsRuntime.from_harness_config(harness_config)
         # TODO: Drop the row fallback after legacy benchmark rows have aged out.
         provider_secret_name = (
             benchmark_row.arguments.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name
@@ -699,7 +709,7 @@ async def stop_benchmark(
             benchmark_row,
             session,
             provider_secret_name,
-            harness_config.aws,
+            aws_runtime,
             org,
             sandbox_provider=benchmark_row.arguments.sandbox_provider,
             task_ids=selected_task_ids,
@@ -955,13 +965,14 @@ async def fetch_run_outputs(
         StreamingResponse
     """
     get_scoped(Benchmark, benchmark_id, session, org)
+    aws_runtime = AwsRuntime.from_harness_config(harness_config)
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
 
     async def output_keys() -> AsyncIterator[str]:
         prefixes = [f"{benchmark_prefix}{task_id}/" for task_id in task_ids] if task_ids else [benchmark_prefix]
         for prefix in prefixes:
-            async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
+            async for key in list_s3_objects(prefix, aws_runtime):
                 if _safe_output_tar_member(key, benchmark_prefix) is None:
                     logger.warning("Skipping unsafe output archive member for benchmark %s", benchmark_id)
                     continue
@@ -984,7 +995,7 @@ async def fetch_run_outputs(
         # download_many_from_s3 reuses a single client/connection pool across all keys,
         # and reads one object into memory at a time (bounded by the largest object).
         with tarfile.open(fileobj=writer, mode="w|") as tar:
-            async for s3_key, data in download_many_from_s3(all_keys(), harness_config.aws, harness_config.s3_bucket):
+            async for s3_key, data in download_many_from_s3(all_keys(), aws_runtime):
                 relative_path = s3_key.removeprefix(benchmark_prefix)
                 tarinfo = tarfile.TarInfo(name=relative_path)
                 tarinfo.size = len(data)

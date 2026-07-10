@@ -42,7 +42,7 @@ class BenchmarkDetails(BaseModel):
 
 
 class AWSCredentials(BaseModel, frozen=True):
-    aws_access_key_id: str
+    aws_access_key_id: str = Field(repr=False)
     aws_secret_access_key: str = Field(repr=False)
     aws_default_region: str
     aws_session_token: str | None = Field(default=None, repr=False)

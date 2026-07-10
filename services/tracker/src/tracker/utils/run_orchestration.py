@@ -10,10 +10,12 @@ import logfire
 import sentry_sdk
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from opentelemetry import trace
+from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
-from tracker._lambda import invoke_lambda, lambda_client
+from tracker._lambda import invoke_lambda
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
+from tracker.aws.runtime import AwsRuntime
 from tracker.aws.s3 import (
     copy_agent_to_benchmark,
 )
@@ -35,7 +37,6 @@ from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.types import (
     FinalViewResponse,
-    HarnessConfig,
     StartBenchmarkRequest,
 )
 
@@ -224,22 +225,35 @@ async def finalize_all_error_run(benchmark_id: UUID, org: Org) -> bool:
         return False
 
 
+def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkRequest:
+    request: StartBenchmarkRequest | None
+    try:
+        request = StartBenchmarkRequest.model_validate(payload)
+    except ValidationError:
+        request = None
+
+    if request is None:
+        raise ValueError("Queued benchmark request is invalid and cannot be processed.")
+    return request
+
+
 # Pin the Taskiq task name to its pre-refactor value so in-flight messages
 # enqueued as `tracker.utils:process_benchmark` still match after the module move.
 @broker.task("tracker.utils:process_benchmark")
-@logfire.instrument("process_benchmark")
+@logfire.instrument("process_benchmark", extract_args=("benchmark_id_str", "verified_task_ids"))
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any],
     benchmark_id_str: str,
     verified_task_ids: list[str],
 ) -> None:
     # Was serialized to make it compatible with the broker
-    start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
+    start_benchmark_request = _parse_start_benchmark_request(start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
-    harness_config: HarnessConfig = start_benchmark_request.harness_config
+    harness_config = start_benchmark_request.harness_config
+    aws_runtime = AwsRuntime.from_harness_config(harness_config)
     sandbox_provider_config = fetch_sandbox_provider_config(
         harness_config.sandbox_provider_secret_name,
-        harness_config.aws,
+        aws_runtime.clients,
         start_benchmark_request.sandbox_provider,
     )
     benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
@@ -260,7 +274,7 @@ async def process_benchmark(
     if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
         notifier = SlackNotifier(
             secret_name=start_benchmark_request.webhook_secret_name,
-            aws=harness_config.aws,
+            clients=aws_runtime.clients,
             intervals=start_benchmark_request.webhook_intervals,
         )
 
@@ -277,14 +291,11 @@ async def process_benchmark(
         await copy_agent_to_benchmark(
             str(benchmark_id),
             start_benchmark_request.contract.name,
-            harness_config.aws,
-            harness_config.s3_bucket,
+            aws_runtime,
         )
 
         # Create benchmark cloudwatch log group
-        create_benchmark_log_group(
-            str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
-        )
+        create_benchmark_log_group(str(benchmark_id), aws_runtime)
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
@@ -311,7 +322,7 @@ async def process_benchmark(
                     benchmark_service,
                     benchmark_id,
                     task_id,
-                    harness_config,
+                    aws_runtime,
                     org,
                     sandbox_provider_config=sandbox_provider_config,
                     creation_semaphore=creation_semaphore,
@@ -378,7 +389,7 @@ async def process_benchmark(
             # Push the final benchmark view to the bucket
             final_view: FinalViewResponse = create_final_view(benchmark_row, session, org)
 
-            await upload_final_view(benchmark_row, final_view, harness_config)
+            await upload_final_view(benchmark_row, final_view, aws_runtime)
 
             # Invoke the configured lambda after the benchmark's final view is uploaded.
             arguments = benchmark_row.arguments
@@ -388,7 +399,7 @@ async def process_benchmark(
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
 
-                invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
+                invoke_lambda(aws_runtime.clients, arguments.lambda_function, lambda_payload)
 
     except BenchmarkServiceUnauthenticatedError as e:
         logfire.warn("process_benchmark failed due to benchmark service auth error")

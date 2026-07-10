@@ -10,6 +10,7 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
+from tracker.aws.runtime import AwsRuntime
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
@@ -81,7 +82,7 @@ async def run_process_task(
     start_benchmark_request: StartBenchmarkRequest,
     task_row: Task,
     benchmark_id: UUID,
-    harness_config: HarnessConfig,
+    aws_runtime: AwsRuntime,
 ) -> dict[str, dict[str, Any] | None]:
     """Run process_task with the shared deterministic unit-test dependencies.
 
@@ -89,7 +90,7 @@ async def run_process_task(
     - start_benchmark_request: Request that created the benchmark.
     - task_row: Persisted task being processed.
     - benchmark_id: Parent benchmark identifier.
-    - harness_config: Harness configuration used for provider resolution.
+    - aws_runtime: Shared AWS runtime used for provider resolution.
 
     Returns
     - The task result mapping returned by process_task.
@@ -100,11 +101,11 @@ async def run_process_task(
         benchmark_service=start_benchmark_request.benchmark_service,
         benchmark_id=benchmark_id,
         task_id="task_0",
-        harness_config=harness_config,
+        aws_runtime=aws_runtime,
         org=TEST_ORG,
         sandbox_provider_config=fetch_sandbox_provider_config(
-            harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
+            start_benchmark_request.harness_config.sandbox_provider_secret_name,
+            aws_runtime.clients,
             start_benchmark_request.sandbox_provider,
         ),
         creation_semaphore=Semaphore(1),

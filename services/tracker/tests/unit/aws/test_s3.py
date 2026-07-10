@@ -10,9 +10,9 @@ import pytest
 from botocore.exceptions import ClientError
 
 from tracker.aws import s3 as s3_module
+from tracker.aws.runtime import AwsRuntime
 from tracker.aws.s3 import upload_stream_to_s3
 from tracker.exceptions import S3Error
-from tracker.types import AWSCredentials
 
 
 class FakeS3Client:
@@ -47,13 +47,13 @@ class FakeS3Client:
 
 
 @pytest.fixture
-def fake_client(monkeypatch: pytest.MonkeyPatch) -> FakeS3Client:
+def fake_client(monkeypatch: pytest.MonkeyPatch, aws_runtime: AwsRuntime) -> FakeS3Client:
     client = FakeS3Client()
 
-    def fake_s3_client(_aws: AWSCredentials) -> FakeS3Client:
+    def fake_s3_client(_provider: object) -> FakeS3Client:
         return client
 
-    monkeypatch.setattr(s3_module, "s3_client", fake_s3_client)
+    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", fake_s3_client)
     monkeypatch.setattr(s3_module, "_MULTIPART_PART_BYTES", 8)
     return client
 
@@ -62,7 +62,7 @@ class TestUploadStreamToS3:
     """Multipart streaming upload behavior."""
 
     async def test_splits_stream_into_parts_and_completes(
-        self, fake_client: FakeS3Client, aws_credentials: AWSCredentials
+        self, fake_client: FakeS3Client, aws_runtime: AwsRuntime
     ) -> None:
         """
         Test cases:
@@ -75,7 +75,7 @@ class TestUploadStreamToS3:
             yield b"bbbb"
             yield b"cc"
 
-        total = await upload_stream_to_s3(chunks(), "key", aws_credentials, "bucket")
+        total = await upload_stream_to_s3(chunks(), "key", aws_runtime)
 
         assert total == 10
         assert fake_client.parts == [(1, b"aaaabbbb"), (2, b"cc")]
@@ -86,20 +86,20 @@ class TestUploadStreamToS3:
         assert not fake_client.aborted
 
     async def test_empty_stream_uploads_empty_object(
-        self, fake_client: FakeS3Client, aws_credentials: AWSCredentials
+        self, fake_client: FakeS3Client, aws_runtime: AwsRuntime
     ) -> None:
         async def chunks() -> AsyncIterator[bytes]:
             return
             yield b""
 
-        total = await upload_stream_to_s3(chunks(), "key", aws_credentials, "bucket")
+        total = await upload_stream_to_s3(chunks(), "key", aws_runtime)
 
         assert total == 0
         assert fake_client.parts == [(1, b"")]
         assert fake_client.completed_parts == [{"ETag": "etag-1", "PartNumber": 1}]
 
     async def test_aborts_multipart_upload_on_failure(
-        self, monkeypatch: pytest.MonkeyPatch, aws_credentials: AWSCredentials
+        self, monkeypatch: pytest.MonkeyPatch, aws_runtime: AwsRuntime
     ) -> None:
         """
         Test cases:
@@ -107,17 +107,17 @@ class TestUploadStreamToS3:
         """
         client = FakeS3Client(fail_on_part=1)
 
-        def fake_s3_client(_aws: AWSCredentials) -> FakeS3Client:
+        def fake_s3_client(_provider: object) -> FakeS3Client:
             return client
 
-        monkeypatch.setattr(s3_module, "s3_client", fake_s3_client)
+        monkeypatch.setattr(type(aws_runtime.clients), "s3_client", fake_s3_client)
         monkeypatch.setattr(s3_module, "_MULTIPART_PART_BYTES", 8)
 
         async def chunks() -> AsyncIterator[bytes]:
             yield b"aaaabbbb"
 
         with pytest.raises(S3Error, match="Failed to upload stream to S3"):
-            await upload_stream_to_s3(chunks(), "key", aws_credentials, "bucket")
+            await upload_stream_to_s3(chunks(), "key", aws_runtime)
 
         assert client.aborted
         assert client.completed_parts is None

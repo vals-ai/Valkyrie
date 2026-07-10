@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/observability/test_observability.py
 """
 
+import importlib
 import logging
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -16,6 +17,68 @@ from tenacity import RetryCallState, Retrying
 import tracker.observability.metrics as metrics_module
 import tracker.observability.retry as retry_module
 import tracker.observability.sentry as sentry_module
+from tracker.types import AWSCredentials, HarnessConfig
+
+
+def _main() -> Any:
+    return importlib.import_module("main")
+
+
+def _run_orchestration() -> Any:
+    return importlib.import_module("tracker.utils.run_orchestration")
+
+
+def test_request_arguments_with_aws_credentials_are_excluded_from_telemetry() -> None:
+    credentials = AWSCredentials(
+        aws_access_key_id="AKIA_TELEMETRY_SENTINEL",
+        aws_secret_access_key="secret-telemetry-sentinel",
+        aws_session_token="session-telemetry-sentinel",
+        aws_default_region="us-east-1",
+    )
+    harness_config = HarnessConfig(
+        aws=credentials,
+        s3_bucket="test-bucket",
+        log_group="test-log-group",
+        log_retention_policy=30,
+        sandbox_provider_secret_name="test-provider-secret",
+    )
+    attributes = {
+        "values": {"harness_config": harness_config},
+        "errors": [
+            {
+                "type": "missing",
+                "loc": ("body", "harness_config", "aws", "aws_default_region"),
+                "msg": "Field required",
+                "input": harness_config.model_dump(),
+            }
+        ],
+    }
+
+    assert _main()._exclude_request_arguments_from_telemetry(Mock(), attributes) is None
+
+
+def test_invalid_queued_request_does_not_expose_aws_credentials() -> None:
+    sentinels = (
+        "AKIA_QUEUE_SENTINEL",
+        "secret-queue-sentinel",
+        "session-queue-sentinel",
+    )
+    payload = {
+        "harness_config": {
+            "aws": {
+                "aws_access_key_id": sentinels[0],
+                "aws_secret_access_key": sentinels[1],
+                "aws_session_token": sentinels[2],
+            }
+        }
+    }
+
+    with pytest.raises(ValueError, match="Queued benchmark request is invalid") as exc_info:
+        _run_orchestration()._parse_start_benchmark_request(payload)
+
+    rendered_error = f"{exc_info.value!r} {exc_info.value}"
+    assert all(sentinel not in rendered_error for sentinel in sentinels)
+    assert exc_info.value.__context__ is None
 
 
 class TestMetrics:

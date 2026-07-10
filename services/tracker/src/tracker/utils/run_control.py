@@ -26,9 +26,7 @@ from tracker.database.models import (
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
-from tracker.types import (
-    AWSCredentials,
-)
+from tracker.aws.runtime import AwsRuntime
 
 from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
 
@@ -110,7 +108,7 @@ async def force_stop_sandboxes(
     benchmark_row: Benchmark,
     session: Session,
     sandbox_provider_secret_name: str,
-    aws: AWSCredentials,
+    aws_runtime: AwsRuntime,
     org: Org,
     sandbox_provider: str = "daytona",
     task_ids: list[str] | None = None,
@@ -124,7 +122,7 @@ async def force_stop_sandboxes(
     """
     benchmark_service = benchmark_row.benchmark_service()
     provider = benchmark_service.get_sandbox_provider(
-        fetch_sandbox_provider_config(sandbox_provider_secret_name, aws, sandbox_provider)
+        fetch_sandbox_provider_config(sandbox_provider_secret_name, aws_runtime.clients, sandbox_provider)
     )
 
     # Update all tasks being processed to stopped

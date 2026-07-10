@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from tracker.exceptions import S3Error
-from tracker.types import AWSCredentials
 
 from valkyrie.cli.agent import storage
 
@@ -50,37 +49,28 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
     - Existing agent downloads, extracts, reads ingest metadata, and deletes from the configured bucket.
     - Missing agent raises the user-facing S3Error without mutating downloaded or deleted keys.
     """
-    credentials = AWSCredentials(
-        aws_access_key_id="key",
-        aws_secret_access_key="secret",
-        aws_default_region="us-east-1",
-    )
     existing_keys = {"agents/demo.zip"}
     downloaded_keys: list[str] = []
     deleted_keys: list[str] = []
 
-    async def s3_object_exists(key: str, aws: AWSCredentials, bucket_name: str) -> bool:
-        assert aws == credentials
+    async def s3_object_exists(key: str, bucket_name: str) -> bool:
         assert bucket_name == "bucket"
         return key in existing_keys
 
-    async def download_from_s3(key: str, aws: AWSCredentials, bucket_name: str) -> bytes:
-        assert aws == credentials
+    async def download_from_s3(key: str, bucket_name: str) -> bytes:
         assert bucket_name == "bucket"
         downloaded_keys.append(key)
         return _agent_zip("demo")
 
-    async def delete_from_s3(key: str, aws: AWSCredentials, bucket_name: str) -> None:
-        assert aws == credentials
+    async def delete_from_s3(key: str, bucket_name: str) -> None:
         assert bucket_name == "bucket"
         deleted_keys.append(key)
         existing_keys.remove(key)
 
-    monkeypatch.setattr(storage, "aws_credentials", lambda: credentials)
-    monkeypatch.setattr(storage, "fetch_bucket_name", lambda: "bucket")
-    monkeypatch.setattr(storage, "s3_object_exists", s3_object_exists)
-    monkeypatch.setattr(storage, "download_from_s3", download_from_s3)
-    monkeypatch.setattr(storage, "delete_from_s3", delete_from_s3)
+    monkeypatch.setattr(storage.cli_s3, "fetch_bucket_name", lambda: "bucket")
+    monkeypatch.setattr(storage.cli_s3, "s3_object_exists", s3_object_exists)
+    monkeypatch.setattr(storage.cli_s3, "download_from_s3", download_from_s3)
+    monkeypatch.setattr(storage.cli_s3, "delete_from_s3", delete_from_s3)
 
     await storage.download_agent("demo", tmp_path)
     assert (tmp_path / "demo" / "contract.yaml").exists()
@@ -96,6 +86,25 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
 
     assert downloaded_keys == ["agents/demo.zip", "agents/demo.zip"]
     assert deleted_keys == ["agents/demo.zip"]
+
+
+async def test_update_benchmark_agent_version_uses_agent_and_benchmark_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exists = AsyncMock(return_value=True)
+    copy = AsyncMock()
+    monkeypatch.setattr(storage.cli_s3, "fetch_bucket_name", lambda: "test-bucket")
+    monkeypatch.setattr(storage.cli_s3, "s3_object_exists", exists)
+    monkeypatch.setattr(storage.cli_s3, "copy_s3_object", copy)
+
+    await storage.update_benchmark_agent_version("alpha", "benchmark-1")
+
+    exists.assert_awaited_once_with("agents/alpha.zip", "test-bucket")
+    copy.assert_awaited_once_with(
+        "agents/alpha.zip",
+        "benchmarks/benchmark-1/alpha.zip",
+        "test-bucket",
+    )
 
 
 class TestInstallAgent:
@@ -182,9 +191,9 @@ class TestPushAgent:
         def mock_s3_client() -> MockAsyncClientContext:
             return MockAsyncClientContext(clients.pop(0))
 
-        monkeypatch.setattr(storage, "fetch_bucket_name", lambda: "agent-bucket")
+        monkeypatch.setattr(storage.cli_s3, "fetch_bucket_name", lambda: "agent-bucket")
         monkeypatch.setattr(storage, "get_agent_zip_stream", mock_zip_stream)
-        monkeypatch.setattr(storage, "s3_client", mock_s3_client)
+        monkeypatch.setattr(storage.cli_s3, "s3_client", mock_s3_client)
 
         await storage.push_agent("demo", Path("/unused"))
 

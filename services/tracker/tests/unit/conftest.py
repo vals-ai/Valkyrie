@@ -32,6 +32,7 @@ os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "test")
 
 # Import the app after configuring the AWS environment.
 from main import app
+from tracker.aws.runtime import AwsRuntime
 
 
 @pytest.fixture
@@ -43,6 +44,11 @@ def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
         log_retention_policy=30,
         sandbox_provider_secret_name="test-daytona-secret",
     )
+
+
+@pytest.fixture
+def aws_runtime(harness_config: HarnessConfig) -> AwsRuntime:
+    return AwsRuntime.from_harness_config(harness_config)
 
 
 @pytest.fixture

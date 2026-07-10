@@ -1,7 +1,11 @@
+from datetime import datetime
+from typing import Any
+
 import aioboto3
 import click
-from tracker.aws.s3 import s3_client as tracker_s3_client
-from tracker.types import AWSCredentials
+from botocore.exceptions import BotoCoreError, ClientError
+from tracker import handle_s3_error
+from tracker.exceptions import S3Error
 
 from valkyrie.cli.config.state import load_config
 
@@ -15,28 +19,70 @@ def fetch_bucket_name() -> str:
     return bucket_name
 
 
-def aws_credentials() -> AWSCredentials:
-    """Build AWS credentials from the valkyrie config."""
+def s3_client() -> Any:
+    """Create an async S3 client using credentials from the valkyrie config."""
     config = load_config()
-    return AWSCredentials(
+    session = aioboto3.Session(
         aws_access_key_id=config["AWS_ACCESS_KEY_ID"],
         aws_secret_access_key=config["AWS_SECRET_ACCESS_KEY"],
-        aws_default_region=config["AWS_DEFAULT_REGION"],
-        aws_session_token=config.get("AWS_SESSION_TOKEN"),
+        region_name=config["AWS_DEFAULT_REGION"],
     )
-
-
-def s3_client():
-    """Create an async S3 client from configured credentials or the AWS SDK chain."""
-    config = load_config()
-    access_key_id = config.get("AWS_ACCESS_KEY_ID")
-    secret_access_key = config.get("AWS_SECRET_ACCESS_KEY")
-
-    if access_key_id and secret_access_key:
-        return tracker_s3_client(aws_credentials())
-
-    if access_key_id or secret_access_key:
-        raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
-
-    session = aioboto3.Session(region_name=config.get("AWS_DEFAULT_REGION"))
     return session.client("s3")
+
+
+async def copy_s3_object(source_key: str, dest_key: str, bucket_name: str) -> None:
+    """Copy an S3 object within one bucket."""
+    try:
+        async with s3_client() as client:
+            await client.copy_object(
+                Bucket=bucket_name,
+                CopySource={"Bucket": bucket_name, "Key": source_key},
+                Key=dest_key,
+            )
+    except (ClientError, BotoCoreError) as exc:
+        raise S3Error(f"Failed to copy S3 object from {source_key} to {dest_key}: {exc}") from exc
+
+
+@handle_s3_error(message="Failed to download from S3")
+async def download_from_s3(s3_key: str, bucket_name: str) -> bytes:
+    """Download one S3 object."""
+    async with s3_client() as client:
+        response = await client.get_object(Bucket=bucket_name, Key=s3_key)
+        async with response["Body"] as stream:
+            return await stream.read()
+
+
+@handle_s3_error(message="Failed to delete from S3")
+async def delete_from_s3(s3_key: str, bucket_name: str) -> None:
+    """Delete one S3 object."""
+    async with s3_client() as client:
+        await client.delete_object(Bucket=bucket_name, Key=s3_key)
+
+
+@handle_s3_error(message="Failed to check S3 object existence")
+async def s3_object_exists(s3_key: str, bucket_name: str) -> bool:
+    """Return whether an S3 object exists in a bucket."""
+    async with s3_client() as client:
+        try:
+            await client.head_object(Bucket=bucket_name, Key=s3_key)
+            return True
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "404":
+                return False
+            raise
+
+
+@handle_s3_error(message="Failed to list agents from S3")
+async def list_agents(bucket_name: str) -> list[tuple[str, datetime | None]]:
+    """List zipped agent bundles under the agents prefix."""
+    agents: list[tuple[str, datetime | None]] = []
+    async with s3_client() as client:
+        paginator = client.get_paginator("list_objects_v2")
+        async for page in paginator.paginate(Bucket=bucket_name, Prefix="agents/"):
+            for s3_object in page.get("Contents", []):
+                tail = s3_object["Key"][len("agents/") :]
+                if not tail.endswith(".zip"):
+                    continue
+                agents.append((tail[: -len(".zip")], s3_object.get("LastModified")))
+
+    return agents
