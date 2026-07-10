@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - "infra/**"
+      - "services/tracker/.dockerignore"
       - "services/tracker/Dockerfile.lambda"
       - "services/tracker/pyproject.toml"
       - "services/tracker/uv.lock"
@@ -14,6 +15,7 @@ on:
     branches: [dev]
     paths:
       - "infra/**"
+      - "services/tracker/.dockerignore"
       - "services/tracker/Dockerfile.lambda"
       - "services/tracker/pyproject.toml"
       - "services/tracker/uv.lock"
