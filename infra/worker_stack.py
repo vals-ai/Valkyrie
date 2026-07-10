@@ -22,6 +22,7 @@ from aws_cdk import (
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
+    MANAGED_RUNTIME_LOG_GROUP_NAME,
     POSTGRES_DB,
     WORKER_LOG_GROUP_NAME,
     WORKER_SCALING_CPU_PERCENT,
@@ -103,6 +104,33 @@ class WorkerStack(Stack):
             "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
         }
 
+        managed_provider_secret_name = os.environ.get("MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME", "")
+        managed_provider_secrets: dict[str, aws_ecs.Secret] = {}
+        if managed_provider_secret_name:
+            managed_provider_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "ManagedSandboxProviderSecret",
+                managed_provider_secret_name,
+            )
+            managed_provider_secrets["MANAGED_RUNTIME_SANDBOX_PROVIDER_CONFIG"] = aws_ecs.Secret.from_secrets_manager(
+                managed_provider_secret
+            )
+
+        gateway_signing_secret_name = (
+            os.environ.get("VALKYRIE_GATEWAY_SIGNING_SECRET_NAME") or f"{stage.name}ModelGatewayConfig"
+        )
+        gateway_signing_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "ModelGatewaySigningSecret",
+            gateway_signing_secret_name,
+        )
+        gateway_secrets = {
+            "VALKYRIE_GATEWAY_SIGNING_KEY": aws_ecs.Secret.from_secrets_manager(
+                gateway_signing_secret,
+                field="valkyrie_signing_key",
+            )
+        }
+
         # ── Worker service ────────────────────────────────────────────────
 
         worker_task_def = aws_ecs.FargateTaskDefinition(
@@ -111,6 +139,22 @@ class WorkerStack(Stack):
             cpu=stage_config.worker.cpu,
             memory_limit_mib=stage_config.worker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
+        )
+        bucket.grant_read_write(worker_task_def.task_role)
+
+        managed_log_arn = self.format_arn(
+            service="logs",
+            resource="log-group",
+            resource_name=f"{stage.phys(MANAGED_RUNTIME_LOG_GROUP_NAME)}*",
+        )
+        worker_task_def.task_role.add_to_policy(
+            aws_iam.PolicyStatement(actions=["logs:CreateLogGroup"], resources=["*"])
+        )
+        worker_task_def.task_role.add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["logs:CreateLogStream", "logs:PutLogEvents", "logs:PutRetentionPolicy"],
+                resources=[managed_log_arn],
+            )
         )
 
         worker_task_def.add_container(
@@ -130,11 +174,15 @@ class WorkerStack(Stack):
                 **shared_env,
                 **db_env,
                 "REDIS_URL": redis_url,
+                "MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME": managed_provider_secret_name,
+                "MODEL_GATEWAY_URL": os.environ.get("MODEL_GATEWAY_URL", ""),
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
             secrets={
                 **db_secrets,
                 **sentry_secrets,
+                **managed_provider_secrets,
+                **gateway_secrets,
             },
             command=[
                 "uv",

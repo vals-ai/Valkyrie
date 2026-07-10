@@ -94,7 +94,11 @@ def test_agent_download_url_uses_module_ttl(monkeypatch: pytest.MonkeyPatch) -> 
     async def fake_exists(*_args, **_kwargs) -> bool:
         return True
 
+    async def fake_size(*_args, **_kwargs) -> int:
+        return 12
+
     monkeypatch.setattr(agents_api, "s3_object_exists", fake_exists)
+    monkeypatch.setattr(agents_api, "get_s3_object_size", fake_size)
     monkeypatch.setattr(agents_api, "create_presigned_url", fake_presigned_url)
 
     response = client.get("/agents/agent-a/download-url")

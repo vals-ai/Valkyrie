@@ -23,6 +23,7 @@ dependencies = [
     "taskiq-redis>=1.2.2",
     "alembic>=1.18.4",
     "descope>=0.9.0",
+    "pyjwt>=2.12.1",
     "tenacity>=9.0.0",
     "sentry-sdk[fastapi]==2.58.0",
     "python-json-logger>=3.2.1",

@@ -77,6 +77,9 @@ jobs:
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME: ${{ secrets.MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME }}
+          MODEL_GATEWAY_URL: ${{ secrets.MODEL_GATEWAY_URL }}
+          VALKYRIE_GATEWAY_SIGNING_SECRET_NAME: ${{ secrets.VALKYRIE_GATEWAY_SIGNING_SECRET_NAME }}
         run: |
           cd infra
           uv run cdk deploy --all -c stage=${{ steps.deploy-stage.outputs.stage }} --require-approval never
@@ -87,6 +90,9 @@ jobs:
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME: ${{ secrets.MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME }}
+          MODEL_GATEWAY_URL: ${{ secrets.MODEL_GATEWAY_URL }}
+          VALKYRIE_GATEWAY_SIGNING_SECRET_NAME: ${{ secrets.VALKYRIE_GATEWAY_SIGNING_SECRET_NAME }}
         run: |
           cd infra
           uv run cdk deploy --all -c stage=${{ steps.deploy-stage.outputs.stage }} --require-approval never

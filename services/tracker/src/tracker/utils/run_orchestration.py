@@ -194,7 +194,7 @@ def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Or
 # Pin the Taskiq task name to its pre-refactor value so in-flight messages
 # enqueued as `tracker.utils:process_benchmark` still match after the module move.
 @broker.task("tracker.utils:process_benchmark")
-@logfire.instrument("process_benchmark")
+@logfire.instrument("process_benchmark", extract_args=("benchmark_id_str",))
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any],
     benchmark_id_str: str,
@@ -246,6 +246,7 @@ async def process_benchmark(
             start_benchmark_request.contract.name,
             harness_config.aws,
             harness_config.s3_bucket,
+            harness_config.s3_prefix,
         )
 
         # Create benchmark cloudwatch log group

@@ -1,7 +1,7 @@
 import re
 import time
 from functools import lru_cache, wraps
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
 
 import boto3
@@ -9,10 +9,11 @@ import logfire
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from tracker.aws.credentials import aws_client_kwargs
 from tracker.exceptions import CloudWatchError
 
 if TYPE_CHECKING:
-    from tracker.types import AWSCredentials
+    from tracker.types import AWSConfig
 
 _created_streams: set[str] = set()
 
@@ -30,15 +31,15 @@ def _sanitize_log_stream_name(task_id: str) -> str:
 
 
 @lru_cache(maxsize=32)
-def _cloudwatch_client(aws: "AWSCredentials") -> Any:
+def _cloudwatch_client(aws: "AWSConfig") -> Any:
     """Cloudwatch client cached to share instances."""
-    return boto3.client(  # pyright: ignore[reportUnknownMemberType]
-        "logs",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        aws_session_token=aws.aws_session_token,
-        region_name=aws.aws_default_region,
-        config=Config(max_pool_connections=200),
+    return cast(
+        Any,
+        boto3.client(  # pyright: ignore[reportUnknownMemberType]
+            "logs",
+            **aws_client_kwargs(aws),
+            config=Config(max_pool_connections=200),
+        ),
     )
 
 
@@ -83,9 +84,7 @@ def get_benchmark_log_url(benchmark_id: str, region: str, log_group: str, task_i
 
 @handle_cloudwatch_error(message="Failed to create log group")
 @logfire.instrument("create_log_group", extract_args=("benchmark_id",))
-def create_benchmark_log_group(
-    benchmark_id: str, aws: "AWSCredentials", log_group: str, log_retention_policy: int
-) -> str:
+def create_benchmark_log_group(benchmark_id: str, aws: "AWSConfig", log_group: str, log_retention_policy: int) -> str:
     """
     Create a log group for a benchmark.
 
@@ -112,7 +111,7 @@ def create_benchmark_log_group(
 
 
 @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
-def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSCredentials", log_group: str) -> None:
+def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSConfig", log_group: str) -> None:
     """
     Stream a log message to CloudWatch.
 

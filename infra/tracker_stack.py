@@ -32,6 +32,7 @@ from constants import (
     POSTGRES_USER,
     TRACKER_DOMAIN,
     TRACKER_LOG_GROUP_NAME,
+    MANAGED_RUNTIME_LOG_GROUP_NAME,
     TRACKER_PORT,
     TRACKER_SCALING_CPU_PERCENT,
     VPC_CIDR,
@@ -150,6 +151,33 @@ class TrackerStack(Stack):
                 descope_management_key_secret,
             )
 
+        managed_provider_secret_name = os.environ.get("MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME", "")
+        managed_provider_secrets: dict[str, aws_ecs.Secret] = {}
+        if managed_provider_secret_name:
+            managed_provider_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "ManagedSandboxProviderSecret",
+                managed_provider_secret_name,
+            )
+            managed_provider_secrets["MANAGED_RUNTIME_SANDBOX_PROVIDER_CONFIG"] = aws_ecs.Secret.from_secrets_manager(
+                managed_provider_secret
+            )
+
+        gateway_signing_secret_name = (
+            os.environ.get("VALKYRIE_GATEWAY_SIGNING_SECRET_NAME") or f"{stage.name}ModelGatewayConfig"
+        )
+        gateway_signing_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "ModelGatewaySigningSecret",
+            gateway_signing_secret_name,
+        )
+        gateway_secrets = {
+            "VALKYRIE_GATEWAY_SIGNING_KEY": aws_ecs.Secret.from_secrets_manager(
+                gateway_signing_secret,
+                field="valkyrie_signing_key",
+            )
+        }
+
         # ── Tracker API service ──────────────────────────────────────────
 
         tracker_task_def = aws_ecs.FargateTaskDefinition(
@@ -159,6 +187,7 @@ class TrackerStack(Stack):
             memory_limit_mib=stage_config.tracker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
         )
+        bucket.grant_read_write(tracker_task_def.task_role)
 
         tracker_task_def.add_container(
             "TrackerContainer",
@@ -181,12 +210,18 @@ class TrackerStack(Stack):
                 "AUTH_REQUIRED": os.environ.get("AUTH_REQUIRED", "false"),
                 "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL", ""),
                 "DESCOPE_PROJECT_ID": os.environ.get("DESCOPE_PROJECT_ID", ""),
+                "MANAGED_RUNTIME_AWS_REGION": self.region,
+                "MANAGED_RUNTIME_LOG_GROUP": stage.phys(MANAGED_RUNTIME_LOG_GROUP_NAME),
+                "MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME": managed_provider_secret_name,
+                "MODEL_GATEWAY_URL": os.environ.get("MODEL_GATEWAY_URL", ""),
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
             secrets={
                 **db_secrets,
                 **sentry_secrets,
                 **descope_secrets,
+                **managed_provider_secrets,
+                **gateway_secrets,
             },
             command=["uv", "run", "--no-sync", "python", "-m", "tracker.serve"],
             health_check=aws_ecs.HealthCheck(

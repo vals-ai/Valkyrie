@@ -21,7 +21,7 @@ from sqlalchemy.orm import joinedload
 from sqlmodel import Session
 
 from tracker.api.agents import router as agents_router
-from tracker.api.benchmark_services import router as benchmark_services_router
+from tracker.api.benchmark_services import authorize_managed_benchmark, router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.filter_options import router as filter_options_router
 from tracker.api.single_benchmark import router as single_benchmark_router
@@ -39,13 +39,13 @@ from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.secrets import resolve_secrets
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
-    S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
     create_benchmark_url,
     create_console_url,
     create_presigned_url,
     download_from_s3,
     download_many_from_s3,
+    get_benchmark_s3_prefix,
     get_contract_s3_key,
     list_s3_objects,
     s3_object_exists,
@@ -74,6 +74,7 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
+from tracker.runtime import harness_config_for_benchmark
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     FetchBenchmarkMetadataResponse,
@@ -87,9 +88,11 @@ from tracker.types import (
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
     StartBenchmarkErrorResponse,
+    StartBenchmarkInput,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    TaskRoleAWSConfig,
 )
 from tracker.utils import (
     BenchmarkContext,
@@ -229,8 +232,9 @@ def init_org(
 
 async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentContractRequest:
     """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
+    key = get_contract_s3_key(request.contract.name, request.harness_config.s3_prefix)
     zip_bytes = await download_from_s3(
-        get_contract_s3_key(request.contract.name),
+        key,
         request.harness_config.aws,
         request.harness_config.s3_bucket,
     )
@@ -244,7 +248,7 @@ async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentCont
 @app.post("/start-benchmark")
 async def start_benchmark(
     http_request: Request,
-    request: StartBenchmarkRequest,
+    body: StartBenchmarkInput,
     session: Session = Depends(get_session),
     run_starter: RequestIdentity = Depends(get_current_starter),
 ) -> StartBenchmarkResponse:
@@ -264,15 +268,27 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
+    if http_request.headers.get("x-valkyrie-runtime"):
+        raise HTTPException(status_code=400, detail="Managed runtime is not activated")
     # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
     header_harness_config = try_fetch_harness_config(http_request)
-    effective_harness_config = header_harness_config or request.harness_config
+    effective_harness_config = header_harness_config or body.harness_config
+    if effective_harness_config is None:
+        raise HTTPException(status_code=400, detail="Missing harness config")
+    if isinstance(effective_harness_config.aws, TaskRoleAWSConfig):
+        raise HTTPException(status_code=400, detail="Managed runtime is not activated")
     # TODO: Drop the top-level fallback after legacy clients have aged out.
-    provider_secret_name = request.harness_config.sandbox_provider_secret_name or request.sandbox_provider_secret_name
+    provider_secret_name = (
+        body.harness_config.sandbox_provider_secret_name if body.harness_config else None
+    ) or body.sandbox_provider_secret_name
     if provider_secret_name:
         effective_harness_config = effective_harness_config.model_copy(
             update={"sandbox_provider_secret_name": provider_secret_name}
         )
+
+    request = StartBenchmarkRequest.model_validate(
+        {**body.model_dump(), "harness_config": effective_harness_config.model_dump()}
+    )
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
@@ -336,6 +352,7 @@ async def start_benchmark(
             request.contract.name,
             request.harness_config.aws,
             request.harness_config.s3_bucket,
+            request.harness_config.s3_prefix,
         )
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
@@ -368,7 +385,10 @@ async def start_benchmark(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group
         ),
         s3_bucket_url=create_benchmark_url(
-            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
+            str(benchmark_row.id),
+            request.harness_config.aws.aws_default_region,
+            request.harness_config.s3_bucket,
+            request.harness_config.s3_prefix,
         ),
     )
 
@@ -383,6 +403,11 @@ async def fetch_benchmark_tasks(
     """
     Fetch all task ids for a benchmark dataset.
     """
+    if isinstance(harness_config.aws, TaskRoleAWSConfig):
+        if request.custom_benchmark_service:
+            raise HTTPException(status_code=400, detail="Managed runtime does not accept custom benchmark services")
+        await authorize_managed_benchmark(http_request, _org, request.benchmark_name)
+
     try:
         benchmark_service = create_benchmark_service_client(
             url=request.custom_benchmark_service or create_benchmark_service_url(request.benchmark_name),
@@ -425,6 +450,7 @@ async def fetch_benchmark(
     - 404 Not Found if benchmark is not found
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    harness_config = harness_config_for_benchmark(benchmark_row, harness_config, org)
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
@@ -446,7 +472,10 @@ async def fetch_benchmark(
         benchmark_id=benchmark_row.id,
         details=benchmark_context.benchmark_details,
         s3_bucket_url=create_benchmark_url(
-            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
+            str(benchmark_row.id),
+            harness_config.aws.aws_default_region,
+            harness_config.s3_bucket,
+            harness_config.s3_prefix,
         ),
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
@@ -470,6 +499,10 @@ async def analyze_benchmark(
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    harness_config = harness_config_for_benchmark(benchmark_row, harness_config, org)
+
+    if isinstance(harness_config.aws, TaskRoleAWSConfig):
+        raise HTTPException(status_code=400, detail="Managed runtime does not support Lambda analyzers")
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
@@ -501,6 +534,7 @@ async def analyze_benchmark(
         "benchmark_id": str(benchmark_id),
         "benchmark_name": benchmark_row.name,
         "s3_bucket": harness_config.s3_bucket,
+        "s3_prefix": harness_config.s3_prefix,
         "contract": {"name": benchmark_row.arguments.contract.name},
     }
 
@@ -545,6 +579,8 @@ async def retrieve_results(
     """
     benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
     assert_org(benchmark_row, org)
+    assert benchmark_row is not None
+    harness_config = harness_config_for_benchmark(benchmark_row, harness_config, org)
 
     final_view = create_final_view(benchmark_row, session, org)
 
@@ -565,6 +601,10 @@ async def retrieve_results(
             if task_id in task_ids_set
         }
 
+        if isinstance(harness_config.aws, TaskRoleAWSConfig):
+            if benchmark_row.custom_benchmark_service:
+                raise HTTPException(status_code=400, detail="Managed runtime does not accept custom benchmark services")
+            await authorize_managed_benchmark(http_request, org, benchmark_row.name)
         effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
         benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
         try:
@@ -611,9 +651,10 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    harness_config = harness_config_for_benchmark(benchmark_row, harness_config, org)
 
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
+    s3_key = f"{get_benchmark_s3_prefix(str(benchmark_id), harness_config.s3_prefix)}results.json"
     exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
     return {"exists": exists}
 
@@ -637,6 +678,7 @@ async def stop_benchmark(
         StopBenchmarkResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    harness_config = harness_config_for_benchmark(benchmark_row, harness_config, org)
 
     valid_stop_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING]
 
@@ -706,6 +748,14 @@ async def retry_or_resume_benchmark(
         RetryOrResumeBenchmarkResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    harness_config = harness_config_for_benchmark(benchmark_row, harness_config, org)
+
+    if isinstance(harness_config.aws, TaskRoleAWSConfig) and secrets:
+        raise HTTPException(status_code=400, detail="Managed runtime does not accept AWS secret references")
+    if isinstance(harness_config.aws, TaskRoleAWSConfig) and benchmark_row.custom_benchmark_service:
+        raise HTTPException(status_code=400, detail="Managed runtime does not accept custom benchmark services")
+    if isinstance(harness_config.aws, TaskRoleAWSConfig):
+        await authorize_managed_benchmark(http_request, org, benchmark_row.name)
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
@@ -863,9 +913,10 @@ async def fetch_run_outputs(
     Returns:
         StreamingResponse
     """
-    get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    harness_config = harness_config_for_benchmark(benchmark_row, harness_config, org)
 
-    benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
+    benchmark_prefix = get_benchmark_s3_prefix(str(benchmark_id), harness_config.s3_prefix)
 
     async def output_keys() -> AsyncIterator[str]:
         prefixes = [f"{benchmark_prefix}{task_id}/" for task_id in task_ids] if task_ids else [benchmark_prefix]

@@ -19,7 +19,7 @@ from sqlmodel import Session
 from tracker._lambda import invoke_lambda, lambda_client
 from tracker.database.models import Benchmark, DocentReadingStatus
 from tracker.database.session import engine
-from tracker.types import AWSCredentials
+from tracker.types import AWSConfig
 
 # Analyzer Lambdas can run up to 15 min (AWS Lambda's ceiling); retries
 # disabled because the Lambda is non-idempotent (a retry would re-ingest).
@@ -33,7 +33,7 @@ def invoke_analyzer(
     benchmark_id: UUID,
     lambda_function: str,
     payload: dict[str, Any],
-    aws: AWSCredentials,
+    aws: AWSConfig,
 ) -> dict[str, Any]:
     """Invoke an analyzer Lambda and persist status/URL onto the Benchmark row.
 
@@ -71,7 +71,7 @@ async def analyze_event_stream(
     benchmark_id: UUID,
     lambda_function: str,
     payload: dict[str, Any],
-    aws: AWSCredentials,
+    aws: AWSConfig,
 ) -> AsyncGenerator[str, None]:
     """SSE event stream: started → heartbeats → done|error."""
     yield f"event: started\ndata: {json.dumps({'lambda_function': lambda_function})}\n\n"

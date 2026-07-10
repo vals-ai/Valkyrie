@@ -1,13 +1,26 @@
-"""GET /agents — list agents from S3 under the org's bucket."""
+"""Manage organization-shared agents."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
+from tracker.agent.contract import MAX_AGENT_ZIP_BYTES
+from tracker.agent.schemas import validate_agent_name
 from tracker.auth import get_current_org
-from tracker.aws.s3 import create_presigned_url, list_agents, s3_object_exists
+from tracker.aws.s3 import (
+    create_presigned_url,
+    get_contract_s3_key,
+    get_s3_object_size,
+    list_agents,
+    s3_object_exists,
+)
 from tracker.database.models import Org
-from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse, HarnessConfig
+from tracker.types import (
+    AgentDownloadURLResponse,
+    AgentEntry,
+    AgentsResponse,
+    HarnessConfig,
+)
 from tracker.utils import fetch_harness_config
 
 PRESIGNED_URL_EXPIRES_SECONDS = 300
@@ -15,13 +28,24 @@ PRESIGNED_URL_EXPIRES_SECONDS = 300
 router = APIRouter(prefix="/agents")
 
 
+def _valid_name(name: str) -> str:
+    try:
+        return validate_agent_name(name)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
 @router.get("", response_model=AgentsResponse)
 async def list_agents_endpoint(
     _org: Org = Depends(get_current_org),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
 ) -> AgentsResponse:
-    """List agent zips under the org's S3 bucket."""
-    agents = await list_agents(aws=harness_config.aws, s3_bucket=harness_config.s3_bucket)
+    """List the organization's agents."""
+    agents = await list_agents(
+        aws=harness_config.aws,
+        s3_bucket=harness_config.s3_bucket,
+        s3_prefix=harness_config.s3_prefix,
+    )
     return AgentsResponse(
         agents=[
             AgentEntry(name=name, last_modified=str(last_modified) if last_modified else None)
@@ -37,9 +61,12 @@ async def get_agent_download_url(
     harness_config: HarnessConfig = Depends(fetch_harness_config),
 ) -> AgentDownloadURLResponse:
     """Return a 5-minute presigned URL to download agents/<name>.zip."""
-    key = f"agents/{name}.zip"
+    name = _valid_name(name)
+    key = get_contract_s3_key(name, harness_config.s3_prefix)
     if not await s3_object_exists(key, aws=harness_config.aws, s3_bucket=harness_config.s3_bucket):
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
+    if await get_s3_object_size(key, aws=harness_config.aws, s3_bucket=harness_config.s3_bucket) > MAX_AGENT_ZIP_BYTES:
+        raise HTTPException(status_code=413, detail="Agent zip exceeds the 100 MiB limit")
 
     url = await create_presigned_url(
         key,

@@ -10,13 +10,14 @@ import logfire
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
+from tracker.aws.credentials import aws_client_kwargs
 from tracker.exceptions import S3Error
 from tracker.logging import get_logger
 
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from tracker.types import AWSCredentials
+    from tracker.types import AWSConfig
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -28,34 +29,37 @@ _CLIENT_CONFIG = Config(max_pool_connections=200)
 
 
 @lru_cache(maxsize=32)
-def _s3_session(aws: "AWSCredentials") -> aioboto3.Session:
+def _s3_session(aws: "AWSConfig") -> aioboto3.Session:
     """aioboto3 session cached per credential set."""
-    return aioboto3.Session(
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        aws_session_token=aws.aws_session_token,
-        region_name=aws.aws_default_region,
-    )
+    return aioboto3.Session(**aws_client_kwargs(aws))
 
 
-def _s3_client(aws: "AWSCredentials") -> Any:
+def _s3_client(aws: "AWSConfig") -> Any:
     """Open an async S3 client for the given credentials (use as `async with`)."""
     return _s3_session(aws).client("s3", config=_CLIENT_CONFIG)  # pyright: ignore[reportUnknownMemberType]
 
 
-def get_contract_s3_key(contract_name: str) -> str:
+def scope_s3_key(s3_prefix: str, key: str) -> str:
+    return f"{s3_prefix}/{key}" if s3_prefix else key
+
+
+def get_contract_s3_key(contract_name: str, s3_prefix: str = "") -> str:
     """Get the S3 key for an agent zip file."""
-    return f"{S3_AGENTS_PREFIX}/{contract_name}.zip"
+    return scope_s3_key(s3_prefix, f"{S3_AGENTS_PREFIX}/{contract_name}.zip")
 
 
-def get_benchmark_contract_s3_key(benchmark_id: str, contract_name: str) -> str:
+def get_benchmark_s3_prefix(benchmark_id: str, s3_prefix: str = "") -> str:
+    return scope_s3_key(s3_prefix, f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/")
+
+
+def get_benchmark_contract_s3_key(benchmark_id: str, contract_name: str, s3_prefix: str = "") -> str:
     """Get the S3 key for an agent zip copied into a benchmark's folder."""
-    return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{contract_name}.zip"
+    return f"{get_benchmark_s3_prefix(benchmark_id, s3_prefix)}{contract_name}.zip"
 
 
-def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str) -> str:
+def get_agent_result_s3_key(benchmark_id: str, task_id: str, output_name: str, s3_prefix: str = "") -> str:
     """Get the S3 key for a run output archive."""
-    return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/{output_name}"
+    return f"{get_benchmark_s3_prefix(benchmark_id, s3_prefix)}{task_id}/{output_name}"
 
 
 def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Callable[_P, Coroutine[Any, Any, _R]]]:
@@ -76,7 +80,7 @@ def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Cal
 
 @logfire.instrument("upload_to_s3", extract_args=("s3_key", "s3_bucket"))
 @handle_s3_error(message="Failed to upload to S3")
-async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSConfig", s3_bucket: str) -> None:
     """
     Upload file content to S3.
 
@@ -94,7 +98,7 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
 
 
 @handle_s3_error(message="Failed to download from S3")
-async def download_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> bytes:
+async def download_from_s3(s3_key: str, aws: "AWSConfig", s3_bucket: str) -> bytes:
     """
     Download file content from S3.
 
@@ -126,7 +130,7 @@ async def _as_async_iter(keys: AsyncIterable[str] | Iterable[str]) -> AsyncItera
 
 
 async def download_many_from_s3(
-    s3_keys: AsyncIterable[str] | Iterable[str], aws: "AWSCredentials", s3_bucket: str
+    s3_keys: AsyncIterable[str] | Iterable[str], aws: "AWSConfig", s3_bucket: str
 ) -> AsyncIterator[tuple[str, bytes]]:
     """Download multiple objects over a single shared client (one connection pool).
 
@@ -147,7 +151,7 @@ async def download_many_from_s3(
 
 
 @handle_s3_error(message="Failed to delete from S3")
-async def delete_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+async def delete_from_s3(s3_key: str, aws: "AWSConfig", s3_bucket: str) -> None:
     """
     Delete file from S3.
 
@@ -163,7 +167,7 @@ async def delete_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> 
         await client.delete_object(Bucket=s3_bucket, Key=s3_key)
 
 
-async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSConfig", s3_bucket: str) -> None:
     """
     Copy an S3 object from source_key to dest_key within the same bucket.
 
@@ -181,15 +185,21 @@ async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSCredentials", 
         raise S3Error(f"Failed to copy S3 object from {source_key} to {dest_key}: {e}") from e
 
 
-async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, aws: "AWSCredentials", s3_bucket: str) -> None:
+async def copy_agent_to_benchmark(
+    benchmark_id: str,
+    contract_name: str,
+    aws: "AWSConfig",
+    s3_bucket: str,
+    s3_prefix: str = "",
+) -> None:
     """
     Freeze the agent for a benchmark run by copying
     agents/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
 
     # NOTE: Skips if it already exists at that location
     """
-    source_key = get_contract_s3_key(contract_name)
-    dest_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
+    source_key = get_contract_s3_key(contract_name, s3_prefix)
+    dest_key = get_benchmark_contract_s3_key(benchmark_id, contract_name, s3_prefix)
 
     if await s3_object_exists(dest_key, aws, s3_bucket):
         return
@@ -198,7 +208,7 @@ async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, aws: "A
 
 
 @handle_s3_error(message="Failed to check S3 object existence")
-async def s3_object_exists(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> bool:
+async def s3_object_exists(s3_key: str, aws: "AWSConfig", s3_bucket: str) -> bool:
     """
     Check if an S3 object exists.
 
@@ -221,7 +231,7 @@ async def s3_object_exists(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -
             raise
 
 
-async def list_s3_objects(prefix: str, aws: "AWSCredentials", s3_bucket: str) -> AsyncIterator[str]:
+async def list_s3_objects(prefix: str, aws: "AWSConfig", s3_bucket: str) -> AsyncIterator[str]:
     """
     Yield S3 object keys with the given prefix, a page at a time (no full list held in memory).
 
@@ -248,7 +258,7 @@ async def list_s3_objects(prefix: str, aws: "AWSCredentials", s3_bucket: str) ->
 
 
 @handle_s3_error(message="Failed to create presigned URL")
-async def create_presigned_url(s3_key: str, aws: "AWSCredentials", s3_bucket: str, expiration: int = 86400) -> str:
+async def create_presigned_url(s3_key: str, aws: "AWSConfig", s3_bucket: str, expiration: int = 86400) -> str:
     """
     Create a presigned URL for an S3 object.
 
@@ -274,6 +284,34 @@ async def create_presigned_url(s3_key: str, aws: "AWSCredentials", s3_bucket: st
     return presigned_url
 
 
+@handle_s3_error(message="Failed to create presigned upload")
+async def create_presigned_upload(
+    s3_key: str,
+    aws: "AWSConfig",
+    s3_bucket: str,
+    max_bytes: int,
+    expiration: int = 300,
+) -> dict[str, Any]:
+    """Create a presigned POST that enforces an upload size limit."""
+    async with _s3_client(aws) as client:
+        upload: dict[str, Any] = await client.generate_presigned_post(
+            Bucket=s3_bucket,
+            Key=s3_key,
+            Conditions=[["content-length-range", 1, max_bytes]],
+            ExpiresIn=expiration,
+        )
+
+    return upload
+
+
+@handle_s3_error(message="Failed to inspect S3 object")
+async def get_s3_object_size(s3_key: str, aws: "AWSConfig", s3_bucket: str) -> int:
+    """Return an S3 object's content length in bytes."""
+    async with _s3_client(aws) as client:
+        response = await client.head_object(Bucket=s3_bucket, Key=s3_key)
+        return int(response["ContentLength"])
+
+
 def create_console_url(s3_key: str, region: str, s3_bucket: str) -> str:
     """
     Create an AWS console URL for an S3 object.
@@ -289,7 +327,7 @@ def create_console_url(s3_key: str, region: str, s3_bucket: str) -> str:
     return f"https://{region}.console.aws.amazon.com/s3/object/{s3_bucket}?region={region}&prefix={s3_key}"
 
 
-def create_benchmark_url(benchmark_id: str, region: str, s3_bucket: str) -> str:
+def create_benchmark_url(benchmark_id: str, region: str, s3_bucket: str, s3_prefix: str = "") -> str:
     """
     Create the AWS Console URL for a benchmark's S3 folder.
 
@@ -301,12 +339,12 @@ def create_benchmark_url(benchmark_id: str, region: str, s3_bucket: str) -> str:
     Returns:
         AWS Console URL pointing to the benchmark folder prefix
     """
-    prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
+    prefix = get_benchmark_s3_prefix(benchmark_id, s3_prefix)
     return f"https://{region}.console.aws.amazon.com/s3/buckets/{s3_bucket}?region={region}&prefix={prefix}"
 
 
 @handle_s3_error(message="Failed to list agents from S3")
-async def list_agents(aws: "AWSCredentials", s3_bucket: str) -> list[tuple[str, datetime | None]]:
+async def list_agents(aws: "AWSConfig", s3_bucket: str, s3_prefix: str = "") -> list[tuple[str, datetime | None]]:
     """List zipped agent bundles under the `agents/` prefix.
 
     Returns (name, last_modified) pairs, one per `agents/<name>.zip`.
@@ -315,11 +353,12 @@ async def list_agents(aws: "AWSCredentials", s3_bucket: str) -> list[tuple[str, 
         S3Error: If listing fails due to AWS errors or network issues
     """
     agents: list[tuple[str, datetime | None]] = []
+    agents_prefix = scope_s3_key(s3_prefix, f"{S3_AGENTS_PREFIX}/")
     async with _s3_client(aws) as client:
         paginator = client.get_paginator("list_objects_v2")
-        async for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/"):
+        async for page in paginator.paginate(Bucket=s3_bucket, Prefix=agents_prefix):
             for s3_object in page.get("Contents", []):
-                tail = s3_object["Key"][len("agents/") :]
+                tail = s3_object["Key"][len(agents_prefix) :]
                 if not tail.endswith(".zip"):
                     continue
                 agents.append((tail[: -len(".zip")], s3_object.get("LastModified")))

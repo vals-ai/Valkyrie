@@ -27,7 +27,7 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
 from tracker.types import (
-    AWSCredentials,
+    AWSConfig,
 )
 
 from tracker.utils.resources import fetch_sandbox_provider_config
@@ -88,7 +88,7 @@ async def force_stop_sandboxes(
     benchmark_row: Benchmark,
     session: Session,
     sandbox_provider_secret_name: str,
-    aws: AWSCredentials,
+    aws: AWSConfig,
     org: Org,
     sandbox_provider: str = "daytona",
 ) -> None:

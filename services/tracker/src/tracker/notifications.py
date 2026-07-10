@@ -17,7 +17,7 @@ from tracker.logging import get_logger
 if TYPE_CHECKING:
     from tracker.database.models import Benchmark, Org
     from sqlmodel import Session
-    from tracker.types import AWSCredentials
+    from tracker.types import AWSConfig
 
 logger = get_logger(__name__)
 
@@ -117,7 +117,7 @@ def _build_terminal_message(
 
 
 class SlackNotifier:
-    def __init__(self, secret_name: str, aws: AWSCredentials, intervals: list[int]):
+    def __init__(self, secret_name: str, aws: AWSConfig, intervals: list[int]):
         self._secret_name = secret_name
         self._aws = aws
         self._intervals = set(intervals)

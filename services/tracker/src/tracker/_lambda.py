@@ -1,28 +1,29 @@
 import json
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
+from tracker.aws.credentials import aws_client_kwargs
 from tracker.exceptions import LambdaError
-from tracker.types import AWSCredentials
+from tracker.types import AWSConfig
 
 
 @lru_cache(maxsize=32)
-def lambda_client(aws: AWSCredentials, config: Config | None = None) -> Any:
+def lambda_client(aws: AWSConfig, config: Config | None = None) -> Any:
     """Build a boto3 Lambda client. The caller chooses the Config — defaults
     (60s read timeout, standard retries) are appropriate for short-running
     Lambdas; long-running invocations (e.g. analyzer Lambdas) should pass a
     Config with an extended read_timeout."""
-    return boto3.client(  # pyright: ignore[reportUnknownMemberType]
-        "lambda",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        aws_session_token=aws.aws_session_token,
-        region_name=aws.aws_default_region,
-        config=config,
+    return cast(
+        Any,
+        boto3.client(  # pyright: ignore[reportUnknownMemberType]
+            "lambda",
+            **aws_client_kwargs(aws),
+            config=config,
+        ),
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -23,6 +24,17 @@ CATALOG_REQUEST_TIMEOUT_SECONDS = 10.0
 HEALTH_CHECK_TIMEOUT_SECONDS = 1.0
 
 router = APIRouter(prefix="/benchmark-services")
+_SERVICE_NAME = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+async def authorize_managed_benchmark(request: Request, org: Org, name: str) -> None:
+    """Require managed runs to use a service exposed by the authenticated catalog."""
+    if not _SERVICE_NAME.fullmatch(name):
+        raise HTTPException(status_code=400, detail=f"Invalid managed benchmark name '{name}'")
+
+    catalog = await catalog_benchmark_services(request, org)
+    if name not in {service.name for service in catalog.services}:
+        raise HTTPException(status_code=403, detail=f"Benchmark '{name}' is not available to this organization")
 
 
 async def _ping_service(client: httpx.AsyncClient, name: str, url: str) -> BenchmarkServiceHealth:

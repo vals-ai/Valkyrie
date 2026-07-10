@@ -1,5 +1,6 @@
 """Factory helpers that construct clients, provider configs, and validated DB rows."""
 
+import json
 from uuid import UUID
 
 from benchmark_service import (
@@ -9,6 +10,7 @@ from benchmark_service import (
 from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session
 
+from tracker import config
 from tracker.auth import RequestIdentity
 from tracker.aws.secrets import fetch_aws_secret
 from tracker.config import create_benchmark_service_url
@@ -20,14 +22,29 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.types import (
-    AWSCredentials,
+    AWSConfig,
     StartBenchmarkRequest,
+    TaskRoleAWSConfig,
 )
 
 
-def fetch_sandbox_provider_config(secret_name: str, aws: AWSCredentials, provider_type: str) -> SandboxProviderConfig:
+def fetch_sandbox_provider_config(secret_name: str, aws: AWSConfig, provider_type: str) -> SandboxProviderConfig:
     """Resolve sandbox provider config from the selected provider type and secret."""
-    secret = fetch_aws_secret(secret_name, aws)
+    if isinstance(aws, TaskRoleAWSConfig):
+        if secret_name != config.MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME:
+            raise TrackerServiceError("Managed runtime provider does not match the deployment config")
+        if provider_type != config.MANAGED_RUNTIME_SANDBOX_PROVIDER:
+            raise TrackerServiceError("Managed runtime provider does not match the deployment config")
+        try:
+            secret = json.loads(config.MANAGED_RUNTIME_SANDBOX_PROVIDER_CONFIG)
+            if not isinstance(secret, dict):
+                raise ValueError
+            return sandbox_provider_config_from_mapping({**secret, "type": provider_type})
+        except (KeyError, TypeError, ValueError):
+            raise TrackerServiceError("Managed runtime sandbox provider config is invalid") from None
+    else:
+        secret = fetch_aws_secret(secret_name, aws)
+
     if not isinstance(secret, dict):
         raise TrackerServiceError("Expected sandbox provider secret to be a JSON object")
 

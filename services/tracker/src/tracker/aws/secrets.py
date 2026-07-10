@@ -2,31 +2,32 @@
 
 import json
 from functools import lru_cache
-from typing import Any
+from typing import Any, cast
 
 import boto3
 from botocore.exceptions import ClientError
 
+from tracker.aws.credentials import aws_client_kwargs
 from tracker.exceptions import SecretsError
 from tracker.logging import get_logger
-from tracker.types import AWSCredentials
+from tracker.types import AWSConfig
 
 logger = get_logger(__name__)
 
 
 @lru_cache(maxsize=32)
-def _secretsmanager_client(aws: AWSCredentials) -> Any:
+def _secretsmanager_client(aws: AWSConfig) -> Any:
     """Cached Secrets Manager client, shared per credential tuple."""
-    return boto3.client(  # pyright: ignore[reportUnknownMemberType]
-        "secretsmanager",
-        aws_access_key_id=aws.aws_access_key_id,
-        aws_secret_access_key=aws.aws_secret_access_key,
-        aws_session_token=aws.aws_session_token,
-        region_name=aws.aws_default_region,
+    return cast(
+        Any,
+        boto3.client(  # pyright: ignore[reportUnknownMemberType]
+            "secretsmanager",
+            **aws_client_kwargs(aws),
+        ),
     )
 
 
-def fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, Any] | str:
+def fetch_aws_secret(secret_name: str, aws: AWSConfig) -> dict[str, Any] | str:
     """Fetch a JSON secret from AWS Secrets Manager by name.
 
     Args:
@@ -58,7 +59,7 @@ def fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, Any] | 
         return secret_string
 
 
-def resolve_secrets(secrets: dict[str, str], aws: AWSCredentials) -> dict[str, str]:
+def resolve_secrets(secrets: dict[str, str], aws: AWSConfig) -> dict[str, str]:
     """Resolve AWS secret references to actual values
 
     Args:

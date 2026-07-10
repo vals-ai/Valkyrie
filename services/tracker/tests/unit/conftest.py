@@ -50,6 +50,15 @@ def harness_config() -> HarnessConfig:
 def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
     """Mocks AWS Secrets Manager to return test Daytona credentials."""
 
+    monkeypatch.setattr("tracker.config.MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME", "test-daytona-secret")
+    monkeypatch.setattr("tracker.config.BENCHMARK_CATALOG_URL", "https://catalog.test")
+    monkeypatch.setattr("tracker.config.MODEL_GATEWAY_URL", "https://model-gateway.test")
+    monkeypatch.setattr("tracker.config.VALKYRIE_GATEWAY_SIGNING_KEY", "0123456789abcdef0123456789abcdef")
+    monkeypatch.setattr(
+        "tracker.config.MANAGED_RUNTIME_SANDBOX_PROVIDER_CONFIG",
+        '{"DAYTONA_API_KEY":"test_key","DAYTONA_API_URL":"http://test.url","DAYTONA_TARGET":"test_target"}',
+    )
+
     def _mock_fetch_aws_secret(secret_name: str, aws: AWSCredentials) -> dict[str, str]:
         return {
             "DAYTONA_API_KEY": "test_key",
@@ -67,8 +76,9 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _mock_download_from_s3(*_args: Any, **_kwargs: Any) -> bytes:
         return b"mock-contract-content"
 
-    def _mock_get_contract_s3_key(contract_name: str) -> str:
-        return f"contracts/{contract_name}.zip"
+    def _mock_get_contract_s3_key(contract_name: str, s3_prefix: str = "") -> str:
+        prefix = f"{s3_prefix}/" if s3_prefix else ""
+        return f"{prefix}contracts/{contract_name}.zip"
 
     async def _mock_upload_to_s3(*_args: Any, **_kwargs: Any) -> None:
         pass

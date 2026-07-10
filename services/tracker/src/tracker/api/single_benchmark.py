@@ -16,13 +16,14 @@ from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
+from tracker.runtime import harness_config_for_benchmark
 from tracker.types import (
     HarnessConfig,
     SingleBenchmarkResponse,
     TasksResponse,
     TaskSummary,
 )
-from tracker.utils import try_fetch_harness_config
+from tracker.utils import try_resolve_harness_config
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -53,11 +54,13 @@ _STATUS_SORT_PRIORITY = case(
 def get_single_benchmark(
     benchmark_id: UUID,
     org: Org = Depends(get_current_org),
-    harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
+    harness_config: HarnessConfig | None = Depends(try_resolve_harness_config),
     session: Session = Depends(get_session),
 ) -> SingleBenchmarkResponse:
     """Fetch a single benchmark with task counts + final score for the SingleRun page."""
     benchmark = get_scoped(Benchmark, benchmark_id, session, org)
+    if harness_config:
+        harness_config = harness_config_for_benchmark(benchmark, harness_config, org)
 
     task_state_counts = benchmark.fetch_task_state_counts(session)
     total = sum(task_state_counts.values())
@@ -73,7 +76,12 @@ def get_single_benchmark(
     s3_bucket_url: str | None = None
     if harness_config:
         region = harness_config.aws.aws_default_region
-        s3_bucket_url = create_benchmark_url(str(benchmark.id), region, harness_config.s3_bucket)
+        s3_bucket_url = create_benchmark_url(
+            str(benchmark.id),
+            region,
+            harness_config.s3_bucket,
+            harness_config.s3_prefix,
+        )
         if harness_config.log_group:
             cloudwatch_url = get_benchmark_log_url(
                 benchmark_id=str(benchmark.id),

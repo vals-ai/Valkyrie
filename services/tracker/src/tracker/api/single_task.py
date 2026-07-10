@@ -10,7 +10,7 @@ from sqlmodel import Session, desc, select
 
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
-from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
+from tracker.aws.s3 import create_presigned_url, get_agent_result_s3_key, s3_object_exists
 from tracker.database.models import (
     Benchmark,
     ErrorResult,
@@ -20,6 +20,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
+from tracker.runtime import harness_config_for_benchmark
 from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
 from tracker.utils import fetch_harness_config
 
@@ -43,11 +44,6 @@ def _load_task_or_404(benchmark_id: UUID, task_id: str, org: Org, session: Sessi
         raise HTTPException(status_code=404, detail="Task not found")
 
     return benchmark, task
-
-
-def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
-    """S3 prefix for a task's artifacts (presigned URLs + run outputs)."""
-    return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
 def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, str | None]:
@@ -116,7 +112,8 @@ async def get_task_artifacts(
     session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
     """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
-    _, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    benchmark, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    harness_config = harness_config_for_benchmark(benchmark, harness_config, org)
 
     cloudwatch_url: str | None = None
     if harness_config.log_group and harness_config.aws.aws_default_region:
@@ -130,7 +127,12 @@ async def get_task_artifacts(
 
     agent_output_url: str | None = None
     ttl_seconds: int | None = None
-    key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
+    key = get_agent_result_s3_key(
+        str(benchmark_id),
+        task_id,
+        "agent_output.tar.gz",
+        harness_config.s3_prefix,
+    )
     if await s3_object_exists(key, aws=harness_config.aws, s3_bucket=harness_config.s3_bucket):
         ttl_seconds = 300
         agent_output_url = await create_presigned_url(

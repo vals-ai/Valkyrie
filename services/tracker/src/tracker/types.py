@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -41,21 +41,34 @@ class BenchmarkDetails(BaseModel):
 
 
 class AWSCredentials(BaseModel, frozen=True):
-    aws_access_key_id: str
-    aws_secret_access_key: str = Field(repr=False)
+    model_config = {"extra": "forbid"}
+
+    aws_access_key_id: str = Field(min_length=1)
+    aws_secret_access_key: str = Field(min_length=1, repr=False)
     aws_default_region: str
     aws_session_token: str | None = Field(default=None, repr=False)
 
 
+class TaskRoleAWSConfig(BaseModel, frozen=True):
+    model_config = {"extra": "forbid"}
+
+    kind: Literal["task_role"] = "task_role"
+    aws_default_region: str
+
+
+AWSConfig = AWSCredentials | TaskRoleAWSConfig
+
+
 class HarnessConfig(BaseModel):
-    aws: AWSCredentials
+    aws: AWSConfig
     s3_bucket: str
+    s3_prefix: str = ""
     log_group: str
     log_retention_policy: int
     sandbox_provider_secret_name: str
 
 
-class StartBenchmarkRequest(BaseModel):
+class _StartBenchmarkBase(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
@@ -64,7 +77,6 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
-    harness_config: HarnessConfig
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
     sandbox_provider: str = "daytona"
@@ -84,6 +96,26 @@ class StartBenchmarkRequest(BaseModel):
             url=benchmark_service_url,
             service_headers=self.service_headers,
         )
+
+
+class StartBenchmarkInput(_StartBenchmarkBase):
+    harness_config: HarnessConfig | None = None
+
+
+class StartBenchmarkRequest(_StartBenchmarkBase):
+    harness_config: HarnessConfig
+
+
+class ManagedRuntimeReadiness(BaseModel):
+    kind: Literal["managed"] = "managed"
+    ready: Literal[True] = True
+
+
+class InitResponse(BaseModel):
+    org_name: str
+    created: bool
+    email_claim_missing: bool
+    runtime: ManagedRuntimeReadiness
 
 
 class FetchBenchmarkTasksRequest(BaseModel):
@@ -371,6 +403,13 @@ class AgentsResponse(BaseModel):
 class AgentDownloadURLResponse(BaseModel):
     name: str
     download_url: str
+    expires_in: int
+
+
+class AgentUploadURLResponse(BaseModel):
+    name: str
+    upload_url: str
+    fields: dict[str, str]
     expires_in: int
 
 

@@ -1,4 +1,5 @@
 import os
+import json
 import unittest
 from unittest import mock
 
@@ -14,6 +15,7 @@ from aws_cdk import (
 
 from constants import (
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
+    MANAGED_RUNTIME_LOG_GROUP_NAME,
     SLACK_WORKSPACE_ID_ENV,
     TRACKER_LOG_GROUP_NAME,
     VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV,
@@ -340,6 +342,87 @@ class MonitoringStackTest(unittest.TestCase):
                         )
                     },
                 )
+
+    def test_managed_runtime_uses_task_roles_and_org_scoped_log_root(self) -> None:
+        provider_secret = "managed-provider"
+        gateway_secret = "devModelGatewayConfig"
+        with mock.patch.dict(
+            os.environ,
+            {
+                "MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME": provider_secret,
+                "MODEL_GATEWAY_URL": "https://gateway.example.test",
+                "VALKYRIE_GATEWAY_SIGNING_SECRET_NAME": gateway_secret,
+            },
+            clear=True,
+        ):
+            tracker_template, worker_template = _service_templates(DEV)
+
+        for template in (tracker_template, worker_template):
+            task_definition = next(iter(template.find_resources("AWS::ECS::TaskDefinition").values()))
+            container = task_definition["Properties"]["ContainerDefinitions"][0]
+            environment = {item["Name"]: item["Value"] for item in container["Environment"]}
+            secret_names = {item["Name"] for item in container["Secrets"]}
+            secrets = {item["Name"]: item["ValueFrom"] for item in container["Secrets"]}
+
+            actions: set[str] = set()
+            for policy in template.find_resources("AWS::IAM::Policy").values():
+                for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+                    action = statement["Action"]
+                    actions.update([action] if isinstance(action, str) else action)
+
+            self.assertEqual(environment["MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME"], provider_secret)
+            self.assertIn("MANAGED_RUNTIME_SANDBOX_PROVIDER_CONFIG", secret_names)
+            self.assertEqual(environment["MODEL_GATEWAY_URL"], "https://gateway.example.test")
+            self.assertIn("VALKYRIE_GATEWAY_SIGNING_KEY", secret_names)
+            signing_secret = json.dumps(secrets["VALKYRIE_GATEWAY_SIGNING_KEY"])
+            self.assertIn(gateway_secret, signing_secret)
+            self.assertIn("valkyrie_signing_key", signing_secret)
+            self.assertIn("secretsmanager:GetSecretValue", actions)
+
+            task_role_id = task_definition["Properties"]["TaskRoleArn"]["Fn::GetAtt"][0]
+            task_role_actions: set[str] = set()
+            for policy in template.find_resources("AWS::IAM::Policy").values():
+                if {"Ref": task_role_id} not in policy["Properties"]["Roles"]:
+                    continue
+                for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+                    action = statement["Action"]
+                    task_role_actions.update([action] if isinstance(action, str) else action)
+            self.assertTrue({"s3:GetObject*", "s3:PutObject"} <= task_role_actions)
+            self.assertNotIn("secretsmanager:GetSecretValue", task_role_actions)
+
+        tracker_task = next(iter(tracker_template.find_resources("AWS::ECS::TaskDefinition").values()))
+        tracker_env = {
+            item["Name"]: item["Value"] for item in tracker_task["Properties"]["ContainerDefinitions"][0]["Environment"]
+        }
+        self.assertEqual(tracker_env["MANAGED_RUNTIME_LOG_GROUP"], f"{MANAGED_RUNTIME_LOG_GROUP_NAME}-dev")
+
+        worker_actions: set[str] = set()
+        for policy in worker_template.find_resources("AWS::IAM::Policy").values():
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+                action = statement["Action"]
+                worker_actions.update([action] if isinstance(action, str) else action)
+        self.assertTrue(
+            {"logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents", "logs:PutRetentionPolicy"}
+            <= worker_actions
+        )
+
+    def test_empty_gateway_secret_selector_uses_stage_default(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"VALKYRIE_GATEWAY_SIGNING_SECRET_NAME": ""},
+            clear=True,
+        ):
+            tracker_template, worker_template = _service_templates(DEV)
+
+        for template in (tracker_template, worker_template):
+            task_definition = next(iter(template.find_resources("AWS::ECS::TaskDefinition").values()))
+            secrets = {
+                item["Name"]: item["ValueFrom"]
+                for item in task_definition["Properties"]["ContainerDefinitions"][0]["Secrets"]
+            }
+            signing_secret = json.dumps(secrets["VALKYRIE_GATEWAY_SIGNING_KEY"])
+            self.assertIn("devModelGatewayConfig", signing_secret)
+            self.assertIn("valkyrie_signing_key", signing_secret)
 
 
 if __name__ == "__main__":

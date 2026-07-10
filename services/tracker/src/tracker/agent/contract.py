@@ -12,6 +12,9 @@ from tracker.agent.schemas import AgentConfig, AgentContract
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import BundlerError, ContractValidationError
 
+MAX_CONTRACT_BYTES = 1024 * 1024
+MAX_AGENT_ZIP_BYTES = 100 * 1024 * 1024
+
 
 def read_agent_name(agent_dir: Path) -> str:
     """Read and validate the agent name from a directory's contract.yaml/.yml."""
@@ -39,6 +42,8 @@ def get_contract_from_zip_bytes(agent_name: str, zip_bytes: bytes, agent_config:
                 for ext in (".yaml", ".yml"):
                     contract_member = f"{agent_name}/contract{ext}"
                     if contract_member in names:
+                        if zf.getinfo(contract_member).file_size > MAX_CONTRACT_BYTES:
+                            raise BundlerError("Agent contract exceeds the 1 MiB limit")
                         zf.extract(contract_member, tmp_path)
                         return get_contract(tmp_path / contract_member, agent_config)
 

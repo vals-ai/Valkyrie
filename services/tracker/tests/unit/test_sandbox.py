@@ -236,6 +236,7 @@ class TestAgentOutputTelemetry:
             task_id: str,
             _aws: Any,
             _s3_bucket: str,
+            _s3_prefix: str,
         ) -> None:
             artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
 

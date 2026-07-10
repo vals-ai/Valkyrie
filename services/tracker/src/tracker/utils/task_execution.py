@@ -24,6 +24,7 @@ from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
+from tracker import config
 from tracker.aws.cloudwatch_logs import write_benchmark_log_event
 from tracker.aws.s3 import (
     get_agent_result_s3_key,
@@ -42,13 +43,15 @@ from tracker.database.models import (
 from tracker.database.session import engine
 from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
+from tracker.model_gateway import model_gateway_origin, sign_model_gateway_token
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
-    AWSCredentials,
+    AWSConfig,
     HarnessConfig,
     StartBenchmarkRequest,
+    TaskRoleAWSConfig,
 )
 
 from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
@@ -205,7 +208,7 @@ def handle_early_exit(task_row: Task, task_session: Session) -> None:
 
 
 def buffer_logs(
-    log_queue: asyncio.Queue[str], stream_key: str, aws: AWSCredentials, log_group: str, force_flush: bool = False
+    log_queue: asyncio.Queue[str], stream_key: str, aws: AWSConfig, log_group: str, force_flush: bool = False
 ) -> None:
     """
     Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
@@ -260,7 +263,7 @@ def commit_task_status_transition(task_row_id: UUID, session: Session, org: Org,
     _commit_task_status(task, session, to_status, extra={"fetch_duration_ms": elapsed_ms(fetch_start)})
 
 
-@logfire.instrument("process_task")
+@logfire.instrument("process_task", extract_args=("benchmark_id", "task_id"))
 @tenacity_retry(
     retry=retry_if_exception_type(SandboxSetupError),
     stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
@@ -307,6 +310,7 @@ async def process_task(
             return {task_id: None}
         benchmark_name = benchmark_row.name
         benchmark_agent_name = benchmark_row.arguments.contract.name
+        benchmark_started_by_id = benchmark_row.started_by_id
         benchmark_started_by_email = benchmark_row.started_by_email
 
     # Setup logging infrastructure before try block so it's always available
@@ -403,8 +407,31 @@ async def process_task(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
+        if isinstance(harness_config.aws, TaskRoleAWSConfig):
+            if start_benchmark_request.contract.secrets:
+                raise TrackerServiceError("Managed runtime does not accept AWS secret references")
+            if benchmark_started_by_id is None:
+                raise TrackerServiceError("Managed run is missing its starter identity")
+            agent_secrets = {
+                "MODEL_GATEWAY_URL": config.MODEL_GATEWAY_URL,
+                "MODEL_GATEWAY_API_KEY": sign_model_gateway_token(
+                    benchmark_started_by_id,
+                    org.id,
+                    benchmark_id,
+                    task_row.task_id,
+                ),
+            }
+            gateway_origin = model_gateway_origin()
+            egress_allowlist = list(start_benchmark_request.contract.egress_allowlist)
+            if egress_allowlist and gateway_origin not in egress_allowlist:
+                egress_allowlist.append(gateway_origin)
+            agent_contract = start_benchmark_request.contract.model_copy(update={"egress_allowlist": egress_allowlist})
+        else:
+            agent_secrets = resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws)
+            agent_contract = start_benchmark_request.contract
+
         env_vars = {
-            **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+            **agent_secrets,
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
@@ -439,10 +466,11 @@ async def process_task(
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(
                     sandbox,
-                    start_benchmark_request.contract,
+                    agent_contract,
                     str(benchmark_id),
                     harness_config.aws,
                     harness_config.s3_bucket,
+                    harness_config.s3_prefix,
                 )
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
@@ -461,17 +489,23 @@ async def process_task(
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
                 if start_benchmark_request.contract.final_output:
-                    agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
+                    agent_output_s3_key = get_agent_result_s3_key(
+                        str(benchmark_id),
+                        task_id,
+                        "agent_output.tar.gz",
+                        harness_config.s3_prefix,
+                    )
 
                 exit_reason, agent_run_time = await run_agent(
                     sandbox,
-                    start_benchmark_request.contract,
+                    agent_contract,
                     task_data.problem_path,
                     task_id,
                     log_output,
                     task_data.cwd,
                     aws=harness_config.aws,
                     s3_bucket=harness_config.s3_bucket,
+                    s3_prefix=harness_config.s3_prefix,
                     agent_output_s3_key=agent_output_s3_key,
                     agent_timeout=task_data.agent_timeout,
                     benchmark_id=str(benchmark_id),

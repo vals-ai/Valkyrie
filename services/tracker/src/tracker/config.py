@@ -36,6 +36,18 @@ def create_benchmark_service_url(benchmark_name: str) -> str:
 
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
+MANAGED_RUNTIME_AWS_REGION = (
+    os.environ.get("MANAGED_RUNTIME_AWS_REGION")
+    or os.environ.get("AWS_REGION")
+    or os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+)
+MANAGED_RUNTIME_LOG_GROUP = os.environ.get("MANAGED_RUNTIME_LOG_GROUP", "/valkyrie/benchmarks")
+MANAGED_RUNTIME_LOG_RETENTION_POLICY = 30
+MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME = os.environ.get("MANAGED_RUNTIME_SANDBOX_PROVIDER_SECRET_NAME", "")
+MANAGED_RUNTIME_SANDBOX_PROVIDER_CONFIG = os.environ.get("MANAGED_RUNTIME_SANDBOX_PROVIDER_CONFIG", "")
+MANAGED_RUNTIME_SANDBOX_PROVIDER = "daytona"
+MODEL_GATEWAY_URL = os.environ.get("MODEL_GATEWAY_URL", "").rstrip("/")
+VALKYRIE_GATEWAY_SIGNING_KEY = os.environ.get("VALKYRIE_GATEWAY_SIGNING_KEY", "")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")

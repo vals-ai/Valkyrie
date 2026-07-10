@@ -3,6 +3,7 @@
 from tracker.utils.harness_config import (
     fetch_harness_config,
     try_fetch_harness_config,
+    try_resolve_harness_config as try_resolve_harness_config,
 )
 from tracker.utils.run_orchestration import (
     catch_errors_during_cleanup,

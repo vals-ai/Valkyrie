@@ -65,7 +65,7 @@ from tracker.observability import (
     retry_callback,
     set_sandbox_context,
 )
-from tracker.types import AWSCredentials
+from tracker.types import AWSConfig
 
 logger = get_logger(__name__)
 
@@ -239,8 +239,9 @@ async def upload_agent_artifacts(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     benchmark_id: str,
-    aws: AWSCredentials,
+    aws: AWSConfig,
     s3_bucket: str,
+    s3_prefix: str = "",
 ) -> None:
     """
     Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
@@ -259,7 +260,7 @@ async def upload_agent_artifacts(
     """
     logger.info(f"Uploading contract {contract.name} to sandbox {sandbox.name}")
 
-    contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name)
+    contract_s3_key = get_benchmark_contract_s3_key(benchmark_id, contract.name, s3_prefix)
     presigned_url = await create_presigned_url(
         contract_s3_key, aws, s3_bucket, expiration=CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS
     )
@@ -469,7 +470,7 @@ async def archive_and_upload_output(
     sandbox: Sandbox,
     output_path: str,
     agent_output_s3_key: str,
-    aws: AWSCredentials,
+    aws: AWSConfig,
     s3_bucket: str,
     *,
     benchmark_id: str | None = None,
@@ -561,8 +562,9 @@ async def upload_output_artifacts(
     artifacts: list[OutputArtifactSpec],
     benchmark_id: str,
     task_id: str,
-    aws: AWSCredentials,
+    aws: AWSConfig,
     s3_bucket: str,
+    s3_prefix: str = "",
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
@@ -598,7 +600,7 @@ async def upload_output_artifacts(
         if b64_result.exit_code != _SUCCESS_EXIT_CODE:
             raise OutputArtifactError(f"Failed to read output artifact: {sandbox_path}")
 
-        s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
+        s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path, s3_prefix)
         file_content = base64.b64decode(b64_result.stdout)
         await upload_to_s3(file_content, s3_key, aws, s3_bucket)
 
@@ -623,8 +625,9 @@ async def run_agent(
     task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
-    aws: AWSCredentials,
+    aws: AWSConfig,
     s3_bucket: str,
+    s3_prefix: str = "",
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
@@ -709,6 +712,7 @@ async def run_agent(
             task_id,
             aws,
             s3_bucket,
+            s3_prefix,
         )
 
     # Return why the agent terminated abnormally, or None on clean exit

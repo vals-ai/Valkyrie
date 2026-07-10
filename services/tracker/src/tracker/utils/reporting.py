@@ -15,8 +15,8 @@ from sqlalchemy.orm import selectinload
 from sqlmodel import Session, asc, case, col, desc, func, or_, select
 
 from tracker.aws.s3 import (
-    S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
+    get_benchmark_s3_prefix,
     upload_to_s3,
 )
 from tracker.database.models import (
@@ -293,7 +293,10 @@ async def stream_benchmark_results(
                     benchmark_id=fresh_benchmark.id,
                     details=benchmark_context.benchmark_details,
                     s3_bucket_url=create_benchmark_url(
-                        str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
+                        str(fresh_benchmark.id),
+                        harness_config.aws.aws_default_region,
+                        harness_config.s3_bucket,
+                        harness_config.s3_prefix,
                     ),
                     label=fresh_benchmark.label,
                     final_score=fresh_benchmark.final_evaluation.final_score
@@ -547,7 +550,7 @@ async def upload_final_view(
     benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig
 ) -> str:
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
+    s3_key = f"{get_benchmark_s3_prefix(str(benchmark_row.id), harness_config.s3_prefix)}{benchmark_row.name}.json"
     await upload_to_s3(
         final_view.model_dump_json(indent=4, exclude_none=True).encode(),
         s3_key,
