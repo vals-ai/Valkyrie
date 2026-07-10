@@ -1,36 +1,29 @@
-"""Delete Valkyrie-managed Daytona sandboxes older than 48 hours."""
+"""Delete Daytona sandboxes older than 48 hours from the configured target."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+from typing import Protocol, cast
 
+import boto3
 from benchmark_service.sandbox.daytona import DaytonaProviderConfig
-from daytona import (
-    AsyncDaytona,
-    AsyncSandbox,
-    DaytonaConfig,
-    ListSandboxesQuery,
-)
+from daytona import AsyncDaytona, AsyncSandbox, DaytonaConfig, ListSandboxesQuery
 
 from tracker.logging import configure_logging, get_logger
-from tracker.sandbox_labels import (
-    ENVIRONMENT_LABEL,
-    MANAGED_BY_LABEL,
-    MANAGED_BY_VALKYRIE,
-    cleanup_is_disabled,
-    cleanup_is_enabled,
-    is_valkyrie_managed,
-)
 
 logger = get_logger(__name__)
 
+_CLEANUP_LABEL = "clean-up"
+_CLEANUP_DISABLED = "false"
 _MAX_SANDBOX_AGE = timedelta(hours=48)
-_PRODUCTION_ENVIRONMENT = "production"
+_DELETE_TIMEOUT_SECONDS = 120
+_LAMBDA_SHUTDOWN_MARGIN_SECONDS = 60
+_REQUIRED_SECRET_FIELDS = ("DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET")
 
 
 class DaytonaListClient(Protocol):
@@ -39,10 +32,22 @@ class DaytonaListClient(Protocol):
     def list(self, query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]: ...
 
 
-class SandboxForceDeleteProvider(Protocol):
-    """Core sandbox-provider deletion operation used by the cleanup engine."""
+class SandboxDeleteProvider(Protocol):
+    """Existing sandbox-provider deletion operation used by the cleanup engine."""
 
-    async def force_delete_sandbox(self, instance_id: str) -> bool: ...
+    async def delete_sandbox(self, instance_id: str) -> None: ...
+
+
+class SecretsManagerClient(Protocol):
+    """Secrets Manager operation used by the Lambda handler."""
+
+    def get_secret_value(self, *, SecretId: str) -> Mapping[str, object]: ...
+
+
+class LambdaContext(Protocol):
+    """Lambda context operation used to preserve a shutdown margin."""
+
+    def get_remaining_time_in_millis(self) -> int: ...
 
 
 @dataclass(frozen=True)
@@ -58,10 +63,8 @@ class CleanupReport:
     dry_run: bool
     scanned: int
     eligible: int
-    deletion_requested: int
-    already_absent: int
+    deletion_completed: int
     exempted: int
-    unmanaged: int
     target_mismatch: int
     not_old: int
     invalid_metadata: int
@@ -96,30 +99,29 @@ def _parse_created_at(value: str | None) -> datetime | None:
     return created_at.astimezone(UTC)
 
 
+def _cleanup_is_disabled(labels: Mapping[str, str] | None) -> bool:
+    value = labels.get(_CLEANUP_LABEL) if labels else None
+    return value is not None and value.strip().casefold() == _CLEANUP_DISABLED
+
+
 async def cleanup_old_sandboxes(
     client: DaytonaListClient,
-    delete_provider: SandboxForceDeleteProvider,
+    delete_provider: SandboxDeleteProvider,
     *,
     now: datetime,
-    environment: str,
     target: str,
     dry_run: bool = True,
 ) -> CleanupReport:
-    """Delete owned sandboxes strictly older than 48 hours and return an audit summary."""
+    """Delete target sandboxes strictly older than 48 hours unless they opt out."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
 
     cutoff = now.astimezone(UTC) - _MAX_SANDBOX_AGE
-    scanned = eligible = deletion_requested = already_absent = 0
-    exempted = unmanaged = target_mismatch = not_old = invalid_metadata = 0
+    scanned = eligible = deletion_completed = 0
+    exempted = target_mismatch = not_old = invalid_metadata = 0
     failures: list[CleanupFailure] = []
 
-    query = ListSandboxesQuery(
-        labels={MANAGED_BY_LABEL: MANAGED_BY_VALKYRIE, ENVIRONMENT_LABEL: environment},
-        targets=[target],
-        created_at_before=cutoff,
-        limit=200,
-    )
+    query = ListSandboxesQuery(targets=[target], created_at_before=cutoff, limit=200)
     sandboxes = [sandbox async for sandbox in client.list(query)]
     for sandbox in sandboxes:
         scanned += 1
@@ -130,25 +132,15 @@ async def cleanup_old_sandboxes(
                 extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
             )
             continue
-        if not is_valkyrie_managed(sandbox.labels, environment=environment):
-            unmanaged += 1
-            continue
-        if cleanup_is_disabled(sandbox.labels):
+        if _cleanup_is_disabled(sandbox.labels):
             exempted += 1
-            continue
-        if not cleanup_is_enabled(sandbox.labels):
-            invalid_metadata += 1
-            logger.error(
-                "Skipping managed Daytona sandbox without an explicit cleanup label",
-                extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
-            )
             continue
 
         created_at = _parse_created_at(sandbox.created_at)
         if created_at is None:
             invalid_metadata += 1
             logger.error(
-                "Skipping managed Daytona sandbox with invalid creation timestamp",
+                "Skipping Daytona sandbox with invalid creation timestamp",
                 extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
             )
             continue
@@ -165,7 +157,10 @@ async def cleanup_old_sandboxes(
             continue
 
         try:
-            was_deleted = await delete_provider.force_delete_sandbox(sandbox.id)
+            await asyncio.wait_for(
+                delete_provider.delete_sandbox(sandbox.id),
+                timeout=_DELETE_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             failures.append(
                 CleanupFailure(
@@ -184,24 +179,19 @@ async def cleanup_old_sandboxes(
             )
             continue
 
-        if was_deleted:
-            deletion_requested += 1
-            logger.info(
-                "Requested deletion of old Daytona sandbox",
-                extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
-            )
-        else:
-            already_absent += 1
+        deletion_completed += 1
+        logger.info(
+            "Completed deletion of old Daytona sandbox",
+            extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
+        )
 
     return CleanupReport(
         cutoff=cutoff,
         dry_run=dry_run,
         scanned=scanned,
         eligible=eligible,
-        deletion_requested=deletion_requested,
-        already_absent=already_absent,
+        deletion_completed=deletion_completed,
         exempted=exempted,
-        unmanaged=unmanaged,
         target_mismatch=target_mismatch,
         not_old=not_old,
         invalid_metadata=invalid_metadata,
@@ -209,13 +199,13 @@ async def cleanup_old_sandboxes(
     )
 
 
-async def run_cleanup(*, now: datetime | None = None) -> CleanupReport:
-    """Build the production Daytona client and perform one cleanup sweep."""
-    provider_config = DaytonaProviderConfig(
-        DAYTONA_API_KEY=os.environ["DAYTONA_API_KEY"],
-        DAYTONA_API_URL=os.environ["DAYTONA_API_URL"],
-        DAYTONA_TARGET=os.environ["DAYTONA_TARGET"],
-    )
+async def run_cleanup(
+    provider_config: DaytonaProviderConfig,
+    *,
+    now: datetime | None = None,
+    dry_run: bool = True,
+) -> CleanupReport:
+    """Build Daytona clients and perform one cleanup sweep."""
     daytona_config = DaytonaConfig(
         api_key=provider_config.DAYTONA_API_KEY,
         api_url=provider_config.DAYTONA_API_URL,
@@ -229,43 +219,75 @@ async def run_cleanup(*, now: datetime | None = None) -> CleanupReport:
             client,
             delete_provider,
             now=now or datetime.now(UTC),
-            environment=_PRODUCTION_ENVIRONMENT,
             target=provider_config.DAYTONA_TARGET,
-            dry_run=os.environ["DAYTONA_CLEANUP_DRY_RUN"] != "false",
+            dry_run=dry_run,
         )
 
 
-def main() -> None:
-    """Run one cleanup sweep and exit non-zero when any managed sandbox could not be evaluated or removed."""
-    # This process holds a Daytona client config in local variables. Keep exception reporting in
-    # CloudWatch logs so traceback-local capture cannot serialize provider credentials.
-    configure_logging()
+def _load_provider_config(secret_name: str) -> DaytonaProviderConfig:
+    secrets = cast(
+        SecretsManagerClient,
+        boto3.client("secretsmanager"),  # pyright: ignore[reportUnknownMemberType]
+    )
+    response = secrets.get_secret_value(SecretId=secret_name)
+    secret_string = response.get("SecretString")
+    if not isinstance(secret_string, str):
+        raise RuntimeError("Daytona cleanup secret must contain a JSON SecretString")
 
     try:
-        report = asyncio.run(run_cleanup())
-        logger.info(
-            "Daytona cleanup sweep complete",
-            extra={
-                "dry_run": report.dry_run,
-                "cutoff": report.cutoff.isoformat(),
-                "scanned": report.scanned,
-                "eligible": report.eligible,
-                "deletion_requested": report.deletion_requested,
-                "already_absent": report.already_absent,
-                "exempted": report.exempted,
-                "unmanaged": report.unmanaged,
-                "target_mismatch": report.target_mismatch,
-                "not_old": report.not_old,
-                "invalid_metadata": report.invalid_metadata,
-                "failures": len(report.failures),
-            },
+        parsed: object = json.loads(secret_string)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Daytona cleanup secret must contain valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Daytona cleanup secret must contain a JSON object")
+    payload = cast(dict[str, object], parsed)
+
+    values: dict[str, str] = {}
+    for field in _REQUIRED_SECRET_FIELDS:
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError(f"Daytona cleanup secret is missing required field {field}")
+        values[field] = value
+
+    return DaytonaProviderConfig(
+        DAYTONA_API_KEY=values["DAYTONA_API_KEY"],
+        DAYTONA_API_URL=values["DAYTONA_API_URL"],
+        DAYTONA_TARGET=values["DAYTONA_TARGET"],
+    )
+
+
+def _report_fields(report: CleanupReport) -> dict[str, object]:
+    return {
+        "dry_run": report.dry_run,
+        "cutoff": report.cutoff.isoformat(),
+        "scanned": report.scanned,
+        "eligible": report.eligible,
+        "deletion_completed": report.deletion_completed,
+        "exempted": report.exempted,
+        "target_mismatch": report.target_mismatch,
+        "not_old": report.not_old,
+        "invalid_metadata": report.invalid_metadata,
+        "failures": len(report.failures),
+    }
+
+
+def lambda_handler(_event: object, context: LambdaContext) -> dict[str, object]:
+    """Run one bounded cleanup sweep from EventBridge Scheduler."""
+    configure_logging()
+    timeout_seconds = context.get_remaining_time_in_millis() / 1000 - _LAMBDA_SHUTDOWN_MARGIN_SECONDS
+    if timeout_seconds <= 0:
+        raise RuntimeError("Insufficient Lambda time remaining for Daytona cleanup")
+
+    provider_config = _load_provider_config(os.environ["DAYTONA_CLEANUP_SECRET_NAME"])
+    dry_run = os.environ.get("DAYTONA_CLEANUP_DRY_RUN") != "false"
+    report = asyncio.run(
+        asyncio.wait_for(
+            run_cleanup(provider_config, dry_run=dry_run),
+            timeout=timeout_seconds,
         )
-        if not report.succeeded:
-            raise DaytonaCleanupError(report)
-    except Exception:
-        logger.exception("Daytona cleanup sweep failed")
-        raise
-
-
-if __name__ == "__main__":
-    main()
+    )
+    fields = _report_fields(report)
+    logger.info("Daytona cleanup sweep complete", extra=fields)
+    if not report.succeeded:
+        raise DaytonaCleanupError(report)
+    return fields

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -9,19 +11,14 @@ from typing import cast
 
 import pytest
 from benchmark_service import SandboxError
-from daytona import (
-    AsyncSandbox,
-    DaytonaConnectionError,
-    ListSandboxesQuery,
-)
+from benchmark_service.sandbox.daytona import DaytonaProviderConfig
+from daytona import AsyncSandbox, DaytonaConnectionError, ListSandboxesQuery
 
 import tracker.daytona_cleanup as cleanup_module
-from tracker.daytona_cleanup import cleanup_old_sandboxes
-from tracker.sandbox_labels import valkyrie_sandbox_labels
+from tracker.daytona_cleanup import CleanupFailure, CleanupReport, DaytonaCleanupError, cleanup_old_sandboxes
 
 NOW = datetime(2026, 7, 9, 12, tzinfo=UTC)
 TARGET = "us-test"
-ENVIRONMENT = "production"
 
 
 def _sandbox(
@@ -37,7 +34,7 @@ def _sandbox(
         SimpleNamespace(
             id=sandbox_id,
             name=f"sandbox-{sandbox_id}",
-            labels=labels if labels is not None else valkyrie_sandbox_labels(ENVIRONMENT),
+            labels=labels or {},
             created_at=timestamp,
             target=target,
         ),
@@ -49,7 +46,7 @@ class FakeDaytona:
         self,
         sandboxes: list[AsyncSandbox],
         *,
-        delete_effects: dict[str, BaseException | bool] | None = None,
+        delete_effects: dict[str, BaseException | str] | None = None,
     ) -> None:
         self.sandboxes = sandboxes
         self.delete_effects = delete_effects or {}
@@ -61,112 +58,112 @@ class FakeDaytona:
         for sandbox in self.sandboxes:
             yield sandbox
 
-    async def force_delete_sandbox(self, instance_id: str) -> bool:
+    async def delete_sandbox(self, instance_id: str) -> None:
         self.delete_calls.append(instance_id)
-        effect = self.delete_effects.get(instance_id, True)
+        effect = self.delete_effects.get(instance_id)
         if isinstance(effect, BaseException):
             raise effect
-        return effect
+        if effect == "block":
+            await asyncio.Event().wait()
 
 
-async def test_cleanup_deletes_only_explicitly_owned_old_sandboxes() -> None:
+def _report(*, succeeded: bool = True, dry_run: bool = True) -> CleanupReport:
+    failures = () if succeeded else (CleanupFailure("id", "name", "SandboxError"),)
+    return CleanupReport(
+        cutoff=NOW - timedelta(hours=48),
+        dry_run=dry_run,
+        scanned=1,
+        eligible=1,
+        deletion_completed=0 if dry_run else 1,
+        exempted=0,
+        target_mismatch=0,
+        not_old=0,
+        invalid_metadata=0,
+        failures=failures,
+    )
+
+
+async def test_cleanup_targets_all_old_sandboxes_unless_explicitly_exempt() -> None:
     cutoff = NOW - timedelta(hours=48)
-    wrong_environment = valkyrie_sandbox_labels("dev")
-    missing_cleanup = valkyrie_sandbox_labels(ENVIRONMENT)
-    del missing_cleanup["clean-up"]
-    exempt = {**valkyrie_sandbox_labels(ENVIRONMENT), "clean-up": " FALSE "}
-    unknown_cleanup = {**valkyrie_sandbox_labels(ENVIRONMENT), "clean-up": "sometimes"}
-
     client = FakeDaytona(
         [
-            _sandbox("eligible", created_at=cutoff - timedelta(seconds=1)),
+            _sandbox("unlabeled", created_at=cutoff - timedelta(seconds=1)),
+            _sandbox("enabled", created_at=cutoff - timedelta(days=1), labels={"clean-up": "true"}),
+            _sandbox("unknown-label", created_at=cutoff - timedelta(days=1), labels={"clean-up": "sometimes"}),
             _sandbox("at-cutoff", created_at=cutoff),
             _sandbox("newer", created_at=cutoff + timedelta(seconds=1)),
-            _sandbox("wrong-environment", created_at=cutoff - timedelta(days=1), labels=wrong_environment),
             _sandbox("wrong-target", created_at=cutoff - timedelta(days=1), target="other-target"),
-            _sandbox("missing-cleanup", created_at=cutoff - timedelta(days=1), labels=missing_cleanup),
-            _sandbox("unknown-cleanup", created_at=cutoff - timedelta(days=1), labels=unknown_cleanup),
-            _sandbox("exempt", created_at=cutoff - timedelta(days=1), labels=exempt),
-            _sandbox("unmanaged", created_at=cutoff - timedelta(days=1), labels={"Benchmark": "legacy"}),
+            _sandbox("exempt", created_at=cutoff - timedelta(days=1), labels={"clean-up": " FALSE "}),
             _sandbox("malformed", created_at="not-a-timestamp"),
             _sandbox("naive", created_at="2026-07-01T12:00:00"),
         ]
     )
 
-    report = await cleanup_old_sandboxes(
-        client,
-        client,
-        now=NOW,
-        environment=ENVIRONMENT,
-        target=TARGET,
-        dry_run=False,
-    )
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
 
-    assert client.delete_calls == ["eligible"]
+    assert client.delete_calls == ["unlabeled", "enabled", "unknown-label"]
     assert client.query is not None
     assert client.query.created_at_before == cutoff
     assert client.query.targets == [TARGET]
-    assert client.query.labels == {"ManagedBy": "Valkyrie", "Environment": ENVIRONMENT}
+    assert client.query.labels is None
     assert client.query.limit == 200
-    assert report.scanned == 11
-    assert report.eligible == 1
-    assert report.deletion_requested == 1
-    assert report.already_absent == 0
+    assert report.scanned == 9
+    assert report.eligible == 3
+    assert report.deletion_completed == 3
     assert report.exempted == 1
-    assert report.unmanaged == 2
     assert report.target_mismatch == 1
     assert report.not_old == 2
-    assert report.invalid_metadata == 4
+    assert report.invalid_metadata == 2
     assert not report.succeeded
 
 
 async def test_cleanup_dry_run_reports_eligibility_without_deleting() -> None:
     client = FakeDaytona([_sandbox("eligible", created_at=NOW - timedelta(hours=49))])
 
-    report = await cleanup_old_sandboxes(
-        client,
-        client,
-        now=NOW,
-        environment=ENVIRONMENT,
-        target=TARGET,
-        dry_run=True,
-    )
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=True)
 
     assert client.delete_calls == []
     assert report.eligible == 1
-    assert report.deletion_requested == 0
+    assert report.deletion_completed == 0
     assert report.succeeded
 
 
-async def test_cleanup_uses_provider_delete_outcomes_and_continues_after_failures() -> None:
+async def test_cleanup_uses_provider_delete_and_continues_after_failures() -> None:
     client = FakeDaytona(
         [
             _sandbox("deleted", created_at=NOW - timedelta(hours=49)),
-            _sandbox("gone", created_at=NOW - timedelta(hours=49)),
             _sandbox("failed", created_at=NOW - timedelta(hours=49)),
             _sandbox("after-failure", created_at=NOW - timedelta(hours=49)),
         ],
-        delete_effects={
-            "gone": False,
-            "failed": SandboxError("invalid state"),
-        },
+        delete_effects={"failed": SandboxError("invalid state")},
     )
 
-    report = await cleanup_old_sandboxes(
-        client,
-        client,
-        now=NOW,
-        environment=ENVIRONMENT,
-        target=TARGET,
-        dry_run=False,
-    )
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
 
-    assert client.delete_calls == ["deleted", "gone", "failed", "after-failure"]
-    assert report.eligible == 4
-    assert report.deletion_requested == 2
-    assert report.already_absent == 1
+    assert client.delete_calls == ["deleted", "failed", "after-failure"]
+    assert report.eligible == 3
+    assert report.deletion_completed == 2
     assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [("failed", "SandboxError")]
     assert not report.succeeded
+
+
+async def test_cleanup_bounds_each_delete_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cleanup_module, "_DELETE_TIMEOUT_SECONDS", 0.01)
+    client = FakeDaytona(
+        [
+            _sandbox("blocked", created_at=NOW - timedelta(hours=49)),
+            _sandbox("after-timeout", created_at=NOW - timedelta(hours=49)),
+        ],
+        delete_effects={"blocked": "block"},
+    )
+
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
+
+    assert client.delete_calls == ["blocked", "after-timeout"]
+    assert report.deletion_completed == 1
+    assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [("blocked", "TimeoutError")]
 
 
 async def test_cleanup_materializes_listing_before_any_deletion() -> None:
@@ -179,13 +176,7 @@ async def test_cleanup_materializes_listing_before_any_deletion() -> None:
     client = FailingListDaytona([_sandbox("first", created_at=NOW - timedelta(hours=49))])
 
     with pytest.raises(DaytonaConnectionError, match="pagination failed"):
-        await cleanup_old_sandboxes(
-            client,
-            client,
-            now=NOW,
-            environment=ENVIRONMENT,
-            target=TARGET,
-        )
+        await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET)
 
     assert client.delete_calls == []
 
@@ -193,17 +184,10 @@ async def test_cleanup_materializes_listing_before_any_deletion() -> None:
 async def test_cleanup_normalizes_offset_aware_creation_timestamps() -> None:
     client = FakeDaytona([_sandbox("offset", created_at="2026-07-07T12:59:59+01:00")])
 
-    report = await cleanup_old_sandboxes(
-        client,
-        client,
-        now=NOW,
-        environment=ENVIRONMENT,
-        target=TARGET,
-        dry_run=False,
-    )
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
 
     assert client.delete_calls == ["offset"]
-    assert report.deletion_requested == 1
+    assert report.deletion_completed == 1
     assert report.succeeded
 
 
@@ -213,20 +197,17 @@ async def test_cleanup_requires_timezone_aware_now() -> None:
             FakeDaytona([]),
             FakeDaytona([]),
             now=NOW.replace(tzinfo=None),
-            environment=ENVIRONMENT,
             target=TARGET,
         )
 
 
-@pytest.mark.parametrize(("dry_run_value", "expected_dry_run"), [("true", True), ("false", False)])
-async def test_run_cleanup_uses_fixed_production_contract(
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_run_cleanup_uses_provider_config_and_closes_both_clients(
     monkeypatch: pytest.MonkeyPatch,
-    dry_run_value: str,
-    expected_dry_run: bool,
+    dry_run: bool,
 ) -> None:
     client = FakeDaytona([_sandbox("eligible", created_at=NOW - timedelta(hours=49))])
     received_daytona_configs: list[object] = []
-    received_provider_configs: list[cleanup_module.DaytonaProviderConfig] = []
     closed_contexts: list[str] = []
 
     class ClientContext:
@@ -247,33 +228,175 @@ async def test_run_cleanup_uses_fixed_production_contract(
         received_daytona_configs.append(config)
         return ClientContext()
 
-    def fake_create_provider(config: cleanup_module.DaytonaProviderConfig) -> ProviderContext:
-        received_provider_configs.append(config)
+    def fake_create_provider(_config: DaytonaProviderConfig) -> ProviderContext:
         return ProviderContext()
 
-    monkeypatch.setenv("DAYTONA_API_KEY", "test-key")
-    monkeypatch.setenv("DAYTONA_API_URL", "https://daytona.example.test/api")
-    monkeypatch.setenv("DAYTONA_TARGET", TARGET)
-    monkeypatch.setenv("DAYTONA_CLEANUP_DRY_RUN", dry_run_value)
-    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    provider_config = DaytonaProviderConfig(
+        DAYTONA_API_KEY="test-key",
+        DAYTONA_API_URL="https://daytona.example.test/api",
+        DAYTONA_TARGET=TARGET,
+    )
     monkeypatch.setattr(cleanup_module, "AsyncDaytona", fake_daytona)
-    monkeypatch.setattr(cleanup_module.DaytonaProviderConfig, "create_provider", fake_create_provider)
+    monkeypatch.setattr(DaytonaProviderConfig, "create_provider", fake_create_provider)
 
-    report = await cleanup_module.run_cleanup(now=NOW)
+    report = await cleanup_module.run_cleanup(provider_config, now=NOW, dry_run=dry_run)
 
     assert len(received_daytona_configs) == 1
     daytona_config = received_daytona_configs[0]
     assert getattr(daytona_config, "api_key") == "test-key"
     assert getattr(daytona_config, "api_url") == "https://daytona.example.test/api"
     assert getattr(daytona_config, "target") == TARGET
-    assert len(received_provider_configs) == 1
-    provider_config = received_provider_configs[0]
-    assert provider_config.DAYTONA_API_KEY == "test-key"
-    assert provider_config.DAYTONA_API_URL == "https://daytona.example.test/api"
-    assert provider_config.DAYTONA_TARGET == TARGET
     assert closed_contexts == ["provider", "daytona"]
     assert client.query is not None
-    assert client.query.labels == {"ManagedBy": "Valkyrie", "Environment": "production"}
     assert client.query.created_at_before == NOW - timedelta(hours=48)
-    assert report.dry_run is expected_dry_run
-    assert client.delete_calls == ([] if expected_dry_run else ["eligible"])
+    assert report.dry_run is dry_run
+    assert client.delete_calls == ([] if dry_run else ["eligible"])
+
+
+class FakeSecretsManager:
+    def __init__(self, response: dict[str, object]) -> None:
+        self.response = response
+        self.secret_ids: list[str] = []
+
+    def get_secret_value(self, *, SecretId: str) -> dict[str, object]:
+        self.secret_ids.append(SecretId)
+        return self.response
+
+
+def test_load_provider_config_validates_secret_without_exposing_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = {
+        "DAYTONA_API_KEY": "super-secret-key",
+        "DAYTONA_API_URL": "https://daytona.example.test/api",
+    }
+    fake = FakeSecretsManager({"SecretString": json.dumps(secret)})
+
+    def fake_client(_service: str) -> FakeSecretsManager:
+        return fake
+
+    monkeypatch.setattr(cleanup_module.boto3, "client", fake_client)
+
+    with pytest.raises(RuntimeError, match="DAYTONA_TARGET") as exc_info:
+        cleanup_module._load_provider_config("cleanup-secret")  # pyright: ignore[reportPrivateUsage]
+
+    assert "super-secret-key" not in str(exc_info.value)
+    assert fake.secret_ids == ["cleanup-secret"]
+
+
+def test_load_provider_config_returns_required_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = {
+        "DAYTONA_API_KEY": "test-key",
+        "DAYTONA_API_URL": "https://daytona.example.test/api",
+        "DAYTONA_TARGET": TARGET,
+    }
+    fake = FakeSecretsManager({"SecretString": json.dumps(secret)})
+
+    def fake_client(_service: str) -> FakeSecretsManager:
+        return fake
+
+    monkeypatch.setattr(cleanup_module.boto3, "client", fake_client)
+
+    config = cleanup_module._load_provider_config("cleanup-secret")  # pyright: ignore[reportPrivateUsage]
+
+    assert config.DAYTONA_API_KEY == "test-key"
+    assert config.DAYTONA_API_URL == "https://daytona.example.test/api"
+    assert config.DAYTONA_TARGET == TARGET
+
+
+class FakeLambdaContext:
+    def __init__(self, remaining_milliseconds: int) -> None:
+        self.remaining_milliseconds = remaining_milliseconds
+
+    def get_remaining_time_in_millis(self) -> int:
+        return self.remaining_milliseconds
+
+
+def test_lambda_handler_is_fail_closed_and_returns_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = DaytonaProviderConfig(
+        DAYTONA_API_KEY="test-key",
+        DAYTONA_API_URL="https://daytona.example.test/api",
+        DAYTONA_TARGET=TARGET,
+    )
+    received: list[tuple[DaytonaProviderConfig, bool]] = []
+
+    async def fake_run_cleanup(provider_config: DaytonaProviderConfig, *, dry_run: bool) -> CleanupReport:
+        received.append((provider_config, dry_run))
+        return _report(dry_run=dry_run)
+
+    monkeypatch.setenv("DAYTONA_CLEANUP_SECRET_NAME", "cleanup-secret")
+    monkeypatch.setenv("DAYTONA_CLEANUP_DRY_RUN", "unexpected")
+    monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
+
+    def fake_load_provider_config(_name: str) -> DaytonaProviderConfig:
+        return config
+
+    monkeypatch.setattr(cleanup_module, "_load_provider_config", fake_load_provider_config)
+    monkeypatch.setattr(cleanup_module, "run_cleanup", fake_run_cleanup)
+
+    result = cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
+
+    assert received == [(config, True)]
+    assert result["dry_run"] is True
+    assert result["eligible"] == 1
+
+
+def test_lambda_handler_raises_for_unsuccessful_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = DaytonaProviderConfig(
+        DAYTONA_API_KEY="test-key",
+        DAYTONA_API_URL="https://daytona.example.test/api",
+        DAYTONA_TARGET=TARGET,
+    )
+
+    async def fake_run_cleanup(_provider_config: DaytonaProviderConfig, *, dry_run: bool) -> CleanupReport:
+        return _report(succeeded=False, dry_run=dry_run)
+
+    monkeypatch.setenv("DAYTONA_CLEANUP_SECRET_NAME", "cleanup-secret")
+    monkeypatch.setenv("DAYTONA_CLEANUP_DRY_RUN", "false")
+    monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
+
+    def fake_load_provider_config(_name: str) -> DaytonaProviderConfig:
+        return config
+
+    monkeypatch.setattr(cleanup_module, "_load_provider_config", fake_load_provider_config)
+    monkeypatch.setattr(cleanup_module, "run_cleanup", fake_run_cleanup)
+
+    with pytest.raises(DaytonaCleanupError):
+        cleanup_module.lambda_handler({}, FakeLambdaContext(840_000))
+
+
+def test_lambda_handler_rejects_insufficient_time_before_loading_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
+
+    def unexpected_load(_name: str) -> DaytonaProviderConfig:
+        pytest.fail("secret must not be loaded")
+
+    monkeypatch.setattr(cleanup_module, "_load_provider_config", unexpected_load)
+
+    with pytest.raises(RuntimeError, match="Insufficient Lambda time"):
+        cleanup_module.lambda_handler({}, FakeLambdaContext(60_000))
+
+
+def test_lambda_handler_bounds_entire_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = DaytonaProviderConfig(
+        DAYTONA_API_KEY="test-key",
+        DAYTONA_API_URL="https://daytona.example.test/api",
+        DAYTONA_TARGET=TARGET,
+    )
+
+    async def blocked_cleanup(_provider_config: DaytonaProviderConfig, *, dry_run: bool) -> CleanupReport:
+        del dry_run
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    monkeypatch.setenv("DAYTONA_CLEANUP_SECRET_NAME", "cleanup-secret")
+    monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
+
+    def fake_load_provider_config(_name: str) -> DaytonaProviderConfig:
+        return config
+
+    monkeypatch.setattr(cleanup_module, "_load_provider_config", fake_load_provider_config)
+    monkeypatch.setattr(cleanup_module, "run_cleanup", blocked_cleanup)
+
+    with pytest.raises(TimeoutError):
+        cleanup_module.lambda_handler({}, FakeLambdaContext(60_010))
