@@ -377,6 +377,36 @@ def test_lambda_handler_rejects_insufficient_time_before_loading_secret(monkeypa
         cleanup_module.lambda_handler({}, FakeLambdaContext(60_000))
 
 
+def test_lambda_handler_rechecks_time_after_loading_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = DaytonaProviderConfig(
+        DAYTONA_API_KEY="test-key",
+        DAYTONA_API_URL="https://daytona.example.test/api",
+        DAYTONA_TARGET=TARGET,
+    )
+    context = FakeLambdaContext(840_000)
+    cleanup_called = False
+
+    def fake_load_provider_config(_name: str) -> DaytonaProviderConfig:
+        context.remaining_milliseconds = 60_000
+        return config
+
+    async def unexpected_cleanup(_provider_config: DaytonaProviderConfig, *, dry_run: bool) -> CleanupReport:
+        nonlocal cleanup_called
+        del dry_run
+        cleanup_called = True
+        return _report()
+
+    monkeypatch.setenv("DAYTONA_CLEANUP_SECRET_NAME", "cleanup-secret")
+    monkeypatch.setattr(cleanup_module, "configure_logging", lambda: None)
+    monkeypatch.setattr(cleanup_module, "_load_provider_config", fake_load_provider_config)
+    monkeypatch.setattr(cleanup_module, "run_cleanup", unexpected_cleanup)
+
+    with pytest.raises(RuntimeError, match="Insufficient Lambda time"):
+        cleanup_module.lambda_handler({}, context)
+
+    assert cleanup_called is False
+
+
 def test_lambda_handler_bounds_entire_sweep(monkeypatch: pytest.MonkeyPatch) -> None:
     config = DaytonaProviderConfig(
         DAYTONA_API_KEY="test-key",

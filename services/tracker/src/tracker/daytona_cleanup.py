@@ -271,14 +271,19 @@ def _report_fields(report: CleanupReport) -> dict[str, object]:
     }
 
 
-def lambda_handler(_event: object, context: LambdaContext) -> dict[str, object]:
-    """Run one bounded cleanup sweep from EventBridge Scheduler."""
-    configure_logging()
+def _remaining_cleanup_seconds(context: LambdaContext) -> float:
     timeout_seconds = context.get_remaining_time_in_millis() / 1000 - _LAMBDA_SHUTDOWN_MARGIN_SECONDS
     if timeout_seconds <= 0:
         raise RuntimeError("Insufficient Lambda time remaining for Daytona cleanup")
+    return timeout_seconds
 
+
+def lambda_handler(_event: object, context: LambdaContext) -> dict[str, object]:
+    """Run one bounded cleanup sweep from EventBridge Scheduler."""
+    configure_logging()
+    _remaining_cleanup_seconds(context)
     provider_config = _load_provider_config(os.environ["DAYTONA_CLEANUP_SECRET_NAME"])
+    timeout_seconds = _remaining_cleanup_seconds(context)
     dry_run = os.environ.get("DAYTONA_CLEANUP_DRY_RUN") != "false"
     report = asyncio.run(
         asyncio.wait_for(
