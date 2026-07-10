@@ -1,5 +1,6 @@
 """Config file state helpers for CLI commands."""
 
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -49,6 +50,9 @@ def load_config() -> dict[str, Any]:
 
 def write_config(config: dict[str, Any], *, sort_keys: bool = True) -> None:
     """Write the Valkyrie configuration to disk."""
-    CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True)
-    with open(CONFIG_LOCATION, "w") as config_file:
+    CONFIG_LOCATION.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    CONFIG_LOCATION.parent.chmod(0o700)
+    descriptor = os.open(CONFIG_LOCATION, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "w") as config_file:
         yaml.dump(config, config_file, default_flow_style=False, sort_keys=sort_keys)

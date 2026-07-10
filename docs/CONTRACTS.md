@@ -30,9 +30,6 @@ egress_allowlist:
   - https://api.openai.com
   - https://github.com
 
-secrets:
-  ANTHROPIC_API_KEY: devEvalInfraAnthropicKey
-
 # Documentation only — these placeholders are always available and
 # substituted at runtime, changes will not be parsed
 provided:
@@ -67,6 +64,8 @@ kwargs:
     description: "Sampling temperature"
 ```
 
+Hosted runs inject `MODEL_GATEWAY_URL` and `MODEL_GATEWAY_API_KEY` for model access. Hosted contracts must omit `secrets`; Valkyrie adds the managed model-gateway origin to a non-empty egress allowlist automatically.
+
 ```bash
 # Run with required model and default temperature (0.7)
 valkyrie run start --agent agents/my_agent --model openai/gpt-4o --benchmark swebench
@@ -84,8 +83,6 @@ name: my_agent
 install_cmd: "bash setup.sh"
 run_cmd: "my_agent --task {problem_statement_path}"
 final_output: /logs/my_agent
-secrets:
-  API_KEY: myAwsSecretName
 ```
 
 ## Required Fields
@@ -187,7 +184,7 @@ egress_allowlist:
 
 Omit this field, or set it to an empty list, to keep unrestricted sandbox egress.
 
-### `secrets: dict`
+### `secrets: dict` (self-hosted only)
 
 Secrets required by the agent. Maps environment variable names to AWS Secrets Manager secret names. These are resolved at sandbox creation time - raw values are never stored.
 

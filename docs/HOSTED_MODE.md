@@ -1,17 +1,14 @@
 # Hosted vs Self-Hosted Mode
 
-Valkyrie supports two operational modes. Both require your own AWS credentials — hosted mode adds Vals AI API key authentication for multi-tenant data isolation.
+Valkyrie supports an API-key-only hosted runtime and a caller-owned self-hosted runtime.
 
 ## Hosted mode
 
-Use Vals-hosted compute infrastructure with your own AWS storage. Data is isolated per organization via Vals AI API key authentication.
+Use Vals-managed compute, storage, logging, sandbox credentials, and model access. Data is isolated by organization and authenticated with your personal Vals AI API key.
 
 ### Prerequisites
 
-- Vals AI API key (provided by Vals)
-- AWS account with the [required permissions](#required-aws-permissions)
-- S3 bucket for storing benchmark artifacts and agents. This will need to be unique for the region and created before defining it inside of the config.
-- API key for sandbox provider (Daytona). [Setup docs](PROVIDER.md)
+- Personal Vals AI API key linked to your user and organization
 
 ### Setup
 
@@ -19,28 +16,20 @@ Use Vals-hosted compute infrastructure with your own AWS storage. Data is isolat
 valkyrie config init
 ```
 
-Choose **hosted** when prompted. You'll be asked for:
-1. Your Vals AI API key — validates against the tracker and creates your organization
-2. AWS credentials — same as self-hosted (you supply your own S3, CloudWatch, Daytona)
+Hosted is the default. The CLI validates your key, organization, and managed-runtime readiness before saving it.
 
 ```
 $ valkyrie config init
-Setup mode (hosted, self-hosted) [self-hosted]: hosted
+Setup mode (hosted, self-hosted) [hosted]:
 API Key: <your-vals-ai-api-key>
 Organization 'your-org' configured successfully.
-
-AWS_ACCESS_KEY_ID: ...
-AWS_SECRET_ACCESS_KEY: ...
-...
 ```
 
-Your API key is sent with every request to authenticate and scope data to your organization. AWS credentials are sent via `X-Harness-*` headers.
+No AWS, S3, logging, provider, or model-provider key is requested. Existing self-hosted fields remain in the local config so historical legacy runs keep working and rollback is reversible; new starts use the managed runtime explicitly.
 
-You can also set the API key manually:
+Run `valkyrie config init` rather than setting `api_key` manually so readiness is checked. Hosted limitations are intentional: custom benchmark URLs, arbitrary AWS secret references, provider overrides, and Lambda hooks are rejected. Agent uploads are shared within the organization.
 
-```bash
-valkyrie config set api_key <your-vals-ai-api-key>
-```
+Each run records the runtime where it started. Managed runs continue to use managed storage after rollback; pre-cutover legacy runs continue to use the preserved self-hosted configuration.
 
 ## Self-hosted mode
 
@@ -65,7 +54,7 @@ Then run `config init` and choose **self-hosted**:
 
 ```
 $ valkyrie config init
-Setup mode (hosted, self-hosted) [self-hosted]: self-hosted
+Setup mode (hosted, self-hosted) [hosted]: self-hosted
 AWS_ACCESS_KEY_ID: ...
 AWS_SECRET_ACCESS_KEY: ...
 ...
@@ -73,7 +62,7 @@ AWS_SECRET_ACCESS_KEY: ...
 
 No API key or Descope authentication is used. All data belongs to a single default organization.
 
-## Required AWS permissions
+## Required AWS permissions (self-hosted only)
 
 Your AWS credentials must have the following permissions:
 

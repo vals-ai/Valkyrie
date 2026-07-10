@@ -10,15 +10,10 @@ Valkyrie is an orchestration platform for running agentic benchmarks.
 
 ## Hosting Modes
 
-Valkyrie supports **hosted** and **self-hosted** modes. 
-- **Self-hosted Mode** requires you to create AWS infrastructure using the IaC provided.
-- **Hosted Mode** allows you to use Vals-hosted infrastructure. Reach out to the Vals team for access (contact@vals.ai)
+Valkyrie supports **hosted** and **self-hosted** modes.
 
-Both modes require you to provide certain credentials and configuration:  
-- AWS API Key: Authentication for an AWS account with S3, CloudWatch, and Secrets Manager access (to store benchmarking logs and results)
-- S3 Bucket Name: The S3 bucket to be used for storing benchmark artifacts and agents
-- Sandbox provider config: named AWS Secrets Manager entries for sandbox providers. [Setup docs](docs/PROVIDER.md)
-- **Hosted mode only:** Vals API Key
+- **Hosted mode** requires only a personal Vals AI API key. Vals manages compute, storage, logs, sandbox credentials, and model access.
+- **Self-hosted mode** uses your AWS account, S3 bucket, CloudWatch logs, and sandbox-provider secrets. [Provider setup](docs/PROVIDER.md)
 
 See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for more details.
 
@@ -36,7 +31,7 @@ uv tool install git+https://github.com/vals-ai/Valkyrie@prod
 valkyrie config init
 ```
 
-This will prompt you to choose between **hosted** and **self-hosted** mode, then collect the required credentials. See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for detailed setup instructions.
+Hosted mode is the default and validates managed-runtime readiness before saving your API key. Self-hosted mode collects AWS configuration. See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for detailed setup instructions.
 
 To upsert a single key:
 
@@ -44,7 +39,7 @@ To upsert a single key:
 valkyrie config set <KEY> <VALUE>
 ```
 
-To configure sandbox providers:
+In self-hosted mode, configure sandbox providers with:
 
 ```bash
 valkyrie config provider set daytona DaytonaSecrets
@@ -56,7 +51,7 @@ The first configured provider is used by default unless you set one with `valkyr
 
 ## Agent Management
 
-Before running benchmarks, you need to install and upload agents to Valkyrie. These commands manage agent lifecycle. All agents are installed inside of the S3 bucket provided by `valkyrie config init` at `agents/`.
+Before running benchmarks, install or upload an agent to the configured runtime. Hosted agents are shared within the organization. Self-hosted agents use the configured S3 bucket.
 
 All agents will need to already be in the Valkyrie format. Please reference the [contract documentation](docs/CONTRACTS.md) to learn more.
 
@@ -69,20 +64,20 @@ valkyrie agent install https://github.com/user/my-agent
 valkyrie agent install https://github.com/user/my-agent --name my-custom-name
 ```
 
-Clones an agent repository from GitHub, bundles it, and pushes it to your S3 bucket.
+Clones an agent repository, bundles it, and uploads it to the configured runtime.
 
 | Option | Description |
 | --- | --- |
 | `--name, -n` | Agent name (defaults to repository name) |
 
-### Push a local agent to S3
+### Push a local agent
 
 ```bash
 valkyrie agent push ./agents/sweagent
 valkyrie agent push ./agents/sweagent --name my-agent
 ```
 
-Uploads an agent on your local machine to S3.
+Uploads an agent from your local machine.
 
 | Option | Description |
 | --- | --- |
@@ -102,7 +97,7 @@ View all installed agents with date and time last modified. Supports paginated n
 valkyrie agent remove sweagent
 ```
 
-Removes an agent from the S3 bucket. Cannot be reversed, will be requested to confirm before deleting.
+Removes an agent from the configured runtime.
 
 ### Download an agent
 
@@ -111,7 +106,7 @@ valkyrie agent download sweagent
 valkyrie agent download sweagent -o ./agents
 ```
 
-Downloads an agent from S3 to your local machine and unzips it.
+Downloads an agent to your local machine and unzips it.
 
 | Option | Description |
 | --- | --- |
@@ -128,7 +123,7 @@ valkyrie run start --agent <agent id> --benchmark <benchmark id>
 
 You can pass `--concurrency` to control the number of tasks that run in parallel, and `--task-ids` or `--slice` to run only a subset of tasks. Specific agents may take additional parameters as well, most commonly, a parameter to set the model. 
 
-To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. This will map the value stored in AWS SECRET NAME to ENVIRONMENT_VARIABLE inside the agent container.
+In self-hosted mode, pass AWS Secrets Manager references with `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. Hosted mode supplies model access through its managed gateway and does not accept arbitrary AWS secret references.
 
 Here is an example of how to run the first ten tasks of SWE-Bench Verified:
 ```bash
@@ -138,7 +133,6 @@ valkyrie run start \
   --model anthropic/claude-sonnet-4-6 \
   --concurrency 10 \
   --dataset default \
-  -s ANTHROPIC_API_KEY devEvalInfraAnthropicKey \
   -k temperature 1 \
   --slice "0:10" \
   --label swebench_sweagent
@@ -152,21 +146,22 @@ valkyrie run start --agent sweagent --benchmark swebench --connect
 
 | Flag | Description |
 | --- | --- |
-| `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
+| `--agent` | Agent name or local agent directory (e.g., `sweagent` or `./agents/sweagent`). Local agents are uploaded before the run starts. |
 | `--benchmark` | Benchmark name (e.g. `swebench`) |
 | `--model` | Model key (e.g. `openai/gpt-4o`) |
 | `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
-| `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged with contract defaults (CLI wins on conflict) |
+| `--provider` | Select a configured sandbox provider (self-hosted only) |
+| `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name` (self-hosted only) |
 | `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
-| `--lambda` | AWS Lambda function to invoke after the run completes |
+| `--lambda` | AWS Lambda function to invoke after the run completes (self-hosted only) |
 | `--task-ids` | Comma-separated task IDs to run |
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
 | `--slice` | Slice the benchmark dataset (`start:stop:step`) |
 | `--dataset` | Dataset variant to run from the benchmark service. A single benchmark can expose multiple datasets (e.g. `default`, `test`, `validation`, `train`, `lite`) representing different task splits or difficulty levels. Defaults to `default` |
 | `-l` / `--label` | Label to attach to the run, can filter by when using `valk run list -l <LABEL>`. Can only set one label per run.  |
 | `-H` / `--header` | Custom header for benchmark service requests as `NAME VALUE`. Repeatable. See [Authentication & Custom Headers](#authentication--custom-headers) |
-| `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
-| `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
+| `-i` / `--interval` | Progress percentage threshold for Slack notification (self-hosted only). Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
+| `--ignore-custom-services` / `--ics` | Ignore configured custom benchmark services (self-hosted only) |
 | `--connect` | Stream run updates after the run starts |
 
 ### Monitor a run
@@ -265,7 +260,7 @@ valkyrie run resume <id> --connect
 # Stream updates after retry
 valkyrie run retry <id> --connect
 
-# Override agent secrets for resumed tasks
+# Override agent secrets for resumed tasks (self-hosted only)
 valkyrie run resume <id> -s ANTHROPIC_API_KEY newSecretName
 
 # Save every task ID in a benchmark dataset to a text file
@@ -278,10 +273,10 @@ valkyrie benchmark tasks swebench --dataset default --output tasks.txt
 | Option | Description |
 | --- | --- |
 | `--concurrency` | Override concurrency level |
-| `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged into the stored run contract before resumed/retried tasks are enqueued (CLI wins on conflict) |
+| `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name` (self-hosted only) |
 | `--task-ids` | Comma-separated task IDs to resume/retry. Any id without an existing row is created as fresh `PENDING` if valid in the current dataset — lets you grow scope without starting a new run. |
 | `--task-ids-file` | Local path or http(s) URL to a text file with one task ID per line |
-| `--update-agent, -u` | Refresh the frozen agent copy from the current `agents/<name>.zip` in S3 before resuming |
+| `--update-agent, -u` | Refresh the frozen agent copy before resuming (self-hosted only) |
 | `--from-scratch` | Clear stored eval resume state and rerun generation for retried tasks |
 | `--connect` | Stream run updates after resume/retry |
 
@@ -343,9 +338,9 @@ valkyrie run output <id> [subpath] [-o ./output-dir]
 | `-o` / `--output-dir` | Local destination directory (defaults to `./<benchmark_id>`) |
 
 
-## Adding Benchmarks
+## Adding Custom Benchmarks (self-hosted only)
 
-Vals provides a set of benchmarks out-of-the-box. If you want to add a new benchmark, you will need to add a new benchmark service. We provide a set of utilities that allow you to create and interact with benchmark services outside of the ones that are provided.
+Vals provides a set of benchmarks out-of-the-box. Self-hosted deployments can configure additional benchmark-service URLs.
 
 If hosting locally please use the [documentation](https://github.com/vals-ai/create-benchmark-service?tab=readme-ov-file#reverse-tunnel-setup) on the reverse tunnel that is needed.
 
@@ -376,9 +371,9 @@ Removes a custom benchmark service.
 
 ## Authentication & Custom Headers
 
-Benchmark services may require authentication. Valkyrie stores per-benchmark credentials and sends them as the `Authorization` header automatically. You can also pass arbitrary headers at runtime with `-H`.
+Self-hosted Valkyrie can store per-benchmark credentials and send them as the `Authorization` header automatically. Hosted runs ignore stored credentials; pass an explicit header with `-H` when needed.
 
-### Managing auth credentials
+### Managing auth credentials (self-hosted only)
 
 ```bash
 # Store a credential — sent as the Authorization header on every request to that benchmark
@@ -409,7 +404,7 @@ valkyrie run start --benchmark my-benchmark --agent sweagent \
   -H X-Another-Header another-value
 ```
 
-## Slack Notifications
+## Slack Notifications (self-hosted only)
 
 Valkyrie can send Slack webhook notifications as benchmark runs progress. Store an AWS Secrets Manager secret name (pointing to your Slack webhook URL) and get notified automatically when runs hit defined thresholds or reach a terminal state (finished, error, stopped).
 

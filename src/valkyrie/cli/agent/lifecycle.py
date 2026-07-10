@@ -8,10 +8,11 @@ from tracker.exceptions import S3Error
 from valkyrie.cli.agent.storage import download_agent, install_agent, list_agents, push_agent, remove_agent
 from valkyrie.cli.bundler import read_agent_name
 from valkyrie.cli.display import format_table, local_time, paginate_cli_pages
+from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.schemas import validate_agent_name
 
 
-@click.command(name="install", help="Installs agent from a github project to the users aws environment")
+@click.command(name="install", help="Install an agent from a GitHub project")
 @click.argument("github_url", type=str)
 @click.option(
     "--name",
@@ -34,13 +35,13 @@ def install(github_url: str, name: str | None):
     try:
         resolved_name = asyncio.run(install_agent(name, github_url))
         click.echo(click.style(f"✓ Agent '{resolved_name}' installed successfully!", fg="green", bold=True))
-    except (RuntimeError, S3Error) as e:
+    except (RuntimeError, S3Error, TrackerServiceError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
 
 
-@click.command(name="push", help="Pushes agent to the users aws environment from the local filesystem")
+@click.command(name="push", help="Push an agent from the local filesystem")
 @click.argument("agent_path", type=click.Path(exists=True, path_type=Path, file_okay=False, dir_okay=True))
 @click.option(
     "--name",
@@ -50,7 +51,7 @@ def install(github_url: str, name: str | None):
     help="Agent name (defaults to the contract name)",
 )
 def push(agent_path: Path, name: str | None):
-    """Push a local agent to S3.
+    """Push a local agent to the configured runtime.
 
     Example:
         valkyrie agent push ./agents/my-agent
@@ -60,7 +61,7 @@ def push(agent_path: Path, name: str | None):
         agent_name = validate_agent_name(name) if name else read_agent_name(agent_path)
         asyncio.run(push_agent(agent_name, agent_path))
         click.echo(click.style(f"✓ Agent '{agent_name}' pushed successfully!", fg="green", bold=True))
-    except S3Error as e:
+    except (S3Error, TrackerServiceError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
@@ -69,7 +70,7 @@ def push(agent_path: Path, name: str | None):
 @click.command(name="remove", help="Remove an installed agent")
 @click.argument("agent_name", type=str)
 def agent_remove(agent_name: str):
-    """Remove an agent from S3.
+    """Remove an agent from the configured runtime.
 
     Example:
         valkyrie agent remove my-agent
@@ -81,7 +82,7 @@ def agent_remove(agent_name: str):
 
         asyncio.run(remove_agent(agent_name))
         click.echo(click.style(f"✓ Agent '{agent_name}' removed successfully!", fg="green", bold=True))
-    except S3Error as e:
+    except (S3Error, TrackerServiceError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
@@ -98,7 +99,7 @@ def agent_remove(agent_name: str):
     help="Output directory for downloaded agent (default: current directory)",
 )
 def download(agent_name: str, output_dir: Path | None):
-    """Download an agent from S3.
+    """Download an agent from the configured runtime.
 
     Example:
         valkyrie agent download my-agent
@@ -106,7 +107,7 @@ def download(agent_name: str, output_dir: Path | None):
     try:
         asyncio.run(download_agent(agent_name, output_dir))
         click.echo(click.style(f"✓ Agent '{agent_name}' downloaded successfully!", fg="green", bold=True))
-    except S3Error as e:
+    except (S3Error, TrackerServiceError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")
@@ -114,7 +115,7 @@ def download(agent_name: str, output_dir: Path | None):
 
 @click.command(name="list", help="List installed agents")
 def list_installed_agents():
-    """List all installed agents in S3.
+    """List all installed agents in the configured runtime.
 
     Use vim keys to navigate: [h] previous page, [l] next page, [q] quit.
 
@@ -129,7 +130,7 @@ def list_installed_agents():
             return
 
         paginate_agents(agents)
-    except S3Error as e:
+    except (S3Error, TrackerServiceError) as e:
         raise click.ClickException(str(e))
     except Exception as e:
         raise click.ClickException(f"Unexpected error: {str(e)}")

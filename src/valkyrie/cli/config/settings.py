@@ -21,35 +21,27 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
 @click.command()
 def init() -> None:
     """
-    Initializes a config we can trust to have references to dependencies to run Valkyrie,
-    this becomes our source of truth for secrets required to run Valkyrie
+    Configure hosted Valkyrie with an API key or self-hosted Valkyrie with AWS resources.
     """
-
-    current_config: dict[str, Any] = {}
-    if CONFIG_LOCATION.exists():
-        try:
-            current_config = read_config_if_exists()
-        except Exception:
-            pass
+    current_config: dict[str, Any] = read_config_if_exists()
 
     mode = click.prompt(
         "Setup mode",
         type=click.Choice(["hosted", "self-hosted"]),
-        default="self-hosted",
+        default="hosted",
     )
 
     if mode == "hosted":
-        api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")
-        current_config["api_key"] = api_key
-
-        # Validate the key and create/confirm org (uses default tracker URL)
+        api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key", hide_input=True)
         try:
             result = TrackerService.init_org(api_key)
         except TrackerServiceError as e:
             raise click.ClickException(str(e))
-        click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
+        current_config["api_key"] = api_key
+        write_config(current_config)
+        click.echo(f"Organization '{result.org_name}' configured successfully.\n")
 
-        if result.get("email_claim_missing"):
+        if result.email_claim_missing:
             click.echo(
                 click.style(
                     "⚠  This access key is missing the 'email' custom claim. "
@@ -59,8 +51,9 @@ def init() -> None:
                     fg="yellow",
                 )
             )
+        click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
+        return
 
-    # Both modes require AWS credentials
     collected_keys: dict[str, str] = {}
     for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
         sourced = current_config.get(key) or os.environ.get(key)
@@ -86,8 +79,7 @@ def init() -> None:
 
     current_config.update(collected_keys)
 
-    if mode != "hosted":
-        current_config.pop("api_key", None)
+    current_config.pop("api_key", None)
 
     write_config(current_config)
 

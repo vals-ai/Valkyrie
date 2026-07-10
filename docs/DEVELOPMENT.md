@@ -85,7 +85,7 @@ Then configure the CLI for hosted mode:
 
 ```bash
 valkyrie config init
-# Choose "hosted", provide your Vals AI API key and AWS credentials
+# Choose "hosted" and provide your personal Vals AI API key
 ```
 
 Without the env vars, the service runs in self-hosted mode (no auth, default org).

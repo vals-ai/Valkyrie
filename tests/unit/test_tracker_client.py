@@ -68,6 +68,150 @@ def _handle_catalog_service_request(requests: list[httpx.Request], request: http
     )
 
 
+def test_hosted_start_uses_managed_payload_and_legacy_headers_only_for_existing_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.startswith("/fetch-run-outputs/"):
+            return httpx.Response(200, content=b"tar")
+        if request.url.path == "/fetch-benchmark-tasks":
+            return httpx.Response(200, json={"task_ids": ["task"]})
+        return httpx.Response(200, json={"status": "success"})
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.Client
+
+    monkeypatch.setattr(
+        TrackerService,
+        "_load_config",
+        staticmethod(
+            lambda: {
+                "api_key": "personal-key",
+                "AWS_ACCESS_KEY_ID": "legacy-key",
+                "AWS_SECRET_ACCESS_KEY": "legacy-secret",
+                "AWS_DEFAULT_REGION": "us-east-1",
+                "S3_BUCKET": "legacy-bucket",
+                "LOG_GROUP": "legacy-logs",
+                "LOG_RETENTION_POLICY": 30,
+                "DAYTONA_SECRET_NAME": "legacy-provider",
+                "custom_benchmark_services": {"swebench": "https://custom.invalid"},
+            }
+        ),
+    )
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", partial(original_client, transport=transport))
+
+    tracker = TrackerService(base_url="http://tracker")
+    tracker.start_benchmark(
+        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
+        benchmark_name="swebench",
+        concurrency=1,
+        ignore_custom_services=False,
+        task_ids=None,
+        slice_str=None,
+    )
+    tracker.fetch_benchmark_tasks("swebench")
+    tracker.fetch_run_outputs(uuid4())
+    tracker.close()
+
+    start_request, tasks_request, outputs_request = requests
+    assert start_request.headers["X-Api-Key"] == "personal-key"
+    assert start_request.headers["X-Valkyrie-Runtime"] == "managed"
+    assert not [name for name in start_request.headers if name.lower().startswith("x-harness-")]
+    start_body = json.loads(start_request.content)
+    assert "harness_config" not in start_body
+    assert "sandbox_provider_secret_name" not in start_body
+    assert "custom_benchmark_service" not in start_body
+    assert json.loads(tasks_request.content)["custom_benchmark_service"] is None
+    assert outputs_request.headers["X-Api-Key"] == "personal-key"
+    assert outputs_request.headers["X-Harness-Aws-Access-Key-Id"] == "legacy-key"
+
+
+def test_hosted_start_ignores_legacy_service_auth_and_webhook(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        TrackerService,
+        "_load_config",
+        staticmethod(
+            lambda: {
+                "api_key": "personal-key",
+                "benchmark_auth": {"swebench": "legacy-auth"},
+                "webhook": "legacy-webhook",
+            }
+        ),
+    )
+
+    assert TrackerService.get_benchmark_auth("swebench") is None
+    assert TrackerService.get_webhook_secret() is None
+
+
+def test_init_org_rejects_unready_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    original_client = httpx.Client
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(
+            200,
+            json={
+                "org_name": "vals",
+                "created": False,
+                "email_claim_missing": False,
+                "runtime": {"kind": "managed", "ready": False},
+            },
+        )
+    )
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", partial(original_client, transport=transport))
+
+    with pytest.raises(TrackerServiceError, match="Managed runtime is not ready"):
+        TrackerService.init_org("personal-key", base_url="http://tracker")
+
+
+def test_hosted_agent_client_uses_tracker_lifecycle_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[httpx.Request] = []
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/agents":
+            return httpx.Response(200, json={"agents": [{"name": "agent", "last_modified": None}]})
+        if request.url.path.endswith("/upload-url"):
+            return httpx.Response(
+                200,
+                json={
+                    "name": "agent",
+                    "upload_url": "https://s3.test/upload",
+                    "fields": {"policy": "signed"},
+                    "expires_in": 300,
+                },
+            )
+        if request.url.path.endswith("/download-url"):
+            return httpx.Response(
+                200,
+                json={"name": "agent", "download_url": "https://s3.test/download", "expires_in": 300},
+            )
+        return httpx.Response(200, json={"status": "success"})
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.Client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(lambda: {"api_key": "personal-key"}))
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", partial(original_client, transport=transport))
+
+    tracker = TrackerService(base_url="http://tracker")
+    assert [agent.name for agent in tracker.list_agents().agents] == ["agent"]
+    assert tracker.create_agent_upload_url("agent", 42).fields == {"policy": "signed"}
+    assert tracker.get_agent_download_url("agent").download_url == "https://s3.test/download"
+    assert tracker.delete_agent("agent").status == "success"
+    tracker.close()
+
+    assert [(request.method, request.url.path) for request in requests] == [
+        ("GET", "/agents"),
+        ("POST", "/agents/agent/upload-url"),
+        ("GET", "/agents/agent/download-url"),
+        ("DELETE", "/agents/agent"),
+    ]
+    assert requests[1].url.params["size_bytes"] == "42"
+    assert all(request.headers["X-Api-Key"] == "personal-key" for request in requests)
+
+
 def test_tracker_client_lists_catalog_services_through_tracker(monkeypatch: pytest.MonkeyPatch) -> None:
     """Catalog service listing should use tracker-owned catalog lookup and health checks.
 
