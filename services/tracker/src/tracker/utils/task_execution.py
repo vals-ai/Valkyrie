@@ -45,6 +45,7 @@ from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox_labels import valkyrie_sandbox_labels
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -391,6 +392,7 @@ async def process_task(
             "Benchmark": start_benchmark_request.benchmark_name,
             "Id": str(benchmark_id),
             "Task": task_row.task_id,
+            **valkyrie_sandbox_labels(ENVIRONMENT),
         }
 
         with Session(bind=engine) as task_session:

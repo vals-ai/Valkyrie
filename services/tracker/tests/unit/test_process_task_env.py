@@ -101,6 +101,7 @@ async def test_process_task_injects_tracker_owned_attribution_env(
         }
     )
     captured_env_vars: list[dict[str, str]] = []
+    captured_labels: list[dict[str, str]] = []
 
     def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
         return {
@@ -113,8 +114,14 @@ async def test_process_task_injects_tracker_owned_attribution_env(
         }
 
     @asynccontextmanager
-    async def _capture_create_sandbox(*_args: Any, env_vars: dict[str, str], **_kwargs: Any):
+    async def _capture_create_sandbox(
+        *_args: Any,
+        env_vars: dict[str, str],
+        labels: dict[str, str],
+        **_kwargs: Any,
+    ):
         captured_env_vars.append(env_vars)
+        captured_labels.append(labels)
         yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
 
     monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
@@ -136,6 +143,16 @@ async def test_process_task_injects_tracker_owned_attribution_env(
     assert env_vars["UNRELATED_SECRET"] == "secret-value"
     assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
     assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+    assert captured_labels == [
+        {
+            "Benchmark": "transient-benchmark-name",
+            "Id": str(benchmark_id),
+            "Task": "task_0",
+            "ManagedBy": "Valkyrie",
+            "Environment": "development",
+            "clean-up": "true",
+        }
+    ]
 
 
 async def test_process_task_omits_identity_email_when_unavailable(
