@@ -41,6 +41,7 @@ class RequestIdentity:
     access_key_id: str | None
     email: str | None
     name: str | None
+    user_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,7 @@ class DescopeIdentity:
     access_key_id: str
     email: str | None
     name: str | None
+    user_id: str | None
 
 
 _cached_default_org: Org | None = None
@@ -213,7 +215,13 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
         email = profile.email
         name = name or profile.name
 
-    return DescopeIdentity(tenant_name=tenants[0], access_key_id=access_key_id, email=email, name=name)
+    return DescopeIdentity(
+        tenant_name=tenants[0],
+        access_key_id=access_key_id,
+        email=email,
+        name=name,
+        user_id=user_id,
+    )
 
 
 def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
@@ -314,4 +322,10 @@ def get_current_starter(request: Request, session: Session = Depends(get_session
             status_code=404,
             detail=f"Organization '{identity.tenant_name}' not configured — run valk config init",
         )
-    return RequestIdentity(org=org, access_key_id=identity.access_key_id, email=identity.email, name=identity.name)
+    return RequestIdentity(
+        org=org,
+        access_key_id=identity.access_key_id,
+        email=identity.email,
+        name=identity.name,
+        user_id=identity.user_id,
+    )

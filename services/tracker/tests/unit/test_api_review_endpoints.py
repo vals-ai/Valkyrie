@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
@@ -19,11 +20,31 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    Org,
     Task,
     TaskStatus,
 )
+from tracker.types import HarnessConfig, TaskRoleAWSConfig
 
 client = TestClient(app)
+
+
+async def test_managed_benchmark_name_is_validated_before_catalog_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fail_catalog(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("invalid names must not reach the catalog or a benchmark service")
+
+    monkeypatch.setattr(benchmark_services_api, "catalog_benchmark_services", fail_catalog)
+    request = Request({"type": "http", "headers": []})
+
+    with pytest.raises(HTTPException) as error:
+        await benchmark_services_api.authorize_managed_benchmark(
+            request,
+            Org(id=TEST_ORG_ID, name="default"),
+            "attacker.example/",
+        )
+
+    assert error.value.status_code == 400
+    assert error.value.detail == "Invalid managed benchmark name 'attacker.example/'"
 
 
 def test_benchmark_services_endpoint_fetches_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -124,6 +145,68 @@ def test_agent_download_url_returns_404_for_missing_agent(monkeypatch: pytest.Mo
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Agent 'missing' not found in S3"
+
+
+async def test_agent_upload_url_uses_org_prefix_and_signed_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    import tracker.api.agents as agents_api
+
+    captured: dict[str, object] = {}
+
+    async def fake_presigned_upload(
+        s3_key: str,
+        *,
+        max_bytes: int,
+        expiration: int,
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        captured.update(key=s3_key, max_bytes=max_bytes, expiration=expiration)
+        return {"url": "https://example.test/upload", "fields": {"policy": "signed"}}
+
+    monkeypatch.setattr(agents_api, "create_presigned_upload", fake_presigned_upload)
+    harness_config = HarnessConfig(
+        aws=TaskRoleAWSConfig(aws_default_region="us-east-1"),
+        s3_bucket="managed-bucket",
+        s3_prefix="orgs/tenant-a",
+        log_group="managed-logs",
+        log_retention_policy=30,
+        sandbox_provider_secret_name="managed-provider",
+    )
+
+    response = await agents_api.get_agent_upload_url(
+        "agent-a",
+        size_bytes=123,
+        _org=Org(id=TEST_ORG_ID, name="default"),
+        harness_config=harness_config,
+    )
+
+    assert response.upload_url == "https://example.test/upload"
+    assert response.fields == {"policy": "signed"}
+    assert captured == {
+        "key": "orgs/tenant-a/agents/agent-a.zip",
+        "max_bytes": 123,
+        "expiration": agents_api.PRESIGNED_URL_EXPIRES_SECONDS,
+    }
+
+
+def test_agent_upload_rejects_invalid_name() -> None:
+    import tracker.api.agents as agents_api
+
+    with pytest.raises(HTTPException) as error:
+        agents_api._valid_name("bad name")
+
+    assert error.value.status_code == 422
+    assert "Invalid agent name" in error.value.detail
+
+
+def test_agent_upload_rejects_oversized_bundle() -> None:
+    import tracker.api.agents as agents_api
+
+    response = client.post(
+        "/agents/agent-a/upload-url",
+        params={"size_bytes": agents_api.MAX_AGENT_ZIP_BYTES + 1},
+    )
+
+    assert response.status_code == 422
 
 
 async def test_ping_service_appends_health_path() -> None:

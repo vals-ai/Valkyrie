@@ -37,7 +37,7 @@ from tracker.auth import (
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.secrets import resolve_secrets
-from tracker.agent.contract import get_contract_from_zip_bytes
+from tracker.agent.contract import MAX_AGENT_ZIP_BYTES, get_contract_from_zip_bytes
 from tracker.aws.s3 import (
     copy_agent_to_benchmark,
     create_benchmark_url,
@@ -47,6 +47,7 @@ from tracker.aws.s3 import (
     download_many_from_s3,
     get_benchmark_s3_prefix,
     get_contract_s3_key,
+    get_s3_object_size,
     list_s3_objects,
     s3_object_exists,
 )
@@ -54,6 +55,7 @@ from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
     ENVIRONMENT,
+    MANAGED_RUNTIME_SANDBOX_PROVIDER,
     create_benchmark_service_url,
 )
 from tracker.database.models import (
@@ -74,7 +76,14 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
-from tracker.runtime import harness_config_for_benchmark
+from tracker.runtime import (
+    LegacyRuntime,
+    harness_config_for_benchmark,
+    harness_config_for_runtime,
+    resolve_runtime,
+    runtime_locator,
+    validate_managed_runtime,
+)
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     FetchBenchmarkMetadataResponse,
@@ -83,12 +92,14 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
     HarnessConfig,
+    InitResponse,
+    ManagedRuntimeReadiness,
     Order,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
-    StartBenchmarkErrorResponse,
     StartBenchmarkInput,
+    StartBenchmarkErrorResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
@@ -210,13 +221,16 @@ def health_check() -> dict[str, str]:
 def init_org(
     request: Request,
     session: Session = Depends(get_session),
-) -> dict[str, str | bool]:
+) -> InitResponse:
     """Initialize org for hosted mode. Validates Descope key and creates org if needed."""
     if not AUTH_REQUIRED:
         raise HTTPException(status_code=405, detail="Init is only available in hosted mode")
 
     api_key = extract_api_key(request)
     identity = resolve_descope_identity(api_key, include_user_profile=True)
+    if identity.user_id is None:
+        raise HTTPException(status_code=400, detail="The personal API key must be linked to a user")
+    validate_managed_runtime()
 
     stmt = pg_insert(Org).values(name=identity.tenant_name).on_conflict_do_nothing(index_elements=["name"])
     result = session.exec(stmt)
@@ -227,12 +241,22 @@ def init_org(
     if not org:
         raise HTTPException(status_code=500, detail="Internal error during org creation")
 
-    return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
+    return InitResponse(
+        org_name=org.name,
+        created=created,
+        email_claim_missing=identity.email is None,
+        runtime=ManagedRuntimeReadiness(),
+    )
 
 
 async def _resolve_contract_from_s3(request: StartBenchmarkRequest) -> AgentContractRequest:
     """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
     key = get_contract_s3_key(request.contract.name, request.harness_config.s3_prefix)
+    if (
+        await get_s3_object_size(key, request.harness_config.aws, request.harness_config.s3_bucket)
+        > MAX_AGENT_ZIP_BYTES
+    ):
+        raise HTTPException(status_code=413, detail="Agent zip exceeds the 100 MiB limit")
     zip_bytes = await download_from_s3(
         key,
         request.harness_config.aws,
@@ -268,28 +292,45 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
-    if http_request.headers.get("x-valkyrie-runtime"):
-        raise HTTPException(status_code=400, detail="Managed runtime is not activated")
-    # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
+    # Prefer harness_config from X-Harness-* headers (web FE), then the request body (CLI),
+    # then Tracker's managed runtime in hosted mode.
     header_harness_config = try_fetch_harness_config(http_request)
-    effective_harness_config = header_harness_config or body.harness_config
-    if effective_harness_config is None:
-        raise HTTPException(status_code=400, detail="Missing harness config")
-    if isinstance(effective_harness_config.aws, TaskRoleAWSConfig):
-        raise HTTPException(status_code=400, detail="Managed runtime is not activated")
-    # TODO: Drop the top-level fallback after legacy clients have aged out.
-    provider_secret_name = (
-        body.harness_config.sandbox_provider_secret_name if body.harness_config else None
-    ) or body.sandbox_provider_secret_name
-    if provider_secret_name:
-        effective_harness_config = effective_harness_config.model_copy(
-            update={"sandbox_provider_secret_name": provider_secret_name}
-        )
+    runtime_header = http_request.headers.get("x-valkyrie-runtime")
+    if runtime_header not in (None, "managed"):
+        raise HTTPException(status_code=400, detail=f"Unknown Valkyrie runtime '{runtime_header}'")
+    runtime = resolve_runtime(
+        run_starter.org,
+        header_harness_config,
+        body.harness_config,
+        managed=runtime_header == "managed",
+    )
+    effective_harness_config = harness_config_for_runtime(runtime)
+
+    if isinstance(runtime, LegacyRuntime):
+        # TODO: Drop the top-level fallback after legacy clients have aged out.
+        provider_secret_name = (
+            body.harness_config.sandbox_provider_secret_name if body.harness_config else None
+        ) or body.sandbox_provider_secret_name
+        if provider_secret_name:
+            effective_harness_config = effective_harness_config.model_copy(
+                update={"sandbox_provider_secret_name": provider_secret_name}
+            )
+    else:
+        if run_starter.user_id is None:
+            raise HTTPException(status_code=400, detail="The personal API key must be linked to a user")
+        if body.contract.secrets or body.service_auth_secret_name or body.webhook_secret_name:
+            raise HTTPException(status_code=400, detail="Managed runtime does not accept AWS secret references")
+        if body.custom_benchmark_service:
+            raise HTTPException(status_code=400, detail="Managed runtime does not accept custom benchmark services")
+        if body.lambda_function:
+            raise HTTPException(status_code=400, detail="Managed runtime does not support Lambda hooks")
+        if body.sandbox_provider != MANAGED_RUNTIME_SANDBOX_PROVIDER:
+            raise HTTPException(status_code=400, detail="Managed runtime sandbox provider is fixed by the deployment")
+        await authorize_managed_benchmark(http_request, run_starter.org, body.benchmark_name)
 
     request = StartBenchmarkRequest.model_validate(
         {**body.model_dump(), "harness_config": effective_harness_config.model_dump()}
     )
-
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
         resolved = resolve_secrets(
@@ -310,6 +351,8 @@ async def start_benchmark(
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})
+    if not isinstance(runtime, LegacyRuntime) and request.contract.secrets:
+        raise HTTPException(status_code=400, detail="Managed runtime does not accept AWS secret references")
 
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
@@ -336,6 +379,9 @@ async def start_benchmark(
 
     # Create benchmark row only after pre-flight checks pass.
     benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
+    benchmark_row.arguments = benchmark_row.arguments.model_copy(
+        update={"runtime": runtime_locator(request.harness_config)}
+    )
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))

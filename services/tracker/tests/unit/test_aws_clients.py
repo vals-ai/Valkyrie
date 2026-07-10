@@ -1,9 +1,10 @@
-from unittest.mock import MagicMock
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from botocore.exceptions import BotoCoreError, ClientError
 
-from tracker.aws import cloudwatch_logs
+from tracker.aws import cloudwatch_logs, s3
 from tracker.aws.cloudwatch_logs import (
     _sanitize_log_stream_name,
     get_benchmark_log_url,
@@ -11,7 +12,7 @@ from tracker.aws.cloudwatch_logs import (
     write_benchmark_log_event,
 )
 from tracker.exceptions import CloudWatchError, S3Error
-from tracker.aws.s3 import handle_s3_error
+from tracker.aws.s3 import create_presigned_upload, handle_s3_error
 from tracker.types import AWSCredentials
 
 _AWS = AWSCredentials(
@@ -22,6 +23,25 @@ _AWS = AWSCredentials(
 
 
 class TestS3DecoratorClient:
+    async def test_presigned_upload_enforces_size(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = AsyncMock()
+        client.generate_presigned_post.return_value = {"url": "https://s3.test", "fields": {}}
+
+        @asynccontextmanager
+        async def s3_client(_aws: object):
+            yield client
+
+        monkeypatch.setattr(s3, "_s3_client", s3_client)
+
+        await create_presigned_upload("agents/a.zip", _AWS, "bucket", 1024, expiration=300)
+
+        client.generate_presigned_post.assert_awaited_once_with(
+            Bucket="bucket",
+            Key="agents/a.zip",
+            Conditions=[["content-length-range", 1, 1024]],
+            ExpiresIn=300,
+        )
+
     async def test_s3_error_with_client(self):
         """Test that ClientError is caught buy the decorator"""
 

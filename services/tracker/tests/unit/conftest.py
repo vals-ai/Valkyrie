@@ -123,6 +123,7 @@ def override_starter() -> None:
         access_key_id=None,
         email=None,
         name=None,
+        user_id="test-user",
     )
 
 

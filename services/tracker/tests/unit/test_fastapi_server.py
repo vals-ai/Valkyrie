@@ -28,6 +28,7 @@ from tracker.database.models import (
     ErrorResult,
     EvaluationResult,
     FinalEvaluation,
+    ManagedRunRuntimeLocator,
     Org,
     Task,
     TaskStatus,
@@ -39,7 +40,9 @@ from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
     StartBenchmarkRequest,
+    TaskRoleAWSConfig,
 )
+from tracker.runtime import runtime_locator
 from tracker.utils import fetch_harness_config
 
 client = TestClient(app)
@@ -89,8 +92,8 @@ class TestFastapiServer:
     async def test_start_benchmark(
         self,
         contract: AgentContractRequest,
-        monkeypatch: MonkeyPatch,
         database_session: Session,
+        monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
     ):
         """
@@ -142,7 +145,9 @@ class TestFastapiServer:
             task_ids=None,
             slice_str=None,
             sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
+            runtime=runtime_locator(harness_config),
         )
+        assert benchmark_row.arguments.runtime == runtime_locator(harness_config)
 
         # Test case 3. Start timestamp is in UTC timezone and matches the benchmark row
         assert isoparse(json_response["started_at"]) == benchmark_row.started_at.replace(tzinfo=timezone.utc)
@@ -179,6 +184,246 @@ class TestFastapiServer:
 
         assert response.status_code == 502
         assert response.json() == {"detail": "Benchmark service 'swebench' is not reachable"}
+
+    async def test_hosted_start_uses_managed_runtime_without_harness_config(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ):
+        captured_request_json: dict[str, Any] = {}
+        copied_prefixes: list[str] = []
+
+        class _MockKicker:
+            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
+                return self
+
+            async def kiq(self, **kwargs: Any) -> None:
+                captured_request_json.update(kwargs["start_benchmark_request_json"])
+
+        async def allow_benchmark(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        async def copy_agent(*args: Any) -> None:
+            copied_prefixes.append(args[-1])
+
+        monkeypatch.setattr("tracker.config.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.authorize_managed_benchmark", allow_benchmark)
+        monkeypatch.setattr("main.copy_agent_to_benchmark", copy_agent)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+
+        response = client.post(
+            "/start-benchmark",
+            json={
+                "contract": contract.model_dump(),
+                "benchmark_name": "swebench",
+                "concurrency": 1,
+            },
+        )
+
+        assert response.status_code == 200
+        harness_config = captured_request_json["harness_config"]
+        assert harness_config["aws"] == {
+            "kind": "task_role",
+            "aws_default_region": "us-east-1",
+        }
+        assert harness_config["s3_prefix"] == f"orgs/{TEST_ORG_ID.hex}"
+        assert harness_config["log_group"] == f"/valkyrie/benchmarks/orgs/{TEST_ORG_ID.hex}"
+        assert harness_config["sandbox_provider_secret_name"] == "test-daytona-secret"
+        assert copied_prefixes == [f"orgs/{TEST_ORG_ID.hex}"]
+        benchmark = database_session.get(Benchmark, UUID(response.json()["benchmark_id"]))
+        assert benchmark is not None
+        assert isinstance(benchmark.arguments.runtime, ManagedRunRuntimeLocator)
+        assert benchmark.arguments.runtime.s3_prefix == f"orgs/{TEST_ORG_ID.hex}"
+
+    def test_start_rejects_caller_supplied_task_role_runtime(self, contract: AgentContractRequest) -> None:
+        response = client.post(
+            "/start-benchmark",
+            json={
+                "contract": contract.model_dump(),
+                "benchmark_name": "swebench",
+                "harness_config": {
+                    "aws": {"kind": "task_role", "aws_default_region": "us-east-1"},
+                    "s3_bucket": "managed-bucket",
+                    "s3_prefix": f"orgs/{uuid4().hex}",
+                    "log_group": "/valkyrie/benchmarks",
+                    "log_retention_policy": 30,
+                    "sandbox_provider_secret_name": "managed-provider",
+                },
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Managed runtime requires the explicit runtime header"}
+
+    def test_managed_start_rejects_aws_secret_references(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("tracker.config.AUTH_REQUIRED", True)
+
+        response = client.post(
+            "/start-benchmark",
+            json={
+                "contract": contract.model_copy(update={"secrets": {"TOKEN": "provider-secret"}}).model_dump(),
+                "benchmark_name": "swebench",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Managed runtime does not accept AWS secret references"}
+
+    @pytest.mark.parametrize(
+        ("field", "value", "detail"),
+        [
+            (
+                "custom_benchmark_service",
+                "https://attacker.example",
+                "Managed runtime does not accept custom benchmark services",
+            ),
+            ("sandbox_provider", "attacker", "Managed runtime sandbox provider is fixed by the deployment"),
+            ("lambda_function", "attacker-function", "Managed runtime does not support Lambda hooks"),
+        ],
+    )
+    def test_managed_start_rejects_unsupported_runtime_overrides(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        field: str,
+        value: str,
+        detail: str,
+    ) -> None:
+        monkeypatch.setattr("tracker.config.AUTH_REQUIRED", True)
+
+        response = client.post(
+            "/start-benchmark",
+            json={"contract": contract.model_dump(), "benchmark_name": "swebench", field: value},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": detail}
+
+    def test_start_rejects_empty_legacy_aws_credentials(self, contract: AgentContractRequest) -> None:
+        response = client.post(
+            "/start-benchmark",
+            json={
+                "contract": contract.model_dump(),
+                "benchmark_name": "swebench",
+                "harness_config": {
+                    "aws": {
+                        "aws_access_key_id": "",
+                        "aws_secret_access_key": "",
+                        "aws_default_region": "us-east-1",
+                    },
+                    "s3_bucket": "bucket",
+                    "log_group": "logs",
+                    "log_retention_policy": 30,
+                    "sandbox_provider_secret_name": "provider",
+                },
+            },
+        )
+
+        assert response.status_code == 422
+
+    def test_managed_start_rechecks_secrets_loaded_from_agent_zip(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        async def allow_benchmark(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        async def resolve_contract(_request: StartBenchmarkRequest) -> AgentContractRequest:
+            return contract.model_copy(update={"secrets": {"TOKEN": "aws-secret-name"}})
+
+        monkeypatch.setattr("tracker.config.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.authorize_managed_benchmark", allow_benchmark)
+        monkeypatch.setattr("main._resolve_contract_from_s3", resolve_contract)
+
+        response = client.post(
+            "/start-benchmark",
+            headers={"X-Valkyrie-Runtime": "managed"},
+            json={
+                "contract": {"name": contract.name},
+                "benchmark_name": "swebench",
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Managed runtime does not accept AWS secret references"}
+
+    def test_managed_start_rejects_invalid_gateway_readiness_without_exposing_config(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        secret = "do-not-expose-this"
+        monkeypatch.setattr("tracker.config.AUTH_REQUIRED", True)
+        monkeypatch.setattr("tracker.config.MODEL_GATEWAY_URL", f"https://user:{secret}@gateway.example")
+
+        response = client.post(
+            "/start-benchmark",
+            headers={"X-Valkyrie-Runtime": "managed"},
+            json={"contract": contract.model_dump(), "benchmark_name": "swebench"},
+        )
+
+        assert response.status_code == 503
+        assert response.json() == {"detail": "Managed Valkyrie runtime is not ready"}
+        assert secret not in response.text
+
+    def test_managed_resume_rejects_secrets_and_stored_custom_service(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ) -> None:
+        managed_config = HarnessConfig(
+            aws=TaskRoleAWSConfig(aws_default_region="us-east-1"),
+            s3_bucket="managed-bucket",
+            s3_prefix=f"orgs/{TEST_ORG_ID.hex}",
+            log_group="managed-logs",
+            log_retention_policy=30,
+            sandbox_provider_secret_name="managed-provider",
+        )
+        example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+            update={"runtime": runtime_locator(managed_config)}
+        )
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        previous = app.dependency_overrides[fetch_harness_config]
+        app.dependency_overrides[fetch_harness_config] = lambda: managed_config
+        try:
+            response = client.post(
+                f"/retry-or-resume-benchmark/{example_benchmark_object.id}",
+                json={"secrets": {"TOKEN": "aws-secret-name"}},
+            )
+            assert response.status_code == 400
+            assert response.json() == {"detail": "Managed runtime does not accept AWS secret references"}
+
+            example_benchmark_object.custom_benchmark_service = "https://attacker.example"
+            database_session.add(example_benchmark_object)
+            database_session.commit()
+            response = client.post(f"/retry-or-resume-benchmark/{example_benchmark_object.id}", json={})
+            assert response.status_code == 400
+            assert response.json() == {"detail": "Managed runtime does not accept custom benchmark services"}
+        finally:
+            app.dependency_overrides[fetch_harness_config] = previous
+
+    def test_managed_start_rejects_partial_byoc_headers(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr("tracker.config.AUTH_REQUIRED", True)
+
+        response = client.post(
+            "/start-benchmark",
+            headers={"x-harness-s3-bucket": "incomplete"},
+            json={"contract": contract.model_dump(), "benchmark_name": "swebench"},
+        )
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "Missing harness config header 'x-harness-aws-access-key-id'"}
 
     async def test_start_benchmark_forwards_tracker_api_key_to_benchmark_service(
         self,
@@ -385,7 +630,11 @@ class TestFastapiServer:
         assert response.json().get("final_score") == 83.25
 
     async def test_retrieve_results(
-        self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        harness_config: HarnessConfig,
     ):
         """
         Test the retrieve results endpoint of the fastapi server.
@@ -407,6 +656,9 @@ class TestFastapiServer:
 
         # Add benchmark row
         benchmark_row = example_benchmark_object
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(
+            update={"runtime": runtime_locator(harness_config)}
+        )
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -418,6 +670,7 @@ class TestFastapiServer:
         # Base fields are included within response
         assert response_json.get("benchmark_name") == benchmark_row.name
         assert response_json.get("status") == benchmark_row.status
+        assert "runtime" not in response_json["benchmark_arguments"]
 
         # Test case 2. Final evaluation is ommited if benchmark has not finished yet
         assert response_json.get("final_evaluation") is None
@@ -910,6 +1163,7 @@ class TestFastapiServer:
                 "tenants": {"test-tenant": {}},
                 "email": "alice@vals.ai",
                 "name": "Alice",
+                "customClaims": {"user_id": "U2abc"},
             },
         }
         monkeypatch.setattr("tracker.auth._descope_client", mock_client)
@@ -919,6 +1173,13 @@ class TestFastapiServer:
         body = response.json()
         assert body["email_claim_missing"] is False
         assert body["org_name"] == "test-tenant"
+        assert body["created"] is True
+        assert body["runtime"] == {"kind": "managed", "ready": True}
+
+        repeated = client.post("/init", headers={"X-Api-Key": "valid-key"})
+        assert repeated.status_code == 200
+        assert repeated.json()["created"] is False
+        assert repeated.json()["runtime"] == {"kind": "managed", "ready": True}
 
     async def test_init_org_returns_email_claim_missing(
         self,
@@ -935,13 +1196,36 @@ class TestFastapiServer:
             "sessionToken": {
                 "sub": "K2abc",
                 "tenants": {"test-tenant": {}},
+                "customClaims": {"user_id": "U2abc"},
             },
         }
+        mock_client.mgmt.user.load_by_user_id.return_value = {"user": {}}
         monkeypatch.setattr("tracker.auth._descope_client", mock_client)
 
         response = client.post("/init", headers={"X-Api-Key": "valid-key"})
         assert response.status_code == 200
         assert response.json()["email_claim_missing"] is True
+        assert response.json()["runtime"] == {"kind": "managed", "ready": True}
+
+    async def test_init_org_rejects_key_not_linked_to_user(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+    ) -> None:
+        monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
+        monkeypatch.setattr("main.AUTH_REQUIRED", True)
+        mock_client = MagicMock(spec=DescopeClient)
+        mock_client.exchange_access_key.return_value = {
+            "tenants": {"test-tenant": {}},
+            "keyId": "K2abc",
+            "sessionToken": {"sub": "K2abc", "tenants": {"test-tenant": {}}},
+        }
+        monkeypatch.setattr("tracker.auth._descope_client", mock_client)
+
+        response = client.post("/init", headers={"X-Api-Key": "valid-key"})
+
+        assert response.status_code == 400
+        assert response.json() == {"detail": "The personal API key must be linked to a user"}
 
     async def test_init_org_uses_bound_user_email_when_email_claim_missing(
         self,
@@ -972,6 +1256,7 @@ class TestFastapiServer:
         response = client.post("/init", headers={"X-Api-Key": "valid-key"})
         assert response.status_code == 200
         assert response.json()["email_claim_missing"] is False
+        assert response.json()["runtime"] == {"kind": "managed", "ready": True}
         mock_client.mgmt.user.load_by_user_id.assert_called_once_with("U2abc")
 
     async def test_fetch_benchmarks_includes_started_by_email(
@@ -1085,11 +1370,16 @@ class TestFastapiServer:
         self,
         contract: AgentContractRequest,
         database_session: Session,
+        harness_config: HarnessConfig,
     ):
         bench = Benchmark(
             org_id=TEST_ORG_ID,
             name="swebench",
-            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            arguments=BenchmarkArguments(
+                contract=contract,
+                concurrency=1,
+                runtime=runtime_locator(harness_config),
+            ),
             started_by_email="alice@vals.ai",
             started_by_id="K2abc",
         )
@@ -1099,6 +1389,7 @@ class TestFastapiServer:
         response = client.get(f"/fetch-benchmark-metadata/{bench.id}")
         assert response.status_code == 200
         assert response.json()["started_by_email"] == "alice@vals.ai"
+        assert "runtime" not in response.json()["benchmark_arguments"]
 
     async def test_fetch_run_outputs_streams_tar(
         self,

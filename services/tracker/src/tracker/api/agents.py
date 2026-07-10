@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from tracker.agent.contract import MAX_AGENT_ZIP_BYTES
 from tracker.agent.schemas import validate_agent_name
 from tracker.auth import get_current_org
 from tracker.aws.s3 import (
+    create_presigned_upload,
     create_presigned_url,
+    delete_from_s3,
     get_contract_s3_key,
     get_s3_object_size,
     list_agents,
@@ -19,7 +21,9 @@ from tracker.types import (
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
+    AgentUploadURLResponse,
     HarnessConfig,
+    StatusResponse,
 )
 from tracker.utils import fetch_harness_config
 
@@ -75,3 +79,44 @@ async def get_agent_download_url(
         expiration=PRESIGNED_URL_EXPIRES_SECONDS,
     )
     return AgentDownloadURLResponse(name=name, download_url=url, expires_in=PRESIGNED_URL_EXPIRES_SECONDS)
+
+
+@router.post("/{name}/upload-url", response_model=AgentUploadURLResponse)
+async def get_agent_upload_url(
+    name: str,
+    size_bytes: int = Query(gt=0, le=MAX_AGENT_ZIP_BYTES),
+    _org: Org = Depends(get_current_org),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+) -> AgentUploadURLResponse:
+    """Return a 5-minute presigned URL to upload an organization agent."""
+    name = _valid_name(name)
+    key = get_contract_s3_key(name, harness_config.s3_prefix)
+    upload = await create_presigned_upload(
+        key,
+        aws=harness_config.aws,
+        s3_bucket=harness_config.s3_bucket,
+        max_bytes=size_bytes,
+        expiration=PRESIGNED_URL_EXPIRES_SECONDS,
+    )
+    return AgentUploadURLResponse(
+        name=name,
+        upload_url=upload["url"],
+        fields=upload["fields"],
+        expires_in=PRESIGNED_URL_EXPIRES_SECONDS,
+    )
+
+
+@router.delete("/{name}", response_model=StatusResponse)
+async def delete_agent(
+    name: str,
+    _org: Org = Depends(get_current_org),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+) -> StatusResponse:
+    """Delete an organization agent."""
+    name = _valid_name(name)
+    key = get_contract_s3_key(name, harness_config.s3_prefix)
+    if not await s3_object_exists(key, aws=harness_config.aws, s3_bucket=harness_config.s3_bucket):
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")
+
+    await delete_from_s3(key, aws=harness_config.aws, s3_bucket=harness_config.s3_bucket)
+    return StatusResponse(status="success")
