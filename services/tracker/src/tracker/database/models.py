@@ -1,11 +1,12 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import BaseModel, Field as PydanticField, field_serializer, field_validator
+from pydantic.json_schema import SkipJsonSchema
 from sqlalchemy import Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -153,6 +154,29 @@ class AgentContractRequest(BaseModel):
         return normalized_artifacts
 
 
+class _RunRuntimeLocator(BaseModel):
+    aws_default_region: str
+    s3_bucket: str
+    s3_prefix: str
+    log_group: str
+    log_retention_policy: int
+    sandbox_provider_secret_name: str
+
+
+class LegacyRunRuntimeLocator(_RunRuntimeLocator):
+    kind: Literal["legacy"] = "legacy"
+
+
+class ManagedRunRuntimeLocator(_RunRuntimeLocator):
+    kind: Literal["managed"] = "managed"
+
+
+RunRuntimeLocator = Annotated[
+    LegacyRunRuntimeLocator | ManagedRunRuntimeLocator,
+    PydanticField(discriminator="kind"),
+]
+
+
 class BenchmarkArguments(BaseModel):
     model_config = {"extra": "forbid"}
 
@@ -164,6 +188,7 @@ class BenchmarkArguments(BaseModel):
     dataset: str | None = None
     sandbox_provider: str = "daytona"
     sandbox_provider_secret_name: str | None = None
+    runtime: SkipJsonSchema[RunRuntimeLocator | None] = PydanticField(default=None, exclude=True)
 
 
 class FinalEvaluation(SQLModel, table=True):
@@ -201,7 +226,10 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we save the value to the database."""
         if value is None:
             return None
-        return value.model_dump()
+        arguments = value.model_dump()
+        if value.runtime:
+            arguments["runtime"] = value.runtime.model_dump()
+        return arguments
 
     def process_result_value(self, value: dict[str, Any] | None, dialect: Dialect) -> BenchmarkArguments | None:
         """Runs when we fetch the value from the database."""
