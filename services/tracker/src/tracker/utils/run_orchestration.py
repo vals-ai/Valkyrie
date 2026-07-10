@@ -310,7 +310,9 @@ async def process_benchmark(
                 if has_stopped_tasks(session, benchmark_row, org):
                     set_benchmark_final_status(benchmark_row, session, org)
                     return
-            raise TrackerServiceError("No tasks were completed successfully")
+                logger.warning(f"Run {benchmark_id} finished with no successfully completed tasks")
+                commit_benchmark_error(benchmark_row, session, "No tasks were completed successfully")
+            return
 
         # Calculate the final score based off the tasks that were ran
         final_score_response = await benchmark_service.final_score(
