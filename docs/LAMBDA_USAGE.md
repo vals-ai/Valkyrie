@@ -13,7 +13,7 @@ The lambda is invoked once after all tasks finish and results are uploaded. If t
 
 ## Payload
 
-The tracker invokes your lambda with the full `BenchmarkArguments` plus the `benchmark_id`:
+The tracker invokes your lambda with the full `BenchmarkArguments` plus the persisted benchmark ID and name:
 
 ```json
 {
@@ -30,7 +30,8 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the `ben
   "task_ids": ["astropy__astropy-12907"],
   "slice_str": null,
   "lambda_function": "my-post-benchmark-handler",
-  "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174"
+  "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
+  "benchmark_name": "swebench"
 }
 ```
 
@@ -42,6 +43,7 @@ The tracker invokes your lambda with the full `BenchmarkArguments` plus the `ben
 | `slice_str` | string or null | Dataset slice if provided |
 | `lambda_function` | string | Name of this lambda function |
 | `benchmark_id` | string | UUID of the completed run |
+| `benchmark_name` | string | Persisted name of the completed benchmark |
 
 ## Format required by AWS
 
