@@ -16,7 +16,12 @@ from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxComm
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
 from tracker import sandbox as sandbox_module
-from tracker.database.models import AgentCausedExitReason, AgentContractRequest, MAX_OUTPUT_ARTIFACT_BYTES, OutputArtifact
+from tracker.database.models import (
+    AgentCausedExitReason,
+    AgentContractRequest,
+    MAX_OUTPUT_ARTIFACT_BYTES,
+    OutputArtifact,
+)
 from tracker.exceptions import (
     AgentRunFailedError,
     OutputArtifactError,
