@@ -27,6 +27,7 @@ jobs:
       contents: read
     outputs:
       target: ${{ steps.target.outputs.target }}
+      environment: ${{ steps.target.outputs.environment }}
       version: ${{ steps.release.outputs.version }}
 
     steps:
@@ -63,7 +64,13 @@ jobs:
             echo "::error::TestPyPI rehearsals must run from refs/heads/dev or refs/heads/prod"
             exit 1
           fi
+          if [[ "$target" == "testpypi" ]]; then
+            environment="pypi-test"
+          else
+            environment="pypi"
+          fi
           echo "target=$target" >> "$GITHUB_OUTPUT"
+          echo "environment=$environment" >> "$GITHUB_OUTPUT"
 
       - name: Install package test tools
         run: uv sync --locked --group dev
@@ -107,7 +114,7 @@ jobs:
     if: needs.build.outputs.target != 'pypi' || github.ref == 'refs/heads/prod'
     runs-on: ubuntu-24.04
     environment:
-      name: ${{ needs.build.outputs.target }}
+      name: ${{ needs.build.outputs.environment }}
     permissions:
       id-token: write
 

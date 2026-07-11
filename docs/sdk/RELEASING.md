@@ -7,12 +7,12 @@
 1. Create protected GitHub environments with a required `@vals-ai/valkyrie` reviewer, no
    self-review, and no administrator bypass:
 
-   - `testpypi`: allow `dev` and `prod`.
+   - `pypi-test`: allow protected branches; the workflow limits releases to `dev` and `prod`.
    - `pypi`: allow only `prod`.
 
 2. Create `valkyrie-sdk` under the Vals AI PyPI organization.
 3. Add a Trusted Publisher on PyPI and TestPyPI using owner `vals-ai`, repository `Valkyrie`,
-   workflow `publish-sdk.yml`, and the matching environment.
+   workflow `publish-sdk.yml`, and environment `pypi` or `pypi-test`, respectively.
 
 ## Release
 

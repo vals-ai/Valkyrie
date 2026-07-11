@@ -57,7 +57,9 @@ def test_publish_is_oidc_only_and_ref_guarded() -> None:
 
     assert workflow["concurrency"] == {"group": "valkyrie-sdk-publish", "cancel-in-progress": False, "queue": "max"}
     assert publish["permissions"] == {"id-token": "write"}
-    assert publish["environment"]["name"] == "${{ needs.build.outputs.target }}"
+    assert build["outputs"]["environment"] == "${{ steps.target.outputs.environment }}"
+    assert publish["environment"]["name"] == "${{ needs.build.outputs.environment }}"
+    assert 'environment="pypi-test"' in target_script
     assert "github.ref == 'refs/heads/prod'" in publish["if"]
     assert "refs/heads/dev" in target_script and "refs/heads/prod" in target_script
     assert not any(line.lstrip().startswith(("password:", "user:", "token:")) for line in contents.splitlines())
