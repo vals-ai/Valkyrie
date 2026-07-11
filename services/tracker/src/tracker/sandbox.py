@@ -72,6 +72,7 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
+AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
 
 
@@ -330,8 +331,18 @@ async def install_agent_dependencies(
     log_output(f"Installing dependencies for contract: {contract.name}")
 
     contract_path = get_contract_path(contract.name)
+    install_cmd = f"timeout {AGENT_INSTALL_TIMEOUT_SECONDS:g} sh -c {shlex.quote(contract.install_cmd)}"
 
-    await stream_command_output(sandbox, f"cd {shlex.quote(str(contract_path))} && {contract.install_cmd}", log_output)
+    exit_reason, _duration = await stream_command_output(
+        sandbox,
+        f"cd {shlex.quote(str(contract_path))} && {install_cmd}",
+        log_output,
+    )
+    if exit_reason == AgentCausedExitReason.TIMEOUT:
+        raise SandboxError(
+            f"Dependency installation for contract {contract.name} timed out after "
+            f"{AGENT_INSTALL_TIMEOUT_SECONDS:g} seconds"
+        )
 
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 

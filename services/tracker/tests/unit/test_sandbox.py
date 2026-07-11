@@ -16,7 +16,7 @@ from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxComm
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
 from tracker import sandbox as sandbox_module
-from tracker.database.models import AgentContractRequest, MAX_OUTPUT_ARTIFACT_BYTES, OutputArtifact
+from tracker.database.models import AgentCausedExitReason, AgentContractRequest, MAX_OUTPUT_ARTIFACT_BYTES, OutputArtifact
 from tracker.exceptions import (
     AgentRunFailedError,
     OutputArtifactError,
@@ -428,6 +428,45 @@ class TestAgentOutputTelemetry:
         assert deps_before_sleep is not None
         assert callable(upload_before_sleep)
         assert callable(deps_before_sleep)
+
+    async def test_install_agent_dependencies_retries_after_setup_timeout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Dependency setup should be bounded and retried when it hangs.
+
+        Test cases:
+        - The install command is wrapped in the 10 minute shell timeout.
+        - A timed out setup attempt is retried by the existing dependency retry policy.
+        """
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="apt-get update -qq && echo done",
+            run_cmd="echo done",
+        )
+        observed_commands: list[str] = []
+        setup_results: deque[tuple[AgentCausedExitReason | None, float]] = deque(
+            [(AgentCausedExitReason.TIMEOUT, 600.0), (None, 2.0)]
+        )
+
+        async def fake_stream_command_output(
+            _sandbox: Any,
+            command: str,
+            _log_output: Any,
+        ) -> tuple[AgentCausedExitReason | None, float]:
+            observed_commands.append(command)
+
+            return setup_results.popleft()
+
+        def log_output(_message: str) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        await _install_agent_dependencies(Mock(), contract, log_output)
+
+        expected_command = "cd /bundle/test-agent && timeout 600 sh -c 'apt-get update -qq && echo done'"
+        assert observed_commands == [expected_command, expected_command]
 
     def test_metric_source_name_drops_high_cardinality_tag_and_digest(self) -> None:
         metric_source_name = getattr(sandbox_module, "_metric_source_name")
