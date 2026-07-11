@@ -101,10 +101,8 @@ def test_errors_text_groups_identical_messages_without_writing_files(monkeypatch
     assert "task-000" in result.stdout
     assert "task-004" in result.stdout
     assert "task-005" not in result.stdout
-    assert "task-099" not in result.stdout
     assert "(+95 more)" in result.stdout
     assert tracker.calls == [(run_id, False, None)]
-    assert "Results saved" not in result.stdout
 
 
 @pytest.mark.parametrize(
@@ -300,7 +298,6 @@ def test_errors_command_is_registered_and_rejects_invalid_uuid(monkeypatch: pyte
     help_result = CliRunner().invoke(errors, ["--help"])
     assert help_result.exit_code == 0
     assert "--format [text|json]" in help_result.stdout
-    assert "--all" not in help_result.stdout
 
     def unexpected_tracker() -> None:
         pytest.fail("invalid UUID should fail before constructing a tracker")

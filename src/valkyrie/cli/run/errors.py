@@ -132,7 +132,6 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
 
 
 @click.command(
-    name="errors",
     help=(
         "Show stored run and current task error messages.\n\n"
         "Example:\n"
