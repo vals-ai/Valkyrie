@@ -1,6 +1,5 @@
 """Sandbox management utilities for the tracker service."""
 
-import base64
 import shlex
 import time
 import uuid
@@ -594,12 +593,8 @@ async def upload_output_artifacts(
                 f"Output artifacts are too large: {total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
             )
 
-        b64_result = await _exec(sandbox, f"base64 {quoted_path}")
-        if b64_result.exit_code != _SUCCESS_EXIT_CODE:
-            raise OutputArtifactError(f"Failed to read output artifact: {sandbox_path}")
-
         s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
-        file_content = base64.b64decode(b64_result.stdout)
+        file_content = await sandbox.download_file(sandbox_path)
         await upload_to_s3(file_content, s3_key, aws, s3_bucket)
 
         logger.info(

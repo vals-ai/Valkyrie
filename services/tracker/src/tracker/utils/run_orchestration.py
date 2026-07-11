@@ -353,9 +353,10 @@ async def process_benchmark(
             # We run it but do not let a failure affect the benchmark status
             arguments = benchmark_row.arguments
             if arguments.lambda_function:
-                # Expose the benchmark arguments and the benchmark id inside of the lambda
+                # Expose the benchmark arguments, id, and name inside of the lambda
                 lambda_payload: dict[str, Any] = arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
+                lambda_payload["benchmark_name"] = benchmark_row.name
 
                 invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
 

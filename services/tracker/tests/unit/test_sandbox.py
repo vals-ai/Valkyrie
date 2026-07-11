@@ -42,21 +42,27 @@ _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 
 
 class TestOutputArtifacts:
-    async def test_upload_output_artifacts_uploads_declared_file_to_task_prefix(
+    async def test_upload_output_artifacts_downloads_file_without_exec_output(
         self,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
     ) -> None:
+        """
+        Verify artifact contents use the sandbox file-transfer API instead of command output.
+
+        Test cases:
+        - A 288,928-byte SkillsBench sidecar is downloaded without a base64 exec call.
+        - The exact bytes are uploaded to the task-scoped S3 key.
+        """
         artifact = "artifacts/turns.jsonl"
+        artifact_content = b"x" * 288_928
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
                 return ExecResult(exit_code=0, output="")
             if command == "stat -c%s /tmp/valkyrie/artifacts/turns.jsonl":
-                return ExecResult(exit_code=0, output="12")
-            if command == "base64 /tmp/valkyrie/artifacts/turns.jsonl":
-                return ExecResult(exit_code=0, output="eyJ0dXJuIjoxfQo=")
+                return ExecResult(exit_code=0, output=str(len(artifact_content)))
             raise AssertionError(f"unexpected command: {command}")
 
         async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
@@ -68,6 +74,7 @@ class TestOutputArtifacts:
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.download_file = AsyncMock(return_value=artifact_content)
 
         await upload_output_artifacts(
             mock_sandbox,
@@ -78,7 +85,7 @@ class TestOutputArtifacts:
             harness_config.s3_bucket,
         )
 
-        assert uploaded == [(b'{"turn":1}\n', "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
+        assert uploaded == [(artifact_content, "benchmarks/benchmark-123/task_0/artifacts/turns.jsonl")]
 
     async def test_upload_output_artifacts_can_upload_explicit_glob_sources(
         self,
@@ -92,14 +99,10 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="/logs/task/turns/init/config.json\n")
             if command == "stat -c%s /logs/task/turns/init/config.json":
                 return ExecResult(exit_code=0, output="11")
-            if command == "base64 /logs/task/turns/init/config.json":
-                return ExecResult(exit_code=0, output="eyJsbG0iOnt9fQo=")
             if command == "find /logs -type f -path '/logs/*/result.json' | sort | head -n 1":
                 return ExecResult(exit_code=0, output="/logs/task/result.json\n")
             if command == "stat -c%s /logs/task/result.json":
                 return ExecResult(exit_code=0, output="13")
-            if command == "base64 /logs/task/result.json":
-                return ExecResult(exit_code=0, output="eyJ0dXJucyI6W119Cg==")
             raise AssertionError(f"unexpected command: {command}")
 
         async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
@@ -111,6 +114,7 @@ class TestOutputArtifacts:
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.download_file = AsyncMock(side_effect=[b'{"llm":{}}\n', b'{"turns":[]}\n'])
 
         await upload_output_artifacts(
             mock_sandbox,
@@ -141,8 +145,6 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="")
             if command == "stat -c%s /logs/model-library-run/result.json":
                 return ExecResult(exit_code=0, output="13")
-            if command == "base64 /logs/model-library-run/result.json":
-                return ExecResult(exit_code=0, output="eyJ0dXJucyI6W119Cg==")
             raise AssertionError(f"unexpected command: {command}")
 
         async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
@@ -154,6 +156,7 @@ class TestOutputArtifacts:
         mock_sandbox = Mock()
         mock_sandbox.id = "sandbox-123"
         mock_sandbox.name = "task-alias"
+        mock_sandbox.download_file = AsyncMock(return_value=b'{"turns":[]}\n')
 
         await upload_output_artifacts(
             mock_sandbox,
