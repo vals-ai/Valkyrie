@@ -349,13 +349,13 @@ async def process_benchmark(
 
             await upload_final_view(benchmark_row, final_view, harness_config)
 
-            # If the user has chosen to invoke a lambda function at the end of the benchmark
-            # We run it but do not let a failure affect the benchmark status
+            # Invoke the configured lambda after the benchmark's final view is uploaded.
             arguments = benchmark_row.arguments
             if arguments.lambda_function:
-                # Expose the benchmark arguments and the benchmark id inside of the lambda
+                # Expose the benchmark arguments, id, and name inside of the lambda
                 lambda_payload: dict[str, Any] = arguments.model_dump()
                 lambda_payload["benchmark_id"] = str(benchmark_id)
+                lambda_payload["benchmark_name"] = benchmark_row.name
 
                 invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
 
