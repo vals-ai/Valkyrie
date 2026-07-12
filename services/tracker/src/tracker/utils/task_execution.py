@@ -58,6 +58,10 @@ logger = get_logger(__name__)
 _PTY_TASK_RETRY_LIMIT: int = 1
 
 
+def _exception_message(exc: BaseException) -> str:
+    return str(exc).strip() or type(exc).__name__
+
+
 class TrackedTaskStatus(str, Enum):
     WAITING = "waiting"
     RUNNING = "running"
@@ -102,7 +106,7 @@ class TrackedTask:
             # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
             return {task_row.task_id: None}
         except Exception as e:
-            error_message = f"Task error was not handled: {str(e)}\n{traceback.format_exc()}"
+            error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"
             logger.error(error_message)
             logfire.exception("tracked_task_run failed")
             sentry_sdk.capture_exception(e)
@@ -558,12 +562,12 @@ async def process_task(
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
-        log_output(f"\n[ERROR] {e}")
+        log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except OutputArtifactError as e:
         if task_is_stopped():
             return {task_id: None}
-        error_message = str(e)
+        error_message = _exception_message(e)
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
@@ -616,7 +620,7 @@ async def process_task(
     except BenchmarkServiceError as e:
         if task_is_stopped():
             return {task_id: None}
-        error_message = str(e)
+        error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
 
         with Session(bind=engine) as task_session:
@@ -628,7 +632,7 @@ async def process_task(
         if task_is_stopped():
             return {task_id: None}
         logfire.exception("process_task failed")
-        error_message = str(e)
+        error_message = _exception_message(e)
         logger.error(error_message, exc_info=True)
 
         sentry_sdk.capture_exception(e)
