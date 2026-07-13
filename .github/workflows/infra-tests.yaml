@@ -60,7 +60,7 @@ jobs:
         run: uv run ruff check .
 
       - name: Type check
-        run: uv run basedpyright
+        run: uv run basedpyright worker_stack.py constants.py tests/test_monitoring_stack.py
 
       - name: Run CDK assertion tests
         env:

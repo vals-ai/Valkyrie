@@ -60,8 +60,8 @@ schedule is disabled and the function is in dry-run mode by default. The Lambda 
 
 The sweep covers every sandbox visible through the `AgenticHarnessSecrets` credentials and their configured target that
 is strictly older than 48 hours. This includes sandboxes provisioned by Harbor and benchmark services outside the
-Valkyrie tracker lifecycle. Only a case-insensitive `clean-up=false` label exempts a sandbox; a missing label remains
-eligible.
+Valkyrie tracker lifecycle. Only the exact `clean-up` label key exempts a sandbox when its value equals `false` after
+trimming and case-folding; a missing key remains eligible.
 
 At invocation time, the Lambda reads the `DAYTONA_API_KEY`, `DAYTONA_API_URL`, and `DAYTONA_TARGET` JSON fields from the
 fixed `AgenticHarnessSecrets` Secrets Manager secret. Configure rollout with GitHub repository variables:
