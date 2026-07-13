@@ -192,7 +192,7 @@ def test_agent_name(worker_id: str) -> str:
     return integration_test_agent_name(worker_id)
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def seeded_test_agent_artifact(test_agent_name: str, harness_config: HarnessConfig) -> Generator[None, None, None]:
     s3_client = create_s3_client(harness_config.aws)
     key = seed_test_agent_artifact(s3_client, harness_config.s3_bucket, test_agent_name)
@@ -203,7 +203,7 @@ def seeded_test_agent_artifact(test_agent_name: str, harness_config: HarnessConf
 
 
 @pytest.fixture
-def contract(test_agent_name: str) -> AgentContractRequest:
+def contract(test_agent_name: str, seeded_test_agent_artifact: None) -> AgentContractRequest:
     return AgentContractRequest(
         name=test_agent_name,
         install_cmd="echo installing dependencies...",
