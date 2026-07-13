@@ -27,6 +27,7 @@ from constants import (
     WORKER_STOP_TIMEOUT_SECONDS,
 )
 from constructs import Construct
+from runtime_iam import create_worker_task_role, managed_runtime_environment
 from stage import Stage
 from stage_config import config_for
 
@@ -83,6 +84,7 @@ class WorkerStack(Stack):
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+            **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
 
         db_env = {
@@ -109,13 +111,17 @@ class WorkerStack(Stack):
 
         # ── Worker service ────────────────────────────────────────────────
 
+        self.worker_task_role = create_worker_task_role(self, stage, bucket, stage_config.managed_aws)
         worker_task_def = aws_ecs.FargateTaskDefinition(
             self,
             "WorkerTaskDef",
             cpu=stage_config.worker.cpu,
             memory_limit_mib=stage_config.worker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
+            task_role=cast(aws_iam.IRole, self.worker_task_role),
         )
+
+        cdk.CfnOutput(self, "WorkerTaskRoleArn", value=self.worker_task_role.role_arn)
 
         worker_task_def.add_container(
             "WorkerContainer",
@@ -154,7 +160,7 @@ class WorkerStack(Stack):
         )
 
         # Allow the worker to toggle ECS Task Protection while benchmarks run
-        cast(aws_iam.Role, worker_task_def.task_role).add_to_policy(
+        self.worker_task_role.add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["ecs:UpdateTaskProtection"],
                 resources=["*"],

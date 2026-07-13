@@ -12,6 +12,7 @@ from aws_cdk import (
     aws_ecs,
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
+    aws_iam,
     aws_logs,
     aws_rds,
     aws_route53,
@@ -42,6 +43,7 @@ from constants import (
     VPC_CIDR,
 )
 from constructs import Construct
+from runtime_iam import create_tracker_task_role, managed_runtime_environment
 from stage import Stage
 from stage_config import config_for
 
@@ -90,6 +92,7 @@ class TrackerStack(Stack):
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+            **managed_runtime_environment(self, stage, bucket, stage_config.managed_aws),
         }
 
         # ── RDS ──────────────────────────────────────────────────────────
@@ -169,13 +172,17 @@ class TrackerStack(Stack):
 
         # ── Tracker API service ──────────────────────────────────────────
 
+        self.tracker_task_role = create_tracker_task_role(self, stage, bucket, stage_config.managed_aws)
         tracker_task_def = aws_ecs.FargateTaskDefinition(
             self,
             "TrackerTaskDef",
             cpu=stage_config.tracker.cpu,
             memory_limit_mib=stage_config.tracker.memory_mib,
             runtime_platform=_ARM64_PLATFORM,
+            task_role=cast(aws_iam.IRole, self.tracker_task_role),
         )
+
+        cdk.CfnOutput(self, "TrackerTaskRoleArn", value=self.tracker_task_role.role_arn)
 
         tracker_task_def.add_container(
             "TrackerContainer",

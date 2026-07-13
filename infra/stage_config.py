@@ -25,12 +25,26 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
+class ManagedAwsRuntimeConfig:
+    benchmark_log_group_prefix: str
+    benchmark_log_retention_days: int
+    deployment_role_org_ids: tuple[str, ...] = ()
+    submissions_enabled: bool = False
+    tracker_secret_name_prefixes: tuple[str, ...] = ()
+    worker_secret_name_prefixes: tuple[str, ...] = ()
+    tracker_lambda_function_name_patterns: tuple[str, ...] = ()
+    worker_lambda_function_name_patterns: tuple[str, ...] = ()
+    kms_key_arns: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class StageConfig:
     runtime_environment: str
     tracker: ServiceConfig
     worker: ServiceConfig
     database: DatabaseConfig
     service_log_retention: aws_logs.RetentionDays
+    managed_aws: ManagedAwsRuntimeConfig
 
 
 PROD_CONFIG = StageConfig(
@@ -44,6 +58,10 @@ PROD_CONFIG = StageConfig(
         connection_alarm_threshold=135,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
+    managed_aws=ManagedAwsRuntimeConfig(
+        benchmark_log_group_prefix="/valkyrie/benchmarks",
+        benchmark_log_retention_days=365,
+    ),
 )
 
 DEV_CONFIG = StageConfig(
@@ -57,6 +75,10 @@ DEV_CONFIG = StageConfig(
         connection_alarm_threshold=65,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_WEEK,
+    managed_aws=ManagedAwsRuntimeConfig(
+        benchmark_log_group_prefix="/valkyrie/benchmarks",
+        benchmark_log_retention_days=7,
+    ),
 )
 
 _STAGE_CONFIGS = {
