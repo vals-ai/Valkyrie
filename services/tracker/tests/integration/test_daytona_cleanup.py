@@ -39,6 +39,12 @@ class ScopedDaytonaListClient:
             if all(sandbox.labels.get(key) == value for key, value in self.labels.items()):
                 yield sandbox
 
+    async def get(self, sandbox_id_or_name: str) -> AsyncSandbox:
+        sandbox = await self.daytona.get(sandbox_id_or_name)
+        if not all(sandbox.labels.get(key) == value for key, value in self.labels.items()):
+            raise RuntimeError("Live cleanup test refused metadata outside its UUID scope")
+        return sandbox
+
 
 class ScopedSandboxDeleteProvider:
     """Refuse any live-test deletion outside the exact sandbox allowlist."""
@@ -63,6 +69,9 @@ async def test_live_cleanup_guards_reject_out_of_scope_results() -> None:
             yield scoped
             yield unrelated
 
+        async def get(self, sandbox_id_or_name: str) -> AsyncSandbox:
+            return {"scoped": scoped, "unrelated": unrelated}[sandbox_id_or_name]
+
     class RecordingProvider:
         def __init__(self) -> None:
             self.deleted: list[str] = []
@@ -72,6 +81,9 @@ async def test_live_cleanup_guards_reject_out_of_scope_results() -> None:
 
     client = ScopedDaytonaListClient(cast(AsyncDaytona, FakeDaytona()), scope_labels)
     assert [sandbox.id async for sandbox in client.list(ListSandboxesQuery())] == ["scoped"]
+    assert (await client.get("scoped")).id == "scoped"
+    with pytest.raises(RuntimeError, match="outside its UUID scope"):
+        await client.get("unrelated")
 
     provider = RecordingProvider()
     guarded_provider = ScopedSandboxDeleteProvider(cast(SandboxProvider, provider), {"scoped"})

@@ -8,11 +8,11 @@ import os
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 import boto3
 from benchmark_service.sandbox.daytona import DaytonaProviderConfig
-from daytona import AsyncDaytona, AsyncSandbox, DaytonaConfig, ListSandboxesQuery
+from daytona import AsyncDaytona, AsyncSandbox, DaytonaConfig, DaytonaNotFoundError, ListSandboxesQuery
 
 from tracker.logging import configure_logging, get_logger
 
@@ -24,12 +24,15 @@ _MAX_SANDBOX_AGE = timedelta(hours=48)
 _DELETE_TIMEOUT_SECONDS = 120
 _LAMBDA_SHUTDOWN_MARGIN_SECONDS = 60
 _REQUIRED_SECRET_FIELDS = ("DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET")
+CandidateExclusion = Literal["exempted", "target_mismatch", "not_old", "invalid_metadata"]
 
 
 class DaytonaListClient(Protocol):
-    """Subset of ``AsyncDaytona`` needed for metadata-aware cleanup listing."""
+    """Subset of ``AsyncDaytona`` needed for metadata-aware cleanup."""
 
     def list(self, query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]: ...
+
+    async def get(self, sandbox_id_or_name: str) -> AsyncSandbox: ...
 
 
 class SandboxDeleteProvider(Protocol):
@@ -104,6 +107,33 @@ def _cleanup_is_disabled(labels: Mapping[str, str] | None) -> bool:
     return value is not None and value.strip().casefold() == _CLEANUP_DISABLED
 
 
+def _candidate_exclusion(sandbox: AsyncSandbox, *, target: str, cutoff: datetime) -> CandidateExclusion | None:
+    if sandbox.target != target:
+        return "target_mismatch"
+    if _cleanup_is_disabled(sandbox.labels):
+        return "exempted"
+
+    created_at = _parse_created_at(sandbox.created_at)
+    if created_at is None:
+        return "invalid_metadata"
+    if created_at >= cutoff:
+        return "not_old"
+    return None
+
+
+def _log_exclusion(exclusion: CandidateExclusion, sandbox: AsyncSandbox) -> None:
+    if exclusion == "target_mismatch":
+        logger.error(
+            "Skipping Daytona sandbox returned outside the configured target",
+            extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
+        )
+    elif exclusion == "invalid_metadata":
+        logger.error(
+            "Skipping Daytona sandbox with invalid creation timestamp",
+            extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
+        )
+
+
 async def cleanup_old_sandboxes(
     client: DaytonaListClient,
     delete_provider: SandboxDeleteProvider,
@@ -118,34 +148,22 @@ async def cleanup_old_sandboxes(
 
     cutoff = now.astimezone(UTC) - _MAX_SANDBOX_AGE
     scanned = eligible = deletion_completed = 0
-    exempted = target_mismatch = not_old = invalid_metadata = 0
+    exclusions: dict[CandidateExclusion, int] = {
+        "exempted": 0,
+        "target_mismatch": 0,
+        "not_old": 0,
+        "invalid_metadata": 0,
+    }
     failures: list[CleanupFailure] = []
 
     query = ListSandboxesQuery(targets=[target], created_at_before=cutoff, limit=200)
     sandboxes = [sandbox async for sandbox in client.list(query)]
     for sandbox in sandboxes:
         scanned += 1
-        if sandbox.target != target:
-            target_mismatch += 1
-            logger.error(
-                "Skipping Daytona sandbox returned outside the configured target",
-                extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
-            )
-            continue
-        if _cleanup_is_disabled(sandbox.labels):
-            exempted += 1
-            continue
-
-        created_at = _parse_created_at(sandbox.created_at)
-        if created_at is None:
-            invalid_metadata += 1
-            logger.error(
-                "Skipping Daytona sandbox with invalid creation timestamp",
-                extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
-            )
-            continue
-        if created_at >= cutoff:
-            not_old += 1
+        exclusion = _candidate_exclusion(sandbox, target=target, cutoff=cutoff)
+        if exclusion is not None:
+            exclusions[exclusion] += 1
+            _log_exclusion(exclusion, sandbox)
             continue
 
         eligible += 1
@@ -154,6 +172,40 @@ async def cleanup_old_sandboxes(
                 "Daytona sandbox is eligible for cleanup (dry run)",
                 extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
             )
+            continue
+
+        try:
+            current_sandbox = await client.get(sandbox.id)
+        except DaytonaNotFoundError:
+            deletion_completed += 1
+            logger.info(
+                "Daytona sandbox was already absent before cleanup deletion",
+                extra={"sandbox_id": sandbox.id, "sandbox_name": sandbox.name},
+            )
+            continue
+        except Exception as exc:
+            failures.append(
+                CleanupFailure(
+                    sandbox_id=sandbox.id,
+                    sandbox_name=sandbox.name,
+                    error_type=type(exc).__name__,
+                )
+            )
+            logger.error(
+                "Failed to refresh Daytona sandbox before deletion",
+                extra={
+                    "sandbox_id": sandbox.id,
+                    "sandbox_name": sandbox.name,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            continue
+
+        exclusion = _candidate_exclusion(current_sandbox, target=target, cutoff=cutoff)
+        if exclusion is not None:
+            eligible -= 1
+            exclusions[exclusion] += 1
+            _log_exclusion(exclusion, current_sandbox)
             continue
 
         try:
@@ -191,10 +243,10 @@ async def cleanup_old_sandboxes(
         scanned=scanned,
         eligible=eligible,
         deletion_completed=deletion_completed,
-        exempted=exempted,
-        target_mismatch=target_mismatch,
-        not_old=not_old,
-        invalid_metadata=invalid_metadata,
+        exempted=exclusions["exempted"],
+        target_mismatch=exclusions["target_mismatch"],
+        not_old=exclusions["not_old"],
+        invalid_metadata=exclusions["invalid_metadata"],
         failures=tuple(failures),
     )
 
