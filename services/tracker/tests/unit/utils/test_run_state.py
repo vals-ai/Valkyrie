@@ -313,10 +313,15 @@ class TestRunState:
             sandbox_provider="modal",
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_starter)
+        benchmark_row = start_benchmark_request_to_benchmark(
+            original_start_benchmark_request,
+            self._test_starter,
+            aws_managed=False,
+            verified_task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
+        )
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
-        recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
+        recreated_start_benchmark_request = benchmark_row.legacy_start_benchmark_request(harness_config)
         assert recreated_start_benchmark_request == original_start_benchmark_request.model_copy(
             update={
                 "harness_config": harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),

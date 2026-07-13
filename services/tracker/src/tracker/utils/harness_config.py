@@ -5,6 +5,7 @@ from tracker.aws.resolver import (
     fetch_harness_config,
     inspect_harness_headers,
     parse_log_retention_policy,
+    resolve_start_harness_config,
     try_fetch_harness_config,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "_parse_log_retention_policy",
     "fetch_harness_config",
     "inspect_harness_headers",
+    "resolve_start_harness_config",
     "try_fetch_harness_config",
 ]

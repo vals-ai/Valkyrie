@@ -60,6 +60,8 @@ def _create_benchmark(
     benchmark = start_benchmark_request_to_benchmark(
         request,
         RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
+        aws_managed=False,
+        verified_task_ids=task_ids or _TASK_IDS,
     )
     session.add(benchmark)
     session.commit()
@@ -291,11 +293,14 @@ class TestProcessBenchmark:
 
         await gather(
             *[
-                process_benchmark(
-                    benchmark.start_benchmark_request(harness_config, service_headers=service_headers).model_dump(),
-                    str(benchmark.id),
-                    [_TASK_ID],
-                )
+            process_benchmark(
+                benchmark.legacy_start_benchmark_request(
+                    harness_config,
+                    service_headers=service_headers,
+                ).model_dump(),
+                str(benchmark.id),
+                [_TASK_ID],
+            )
                 for benchmark in benchmarks
             ]
         )

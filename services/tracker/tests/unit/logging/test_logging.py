@@ -235,6 +235,27 @@ class TestLoggingContextMiddleware:
         assert request_id_var.get() == "req-456"
         assert result is message
 
+    async def test_logging_context_middleware_reads_v2_benchmark_id(self) -> None:
+        """Taskiq middleware binds the benchmark ID nested in a V2 execution context."""
+        middleware = LoggingContextMiddleware()
+
+        message = MagicMock()
+        message.kwargs = {
+            "execution_context_json": {
+                "version": 2,
+                "benchmark_id": "bench-v2",
+                "verified_task_ids": ["task-1"],
+                "start_benchmark_request": {},
+            }
+        }
+        message.labels = {"request_id": "req-v2"}
+
+        result = await middleware.pre_execute(message)
+
+        assert benchmark_id_var.get() == "bench-v2"
+        assert request_id_var.get() == "req-v2"
+        assert result is message
+
     async def test_logging_context_middleware_post_execute_clears(self) -> None:
         """post_execute clears all context vars."""
         middleware = LoggingContextMiddleware()

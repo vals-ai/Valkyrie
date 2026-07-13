@@ -3,23 +3,27 @@
 import asyncio
 import traceback
 from asyncio import Semaphore, gather
+from dataclasses import dataclass
 from typing import Any, Sequence, cast
 from uuid import UUID
 
 import logfire
 import sentry_sdk
-from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
+from benchmark_service import SandboxProviderConfig
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from opentelemetry import trace
 from pydantic import ValidationError
 from sqlmodel import Session, col, desc, func, select
 
-from tracker._lambda import invoke_lambda
+from tracker._lambda import dry_run_lambda, invoke_lambda
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
+from tracker.aws.resolver import deployment_aws_runtime
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     copy_agent_to_benchmark,
 )
 from tracker.config import broker
+from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -37,6 +41,7 @@ from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.types import (
     FinalViewResponse,
+    ManagedExecutionContext,
     StartBenchmarkRequest,
 )
 
@@ -243,46 +248,123 @@ def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkReq
     return request
 
 
+@dataclass(frozen=True)
+class _WorkerExecution:
+    request: StartBenchmarkRequest
+    benchmark_id: UUID
+    verified_task_ids: list[str]
+    managed: bool
+
+
+_TRANSIENT_MANAGED_REQUEST_FIELDS = {
+    "service_headers",
+    "service_auth_header_name",
+    "service_auth_secret_name",
+}
+
+
+def _validate_managed_worker_execution(execution: _WorkerExecution, benchmark_row: Benchmark) -> None:
+    expected_request = benchmark_row.managed_start_benchmark_request()
+    expected_inputs = expected_request.model_dump(exclude=_TRANSIENT_MANAGED_REQUEST_FIELDS)
+    actual_inputs = execution.request.model_dump(exclude=_TRANSIENT_MANAGED_REQUEST_FIELDS)
+    if actual_inputs != expected_inputs:
+        raise TrackerServiceError("Managed worker input does not match the stored run inputs")
+
+    persisted_task_ids = benchmark_row.verified_task_ids
+    queued_task_ids = execution.verified_task_ids
+    if (
+        persisted_task_ids is None
+        or len(queued_task_ids) != len(set(queued_task_ids))
+        or not set(queued_task_ids).issubset(persisted_task_ids)
+    ):
+        raise TrackerServiceError("Managed worker task IDs do not match the stored run inputs")
+
+
+def _parse_worker_execution(
+    start_benchmark_request_json: dict[str, Any] | None,
+    benchmark_id_str: str | None,
+    verified_task_ids: list[str] | None,
+    execution_context_json: dict[str, Any] | None,
+) -> _WorkerExecution:
+    if execution_context_json is None:
+        if start_benchmark_request_json is None or benchmark_id_str is None or verified_task_ids is None:
+            raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
+        request = _parse_start_benchmark_request(start_benchmark_request_json)
+        if request.harness_config is None:
+            raise ValueError("Queued legacy benchmark request has no AWS configuration.")
+        return _WorkerExecution(
+            request=request,
+            benchmark_id=UUID(benchmark_id_str),
+            verified_task_ids=verified_task_ids,
+            managed=False,
+        )
+
+    if start_benchmark_request_json is not None or benchmark_id_str is not None or verified_task_ids is not None:
+        raise ValueError("Queued benchmark request mixes legacy and managed execution inputs.")
+    try:
+        context = ManagedExecutionContext.model_validate(execution_context_json)
+    except ValidationError:
+        raise ValueError("Queued managed execution context is invalid and cannot be processed.") from None
+    return _WorkerExecution(
+        request=context.start_benchmark_request,
+        benchmark_id=context.benchmark_id,
+        verified_task_ids=context.verified_task_ids,
+        managed=True,
+    )
+
+
+def _managed_worker_preflight(
+    execution: _WorkerExecution,
+    runtime: AWSRuntime,
+) -> SandboxProviderConfig:
+    """Verify worker-owned AWS access before starting sandbox work."""
+    create_benchmark_log_group(str(execution.benchmark_id), runtime)
+    request = execution.request
+    provider_secret_name = request.sandbox_provider_secret_name
+    assert provider_secret_name is not None
+    sandbox_provider_config = fetch_sandbox_provider_config(
+        provider_secret_name,
+        runtime.clients,
+        request.sandbox_provider,
+    )
+    resolve_secrets(request.contract.secrets, runtime.clients)
+    if request.webhook_secret_name and request.webhook_intervals:
+        fetch_aws_secret(request.webhook_secret_name, runtime.clients)
+    if request.lambda_function:
+        dry_run_lambda(runtime.clients, request.lambda_function)
+    return sandbox_provider_config
+
+
 # Pin the Taskiq task name to its pre-refactor value so in-flight messages
 # enqueued as `tracker.utils:process_benchmark` still match after the module move.
 @broker.task("tracker.utils:process_benchmark")
 @logfire.instrument("process_benchmark", extract_args=("benchmark_id_str", "verified_task_ids"))
 async def process_benchmark(
-    start_benchmark_request_json: dict[str, Any],
-    benchmark_id_str: str,
-    verified_task_ids: list[str],
+    start_benchmark_request_json: dict[str, Any] | None = None,
+    benchmark_id_str: str | None = None,
+    verified_task_ids: list[str] | None = None,
+    execution_context_json: dict[str, Any] | None = None,
 ) -> None:
-    # Was serialized to make it compatible with the broker
-    start_benchmark_request = _parse_start_benchmark_request(start_benchmark_request_json)
-    benchmark_id: UUID = UUID(benchmark_id_str)
-    harness_config = start_benchmark_request.harness_config
-    aws_runtime = AWSRuntime.from_harness_config(harness_config)
-    sandbox_provider_config = fetch_sandbox_provider_config(
-        harness_config.sandbox_provider_secret_name,
-        aws_runtime.clients,
-        start_benchmark_request.sandbox_provider,
+    execution = _parse_worker_execution(
+        start_benchmark_request_json,
+        benchmark_id_str,
+        verified_task_ids,
+        execution_context_json,
     )
-    benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
+    start_benchmark_request = execution.request
+    benchmark_id = execution.benchmark_id
+    verified_task_ids = execution.verified_task_ids
 
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
     trace.get_current_span().set_attributes(
         {
-            "benchmark_id": benchmark_id_str,
+            "benchmark_id": str(benchmark_id),
             "benchmark_name": start_benchmark_request.benchmark_name,
             "agent_name": start_benchmark_request.contract.name,
             "task_count": len(verified_task_ids),
         }
     )
-
-    # Create notifier if webhook is configured
-    notifier: SlackNotifier | None = None
-    if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
-        notifier = SlackNotifier(
-            secret_name=start_benchmark_request.webhook_secret_name,
-            clients=aws_runtime.clients,
-            intervals=start_benchmark_request.webhook_intervals,
-        )
 
     # Resolve the org from the benchmark row (no org check on first fetch since the benchmark was just created by our system)
     with Session(bind=engine) as session:
@@ -292,7 +374,35 @@ async def process_benchmark(
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
     finalization_deferred = False
+    benchmark_service: BenchmarkServiceClient | None = None
+    notifier: SlackNotifier | None = None
     try:
+        if execution.managed:
+            if not benchmark_row.aws_managed:
+                raise TrackerServiceError("Managed worker input does not match the stored run mode")
+            _validate_managed_worker_execution(execution, benchmark_row)
+            aws_runtime = deployment_aws_runtime(org.id)
+            sandbox_provider_config = _managed_worker_preflight(execution, aws_runtime)
+        else:
+            if benchmark_row.aws_managed:
+                raise TrackerServiceError("Legacy worker input does not match the stored run mode")
+            harness_config = start_benchmark_request.harness_config
+            assert harness_config is not None
+            aws_runtime = AWSRuntime.from_harness_config(harness_config)
+            sandbox_provider_config = fetch_sandbox_provider_config(
+                harness_config.sandbox_provider_secret_name,
+                aws_runtime.clients,
+                start_benchmark_request.sandbox_provider,
+            )
+
+        benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
+        if start_benchmark_request.webhook_secret_name and start_benchmark_request.webhook_intervals:
+            notifier = SlackNotifier(
+                secret_name=start_benchmark_request.webhook_secret_name,
+                clients=aws_runtime.clients,
+                intervals=start_benchmark_request.webhook_intervals,
+            )
+
         # Copy the agent into the benchmarks S3 folder
         await copy_agent_to_benchmark(
             str(benchmark_id),
@@ -300,8 +410,8 @@ async def process_benchmark(
             aws_runtime,
         )
 
-        # Create benchmark cloudwatch log group
-        create_benchmark_log_group(str(benchmark_id), aws_runtime)
+        if not execution.managed:
+            create_benchmark_log_group(str(benchmark_id), aws_runtime)
 
         # Create tasks inside of the database for each task id
         with Session(bind=engine) as session:
@@ -447,7 +557,8 @@ async def process_benchmark(
             except Exception as notification_error:
                 logger.warning(f"Failed to send terminal notification: {notification_error}")
 
-        await benchmark_service.close()
+        if benchmark_service is not None:
+            await benchmark_service.close()
 
 
 def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_message: str) -> None:

@@ -39,6 +39,7 @@ from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.resolver import (
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime,
+    resolve_start_aws_runtime,
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import resolve_secrets
@@ -89,6 +90,7 @@ from tracker.types import (
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
     HarnessConfig,
+    ManagedExecutionContext,
     Order,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
@@ -99,6 +101,7 @@ from tracker.types import (
     StopBenchmarkResponse,
     UpdateBenchmarkConcurrencyRequest,
     UpdateBenchmarkConcurrencyResponse,
+    validate_managed_execution_request,
 )
 from tracker.utils import (
     BenchmarkConcurrencyUpdate,
@@ -110,7 +113,6 @@ from tracker.utils import (
     create_final_view,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
-    fetch_harness_config,
     try_fetch_harness_config,
     force_stop_sandboxes,
     initiate_stop_benchmark,
@@ -186,6 +188,27 @@ def _taskiq_labels() -> dict[str, str]:
     trace_context: dict[str, str] = {}
     inject(trace_context)
     return {"request_id": request_id_var.get(), **trace_context}
+
+
+def _process_benchmark_kwargs(
+    benchmark_row: Benchmark,
+    request: StartBenchmarkRequest,
+    verified_task_ids: list[str],
+) -> dict[str, Any]:
+    if benchmark_row.aws_managed:
+        return {
+            "execution_context_json": ManagedExecutionContext(
+                version=2,
+                benchmark_id=benchmark_row.id,
+                verified_task_ids=verified_task_ids,
+                start_benchmark_request=request,
+            ).model_dump(mode="json")
+        }
+    return {
+        "start_benchmark_request_json": request.model_dump(),
+        "benchmark_id_str": str(benchmark_row.id),
+        "verified_task_ids": verified_task_ids,
+    }
 
 
 @app.exception_handler(TrackerServiceError)
@@ -303,16 +326,30 @@ async def start_benchmark(
     - 400 Bad Request if parameters are invalid
     - 500 Internal Server Error if benchmark fails to start
     """
-    # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
-    header_harness_config = try_fetch_harness_config(http_request)
-    effective_harness_config = header_harness_config or request.harness_config
-    # TODO: Drop the top-level fallback after legacy clients have aged out.
-    provider_secret_name = request.harness_config.sandbox_provider_secret_name or request.sandbox_provider_secret_name
-    if provider_secret_name:
-        effective_harness_config = effective_harness_config.model_copy(
-            update={"sandbox_provider_secret_name": provider_secret_name}
+    runtime_resolution = resolve_start_aws_runtime(http_request, request.harness_config, run_starter.org.id)
+    aws_runtime = runtime_resolution.runtime
+    effective_harness_config = runtime_resolution.legacy_harness_config
+
+    if aws_runtime.managed:
+        if not request.sandbox_provider or not request.sandbox_provider_secret_name:
+            raise HTTPException(
+                status_code=400,
+                detail="Managed runs require a sandbox provider and sandbox provider secret name.",
+            )
+    else:
+        assert effective_harness_config is not None
+        body_provider_secret_name = (
+            request.harness_config.sandbox_provider_secret_name if request.harness_config is not None else None
         )
-    aws_runtime = AWSRuntime.from_harness_config(effective_harness_config)
+        provider_secret_name = (
+            body_provider_secret_name
+            or request.sandbox_provider_secret_name
+            or effective_harness_config.sandbox_provider_secret_name
+        )
+        if provider_secret_name:
+            effective_harness_config = effective_harness_config.model_copy(
+                update={"sandbox_provider_secret_name": provider_secret_name}
+            )
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
@@ -334,6 +371,17 @@ async def start_benchmark(
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, aws_runtime)})
+    elif aws_runtime.managed and not await s3_object_exists(get_contract_s3_key(request.contract.name), aws_runtime):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
+        )
+
+    if aws_runtime.managed:
+        try:
+            validate_managed_execution_request(request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
@@ -361,7 +409,12 @@ async def start_benchmark(
         raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
 
     # Create benchmark row only after pre-flight checks pass.
-    benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
+    benchmark_row = start_benchmark_request_to_benchmark(
+        request,
+        run_starter,
+        aws_managed=aws_runtime.managed,
+        verified_task_ids=verify_response.task_ids,
+    )
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))
@@ -391,11 +444,7 @@ async def start_benchmark(
     await (
         process_benchmark.kicker()
         .with_labels(**_taskiq_labels())
-        .kiq(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verify_response.task_ids,
-        )
+        .kiq(**_process_benchmark_kwargs(benchmark_row, request, verify_response.task_ids))
     )
 
     return StartBenchmarkResponse(
@@ -823,6 +872,7 @@ def patch_benchmark_concurrency(
 async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
+    legacy_harness_config: OptionalHarnessConfig,
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
     concurrency: int | None = Query(default=None),
@@ -830,7 +880,6 @@ async def retry_or_resume_benchmark(
     service_headers: dict[str, str] = Body(default={}),
     secrets: dict[str, str] = Body(default={}),
     session: Session = Depends(get_session),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> RetryOrResumeBenchmarkResponse:
     """
@@ -851,6 +900,12 @@ async def retry_or_resume_benchmark(
         RetryOrResumeBenchmarkResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    runtime_resolution = resolve_run_aws_runtime(
+        http_request,
+        aws_managed=benchmark_row.aws_managed,
+        org_id=org.id,
+        legacy_harness_config=legacy_harness_config,
+    )
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
@@ -876,6 +931,20 @@ async def retry_or_resume_benchmark(
         http_request.headers.get("x-api-key"),
     )
 
+    if benchmark_row.aws_managed:
+        prospective_request = benchmark_row.managed_start_benchmark_request(
+            service_headers=effective_service_headers,
+        )
+        if secrets:
+            prospective_contract = prospective_request.contract.model_copy(
+                update={"secrets": {**prospective_request.contract.secrets, **secrets}}
+            )
+            prospective_request = prospective_request.model_copy(update={"contract": prospective_contract})
+        try:
+            validate_managed_execution_request(prospective_request)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     verified_task_ids = await reset_to_in_progress_status(
         benchmark_row=benchmark_row,
         session=session,
@@ -900,21 +969,28 @@ async def retry_or_resume_benchmark(
             concurrency=concurrency,
         )
 
-    # Ensure that credentials are included with the model dump
-    resume_request_json = benchmark_row.start_benchmark_request(
-        harness_config, service_headers=effective_service_headers
-    ).model_dump()
+    if benchmark_row.aws_managed:
+        persisted_task_ids = benchmark_row.verified_task_ids or []
+        benchmark_row.verified_task_ids = list(dict.fromkeys([*persisted_task_ids, *verified_task_ids]))
+        session.add(benchmark_row)
+        session.commit()
+        resume_request = benchmark_row.managed_start_benchmark_request(
+            service_headers=effective_service_headers,
+        )
+    else:
+        legacy_harness_config = runtime_resolution.legacy_harness_config
+        assert legacy_harness_config is not None
+        resume_request = benchmark_row.legacy_start_benchmark_request(
+            legacy_harness_config,
+            service_headers=effective_service_headers,
+        )
 
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
     await (
         process_benchmark.kicker()
         .with_labels(**_taskiq_labels())
-        .kiq(
-            start_benchmark_request_json=resume_request_json,
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verified_task_ids,
-        )
+        .kiq(**_process_benchmark_kwargs(benchmark_row, resume_request, verified_task_ids))
     )
 
     return RetryOrResumeBenchmarkResponse(
