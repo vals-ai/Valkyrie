@@ -5,25 +5,20 @@ from __future__ import annotations
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import case
 from sqlmodel import Session, col, desc, func, select
 
 from tracker.api.parsing import parse_csv
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.resolver import resolve_optional_run_aws_runtime
 from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
-from tracker.types import (
-    HarnessConfig,
-    SingleBenchmarkResponse,
-    TasksResponse,
-    TaskSummary,
-)
-from tracker.utils import try_fetch_harness_config
+from tracker.types import HarnessConfig, SingleBenchmarkResponse, TasksResponse, TaskSummary
+from tracker.utils.harness_config import try_fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -53,8 +48,9 @@ _STATUS_SORT_PRIORITY = case(
 @router.get("/{benchmark_id}", response_model=SingleBenchmarkResponse)
 def get_single_benchmark(
     benchmark_id: UUID,
+    request: Request,
     org: Org = Depends(get_current_org),
-    harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
+    legacy_harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
     session: Session = Depends(get_session),
 ) -> SingleBenchmarkResponse:
     """Fetch a single benchmark with task counts + final score for the SingleRun page."""
@@ -68,12 +64,16 @@ def get_single_benchmark(
         + task_state_counts.get(TaskStatus.STOPPED, 0)
     )
 
-    # region + s3_bucket are required harness headers, so they're present whenever
-    # harness_config is; log_group is optional (no log group -> no CloudWatch link).
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
-    if harness_config:
-        aws_resources = AWSRuntime.from_harness_config(harness_config).resources
+    aws_runtime = resolve_optional_run_aws_runtime(
+        request,
+        aws_managed=benchmark.aws_managed,
+        org_id=org.id,
+        legacy_harness_config=legacy_harness_config,
+    )
+    if aws_runtime:
+        aws_resources = aws_runtime.resources
         s3_bucket_url = create_benchmark_url(str(benchmark.id), aws_resources)
         if aws_resources.log_group:
             cloudwatch_url = get_benchmark_log_url(

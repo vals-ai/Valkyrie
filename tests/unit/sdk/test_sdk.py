@@ -309,6 +309,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
                     "s3_url": "s3://runs-bucket/results.json",
                     "presigned_url": "https://download.test/results.json",
                     "console_url": "https://console.aws.test/results.json",
+                    "expires_in": 86400,
                 },
             )
         raise AssertionError(f"Unexpected request: {request.url}")
@@ -328,6 +329,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     assert_type(results, S3UploadResultsResponse)
     assert inline_results.benchmark_id == run_id
     assert results.s3_url == "s3://runs-bucket/results.json"
+    assert results.expires_in == 86400
     assert paths == [
         "/fetch-benchmark",
         "/fetch-benchmarks",

@@ -86,7 +86,13 @@ def results(
 
                 download_final_view(path or default_path, results_response)
             else:
-                click.echo(click.style("Download (expires in 1 day):", fg="cyan", bold=True))
+                click.echo(
+                    click.style(
+                        f"Download (expires in {results_response.expires_in} seconds):",
+                        fg="cyan",
+                        bold=True,
+                    )
+                )
                 click.echo(f"  {results_response.presigned_url}")
                 click.echo()
                 click.echo(click.style("AWS Console:", fg="cyan", bold=True))

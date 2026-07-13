@@ -18,7 +18,7 @@ from tracker.auth import get_current_org
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_harness_config
+from tracker.utils import fetch_harness_config, try_fetch_harness_config
 
 
 @pytest.fixture
@@ -46,6 +46,7 @@ def setup_app_dependencies(
 
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
     monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: harness_config)
+    monkeypatch.setitem(app.dependency_overrides, try_fetch_harness_config, lambda: harness_config)
     test_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
     monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: test_org)
 
@@ -69,6 +70,7 @@ def local_app(
 
     main_module.app.dependency_overrides[get_session] = get_test_session
     main_module.app.dependency_overrides[fetch_harness_config] = lambda: harness_config
+    main_module.app.dependency_overrides[try_fetch_harness_config] = lambda: harness_config
     monkeypatch.setattr("tracker.database.session.engine", database_session.bind)
 
     try:
