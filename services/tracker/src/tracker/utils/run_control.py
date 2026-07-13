@@ -35,7 +35,13 @@ from tracker.utils.resources import fetch_sandbox_provider_config
 logger = get_logger(__name__)
 
 
-async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, force: bool, org: Org) -> None:
+async def initiate_stop_benchmark(
+    benchmark_row: Benchmark,
+    session: Session,
+    force: bool,
+    org: Org,
+    task_ids: list[str] | None = None,
+) -> None:
     """
     Sets the flags to initiate the stopping process for a benchmark.
 
@@ -46,17 +52,19 @@ async def initiate_stop_benchmark(benchmark_row: Benchmark, session: Session, fo
     """
     try:
         # Update all rows where tasks are pending or building to stopped
-        result = session.exec(
+        task_update = (
             update(Task)
             .where(col(Task.benchmark) == benchmark_row.id)
             .where(col(Task.org_id) == org.id)
             .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
-            .values(status=TaskStatus.STOPPED)
         )
+        if task_ids:
+            task_update = task_update.where(col(Task.task_id).in_(task_ids))
+
+        result = session.exec(task_update.values(status=TaskStatus.STOPPED))
         session.commit()
 
-        # If we have stopped any tasks or are forcing the benchmark to stop, set the benchmark status to stopping
-        if result.rowcount > 0 or force:
+        if task_ids is None and (result.rowcount > 0 or force):
             benchmark_row.status = BenchmarkStatus.STOPPING
             session.add(benchmark_row)
             session.commit()
@@ -75,13 +83,27 @@ async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> str | Non
         return f"{str(e)}: {traceback.format_exc()}"
 
 
-async def sandbox_generator(benchmark_row: Benchmark, provider: SandboxProvider) -> AsyncGenerator[Sandbox, None]:
+async def sandbox_generator(
+    benchmark_row: Benchmark,
+    provider: SandboxProvider,
+    task_ids: list[str] | None = None,
+) -> AsyncGenerator[Sandbox, None]:
     """
     Generator that yields all sandboxes for a given benchmark.
     """
-    query = SandboxQuery(labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)})
-    async for sandbox in provider.list_sandboxes(query):
-        yield sandbox
+    labels = {"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)}
+    queries = (
+        [SandboxQuery(labels={**labels, "Task": task_id}) for task_id in task_ids]
+        if task_ids
+        else [SandboxQuery(labels=labels)]
+    )
+    seen_sandbox_ids: set[str] = set()
+    for query in queries:
+        async for sandbox in provider.list_sandboxes(query):
+            if sandbox.id in seen_sandbox_ids:
+                continue
+            seen_sandbox_ids.add(sandbox.id)
+            yield sandbox
 
 
 async def force_stop_sandboxes(
@@ -91,6 +113,7 @@ async def force_stop_sandboxes(
     aws: AWSCredentials,
     org: Org,
     sandbox_provider: str = "daytona",
+    task_ids: list[str] | None = None,
 ) -> None:
     """
     Stops and deletes all sandboxes which are in progress or evaluating.
@@ -105,20 +128,23 @@ async def force_stop_sandboxes(
     )
 
     # Update all tasks being processed to stopped
-    session.exec(
+    task_update = (
         update(Task)
         .where(col(Task.benchmark) == benchmark_row.id)
         .where(col(Task.org_id) == org.id)
         .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
-        .values(status=TaskStatus.STOPPED)
     )
+    if task_ids:
+        task_update = task_update.where(col(Task.task_id).in_(task_ids))
+
+    session.exec(task_update.values(status=TaskStatus.STOPPED))
 
     session.commit()
 
     # Iterate through each running sandbox and stop it, collecting error messages
     results: dict[str, str | None] = {}
     try:
-        async for sandbox in sandbox_generator(benchmark_row, provider):
+        async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids):
             result = await stop_sandbox(sandbox, provider)
             results[sandbox.name] = result
     finally:
