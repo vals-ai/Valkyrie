@@ -1,9 +1,14 @@
+"""Tests for Tracker API review endpoints.
+
+Run: uv run pytest tests/unit/test_api_review_endpoints.py
+"""
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import httpx
@@ -49,7 +54,7 @@ def test_benchmark_services_endpoint_fetches_catalog(monkeypatch: pytest.MonkeyP
         return original_client(transport=transport, timeout=timeout)
 
     monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
-    monkeypatch.setattr(benchmark_services_api.httpx, "AsyncClient", build_client)
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
 
     response = client.get("/benchmark-services", headers={"X-Api-Key": "tenant-key"})
 
@@ -66,6 +71,119 @@ def test_benchmark_services_endpoint_fetches_catalog(monkeypatch: pytest.MonkeyP
             }
         ]
     }
+
+
+def test_benchmark_services_endpoint_defaults_missing_services_to_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserve the empty catalog response when the services key is absent."""
+
+    async def handle_request(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={})
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
+
+    def build_client(*, timeout: float) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=timeout)
+
+    monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+
+    response = client.get("/benchmark-services", headers={"X-Api-Key": "tenant-key"})
+
+    assert response.status_code == 200
+    assert response.json() == {"services": []}
+
+
+def test_benchmark_services_endpoint_hides_catalog_error_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Verify downstream catalog failures retain only a stable public error.
+
+    Test cases:
+    - The downstream status remains available to the caller.
+    - The downstream response body is not reflected.
+    """
+    sensitive_detail = "sensitive-catalog-provider-detail"
+
+    async def handle_request(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": sensitive_detail})
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
+
+    def build_client(*, timeout: float) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=timeout)
+
+    monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+
+    response = client.get("/benchmark-services", headers={"X-Api-Key": "tenant-key"})
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Failed to list benchmark services"}
+    assert sensitive_detail not in response.text
+
+
+def test_benchmark_services_endpoint_hides_catalog_transport_error_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return a stable 502 without reflecting catalog transport exception text."""
+    sensitive_detail = "sensitive-catalog-transport-detail"
+
+    async def handle_request(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(sensitive_detail, request=request)
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
+
+    def build_client(*, timeout: float) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=timeout)
+
+    monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+
+    response = client.get("/benchmark-services", headers={"X-Api-Key": "tenant-key"})
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Failed to list benchmark services"}
+    assert sensitive_detail not in response.text
+
+
+@pytest.mark.parametrize(
+    "catalog_response",
+    [
+        pytest.param(httpx.Response(200, content=b"sensitive-not-json"), id="invalid-json"),
+        pytest.param(httpx.Response(200, json=[]), id="non-object-json"),
+        pytest.param(
+            httpx.Response(200, json={"services": [{"name": "swebench", "url": "not-a-url"}]}),
+            id="invalid-service-entry",
+        ),
+        pytest.param(httpx.Response(200, json={"services": None}), id="non-list-services"),
+    ],
+)
+def test_benchmark_services_endpoint_hides_malformed_catalog_response_detail(
+    monkeypatch: pytest.MonkeyPatch,
+    catalog_response: httpx.Response,
+) -> None:
+    """Return a stable 502 for malformed successful catalog responses."""
+
+    async def handle_request(_request: httpx.Request) -> httpx.Response:
+        return catalog_response
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
+
+    def build_client(*, timeout: float) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=timeout)
+
+    monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+
+    response = client.get("/benchmark-services", headers={"X-Api-Key": "tenant-key"})
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Failed to list benchmark services"}
 
 
 def test_list_agents_uses_harness_config(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -142,11 +260,19 @@ async def test_ping_service_appends_health_path() -> None:
     assert result.error is None
 
 
-async def test_ping_service_reports_request_errors() -> None:
-    async def fake_get(url: str) -> httpx.Response:
-        raise httpx.ConnectError("boom", request=httpx.Request("GET", url))
+async def test_ping_service_hides_request_errors_and_logs_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    sensitive_detail = "sensitive-benchmark-service-transport-detail"
+    error = httpx.ConnectError(
+        sensitive_detail,
+        request=httpx.Request("GET", "http://benchmark-service/health"),
+    )
+
+    async def fake_get(_url: str) -> httpx.Response:
+        raise error
 
     fake_client = SimpleNamespace(get=fake_get)
+    warning = Mock()
+    monkeypatch.setattr(benchmark_services_api.logger, "warning", warning)
 
     result = await benchmark_services_api._ping_service(
         cast(httpx.AsyncClient, fake_client),
@@ -156,7 +282,48 @@ async def test_ping_service_reports_request_errors() -> None:
 
     assert result.healthy is False
     assert result.latency_ms is None
-    assert result.error == "boom"
+    assert result.error == "Benchmark service request failed"
+    warning.assert_called_once_with(
+        "Benchmark service health check failed for %s: %s",
+        "swebench",
+        error,
+    )
+
+
+def test_benchmark_services_endpoint_hides_health_transport_error_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sensitive_detail = "sensitive-benchmark-service-transport-detail"
+
+    async def handle_request(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError(sensitive_detail, request=request)
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
+
+    def build_client(*, timeout: float) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=timeout)
+
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+
+    response = client.post(
+        "/benchmark-services",
+        json={"services": [{"name": "swebench", "url": "http://swebench"}]},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "services": [
+            {
+                "name": "swebench",
+                "url": "http://swebench",
+                "healthy": False,
+                "latency_ms": None,
+                "error": "Benchmark service request failed",
+            }
+        ]
+    }
+    assert sensitive_detail not in response.text
 
 
 def test_benchmark_services_endpoint_reuses_ping_client(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -203,7 +370,7 @@ def test_benchmark_services_endpoint_uses_short_health_timeout(monkeypatch: pyte
     async def fake_ping(_client: httpx.AsyncClient, name: str, url: str):
         return {"name": name, "url": url, "healthy": True, "latency_ms": 1, "error": None}
 
-    monkeypatch.setattr(benchmark_services_api.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(benchmark_services_api, "_ping_service", AsyncMock(side_effect=fake_ping))
 
     response = client.post(

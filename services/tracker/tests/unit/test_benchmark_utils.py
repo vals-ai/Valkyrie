@@ -264,7 +264,7 @@ class TestBenchmarkUtils:
         Test Cases:
             - Running benchmark retry with no error tasks is a no-op
             - Cannot resume a benchmark where all tasks have already finished
-            - Errors are raised and returned to the client
+            - Downstream errors return a stable generic client detail
             - Can recreate the same environment the benchmark was started in
             - Can force resume a task and validate the task ids passed in
         """
@@ -338,7 +338,7 @@ class TestBenchmarkUtils:
             json={"task_ids": ["task_5"]},
         )
         assert response.status_code == 500
-        assert "task_5" in response.json()["detail"]
+        assert response.json() == {"detail": "Benchmark service request failed"}
 
         # Assert all tasks but 0 are in finished state
         task_rows = database_session.exec(

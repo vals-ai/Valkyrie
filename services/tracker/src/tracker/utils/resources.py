@@ -19,6 +19,7 @@ from tracker.database.models import (
     Task,
 )
 from tracker.exceptions import TrackerServiceError
+from tracker.outbound_security import validate_service_headers, validate_service_url_syntax
 from tracker.types import (
     AWSCredentials,
     StartBenchmarkRequest,
@@ -39,9 +40,10 @@ def create_benchmark_service_client(
     service_headers: dict[str, str] | None = None,
 ) -> BenchmarkServiceClient:
     """Create a BenchmarkServiceClient with benchmark-service headers."""
-    headers: dict[str, str] = {}
-    if service_headers:
-        headers.update(service_headers)
+    url = validate_service_url_syntax(url)
+    headers = dict(service_headers or {})
+    validate_service_headers(headers)
+
     return BenchmarkServiceClient(url=url, headers=headers)
 
 
