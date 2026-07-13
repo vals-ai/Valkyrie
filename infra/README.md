@@ -76,9 +76,10 @@ Safe rollout:
 1. Validate that `AgenticHarnessSecrets` contains the three required Daytona fields and points at the intended target.
 2. Deploy with the default disabled, dry-run configuration.
 3. Run the isolated live cleanup integration test against approved test credentials.
-4. Invoke the Lambda once in dry-run mode and inspect `/valkyrie/daytona-cleanup` logs.
-5. Set `DAYTONA_CLEANUP_ENABLED=true` while leaving dry-run enabled, then observe a scheduled invocation.
-6. Set `DAYTONA_CLEANUP_DRY_RUN=false` and redeploy the same revision.
+4. Invoke the Lambda once in dry-run mode, then inspect `/valkyrie/daytona-cleanup` logs and the cleanup DLQ.
+5. Assign an owner for those signals, set `DAYTONA_CLEANUP_ENABLED=true` while leaving dry-run enabled, redeploy the same
+   revision, and inspect the logs and DLQ after at least one scheduled invocation.
+6. With explicit approval, set `DAYTONA_CLEANUP_DRY_RUN=false` and redeploy the same revision.
 
 The encrypted dead-letter queue receives both Scheduler delivery failures and Lambda asynchronous handler failures;
 their message formats identify which stage failed. Individual sandbox deletion failures are also reported in CloudWatch,
