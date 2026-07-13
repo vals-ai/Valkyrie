@@ -124,7 +124,7 @@ def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
 
-    run_id = uuid4()
+    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
     tracker = TrackerService(base_url="http://tracker")
     response = tracker.fetch_run_outputs(run_id, task_ids=["task-1", "task-2"])
 
@@ -150,6 +150,40 @@ def test_fetch_run_outputs_omits_empty_task_ids(monkeypatch: pytest.MonkeyPatch)
     assert response.content == b"tar"
     assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
     assert client.params == {}
+
+
+def test_stop_benchmark_sends_task_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send selected task IDs in stop requests.
+
+    Test cases:
+    - Force remains a query parameter.
+    - Task IDs are sent in the request body.
+    """
+    client = FakeClient()
+
+    def build_client(**_kwargs: object) -> FakeClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    run_id = uuid4()
+    tracker = TrackerService(base_url="http://tracker")
+
+    tracker.stop_benchmark(
+        run_id,
+        force=True,
+        task_ids=["task-a", "task-b"],
+    )
+
+    assert client.url == f"http://tracker/stop-benchmark/{run_id}"
+    assert client.params == {"force": True}
+    assert client.json == {"task_ids": ["task-a", "task-b"]}
+
+    tracker.stop_benchmark(run_id, force=False)
+
+    assert client.json == {"task_ids": None}
 
 
 def test_tracker_client_checks_health_on_context_entry(monkeypatch: pytest.MonkeyPatch) -> None:

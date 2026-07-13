@@ -31,10 +31,13 @@ def read_task_ids_source(source: str) -> list[str]:
 
 
 def resolve_task_ids(task_ids: str | None = None, task_ids_file: str | None = None) -> list[str] | None:
-    if task_ids and task_ids_file:
+    if task_ids is not None and task_ids_file is not None:
         raise click.UsageError("--task-ids and --task-ids-file are mutually exclusive")
-    if task_ids_file:
+    if task_ids_file is not None:
         return read_task_ids_source(task_ids_file)
-    if task_ids:
-        return _clean_task_ids(task_ids.split(",")) or None
+    if task_ids is not None:
+        resolved_task_ids = _clean_task_ids(task_ids.split(","))
+        if not resolved_task_ids:
+            raise click.UsageError("No task ids provided")
+        return resolved_task_ids
     return None
