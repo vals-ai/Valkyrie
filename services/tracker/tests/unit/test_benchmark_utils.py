@@ -75,6 +75,24 @@ class TestBenchmarkUtils:
             "DAYTONA_TARGET": "target",
         }
 
+    def test_fetch_sandbox_provider_config_builds_modal_config(
+        self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fetch_secret(_name: str, _aws: AWSCredentials) -> dict[str, str]:
+            return {"MODAL_TOKEN_ID": "id", "MODAL_TOKEN_SECRET": "secret"}
+
+        monkeypatch.setattr(
+            "tracker.utils.resources.fetch_aws_secret",
+            fetch_secret,
+        )
+
+        provider_config = fetch_sandbox_provider_config("provider-secret", harness_config.aws, "modal")
+        assert provider_config.model_dump(mode="json") == {
+            "type": "modal",
+            "MODAL_TOKEN_ID": "id",
+            "MODAL_TOKEN_SECRET": "secret",
+        }
+
     async def _mock_request_final_score(
         self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
     ) -> FinalScoreResponse:
