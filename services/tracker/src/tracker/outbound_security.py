@@ -1,4 +1,9 @@
-"""Validation for caller-controlled benchmark-service destinations and headers."""
+"""Validation for caller-controlled benchmark-service destinations and headers.
+
+This module intentionally implements Tracker's reject-only policy before HTTP
+transport. Generic URL and header containers normalize or accept inputs forbidden
+here, which would change persisted/API values or defer failures until request time.
+"""
 
 from __future__ import annotations
 
