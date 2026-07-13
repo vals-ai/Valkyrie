@@ -7,7 +7,6 @@ Covers CLI task selection and conflicting task sources for `valkyrie run stop`.
 
 from importlib import import_module
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import UUID
 
 import pytest
@@ -22,7 +21,6 @@ class MockTrackerService:
     """Record stop requests made by the CLI command."""
 
     stop_calls: list[dict[str, object]] = []
-    auth_credential: str | None = "benchmark-secret"
 
     def __enter__(self) -> "MockTrackerService":
         return self
@@ -30,26 +28,17 @@ class MockTrackerService:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def fetch_benchmark(self, _run_id: UUID) -> SimpleNamespace:
-        return SimpleNamespace(benchmark_name="swebench")
-
-    @classmethod
-    def get_benchmark_auth(cls, _benchmark_name: str) -> str | None:
-        return cls.auth_credential
-
     def stop_benchmark(
         self,
         benchmark_id: UUID,
         force: bool,
         task_ids: list[str] | None = None,
-        service_headers: dict[str, str] | None = None,
     ) -> StopBenchmarkResponse:
         self.stop_calls.append(
             {
                 "benchmark_id": benchmark_id,
                 "force": force,
                 "task_ids": task_ids,
-                "service_headers": service_headers,
             }
         )
 
@@ -60,7 +49,6 @@ class MockTrackerService:
 def reset_stop_calls() -> None:
     """Reset recorded requests so each test is isolated."""
     MockTrackerService.stop_calls = []
-    MockTrackerService.auth_credential = "benchmark-secret"
 
 
 def test_stop_task_selection(
@@ -86,11 +74,13 @@ def test_stop_task_selection(
         [str(run_id), "--task-ids", "task-a, task-b,task-a"],
         input="y\n",
     )
+
     file_result = runner.invoke(
         stop_command,
         [str(run_id), "--task-ids-file", str(task_ids_file)],
         input="y\n",
     )
+
     conflicting_result = runner.invoke(
         stop_command,
         [
@@ -101,6 +91,7 @@ def test_stop_task_selection(
             str(task_ids_file),
         ],
     )
+
     empty_result = runner.invoke(
         stop_command,
         [str(run_id), "--task-ids", ","],
@@ -111,10 +102,6 @@ def test_stop_task_selection(
     assert [call["task_ids"] for call in MockTrackerService.stop_calls] == [
         ["task-a", "task-b"],
         ["task-c", "task-d"],
-    ]
-    assert [call["service_headers"] for call in MockTrackerService.stop_calls] == [
-        {"Authorization": "benchmark-secret"},
-        {"Authorization": "benchmark-secret"},
     ]
     assert conflicting_result.exit_code == 2
     assert "mutually exclusive" in conflicting_result.output

@@ -48,18 +48,10 @@ def stop(run_id: UUID, task_ids: str | None, task_ids_file: str | None, force: b
 
     try:
         with TrackerService() as tracker:
-            service_headers: dict[str, str] = {}
-            if selected_task_ids:
-                benchmark_info = tracker.fetch_benchmark(run_id)
-                auth_credential = TrackerService.get_benchmark_auth(benchmark_info.benchmark_name)
-                if auth_credential:
-                    service_headers["Authorization"] = str(auth_credential)
-
             _ = tracker.stop_benchmark(
                 run_id,
                 force,
                 task_ids=selected_task_ids,
-                service_headers=service_headers or None,
             )
 
             if force:

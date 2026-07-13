@@ -12,6 +12,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -122,12 +123,26 @@ class TestStopAndResume:
         Test cases:
         - Graceful stop changes only the selected tasks.
         - Force stop deletes only the selected task sandbox.
-        - Empty, dataset-invalid, and out-of-run selections are rejected.
+        - Empty and out-of-run selections are rejected.
         - Unselected work and benchmark status remain unchanged.
         """
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        foreign_benchmark = Benchmark(
+            id=UUID("123e4567-e89b-12d3-a456-426614174001"),
+            org_id=TEST_ORG_ID,
+            name="other-benchmark",
+            arguments=benchmark_row.arguments,
+        )
+        foreign_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_not_in_run",
+            benchmark=foreign_benchmark.id,
+            status=TaskStatus.PENDING,
+        )
         database_session.add(benchmark_row)
+        database_session.add(foreign_benchmark)
+        database_session.add(foreign_task)
         database_session.add_all(
             [
                 Task(
@@ -159,20 +174,10 @@ class TestStopAndResume:
         database_session.commit()
         provider = MockSubsetSandboxProvider(["task_force_selected", "task_unselected"])
 
-        captured_headers: list[dict[str, str]] = []
+        async def reject_task_verification(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise AssertionError("stopping existing tasks must not call the benchmark service")
 
-        async def verify_task_ids(
-            service_client: BenchmarkServiceClient,
-            task_ids: list[str],
-            **_kwargs: Any,
-        ) -> VerifyTaskIdsResponse:
-            captured_headers.append(service_client._headers)
-            if task_ids == ["task_invalid"]:
-                return VerifyTaskIdsResponse(task_ids=[])
-
-            return VerifyTaskIdsResponse(task_ids=task_ids)
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", reject_task_verification)
         monkeypatch.setattr(
             BenchmarkServiceClient,
             "get_sandbox_provider",
@@ -181,24 +186,19 @@ class TestStopAndResume:
 
         graceful_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=false",
-            headers={"X-Api-Key": "tracker-secret"},
-            json={
-                "task_ids": ["task_pending", "task_evaluating"],
-                "service_headers": {"Authorization": "benchmark-secret"},
-            },
+            json={"task_ids": ["task_pending", "task_evaluating"]},
         )
+
         force_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=true",
             json={"task_ids": ["task_force_selected"]},
         )
+
         empty_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}",
             json={"task_ids": []},
         )
-        invalid_response = client.post(
-            f"/stop-benchmark/{benchmark_row.id}",
-            json={"task_ids": ["task_invalid"]},
-        )
+
         missing_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}",
             json={"task_ids": ["task_not_in_run"]},
@@ -207,8 +207,8 @@ class TestStopAndResume:
         assert graceful_response.status_code == 200, graceful_response.text
         assert force_response.status_code == 200, force_response.text
         assert empty_response.status_code == 400
-        assert invalid_response.status_code == 400
         assert missing_response.status_code == 400
+        assert "not part of run" in missing_response.text
 
         task_statuses = {
             task.task_id: task.status
@@ -221,10 +221,9 @@ class TestStopAndResume:
             "task_unselected": TaskStatus.IN_PROGRESS,
         }
         assert provider.deleted_sandbox_ids == ["sandbox-task_force_selected"]
-        assert captured_headers[0] == {
-            "Authorization": "benchmark-secret",
-            "X-Descope-Api-Key": "tracker-secret",
-        }
+
+        database_session.refresh(foreign_task)
+        assert foreign_task.status == TaskStatus.PENDING
 
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS

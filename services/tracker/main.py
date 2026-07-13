@@ -619,13 +619,40 @@ async def check_results_exist(
     return {"exists": exists}
 
 
+async def validate_tasks_exist(
+    benchmark_row: Benchmark,
+    task_ids: list[str],
+    session: Session,
+    org: Org,
+) -> list[str]:
+    """Validate that selected tasks belong to the run."""
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="task_ids cannot be empty")
+
+    requested_task_ids = list(dict.fromkeys(task_ids))
+    existing_task_ids = set(
+        session.exec(
+            select(Task.task_id)
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.org_id) == org.id)
+            .where(col(Task.task_id).in_(requested_task_ids))
+        ).all()
+    )
+    missing_task_ids = [task_id for task_id in requested_task_ids if task_id not in existing_task_ids]
+    if missing_task_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task IDs are not part of run {benchmark_row.id}: {', '.join(missing_task_ids)}",
+        )
+
+    return requested_task_ids
+
+
 @app.post("/stop-benchmark/{benchmark_id}")
 async def stop_benchmark(
     benchmark_id: TrackedBenchmarkId,
-    http_request: Request,
     force: bool = Query(default=False),
-    task_ids: list[str] | None = Body(default=None),
-    service_headers: dict[str, str] = Body(default={}),
+    task_ids: list[str] | None = Body(default=None, embed=True),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -650,49 +677,9 @@ async def stop_benchmark(
             detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error run.",
         )
 
-    selected_task_ids: list[str] | None = None
-    if task_ids == []:
-        raise HTTPException(status_code=400, detail="task_ids cannot be empty")
-    if task_ids is not None:
-        requested_task_ids = list(dict.fromkeys(task_ids))
-        effective_service_headers = forward_tracker_api_key(
-            service_headers,
-            http_request.headers.get("x-api-key"),
-        )
-        benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
-        try:
-            verified_response = await benchmark_service.verify_task_ids(
-                task_ids=requested_task_ids,
-                slice_str=None,
-                dataset=benchmark_row.arguments.dataset,
-            )
-        finally:
-            await benchmark_service.close()
-
-        verified_task_ids = set(verified_response.task_ids)
-        invalid_task_ids = [task_id for task_id in requested_task_ids if task_id not in verified_task_ids]
-        if invalid_task_ids:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Task IDs are not valid for this dataset: {', '.join(invalid_task_ids)}",
-            )
-
-        existing_task_ids = set(
-            session.exec(
-                select(Task.task_id)
-                .where(col(Task.benchmark) == benchmark_row.id)
-                .where(col(Task.org_id) == org.id)
-                .where(col(Task.task_id).in_(requested_task_ids))
-            ).all()
-        )
-        missing_task_ids = [task_id for task_id in requested_task_ids if task_id not in existing_task_ids]
-        if missing_task_ids:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Task IDs are not part of run {benchmark_id}: {', '.join(missing_task_ids)}",
-            )
-
-        selected_task_ids = requested_task_ids
+    selected_task_ids = (
+        await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
+    )
 
     await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
