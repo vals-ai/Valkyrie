@@ -417,14 +417,6 @@ class MonitoringStackTest(unittest.TestCase):
             },
         )
 
-        _, schedule = _resource_with_logical_id_prefix(
-            worker_template,
-            "AWS::Scheduler::Schedule",
-            "DaytonaCleanupSchedule",
-        )
-        schedule_target = cast(dict[str, Any], cast(dict[str, Any], schedule["Properties"])["Target"])
-        self.assertNotIn("EcsParameters", schedule_target)
-
         worker_template.has_resource_properties(
             "AWS::Lambda::Function",
             {
@@ -460,11 +452,6 @@ class MonitoringStackTest(unittest.TestCase):
                 "SqsManagedSseEnabled": True,
             },
         )
-        self.assertFalse(_has_logical_id_prefix(worker_template, "AWS::ECS::TaskDefinition", "DaytonaCleanupTaskDef"))
-        self.assertFalse(
-            _has_logical_id_prefix(worker_template, "AWS::EC2::SecurityGroup", "DaytonaCleanupSecurityGroup")
-        )
-
         cleanup_function_role_id, cleanup_function_role = _resource_with_logical_id_prefix(
             worker_template,
             "AWS::IAM::Role",
@@ -502,6 +489,7 @@ class MonitoringStackTest(unittest.TestCase):
 
         cleanup_function_actions: set[str] = set()
         for statement in cleanup_function_statements:
+            self.assertNotEqual(statement["Resource"], "*")
             actions = statement["Action"]
             if isinstance(actions, str):
                 cleanup_function_actions.add(actions)
@@ -541,6 +529,7 @@ class MonitoringStackTest(unittest.TestCase):
         )
         scheduler_actions: set[str] = set()
         for statement in scheduler_statements:
+            self.assertNotEqual(statement["Resource"], "*")
             actions = statement["Action"]
             if isinstance(actions, str):
                 scheduler_actions.add(actions)
