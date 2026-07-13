@@ -5,11 +5,11 @@ from typing import Any, cast
 import pytest
 from click.testing import CliRunner
 from pydantic import ValidationError
+from tracker.agent.schemas import AgentConfig, AgentContract, Parameter
 from tracker.database.models import AgentContractRequest, OutputArtifact
 
 from tracker.agent.contract import _parse_yaml_contract  # type: ignore
 from valkyrie.cli.main import agent
-from valkyrie.schemas import AgentConfig, AgentContract, Parameter
 
 
 def _make_contract(**overrides: Any) -> AgentContract:

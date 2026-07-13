@@ -32,6 +32,7 @@ from tracker.types import (
 )
 
 from valkyrie.cli import main as cli_main
+from valkyrie.cli import service_headers
 import valkyrie.cli.config.state as config_state
 import valkyrie.cli.config.benchmark_services as config_benchmark_services
 from valkyrie.cli import tracker_client as tracker_client_module
@@ -673,7 +674,43 @@ def test_run_start_provider_option_reaches_tracker(connect_stream_testbed: tuple
     assert result.exit_code == 0, result.output
     assert FakeTrackerService.provider_validations == ["modal"]
     assert FakeTrackerService.init_calls == 1
-    assert FakeTrackerService.start_calls[-1]["kwargs"]["provider"] == "modal"
+    start_kwargs = FakeTrackerService.start_calls[-1]["kwargs"]
+    assert isinstance(start_kwargs, dict)
+    assert start_kwargs["provider"] == "modal"
+
+
+def test_run_start_sends_configured_service_auth_and_cli_headers(
+    connect_stream_testbed: tuple[UUID, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run start should send configured benchmark auth and CLI headers to the tracker.
+
+    Test cases:
+    - Configured benchmark auth is included in the tracker start request.
+    - CLI-provided Authorization overrides configured auth while preserving extra headers.
+    """
+
+    def get_benchmark_auth(_benchmark_name: str) -> str:
+        return "Bearer configured"
+
+    monkeypatch.setattr(service_headers.TrackerService, "get_benchmark_auth", staticmethod(get_benchmark_auth))
+
+    for header_args, expected_headers in (
+        (["--header", "X-Test", "1"], {"Authorization": "Bearer configured", "X-Test": "1"}),
+        (
+            ["--header", "Authorization", "Bearer cli", "--header", "X-Test", "1"],
+            {"Authorization": "Bearer cli", "X-Test": "1"},
+        ),
+    ):
+        result = CliRunner().invoke(
+            cli_main.cli,
+            ["run", "start", "--agent", "agent", "--benchmark", "swebench", *header_args],
+        )
+
+        assert result.exit_code == 0, result.output
+        start_kwargs = FakeTrackerService.start_calls[-1]["kwargs"]
+        assert isinstance(start_kwargs, dict)
+        assert start_kwargs["service_headers"] == expected_headers
 
 
 def test_run_label_cli_options_and_client_requests(monkeypatch: pytest.MonkeyPatch) -> None:

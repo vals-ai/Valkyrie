@@ -39,7 +39,7 @@ def init() -> None:
     )
 
     if mode == "hosted":
-        api_key = os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")
+        api_key = (os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")).strip()
         current_config["api_key"] = api_key
 
         # Validate the key and create/confirm org (uses default tracker URL)
@@ -74,13 +74,13 @@ def init() -> None:
                 f"  {key} (required, Enter to cancel)",
                 default="",
                 show_default=False,
-            )
+            ).strip()
 
-            if not value.strip():
+            if not value:
                 click.echo(click.style(f"\n  {key} is required. Aborting.", fg="red"))
                 raise click.Abort()
         else:
-            value = click.prompt(f"  {key}", default=str(default))
+            value = click.prompt(f"  {key}", default=str(default)).strip()
 
         collected_keys[key] = value
 

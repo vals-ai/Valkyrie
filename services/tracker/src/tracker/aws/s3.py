@@ -38,7 +38,7 @@ def _s3_session(aws: "AWSCredentials") -> aioboto3.Session:
     )
 
 
-def _s3_client(aws: "AWSCredentials") -> Any:
+def s3_client(aws: "AWSCredentials") -> Any:
     """Open an async S3 client for the given credentials (use as `async with`)."""
     return _s3_session(aws).client("s3", config=_CLIENT_CONFIG)  # pyright: ignore[reportUnknownMemberType]
 
@@ -89,7 +89,7 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
     Raises:
         S3Error: If upload fails due to AWS errors or network issues
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         await client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
 
 
@@ -109,7 +109,7 @@ async def download_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -
     Raises:
         S3Error: If download fails due to AWS errors, network issues, or file not found
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         response = await client.get_object(Bucket=s3_bucket, Key=s3_key)
         async with response["Body"] as stream:
             return await stream.read()
@@ -136,7 +136,7 @@ async def download_many_from_s3(
     each object is read fully into memory one at a time, so peak memory is
     bounded by the largest single object rather than the whole set.
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         async for s3_key in _as_async_iter(s3_keys):
             try:
                 response = await client.get_object(Bucket=s3_bucket, Key=s3_key)
@@ -159,7 +159,7 @@ async def delete_from_s3(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> 
     Raises:
         S3Error: If deletion fails due to AWS errors or network issues
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         await client.delete_object(Bucket=s3_bucket, Key=s3_key)
 
 
@@ -171,7 +171,7 @@ async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSCredentials", 
         S3Error: If copy fails due to AWS errors or network issues
     """
     try:
-        async with _s3_client(aws) as client:
+        async with s3_client(aws) as client:
             await client.copy_object(
                 Bucket=s3_bucket,
                 CopySource={"Bucket": s3_bucket, "Key": source_key},
@@ -210,7 +210,7 @@ async def s3_object_exists(s3_key: str, aws: "AWSCredentials", s3_bucket: str) -
     Returns:
         True if the object exists, False otherwise
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         try:
             await client.head_object(Bucket=s3_bucket, Key=s3_key)
             return True
@@ -237,7 +237,7 @@ async def list_s3_objects(prefix: str, aws: "AWSCredentials", s3_bucket: str) ->
         S3Error: If listing fails due to AWS errors or network issues
     """
     try:
-        async with _s3_client(aws) as client:
+        async with s3_client(aws) as client:
             paginator = client.get_paginator("list_objects_v2")
             async for page in paginator.paginate(Bucket=s3_bucket, Prefix=prefix):
                 for s3_object in page.get("Contents", []):
@@ -264,7 +264,7 @@ async def create_presigned_url(s3_key: str, aws: "AWSCredentials", s3_bucket: st
     Raises:
         S3Error: If presigned URL creation fails
     """
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         presigned_url: str = await client.generate_presigned_url(
             "get_object",
             Params={"Bucket": s3_bucket, "Key": s3_key},
@@ -315,7 +315,7 @@ async def list_agents(aws: "AWSCredentials", s3_bucket: str) -> list[tuple[str, 
         S3Error: If listing fails due to AWS errors or network issues
     """
     agents: list[tuple[str, datetime | None]] = []
-    async with _s3_client(aws) as client:
+    async with s3_client(aws) as client:
         paginator = client.get_paginator("list_objects_v2")
         async for page in paginator.paginate(Bucket=s3_bucket, Prefix="agents/"):
             for s3_object in page.get("Contents", []):

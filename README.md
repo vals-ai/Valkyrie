@@ -452,6 +452,7 @@ Webhook configuration is persisted per-benchmark in the database. On resume or r
 
 | Topic | Link |
 | --- | --- |
+| Python SDK | [Guide](docs/sdk/README.md) |
 | Hosted vs self-hosted | [HOSTED_MODE.md](docs/HOSTED_MODE.md) |
 | Local development | [DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | Lambda integration | [LAMBDA_USAGE.md](docs/LAMBDA_USAGE.md) |

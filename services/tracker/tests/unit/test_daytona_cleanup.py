@@ -12,7 +12,7 @@ from typing import cast
 import pytest
 from benchmark_service import SandboxError
 from benchmark_service.sandbox.daytona import DaytonaProviderConfig
-from daytona import AsyncSandbox, DaytonaConnectionError, ListSandboxesQuery
+from daytona import AsyncSandbox, DaytonaConnectionError, DaytonaNotFoundError, ListSandboxesQuery
 
 import tracker.daytona_cleanup as cleanup_module
 from tracker.daytona_cleanup import CleanupFailure, CleanupReport, DaytonaCleanupError, cleanup_old_sandboxes
@@ -47,16 +47,26 @@ class FakeDaytona:
         sandboxes: list[AsyncSandbox],
         *,
         delete_effects: dict[str, BaseException | str] | None = None,
+        current_sandboxes: dict[str, AsyncSandbox | BaseException] | None = None,
     ) -> None:
         self.sandboxes = sandboxes
         self.delete_effects = delete_effects or {}
+        self.current_sandboxes = current_sandboxes or {sandbox.id: sandbox for sandbox in sandboxes}
         self.delete_calls: list[str] = []
+        self.get_calls: list[str] = []
         self.query: ListSandboxesQuery | None = None
 
     async def list(self, query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]:
         self.query = query
         for sandbox in self.sandboxes:
             yield sandbox
+
+    async def get(self, sandbox_id_or_name: str) -> AsyncSandbox:
+        self.get_calls.append(sandbox_id_or_name)
+        sandbox = self.current_sandboxes[sandbox_id_or_name]
+        if isinstance(sandbox, BaseException):
+            raise sandbox
+        return sandbox
 
     async def delete_sandbox(self, instance_id: str) -> None:
         self.delete_calls.append(instance_id)
@@ -96,6 +106,7 @@ async def test_cleanup_targets_all_old_sandboxes_unless_explicitly_exempt() -> N
             _sandbox("exempt", created_at=cutoff - timedelta(days=1), labels={"clean-up": " FALSE "}),
             _sandbox("malformed", created_at="not-a-timestamp"),
             _sandbox("naive", created_at="2026-07-01T12:00:00"),
+            _sandbox("missing", created_at=None),
         ]
     )
 
@@ -107,13 +118,13 @@ async def test_cleanup_targets_all_old_sandboxes_unless_explicitly_exempt() -> N
     assert client.query.targets == [TARGET]
     assert client.query.labels is None
     assert client.query.limit == 200
-    assert report.scanned == 9
+    assert report.scanned == 10
     assert report.eligible == 3
     assert report.deletion_completed == 3
     assert report.exempted == 1
     assert report.target_mismatch == 1
     assert report.not_old == 2
-    assert report.invalid_metadata == 2
+    assert report.invalid_metadata == 3
     assert not report.succeeded
 
 
@@ -126,6 +137,63 @@ async def test_cleanup_dry_run_reports_eligibility_without_deleting() -> None:
     assert report.eligible == 1
     assert report.deletion_completed == 0
     assert report.succeeded
+
+
+async def test_cleanup_rechecks_mutable_opt_out_immediately_before_deletion() -> None:
+    listed = _sandbox("newly-exempt", created_at=NOW - timedelta(hours=49))
+    current = _sandbox(
+        "newly-exempt",
+        created_at=NOW - timedelta(hours=49),
+        labels={"clean-up": "false"},
+    )
+    client = FakeDaytona([listed], current_sandboxes={listed.id: current})
+
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
+
+    assert client.get_calls == [listed.id]
+    assert client.delete_calls == []
+    assert report.eligible == 0
+    assert report.exempted == 1
+    assert report.deletion_completed == 0
+    assert report.succeeded
+
+
+async def test_cleanup_treats_candidate_disappearing_before_deletion_as_complete() -> None:
+    listed = _sandbox("already-absent", created_at=NOW - timedelta(hours=49))
+    client = FakeDaytona(
+        [listed],
+        current_sandboxes={listed.id: DaytonaNotFoundError("sandbox no longer exists")},
+    )
+
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
+
+    assert client.get_calls == [listed.id]
+    assert client.delete_calls == []
+    assert report.eligible == 1
+    assert report.deletion_completed == 1
+    assert report.succeeded
+
+
+async def test_cleanup_records_refresh_failure_and_continues() -> None:
+    failed = _sandbox("refresh-failed", created_at=NOW - timedelta(hours=49))
+    deleted = _sandbox("deleted", created_at=NOW - timedelta(hours=49))
+    client = FakeDaytona(
+        [failed, deleted],
+        current_sandboxes={
+            failed.id: DaytonaConnectionError("refresh failed"),
+            deleted.id: deleted,
+        },
+    )
+
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
+
+    assert client.get_calls == [failed.id, deleted.id]
+    assert client.delete_calls == [deleted.id]
+    assert report.deletion_completed == 1
+    assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [
+        (failed.id, "DaytonaConnectionError")
+    ]
+    assert not report.succeeded
 
 
 async def test_cleanup_uses_provider_delete_and_continues_after_failures() -> None:
@@ -261,6 +329,32 @@ class FakeSecretsManager:
     def get_secret_value(self, *, SecretId: str) -> dict[str, object]:
         self.secret_ids.append(SecretId)
         return self.response
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        ({}, "JSON SecretString"),
+        ({"SecretString": "not-json"}, "valid JSON"),
+        ({"SecretString": "[]"}, "JSON object"),
+    ],
+)
+def test_load_provider_config_rejects_malformed_secret_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+    response: dict[str, object],
+    message: str,
+) -> None:
+    fake = FakeSecretsManager(response)
+
+    def fake_client(_service: str) -> FakeSecretsManager:
+        return fake
+
+    monkeypatch.setattr(cleanup_module.boto3, "client", fake_client)
+
+    with pytest.raises(RuntimeError, match=message):
+        cleanup_module._load_provider_config("cleanup-secret")  # pyright: ignore[reportPrivateUsage]
+
+    assert fake.secret_ids == ["cleanup-secret"]
 
 
 def test_load_provider_config_validates_secret_without_exposing_values(monkeypatch: pytest.MonkeyPatch) -> None:
