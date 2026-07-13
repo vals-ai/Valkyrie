@@ -3,11 +3,13 @@ from textwrap import dedent
 from typing import Any, cast
 
 import pytest
+from click.testing import CliRunner
 from pydantic import ValidationError
+from tracker.agent.schemas import AgentConfig, AgentContract, Parameter
 from tracker.database.models import AgentContractRequest, OutputArtifact
 
 from tracker.agent.contract import _parse_yaml_contract  # type: ignore
-from valkyrie.schemas import AgentConfig, AgentContract, Parameter
+from valkyrie.cli.main import agent
 
 
 def _make_contract(**overrides: Any) -> AgentContract:
@@ -417,6 +419,9 @@ class TestParseYamlContract:
               - artifacts/turns.jsonl
               - path: artifacts/result.json
                 source: /logs/{task_id}/result.json
+            egress_allowlist:
+              - https://api.openai.com
+              - https://github.com
             secrets:
               API_KEY: MySecretName
         """,
@@ -429,6 +434,7 @@ class TestParseYamlContract:
         artifact = cast(OutputArtifact, result.output_artifacts[1])
         assert artifact.path == "artifacts/result.json"
         assert artifact.source == "/logs/{task_id}/result.json"
+        assert result.egress_allowlist == ["https://api.openai.com", "https://github.com"]
         assert result.secrets == {"API_KEY": "MySecretName"}
 
     def test_model_from_agent_config(self, tmp_path: Path) -> None:
@@ -574,3 +580,44 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig())
 
         assert result.name == "my_agent"
+
+
+class TestPushCommand:
+    def _write_contract(self, agent_dir: Path) -> None:
+        (agent_dir / "contract.yaml").write_text(
+            dedent(
+                """\
+                name: my_agent
+                install_cmd: bash setup.sh
+                run_cmd: "agent --task {problem_statement_path}"
+                """
+            )
+        )
+
+    def test_push_uses_contract_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._write_contract(tmp_path)
+        pushed: dict[str, str] = {}
+
+        async def fake_push(agent_name: str, agent_path: Path) -> None:
+            pushed["name"] = agent_name
+
+        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", fake_push)
+
+        result = CliRunner().invoke(agent, ["push", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert pushed["name"] == "my_agent"
+
+    def test_push_name_flag_overrides_contract_name(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._write_contract(tmp_path)
+        pushed: dict[str, str] = {}
+
+        async def fake_push(agent_name: str, agent_path: Path) -> None:
+            pushed["name"] = agent_name
+
+        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", fake_push)
+
+        result = CliRunner().invoke(agent, ["push", str(tmp_path), "--name", "override"])
+
+        assert result.exit_code == 0
+        assert pushed["name"] == "override"

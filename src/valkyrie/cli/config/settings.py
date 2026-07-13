@@ -1,0 +1,151 @@
+import os
+from typing import Any
+
+import click
+
+from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.tracker_client import TrackerService
+from valkyrie.cli.config.state import CONFIG_LOCATION, ConfigValue, load_config, read_config_if_exists, write_config
+
+
+_REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
+    "AWS_ACCESS_KEY_ID": None,  # AWS ACCESS KEY
+    "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
+    "AWS_DEFAULT_REGION": None,  # What region your secrets are in
+    "S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
+    "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
+    "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
+}
+
+
+@click.command()
+def init() -> None:
+    """
+    Initializes a config we can trust to have references to dependencies to run Valkyrie,
+    this becomes our source of truth for secrets required to run Valkyrie
+    """
+
+    current_config: dict[str, Any] = {}
+    if CONFIG_LOCATION.exists():
+        try:
+            current_config = read_config_if_exists()
+        except Exception:
+            pass
+
+    mode = click.prompt(
+        "Setup mode",
+        type=click.Choice(["hosted", "self-hosted"]),
+        default="self-hosted",
+    )
+
+    if mode == "hosted":
+        api_key = (os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")).strip()
+        current_config["api_key"] = api_key
+
+        # Validate the key and create/confirm org (uses default tracker URL)
+        try:
+            result = TrackerService.init_org(api_key)
+        except TrackerServiceError as e:
+            raise click.ClickException(str(e))
+        click.echo(f"Organization '{result['org_name']}' configured successfully.\n")
+
+        if result.get("email_claim_missing"):
+            click.echo(
+                click.style(
+                    "⚠  This access key is missing the 'email' custom claim. "
+                    "Run attribution for runs you start will be empty.\n"
+                    "   Ask your Vals admin to add an 'email' (and optionally 'name') "
+                    "custom claim to this key.",
+                    fg="yellow",
+                )
+            )
+
+    # Both modes require AWS credentials
+    collected_keys: dict[str, str] = {}
+    for key, default in _REQUIRED_ENVIRONMENT_VARIABLES.items():
+        sourced = current_config.get(key) or os.environ.get(key)
+        if sourced:
+            click.echo(f"  {key}: sourced from {'environment' if not current_config.get(key) else 'existing config'}")
+            collected_keys[key] = sourced
+            continue
+
+        if not default:
+            value = click.prompt(
+                f"  {key} (required, Enter to cancel)",
+                default="",
+                show_default=False,
+            ).strip()
+
+            if not value:
+                click.echo(click.style(f"\n  {key} is required. Aborting.", fg="red"))
+                raise click.Abort()
+        else:
+            value = click.prompt(f"  {key}", default=str(default)).strip()
+
+        collected_keys[key] = value
+
+    current_config.update(collected_keys)
+
+    if mode != "hosted":
+        current_config.pop("api_key", None)
+
+    write_config(current_config)
+
+    click.echo(click.style(f"\nConfig written to {CONFIG_LOCATION}", fg="green", bold=True))
+
+
+@click.command()
+@click.argument("key")
+@click.argument("value")
+def set(key: str, value: str) -> None:
+    """
+    Set a single key in the Valkyrie config.
+
+    Example: valkyrie config set AWS_DEFAULT_REGION us-west-2
+    """
+
+    current = load_config()
+
+    try:
+        config_value = ConfigValue.from_str(key)
+    except ValueError:
+        raise click.ClickException(
+            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
+        )
+
+    current[config_value.value] = value
+
+    write_config(current)
+
+    click.echo(click.style(f"  {key} updated.", fg="green"))
+
+
+@click.command(name="remove")
+@click.argument("key")
+def config_remove(key: str) -> None:
+    """
+    Remove a single key from the Valkyrie config.
+
+    Example: valkyrie config remove AWS_DEFAULT_REGION
+    """
+
+    current = load_config()
+
+    try:
+        config_value = ConfigValue.from_str(key)
+    except ValueError:
+        raise click.ClickException(
+            f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
+        )
+
+    if config_value.value in _REQUIRED_ENVIRONMENT_VARIABLES:
+        raise click.ClickException(
+            f"Key '{key}' is required and cannot be removed. Consider using `valkyrie config set` to update it."
+        )
+
+    if config_value.value in current:
+        del current[config_value.value]
+
+    write_config(current)
+
+    click.echo(click.style(f"  {key} removed.", fg="green"))

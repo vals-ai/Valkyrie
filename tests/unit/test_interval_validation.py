@@ -1,7 +1,7 @@
 import click
 import pytest
 
-from valkyrie.cli.utils import validate_intervals
+from valkyrie.cli.run.start import validate_intervals
 
 
 class TestIntervalValidation:

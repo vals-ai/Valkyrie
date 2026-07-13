@@ -1,7 +1,15 @@
-"""Integration tests for sandbox operations."""
+"""Integration tests for live sandbox operations.
+
+Run: uv run pytest tests/integration/test_sandbox.py
+
+Covers real provider sandbox creation, artifact movement, command streaming,
+and agent execution. Add cases here when behavior must be proven against a live
+sandbox rather than tracker-owned mocks.
+"""
 
 import asyncio
 import io
+import shlex
 import zipfile
 from typing import AsyncGenerator
 
@@ -46,6 +54,47 @@ async def test_sandbox(
         creation_semaphore,
     ) as sandbox:
         yield sandbox
+
+
+@pytest.fixture
+def egress_allowlist_probe_command() -> str:
+    """Command that checks an allowlisted host and a blocked host during run_agent."""
+    script = """
+import socket
+
+
+def can_connect(host):
+    try:
+        address = socket.getaddrinfo(host, 80, type=socket.SOCK_STREAM)[0][4][0]
+        with socket.create_connection((address, 80), timeout=3):
+            return True
+    except OSError as exc:
+        print(f"{host} blocked: {type(exc).__name__}", flush=True)
+        return False
+
+
+allowed = can_connect("example.com")
+blocked = can_connect("www.python.org")
+print(f"allowed={allowed} blocked={blocked}", flush=True)
+raise SystemExit(0 if allowed and not blocked else 1)
+"""
+
+    return f"python -c {shlex.quote(script)}"
+
+
+@pytest.fixture
+def restored_egress_probe_command() -> str:
+    """Command that verifies unrestricted egress returns after run_agent cleanup."""
+    script = """
+import socket
+
+
+address = socket.getaddrinfo("www.python.org", 80, type=socket.SOCK_STREAM)[0][4][0]
+with socket.create_connection((address, 80), timeout=3):
+    print("restored=True", flush=True)
+"""
+
+    return f"python -c {shlex.quote(script)}"
 
 
 class TestSandboxOperations:
@@ -221,6 +270,52 @@ class TestSandboxOperations:
         assert "line1" in output
         assert "line2" in output
         assert "line3" in output
+
+    async def test_run_agent_applies_egress_allowlist_and_restores_egress(
+        self,
+        test_sandbox: Sandbox,
+        aws_credentials: AWSCredentials,
+        harness_config: HarnessConfig,
+        egress_allowlist_probe_command: str,
+        restored_egress_probe_command: str,
+    ) -> None:
+        """Verify real provider egress rules are scoped to the agent command.
+
+        Test cases:
+        - The agent can connect to the allowlisted URL host but not an off-list host.
+        - The off-list host is reachable again after run_agent clears egress rules.
+        """
+        logged_messages: list[str] = []
+
+        def log_callback(message: str) -> None:
+            logged_messages.append(message)
+
+        contract = AgentContractRequest(
+            name="test_agent",
+            install_cmd="true",
+            run_cmd=egress_allowlist_probe_command,
+            egress_allowlist=["http://example.com"],
+        )
+
+        await test_sandbox.exec("mkdir -p /bundle/test_agent")
+
+        await run_agent(
+            test_sandbox,
+            contract,
+            "some problem statement",
+            task_id=random_task_id(),
+            log_output=log_callback,
+            cwd="/",
+            aws=aws_credentials,
+            s3_bucket=harness_config.s3_bucket,
+        )
+
+        output = "\n".join(logged_messages)
+        assert "allowed=True blocked=False" in output
+
+        restored_result = await test_sandbox.exec(restored_egress_probe_command)
+        assert restored_result.exit_code == 0
+        assert "restored=True" in restored_result.stdout
 
     async def test_deterministic_timeout_behavior(
         self,
