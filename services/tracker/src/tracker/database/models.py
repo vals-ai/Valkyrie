@@ -231,6 +231,7 @@ class Benchmark(SQLModel, table=True):
     finished_at: datetime | None = None
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
+    aws_managed: bool = Field(default=False, nullable=False)
 
     error_message: str | None = Field(default=None)
     webhook_secret_name: str | None = Field(default=None)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -166,9 +166,16 @@ class S3UploadResultsResponse(BaseModel):
     s3_url: str
     presigned_url: str
     console_url: str
+    expires_in: int = 86400
 
 
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
+
+
+class AWSRuntimeResponse(BaseModel):
+    mode: Literal["legacy", "managed"]
+    region: str | None = None
+    s3_bucket: str | None = None
 
 
 class StatusResponse(BaseModel):

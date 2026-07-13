@@ -52,7 +52,7 @@ from tracker.types import (
     HarnessConfig,
     StartBenchmarkRequest,
 )
-from tracker.utils import fetch_harness_config, update_benchmark_concurrency
+from tracker.utils import try_fetch_harness_config, update_benchmark_concurrency
 
 client = TestClient(app)
 
@@ -1589,13 +1589,17 @@ class TestTrackerAPI:
 
     def test_fetch_benchmark_returns_400_when_harness_headers_missing(
         self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
         harness_config: HarnessConfig,
     ) -> None:
         """Missing X-Harness-* headers should return 400, not 500 KeyError."""
-        app.dependency_overrides.pop(fetch_harness_config)
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        app.dependency_overrides.pop(try_fetch_harness_config)
         try:
-            response = client.get("/fetch-benchmark", params={"benchmark_id": str(uuid4())})
+            response = client.get("/fetch-benchmark", params={"benchmark_id": str(example_benchmark_object.id)})
             assert response.status_code == 400
             assert "Missing harness config header" in response.json()["detail"]
         finally:
-            app.dependency_overrides[fetch_harness_config] = lambda: harness_config
+            app.dependency_overrides[try_fetch_harness_config] = lambda: harness_config

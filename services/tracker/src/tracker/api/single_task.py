@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlmodel import Session, desc, select
 
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
-from tracker.aws.runtime import AWSRuntime
+from tracker.aws.resolver import resolve_run_aws_runtime
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
     Benchmark,
@@ -22,7 +22,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import get_session
 from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
-from tracker.utils import fetch_harness_config
+from tracker.utils.harness_config import try_fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -112,13 +112,19 @@ def get_single_task(
 async def get_task_artifacts(
     benchmark_id: UUID,
     task_id: str,
+    request: Request,
     org: Org = Depends(get_current_org),
-    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    legacy_harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
     session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
     """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
-    _, task = _load_task_or_404(benchmark_id, task_id, org, session)
-    aws_runtime = AWSRuntime.from_harness_config(harness_config)
+    benchmark, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    aws_runtime = resolve_run_aws_runtime(
+        request,
+        aws_managed=benchmark.aws_managed,
+        org_id=org.id,
+        legacy_harness_config=legacy_harness_config,
+    ).runtime
 
     cloudwatch_url: str | None = None
     if aws_runtime.resources.log_group and aws_runtime.resources.region:
@@ -133,7 +139,7 @@ async def get_task_artifacts(
     ttl_seconds: int | None = None
     key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
     if await s3_object_exists(key, aws_runtime):
-        ttl_seconds = 300
+        ttl_seconds = aws_runtime.clients.maximum_presign_ttl(300)
         agent_output_url = await create_presigned_url(
             s3_key=key,
             runtime=aws_runtime,
