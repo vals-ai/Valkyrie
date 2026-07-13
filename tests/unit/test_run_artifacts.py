@@ -3,7 +3,9 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+import click
 import pytest
+from tracker.types import AWSCredentials
 
 from valkyrie.cli.run.artifacts import download_s3_path
 
@@ -58,8 +60,19 @@ class FakeS3Client:
 
 
 def patch_s3(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
-    monkeypatch.setattr("valkyrie.cli.run.artifacts._fetch_bucket_name", lambda: "test-bucket")
-    monkeypatch.setattr("valkyrie.cli.run.artifacts._s3_client", lambda: FakeS3Client(payloads, tracker))
+    def tracker_s3_client(_credentials: AWSCredentials) -> FakeS3Client:
+        return FakeS3Client(payloads, tracker)
+
+    monkeypatch.setattr(
+        "valkyrie.cli.s3_config.load_config",
+        lambda: {
+            "AWS_ACCESS_KEY_ID": "key",
+            "AWS_SECRET_ACCESS_KEY": "secret",
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "S3_BUCKET": "test-bucket",
+        },
+    )
+    monkeypatch.setattr("valkyrie.cli.s3_config.tracker_s3_client", tracker_s3_client)
 
 
 @pytest.mark.asyncio
@@ -93,3 +106,23 @@ async def test_download_s3_path_handles_exact_file_path(monkeypatch: pytest.Monk
 
     assert count == 1
     assert (tmp_path / "results.json").read_bytes() == b"results"
+
+
+@pytest.mark.asyncio
+async def test_download_s3_path_requires_configured_bucket(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """S3 artifact downloads should fail with the CLI config error before making AWS calls.
+
+    Test cases:
+    - Missing S3_BUCKET raises the same ClickException surfaced by CLI commands.
+    """
+    monkeypatch.setattr(
+        "valkyrie.cli.s3_config.load_config",
+        lambda: {
+            "AWS_ACCESS_KEY_ID": "key",
+            "AWS_SECRET_ACCESS_KEY": "secret",
+            "AWS_DEFAULT_REGION": "us-east-1",
+        },
+    )
+
+    with pytest.raises(click.ClickException, match="S3_BUCKET key not found"):
+        await download_s3_path("benchmarks/run-1", tmp_path)

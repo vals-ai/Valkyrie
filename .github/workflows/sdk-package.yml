@@ -1,0 +1,153 @@
+name: SDK package
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "packages/valkyrie-sdk/**"
+      - "src/valkyrie/__init__.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "tests/unit/sdk/**"
+      - "tests/contract/**"
+      - "tests/fixtures/sdk_api/**"
+      - "services/tracker/main.py"
+      - "services/tracker/pyproject.toml"
+      - "services/tracker/uv.lock"
+      - "services/tracker/src/tracker/**"
+      - "docs/sdk/examples/**"
+      - "scripts/sdk/**"
+      - ".github/workflows/sdk-package.yml"
+      - ".github/workflows/publish-sdk.yml"
+  pull_request:
+    branches: [dev, prod]
+    paths:
+      - "packages/valkyrie-sdk/**"
+      - "src/valkyrie/__init__.py"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "tests/unit/sdk/**"
+      - "tests/contract/**"
+      - "tests/fixtures/sdk_api/**"
+      - "services/tracker/main.py"
+      - "services/tracker/pyproject.toml"
+      - "services/tracker/uv.lock"
+      - "services/tracker/src/tracker/**"
+      - "docs/sdk/examples/**"
+      - "scripts/sdk/**"
+      - ".github/workflows/sdk-package.yml"
+      - ".github/workflows/publish-sdk.yml"
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.26"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install workspace and package test tools
+        run: uv sync --locked --group dev
+
+      - name: Check independent SDK version
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: uv run python scripts/sdk/check_sdk_version.py "$BASE_SHA"
+
+      - name: Enforce SDK import boundary
+        run: |
+          if rg -n "from tracker|import tracker|from valkyrie\.cli|import valkyrie\.cli" \
+            packages/valkyrie-sdk/src tests/unit/sdk; then
+            echo "::error::The standalone SDK must not import Tracker or CLI modules"
+            exit 1
+          fi
+
+      - name: Run SDK and Tracker contract tests
+        run: uv run pytest tests/unit/sdk tests/contract -q
+
+      - name: Lint SDK and release tooling
+        run: uv run ruff check packages/valkyrie-sdk/src scripts tests/unit/sdk tests/contract
+
+      - name: Type check
+        run: uv run basedpyright
+
+      - name: Build SDK distributions
+        run: uv build --package valkyrie-sdk --no-sources --out-dir release/packages
+
+      - name: Validate SDK distributions
+        run: |
+          uv run python scripts/sdk/validate_sdk_artifacts.py release/packages/*
+          uv run twine check --strict release/packages/*
+          uv run check-wheel-contents release/packages/*.whl
+
+      - name: Verify installed distributions and namespace
+        run: uv run python scripts/sdk/verify_sdk_install.py --dist release/packages
+
+      - name: Create artifact checksums
+        working-directory: release
+        run: sha256sum packages/* > SHA256SUMS
+
+      - name: Read SDK version
+        id: version
+        run: echo "version=$(uv version --package valkyrie-sdk --short)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload verified SDK artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: valkyrie-sdk-${{ steps.version.outputs.version }}
+          path: release
+          if-no-files-found: error
+          retention-days: 30
+
+  compatibility:
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.13", "3.14"]
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: "0.11.26"
+
+      - name: Download SDK artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: valkyrie-sdk-*
+          path: release
+          merge-multiple: true
+
+      - name: Install and import SDK
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        run: |
+          uv venv /tmp/sdk-compat --python "$PYTHON_VERSION"
+          uv pip install --python /tmp/sdk-compat/bin/python --prerelease=disallow release/packages/*.whl
+          /tmp/sdk-compat/bin/python -c "from valkyrie.sdk import ValkyrieClient; print(ValkyrieClient)"
