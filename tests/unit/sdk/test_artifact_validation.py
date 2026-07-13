@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import io
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from scripts import validate_sdk_artifacts
-from scripts.validate_sdk_artifacts import ArtifactError, validate_sdist, validate_wheel
+from scripts.sdk import validate_sdk_artifacts
+from scripts.sdk.validate_sdk_artifacts import ArtifactError, validate_sdist, validate_wheel
 
+ROOT = Path(__file__).parents[3]
+PACKAGE_ROOT = ROOT / "packages" / "valkyrie-sdk"
 METADATA = """Metadata-Version: 2.4
 Name: valkyrie-sdk
 Version: 0.1.0
@@ -64,6 +67,20 @@ def write_sdist(path: Path, *, extra_members: dict[str, str] | None = None) -> N
             info = tarfile.TarInfo(name)
             info.size = len(encoded)
             archive.addfile(info, io.BytesIO(encoded))
+
+
+def test_sdk_package_configuration_matches_release_boundaries() -> None:
+    with (ROOT / "pyproject.toml").open("rb") as root_file:
+        root_project = tomllib.load(root_file)
+    with (PACKAGE_ROOT / "pyproject.toml").open("rb") as sdk_file:
+        sdk_project = tomllib.load(sdk_file)
+
+    assert root_project["project"]["requires-python"] == ">=3.12,<3.13"
+    assert sdk_project["project"]["requires-python"] == ">=3.12"
+    assert root_project["tool"]["basedpyright"]["pythonVersion"] == "3.12"
+    assert sdk_project["tool"]["basedpyright"]["pythonVersion"] == "3.12"
+    assert sdk_project["build-system"]["requires"] == ["hatchling==1.27.0"]
+    assert (PACKAGE_ROOT / ".gitignore").read_text(encoding="utf-8") == ".ruff_cache/\n__pycache__/\ndist/\n"
 
 
 def test_valid_artifacts_are_accepted(tmp_path: Path) -> None:

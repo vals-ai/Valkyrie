@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from email.parser import Parser
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
@@ -103,7 +103,9 @@ def ensure_index_version_available(
     except HTTPError as exc:
         if exc.code == 404:
             return
-        raise
+        raise ReleaseError(f"could not check {target} for {name} {version}: HTTP {exc.code}") from exc
+    except URLError as exc:
+        raise ReleaseError(f"could not check {target} for {name} {version}: {exc.reason}") from exc
     raise ReleaseError(f"{name} {version} already exists on {target}")
 
 

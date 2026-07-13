@@ -16,7 +16,7 @@ on:
       - "services/tracker/uv.lock"
       - "services/tracker/src/tracker/**"
       - "docs/sdk/examples/**"
-      - "scripts/**"
+      - "scripts/sdk/**"
       - ".github/workflows/sdk-package.yml"
       - ".github/workflows/publish-sdk.yml"
   pull_request:
@@ -34,7 +34,7 @@ on:
       - "services/tracker/uv.lock"
       - "services/tracker/src/tracker/**"
       - "docs/sdk/examples/**"
-      - "scripts/**"
+      - "scripts/sdk/**"
       - ".github/workflows/sdk-package.yml"
       - ".github/workflows/publish-sdk.yml"
 
@@ -69,7 +69,7 @@ jobs:
       - name: Check independent SDK version
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: uv run python scripts/check_sdk_version.py "$BASE_SHA"
+        run: uv run python scripts/sdk/check_sdk_version.py "$BASE_SHA"
 
       - name: Enforce SDK import boundary
         run: |
@@ -93,12 +93,12 @@ jobs:
 
       - name: Validate SDK distributions
         run: |
-          uv run python scripts/validate_sdk_artifacts.py release/packages/*
+          uv run python scripts/sdk/validate_sdk_artifacts.py release/packages/*
           uv run twine check --strict release/packages/*
           uv run check-wheel-contents release/packages/*.whl
 
       - name: Verify installed distributions and namespace
-        run: uv run python scripts/verify_sdk_install.py --dist release/packages
+        run: uv run python scripts/sdk/verify_sdk_install.py --dist release/packages
 
       - name: Create artifact checksums
         working-directory: release

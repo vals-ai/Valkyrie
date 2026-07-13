@@ -21,7 +21,7 @@ EXPECTED_NAME = "valkyrie-sdk"
 EXPECTED_LICENSE = "AGPL-3.0-only"
 EXPECTED_LICENSE_FILES = frozenset({"LICENSE"})
 FORBIDDEN_REQUIREMENTS = frozenset({"tracker", "valkyrie"})
-PACKAGE_PYPROJECT = Path(__file__).parents[1] / "packages" / "valkyrie-sdk" / "pyproject.toml"
+PACKAGE_PYPROJECT = Path(__file__).resolve().parents[2] / "packages" / "valkyrie-sdk" / "pyproject.toml"
 REQUIRED_WHEEL_MEMBERS = {
     "valkyrie/sdk/__init__.py",
     "valkyrie/sdk/client.py",

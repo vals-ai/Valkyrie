@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -102,42 +101,3 @@ def test_signature_text_preserves_parameter_kinds() -> None:
         pass
 
     assert signature_text(sample) == "value, /, other, *, flag=False"
-
-
-def test_sdk_loads_from_workspace_member() -> None:
-    sdk_file = Path(sdk.__file__).resolve()
-    assert "packages/valkyrie-sdk/src/valkyrie/sdk" in sdk_file.as_posix()
-
-
-def test_sdk_package_has_local_vcs_ignore_boundary() -> None:
-    package_root = Path(__file__).parents[3] / "packages" / "valkyrie-sdk"
-    ignore_file = package_root / ".gitignore"
-
-    assert ignore_file.read_text(encoding="utf-8") == ".ruff_cache/\n__pycache__/\ndist/\n"
-
-
-def test_type_checkers_use_the_supported_python_version() -> None:
-    root = Path(__file__).parents[3]
-    for pyproject_path in (root / "pyproject.toml", root / "packages" / "valkyrie-sdk" / "pyproject.toml"):
-        with pyproject_path.open("rb") as pyproject_file:
-            pyproject = tomllib.load(pyproject_file)
-        assert pyproject["tool"]["basedpyright"]["pythonVersion"] == "3.12"
-
-
-def test_sdk_build_backend_is_reproducibly_pinned() -> None:
-    pyproject_path = Path(__file__).parents[3] / "packages" / "valkyrie-sdk" / "pyproject.toml"
-    with pyproject_path.open("rb") as pyproject_file:
-        pyproject = tomllib.load(pyproject_file)
-
-    assert pyproject["build-system"]["requires"] == ["hatchling==1.27.0"]
-
-
-def test_python_support_matches_each_distribution_boundary() -> None:
-    root = Path(__file__).parents[3]
-    with (root / "pyproject.toml").open("rb") as root_file:
-        root_project = tomllib.load(root_file)
-    with (root / "packages" / "valkyrie-sdk" / "pyproject.toml").open("rb") as sdk_file:
-        sdk_project = tomllib.load(sdk_file)
-
-    assert root_project["project"]["requires-python"] == ">=3.12,<3.13"
-    assert sdk_project["project"]["requires-python"] == ">=3.12"

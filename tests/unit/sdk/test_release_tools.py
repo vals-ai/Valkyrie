@@ -9,13 +9,13 @@ import zipfile
 from email.message import Message
 from pathlib import Path
 from typing import Never
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 from packaging.version import Version
 
-from scripts.check_sdk_version import VersionError, validate_version_change
-from scripts.prepare_sdk_release import (
+from scripts.sdk.check_sdk_version import VersionError, validate_version_change
+from scripts.sdk.prepare_sdk_release import (
     ReleaseError,
     build_manifest,
     ensure_index_version_available,
@@ -105,6 +105,21 @@ def test_index_404_means_version_is_available() -> None:
         raise HTTPError("https://pypi.test", 404, "Not Found", Message(), None)
 
     ensure_index_version_available("pypi", "valkyrie-sdk", "0.1.0", opener=not_found)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        HTTPError("https://pypi.test", 500, "Server Error", Message(), None),
+        URLError("connection failed"),
+    ],
+)
+def test_index_network_errors_fail_with_release_context(error: URLError) -> None:
+    def unavailable(_request: object) -> Never:
+        raise error
+
+    with pytest.raises(ReleaseError, match="could not check pypi for valkyrie-sdk 0.1.0"):
+        ensure_index_version_available("pypi", "valkyrie-sdk", "0.1.0", opener=unavailable)
 
 
 def test_existing_index_version_fails_loudly() -> None:

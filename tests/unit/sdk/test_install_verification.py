@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.verify_sdk_install import build_commands
+from scripts.sdk.verify_sdk_install import build_commands
 
 
 def test_verification_covers_both_artifacts_public_api_examples_and_namespace(tmp_path: Path) -> None:

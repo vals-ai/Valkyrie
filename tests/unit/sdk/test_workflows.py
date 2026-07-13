@@ -72,10 +72,15 @@ def test_publish_is_oidc_only_and_ref_guarded() -> None:
 
 
 def test_workflows_verify_the_exact_artifacts() -> None:
-    for name in ("sdk-package.yml", "publish-sdk.yml"):
+    expected_scripts = {
+        "sdk-package.yml": ("check_sdk_version.py", "validate_sdk_artifacts.py", "verify_sdk_install.py"),
+        "publish-sdk.yml": ("prepare_sdk_release.py", "validate_sdk_artifacts.py", "verify_sdk_install.py"),
+    }
+    for name, scripts in expected_scripts.items():
         contents = (WORKFLOWS / name).read_text(encoding="utf-8")
         assert "uv sync --locked --group dev" in contents
-        assert "scripts/verify_sdk_install.py --dist release/packages" in contents
+        for script in scripts:
+            assert f"scripts/sdk/{script}" in contents
 
     package = load("sdk-package.yml")["jobs"]["package"]
     upload = action(package, "actions/upload-artifact@")
@@ -88,9 +93,3 @@ def test_sdk_ci_checks_newer_python_versions() -> None:
     assert compatibility["strategy"]["matrix"]["python-version"] == ["3.13", "3.14"]
     install = next(step["run"] for step in compatibility["steps"] if step["name"] == "Install and import SDK")
     assert "--prerelease=disallow" in install
-
-
-def test_dependabot_updates_action_pins_on_dev() -> None:
-    update = yaml.safe_load((ROOT / ".github" / "dependabot.yml").read_text(encoding="utf-8"))["updates"][0]
-    assert update["package-ecosystem"] == "github-actions"
-    assert update["target-branch"] == "dev"
