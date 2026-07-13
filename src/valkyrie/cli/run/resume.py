@@ -9,6 +9,7 @@ from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import update_benchmark_agent_version
+from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -99,12 +100,8 @@ def resume(
 
     try:
         with TrackerService() as tracker:
-            # Resolve service headers from config using the benchmark name
             benchmark_info = tracker.fetch_benchmark(run_id)
-            service_headers: dict[str, str] = {}
-            auth_credential = TrackerService.get_benchmark_auth(benchmark_info.benchmark_name)
-            if auth_credential:
-                service_headers["Authorization"] = str(auth_credential)
+            service_headers = benchmark_service_headers(benchmark_info.benchmark_name)
 
             if update_agent:
                 metadata = tracker.fetch_benchmark_metadata(run_id)

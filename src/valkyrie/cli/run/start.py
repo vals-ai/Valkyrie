@@ -3,16 +3,17 @@ from pathlib import Path
 from typing import Any
 
 import click
+from tracker.agent.contract import get_contract
+from tracker.agent.schemas import AgentConfig
 from tracker.types import StartBenchmarkResponse
 
-from valkyrie.cli.bundler import get_contract
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
 from valkyrie.cli.display import local_time
+from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService
-from valkyrie.schemas import AgentConfig
 
 
 COLUMN_WIDTH = 14
@@ -75,7 +76,7 @@ def format_agent_start_details(
     click.echo()
 
 
-def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse) -> None:
+def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse, connect: bool = False) -> None:
     """Format and display the start run response."""
     run_id = start_benchmark_response.benchmark_id
 
@@ -90,6 +91,8 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
     click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
+    if not connect:
+        click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
     click.echo(
         f"│ {'Get results:':<17} "
         + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
@@ -296,12 +299,7 @@ def start(
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
-    service_headers: dict[str, str] = {}
-    auth_credential = TrackerService.get_benchmark_auth(benchmark)
-    if auth_credential:
-        service_headers["Authorization"] = str(auth_credential)
-    for name, value in headers:
-        service_headers[name] = value
+    service_headers = benchmark_service_headers(benchmark, headers)
 
     # Webhook notification setup (may print a warning before the boxes)
     webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
@@ -375,13 +373,8 @@ def start(
                 return
 
             start_response = StartBenchmarkResponse.model_validate(response.json())
-            format_start_benchmark_response(start_response)
+            format_start_benchmark_response(start_response, connect)
             if connect:
                 stream_benchmark_status(tracker, start_response.benchmark_id)
-            else:
-                click.echo(
-                    f"{'Track progress:':<17} "
-                    + click.style(f"valkyrie run fetch {start_response.benchmark_id} --connect", fg="cyan")
-                )
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))
