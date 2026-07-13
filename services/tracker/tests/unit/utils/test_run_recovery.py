@@ -461,7 +461,12 @@ class TestRunRecovery:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
+        benchmark_row = start_benchmark_request_to_benchmark(
+            start_benchmark_request,
+            self._test_starter,
+            aws_managed=False,
+            verified_task_ids=task_ids,
+        )
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -525,7 +530,7 @@ class TestRunRecovery:
 
         # Run process_benchmark to complete the remaining tasks (the 3 tasks that are pending)
         await process_benchmark(
-            start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
+            start_benchmark_request_json=benchmark_row.legacy_start_benchmark_request(harness_config).model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verified_task_ids,
         )
@@ -776,7 +781,12 @@ class TestRunRecovery:
             task_ids=existing_task_ids,
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
+        benchmark_row = start_benchmark_request_to_benchmark(
+            start_benchmark_request,
+            self._test_starter,
+            aws_managed=False,
+            verified_task_ids=existing_task_ids,
+        )
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
         database_session.add(benchmark_row)
@@ -834,7 +844,7 @@ class TestRunRecovery:
 
         # Run the worker — the new task should make it through evaluation
         await process_benchmark(
-            start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
+            start_benchmark_request_json=benchmark_row.legacy_start_benchmark_request(harness_config).model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verified_task_ids,
         )
@@ -867,7 +877,12 @@ class TestRunRecovery:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row = start_benchmark_request_to_benchmark(
+            request,
+            self._test_starter,
+            aws_managed=False,
+            verified_task_ids=["task_0"],
+        )
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -948,7 +963,12 @@ class TestRunRecovery:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row = start_benchmark_request_to_benchmark(
+            request,
+            self._test_starter,
+            aws_managed=False,
+            verified_task_ids=["task_0"],
+        )
         database_session.add(benchmark_row)
         database_session.commit()
 

@@ -50,3 +50,12 @@ def invoke_lambda(
         return response_payload
     except ClientError as e:
         raise LambdaError(f"Failed to invoke lambda function '{function_name}': {e}") from e
+
+
+def dry_run_lambda(client_provider: AWSClientProvider, function_name: str) -> None:
+    """Verify that the selected AWS authority can invoke a Lambda function."""
+    client = client_provider.lambda_client()
+    try:
+        client.invoke(FunctionName=function_name, InvocationType="DryRun")
+    except ClientError as e:
+        raise LambdaError(f"Lambda invoke preflight failed for '{function_name}': {e}") from e

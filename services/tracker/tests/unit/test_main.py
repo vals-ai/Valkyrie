@@ -442,6 +442,7 @@ class TestTrackerAPI:
             slice_str=None,
             sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
         )
+        assert benchmark_row.verified_task_ids == [f"task_{i}" for i in range(500)]
 
         # Test case 3. Start timestamp is in UTC timezone and matches the benchmark row
         assert isoparse(json_response["started_at"]) == benchmark_row.started_at.replace(tzinfo=timezone.utc)

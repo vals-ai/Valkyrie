@@ -66,13 +66,29 @@ def create_benchmark_service_client_from_request(request: StartBenchmarkRequest)
     return create_benchmark_service_client(url, service_headers=request.service_headers)
 
 
-def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
+def start_benchmark_request_to_benchmark(
+    request: StartBenchmarkRequest,
+    run_starter: RequestIdentity,
+    *,
+    aws_managed: bool,
+    verified_task_ids: list[str],
+) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
+    if aws_managed != (request.harness_config is None):
+        raise ValueError("Benchmark AWS mode does not match the start request")
+    provider_secret_name = (
+        request.harness_config.sandbox_provider_secret_name if request.harness_config is not None else None
+    ) or request.sandbox_provider_secret_name
+    if aws_managed and (not request.sandbox_provider or not provider_secret_name):
+        raise ValueError("Managed runs require a sandbox provider and provider secret name")
+
     return Benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,
         label=request.label,
         custom_benchmark_service=request.custom_benchmark_service,
+        aws_managed=aws_managed,
+        verified_task_ids=verified_task_ids,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
         arguments=BenchmarkArguments(
@@ -83,7 +99,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
             lambda_function=request.lambda_function,
             dataset=request.dataset,
             sandbox_provider=request.sandbox_provider,
-            sandbox_provider_secret_name=request.harness_config.sandbox_provider_secret_name,
+            sandbox_provider_secret_name=provider_secret_name,
         ),
         started_by_id=run_starter.access_key_id,
         started_by_email=run_starter.email,

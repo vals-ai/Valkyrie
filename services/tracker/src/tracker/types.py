@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -65,7 +65,7 @@ class StartBenchmarkRequest(BaseModel):
     slice_str: str | None = None
     lambda_function: str | None = None
     dataset: str | None = None
-    harness_config: HarnessConfig
+    harness_config: HarnessConfig | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
     sandbox_provider: str = "daytona"
@@ -170,6 +170,49 @@ class S3UploadResultsResponse(BaseModel):
 
 
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
+
+
+_FORBIDDEN_MANAGED_AWS_KEYS = {
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+    "aws_profile",
+}
+
+
+def _contains_forbidden_managed_aws_key(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, nested_value in cast(dict[object, object], value).items():
+            normalized_key = str(key).lower().replace("-", "_")
+            if any(
+                normalized_key == forbidden_key or normalized_key.endswith(f"_{forbidden_key}")
+                for forbidden_key in _FORBIDDEN_MANAGED_AWS_KEYS
+            ) or _contains_forbidden_managed_aws_key(nested_value):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_forbidden_managed_aws_key(item) for item in cast(list[object], value))
+    return False
+
+
+def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
+    if request.harness_config is not None or _contains_forbidden_managed_aws_key(request.model_dump(mode="python")):
+        raise ValueError("Managed execution cannot include AWS credentials")
+    if not request.sandbox_provider or not request.sandbox_provider_secret_name:
+        raise ValueError("Managed execution requires a sandbox provider and provider secret name")
+
+
+class ManagedExecutionContext(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[2]
+    benchmark_id: UUID
+    verified_task_ids: list[str]
+    start_benchmark_request: StartBenchmarkRequest
+
+    @model_validator(mode="after")
+    def validate_credential_free_request(self) -> "ManagedExecutionContext":
+        validate_managed_execution_request(self.start_benchmark_request)
+        return self
 
 
 class AWSRuntimeResponse(BaseModel):

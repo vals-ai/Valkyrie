@@ -44,6 +44,7 @@ AWS_DEPLOYMENT_REGION = os.environ.get("AWS_DEPLOYMENT_REGION") or os.environ.ge
 AWS_DEPLOYMENT_S3_BUCKET = os.environ.get("AWS_DEPLOYMENT_S3_BUCKET")
 AWS_DEPLOYMENT_LOG_GROUP = os.environ.get("AWS_DEPLOYMENT_LOG_GROUP")
 AWS_DEPLOYMENT_LOG_RETENTION_DAYS = os.environ.get("AWS_DEPLOYMENT_LOG_RETENTION_DAYS")
+AWS_MANAGED_SUBMISSIONS_ENABLED = os.environ.get("AWS_MANAGED_SUBMISSIONS_ENABLED", "false").lower() == "true"
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")

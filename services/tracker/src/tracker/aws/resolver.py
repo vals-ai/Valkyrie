@@ -130,6 +130,19 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
     _raise_missing_header(state.first_missing_key)
 
 
+def resolve_start_harness_config(request: Request, body_config: HarnessConfig | None) -> HarnessConfig | None:
+    """Apply legacy header-over-body precedence for a start request."""
+    state = inspect_harness_headers(request)
+    if state.config is not None:
+        return state.config
+    if body_config is not None:
+        return body_config
+    if state.present:
+        assert state.first_missing_key is not None
+        _raise_missing_header(state.first_missing_key)
+    return None
+
+
 def _eligible_org_ids() -> frozenset[UUID]:
     """Parse organizations allowed to use deployment AWS authority."""
     try:
@@ -199,6 +212,23 @@ def _http_deployment_runtime(org_id: UUID) -> AWSRuntime:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ManagedAWSConfigurationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def resolve_start_aws_runtime(
+    request: Request,
+    body_config: HarnessConfig | None,
+    org_id: UUID,
+) -> AWSRuntimeResolution:
+    """Resolve a new run without reinterpreting partial legacy input as managed."""
+    harness_config = resolve_start_harness_config(request, body_config)
+    if harness_config is not None:
+        return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
+    if not config.AWS_MANAGED_SUBMISSIONS_ENABLED:
+        raise HTTPException(
+            status_code=503,
+            detail="Managed AWS submissions are temporarily unavailable. Configure AWS access keys and try again.",
+        )
+    return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
 
 
 def resolve_run_aws_runtime(
