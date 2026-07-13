@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -24,9 +25,9 @@ class ScopedDaytonaListClient:
         self.daytona = daytona
         self.labels = dict(labels)
 
-    def list(self, query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]:
+    async def list(self, query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]:
         assert query is not None
-        return self.daytona.list(
+        sandboxes = self.daytona.list(
             ListSandboxesQuery(
                 labels=self.labels,
                 targets=query.targets,
@@ -34,6 +35,50 @@ class ScopedDaytonaListClient:
                 limit=query.limit,
             )
         )
+        async for sandbox in sandboxes:
+            if all(sandbox.labels.get(key) == value for key, value in self.labels.items()):
+                yield sandbox
+
+
+class ScopedSandboxDeleteProvider:
+    """Refuse any live-test deletion outside the exact sandbox allowlist."""
+
+    def __init__(self, provider: SandboxProvider, allowed_ids: set[str]) -> None:
+        self.provider = provider
+        self.allowed_ids = allowed_ids
+
+    async def delete_sandbox(self, instance_id: str) -> None:
+        if instance_id not in self.allowed_ids:
+            raise RuntimeError("Live cleanup test refused deletion outside its allowlist")
+        await self.provider.delete_sandbox(instance_id)
+
+
+async def test_live_cleanup_guards_reject_out_of_scope_results() -> None:
+    scope_labels = {"CleanupTest": "scope-id"}
+    scoped = cast(AsyncSandbox, SimpleNamespace(id="scoped", labels=scope_labels))
+    unrelated = cast(AsyncSandbox, SimpleNamespace(id="unrelated", labels={}))
+
+    class FakeDaytona:
+        async def list(self, _query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]:
+            yield scoped
+            yield unrelated
+
+    class RecordingProvider:
+        def __init__(self) -> None:
+            self.deleted: list[str] = []
+
+        async def delete_sandbox(self, instance_id: str) -> None:
+            self.deleted.append(instance_id)
+
+    client = ScopedDaytonaListClient(cast(AsyncDaytona, FakeDaytona()), scope_labels)
+    assert [sandbox.id async for sandbox in client.list(ListSandboxesQuery())] == ["scoped"]
+
+    provider = RecordingProvider()
+    guarded_provider = ScopedSandboxDeleteProvider(cast(SandboxProvider, provider), {"scoped"})
+    await guarded_provider.delete_sandbox("scoped")
+    with pytest.raises(RuntimeError, match="outside its allowlist"):
+        await guarded_provider.delete_sandbox("unrelated")
+    assert provider.deleted == ["scoped"]
 
 
 async def _wait_until_daytona_sandbox_is_absent(daytona: AsyncDaytona, sandbox_id: str) -> None:
@@ -112,13 +157,14 @@ async def test_cleanup_deletes_unlabeled_sandbox_and_preserves_exemption(
         )
         report = await cleanup_old_sandboxes(
             ScopedDaytonaListClient(daytona, scope_labels),
-            sandbox_provider,
+            ScopedSandboxDeleteProvider(sandbox_provider, {eligible.id}),
             now=datetime.now(UTC) + timedelta(hours=49),
             target=provider_config.DAYTONA_TARGET,
             dry_run=False,
         )
 
         assert report.succeeded
+        assert report.scanned == 2
         assert report.eligible == 1
         assert report.deletion_completed == 1
         assert report.exempted == 1
