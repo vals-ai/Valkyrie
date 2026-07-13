@@ -3,6 +3,7 @@ from asyncio import Semaphore
 from typing import Any
 from uuid import UUID
 
+import httpx
 import pytest
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from benchmark_service.schemas import RetrieveTaskResponse
@@ -233,6 +234,43 @@ class TestBenchmarkServiceDisconnect:
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
         assert "ProgramBench task container failed to start" in error_message
+
+    async def test_empty_network_error_stores_visible_message(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        process_benchmark_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        """Network exceptions with empty strings must still produce visible task errors.
+
+        Test cases:
+        - Empty-string httpx.ConnectTimeout stores its exception type in the DB.
+        - The task log path receives the same visible exception type.
+        """
+        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+            contract, database_session, harness_config
+        )
+        logged_messages: list[str] = []
+
+        async def _mock_retrieve_task_timeout(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            raise httpx.ConnectTimeout("")
+
+        def _mock_write_benchmark_log_event(_stream_key: str, message: str, *_args: Any, **_kwargs: Any) -> None:
+            logged_messages.append(message)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
+        monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
+
+        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+        assert result == {"task_0": None}
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        assert self._latest_task_error(database_session, task_row) == "ConnectTimeout"
+        assert any("[ERROR] ConnectTimeout" in message for message in logged_messages)
 
     async def test_benchmark_service_error_in_process_benchmark(
         self,

@@ -3,12 +3,12 @@ from datetime import datetime
 from pathlib import Path
 
 import click
+from tracker.agent.contract import read_agent_name
+from tracker.agent.schemas import validate_agent_name
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.agent.storage import download_agent, install_agent, list_agents, push_agent, remove_agent
-from valkyrie.cli.bundler import read_agent_name
 from valkyrie.cli.display import format_table, local_time, paginate_cli_pages
-from valkyrie.schemas import validate_agent_name
 
 
 @click.command(name="install", help="Installs agent from a github project to the users aws environment")

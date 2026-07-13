@@ -1,6 +1,5 @@
 """Sandbox management utilities for the tracker service."""
 
-import base64
 import shlex
 import time
 import uuid
@@ -73,6 +72,7 @@ logger = get_logger(__name__)
 bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
+AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
 
 
@@ -331,8 +331,18 @@ async def install_agent_dependencies(
     log_output(f"Installing dependencies for contract: {contract.name}")
 
     contract_path = get_contract_path(contract.name)
+    install_cmd = f"timeout {AGENT_INSTALL_TIMEOUT_SECONDS:g} sh -c {shlex.quote(contract.install_cmd)}"
 
-    await stream_command_output(sandbox, f"cd {shlex.quote(str(contract_path))} && {contract.install_cmd}", log_output)
+    exit_reason, _duration = await stream_command_output(
+        sandbox,
+        f"cd {shlex.quote(str(contract_path))} && {install_cmd}",
+        log_output,
+    )
+    if exit_reason == AgentCausedExitReason.TIMEOUT:
+        raise SandboxError(
+            f"Dependency installation for contract {contract.name} timed out after "
+            f"{AGENT_INSTALL_TIMEOUT_SECONDS:g} seconds"
+        )
 
     log_output(f"Finished installing dependencies for contract: {contract.name}")
 
@@ -594,12 +604,8 @@ async def upload_output_artifacts(
                 f"Output artifacts are too large: {total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
             )
 
-        b64_result = await _exec(sandbox, f"base64 {quoted_path}")
-        if b64_result.exit_code != _SUCCESS_EXIT_CODE:
-            raise OutputArtifactError(f"Failed to read output artifact: {sandbox_path}")
-
         s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
-        file_content = base64.b64decode(b64_result.stdout)
+        file_content = await sandbox.download_file(sandbox_path)
         await upload_to_s3(file_content, s3_key, aws, s3_bucket)
 
         logger.info(

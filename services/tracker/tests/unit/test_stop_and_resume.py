@@ -377,6 +377,7 @@ class TestStopAndResume:
         database_session: Session,
         process_benchmark_env: None,
         harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
     ):
         """
         Tests stop and resume when some tasks have already completed.
@@ -387,6 +388,7 @@ class TestStopAndResume:
             - Stop benchmark - 3 tasks are stopped (pending -> stopped)
             - Resume benchmark - only the 3 tasks that are stopped should be resumed
             - Retry or resume benchmark - all 5 tasks should have evaluation results after completion
+            - The finalization lambda receives the persisted benchmark name
         """
         task_ids: list[str] = [
             "astropy__astropy-12907",
@@ -395,12 +397,21 @@ class TestStopAndResume:
             "django__django-12325",
             "django__django-12858",
         ]
+        captured_lambda_payload: dict[str, Any] | None = None
+
+        def _capture_lambda_payload(_client: Any, _function_name: str, payload: dict[str, Any]) -> None:
+            nonlocal captured_lambda_payload
+            captured_lambda_payload = payload
+
+        monkeypatch.setattr("tracker.utils.run_orchestration.lambda_client", Mock(return_value=object()))
+        monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", _capture_lambda_payload)
 
         start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench",
             contract=contract,
             concurrency=2,
             task_ids=task_ids,
+            lambda_function="vals-format-lambda",
             harness_config=harness_config,
         )
 
@@ -475,6 +486,8 @@ class TestStopAndResume:
 
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
+        assert captured_lambda_payload is not None
+        assert captured_lambda_payload["benchmark_name"] == "swebench"
 
     @pytest.mark.parametrize(
         ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),
@@ -811,16 +824,24 @@ class TestStopAndResume:
             raise AssertionError("eval resume should not create a sandbox")
             yield
 
+        sandbox_provider_config = DaytonaProviderConfig(
+            DAYTONA_API_KEY="key",
+            DAYTONA_API_URL="url",
+            DAYTONA_TARGET="target",
+        )
+
         async def _mock_resume_evaluation(
             _self: BenchmarkServiceClient,
             task_id: str,
             *_args: Any,
             eval_resume_state: dict[str, Any],
             on_eval_resume_state: Any,
+            sandbox_provider: DaytonaProviderConfig,
             **_kwargs: Any,
         ) -> dict[str, Any]:
             assert task_id == "task_0"
             assert eval_resume_state == {"artifact_prefix": "s3://bucket/run"}
+            assert sandbox_provider is sandbox_provider_config
             on_eval_resume_state({"artifact_prefix": "s3://bucket/run", "job_id": "job-1"})
             return {"score": 1.0}
 
@@ -840,11 +861,7 @@ class TestStopAndResume:
                 task_row.task_id,
                 harness_config,
                 self._test_org,
-                sandbox_provider_config=DaytonaProviderConfig(
-                    DAYTONA_API_KEY="key",
-                    DAYTONA_API_URL="url",
-                    DAYTONA_TARGET="target",
-                ),
+                sandbox_provider_config=sandbox_provider_config,
                 creation_semaphore=asyncio.Semaphore(1),
             )
         finally:
