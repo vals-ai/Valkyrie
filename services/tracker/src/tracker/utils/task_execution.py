@@ -282,9 +282,11 @@ def _commit_task_status(
         span_attributes["has_error_message"] = True
 
     with logfire.span("task.status_transition", **span_attributes):  # pyright: ignore[reportArgumentType]
-        values: dict[str, TaskStatus | datetime] = {"status": to_status}
+        values: dict[str, TaskStatus | datetime | None] = {"status": to_status}
         if to_status in [TaskStatus.FINISHED, TaskStatus.ERROR]:
             values["finished_at"] = datetime.now(ZoneInfo("UTC"))
+        if to_status == TaskStatus.FINISHED:
+            values["eval_resume_state"] = None
 
         task_update = update(Task).where(col(Task.id) == task.id).where(col(Task.org_id) == task.org_id)
         if to_status != TaskStatus.STOPPED:

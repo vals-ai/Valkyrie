@@ -871,7 +871,7 @@ class TestStopAndResume:
         evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
         assert result == {"task_0": {"score": 1.0}}
         assert task_row.status == TaskStatus.FINISHED
-        assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
+        assert task_row.eval_resume_state is None
         assert evaluation.instance_id is None
 
     async def test_process_task_keeps_stopped_eval_resume_task_stopped(
