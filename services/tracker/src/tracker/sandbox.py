@@ -885,11 +885,10 @@ async def _wait_for_egress(
         ) from None
 
 
-@asynccontextmanager
-async def restricted_agent_egress(
+async def restrict_agent_egress(
     sandbox: Sandbox,
     allowed_addresses: list[str],
-) -> AsyncGenerator[EgressReadiness, None]:
+) -> EgressReadiness:
     if not allowed_addresses:
         raise ValueError("restricted_agent_egress requires at least one allowed address")
 
@@ -903,19 +902,41 @@ async def restricted_agent_egress(
     await _apply_egress_allowlist(sandbox, allowed_addresses)
     update_returned_at = time.time()
     ready_at, attempts = await _wait_for_egress(sandbox, "restricted", allowed_addresses, sentinels)
+    return EgressReadiness(
+        sentinel_addresses=sentinels,
+        update_returned_at=update_returned_at,
+        ready_at=ready_at,
+        attempts=attempts,
+    )
+
+
+@asynccontextmanager
+async def sandbox_lifetime_restricted_agent_egress(
+    sandbox: Sandbox,
+    allowed_addresses: list[str],
+) -> AsyncGenerator[EgressReadiness, None]:
+    yield await restrict_agent_egress(sandbox, allowed_addresses)
+
+
+@asynccontextmanager
+async def restricted_agent_egress(
+    sandbox: Sandbox,
+    allowed_addresses: list[str],
+) -> AsyncGenerator[EgressReadiness, None]:
+    readiness = await restrict_agent_egress(sandbox, allowed_addresses)
     completed = False
     try:
-        yield EgressReadiness(
-            sentinel_addresses=sentinels,
-            update_returned_at=update_returned_at,
-            ready_at=ready_at,
-            attempts=attempts,
-        )
+        yield readiness
         completed = True
     finally:
         if completed:
             await _clear_egress_allowlist(sandbox, fail_on_error=True)
-            _ = await _wait_for_egress(sandbox, "unrestricted", allowed_addresses, sentinels)
+            _ = await _wait_for_egress(
+                sandbox,
+                "unrestricted",
+                allowed_addresses,
+                readiness.sentinel_addresses,
+            )
 
 
 async def _stream_command_output_with_egress_allowlist(

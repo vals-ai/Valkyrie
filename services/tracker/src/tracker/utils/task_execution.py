@@ -24,6 +24,7 @@ from benchmark_service import (
     SandboxProviderConfig,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.schemas import AbortableSetupLifecycle, StandardSetupLifecycle
 from opentelemetry import trace
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlmodel import Session, col, select, update
@@ -71,6 +72,7 @@ from tracker.sandbox import (
     restricted_agent_egress,
     run_agent,
     runtime_sandbox,
+    sandbox_lifetime_restricted_agent_egress,
     upload_agent_artifacts,
     upload_agent_outputs,
 )
@@ -89,6 +91,8 @@ _MODEL_GATEWAY_USAGE_DIRECTORY = "model_gateway_usage"
 _MODEL_GATEWAY_USAGE_RESULT_KEY = "_valkyrie_model_gateway_usage"
 _AGENT_EGRESS_DIRECTORY = "agent_egress"
 _AGENT_EGRESS_RESULT_KEY = "_valkyrie_agent_egress"
+# The CBS client owns the three-hour retry budget; Tracker only bounds a stuck client.
+_ABORT_TASK_DEADLINE_SECONDS = 3 * 60 * 60 + 60
 _AGENT_ENV_VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_AGENT_ENV_VAR_NAMES = frozenset(
     {
@@ -202,6 +206,35 @@ async def _upload_egress_readiness_receipt(
         harness_config.s3_bucket,
     )
     return hashlib.sha256(content).hexdigest()
+
+
+async def _abort_task_uninterruptibly(
+    benchmark_service: BenchmarkServiceClient,
+    task_id: str,
+    run_id: str,
+    instance_id: str,
+    dataset: str | None,
+) -> None:
+    async def abort_before_deadline() -> None:
+        try:
+            async with asyncio.timeout(_ABORT_TASK_DEADLINE_SECONDS):
+                await benchmark_service.abort_task(task_id, run_id, instance_id, dataset)
+        except TimeoutError:
+            raise TrackerServiceError(
+                f"Benchmark abort did not complete within {_ABORT_TASK_DEADLINE_SECONDS} seconds"
+            ) from None
+
+    abort = asyncio.create_task(abort_before_deadline())
+    cancellation: asyncio.CancelledError | None = None
+    while not abort.done():
+        try:
+            await asyncio.shield(abort)
+        except asyncio.CancelledError as error:
+            cancellation = error
+
+    abort.result()
+    if cancellation is not None:
+        raise cancellation
 
 
 def _parse_egress_readiness_receipt(content: bytes, benchmark_id: UUID, task_id: str) -> dict[str, Any]:
@@ -799,6 +832,13 @@ async def process_task(
 
         task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
         sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
+        match task_data.setup_lifecycle:
+            case StandardSetupLifecycle():
+                abortable_setup = False
+                egress_scope = restricted_agent_egress
+            case AbortableSetupLifecycle():
+                abortable_setup = True
+                egress_scope = sandbox_lifetime_restricted_agent_egress
 
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
@@ -854,6 +894,7 @@ async def process_task(
         ) as sandbox:
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
             start_sandbox_run_time = time.perf_counter()
+            abortable_setup_owned = False
 
             try:
                 with Session(bind=engine) as task_session:
@@ -878,6 +919,7 @@ async def process_task(
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 last_log_time = time.monotonic()
+                abortable_setup_owned = abortable_setup
                 setup_response = await benchmark_service.setup_task(
                     task_row.task_id,
                     sandbox.id,
@@ -890,6 +932,8 @@ async def process_task(
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
                 setup_addresses = setup_response.egress_allowlist
+                if abortable_setup and not setup_addresses:
+                    raise SandboxSetupError("Abortable setup requires a dynamic egress allowlist")
                 contract_with_setup_egress = start_benchmark_request.contract.model_copy(
                     update={
                         "egress_allowlist": _merge_egress_addresses(
@@ -936,7 +980,7 @@ async def process_task(
                             )
                             command_contract = contract_with_setup_egress.model_copy(update={"egress_allowlist": []})
                             agent_sandbox = runtime_sandbox(sandbox, task_data.source)
-                            async with restricted_agent_egress(
+                            async with egress_scope(
                                 agent_sandbox, contract_with_setup_egress.egress_allowlist
                             ) as readiness:
                                 egress_readiness_receipt = _egress_readiness_receipt(
@@ -1024,7 +1068,7 @@ async def process_task(
                         )
                         command_contract = contract_with_setup_egress.model_copy(update={"egress_allowlist": []})
                         agent_sandbox = runtime_sandbox(sandbox, task_data.source)
-                        async with restricted_agent_egress(agent_sandbox, effective_addresses) as readiness:
+                        async with egress_scope(agent_sandbox, effective_addresses) as readiness:
                             egress_readiness_receipt = _egress_readiness_receipt(
                                 benchmark_id,
                                 task_id,
@@ -1141,6 +1185,7 @@ async def process_task(
                     dataset=start_benchmark_request.dataset,
                     sandbox_provider=sandbox_provider_config,
                 )
+                abortable_setup_owned = False
                 if capability_usage is not None:
                     if _MODEL_GATEWAY_USAGE_RESULT_KEY in evaluation_result:
                         raise TrackerServiceError(
@@ -1195,6 +1240,14 @@ async def process_task(
                 raise
             finally:
                 agent_env_vars.clear()
+                if abortable_setup_owned:
+                    await _abort_task_uninterruptibly(
+                        benchmark_service,
+                        task_row.task_id,
+                        str(benchmark_id),
+                        sandbox.id,
+                        start_benchmark_request.dataset,
+                    )
 
     except SandboxSetupError as e:
         if task_is_stopped():

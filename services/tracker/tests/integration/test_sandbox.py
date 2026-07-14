@@ -26,6 +26,7 @@ from tracker.sandbox import (
     install_agent_dependencies,
     restricted_agent_egress,
     run_agent,
+    sandbox_lifetime_restricted_agent_egress,
     stream_command_output,
     upload_agent_artifacts,
 )
@@ -360,6 +361,23 @@ class TestSandboxOperations:
 
         assert before[0] == restricted[0] == restored[0]
         assert before[1] < restricted[1] <= restored[1]
+
+    async def test_sandbox_lifetime_egress_remains_restricted_after_context(
+        self,
+        test_sandbox: Sandbox,
+        egress_allowlist_probe_command: str,
+    ) -> None:
+        """Prove abortable-task egress is never restored before fixture deletion."""
+        async with sandbox_lifetime_restricted_agent_egress(
+            test_sandbox,
+            ["http://example.com"],
+        ) as readiness:
+            assert len(readiness.sentinel_addresses) == 2
+            assert readiness.attempts >= 2
+
+        restricted = await test_sandbox.exec(egress_allowlist_probe_command)
+        assert restricted.exit_code == 0
+        assert "allowed=True blocked=False" in restricted.stdout
 
     async def test_deterministic_timeout_behavior(
         self,

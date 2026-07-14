@@ -10,13 +10,18 @@ from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
 from benchmark_service import ImageSource, Resources
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import RetrieveTaskResponse, SetupTaskResponse
+from benchmark_service.schemas import (
+    AbortableSetupLifecycle,
+    AbortTaskResponse,
+    RetrieveTaskResponse,
+    SetupTaskResponse,
+)
 from sqlmodel import Session, select
 
 import tracker.utils.task_execution as utils_module
@@ -87,6 +92,16 @@ def _task_capability_contract(contract: AgentContractRequest) -> AgentContractRe
                 max_sessions=4,
             ),
         }
+    )
+
+
+def _abortable_task_response() -> RetrieveTaskResponse:
+    return RetrieveTaskResponse(
+        source=ImageSource(image="test-image:latest"),
+        problem_path="/tmp/problem_statement.txt",
+        cwd="/testbed",
+        resources=Resources(vcpu=2, memory=4, disk=5),
+        setup_lifecycle=AbortableSetupLifecycle(),
     )
 
 
@@ -590,6 +605,7 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
             cwd="/testbed",
             agent_timeout=120.0,
             resources=Resources(vcpu=2, memory=4, disk=5),
+            setup_lifecycle=AbortableSetupLifecycle(),
         )
 
     async def setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
@@ -628,7 +644,7 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
         usage_uploads.append((content, key))
 
     @asynccontextmanager
-    async def restricted_egress(
+    async def persistent_egress(
         _sandbox: Any,
         allowed_addresses: list[str],
     ) -> AsyncGenerator[EgressReadiness, None]:
@@ -640,7 +656,7 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
             ready_at=12.5,
             attempts=3,
         )
-        events.append("egress clear")
+        events.append("egress remains")
 
     async def evaluate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         events.append("evaluate")
@@ -674,6 +690,7 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
             return usage
 
     gateway = FakeGateway()
+    abort_task = AsyncMock(return_value=AbortTaskResponse())
 
     class FakeGatewayFactory:
         @classmethod
@@ -682,14 +699,16 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
 
     monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
     monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "abort_task", abort_task)
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate)
     monkeypatch.setattr(utils_module, "resolve_secrets", resolve_install_secrets)
     monkeypatch.setattr(utils_module, "install_agent", install_agent)
     monkeypatch.setattr(utils_module, "execute_agent", execute_agent)
     monkeypatch.setattr(utils_module, "upload_to_s3", upload_usage)
     monkeypatch.setattr(utils_module, "upload_agent_outputs", upload_outputs)
-    monkeypatch.setattr(utils_module, "restricted_agent_egress", restricted_egress)
+    monkeypatch.setattr(utils_module, "sandbox_lifetime_restricted_agent_egress", persistent_egress)
     monkeypatch.setattr(utils_module, "ModelGatewayAdminClient", FakeGatewayFactory)
+    monkeypatch.setattr(utils_module, "buffer_logs", Mock())
 
     before = time.time()
     result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
@@ -704,11 +723,12 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
         "execute",
         "finalize",
         "usage upload",
-        "egress clear",
+        "egress remains",
         "close",
         "upload",
         "evaluate",
     ]
+    abort_task.assert_not_awaited()
     assert install_env_copies == [{"INSTALL_SECRET": "install-secret-value"}]
     assert install_env_refs == [{}]
     assert resolved_install_env == {}
@@ -985,6 +1005,227 @@ async def test_process_task_resume_accepts_legacy_capability_state(
             "_valkyrie_model_gateway_usage": usage.model_dump(mode="json"),
         }
     }
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [None, "setup", "empty setup", "install", "readiness", "execute", "upload", "evaluation"],
+)
+async def test_process_task_abortable_setup_ownership(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+    failure: str | None,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+        retry_policy=RetryPolicy.FORBID,
+    )
+
+    async def setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+        if failure == "setup":
+            raise RuntimeError("setup failed")
+        addresses = [] if failure == "empty setup" else ["https://controller.preview.test"]
+        return SetupTaskResponse(status="ok", egress_allowlist=addresses)
+
+    async def install_agent(*_args: Any, **_kwargs: Any) -> None:
+        if failure == "install":
+            raise RuntimeError("install failed")
+
+    async def execute_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        if failure == "execute":
+            raise RuntimeError("execute failed")
+        return None, 1.0
+
+    @asynccontextmanager
+    async def persistent_egress(*_args: Any, **_kwargs: Any) -> AsyncGenerator[EgressReadiness, None]:
+        if failure == "readiness":
+            raise RuntimeError("readiness failed")
+        yield EgressReadiness(
+            sentinel_addresses=("192.0.2.10", "192.0.2.11"),
+            update_returned_at=10.0,
+            ready_at=12.5,
+            attempts=3,
+        )
+
+    async def upload_outputs(*_args: Any, **_kwargs: Any) -> None:
+        if failure == "upload":
+            raise RuntimeError("upload failed")
+
+    async def evaluate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        if failure == "evaluation":
+            raise RuntimeError("evaluation failed")
+        return {"status": "success", "score": 1.0}
+
+    abort_task = AsyncMock(return_value=AbortTaskResponse())
+    monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", AsyncMock(return_value=_abortable_task_response()))
+    monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "abort_task", abort_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate)
+    monkeypatch.setattr(utils_module, "resolve_secrets", Mock(return_value={}))
+    monkeypatch.setattr(utils_module, "install_agent", install_agent)
+    monkeypatch.setattr(utils_module, "execute_agent", execute_agent)
+    monkeypatch.setattr(utils_module, "sandbox_lifetime_restricted_agent_egress", persistent_egress)
+    monkeypatch.setattr(utils_module, "upload_to_s3", AsyncMock())
+    monkeypatch.setattr(utils_module, "upload_agent_outputs", upload_outputs)
+    monkeypatch.setattr(utils_module, "buffer_logs", Mock())
+
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    if failure is None:
+        abort_task.assert_not_awaited()
+        evaluation = cast(dict[str, Any], result["task_0"])
+        assert evaluation["status"] == "success"
+        assert evaluation["score"] == 1.0
+        assert "_valkyrie_agent_egress" in evaluation
+        return
+
+    assert result == {"task_0": None}
+    abort_task.assert_awaited_once_with("task_0", str(benchmark_id), "mock-sandbox-id", None)
+
+
+async def test_process_task_cancellation_waits_for_abort_before_sandbox_delete(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+        retry_policy=RetryPolicy.FORBID,
+    )
+    events: list[str] = []
+    execute_started = asyncio.Event()
+    abort_started = asyncio.Event()
+    release_abort = asyncio.Event()
+
+    @asynccontextmanager
+    async def create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any, None]:
+        try:
+            yield SimpleNamespace(id="sandbox-abortable", name="sandbox-abortable")
+        finally:
+            events.append("sandbox delete")
+
+    async def execute_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        events.append("execute")
+        execute_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    @asynccontextmanager
+    async def persistent_egress(*_args: Any, **_kwargs: Any) -> AsyncGenerator[EgressReadiness, None]:
+        try:
+            yield EgressReadiness(
+                sentinel_addresses=("192.0.2.10", "192.0.2.11"),
+                update_returned_at=10.0,
+                ready_at=12.5,
+                attempts=3,
+            )
+        finally:
+            events.append("restriction retained")
+
+    async def abort_task(
+        _client: BenchmarkServiceClient,
+        task_id: str,
+        run_id: str,
+        instance_id: str,
+        dataset: str | None = None,
+    ) -> AbortTaskResponse:
+        assert (task_id, run_id, instance_id, dataset) == (
+            "task_0",
+            str(benchmark_id),
+            "sandbox-abortable",
+            None,
+        )
+        events.append("abort start")
+        abort_started.set()
+        await release_abort.wait()
+        events.append("abort done")
+        return AbortTaskResponse()
+
+    monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", AsyncMock(return_value=_abortable_task_response()))
+    monkeypatch.setattr(
+        BenchmarkServiceClient,
+        "setup_task",
+        AsyncMock(return_value=SetupTaskResponse(status="ok", egress_allowlist=["https://controller.preview.test"])),
+    )
+    monkeypatch.setattr(BenchmarkServiceClient, "abort_task", abort_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", AsyncMock(side_effect=AssertionError("evaluate")))
+    monkeypatch.setattr(utils_module, "create_sandbox", create_sandbox)
+    monkeypatch.setattr(utils_module, "resolve_secrets", Mock(return_value={}))
+    monkeypatch.setattr(utils_module, "install_agent", AsyncMock())
+    monkeypatch.setattr(utils_module, "execute_agent", execute_agent)
+    monkeypatch.setattr(utils_module, "sandbox_lifetime_restricted_agent_egress", persistent_egress)
+    monkeypatch.setattr(utils_module, "upload_to_s3", AsyncMock())
+    monkeypatch.setattr(utils_module, "upload_agent_outputs", AsyncMock(side_effect=AssertionError("upload")))
+    monkeypatch.setattr(utils_module, "buffer_logs", Mock())
+
+    task = asyncio.create_task(_run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config))
+    await asyncio.wait_for(execute_started.wait(), timeout=1)
+    task.cancel()
+    await asyncio.wait_for(abort_started.wait(), timeout=1)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    release_abort.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert events == ["execute", "restriction retained", "abort start", "abort done", "sandbox delete"]
+
+
+async def test_process_task_abort_deadline_still_deletes_sandbox(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+        retry_policy=RetryPolicy.FORBID,
+    )
+    events: list[str] = []
+
+    @asynccontextmanager
+    async def create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[Any, None]:
+        try:
+            yield SimpleNamespace(id="sandbox-abortable", name="sandbox-abortable")
+        finally:
+            events.append("sandbox delete")
+
+    async def setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+        raise RuntimeError("setup failed after allocating resources")
+
+    async def abort_task(*_args: Any, **_kwargs: Any) -> AbortTaskResponse:
+        events.append("abort start")
+        try:
+            await asyncio.Event().wait()
+        finally:
+            events.append("abort cancelled")
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", AsyncMock(return_value=_abortable_task_response()))
+    monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "abort_task", abort_task)
+    monkeypatch.setattr(utils_module, "create_sandbox", create_sandbox)
+    monkeypatch.setattr(utils_module, "_ABORT_TASK_DEADLINE_SECONDS", 0.01)
+    monkeypatch.setattr(utils_module, "buffer_logs", Mock())
+
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    assert result == {"task_0": None}
+    assert events == ["abort start", "abort cancelled", "sandbox delete"]
 
 
 async def test_process_task_scopes_dynamic_setup_egress_without_model_gateway(

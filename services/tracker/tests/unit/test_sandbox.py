@@ -1047,6 +1047,30 @@ class TestEgressAllowlist:
 
         mock_sandbox.clear_egress_rules.assert_not_awaited()
 
+    async def test_persistent_restriction_is_not_cleared_after_readiness(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def prevalidate(*_args: Any, **_kwargs: Any) -> tuple[str, ...]:
+            return ("192.0.2.10", "192.0.2.11")
+
+        async def ready(*_args: Any, **_kwargs: Any) -> tuple[float, int]:
+            return 12.5, 3
+
+        monkeypatch.setattr(sandbox_module, "_prevalidate_egress_sentinels", prevalidate)
+        monkeypatch.setattr(sandbox_module, "_wait_for_egress", ready)
+        mock_sandbox = Mock(id="sandbox-123")
+        mock_sandbox.modify_egress_rules = AsyncMock()
+        mock_sandbox.clear_egress_rules = AsyncMock()
+
+        readiness = await sandbox_module.restrict_agent_egress(mock_sandbox, ["https://api.openai.com"])
+
+        assert readiness.sentinel_addresses == ("192.0.2.10", "192.0.2.11")
+        assert readiness.ready_at == 12.5
+        assert readiness.attempts == 3
+        mock_sandbox.modify_egress_rules.assert_awaited_once_with(["https://api.openai.com"])
+        mock_sandbox.clear_egress_rules.assert_not_awaited()
+
     async def test_prevalidation_has_a_hard_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
         async def never_returns(*_args: Any, **_kwargs: Any) -> tuple[str, ...]:
             await asyncio.Event().wait()
