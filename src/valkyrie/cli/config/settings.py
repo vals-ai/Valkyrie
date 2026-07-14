@@ -19,6 +19,31 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
 }
 
 
+def _rotate_matching_benchmark_auth(config: dict[str, Any], new_api_key: str) -> int:
+    """Rotate benchmark credentials derived from the previous hosted API key."""
+    previous_api_key = config.get("api_key")
+    benchmark_auth = config.get("benchmark_auth")
+    if (
+        not isinstance(previous_api_key, str)
+        or not previous_api_key
+        or previous_api_key == new_api_key
+        or not isinstance(benchmark_auth, dict)
+    ):
+        return 0
+
+    replacements = {
+        previous_api_key: new_api_key,
+        f"Bearer {previous_api_key}": f"Bearer {new_api_key}",
+    }
+    updated = 0
+    for benchmark_name, credential in benchmark_auth.items():
+        if isinstance(credential, str) and credential in replacements:
+            benchmark_auth[benchmark_name] = replacements[credential]
+            updated += 1
+
+    return updated
+
+
 @click.command()
 def init() -> None:
     """
@@ -115,11 +140,18 @@ def set(key: str, value: str) -> None:
             f"Key '{key}' is not a valid config key. Valid keys: {', '.join(m.value for m in ConfigValue)}"
         )
 
+    rotated_benchmark_auth = 0
+    if config_value is ConfigValue.API_KEY:
+        rotated_benchmark_auth = _rotate_matching_benchmark_auth(current, value)
+
     current[config_value.value] = value
 
     write_config(current)
 
     click.echo(click.style(f"  {key} updated.", fg="green"))
+    if rotated_benchmark_auth:
+        label = "benchmark" if rotated_benchmark_auth == 1 else "benchmarks"
+        click.echo(f"  Updated benchmark service auth for {rotated_benchmark_auth} {label}.")
 
 
 @click.command(name="remove")
