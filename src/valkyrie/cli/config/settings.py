@@ -67,6 +67,7 @@ def init() -> None:
 
     if mode == "hosted":
         api_key = (os.environ.get("VALKYRIE_API_KEY") or click.prompt("API Key")).strip()
+        _rotate_matching_benchmark_auth(current_config, api_key)
         current_config["api_key"] = api_key
 
         # Validate the key and create/confirm org (uses default tracker URL)
