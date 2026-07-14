@@ -24,7 +24,7 @@ _R = TypeVar("_R")
 S3_AGENTS_PREFIX = "agents"
 S3_BENCHMARKS_PREFIX = "benchmarks"
 
-_CLIENT_CONFIG = Config(max_pool_connections=200)
+_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
 
 
 @lru_cache(maxsize=32)
