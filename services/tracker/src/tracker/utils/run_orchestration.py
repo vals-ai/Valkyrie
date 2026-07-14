@@ -229,7 +229,12 @@ def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkReq
     request: StartBenchmarkRequest | None
     try:
         request = StartBenchmarkRequest.model_validate(payload)
-    except ValidationError:
+    except ValidationError as exc:
+        # Log field locations only; rendering the full error would expose input
+        # values, which include AWS credentials on this payload.
+        logger.warning(
+            f"Queued benchmark request failed validation: {exc.errors(include_url=False, include_input=False)}"
+        )
         request = None
 
     if request is None:

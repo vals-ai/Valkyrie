@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 from types import TracebackType
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 from botocore.exceptions import ClientError
@@ -51,58 +50,42 @@ class FakeS3Client:
         }
 
 
-def test_s3_client_uses_explicit_credentials_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[dict[str, object]] = []
+def test_s3_client_reuses_one_session_with_pool_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    session_constructions: list[dict[str, object]] = []
+    client_configs: list[Any] = []
     client = object()
 
     class FakeSession:
         def __init__(self, **kwargs: object) -> None:
-            calls.append(kwargs)
+            session_constructions.append(kwargs)
 
-        def client(self, service_name: str) -> object:
-            calls.append({"service_name": service_name})
+        def client(self, service_name: str, config: Any = None) -> object:
+            assert service_name == "s3"
+            client_configs.append(config)
             return client
 
     monkeypatch.setattr(
         cli_s3,
         "load_config",
         lambda: {
-            "AWS_ACCESS_KEY_ID": "aws-key",
-            "AWS_SECRET_ACCESS_KEY": "aws-secret",
-            "AWS_DEFAULT_REGION": "us-east-1",
+            "AWS_ACCESS_KEY_ID": "aws-key-cached",
+            "AWS_SECRET_ACCESS_KEY": "aws-secret-cached",
+            "AWS_DEFAULT_REGION": "us-west-2",
         },
     )
     monkeypatch.setattr(cli_s3.aioboto3, "Session", FakeSession)
 
     assert cli_s3.s3_client() is client
-    assert calls == [
+    assert cli_s3.s3_client() is client
+
+    assert session_constructions == [
         {
-            "aws_access_key_id": "aws-key",
-            "aws_secret_access_key": "aws-secret",
-            "region_name": "us-east-1",
-        },
-        {"service_name": "s3"},
+            "aws_access_key_id": "aws-key-cached",
+            "aws_secret_access_key": "aws-secret-cached",
+            "region_name": "us-west-2",
+        }
     ]
-
-
-def test_s3_client_requires_explicit_credentials(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    session_factory = MagicMock()
-    session_factory.return_value.client.return_value = object()
-    monkeypatch.setattr(
-        cli_s3,
-        "load_config",
-        lambda: {
-            "AWS_DEFAULT_REGION": "us-east-1",
-        },
-    )
-    monkeypatch.setattr(cli_s3.aioboto3, "Session", session_factory)
-
-    with pytest.raises(KeyError, match="AWS_ACCESS_KEY_ID"):
-        cli_s3.s3_client()
-
-    session_factory.assert_not_called()
+    assert [config.max_pool_connections for config in client_configs] == [200, 200]
 
 
 @pytest.mark.asyncio

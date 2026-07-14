@@ -1,13 +1,17 @@
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 
 import aioboto3
 import click
+from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 from tracker import handle_s3_error
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.config.state import load_config
+
+_CLIENT_CONFIG = Config(max_pool_connections=200)
 
 
 def fetch_bucket_name() -> str:
@@ -19,15 +23,24 @@ def fetch_bucket_name() -> str:
     return bucket_name
 
 
+@lru_cache(maxsize=4)
+def _s3_session(access_key_id: str, secret_access_key: str, region_name: str) -> aioboto3.Session:
+    return aioboto3.Session(
+        aws_access_key_id=access_key_id,
+        aws_secret_access_key=secret_access_key,
+        region_name=region_name,
+    )
+
+
 def s3_client() -> Any:
     """Create an async S3 client using credentials from the valkyrie config."""
     config = load_config()
-    session = aioboto3.Session(
-        aws_access_key_id=config["AWS_ACCESS_KEY_ID"],
-        aws_secret_access_key=config["AWS_SECRET_ACCESS_KEY"],
-        region_name=config["AWS_DEFAULT_REGION"],
+    session = _s3_session(
+        config["AWS_ACCESS_KEY_ID"],
+        config["AWS_SECRET_ACCESS_KEY"],
+        config["AWS_DEFAULT_REGION"],
     )
-    return session.client("s3")
+    return session.client("s3", config=_CLIENT_CONFIG)
 
 
 async def copy_s3_object(source_key: str, dest_key: str, bucket_name: str) -> None:
