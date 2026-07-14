@@ -57,7 +57,7 @@ def unit_test_environment(monkeypatch: pytest.MonkeyPatch):
             "DAYTONA_TARGET": "test_target",
         }
 
-    monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)
+    monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", _mock_fetch_aws_secret)
 
 
 @pytest.fixture(autouse=True)
@@ -78,9 +78,9 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("tracker.aws.s3.download_from_s3", _mock_download_from_s3)
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
-    monkeypatch.setattr("tracker.utils.upload_to_s3", _mock_upload_to_s3)
+    monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
     monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
-    monkeypatch.setattr("tracker.utils.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
+    monkeypatch.setattr("tracker.utils.run_orchestration.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
 
 
 @pytest.fixture(autouse=True)
@@ -166,11 +166,11 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.create_benchmark_log_group", _mock_create_benchmark_log_group)
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.write_benchmark_log_event", _mock_write_benchmark_log_event)
-    monkeypatch.setattr("tracker.utils.create_benchmark_log_group", _mock_create_benchmark_log_group)
-    monkeypatch.setattr("tracker.utils.write_benchmark_log_event", _mock_write_benchmark_log_event)
-    monkeypatch.setattr("tracker.utils.upload_final_view", _mock_upload_final_view)
+    monkeypatch.setattr("tracker.utils.run_orchestration.create_benchmark_log_group", _mock_create_benchmark_log_group)
+    monkeypatch.setattr("tracker.utils.task_execution.write_benchmark_log_event", _mock_write_benchmark_log_event)
+    monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", _mock_upload_final_view)
     monkeypatch.setattr("tracker.aws.secrets.fetch_aws_secret", _mock_fetch_aws_secret)
-    monkeypatch.setattr("tracker.utils.fetch_aws_secret", _mock_fetch_aws_secret)
+    monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", _mock_fetch_aws_secret)
 
 
 @pytest.fixture(autouse=True)
@@ -183,8 +183,8 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _noop_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
         return None, 0.0
 
-    monkeypatch.setattr("tracker.utils.upload_agent_artifacts", _noop)
-    monkeypatch.setattr("tracker.utils.run_agent", _noop_run_agent)
+    monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", _noop)
+    monkeypatch.setattr("tracker.utils.task_execution.run_agent", _noop_run_agent)
 
 
 @pytest.fixture(autouse=True)
@@ -232,8 +232,9 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
     async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
         return VerifyTaskIdsResponse(task_ids=task_ids)
 
-    monkeypatch.setattr("tracker.utils.engine", database_session.bind)
-    monkeypatch.setattr("tracker.utils.create_sandbox", _mock_create_sandbox)
+    monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+    monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+    monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
     monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
     monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)

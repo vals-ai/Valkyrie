@@ -1,20 +1,90 @@
 import io
 import tarfile
 from datetime import datetime, timezone
+from importlib import import_module
 from pathlib import Path
-from uuid import uuid4
+from typing import cast
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
-from tracker.types import BenchmarkDetails, FetchBenchmarkResponse, StartBenchmarkResponse
-
-from valkyrie.cli.utils import (
-    _stream_next_steps,
-    download_run_outputs,
-    format_benchmark_status,
-    format_start_benchmark_response,
+from click.testing import CliRunner
+from tracker.database.models import (
+    AgentContractRequest,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    DocentReadingStatus,
+    TaskStatus,
 )
+from tracker.types import (
+    BenchmarkDetails,
+    FetchBenchmarkMetadataResponse,
+    FetchBenchmarkResponse,
+    StartBenchmarkResponse,
+)
+
+from valkyrie.cli.display import paginate_cli_pages
+from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.run.fetch import fetch
+from valkyrie.cli.run.outputs import download_run_outputs
+from valkyrie.cli.run.progress import _stream_next_steps, format_benchmark_status, stream_benchmark_status
+from valkyrie.cli.run.start import format_start_benchmark_response
+from valkyrie.cli.tracker_client import TrackerService
+
+fetch_module = import_module("valkyrie.cli.run.fetch")
+
+
+class StubProgressTracker:
+    def __init__(
+        self,
+        response: FetchBenchmarkResponse,
+        metadata: FetchBenchmarkMetadataResponse | TrackerServiceError,
+    ) -> None:
+        self.response = response
+        self.metadata = metadata
+        self.metadata_calls = 0
+
+    def fetch_benchmark(self, _run_id: UUID) -> FetchBenchmarkResponse:
+        return self.response
+
+    def fetch_benchmark_metadata(self, _run_id: UUID) -> FetchBenchmarkMetadataResponse:
+        self.metadata_calls += 1
+        if isinstance(self.metadata, TrackerServiceError):
+            raise self.metadata
+        return self.metadata
+
+    def stream_benchmark(self, _run_id: UUID):
+        yield "event: disconnect"
+
+
+def make_fetch_response(run_id: UUID) -> FetchBenchmarkResponse:
+    return FetchBenchmarkResponse(
+        benchmark_name="swebench",
+        benchmark_id=run_id,
+        details=BenchmarkDetails(
+            status=BenchmarkStatus.IN_PROGRESS,
+            started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            total_tasks=4,
+            finished_tasks=1,
+            task_breakdown={TaskStatus.IN_PROGRESS: 3, TaskStatus.FINISHED: 1},
+            docent_reading_status=DocentReadingStatus.IDLE,
+        ),
+        s3_bucket_url="https://example.com/run",
+        label="release-candidate",
+    )
+
+
+def make_fetch_metadata(run_id: UUID) -> FetchBenchmarkMetadataResponse:
+    return FetchBenchmarkMetadataResponse(
+        benchmark_id=run_id,
+        benchmark_name="swebench",
+        benchmark_arguments=BenchmarkArguments(
+            contract=AgentContractRequest(name="mini_sweagent", model="openai/gpt-5", secrets={"API_KEY": "secret"}),
+            concurrency=20,
+            dataset="verified",
+        ),
+        started_by_email="runner@vals.ai",
+    )
 
 
 def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixture[str]) -> None:
@@ -45,6 +115,75 @@ def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixtur
     assert "Final score:" in output
     assert "83.2%" in output
     assert "3/4 (75.0%)" in output
+
+
+def test_connected_fetch_prints_rich_identity(capsys: pytest.CaptureFixture[str]) -> None:
+    run_id = uuid4()
+    tracker = StubProgressTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
+
+    stream_benchmark_status(cast(TrackerService, tracker), run_id, show_identity=True)
+
+    output = capsys.readouterr().out
+    assert "Run Details" in output
+    assert "swebench" in output
+    assert "mini_sweagent" in output
+    assert "openai/gpt-5" in output
+    assert "verified" in output
+    assert str(run_id) in output
+    assert "release-candidate" in output
+    assert "runner@vals.ai" in output
+    assert "20" in output
+    assert "Streaming run updates" in output
+    assert "API_KEY" not in output
+    assert "secret" not in output
+    assert tracker.metadata_calls == 1
+
+
+def test_connected_fetch_continues_when_metadata_is_unavailable(capsys: pytest.CaptureFixture[str]) -> None:
+    run_id = uuid4()
+    tracker = StubProgressTracker(make_fetch_response(run_id), TrackerServiceError("metadata unavailable"))
+
+    stream_benchmark_status(cast(TrackerService, tracker), run_id, show_identity=True)
+
+    output = capsys.readouterr().out
+    assert "Run Details" in output
+    assert "Metadata:" in output
+    assert "unavailable" in output
+    assert "Streaming run updates" in output
+
+
+def test_shared_connected_stream_omits_identity_by_default(capsys: pytest.CaptureFixture[str]) -> None:
+    run_id = uuid4()
+    tracker = StubProgressTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
+
+    stream_benchmark_status(cast(TrackerService, tracker), run_id)
+
+    output = capsys.readouterr().out
+    assert "Run Details" not in output
+    assert tracker.metadata_calls == 0
+
+
+def test_fetch_connect_enables_identity_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = uuid4()
+    stream_calls: list[tuple[UUID, bool]] = []
+
+    class StubFetchTrackerService:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc_info: object) -> None:
+            return None
+
+    def record_stream(_tracker: StubFetchTrackerService, actual_run_id: UUID, *, show_identity: bool = False) -> None:
+        stream_calls.append((actual_run_id, show_identity))
+
+    monkeypatch.setattr(fetch_module, "TrackerService", StubFetchTrackerService)
+    monkeypatch.setattr(fetch_module, "stream_benchmark_status", record_stream)
+
+    result = CliRunner().invoke(fetch, [str(run_id), "--connect"])
+
+    assert result.exit_code == 0, result.output
+    assert stream_calls == [(run_id, True)]
 
 
 def test_format_start_benchmark_response_prints_run_outputs_command(capsys: pytest.CaptureFixture[str]) -> None:
@@ -104,3 +243,57 @@ def test_download_run_outputs_extracts_archive_and_nested_tars(tmp_path: Path) -
     assert (tmp_path / "task" / "output.txt").read_bytes() == b"run output"
     assert (tmp_path / "task" / "artifacts" / "nested.txt").read_bytes() == b"nested contents"
     assert not (tmp_path / "task" / "artifacts.tar.gz").exists()
+
+
+def test_paginate_cli_pages_clears_between_pages_and_handles_filtered_totals(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Shared table pagination should clear each render and recover when totals shrink.
+
+    Test cases:
+    - Moving forward clears the previous table before rendering the next page.
+    - If a filtered/refetched total invalidates the current page, pagination reloads a valid page.
+    """
+    load_offsets: list[int] = []
+    rendered_pages: list[tuple[list[str], int, int, int]] = []
+    page_responses = [
+        (8, ["one", "two"]),
+        (8, ["three", "four"]),
+        (8, ["five", "six"]),
+        (4, []),
+        (1, []),
+        (1, ["filtered"]),
+    ]
+    keys = iter(["l", "l", "l"])
+
+    def load_page(offset: int, _limit: int) -> tuple[int, list[str]]:
+        response = page_responses[len(load_offsets)]
+        load_offsets.append(offset)
+
+        return response
+
+    def render_page(page: list[str], current_page: int, total_pages: int, total_count: int) -> None:
+        rendered_pages.append((page, current_page, total_pages, total_count))
+        print(f"page={current_page}/{total_pages}:{','.join(page)}")
+
+    monkeypatch.setattr("valkyrie.cli.display.click.getchar", lambda: next(keys))
+
+    paginate_cli_pages(
+        load_page,
+        render_page,
+        limit=2,
+        render_empty=lambda: print("empty"),
+    )
+
+    output = capsys.readouterr().out
+    assert load_offsets == [0, 2, 4, 6, 2, 0]
+    assert rendered_pages == [
+        (["one", "two"], 1, 4, 8),
+        (["three", "four"], 2, 4, 8),
+        (["five", "six"], 3, 4, 8),
+        (["filtered"], 1, 1, 1),
+    ]
+    assert output.count("\033[2J\033[3J\033[1;1H") == 4
+    assert "page=2/1" not in output
+    assert "empty" not in output

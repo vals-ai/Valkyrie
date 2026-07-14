@@ -334,6 +334,7 @@ class TestDatabaseIntegration:
                 expected = {
                     **evaluation_result_row.result,
                     "agent_caused_exit_reason": evaluation_result_row.agent_caused_exit_reason,
+                    "attempts": 1,
                 }
                 assert evaluation_result == expected
 

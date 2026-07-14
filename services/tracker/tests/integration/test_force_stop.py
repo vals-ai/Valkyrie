@@ -63,9 +63,7 @@ async def _wait_until_no_sandboxes(benchmark: Benchmark, provider: SandboxProvid
 
 def _assert_no_task_errors(benchmark: Benchmark, database_session: Session) -> None:
     database_session.expire_all()
-    tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
-    task_errors = [f"{task.task_id}: {task.error_message}" for task in tasks if task.error_message]
-    assert task_errors == []
+    assert benchmark.fetch_tasks_with_errors(database_session) is None
 
 
 class TestForceStop:
@@ -116,6 +114,7 @@ class TestForceStop:
                 daytona_secret_name,
                 aws_credentials,
                 Org(id=TEST_ORG_ID, name="default"),
+                sandbox_provider="daytona",
             )
 
         created_sandbox_name: list[str] = []
@@ -216,6 +215,7 @@ class TestForceStop:
                 daytona_secret_name,
                 aws_credentials,
                 Org(id=TEST_ORG_ID, name="default"),
+                sandbox_provider="daytona",
             )
         finally:
             release_sandboxes.set()
@@ -304,9 +304,7 @@ class TestForceStop:
                 select(Task).where(Task.benchmark == example_benchmark_object.id).where(Task.status == TaskStatus.ERROR)
             ).all()
 
-            assert len(error_tasks) == 0, (
-                f"Tasks have error status: {', '.join([task.error_message or 'No error message' for task in error_tasks])}"
-            )
+            assert len(error_tasks) == 0, f"Tasks have error status: {', '.join(task.task_id for task in error_tasks)}"
             _assert_no_task_errors(example_benchmark_object, database_session)
 
             # All tasks should be in a finished state (STOPPED or FINISHED)

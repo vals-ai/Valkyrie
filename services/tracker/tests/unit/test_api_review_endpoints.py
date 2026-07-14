@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
+import tracker.api.benchmark_services as benchmark_services_api
 from main import app
 from tests.conftest import TEST_ORG_ID
 from tracker.database.models import (
@@ -23,6 +24,48 @@ from tracker.database.models import (
 )
 
 client = TestClient(app)
+
+
+def test_benchmark_services_endpoint_fetches_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Tracker should own catalog lookup so clients only need the tracker API.
+
+    Test cases:
+    - The endpoint forwards the caller API key to the catalog API.
+    - Catalog responses are returned as benchmark service entries.
+    """
+    requests: list[httpx.Request] = []
+
+    async def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"services": [{"name": "swebench", "url": "https://swebench.benchmarks.vals.ai/"}]},
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
+
+    def build_client(*, timeout: float) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=timeout)
+
+    monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
+    monkeypatch.setattr(benchmark_services_api.httpx, "AsyncClient", build_client)
+
+    response = client.get("/benchmark-services", headers={"X-Api-Key": "tenant-key"})
+
+    assert response.status_code == 200
+    assert [str(request.url) for request in requests] == ["https://catalog.example/benchmark-services"]
+    assert requests[0].headers["X-Api-Key"] == "tenant-key"
+    assert response.json() == {
+        "services": [
+            {
+                "name": "swebench",
+                "url": "https://swebench.benchmarks.vals.ai",
+                "auth_header_name": None,
+                "auth_secret_name": None,
+            }
+        ]
+    }
 
 
 def test_list_agents_uses_harness_config(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,8 +123,6 @@ def test_agent_download_url_returns_404_for_missing_agent(monkeypatch: pytest.Mo
 
 
 async def test_ping_service_appends_health_path() -> None:
-    import tracker.api.benchmark_services as benchmark_services_api
-
     fake_client = SimpleNamespace(requested_url=None)
 
     async def fake_get(url: str) -> httpx.Response:
@@ -102,8 +143,6 @@ async def test_ping_service_appends_health_path() -> None:
 
 
 async def test_ping_service_reports_request_errors() -> None:
-    import tracker.api.benchmark_services as benchmark_services_api
-
     async def fake_get(url: str) -> httpx.Response:
         raise httpx.ConnectError("boom", request=httpx.Request("GET", url))
 
@@ -121,8 +160,6 @@ async def test_ping_service_reports_request_errors() -> None:
 
 
 def test_benchmark_services_endpoint_reuses_ping_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    import tracker.api.benchmark_services as benchmark_services_api
-
     async def fake_ping(_client: httpx.AsyncClient, name: str, url: str):
         return {"name": name, "url": url, "healthy": True, "latency_ms": 1, "error": None}
 
@@ -145,9 +182,40 @@ def test_benchmark_services_endpoint_reuses_ping_client(monkeypatch: pytest.Monk
     assert ping_mock.await_count == 2
 
 
-def test_benchmark_services_endpoint_returns_empty_services(monkeypatch: pytest.MonkeyPatch) -> None:
-    import tracker.api.benchmark_services as benchmark_services_api
+def test_benchmark_services_endpoint_uses_short_health_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Service listing should not wait long on slow benchmark health checks.
 
+    Test cases:
+    - The endpoint passes a 1 second timeout into the shared health-check HTTP client.
+    """
+    captured_timeouts: list[float] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            captured_timeouts.append(timeout)
+
+        async def __aenter__(self) -> "FakeAsyncClient":
+            return self
+
+        async def __aexit__(self, *_exc_info: object) -> None:
+            return None
+
+    async def fake_ping(_client: httpx.AsyncClient, name: str, url: str):
+        return {"name": name, "url": url, "healthy": True, "latency_ms": 1, "error": None}
+
+    monkeypatch.setattr(benchmark_services_api.httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(benchmark_services_api, "_ping_service", AsyncMock(side_effect=fake_ping))
+
+    response = client.post(
+        "/benchmark-services",
+        json={"services": [{"name": "swebench", "url": "http://swebench"}]},
+    )
+
+    assert response.status_code == 200
+    assert captured_timeouts == [1.0]
+
+
+def test_benchmark_services_endpoint_returns_empty_services(monkeypatch: pytest.MonkeyPatch) -> None:
     ping_mock = AsyncMock()
     monkeypatch.setattr(benchmark_services_api, "_ping_service", ping_mock)
 

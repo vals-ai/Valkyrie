@@ -75,6 +75,7 @@ jobs:
           VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
           DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
+          BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
         run: |
           cd infra
@@ -84,6 +85,7 @@ jobs:
         if: steps.deploy-stage.outputs.stage != 'prod'
         env:
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
+          BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
         run: |
           cd infra

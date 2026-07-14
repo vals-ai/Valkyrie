@@ -1,0 +1,17 @@
+{
+  "body": {
+    "task_ids": [
+      "task-1"
+    ],
+    "service_headers": {},
+    "secrets": {}
+  },
+  "query": {
+    "retry": false,
+    "retry_mode": "auto",
+    "concurrency": 2
+  },
+  "response": {
+    "status": "success"
+  }
+}

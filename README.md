@@ -17,7 +17,7 @@ Valkyrie supports **hosted** and **self-hosted** modes.
 Both modes require you to provide certain credentials and configuration:  
 - AWS API Key: Authentication for an AWS account with S3, CloudWatch, and Secrets Manager access (to store benchmarking logs and results)
 - S3 Bucket Name: The S3 bucket to be used for storing benchmark artifacts and agents
-- Sandbox provider config: AWS Secrets Manager entry for the sandbox provider. [Setup docs](docs/PROVIDER.md)
+- Sandbox provider config: named AWS Secrets Manager entries for sandbox providers. [Setup docs](docs/PROVIDER.md)
 - **Hosted mode only:** Vals API Key
 
 See [Hosted vs Self-Hosted Mode](docs/HOSTED_MODE.md) for more details.
@@ -43,6 +43,16 @@ To upsert a single key:
 ```bash
 valkyrie config set <KEY> <VALUE>
 ```
+
+To configure sandbox providers:
+
+```bash
+valkyrie config provider set daytona DaytonaSecrets
+valkyrie config provider set modal ModalSecrets
+valkyrie config provider default modal
+```
+
+The first configured provider is used by default unless you set one with `valkyrie config provider default <name>`. Use `valkyrie run start --provider <name>` to select another configured provider for one run.
 
 ## Agent Management
 
@@ -118,7 +128,7 @@ valkyrie run start --agent <agent id> --benchmark <benchmark id>
 
 You can pass `--concurrency` to control the number of tasks that run in parallel, and `--task-ids` or `--slice` to run only a subset of tasks. Specific agents may take additional parameters as well, most commonly, a parameter to set the model. 
 
-To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. This will map the value stored in AWS SECRET NAME to ENVIRONMENT_VARIABLE inside the agent container. 
+To pass secrets to the agent environment, use `-s <ENVIRONMENT_VARIABLE> <AWS SECRET NAME>`. This will map the value stored in AWS SECRET NAME to ENVIRONMENT_VARIABLE inside the agent container.
 
 Here is an example of how to run the first ten tasks of SWE-Bench Verified:
 ```bash
@@ -169,7 +179,47 @@ valkyrie run fetch <id> --connect
 
 # One-time status check
 valkyrie run fetch <id>
+
+# One-time machine-readable snapshot
+valkyrie run fetch <id> --format json
+
+# Machine-readable stream (one JSON object per line)
+valkyrie run fetch <id> --connect --format jsonl
+
+# Lightweight status for several known run IDs
+valkyrie run status --ids <id-1>,<id-2> --format json
+
+# Show stored run and current task error messages
+valkyrie run errors <id>
+
+# Machine-readable error messages
+valkyrie run errors <id> --format json
 ```
+
+Connected text fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
+progress updates. Machine-readable output uses a versioned, allowlisted schema and does not include stored agent
+secrets or kwargs. JSONL begins with a `snapshot` record, followed by zero or more `update` records. Recognized stream
+termination emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`; unexpected clean exhaustion emits
+`disconnect` and exits nonzero. Transport or malformed-protocol failures can exit nonzero without a final record, so
+stderr and the process exit code remain authoritative for command failures.
+
+Exit code 0 means the CLI handled the response or stream event; it does not mean the benchmark itself succeeded.
+Agents must inspect each run's `status` and each JSONL record's `event`. Optional values such as model, starter, label,
+finish time, and score can be null. In fetch output, `metadata_available: false` specifically means identity metadata
+could not be loaded. All timestamps are UTC ISO 8601 strings, and non-finite scores are normalized to null.
+
+The version 1 machine document shapes are:
+
+- Fetch JSON/JSONL record: `schema_version`, `event`, `observed_at`, run identity, status/progress counts, score, and
+  metadata availability.
+- Run list document: `schema_version`, `kind: "run_list"`, `observed_at`, `returned_count`, and allowlisted `runs`.
+- Batch status document: `schema_version`, `kind: "run_status"`, `observed_at`, request/return counts,
+  `missing_run_ids`, and lightweight `runs` containing status and task counts.
+
+Batch status preserves the requested ID order, ignores duplicate IDs, and requests up to 50 IDs at a time. A missing
+or inaccessible ID is listed in `missing_run_ids` and makes the command exit nonzero after emitting the JSON document.
+Its `finished_tasks` count includes terminal `FINISHED`, `ERROR`, and `STOPPED` tasks. Use `run list --format json --all`
+when benchmark, agent, model, or dataset identity is also needed.
 
 ### Download results
 
@@ -199,8 +249,15 @@ valkyrie run results <id> --task-ids-file https://example.com/subset.txt
 ```bash
 valkyrie run stop <id>
 
+# Stop only selected tasks
+valkyrie run stop <id> --task-ids task-a,task-b
+valkyrie run stop <id> --task-ids-file ./task-ids.txt
+
 # Force stop all in-flight tasks immediately
 valkyrie run stop <id> --force
+
+# Force stop only selected tasks and remove their sandboxes
+valkyrie run stop <id> --task-ids task-a,task-b --force
 ```
 
 ### Resume / Retry a run
@@ -251,6 +308,11 @@ valkyrie run list \
   --order-by DESC \
   --started-by alice@vals.ai,bob@vals.ai \
   --label swebench_claude_code
+
+# Dump every matching run as one machine-readable JSON document
+valkyrie run list --format json --all \
+  --model openai/gpt-5 \
+  --status IN_PROGRESS
 ```
 
 | Option | Description |
@@ -262,8 +324,12 @@ valkyrie run list \
 | `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
 | `--order-by` | Order results (`desc` or `asc`) |
 | `--started-by` | Comma-separated list of starter emails (case-insensitive) |
+| `--format json` | Emit one versioned, allowlisted JSON document instead of a table (requires `--all`) |
+| `--all` | Fetch every matching run without interactive paging (requires `--format json`) |
 
 Supports paginated navigation ([h] previous, [l] next, [q] quit).
+Machine output exhausts cursor pagination before writing stdout and excludes stored agent secrets, kwargs, and raw
+error messages.
 
 ### Download run outputs
 
@@ -275,7 +341,7 @@ valkyrie run outputs <id> --output-dir ./outputs
 valkyrie run outputs <id> --task-ids astropy__astropy-7606,django__django-10880
 ```
 
-Valkyrie run outputs downloads the files produced during a run, while Valkyrie run results downloads the scores and evaluation. 
+Valkyrie run outputs downloads the files produced during a run, while Valkyrie run results downloads the scores and evaluation.
 
 ### Download a specific file or folder from a run
 
@@ -399,6 +465,7 @@ Webhook configuration is persisted per-benchmark in the database. On resume or r
 
 | Topic | Link |
 | --- | --- |
+| Python SDK | [Guide](docs/sdk/README.md) |
 | Hosted vs self-hosted | [HOSTED_MODE.md](docs/HOSTED_MODE.md) |
 | Local development | [DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | Lambda integration | [LAMBDA_USAGE.md](docs/LAMBDA_USAGE.md) |

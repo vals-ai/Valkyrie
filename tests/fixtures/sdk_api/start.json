@@ -1,0 +1,63 @@
+{
+  "request": {
+    "contract": {
+      "name": "sweagent",
+      "model": "claude-sonnet",
+      "install_cmd": "",
+      "run_cmd": "",
+      "final_output": null,
+      "output_artifacts": [
+        {
+          "path": "report.json",
+          "source": "/workspace/report.json"
+        }
+      ],
+      "egress_allowlist": [],
+      "secrets": {
+        "ANTHROPIC_API_KEY": "AnthropicSecret"
+      },
+      "kwargs": {
+        "temperature": "0"
+      }
+    },
+    "benchmark_name": "swebench",
+    "concurrency": 2,
+    "label": "nightly",
+    "task_ids": [
+      "task-1"
+    ],
+    "slice_str": null,
+    "lambda_function": null,
+    "dataset": "default",
+    "harness_config": {
+      "aws": {
+        "aws_access_key_id": "aws-key",
+        "aws_secret_access_key": "aws-secret",
+        "aws_default_region": "us-west-2",
+        "aws_session_token": null
+      },
+      "s3_bucket": "runs-bucket",
+      "log_group": "benchmarks",
+      "log_retention_policy": 30,
+      "sandbox_provider_secret_name": "ModalSecret"
+    },
+    "custom_benchmark_service": null,
+    "service_headers": {},
+    "sandbox_provider": "modal",
+    "sandbox_provider_secret_name": null,
+    "service_auth_header_name": null,
+    "service_auth_secret_name": null,
+    "webhook_secret_name": null,
+    "webhook_intervals": null
+  },
+  "response": {
+    "benchmark_name": "swebench",
+    "agent_name": "sweagent",
+    "benchmark_id": "11111111-1111-4111-8111-111111111111",
+    "concurrency": 2,
+    "started_at": "2026-07-08T12:00:00Z",
+    "task_count": 1,
+    "cloudwatch_url": "https://logs.test/run",
+    "s3_bucket_url": "s3://runs-bucket/run"
+  }
+}

@@ -19,6 +19,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     Org,
     Task,
@@ -27,7 +28,6 @@ from tracker.database.models import (
 from tracker.exceptions import TrackerServiceError
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
-    _parse_log_retention_policy,  # pyright: ignore[reportPrivateUsage]
     commit_task_error,
     create_task_rows,
     fetch_benchmark_row,
@@ -39,6 +39,7 @@ from tracker.utils import (
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
+from tracker.utils.harness_config import _parse_log_retention_policy
 
 
 class TestBenchmarkUtils:
@@ -64,7 +65,7 @@ class TestBenchmarkUtils:
         def fetch_secret(name: str, _aws: AWSCredentials) -> dict[str, str]:
             return secrets[name]
 
-        monkeypatch.setattr("tracker.utils.fetch_aws_secret", fetch_secret)
+        monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", fetch_secret)
 
         provider_config = fetch_sandbox_provider_config("provider-secret", harness_config.aws, "daytona")
         assert provider_config.model_dump(mode="json") == {
@@ -300,16 +301,18 @@ class TestBenchmarkUtils:
             concurrency=5,
             task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
             slice_str=":10",
-            harness_config=harness_config,
-            sandbox_provider_secret_name="ignored-request-secret",
+            harness_config=harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
+            sandbox_provider="modal",
         )
 
         benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_starter)
-        assert benchmark_row.arguments.sandbox_provider_secret_name == harness_config.sandbox_provider_secret_name
+        assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
         recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
         assert recreated_start_benchmark_request == original_start_benchmark_request.model_copy(
-            update={"sandbox_provider_secret_name": harness_config.sandbox_provider_secret_name}
+            update={
+                "harness_config": harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
+            }
         )
 
         # Assert we have 5 tasks in the database
@@ -478,8 +481,8 @@ class TestBenchmarkUtils:
             span_records.append(record)
             return MockSpan(record)
 
-        monkeypatch.setattr("tracker.utils.logger.info", fake_info)
-        monkeypatch.setattr("tracker.utils.logfire.span", fake_span)
+        monkeypatch.setattr("tracker.utils.task_execution.logger.info", fake_info)
+        monkeypatch.setattr("tracker.utils.task_execution.logfire.span", fake_span)
 
         task_row = Task(
             org_id=TEST_ORG_ID,
@@ -494,6 +497,12 @@ class TestBenchmarkUtils:
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
+        error_message = database_session.exec(
+            select(ErrorResult.error_message)
+            .where(ErrorResult.task == task_row.id)
+            .where(ErrorResult.org_id == TEST_ORG_ID)
+        ).one()
+        assert error_message == "agent failed"
         transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
         assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
         assert transition_record["to_status"] == TaskStatus.ERROR.value

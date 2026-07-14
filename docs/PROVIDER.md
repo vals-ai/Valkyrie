@@ -21,4 +21,23 @@ Upload that key to AWS secrets manager using the following format in plain text
 }
 ```
 
-When using `valkyrie config init` or `valkyrie config set`, add `SANDBOX_PROVIDER_SECRET_NAME` with the name of the secret (e.g. `DaytonaSecrets`).
+Register the secret under a provider name:
+
+```bash
+valkyrie config provider set daytona DaytonaSecrets
+```
+
+You can configure multiple sandbox providers:
+
+```bash
+valkyrie config provider set daytona DaytonaSecrets
+valkyrie config provider set modal ModalSecrets
+```
+
+The first configured provider is used by default. Select a provider for a single run with:
+
+```bash
+valkyrie run start --agent agents/claude_code --benchmark swebench --provider modal
+```
+
+Legacy flat config key `DAYTONA_SECRET_NAME` is still accepted when `sandbox_providers` is not configured.

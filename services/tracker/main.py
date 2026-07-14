@@ -18,7 +18,7 @@ from fastapi.routing import APIRoute
 from opentelemetry.propagate import inject
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import joinedload
-from sqlmodel import Session
+from sqlmodel import Session, col, select
 
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
@@ -64,6 +64,7 @@ from tracker.database.models import (
     FinalEvaluation,
     Org,
     RetryMode,
+    Task,
 )
 from tracker.database.scoping import assert_org, get_scoped
 from tracker.database.session import check_database_connection, get_session
@@ -267,6 +268,12 @@ async def start_benchmark(
     # Prefer harness_config from X-Harness-* headers (web FE); fall back to request body (CLI).
     header_harness_config = try_fetch_harness_config(http_request)
     effective_harness_config = header_harness_config or request.harness_config
+    # TODO: Drop the top-level fallback after legacy clients have aged out.
+    provider_secret_name = request.harness_config.sandbox_provider_secret_name or request.sandbox_provider_secret_name
+    if provider_secret_name:
+        effective_harness_config = effective_harness_config.model_copy(
+            update={"sandbox_provider_secret_name": provider_secret_name}
+        )
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
@@ -612,10 +619,40 @@ async def check_results_exist(
     return {"exists": exists}
 
 
+async def validate_tasks_exist(
+    benchmark_row: Benchmark,
+    task_ids: list[str],
+    session: Session,
+    org: Org,
+) -> list[str]:
+    """Validate that selected tasks belong to the run."""
+    if not task_ids:
+        raise HTTPException(status_code=400, detail="task_ids cannot be empty")
+
+    requested_task_ids = list(dict.fromkeys(task_ids))
+    existing_task_ids = set(
+        session.exec(
+            select(Task.task_id)
+            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.org_id) == org.id)
+            .where(col(Task.task_id).in_(requested_task_ids))
+        ).all()
+    )
+    missing_task_ids = [task_id for task_id in requested_task_ids if task_id not in existing_task_ids]
+    if missing_task_ids:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Task IDs are not part of run {benchmark_row.id}: {', '.join(missing_task_ids)}",
+        )
+
+    return requested_task_ids
+
+
 @app.post("/stop-benchmark/{benchmark_id}")
 async def stop_benchmark(
     benchmark_id: TrackedBenchmarkId,
     force: bool = Query(default=False),
+    task_ids: list[str] | None = Body(default=None, embed=True),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -640,11 +677,25 @@ async def stop_benchmark(
             detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error run.",
         )
 
-    await initiate_stop_benchmark(benchmark_row, session, force, org)
+    selected_task_ids = (
+        await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
+    )
+
+    await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
     if force:
+        # TODO: Drop the row fallback after legacy benchmark rows have aged out.
+        provider_secret_name = (
+            benchmark_row.arguments.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name
+        )
         await force_stop_sandboxes(
-            benchmark_row, session, harness_config.sandbox_provider_secret_name, harness_config.aws, org
+            benchmark_row,
+            session,
+            provider_secret_name,
+            harness_config.aws,
+            org,
+            sandbox_provider=benchmark_row.arguments.sandbox_provider,
+            task_ids=selected_task_ids,
         )
 
     return StopBenchmarkResponse(

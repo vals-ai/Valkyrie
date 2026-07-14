@@ -4,7 +4,7 @@ Local development guide for the Agentic Harness.
 
 ## Prerequisites
 
-- Python 3.12+
+- Python 3.12.x
 - [uv](https://github.com/astral-sh/uv) package manager (`brew install uv`)
 
 ### Environment

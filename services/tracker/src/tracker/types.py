@@ -258,6 +258,10 @@ class BenchmarkServicesResponse(BaseModel):
     services: list[BenchmarkServiceHealth]
 
 
+class BenchmarkServiceCatalogResponse(BaseModel):
+    services: list[BenchmarkServiceEntry]
+
+
 class BenchmarkServicesRequest(BaseModel):
     services: list[BenchmarkServiceEntry] = Field(default_factory=list)
 
@@ -296,6 +300,8 @@ class SingleBenchmarkResponse(BaseModel):
     started_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None
+    cloudwatch_url: str | None = None
+    s3_bucket_url: str | None = None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
