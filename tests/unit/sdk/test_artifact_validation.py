@@ -15,9 +15,11 @@ from scripts.sdk.validate_sdk_artifacts import ArtifactError, validate_sdist, va
 
 ROOT = Path(__file__).parents[3]
 PACKAGE_ROOT = ROOT / "packages" / "valkyrie-sdk"
-METADATA = """Metadata-Version: 2.4
+PACKAGE_VERSION = tomllib.loads((PACKAGE_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+SDIST_ROOT = f"valkyrie_sdk-{PACKAGE_VERSION}"
+METADATA = f"""Metadata-Version: 2.4
 Name: valkyrie-sdk
-Version: 0.1.0
+Version: {PACKAGE_VERSION}
 License-Expression: AGPL-3.0-only
 License-File: LICENSE
 Requires-Python: >=3.12
@@ -32,7 +34,7 @@ def write_wheel(
     *,
     extra_members: dict[str, str] | None = None,
     metadata: str = METADATA,
-    dist_info_version: str = "0.1.0",
+    dist_info_version: str = PACKAGE_VERSION,
 ) -> None:
     dist_info = f"valkyrie_sdk-{dist_info_version}.dist-info"
     members = {
@@ -52,13 +54,13 @@ def write_wheel(
 
 def write_sdist(path: Path, *, extra_members: dict[str, str] | None = None) -> None:
     members = {
-        "valkyrie_sdk-0.1.0/.gitignore": ".ruff_cache/\n__pycache__/\ndist/\n",
-        "valkyrie_sdk-0.1.0/LICENSE": "AGPL",
-        "valkyrie_sdk-0.1.0/README.md": "# Valkyrie SDK",
-        "valkyrie_sdk-0.1.0/pyproject.toml": "[project]\nname='valkyrie-sdk'\n",
-        "valkyrie_sdk-0.1.0/PKG-INFO": METADATA,
-        "valkyrie_sdk-0.1.0/src/valkyrie/sdk/__init__.py": "",
-        "valkyrie_sdk-0.1.0/src/valkyrie/sdk/py.typed": "",
+        f"{SDIST_ROOT}/.gitignore": ".ruff_cache/\n__pycache__/\ndist/\n",
+        f"{SDIST_ROOT}/LICENSE": "AGPL",
+        f"{SDIST_ROOT}/README.md": "# Valkyrie SDK",
+        f"{SDIST_ROOT}/pyproject.toml": "[project]\nname='valkyrie-sdk'\n",
+        f"{SDIST_ROOT}/PKG-INFO": METADATA,
+        f"{SDIST_ROOT}/src/valkyrie/sdk/__init__.py": "",
+        f"{SDIST_ROOT}/src/valkyrie/sdk/py.typed": "",
     }
     members.update(extra_members or {})
     with tarfile.open(path, "w:gz") as archive:
@@ -84,8 +86,8 @@ def test_sdk_package_configuration_matches_release_boundaries() -> None:
 
 
 def test_valid_artifacts_are_accepted(tmp_path: Path) -> None:
-    wheel = tmp_path / "valkyrie_sdk-0.1.0-py3-none-any.whl"
-    sdist = tmp_path / "valkyrie_sdk-0.1.0.tar.gz"
+    wheel = tmp_path / f"valkyrie_sdk-{PACKAGE_VERSION}-py3-none-any.whl"
+    sdist = tmp_path / f"valkyrie_sdk-{PACKAGE_VERSION}.tar.gz"
     write_wheel(wheel)
     write_sdist(sdist)
 
@@ -148,7 +150,7 @@ def test_wheel_rejects_forbidden_dependency_declared_by_pyproject(
 ) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        '[project]\nversion = "0.1.0"\nrequires-python = ">=3.12"\ndependencies = ["tracker"]\n',
+        f'[project]\nversion = "{PACKAGE_VERSION}"\nrequires-python = ">=3.12"\ndependencies = ["tracker"]\n',
         encoding="utf-8",
     )
     monkeypatch.setattr(validate_sdk_artifacts, "PACKAGE_PYPROJECT", pyproject)
@@ -163,7 +165,7 @@ def test_wheel_rejects_forbidden_dependency_declared_by_pyproject(
 def test_wheel_rejects_unsupported_optional_dependencies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     pyproject = tmp_path / "pyproject.toml"
     pyproject.write_text(
-        '[project]\nversion = "0.1.0"\nrequires-python = ">=3.12"\ndependencies = []\n'
+        f'[project]\nversion = "{PACKAGE_VERSION}"\nrequires-python = ">=3.12"\ndependencies = []\n'
         '[project.optional-dependencies]\ncli = ["click>=8"]\n',
         encoding="utf-8",
     )
@@ -177,7 +179,7 @@ def test_wheel_rejects_unsupported_optional_dependencies(tmp_path: Path, monkeyp
 
 def test_wheel_rejects_mismatched_dist_info_version(tmp_path: Path) -> None:
     wheel = tmp_path / "bad.whl"
-    write_wheel(wheel, dist_info_version="0.1.1")
+    write_wheel(wheel, dist_info_version="99.0.0")
 
     with pytest.raises(ArtifactError, match="unexpected wheel metadata directory"):
         validate_wheel(wheel)
@@ -185,7 +187,7 @@ def test_wheel_rejects_mismatched_dist_info_version(tmp_path: Path) -> None:
 
 def test_sdist_rejects_unrelated_repository_files(tmp_path: Path) -> None:
     sdist = tmp_path / "bad.tar.gz"
-    write_sdist(sdist, extra_members={"valkyrie_sdk-0.1.0/services/tracker/app.py": ""})
+    write_sdist(sdist, extra_members={f"{SDIST_ROOT}/services/tracker/app.py": ""})
 
     with pytest.raises(ArtifactError, match="forbidden sdist member"):
         validate_sdist(sdist)

@@ -2440,7 +2440,7 @@ dev = [
 
 [[package]]
 name = "valkyrie-sdk"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/valkyrie-sdk" }
 dependencies = [
     { name = "httpx" },
