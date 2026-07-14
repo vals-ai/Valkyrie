@@ -108,7 +108,7 @@ async def _wait_until_daytona_sandboxes_are_listed(
     *,
     labels: Mapping[str, str],
     target: str,
-    sandbox_ids: set[str],
+    expected_labels: Mapping[str, Mapping[str, str]],
     created_at_before: datetime,
 ) -> None:
     query = ListSandboxesQuery(
@@ -118,8 +118,12 @@ async def _wait_until_daytona_sandboxes_are_listed(
         limit=200,
     )
     for _ in range(30):
-        listed_ids = {sandbox.id async for sandbox in daytona.list(query)}
-        if sandbox_ids <= listed_ids:
+        listed = {sandbox.id: sandbox async for sandbox in daytona.list(query)}
+        if all(
+            sandbox_id in listed
+            and all(listed[sandbox_id].labels.get(key) == value for key, value in sandbox_labels.items())
+            for sandbox_id, sandbox_labels in expected_labels.items()
+        ):
             return
         await asyncio.sleep(2)
     pytest.fail("Cleanup test sandboxes were not both visible to the Daytona list API")
@@ -172,7 +176,7 @@ async def test_cleanup_deletes_eligible_sandbox_and_preserves_exemption(
             daytona,
             labels=scope_labels,
             target=provider_config.DAYTONA_TARGET,
-            sandbox_ids={eligible.id, exempt.id},
+            expected_labels={eligible.id: scope_labels, exempt.id: exempt_labels},
             created_at_before=cleanup_now - timedelta(hours=48),
         )
         report = await cleanup_old_sandboxes(
