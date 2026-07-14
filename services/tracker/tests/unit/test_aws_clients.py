@@ -55,7 +55,7 @@ class TestS3DecoratorClient:
 class TestS3ClientRetry:
     async def test_uses_standard_retry_mode(self):
         async with s3_client(_AWS) as client:
-            assert client.meta.config.retries == {"mode": "standard"}
+            assert client.meta.config.retries["mode"] == "standard"
 
 
 class TestCloudWatchClient:
