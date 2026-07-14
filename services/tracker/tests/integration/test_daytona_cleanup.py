@@ -120,7 +120,7 @@ async def _wait_until_daytona_sandboxes_are_listed(
 
 
 @pytest.mark.slow
-async def test_cleanup_deletes_unlabeled_sandbox_and_preserves_exemption(
+async def test_cleanup_deletes_eligible_sandbox_and_preserves_exemption(
     sandbox_provider: SandboxProvider,
     daytona_secret_name: str,
     aws_credentials: AWSCredentials,
