@@ -20,6 +20,7 @@ from tracker.types import (
     AverageTaskBreakdown,
     BenchmarkDetails,
     BenchmarkTableRow,
+    FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
@@ -38,6 +39,7 @@ from valkyrie.sdk.models import (
     BenchmarkArguments as SDKBenchmarkArguments,
     BenchmarkDetails as SDKBenchmarkDetails,
     BenchmarkTableRow as SDKBenchmarkTableRow,
+    FetchBenchmarkMetadataResponse as SDKFetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse as SDKFetchBenchmarkResponse,
     FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
@@ -56,6 +58,8 @@ FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
 ROUTES = (
     ("/start-benchmark", "post", ""),
     ("/fetch-benchmark", "get", "benchmark_id connect"),
+    ("/fetch-benchmark-metadata/{benchmark_id}", "get", "benchmark_id"),
+    ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id task_ids"),
     (
         "/fetch-benchmarks",
         "get",
@@ -68,6 +72,7 @@ ROUTES = (
 RESPONSE_MODELS = {
     "/start-benchmark": "StartBenchmarkResponse",
     "/fetch-benchmarks": "FetchBenchmarksResponse",
+    "/fetch-benchmark-metadata/{benchmark_id}": "FetchBenchmarkMetadataResponse",
     "/stop-benchmark/{benchmark_id}": "StopBenchmarkResponse",
     "/retry-or-resume-benchmark/{benchmark_id}": "RetryOrResumeBenchmarkResponse",
 }
@@ -80,6 +85,7 @@ MODEL_PAIRS = (
     (BenchmarkDetails, SDKBenchmarkDetails),
     (StartBenchmarkResponse, SDKStartBenchmarkResponse),
     (FetchBenchmarkResponse, SDKFetchBenchmarkResponse),
+    (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
     (FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
     (BenchmarkTableRow, SDKBenchmarkTableRow),
     (FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
@@ -235,6 +241,8 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
 
     for path, method, parameter_name in (
         ("/fetch-benchmark", "get", "benchmark_id"),
+        ("/fetch-benchmark-metadata/{benchmark_id}", "get", "benchmark_id"),
+        ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id"),
         ("/retrieve-results", "get", "benchmark_id"),
         ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id"),
         ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id"),

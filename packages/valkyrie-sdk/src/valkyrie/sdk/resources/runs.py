@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal, overload
 from uuid import UUID
 
@@ -11,6 +12,7 @@ import httpx
 from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, ValkyrieTransportError
 from valkyrie.sdk.models import (
     AgentContractRequest,
+    FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
@@ -99,6 +101,36 @@ class RunsResource:
             FetchBenchmarkResponse,
             params={"benchmark_id": str(run_id)},
         )
+
+    async def metadata(self, run_id: UUID) -> FetchBenchmarkMetadataResponse:
+        """Fetch the immutable arguments and ownership retained with a run."""
+        return await self._sdk.request_model(
+            "GET",
+            f"/fetch-benchmark-metadata/{run_id}",
+            FetchBenchmarkMetadataResponse,
+        )
+
+    @asynccontextmanager
+    async def outputs(
+        self,
+        run_id: UUID,
+        *,
+        task_ids: Sequence[str] | None = None,
+    ) -> AsyncGenerator[AsyncIterator[bytes], None]:
+        """Stream a run-output tar without buffering it in memory."""
+        params: dict[str, Any] | None = {"task_ids": list(task_ids)} if task_ids else None
+        try:
+            async with self._sdk.stream_response(
+                "GET",
+                f"/fetch-run-outputs/{run_id}",
+                params=params,
+            ) as response:
+                if not response.is_success:
+                    await response.aread()
+                    self._sdk.raise_for_status(response)
+                yield response.aiter_bytes()
+        except httpx.HTTPError as exc:
+            raise ValkyrieTransportError(f"Valkyrie run outputs stream failed: {exc}") from exc
 
     async def list(self, request: FetchBenchmarksRequest | None = None) -> FetchBenchmarksResponse:
         """List runs using typed filters and pagination."""

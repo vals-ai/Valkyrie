@@ -3,6 +3,7 @@
 from valkyrie.sdk.models import (
     AgentContractRequest,
     BenchmarkStatus,
+    FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
@@ -28,6 +29,7 @@ from valkyrie.sdk.errors import (
 __all__ = [
     "AgentContractRequest",
     "BenchmarkStatus",
+    "FetchBenchmarkMetadataResponse",
     "FetchBenchmarkResponse",
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",

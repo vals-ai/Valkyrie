@@ -6,6 +6,7 @@ Covers config validation, request construction, response parsing, streaming, and
 """
 
 import json
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, assert_type
 from uuid import uuid4
@@ -30,6 +31,21 @@ from valkyrie.sdk import (
 )
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "sdk_api"
+
+
+class ChunkedStream(httpx.AsyncByteStream):
+    def __init__(self, *chunks: bytes) -> None:
+        self.chunks = chunks
+        self.iterations = 0
+        self.closed = False
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        self.iterations += 1
+        for chunk in self.chunks:
+            yield chunk
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def load_sdk_fixture(name: str) -> dict[str, Any]:
@@ -334,6 +350,85 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
         "/retrieve-results",
         "/retrieve-results",
     ]
+
+
+async def test_metadata_returns_typed_retained_run_arguments(make_client) -> None:
+    run_id = uuid4()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_id": str(run_id),
+                "benchmark_name": "osworld-v2",
+                "benchmark_arguments": {
+                    "contract": {
+                        "name": "osworld-agent",
+                        "model": "openai/gpt-5.5",
+                        "model_gateway_policy": {
+                            "kind": "task_capability",
+                            "model": "openai/gpt-5.5",
+                            "config": {"client_scope": "shared", "max_tokens": 8192},
+                            "max_queries": 800,
+                            "max_sessions": 4,
+                        },
+                    },
+                    "concurrency": 4,
+                    "task_ids": ["001", "002"],
+                    "dataset": "osworld-v2-2026.06.24",
+                    "sandbox_provider": "daytona",
+                },
+                "started_by_email": "owner@vals.ai",
+            },
+        )
+
+    client = make_client(handler)
+    async with client:
+        metadata = await client.runs.metadata(run_id)
+
+    assert metadata.benchmark_id == run_id
+    assert metadata.benchmark_arguments.contract.model == "openai/gpt-5.5"
+    assert metadata.benchmark_arguments.contract.model_gateway_policy is not None
+    assert metadata.benchmark_arguments.contract.model_gateway_policy.max_queries == 800
+    assert metadata.benchmark_arguments.task_ids == ["001", "002"]
+    assert metadata.started_by_email == "owner@vals.ai"
+    assert requests[0].url.path == f"/fetch-benchmark-metadata/{run_id}"
+
+
+async def test_outputs_streams_selected_tasks_and_closes_response(make_client) -> None:
+    run_id = uuid4()
+    requests: list[httpx.Request] = []
+    stream = ChunkedStream(b"tar-", b"contents")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, headers={"Content-Type": "application/x-tar"}, stream=stream)
+
+    client = make_client(handler)
+    async with client:
+        async with client.runs.outputs(run_id, task_ids=["001", "108"]) as chunks:
+            assert stream.iterations == 0
+            content = b"".join([chunk async for chunk in chunks])
+
+    assert content == b"tar-contents"
+    assert stream.closed
+    assert requests[0].url.path == f"/fetch-run-outputs/{run_id}"
+    assert requests[0].url.params.get_list("task_ids") == ["001", "108"]
+
+
+async def test_outputs_raises_sdk_api_error_before_yielding_error_body(make_client) -> None:
+    run_id = uuid4()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"detail": "No outputs found"})
+
+    client = make_client(handler)
+    async with client:
+        with pytest.raises(ValkyrieAPIError, match="No outputs found"):
+            async with client.runs.outputs(run_id):
+                raise AssertionError("error responses must not yield output chunks")
 
 
 @pytest.mark.parametrize(("method_name", "retry"), [("resume", "false"), ("retry", "true")])

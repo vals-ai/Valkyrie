@@ -188,6 +188,15 @@ class BenchmarkArguments(ResponseModel):
     sandbox_provider_secret_name: str | None = None
 
 
+class FetchBenchmarkMetadataResponse(ResponseModel):
+    """Immutable arguments and ownership retained with a run."""
+
+    benchmark_id: UUID
+    benchmark_name: str
+    benchmark_arguments: BenchmarkArguments
+    started_by_email: str | None = None
+
+
 class FinalEvaluation(ResponseModel):
     """Final aggregate evaluation stored for a run."""
 

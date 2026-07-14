@@ -14,6 +14,7 @@ from valkyrie.sdk.resources import RunsResource
 EXPECTED_ALL = [
     "AgentContractRequest",
     "BenchmarkStatus",
+    "FetchBenchmarkMetadataResponse",
     "FetchBenchmarkResponse",
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",
@@ -44,6 +45,8 @@ EXPECTED_SIGNATURES = {
         "webhook_intervals=None, ignore_custom_services=False"
     ),
     RunsResource.fetch: "self, run_id",
+    RunsResource.metadata: "self, run_id",
+    RunsResource.outputs: "self, run_id, *, task_ids=None",
     RunsResource.list: "self, request=None",
     RunsResource.stream: "self, run_id",
     RunsResource.results: "self, run_id, *, task_ids=None, upload_to_s3=False",
