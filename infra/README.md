@@ -73,7 +73,9 @@ fixed `AgenticHarnessSecrets` Secrets Manager secret. Configure rollout with Git
 
 Safe rollout:
 
-1. Validate that `AgenticHarnessSecrets` contains the three required Daytona fields and points at the intended target.
+1. Validate that `AgenticHarnessSecrets` contains the three required Daytona fields, uses the same Daytona API and target
+   as every producer being swept, and can see those producers' sandboxes. Give every legitimate sandbox expected to
+   exceed 48 hours the exact `clean-up=false` label before enabling deletion.
 2. Deploy with the default disabled, dry-run configuration.
 3. Run the isolated live cleanup integration test against approved test credentials.
 4. Invoke the Lambda once in dry-run mode, then inspect `/valkyrie/daytona-cleanup` logs and the cleanup DLQ.
