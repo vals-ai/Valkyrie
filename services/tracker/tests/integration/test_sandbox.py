@@ -9,9 +9,11 @@ sandbox rather than tracker-owned mocks.
 
 import asyncio
 import io
+import json
 import shlex
+import time
 import zipfile
-from typing import AsyncGenerator
+from typing import Any, AsyncGenerator, cast
 
 import boto3
 import pytest
@@ -99,6 +101,81 @@ with socket.create_connection((address, 80), timeout=3):
 
 class TestSandboxOperations:
     """Integration tests for sandbox operations."""
+
+    async def test_daytona_egress_transition_diagnostic(self, test_sandbox: Sandbox) -> None:
+        """Measure live firewall and DNS readiness without restarting the sandbox."""
+        baseline_script = """
+import socket
+
+
+host = "www.iana.org"
+address = socket.getaddrinfo(host, 443, family=socket.AF_INET, type=socket.SOCK_STREAM)[0][4][0]
+with socket.create_connection((address, 443), timeout=3):
+    print(address, flush=True)
+"""
+        baseline = await test_sandbox.exec(f"python -c {shlex.quote(baseline_script)}")
+        assert baseline.exit_code == 0, baseline.stdout
+        off_list_ip = baseline.stdout.strip().splitlines()[-1]
+
+        async def probe() -> dict[str, bool]:
+            script = f"""
+import json
+import socket
+
+
+def connect(address, port):
+    try:
+        with socket.create_connection((address, port), timeout=2):
+            return True
+    except OSError:
+        return False
+
+
+def connect_host(host, port):
+    try:
+        address = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)[0][4][0]
+    except OSError:
+        return False
+    return connect(address, port)
+
+
+print(json.dumps({{
+    "allowed": connect_host("example.com", 80),
+    "off_list_ip": connect({off_list_ip!r}, 443),
+    "off_list_dns": connect_host("www.iana.org", 443),
+}}), flush=True)
+"""
+            result = await test_sandbox.exec(f"python -c {shlex.quote(script)}")
+            assert result.exit_code == 0, result.stdout
+            return cast(dict[str, bool], json.loads(result.stdout.strip().splitlines()[-1]))
+
+        async def wait_for(phase: str, expected: dict[str, bool]) -> float:
+            started = time.monotonic()
+            matches = 0
+            while time.monotonic() - started < 30:
+                observation = await probe()
+                elapsed = time.monotonic() - started
+                print(json.dumps({"phase": phase, "elapsed": elapsed, "observation": observation}), flush=True)
+                matches = matches + 1 if observation == expected else 0
+                if matches == 3:
+                    return elapsed
+                await asyncio.sleep(0.25)
+            raise AssertionError(f"{phase} did not settle to {expected}")
+
+        restricted = {"allowed": True, "off_list_ip": False, "off_list_dns": False}
+        restored = {"allowed": True, "off_list_ip": True, "off_list_dns": True}
+        inner = cast(Any, test_sandbox)._sandbox  # pyright: ignore[reportPrivateUsage]
+        for iteration in range(5):
+            await test_sandbox.modify_egress_rules(["http://example.com"])
+            await wait_for(f"current-{iteration}-restrict", restricted)
+            await test_sandbox.clear_egress_rules()
+            await wait_for(f"current-{iteration}-clear", restored)
+
+        for iteration in range(5):
+            await test_sandbox.modify_egress_rules(["http://example.com"])
+            await wait_for(f"canonical-{iteration}-restrict", restricted)
+            await inner.update_network_settings(network_block_all=False)
+            await wait_for(f"canonical-{iteration}-clear", restored)
 
     async def test_create_and_cleanup_sandbox(
         self,
