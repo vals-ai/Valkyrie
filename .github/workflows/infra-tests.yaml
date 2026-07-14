@@ -68,10 +68,10 @@ jobs:
         run: uv run python -m unittest discover -s tests -p "test_*.py"
 
       - name: Enable ARM64 container builds
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Configure Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Build the cleanup Lambda image
         working-directory: services/tracker
