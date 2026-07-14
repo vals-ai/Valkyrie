@@ -233,13 +233,13 @@ def health_check() -> dict[str, str]:
 @app.get("/aws-runtime", response_model=AWSRuntimeResponse)
 def fetch_aws_runtime_metadata(org: Org = Depends(get_current_org)) -> AWSRuntimeResponse:
     """Return managed AWS resource locations without credential material."""
-    runtime = resolve_aws_runtime_metadata(org.id)
-    if runtime is None:
+    resources = resolve_aws_runtime_metadata(org.id)
+    if resources is None:
         return AWSRuntimeResponse(mode="legacy")
     return AWSRuntimeResponse(
         mode="managed",
-        region=runtime.resources.region,
-        s3_bucket=runtime.resources.s3_bucket,
+        region=resources.region,
+        s3_bucket=resources.s3_bucket,
     )
 
 
@@ -757,15 +757,15 @@ async def stop_benchmark(
 
     if force:
         aws_runtime = runtime_resolution.runtime
-        legacy_harness_config = runtime_resolution.legacy_harness_config
+        resolved_harness_config = runtime_resolution.legacy_harness_config
         provider_secret_name = benchmark_row.arguments.sandbox_provider_secret_name or (
-            legacy_harness_config.sandbox_provider_secret_name if legacy_harness_config is not None else None
+            resolved_harness_config.sandbox_provider_secret_name if resolved_harness_config is not None else None
         )
         if not provider_secret_name:
-            raise HTTPException(
-                status_code=400,
-                detail="The run does not have a sandbox provider secret name. Supply complete legacy AWS configuration.",
-            )
+            detail = "The run does not have a sandbox provider secret name."
+            if resolved_harness_config is not None:
+                detail += " Provide the x-harness-sandbox-provider-secret-name header and retry."
+            raise HTTPException(status_code=400, detail=detail)
         await force_stop_sandboxes(
             benchmark_row,
             session,

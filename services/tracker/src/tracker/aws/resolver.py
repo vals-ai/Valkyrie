@@ -225,16 +225,16 @@ def resolve_non_run_aws_runtime(
     header_state = inspect_harness_headers(request)
     if header_state.config is not None:
         return AWSRuntime.from_harness_config(header_state.config)
-    if header_state.present:
-        return AWSRuntime.from_harness_config(fetch_harness_config(request))
+    if header_state.first_missing_key is not None and header_state.present:
+        _raise_missing_header(header_state.first_missing_key)
     return _http_deployment_runtime(org_id)
 
 
-def resolve_aws_runtime_metadata(org_id: UUID) -> AWSRuntime | None:
-    """Return non-secret deployment metadata for an eligible organization."""
+def resolve_aws_runtime_metadata(org_id: UUID) -> AWSResources | None:
+    """Return non-secret deployment resource locations for an eligible organization."""
     try:
         if not organization_can_use_managed_aws(org_id):
             return None
+        return _managed_resources()
     except ManagedAWSConfigurationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
-    return _http_deployment_runtime(org_id)
