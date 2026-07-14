@@ -72,11 +72,13 @@ def _task_role(scope: Construct, construct_id: str, role_name: str) -> aws_iam.R
 
 
 def _add_s3_runtime_access(role: aws_iam.Role, bucket: aws_s3.IBucket) -> None:
+    # ListBucket must be unconditioned: S3 reports a missing object as 404 instead of
+    # 403 only when the caller holds ListBucket, and HeadObject's request context has
+    # no s3:prefix key for a prefix condition to match.
     role.add_to_policy(
         aws_iam.PolicyStatement(
             actions=["s3:ListBucket"],
             resources=[bucket.bucket_arn],
-            conditions={"StringLike": {"s3:prefix": list(_S3_PREFIXES)}},
         )
     )
     role.add_to_policy(
@@ -101,16 +103,13 @@ def _add_worker_log_access(role: aws_iam.Role, stage: Stage, log_group_prefix: s
         resource_name=f"{stage.phys(log_group_prefix)}/*",
         arn_format=cdk.ArnFormat.COLON_RESOURCE_NAME,
     )
+    # CreateLogStream authorizes against the log-group ARN (whose IAM form ends in
+    # `:*`), which a `...:log-stream:*` pattern never matches; the group wildcard
+    # already covers both the groups and their streams.
     role.add_to_policy(
         aws_iam.PolicyStatement(
-            actions=["logs:CreateLogGroup", "logs:PutRetentionPolicy"],
+            actions=["logs:CreateLogGroup", "logs:PutRetentionPolicy", "logs:CreateLogStream", "logs:PutLogEvents"],
             resources=[log_group_arn],
-        )
-    )
-    role.add_to_policy(
-        aws_iam.PolicyStatement(
-            actions=["logs:CreateLogStream", "logs:PutLogEvents"],
-            resources=[f"{log_group_arn}:log-stream:*"],
         )
     )
 
