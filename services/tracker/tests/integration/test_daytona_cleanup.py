@@ -109,8 +109,14 @@ async def _wait_until_daytona_sandboxes_are_listed(
     labels: Mapping[str, str],
     target: str,
     sandbox_ids: set[str],
+    created_at_before: datetime,
 ) -> None:
-    query = ListSandboxesQuery(labels=dict(labels), targets=[target], limit=200)
+    query = ListSandboxesQuery(
+        labels=dict(labels),
+        targets=[target],
+        created_at_before=created_at_before,
+        limit=200,
+    )
     for _ in range(30):
         listed_ids = {sandbox.id async for sandbox in daytona.list(query)}
         if sandbox_ids <= listed_ids:
@@ -161,16 +167,18 @@ async def test_cleanup_deletes_eligible_sandbox_and_preserves_exemption(
         ) as exempt,
         AsyncDaytona(config=daytona_config) as daytona,
     ):
+        cleanup_now = datetime.now(UTC) + timedelta(hours=49)
         await _wait_until_daytona_sandboxes_are_listed(
             daytona,
             labels=scope_labels,
             target=provider_config.DAYTONA_TARGET,
             sandbox_ids={eligible.id, exempt.id},
+            created_at_before=cleanup_now - timedelta(hours=48),
         )
         report = await cleanup_old_sandboxes(
             ScopedDaytonaListClient(daytona, scope_labels),
             ScopedSandboxDeleteProvider(sandbox_provider, {eligible.id}),
-            now=datetime.now(UTC) + timedelta(hours=49),
+            now=cleanup_now,
             target=provider_config.DAYTONA_TARGET,
             dry_run=False,
         )
