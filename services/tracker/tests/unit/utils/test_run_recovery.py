@@ -305,7 +305,11 @@ class TestRunRecovery:
             task_ids=["task_selected"],
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(start_request, self._test_starter)
+        benchmark_row = start_benchmark_request_to_benchmark(
+            start_request,
+            self._test_starter,
+            aws_managed=False,
+        )
         selected_task = Task(
             org_id=TEST_ORG_ID,
             task_id="task_selected",
