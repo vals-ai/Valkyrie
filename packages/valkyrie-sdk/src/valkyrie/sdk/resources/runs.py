@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, cast, overload
 from uuid import UUID
 
 import httpx
 from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, ValkyrieTransportError
 from valkyrie.sdk.models import (
     AgentContractRequest,
+    AnalyzeBenchmarkRequest,
+    AnalyzeEvent,
     FetchBenchmarkResponse,
+    FetchBenchmarkMetadataResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
     RetrieveResultsResponse,
+    ResultsExistResponse,
     RetryMode,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
@@ -187,6 +191,96 @@ class RunsResource:
         response_model = S3UploadResultsResponse if upload_to_s3 else FinalViewResponse
         return await self._sdk.request_model("GET", "/retrieve-results", response_model, params=params)
 
+    async def metadata(self, run_id: UUID) -> FetchBenchmarkMetadataResponse:
+        """Fetch the stored launch metadata for a run."""
+        return await self._sdk.request_model(
+            "GET",
+            f"/fetch-benchmark-metadata/{run_id}",
+            FetchBenchmarkMetadataResponse,
+        )
+
+    async def results_exist(self, run_id: UUID) -> ResultsExistResponse:
+        """Check whether the canonical result file already exists in S3."""
+        return await self._sdk.request_model(
+            "GET",
+            "/check-results-exist",
+            ResultsExistResponse,
+            params={"benchmark_id": str(run_id)},
+        )
+
+    async def analyze(
+        self,
+        run_id: UUID,
+        *,
+        no_cache: bool = False,
+        lambda_function: str | None = None,
+    ) -> AsyncIterator[AnalyzeEvent]:
+        """Yield typed progress events while analyzing a finished run."""
+        payload = AnalyzeBenchmarkRequest(no_cache=no_cache, lambda_function=lambda_function)
+        try:
+            async with self._sdk.stream_response(
+                "POST",
+                f"/analyze-benchmark/{run_id}",
+                json=payload.model_dump(mode="json"),
+            ) as response:
+                if not response.is_success:
+                    await response.aread()
+                    self._sdk.raise_for_status(response)
+
+                if "text/event-stream" not in response.headers.get("content-type", ""):
+                    await response.aread()
+                    cached_payload: Any = response.json()
+                    if not isinstance(cached_payload, dict):
+                        raise ValkyrieStreamError("Invalid Valkyrie analysis response")
+                    yield AnalyzeEvent(event="done", data=cast(dict[str, Any], cached_payload))
+                    return
+
+                event_name = ""
+                data_lines: list[str] = []
+                async for line in response.aiter_lines():
+                    if line == "":
+                        event = self._parse_analysis_event(event_name, data_lines)
+                        if event is not None:
+                            yield event
+                            if event.event == "done":
+                                return
+                        event_name = ""
+                        data_lines = []
+                    elif line.startswith("event:"):
+                        event_name = line.removeprefix("event:").strip()
+                    elif line.startswith("data:"):
+                        data_lines.append(line.removeprefix("data:").lstrip())
+
+                event = self._parse_analysis_event(event_name, data_lines)
+                if event is not None:
+                    yield event
+        except httpx.HTTPError as exc:
+            raise ValkyrieTransportError(f"Valkyrie analysis stream failed: {exc}") from exc
+
+    async def stream_outputs(
+        self,
+        run_id: UUID,
+        *,
+        task_ids: Sequence[str] | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Yield chunks from the tar archive containing run outputs."""
+        params: dict[str, Any] = {}
+        if task_ids:
+            params["task_ids"] = list(task_ids)
+        try:
+            async with self._sdk.stream_response(
+                "GET",
+                f"/fetch-run-outputs/{run_id}",
+                params=params,
+            ) as response:
+                if not response.is_success:
+                    await response.aread()
+                    self._sdk.raise_for_status(response)
+                async for chunk in response.aiter_bytes():
+                    yield chunk
+        except httpx.HTTPError as exc:
+            raise ValkyrieTransportError(f"Valkyrie output stream failed: {exc}") from exc
+
     async def stop(self, run_id: UUID, *, force: bool = False) -> StopBenchmarkResponse:
         """Stop a run, optionally terminating active sandboxes."""
         return await self._sdk.request_model(
@@ -338,3 +432,20 @@ class RunsResource:
             return FetchBenchmarkResponse.model_validate_json(data)
         except (ValueError, TypeError) as exc:
             raise ValkyrieStreamError(f"Invalid Valkyrie run stream event: {data}") from exc
+
+    @staticmethod
+    def _parse_analysis_event(event_name: str, data_lines: Sequence[str]) -> AnalyzeEvent | None:
+        """Parse one analysis server-sent event."""
+        data = "\n".join(data_lines)
+        if not event_name and not data:
+            return None
+        try:
+            payload: Any = json.loads(data) if data else {}
+        except json.JSONDecodeError as exc:
+            raise ValkyrieStreamError(f"Invalid Valkyrie analysis event: {data}") from exc
+        if not isinstance(payload, dict):
+            raise ValkyrieStreamError(f"Invalid Valkyrie analysis event: {data}")
+        if event_name == "error":
+            detail = payload.get("message", payload)
+            raise ValkyrieStreamError(f"Valkyrie analysis failed: {detail}")
+        return AnalyzeEvent(event=event_name or "message", data=cast(dict[str, Any], payload))
