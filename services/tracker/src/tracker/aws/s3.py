@@ -9,11 +9,9 @@ import aioboto3
 import logfire
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
-from tenacity import retry, retry_if_exception, stop_after_attempt
 
 from tracker.exceptions import S3Error
 from tracker.logging import get_logger
-from tracker.observability import retry_callback
 
 logger = get_logger(__name__)
 
@@ -26,14 +24,7 @@ _R = TypeVar("_R")
 S3_AGENTS_PREFIX = "agents"
 S3_BENCHMARKS_PREFIX = "benchmarks"
 
-_CLIENT_CONFIG = Config(max_pool_connections=200)
-_FD_TRANSPORT_ERROR_MARKERS = ("file descriptor", "is used by transport", "tcptransport")
-
-
-def _is_fd_transport_error(exc: BaseException) -> bool:
-    """Return whether an AWS request hit the known uvloop fd transport race."""
-    error = str(exc).lower()
-    return isinstance(exc, BotoCoreError) and all(marker in error for marker in _FD_TRANSPORT_ERROR_MARKERS)
+_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
 
 
 @lru_cache(maxsize=32)
@@ -85,12 +76,6 @@ def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Cal
 
 @logfire.instrument("upload_to_s3", extract_args=("s3_key", "s3_bucket"))
 @handle_s3_error(message="Failed to upload to S3")
-@retry(
-    retry=retry_if_exception(_is_fd_transport_error),
-    reraise=True,
-    stop=stop_after_attempt(3),
-    before_sleep=retry_callback("valkyrie.s3.upload"),
-)
 async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> None:
     """
     Upload file content to S3.

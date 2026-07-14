@@ -1,7 +1,7 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
-from botocore.exceptions import BotoCoreError, ClientError, HTTPClientError
+from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker.aws import cloudwatch_logs
 from tracker.aws.cloudwatch_logs import (
@@ -10,7 +10,7 @@ from tracker.aws.cloudwatch_logs import (
     handle_cloudwatch_error,
     write_benchmark_log_event,
 )
-from tracker.aws.s3 import handle_s3_error, upload_to_s3
+from tracker.aws.s3 import handle_s3_error, s3_client
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.types import AWSCredentials
 
@@ -52,60 +52,10 @@ class TestS3DecoratorClient:
         assert exc_info.value.__cause__ == botocore_error
 
 
-class TestS3UploadRetry:
-    @staticmethod
-    def _client_context(client: MagicMock) -> MagicMock:
-        context = MagicMock()
-        context.__aenter__ = AsyncMock(return_value=client)
-        context.__aexit__ = AsyncMock(return_value=False)
-        return context
-
-    async def test_retries_fd_transport_error(self, monkeypatch: pytest.MonkeyPatch):
-        fd_error = HTTPClientError(
-            error=RuntimeError(
-                "File descriptor 423 is used by transport <TCPTransport closed=False reading=True 0xabc>"
-            )
-        )
-        client = MagicMock()
-        client.put_object = AsyncMock(side_effect=[fd_error, None])
-        context = self._client_context(client)
-        s3_client_mock = MagicMock(return_value=context)
-        monkeypatch.setattr("tracker.aws.s3.s3_client", s3_client_mock)
-
-        await upload_to_s3(b"content", "key", _AWS, "bucket")
-
-        assert client.put_object.await_count == 2
-        assert s3_client_mock.call_count == 2
-
-    async def test_does_not_retry_other_botocore_errors(self, monkeypatch: pytest.MonkeyPatch):
-        other_error = HTTPClientError(error=RuntimeError("connection reset"))
-        client = MagicMock()
-        client.put_object = AsyncMock(side_effect=other_error)
-        context = self._client_context(client)
-        monkeypatch.setattr("tracker.aws.s3.s3_client", MagicMock(return_value=context))
-
-        with pytest.raises(S3Error) as exc_info:
-            await upload_to_s3(b"content", "key", _AWS, "bucket")
-
-        assert exc_info.value.__cause__ == other_error
-        assert client.put_object.await_count == 1
-
-    async def test_stops_after_three_fd_transport_errors(self, monkeypatch: pytest.MonkeyPatch):
-        fd_error = HTTPClientError(
-            error=RuntimeError(
-                "File descriptor 423 is used by transport <TCPTransport closed=False reading=True 0xabc>"
-            )
-        )
-        client = MagicMock()
-        client.put_object = AsyncMock(side_effect=fd_error)
-        context = self._client_context(client)
-        monkeypatch.setattr("tracker.aws.s3.s3_client", MagicMock(return_value=context))
-
-        with pytest.raises(S3Error) as exc_info:
-            await upload_to_s3(b"content", "key", _AWS, "bucket")
-
-        assert exc_info.value.__cause__ == fd_error
-        assert client.put_object.await_count == 3
+class TestS3ClientRetry:
+    async def test_uses_standard_retry_mode(self):
+        async with s3_client(_AWS) as client:
+            assert client.meta.config.retries == {"mode": "standard"}
 
 
 class TestCloudWatchClient:
