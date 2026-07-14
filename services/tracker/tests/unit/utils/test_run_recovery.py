@@ -28,6 +28,7 @@ from main import app
 from tests.factories import make_error_result, make_evaluation_result
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
+from tracker import config
 from tracker.auth import RequestIdentity
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
@@ -1083,6 +1084,38 @@ class TestRunRecovery:
             "sandbox_provider": "modal",
             "task_ids": None,
         }
+
+    async def test_force_stop_names_missing_provider_secret_for_managed_run(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """A managed run without a stored provider secret names the run record as the problem.
+
+        Test cases:
+        - The 400 detail names the missing sandbox provider secret name.
+        - The detail does not ask a managed caller for legacy AWS configuration.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.aws_managed = True
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"sandbox_provider_secret_name": ""})
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
+        monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+
+        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true")
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "sandbox provider secret name" in detail
+        assert "legacy AWS configuration" not in detail
 
     async def test_retry_or_resume_applies_secrets_to_stored_contract(
         self,

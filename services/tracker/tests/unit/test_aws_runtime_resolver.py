@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 from starlette.requests import Request
@@ -109,6 +110,19 @@ def test_optional_run_runtime_preserves_stored_mode(
     assert (runtime.resources.s3_bucket if runtime is not None else None) == expected_bucket
 
 
+def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch, eligible=False)
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_run_aws_runtime(
+            _request(_COMPLETE_HARNESS_HEADERS),
+            aws_managed=True,
+            org_id=_ORG_ID,
+        )
+
+    assert exc_info.value.status_code == 403
+
+
 @pytest.mark.parametrize("eligible", [True, False])
 def test_deployment_runtime_metadata_requires_eligible_org(
     monkeypatch: pytest.MonkeyPatch,
@@ -116,9 +130,9 @@ def test_deployment_runtime_metadata_requires_eligible_org(
 ) -> None:
     _configure_managed_runtime(monkeypatch, eligible=eligible)
 
-    runtime = resolve_aws_runtime_metadata(_ORG_ID)
+    resources = resolve_aws_runtime_metadata(_ORG_ID)
 
-    assert (runtime.resources.s3_bucket if runtime is not None else None) == ("deployment-bucket" if eligible else None)
+    assert (resources.s3_bucket if resources is not None else None) == ("deployment-bucket" if eligible else None)
 
 
 def test_agent_list_uses_deployment_runtime_for_eligible_org(
