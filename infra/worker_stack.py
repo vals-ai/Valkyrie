@@ -5,7 +5,7 @@ tasks can finish while a new worker version is rolled out.
 """
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -14,14 +14,24 @@ from aws_cdk import (
     aws_ec2,
     aws_ecs,
     aws_iam,
+    aws_lambda,
+    aws_lambda_destinations,
     aws_logs,
     aws_rds,
     aws_s3,
+    aws_scheduler,
+    aws_scheduler_targets,
     aws_secretsmanager,
     aws_servicediscovery,
+    aws_sqs,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
+    DAYTONA_CLEANUP_DLQ_NAME,
+    DAYTONA_CLEANUP_FUNCTION_NAME,
+    DAYTONA_CLEANUP_LOG_GROUP_NAME,
+    DAYTONA_CLEANUP_SCHEDULE_NAME,
+    DAYTONA_CLEANUP_SECRET_NAME,
     POSTGRES_DB,
     WORKER_LOG_GROUP_NAME,
     WORKER_SCALING_CPU_PERCENT,
@@ -92,9 +102,10 @@ class WorkerStack(Stack):
             "DB_NAME": POSTGRES_DB,
         }
 
+        db_credentials_secret = cast(aws_secretsmanager.ISecret, db_credentials)
         db_secrets = {
-            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials, field="username"),
-            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
+            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="username"),
+            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
         sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")
@@ -150,7 +161,7 @@ class WorkerStack(Stack):
         )
 
         # Allow the worker to toggle ECS Task Protection while benchmarks run
-        worker_task_def.task_role.add_to_policy(
+        worker_task_def.task_role.add_to_principal_policy(
             aws_iam.PolicyStatement(
                 actions=["ecs:UpdateTaskProtection"],
                 resources=["*"],
@@ -179,4 +190,86 @@ class WorkerStack(Stack):
         worker_scaling.scale_on_cpu_utilization(
             "WorkerCpuScaling",
             target_utilization_percent=WORKER_SCALING_CPU_PERCENT,
+        )
+
+        if stage.is_prod:
+            self._add_daytona_cleanup_schedule(
+                stage=stage,
+                log_retention=stage_config.service_log_retention,
+            )
+
+    def _add_daytona_cleanup_schedule(
+        self,
+        *,
+        stage: Stage,
+        log_retention: aws_logs.RetentionDays,
+    ) -> None:
+        cleanup_enabled = os.environ.get("DAYTONA_CLEANUP_ENABLED") == "true"
+        cleanup_dry_run = os.environ.get("DAYTONA_CLEANUP_DRY_RUN") != "false"
+
+        cleanup_log_group = aws_logs.LogGroup(
+            self,
+            "DaytonaCleanupLogGroup",
+            log_group_name=stage.phys(DAYTONA_CLEANUP_LOG_GROUP_NAME),
+            retention=log_retention,
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+        cleanup_credentials = aws_secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "DaytonaCleanupCredentials",
+            DAYTONA_CLEANUP_SECRET_NAME,
+        )
+        cleanup_dlq = aws_sqs.Queue(
+            self,
+            "DaytonaCleanupDlq",
+            queue_name=stage.phys(DAYTONA_CLEANUP_DLQ_NAME),
+            encryption=aws_sqs.QueueEncryption.SQS_MANAGED,
+            enforce_ssl=True,
+            retention_period=Duration.days(14),
+            removal_policy=cdk.RemovalPolicy.DESTROY,
+        )
+        cleanup_function = aws_lambda.DockerImageFunction(
+            self,
+            "DaytonaCleanupFunction",
+            code=aws_lambda.DockerImageCode.from_image_asset(
+                "../services/tracker",
+                file="Dockerfile.lambda",
+                platform=Platform.LINUX_ARM64,
+            ),
+            architecture=aws_lambda.Architecture.ARM_64,
+            function_name=stage.phys(DAYTONA_CLEANUP_FUNCTION_NAME),
+            description="Delete Daytona sandboxes older than 48 hours unless they opt out",
+            memory_size=512,
+            timeout=Duration.minutes(14),
+            reserved_concurrent_executions=1,
+            environment={
+                "DAYTONA_CLEANUP_DRY_RUN": str(cleanup_dry_run).lower(),
+                "DAYTONA_CLEANUP_SECRET_NAME": DAYTONA_CLEANUP_SECRET_NAME,
+                "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+                "ENVIRONMENT": "production",
+            },
+            log_group=cleanup_log_group,
+            retry_attempts=0,
+            max_event_age=Duration.minutes(30),
+            on_failure=cast(
+                aws_lambda.IDestination,
+                aws_lambda_destinations.SqsDestination(cleanup_dlq),
+            ),
+        )
+        cleanup_credentials.grant_read(cleanup_function)
+
+        cleanup_target = aws_scheduler_targets.LambdaInvoke(
+            cast(aws_lambda.IFunction, cleanup_function),
+            dead_letter_queue=cleanup_dlq,
+            retry_attempts=1,
+            max_event_age=Duration.minutes(30),
+        )
+        self.daytona_cleanup_schedule = aws_scheduler.Schedule(
+            self,
+            "DaytonaCleanupSchedule",
+            schedule=aws_scheduler.ScheduleExpression.rate(Duration.hours(1)),
+            target=cast(aws_scheduler.IScheduleTarget, cleanup_target),
+            enabled=cleanup_enabled,
+            schedule_name=stage.phys(DAYTONA_CLEANUP_SCHEDULE_NAME),
+            description="Delete Daytona sandboxes older than 48 hours unless they opt out",
         )

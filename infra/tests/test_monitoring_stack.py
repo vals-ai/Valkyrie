@@ -1,6 +1,7 @@
 import os
 import unittest
 from unittest import mock
+from typing import Any, cast
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -13,6 +14,11 @@ from aws_cdk import (
 )
 
 from constants import (
+    DAYTONA_CLEANUP_DLQ_NAME,
+    DAYTONA_CLEANUP_FUNCTION_NAME,
+    DAYTONA_CLEANUP_LOG_GROUP_NAME,
+    DAYTONA_CLEANUP_SCHEDULE_NAME,
+    DAYTONA_CLEANUP_SECRET_NAME,
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
     SLACK_WORKSPACE_ID_ENV,
     TRACKER_LOG_GROUP_NAME,
@@ -62,6 +68,25 @@ def _has_resource_property(
 
 def _has_logical_id_prefix(template: assertions.Template, resource_type: str, prefix: str) -> bool:
     return any(logical_id.startswith(prefix) for logical_id in template.find_resources(resource_type))
+
+
+def _cleanup_function(template: assertions.Template) -> dict[str, Any]:
+    for resource in template.find_resources("AWS::Lambda::Function").values():
+        properties = cast(dict[str, Any], resource.get("Properties", {}))
+        if properties.get("FunctionName") == DAYTONA_CLEANUP_FUNCTION_NAME:
+            return properties
+    raise AssertionError("Daytona cleanup Lambda function not found")
+
+
+def _resource_with_logical_id_prefix(
+    template: assertions.Template,
+    resource_type: str,
+    prefix: str,
+) -> tuple[str, dict[str, Any]]:
+    for logical_id, resource in template.find_resources(resource_type).items():
+        if logical_id.startswith(prefix):
+            return logical_id, cast(dict[str, Any], resource)
+    raise AssertionError(f"{resource_type} resource with prefix {prefix!r} not found")
 
 
 def _monitoring_template(stage_name: str = PROD) -> assertions.Template:
@@ -340,6 +365,224 @@ class MonitoringStackTest(unittest.TestCase):
                         )
                     },
                 )
+
+    def test_dev_does_not_create_daytona_cleanup_resources(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"DAYTONA_CLEANUP_ENABLED": "true", "DAYTONA_CLEANUP_DRY_RUN": "false"},
+            clear=True,
+        ):
+            _, worker_template = _service_templates(DEV)
+
+        worker_template.resource_count_is("AWS::Scheduler::Schedule", 0)
+        worker_template.resource_count_is("AWS::Lambda::Function", 0)
+        worker_template.resource_count_is("AWS::Lambda::EventInvokeConfig", 0)
+        self.assertFalse(
+            _has_resource_property(
+                worker_template,
+                "AWS::Logs::LogGroup",
+                "LogGroupName",
+                f"{DAYTONA_CLEANUP_LOG_GROUP_NAME}-dev",
+            )
+        )
+        self.assertFalse(
+            _has_resource_property(
+                worker_template,
+                "AWS::SQS::Queue",
+                "QueueName",
+                f"{DAYTONA_CLEANUP_DLQ_NAME}-dev",
+            )
+        )
+
+    def test_prod_daytona_cleanup_schedule_is_safe_by_default(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            _, worker_template = _service_templates(PROD)
+
+        worker_template.has_resource_properties(
+            "AWS::Scheduler::Schedule",
+            {
+                "Name": DAYTONA_CLEANUP_SCHEDULE_NAME,
+                "ScheduleExpression": "rate(1 hour)",
+                "State": "DISABLED",
+                "FlexibleTimeWindow": {"Mode": "OFF"},
+                "Target": assertions.Match.object_like(
+                    {
+                        "DeadLetterConfig": assertions.Match.any_value(),
+                        "RetryPolicy": {
+                            "MaximumEventAgeInSeconds": 1800,
+                            "MaximumRetryAttempts": 1,
+                        },
+                    }
+                ),
+            },
+        )
+
+        worker_template.has_resource_properties(
+            "AWS::Lambda::Function",
+            {
+                "Architectures": ["arm64"],
+                "Description": "Delete Daytona sandboxes older than 48 hours unless they opt out",
+                "FunctionName": DAYTONA_CLEANUP_FUNCTION_NAME,
+                "MemorySize": 512,
+                "PackageType": "Image",
+                "ReservedConcurrentExecutions": 1,
+                "Timeout": 14 * 60,
+            },
+        )
+        worker_template.has_resource_properties(
+            "AWS::Lambda::EventInvokeConfig",
+            {
+                "DestinationConfig": {
+                    "OnFailure": {"Destination": assertions.Match.any_value()},
+                },
+                "MaximumEventAgeInSeconds": 1800,
+                "MaximumRetryAttempts": 0,
+                "Qualifier": "$LATEST",
+            },
+        )
+        worker_template.has_resource_properties(
+            "AWS::Logs::LogGroup",
+            {"LogGroupName": DAYTONA_CLEANUP_LOG_GROUP_NAME, "RetentionInDays": 365},
+        )
+        worker_template.has_resource_properties(
+            "AWS::SQS::Queue",
+            {
+                "QueueName": DAYTONA_CLEANUP_DLQ_NAME,
+                "MessageRetentionPeriod": 14 * 24 * 60 * 60,
+                "SqsManagedSseEnabled": True,
+            },
+        )
+        cleanup_function_role_id, cleanup_function_role = _resource_with_logical_id_prefix(
+            worker_template,
+            "AWS::IAM::Role",
+            "DaytonaCleanupFunctionServiceRole",
+        )
+        cleanup_function_role_properties = cast(dict[str, Any], cleanup_function_role["Properties"])
+        self.assertEqual(
+            cleanup_function_role_properties["AssumeRolePolicyDocument"]["Statement"][0]["Principal"],
+            {"Service": "lambda.amazonaws.com"},
+        )
+        self.assertIn("AWSLambdaBasicExecutionRole", str(cleanup_function_role_properties["ManagedPolicyArns"]))
+
+        _, cleanup_function_policy = _resource_with_logical_id_prefix(
+            worker_template,
+            "AWS::IAM::Policy",
+            "DaytonaCleanupFunctionServiceRoleDefaultPolicy",
+        )
+        cleanup_function_policy_properties = cast(dict[str, Any], cleanup_function_policy["Properties"])
+        self.assertIn({"Ref": cleanup_function_role_id}, cleanup_function_policy_properties["Roles"])
+        cleanup_function_statements = cast(
+            list[dict[str, Any]],
+            cleanup_function_policy_properties["PolicyDocument"]["Statement"],
+        )
+        secret_statement = next(
+            statement
+            for statement in cleanup_function_statements
+            if "secretsmanager:GetSecretValue" in statement["Action"]
+        )
+        self.assertEqual(
+            set(secret_statement["Action"]),
+            {"secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"},
+        )
+        self.assertNotEqual(secret_statement["Resource"], "*")
+        self.assertIn(DAYTONA_CLEANUP_SECRET_NAME, str(secret_statement["Resource"]))
+
+        cleanup_function_actions: set[str] = set()
+        for statement in cleanup_function_statements:
+            self.assertNotEqual(statement["Resource"], "*")
+            actions = statement["Action"]
+            if isinstance(actions, str):
+                cleanup_function_actions.add(actions)
+            else:
+                cleanup_function_actions.update(cast(list[str], actions))
+        self.assertEqual(
+            cleanup_function_actions,
+            {
+                "secretsmanager:GetSecretValue",
+                "secretsmanager:DescribeSecret",
+                "sqs:SendMessage",
+                "sqs:GetQueueAttributes",
+                "sqs:GetQueueUrl",
+            },
+        )
+
+        scheduler_role_id, scheduler_role = _resource_with_logical_id_prefix(
+            worker_template,
+            "AWS::IAM::Role",
+            "SchedulerRoleForTarget",
+        )
+        scheduler_role_properties = cast(dict[str, Any], scheduler_role["Properties"])
+        self.assertEqual(
+            scheduler_role_properties["AssumeRolePolicyDocument"]["Statement"][0]["Principal"],
+            {"Service": "scheduler.amazonaws.com"},
+        )
+        _, scheduler_policy = _resource_with_logical_id_prefix(
+            worker_template,
+            "AWS::IAM::Policy",
+            "SchedulerRoleForTarget",
+        )
+        scheduler_policy_properties = cast(dict[str, Any], scheduler_policy["Properties"])
+        self.assertIn({"Ref": scheduler_role_id}, scheduler_policy_properties["Roles"])
+        scheduler_statements = cast(
+            list[dict[str, Any]],
+            scheduler_policy_properties["PolicyDocument"]["Statement"],
+        )
+        scheduler_actions: set[str] = set()
+        for statement in scheduler_statements:
+            self.assertNotEqual(statement["Resource"], "*")
+            actions = statement["Action"]
+            if isinstance(actions, str):
+                scheduler_actions.add(actions)
+            else:
+                scheduler_actions.update(cast(list[str], actions))
+        self.assertEqual(scheduler_actions, {"lambda:InvokeFunction", "sqs:SendMessage"})
+
+        cleanup_function = _cleanup_function(worker_template)
+        self.assertNotIn("VpcConfig", cleanup_function)
+        environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
+        self.assertEqual(
+            environment,
+            {
+                "DAYTONA_CLEANUP_DRY_RUN": "true",
+                "DAYTONA_CLEANUP_SECRET_NAME": DAYTONA_CLEANUP_SECRET_NAME,
+                "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+                "ENVIRONMENT": "production",
+            },
+        )
+
+    def test_prod_daytona_cleanup_rollout_flags_are_configurable(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {
+                "DAYTONA_CLEANUP_ENABLED": "true",
+                "DAYTONA_CLEANUP_DRY_RUN": "false",
+                "DAYTONA_CLEANUP_SECRET_NAME": "ignored",
+            },
+            clear=True,
+        ):
+            _, worker_template = _service_templates(PROD)
+
+        worker_template.has_resource_properties(
+            "AWS::Scheduler::Schedule",
+            {"State": "ENABLED"},
+        )
+        cleanup_function = _cleanup_function(worker_template)
+        environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
+        self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "false")
+        self.assertEqual(environment["DAYTONA_CLEANUP_SECRET_NAME"], DAYTONA_CLEANUP_SECRET_NAME)
+
+    def test_unrecognized_daytona_cleanup_rollout_flags_fail_closed(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"DAYTONA_CLEANUP_ENABLED": "sometimes", "DAYTONA_CLEANUP_DRY_RUN": "sometimes"},
+            clear=True,
+        ):
+            _, worker_template = _service_templates(PROD)
+
+        worker_template.has_resource_properties("AWS::Scheduler::Schedule", {"State": "DISABLED"})
+        cleanup_function = _cleanup_function(worker_template)
+        environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
+        self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "true")
 
 
 if __name__ == "__main__":
