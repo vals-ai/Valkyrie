@@ -22,7 +22,6 @@ def aws_credentials() -> AWSCredentials:
         aws_access_key_id=config["AWS_ACCESS_KEY_ID"],
         aws_secret_access_key=config["AWS_SECRET_ACCESS_KEY"],
         aws_default_region=config["AWS_DEFAULT_REGION"],
-        aws_session_token=config.get("AWS_SESSION_TOKEN"),
     )
 
 
@@ -31,16 +30,12 @@ def s3_client():
     config = load_config()
     access_key_id = config.get("AWS_ACCESS_KEY_ID")
     secret_access_key = config.get("AWS_SECRET_ACCESS_KEY")
-    session_token = config.get("AWS_SESSION_TOKEN")
 
     if access_key_id and secret_access_key:
         return tracker_s3_client(aws_credentials())
 
     if access_key_id or secret_access_key:
         raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
-
-    if session_token:
-        raise click.ClickException("AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.")
 
     session = aioboto3.Session(region_name=config.get("AWS_DEFAULT_REGION"))
     return session.client("s3")

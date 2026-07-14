@@ -5,7 +5,7 @@ from tracker.types import AWSCredentials
 from valkyrie.cli import s3_config as cli_s3
 
 
-def test_s3_client_forwards_explicit_session_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_s3_client_uses_explicit_configured_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     credentials: list[AWSCredentials] = []
     client = object()
 
@@ -15,7 +15,6 @@ def test_s3_client_forwards_explicit_session_credentials(monkeypatch: pytest.Mon
         lambda: {
             "AWS_ACCESS_KEY_ID": "aws-key",
             "AWS_SECRET_ACCESS_KEY": "aws-secret",
-            "AWS_SESSION_TOKEN": "aws-token",
             "AWS_DEFAULT_REGION": "us-west-2",
         },
     )
@@ -32,7 +31,6 @@ def test_s3_client_forwards_explicit_session_credentials(monkeypatch: pytest.Mon
             aws_access_key_id="aws-key",
             aws_secret_access_key="aws-secret",
             aws_default_region="us-west-2",
-            aws_session_token="aws-token",
         )
     ]
 
@@ -66,10 +64,6 @@ def test_s3_client_uses_sdk_credential_chain_without_configured_keys(monkeypatch
         (
             {"AWS_SECRET_ACCESS_KEY": "aws-secret", "AWS_DEFAULT_REGION": "us-west-2"},
             "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together",
-        ),
-        (
-            {"AWS_SESSION_TOKEN": "aws-token", "AWS_DEFAULT_REGION": "us-west-2"},
-            "AWS_SESSION_TOKEN requires AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY",
         ),
     ],
 )
