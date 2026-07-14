@@ -1,8 +1,17 @@
 """Agent contract models used by SDK run requests."""
 
 from pathlib import PurePosixPath
+from typing import Literal, cast
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    FiniteFloat,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 
 MAX_OUTPUT_ARTIFACT_COUNT = 10
 
@@ -43,6 +52,53 @@ class OutputArtifact(BaseModel):
 OutputArtifactSpec = str | OutputArtifact
 
 
+ModelGatewayConfigValue = bool | float | int | str
+
+
+class ModelGatewayPolicyConfig(BaseModel):
+    """Closed model settings allowed in a task-scoped gateway capability."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    client_scope: Literal["shared"]
+    max_tokens: int | None = Field(default=None, gt=0)
+    temperature: FiniteFloat | None = None
+    top_p: FiniteFloat | None = None
+    top_k: int | None = Field(default=None, gt=0)
+    reasoning: bool | None = None
+    reasoning_effort: str | bool | None = None
+    compute_effort: str | int | None = None
+
+    @model_serializer(mode="plain")
+    def serialize_config(self) -> dict[str, ModelGatewayConfigValue]:
+        """Preserve only the immutable settings authored in the contract row."""
+        return {
+            name: cast(ModelGatewayConfigValue, getattr(self, name))
+            for name in type(self).model_fields
+            if name in self.model_fields_set and getattr(self, name) is not None
+        }
+
+
+class ModelGatewayTaskCapabilityPolicy(BaseModel):
+    """One selected model policy carried on a resolved agent contract."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["task_capability"]
+    model: str
+    config: ModelGatewayPolicyConfig
+    max_queries: int = Field(ge=1, le=2000)
+    max_sessions: int = Field(ge=1, le=16)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        """Require the exact non-blank registry key selected by the contract."""
+        if not value or value != value.strip():
+            raise ValueError("model must be a non-blank exact model key")
+        return value
+
+
 class AgentContractRequest(BaseModel):
     """Agent definition submitted when starting a run."""
 
@@ -55,6 +111,7 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = Field(default_factory=list)
     secrets: dict[str, str] = Field(default_factory=dict)
     kwargs: dict[str, str] = Field(default_factory=dict)
+    model_gateway_policy: ModelGatewayTaskCapabilityPolicy | None = None
 
     @field_validator("output_artifacts")
     @classmethod
@@ -75,3 +132,10 @@ class AgentContractRequest(BaseModel):
                 str(path) if isinstance(artifact, str) else artifact.model_copy(update={"path": str(path)})
             )
         return normalized_artifacts
+
+    @model_validator(mode="after")
+    def validate_model_gateway_policy(self) -> "AgentContractRequest":
+        """Bind the selected capability policy to the request's exact model."""
+        if self.model_gateway_policy is not None and self.model_gateway_policy.model != self.model:
+            raise ValueError("model_gateway_policy.model must exactly match contract.model")
+        return self

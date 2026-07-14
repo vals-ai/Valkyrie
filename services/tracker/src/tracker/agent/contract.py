@@ -22,7 +22,7 @@ def read_agent_name(agent_dir: Path) -> str:
             if not isinstance(data, dict):
                 raise BundlerError(f"Invalid contract file '{contract_file}': expected a mapping")
             try:
-                return AgentContract(**data).name
+                return AgentContract.model_validate(data).name
             except PydanticValidationError as e:
                 raise BundlerError(f"Invalid contract file '{contract_file}': {e}") from e
 
@@ -70,6 +70,7 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
             user_values["model"] = agent_config.model
 
         validated_kwargs = agent_contract.validate_kwargs(all_schema, user_values)
+        model_gateway_policy = agent_contract.select_model_gateway_policy(agent_config.model)
 
         return AgentContractRequest(
             name=agent_contract.name,
@@ -80,6 +81,7 @@ def _parse_yaml_contract(contract_path: Path, agent_config: AgentConfig) -> Agen
             output_artifacts=agent_contract.output_artifacts,
             egress_allowlist=agent_contract.egress_allowlist,
             secrets=agent_contract.secrets,
+            model_gateway_policy=model_gateway_policy,
         )
     except ContractValidationError:
         raise

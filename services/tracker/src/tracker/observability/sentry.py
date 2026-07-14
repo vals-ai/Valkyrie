@@ -70,6 +70,7 @@ def init_sentry(service_name: str, environment: str) -> None:
             instrumenter=INSTRUMENTER.OTEL,
             enable_logs=True,
             send_default_pii=False,
+            include_local_variables=False,
             before_send=_before_send,
             before_send_log=_before_send_log,
             integrations=[

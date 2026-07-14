@@ -1,11 +1,13 @@
 """Sandbox management utilities for the tracker service."""
 
+import asyncio
+import json
 import shlex
 import time
 import uuid
 from asyncio import Semaphore
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
@@ -74,6 +76,154 @@ SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
 AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
+_REDACTED = "[REDACTED]"
+_AGENT_SCOPE_ENV = "VALKYRIE_AGENT_SECRET_SCOPE"
+_SECRET_NAMES_ENV = "VALKYRIE_AGENT_SECRET_NAMES"
+_AGENT_SECRET_CLEANUP_SOURCE = r"""
+import json
+import os
+import signal
+import time
+from pathlib import Path
+
+scope_name = "VALKYRIE_AGENT_SECRET_SCOPE"
+names = json.loads(os.environ["VALKYRIE_AGENT_SECRET_NAMES"])
+scope_entry = f"{scope_name}={os.environ[scope_name]}".encode()
+secret_entries = {
+    f"{name}={os.environ[name]}".encode()
+    for name in names
+    if os.environ[name]
+}
+uid = os.getuid()
+
+
+def process_fields(path):
+    fields = (path / "stat").read_text().rsplit(")", 1)[1].split()
+    return fields[0], int(fields[1]), int(fields[19])
+
+
+ancestors = set()
+pid = os.getpid()
+while pid > 1:
+    ancestors.add(pid)
+    try:
+        _state, pid, _start_time = process_fields(Path("/proc") / str(pid))
+    except FileNotFoundError:
+        break
+
+
+def matching_processes():
+    matches = []
+    for path in Path("/proc").iterdir():
+        if not path.name.isdecimal() or int(path.name) in ancestors:
+            continue
+        try:
+            if path.stat().st_uid != uid:
+                continue
+            state, _parent_pid, start_time = process_fields(path)
+            if state == "Z":
+                continue
+            entries = set((path / "environ").read_bytes().split(b"\0"))
+        except FileNotFoundError:
+            continue
+        if scope_entry in entries or secret_entries.intersection(entries):
+            matches.append((int(path.name), start_time))
+    return matches
+
+
+def still_matches(pid, start_time):
+    path = Path("/proc") / str(pid)
+    try:
+        state, _parent_pid, current_start_time = process_fields(path)
+        if state == "Z" or current_start_time != start_time:
+            return False
+        entries = set((path / "environ").read_bytes().split(b"\0"))
+    except FileNotFoundError:
+        return False
+    return scope_entry in entries or bool(secret_entries.intersection(entries))
+
+
+for signum in (signal.SIGTERM, signal.SIGKILL):
+    for _attempt in range(20):
+        matches = matching_processes()
+        if not matches:
+            break
+        for pid, start_time in matches:
+            if not still_matches(pid, start_time):
+                continue
+            try:
+                os.kill(pid, signum)
+            except ProcessLookupError:
+                pass
+        time.sleep(0.05)
+
+if matching_processes():
+    raise RuntimeError("agent credential processes remain")
+"""
+_AGENT_SECRET_CLEANUP_COMMAND = f"python3 -c {shlex.quote(_AGENT_SECRET_CLEANUP_SOURCE)}"
+
+
+class _SecretRedactor:
+    def __init__(self, secrets: Collection[str]) -> None:
+        self._secrets = sorted({secret for secret in secrets if secret}, key=len, reverse=True)
+        self._starts = {secret[0] for secret in self._secrets}
+        self._pending = ""
+
+    def feed(self, chunk: str) -> str:
+        if not self._secrets:
+            return chunk
+
+        self._pending += chunk
+        output: list[str] = []
+
+        while self._pending:
+            candidates = [secret for secret in self._secrets if secret.startswith(self._pending)]
+            if candidates:
+                if self._pending in candidates and not any(len(secret) > len(self._pending) for secret in candidates):
+                    output.append(_REDACTED)
+                    self._pending = ""
+                break
+
+            matches = [secret for secret in self._secrets if self._pending.startswith(secret)]
+            if matches:
+                secret = max(matches, key=len)
+                output.append(_REDACTED)
+                self._pending = self._pending[len(secret) :]
+                continue
+
+            next_start = min(
+                (index for start in self._starts if (index := self._pending.find(start, 1)) >= 0),
+                default=len(self._pending),
+            )
+            output.append(self._pending[:next_start])
+            self._pending = self._pending[next_start:]
+
+        return "".join(output)
+
+    def finish(self) -> str:
+        if not self._pending:
+            return ""
+        self._pending = ""
+        return _REDACTED
+
+    def redact(self, text: str) -> str:
+        for secret in self._secrets:
+            text = text.replace(secret, _REDACTED)
+        return text
+
+
+async def _await_uninterruptibly(operation: Coroutine[Any, Any, None]) -> None:
+    task = asyncio.create_task(operation)
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as error:
+            cancellation = error
+
+    task.result()
+    if cancellation is not None:
+        raise cancellation
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -226,7 +376,7 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        await delete_sandbox(sandbox, provider)
+        await _await_uninterruptibly(delete_sandbox(sandbox, provider))
 
 
 @retry(
@@ -314,7 +464,7 @@ async def upload_agent_artifacts(
 
 
 @retry(
-    retry=retry_if_exception_type(SandboxError),
+    retry=retry_if_exception_type(SandboxError) & retry_if_not_exception_type(SandboxSetupError),
     reraise=True,
     stop=stop_after_attempt(3),
     before_sleep=retry_callback("valkyrie.sandbox.deps"),
@@ -323,6 +473,8 @@ async def install_agent_dependencies(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
+    *,
+    agent_env_vars: Mapping[str, str],
 ) -> None:
     """Install agent dependencies in the sandbox."""
     if not contract.install_cmd:
@@ -337,6 +489,7 @@ async def install_agent_dependencies(
         sandbox,
         f"cd {shlex.quote(str(contract_path))} && {install_cmd}",
         log_output,
+        env_vars=agent_env_vars,
     )
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         raise SandboxError(
@@ -372,6 +525,18 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
         raise SandboxError(str(e)) from e
 
 
+async def _cleanup_agent_secret_processes(sandbox: Sandbox, env_vars: Mapping[str, str]) -> None:
+    cleanup_env = dict(env_vars)
+    cleanup_env[_SECRET_NAMES_ENV] = json.dumps([name for name in env_vars if name != _AGENT_SCOPE_ENV])
+    try:
+        async for _output in sandbox.command(_AGENT_SECRET_CLEANUP_COMMAND, env_vars=cleanup_env):
+            pass
+    except SandboxNotFoundError:
+        return
+    except ProviderSandboxError:
+        raise SandboxSetupError("Failed to clear agent credential processes") from None
+
+
 @_EGRESS_RETRY
 async def _run_egress_operation(operation: Callable[[], Awaitable[None]]) -> None:
     await operation()
@@ -403,27 +568,35 @@ async def _stream_command_output_with_egress_allowlist(
     command: str,
     on_output: Callable[[str], None],
     allowed_addresses: list[str],
+    *,
+    env_vars: Mapping[str, str],
 ) -> tuple[AgentCausedExitReason | None, float]:
     if not allowed_addresses:
-        return await stream_command_output(sandbox, command, on_output)
+        return await stream_command_output(sandbox, command, on_output, env_vars=env_vars)
 
     command_completed = False
     try:
         await _apply_egress_allowlist(sandbox, allowed_addresses)
-        result = await stream_command_output(sandbox, command, on_output)
+        result = await stream_command_output(sandbox, command, on_output, env_vars=env_vars)
         command_completed = True
         return result
     finally:
-        # After a clean agent run, stale egress rules would affect evaluation; otherwise preserve the original error.
-        await _clear_egress_allowlist(sandbox, fail_on_error=command_completed)
+        if command_completed:
+            await _clear_egress_allowlist(sandbox, fail_on_error=True)
 
 
 async def stream_command_output(
     sandbox: Sandbox,
     command: str,
     on_output: Callable[[str], None],
+    *,
+    env_vars: Mapping[str, str],
 ) -> tuple[AgentCausedExitReason | None, float]:
     output: deque[str] = deque(maxlen=50)
+    scoped_env = dict(env_vars)
+    if scoped_env:
+        scoped_env[_AGENT_SCOPE_ENV] = uuid.uuid4().hex
+    redactor = _SecretRedactor(scoped_env.values())
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
@@ -439,15 +612,22 @@ async def stream_command_output(
     exit_code = _SUCCESS_EXIT_CODE
     try:
         try:
-            async for data in sandbox.command(timed_command):
-                on_output(data)
-                output.append(data)
+            async for data in sandbox.command(timed_command, env_vars=scoped_env):
+                redacted = redactor.feed(data)
+                if redacted:
+                    on_output(redacted)
+                    output.append(redacted)
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
         except SandboxNotFoundError:
             raise
         except ProviderSandboxError as e:
-            raise SandboxError(str(e)) from e
+            raise SandboxError(redactor.redact(str(e))) from None
+
+        final_output = redactor.finish()
+        if final_output:
+            on_output(final_output)
+            output.append(final_output)
 
         start_ns = (await _exec(sandbox, f"cat {shlex.quote(start_ns_path)}")).stdout
         end_ns = (await _exec(sandbox, f"cat {shlex.quote(end_ns_path)}")).stdout
@@ -463,12 +643,16 @@ async def stream_command_output(
         tail = "".join(output).strip().splitlines()
         recent = "\n".join(tail[-10:]) if tail else "(no output)"
         sentry_sdk.set_tag("agent_exit_code", str(exit_code))
-        raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
+        raise AgentRunFailedError(f"Agent command failed with exit code: {exit_code}\nLast output:\n{recent}")
     finally:
         try:
-            await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
-        except Exception:
-            pass
+            if scoped_env:
+                await _await_uninterruptibly(_cleanup_agent_secret_processes(sandbox, scoped_env))
+        finally:
+            try:
+                await _exec(sandbox, f"rm -f {shlex.quote(start_ns_path)} {shlex.quote(end_ns_path)}")
+            except Exception:
+                pass
 
 
 @logfire.instrument(
@@ -622,64 +806,54 @@ async def upload_output_artifacts(
         )
 
 
-async def run_agent(
+async def install_agent(
+    sandbox: Sandbox,
+    contract: AgentContractRequest,
+    log_output: Callable[[str], None],
+    agent_env_vars: Mapping[str, str],
+    runtime_source: SandboxSource | None,
+) -> None:
+    if runtime_source is not None:
+        sandbox = runtime_sandbox(sandbox, runtime_source)
+    await install_agent_dependencies(
+        sandbox,
+        contract,
+        log_output,
+        agent_env_vars=agent_env_vars,
+    )
+
+
+async def execute_agent(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     problem_path: str,
     task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
-    aws: AWSCredentials,
-    s3_bucket: str,
-    agent_output_s3_key: str | None = None,
-    agent_timeout: float | None = None,
-    benchmark_id: str | None = None,
-    runtime_source: SandboxSource | None = None,
+    agent_env_vars: Mapping[str, str],
+    agent_timeout: float | None,
+    runtime_source: SandboxSource | None,
 ) -> tuple[AgentCausedExitReason | None, float]:
-    """
-    Run the agent inside the sandbox for a given task.
-
-    Args:
-        sandbox: The sandbox to run the agent in
-        contract: The agent contract configuration
-        problem_path: Path inside the sandbox where the problem statement file was written during setup
-        log_output: Callback to log output
-        cwd: Working directory to run the agent in
-        agent_output_s3_key: S3 key to where we will upload the final output archive to
-        agent_timeout: Optional timeout in seconds to enforce on the agent command
-        runtime_source: Optional source used to adapt agent commands to the task runtime
-
-    Returns:
-        AgentCausedExitReason if the agent was terminated abnormally but recoverably
-        (timeout or OS kill), None on clean exit.
-
-    Raises:
-        SandboxError: If the agent fails to run or times out
-    """
+    """Run an installed agent without uploading its outputs."""
     log_output(f"Running agent {contract.name}")
     if runtime_source is not None:
         sandbox = runtime_sandbox(sandbox, runtime_source)
-
-    await install_agent_dependencies(sandbox, contract, log_output)
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
     for kwarg_key, kwarg_value in contract.kwargs.items():
         run_cmd = run_cmd.replace(f"{{{kwarg_key}}}", kwarg_value)
 
-    # Apply timeout if specified
     if agent_timeout is not None:
         run_cmd = f"timeout {agent_timeout:g} sh -c {shlex.quote(run_cmd)}"
 
-    # Create cwd if it does not already exist
     await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
-
-    # Run the agent without including task directory dependencies
     exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
         sandbox,
         f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
         log_output,
         contract.egress_allowlist,
+        env_vars=agent_env_vars,
     )
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
@@ -691,7 +865,23 @@ async def run_agent(
             f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
         )
 
-    # Upload any output from the agent to S3
+    return exit_reason, agent_run_time
+
+
+async def upload_agent_outputs(
+    sandbox: Sandbox,
+    contract: AgentContractRequest,
+    task_id: str,
+    aws: AWSCredentials,
+    s3_bucket: str,
+    agent_output_s3_key: str | None,
+    benchmark_id: str | None,
+    runtime_source: SandboxSource | None,
+) -> None:
+    """Upload agent outputs after execution-side credentials have been closed."""
+    if runtime_source is not None:
+        sandbox = runtime_sandbox(sandbox, runtime_source)
+
     if contract.final_output:
         result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
         if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
@@ -717,5 +907,69 @@ async def run_agent(
             s3_bucket,
         )
 
-    # Return why the agent terminated abnormally, or None on clean exit
+
+async def run_agent(
+    sandbox: Sandbox,
+    contract: AgentContractRequest,
+    problem_path: str,
+    task_id: str,
+    log_output: Callable[[str], None],
+    cwd: str,
+    aws: AWSCredentials,
+    s3_bucket: str,
+    agent_env_vars: Mapping[str, str],
+    agent_output_s3_key: str | None = None,
+    agent_timeout: float | None = None,
+    benchmark_id: str | None = None,
+    runtime_source: SandboxSource | None = None,
+) -> tuple[AgentCausedExitReason | None, float]:
+    """
+    Run the agent inside the sandbox for a given task.
+
+    Args:
+        sandbox: The sandbox to run the agent in
+        contract: The agent contract configuration
+        problem_path: Path inside the sandbox where the problem statement file was written during setup
+        log_output: Callback to log output
+        cwd: Working directory to run the agent in
+        agent_env_vars: Agent contract secrets scoped to install and run command processes
+        agent_output_s3_key: S3 key to where we will upload the final output archive to
+        agent_timeout: Optional timeout in seconds to enforce on the agent command
+        runtime_source: Optional source used to adapt agent commands to the task runtime
+
+    Returns:
+        AgentCausedExitReason if the agent was terminated abnormally but recoverably
+        (timeout or OS kill), None on clean exit.
+
+    Raises:
+        SandboxError: If the agent fails to run or times out
+    """
+    await install_agent(
+        sandbox,
+        contract,
+        log_output,
+        agent_env_vars,
+        runtime_source,
+    )
+    exit_reason, agent_run_time = await execute_agent(
+        sandbox,
+        contract,
+        problem_path,
+        task_id,
+        log_output,
+        cwd,
+        agent_env_vars,
+        agent_timeout,
+        runtime_source,
+    )
+    await upload_agent_outputs(
+        sandbox,
+        contract,
+        task_id,
+        aws,
+        s3_bucket,
+        agent_output_s3_key,
+        benchmark_id,
+        runtime_source,
+    )
     return exit_reason, agent_run_time

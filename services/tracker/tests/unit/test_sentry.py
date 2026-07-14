@@ -73,6 +73,7 @@ def test_init_sentry_registers_otlp_integration_without_exporter_or_propagator(
 
     sentry_module.init_sentry("valkyrie-worker", environment="test")
 
+    assert init_mock.call_args.kwargs["include_local_variables"] is False
     integrations = init_mock.call_args.kwargs["integrations"]
     otlp_integrations = [i for i in integrations if isinstance(i, OTLPIntegration)]
     assert len(otlp_integrations) == 1, "expected exactly one OTLPIntegration in integrations="

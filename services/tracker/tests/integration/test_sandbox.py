@@ -219,7 +219,7 @@ class TestSandboxOperations:
         await test_sandbox.exec(f"mkdir -p /bundle/{contract_name}")
         await test_sandbox.exec(f"echo '#!/bin/bash\necho hello world' > /bundle/{contract_name}/setup.sh")
 
-        await install_agent_dependencies(test_sandbox, contract, log_callback)
+        await install_agent_dependencies(test_sandbox, contract, log_callback, agent_env_vars={})
 
         # Verify messages were logged
         output = "\n".join(logged_messages)
@@ -262,6 +262,7 @@ class TestSandboxOperations:
             task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
+            agent_env_vars={},
             aws=aws_credentials,
             s3_bucket=harness_config.s3_bucket,
         )
@@ -306,6 +307,7 @@ class TestSandboxOperations:
             task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
+            agent_env_vars={},
             aws=aws_credentials,
             s3_bucket=harness_config.s3_bucket,
         )
@@ -341,7 +343,7 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "timeout 15 sleep 70"
 
-            command_timeout, _ = await stream_command_output(sandbox, command, on_output=print)
+            command_timeout, _ = await stream_command_output(sandbox, command, on_output=print, env_vars={})
 
             assert command_timeout
 
@@ -354,7 +356,7 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "timeout 15 sleep 10"
 
-            command_timeout, _ = await stream_command_output(sandbox, command, on_output=print)
+            command_timeout, _ = await stream_command_output(sandbox, command, on_output=print, env_vars={})
 
             assert not command_timeout
 
@@ -386,7 +388,7 @@ class TestSandboxOperations:
         ) as sandbox:
             command = "echo 'STAGE_1' && sleep 1 && echo 'STAGE_2' && sleep 1 && echo 'STAGE_3'"
 
-            timed_out, _ = await stream_command_output(sandbox, command, on_output=log_callback)
+            timed_out, _ = await stream_command_output(sandbox, command, on_output=log_callback, env_vars={})
 
             assert not timed_out
             output = "\n".join(logged_messages)
@@ -423,7 +425,7 @@ class TestSandboxOperations:
                     ready.set()
 
             stream_task = asyncio.create_task(
-                stream_command_output(sandbox, "echo stream-ready && sleep 30", on_output=mark_ready)
+                stream_command_output(sandbox, "echo stream-ready && sleep 30", on_output=mark_ready, env_vars={})
             )
 
             async def destroy_sandbox_after_stream_starts() -> None:
@@ -460,4 +462,4 @@ class TestSandboxOperations:
             # Use `false` (returns 1) instead of `exit 1` — exit kills the writer
             # shell itself, preventing the status file from being written.
             with pytest.raises(SandboxError, match="exit code: 1"):
-                await stream_command_output(sandbox, "false", on_output=lambda _: None)
+                await stream_command_output(sandbox, "false", on_output=lambda _: None, env_vars={})

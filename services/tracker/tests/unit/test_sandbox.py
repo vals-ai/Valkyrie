@@ -44,6 +44,15 @@ _apply_egress_allowlist = getattr(sandbox_module, "_apply_egress_allowlist")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
 _stream_command_output_with_egress_allowlist = getattr(sandbox_module, "_stream_command_output_with_egress_allowlist")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
+_AGENT_SCOPE_ENV = getattr(sandbox_module, "_AGENT_SCOPE_ENV")
+_SECRET_NAMES_ENV = getattr(sandbox_module, "_SECRET_NAMES_ENV")
+_AGENT_SECRET_CLEANUP_COMMAND = getattr(sandbox_module, "_AGENT_SECRET_CLEANUP_COMMAND")
+_cleanup_agent_secret_processes = getattr(sandbox_module, "_cleanup_agent_secret_processes")
+
+
+def _assert_scoped_env(actual: dict[str, str], expected: dict[str, str]) -> None:
+    assert {name: value for name, value in actual.items() if name != _AGENT_SCOPE_ENV} == expected
+    assert len(actual[_AGENT_SCOPE_ENV]) == 32
 
 
 class TestOutputArtifacts:
@@ -262,6 +271,7 @@ class TestAgentOutputTelemetry:
             "task_0",
             lambda _msg: None,
             "/testbed",
+            agent_env_vars={},
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             benchmark_id="benchmark-123",
@@ -317,6 +327,7 @@ class TestAgentOutputTelemetry:
             "task_0",
             lambda _msg: None,
             "/testbed",
+            agent_env_vars={},
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
@@ -347,9 +358,16 @@ class TestAgentOutputTelemetry:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+        async def fake_stream_command_output(
+            sandbox: Any,
+            command: str,
+            _log_output: Any,
+            *,
+            env_vars: dict[str, str],
+        ) -> tuple[None, float]:
             observed_sandboxes.append(sandbox)
             assert command == "cd /workspace && PYTHONSAFEPATH=1 echo done"
+            assert env_vars == {}
             return None, 0.0
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -367,6 +385,7 @@ class TestAgentOutputTelemetry:
             "task_0",
             lambda _msg: None,
             "/workspace",
+            agent_env_vars={},
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             runtime_source=ComposeSource(
@@ -400,8 +419,15 @@ class TestAgentOutputTelemetry:
             assert command == "mkdir -p /workspace"
             return ExecResult(exit_code=0)
 
-        async def fake_stream_command_output(_sandbox: Any, command: str, _log_output: Any) -> tuple[None, float]:
+        async def fake_stream_command_output(
+            _sandbox: Any,
+            command: str,
+            _log_output: Any,
+            *,
+            env_vars: dict[str, str],
+        ) -> tuple[None, float]:
             observed_commands.append(command)
+            assert env_vars == {}
             return None, 0.0
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -418,12 +444,66 @@ class TestAgentOutputTelemetry:
             "task_0",
             lambda _msg: None,
             "/workspace",
+            agent_env_vars={},
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             agent_timeout=2.5,
         )
 
         assert observed_commands == [f"cd /workspace && PYTHONSAFEPATH=1 timeout 2.5 sh -c {shlex.quote(run_cmd)}"]
+
+    async def test_run_agent_scopes_native_secrets_to_install_and_run(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        secret = "value with spaces; $(touch /tmp/leaked) and 'quotes'"
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="echo install",
+            run_cmd="echo run && echo done",
+            final_output="/tmp/result",
+        )
+        exec_commands: list[str] = []
+        streamed_commands: list[tuple[str, dict[str, str]]] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            exec_commands.append(command)
+            return ExecResult(exit_code=1)
+
+        async def fake_stream_command_output(
+            _sandbox: Any,
+            command: str,
+            _log_output: Any,
+            *,
+            env_vars: dict[str, str],
+        ) -> tuple[None, float]:
+            streamed_commands.append((command, env_vars))
+            return None, 0.0
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
+
+        mock_sandbox = Mock(id="sandbox-123", name="task-alias")
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/workspace",
+            agent_env_vars={"AGENT_SECRET": secret},
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+        )
+
+        assert streamed_commands == [
+            ("cd /bundle/test-agent && timeout 600 sh -c 'echo install'", {"AGENT_SECRET": secret}),
+            ("cd /workspace && PYTHONSAFEPATH=1 echo run && echo done", {"AGENT_SECRET": secret}),
+        ]
+        assert exec_commands == ["mkdir -p /workspace", "test -e /tmp/result"]
+        assert all(secret not in command for command, _env_vars in streamed_commands)
+        assert all(secret not in command for command in exec_commands)
 
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
@@ -458,8 +538,11 @@ class TestAgentOutputTelemetry:
             _sandbox: Any,
             command: str,
             _log_output: Any,
+            *,
+            env_vars: dict[str, str],
         ) -> tuple[AgentCausedExitReason | None, float]:
             observed_commands.append(command)
+            assert env_vars == {}
 
             return setup_results.popleft()
 
@@ -468,7 +551,7 @@ class TestAgentOutputTelemetry:
 
         monkeypatch.setattr(sandbox_module, "stream_command_output", fake_stream_command_output)
 
-        await _install_agent_dependencies(Mock(), contract, log_output)
+        await _install_agent_dependencies(Mock(), contract, log_output, agent_env_vars={})
 
         expected_command = "cd /bundle/test-agent && timeout 600 sh -c 'apt-get update -qq && echo done'"
         assert observed_commands == [expected_command, expected_command]
@@ -701,6 +784,45 @@ class TestAgentOutputTelemetry:
 
         assert increments == [("valkyrie.sandbox.create.errors", {"error_class": "RuntimeError"})]
 
+    async def test_create_sandbox_cancellation_waits_for_deletion(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        sandbox = Mock(id="sandbox-123", name="task-alias", state="started")
+        entered = asyncio.Event()
+        delete_started = asyncio.Event()
+        allow_delete = asyncio.Event()
+
+        async def fake_create(*_args: Any, **_kwargs: Any) -> Any:
+            return sandbox
+
+        async def fake_delete(actual_sandbox: Any, _provider: Any) -> None:
+            assert actual_sandbox is sandbox
+            delete_started.set()
+            await allow_delete.wait()
+
+        async def use_sandbox() -> None:
+            async with create_sandbox(
+                provider=AsyncMock(),
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                entered.set()
+                await asyncio.Event().wait()
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", fake_delete)
+        task = asyncio.create_task(use_sandbox())
+        await entered.wait()
+        task.cancel()
+        await delete_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        allow_delete.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
 
 class TestUploadAgentArtifacts:
     @pytest.mark.parametrize(
@@ -794,6 +916,7 @@ class TestEgressAllowlist:
             "run-agent.sh",
             on_output=ignore_output,
             allowed_addresses=["https://api.openai.com"],
+            env_vars={},
         )
 
         assert result == (None, 2.5)
@@ -827,10 +950,31 @@ class TestEgressAllowlist:
             "run-agent.sh",
             on_output=ignore_output,
             allowed_addresses=[],
+            env_vars={},
         )
 
         assert result == (None, 1.0)
         mock_sandbox.modify_egress_rules.assert_not_awaited()
+        mock_sandbox.clear_egress_rules.assert_not_awaited()
+
+    async def test_failed_agent_command_keeps_egress_restricted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def fail_stream(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            raise SandboxSetupError("credential cleanup failed")
+
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_stream)
+        mock_sandbox = Mock(id="sandbox-123")
+        mock_sandbox.modify_egress_rules = AsyncMock()
+        mock_sandbox.clear_egress_rules = AsyncMock()
+
+        with pytest.raises(SandboxSetupError, match="credential cleanup failed"):
+            await _stream_command_output_with_egress_allowlist(
+                mock_sandbox,
+                "run-agent.sh",
+                on_output=lambda _message: None,
+                allowed_addresses=["https://api.openai.com"],
+                env_vars={"AGENT_SECRET": "secret"},
+            )
+
         mock_sandbox.clear_egress_rules.assert_not_awaited()
 
     @pytest.mark.parametrize(
@@ -860,8 +1004,16 @@ class TestEgressAllowlist:
 
 
 class TestStreamCommandOutputAgentFailure:
+    @pytest.fixture(autouse=True)
+    def stub_secret_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def cleanup(_sandbox: Any, _env_vars: Mapping[str, str]) -> None:
+            return
+
+        monkeypatch.setattr(sandbox_module, "_cleanup_agent_secret_processes", cleanup)
+
     async def test_stream_command_output_removes_timing_files(self) -> None:
-        async def stream_command(_command: str) -> Any:
+        async def stream_command(_command: str, *, env_vars: dict[str, str]) -> Any:
+            assert env_vars == {}
             yield "done\n"
 
         exec_commands: list[str] = []
@@ -882,7 +1034,10 @@ class TestStreamCommandOutputAgentFailure:
         mock_sandbox.exec = exec_command
 
         exit_reason, duration = await sandbox_module.stream_command_output(
-            mock_sandbox, "run-agent.sh", on_output=lambda _: None
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=lambda _: None,
+            env_vars={},
         )
 
         assert exit_reason is None
@@ -895,7 +1050,12 @@ class TestStreamCommandOutputAgentFailure:
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int
     ) -> None:
-        async def stream_command(_command: str) -> Any:
+        secret = "value with spaces; $(touch /tmp/leaked) and 'quotes'"
+        streamed_commands: list[str] = []
+
+        async def stream_command(command: str, *, env_vars: dict[str, str]) -> Any:
+            streamed_commands.append(command)
+            _assert_scoped_env(env_vars, {"AGENT_SECRET": secret})
             yield "last line\n"
             raise ProviderSandboxCommandError(exit_code)
 
@@ -917,10 +1077,241 @@ class TestStreamCommandOutputAgentFailure:
         monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", fake_set_tag)
 
         with pytest.raises(AgentRunFailedError) as exc_info:
-            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh",
+                on_output=lambda _: None,
+                env_vars={"AGENT_SECRET": secret},
+            )
 
         assert isinstance(exc_info.value, SandboxError)
         assert not isinstance(exc_info.value, SandboxSetupError)
         assert f"exit code: {exit_code}" in str(exc_info.value)
         assert "last line" in str(exc_info.value)
+        assert "AGENT_SECRET" not in str(exc_info.value)
+        assert secret not in str(exc_info.value)
+        assert len(streamed_commands) == 1
+        assert "; run-agent.sh;" in streamed_commands[0]
+        assert secret not in streamed_commands[0]
         assert tagged == {"agent_exit_code": str(exit_code)}
+
+    @pytest.mark.parametrize("split", range(1, len("cross-chunk-secret")))
+    async def test_stream_command_output_redacts_secrets_across_chunk_boundaries(self, split: int) -> None:
+        secret = "cross-chunk-secret"
+        logs: list[str] = []
+
+        async def stream_command(command: str, *, env_vars: dict[str, str]) -> Any:
+            assert secret not in command
+            _assert_scoped_env(env_vars, {"AGENT_SECRET": secret})
+            yield f"before:{secret[:split]}"
+            yield f"{secret[split:]}:after"
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("cat ") and command.endswith(".start_ns"):
+                return ExecResult(exit_code=0, output="1000000000")
+            if command.startswith("cat ") and command.endswith(".end_ns"):
+                return ExecResult(exit_code=0, output="3000000000")
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock(id="sandbox-123", name="test-sandbox", state="started")
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        await sandbox_module.stream_command_output(
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=logs.append,
+            env_vars={"AGENT_SECRET": secret},
+        )
+
+        assert "".join(logs) == "before:[REDACTED]:after"
+
+    async def test_stream_command_output_redacts_prefix_overlapping_secrets(self) -> None:
+        logs: list[str] = []
+
+        async def stream_command(command: str, *, env_vars: dict[str, str]) -> Any:
+            assert "abcdef" not in command
+            _assert_scoped_env(env_vars, {"SHORT": "abc", "LONG": "abcdef"})
+            yield "0abc"
+            yield "def1abc2"
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("cat ") and command.endswith(".start_ns"):
+                return ExecResult(exit_code=0, output="1000000000")
+            if command.startswith("cat ") and command.endswith(".end_ns"):
+                return ExecResult(exit_code=0, output="3000000000")
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock(id="sandbox-123", name="test-sandbox", state="started")
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        await sandbox_module.stream_command_output(
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=logs.append,
+            env_vars={"SHORT": "abc", "LONG": "abcdef"},
+        )
+
+        assert "".join(logs) == "0[REDACTED]1[REDACTED]2"
+
+    @pytest.mark.parametrize("secret", ["aaaa", "abab", "abcab"])
+    async def test_stream_command_output_redacts_self_overlapping_secrets(self, secret: str) -> None:
+        logs: list[str] = []
+
+        async def stream_command(_command: str, *, env_vars: dict[str, str]) -> Any:
+            _assert_scoped_env(env_vars, {"AGENT_SECRET": secret})
+            yield secret
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("cat ") and command.endswith(".start_ns"):
+                return ExecResult(exit_code=0, output="1000000000")
+            if command.startswith("cat ") and command.endswith(".end_ns"):
+                return ExecResult(exit_code=0, output="3000000000")
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock(id="sandbox-123", name="test-sandbox", state="started")
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        await sandbox_module.stream_command_output(
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=logs.append,
+            env_vars={"AGENT_SECRET": secret},
+        )
+
+        assert "".join(logs) == "[REDACTED]"
+
+    async def test_stream_command_output_redacts_dangling_secret_prefix(self) -> None:
+        logs: list[str] = []
+
+        async def stream_command(_command: str, *, env_vars: dict[str, str]) -> Any:
+            _assert_scoped_env(env_vars, {"AGENT_SECRET": "abcdef"})
+            yield "before:abc"
+
+        async def exec_command(command: str) -> ExecResult:
+            if command.startswith("cat ") and command.endswith(".start_ns"):
+                return ExecResult(exit_code=0, output="1000000000")
+            if command.startswith("cat ") and command.endswith(".end_ns"):
+                return ExecResult(exit_code=0, output="3000000000")
+            return ExecResult(exit_code=0)
+
+        mock_sandbox = Mock(id="sandbox-123", name="test-sandbox", state="started")
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        await sandbox_module.stream_command_output(
+            mock_sandbox,
+            "run-agent.sh",
+            on_output=logs.append,
+            env_vars={"AGENT_SECRET": "abcdef"},
+        )
+
+        assert "".join(logs) == "before:[REDACTED]"
+
+    async def test_stream_command_output_redacts_provider_errors(self) -> None:
+        secret = "provider-secret"
+
+        async def stream_command(_command: str, *, env_vars: dict[str, str]) -> Any:
+            _assert_scoped_env(env_vars, {"AGENT_SECRET": secret})
+            raise ProviderSandboxError(f"provider failed: {secret}")
+            yield
+
+        mock_sandbox = Mock(id="sandbox-123", name="test-sandbox", state="started")
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = AsyncMock(return_value=ExecResult(exit_code=0))
+
+        with pytest.raises(SandboxError, match=r"provider failed: \[REDACTED\]") as exc_info:
+            await sandbox_module.stream_command_output(
+                mock_sandbox,
+                "run-agent.sh",
+                on_output=lambda _: None,
+                env_vars={"AGENT_SECRET": secret},
+            )
+
+        assert secret not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+
+class TestAgentSecretProcessCleanup:
+    async def test_cleanup_uses_native_env_without_putting_secrets_in_command(self) -> None:
+        calls: list[tuple[str, dict[str, str]]] = []
+
+        async def command(command: str, *, env_vars: dict[str, str]) -> Any:
+            calls.append((command, env_vars))
+            yield ""
+
+        sandbox = Mock(command=command)
+        env_vars = {
+            "API_KEY": "secret with spaces; $(touch /tmp/leak)",
+            _AGENT_SCOPE_ENV: "scope-123",
+        }
+
+        await _cleanup_agent_secret_processes(sandbox, env_vars)
+
+        assert len(calls) == 1
+        command_text, cleanup_env = calls[0]
+        assert command_text == _AGENT_SECRET_CLEANUP_COMMAND
+        assert env_vars["API_KEY"] not in command_text
+        assert cleanup_env[_SECRET_NAMES_ENV] == '["API_KEY"]'
+        assert cleanup_env["API_KEY"] == env_vars["API_KEY"]
+        assert cleanup_env[_AGENT_SCOPE_ENV] == "scope-123"
+
+    async def test_cleanup_failure_is_fail_closed_and_redacted(self) -> None:
+        secret = "provider-secret"
+
+        async def command(_command: str, *, env_vars: dict[str, str]) -> Any:
+            assert env_vars["API_KEY"] == secret
+            raise ProviderSandboxError(f"failed with {secret}")
+            yield
+
+        sandbox = Mock(command=command)
+        with pytest.raises(SandboxSetupError, match="Failed to clear agent credential processes") as exc_info:
+            await _cleanup_agent_secret_processes(
+                sandbox,
+                {"API_KEY": secret, _AGENT_SCOPE_ENV: "scope-123"},
+            )
+
+        assert secret not in str(exc_info.value)
+        assert exc_info.value.__cause__ is None
+
+    async def test_cancellation_waits_for_secret_cleanup(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        command_started = asyncio.Event()
+        cleanup_started = asyncio.Event()
+        allow_cleanup = asyncio.Event()
+
+        async def command(_command: str, *, env_vars: dict[str, str]) -> Any:
+            _assert_scoped_env(env_vars, {"API_KEY": "secret"})
+            command_started.set()
+            await asyncio.Event().wait()
+            yield
+
+        async def cleanup(_sandbox: Any, env_vars: Mapping[str, str]) -> None:
+            assert env_vars["API_KEY"] == "secret"
+            cleanup_started.set()
+            await allow_cleanup.wait()
+
+        sandbox = Mock(id="sandbox-123", name="test-sandbox", state="started")
+        sandbox.command = command
+        sandbox.exec = AsyncMock(return_value=ExecResult(exit_code=0))
+        monkeypatch.setattr(sandbox_module, "_cleanup_agent_secret_processes", cleanup)
+
+        task = asyncio.create_task(
+            sandbox_module.stream_command_output(
+                sandbox,
+                "run-agent.sh",
+                on_output=lambda _message: None,
+                env_vars={"API_KEY": "secret"},
+            )
+        )
+        await command_started.wait()
+        task.cancel()
+        await cleanup_started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+
+        allow_cleanup.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task

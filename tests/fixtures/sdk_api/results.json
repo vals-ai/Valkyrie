@@ -21,7 +21,8 @@
         ],
         "egress_allowlist": [],
         "secrets": {},
-        "kwargs": {}
+        "kwargs": {},
+        "model_gateway_policy": null
       },
       "concurrency": 2,
       "task_ids": [

@@ -5,9 +5,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ValidationError, create_model, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, create_model, field_validator
 
-from tracker.database.models import OutputArtifact, OutputArtifactSpec
+from tracker.database.models import (
+    ModelGatewayPolicyConfig,
+    ModelGatewayTaskCapabilityPolicy,
+    OutputArtifact,
+    OutputArtifactSpec,
+)
 from tracker.exceptions import ContractValidationError
 
 
@@ -52,6 +57,14 @@ class Parameter(BaseModel):
     description: str | None = None
 
 
+class ModelGatewayPolicyRow(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    config: ModelGatewayPolicyConfig
+    max_queries: int = Field(ge=1, le=2000)
+    max_sessions: int = Field(ge=1, le=16)
+
+
 class AgentContract(BaseModel):
     """Declarative YAML agent contract."""
 
@@ -64,6 +77,7 @@ class AgentContract(BaseModel):
     ingest_lambda: str | None = None
     defaults: dict[str, Parameter] = {}
     kwargs: dict[str, Parameter] = {}
+    model_gateway_policies: dict[str, ModelGatewayPolicyRow] = {}
     run_cmd: str
 
     @field_validator("name")
@@ -88,6 +102,23 @@ class AgentContract(BaseModel):
             reference = reference.replace(f"{{{name}}}", str(value))
 
         return reference
+
+    def select_model_gateway_policy(self, model: str | None) -> ModelGatewayTaskCapabilityPolicy | None:
+        if not self.model_gateway_policies:
+            return None
+        if model is None:
+            raise ValueError("agent_config.model is required by model_gateway_policies")
+        try:
+            policy = self.model_gateway_policies[model]
+        except KeyError as e:
+            raise ValueError(f"model_gateway_policies has no policy for exact model {model!r}") from e
+        return ModelGatewayTaskCapabilityPolicy(
+            kind="task_capability",
+            model=model,
+            config=policy.config,
+            max_queries=policy.max_queries,
+            max_sessions=policy.max_sessions,
+        )
 
     def validate_kwargs(self, schema: dict[str, Parameter], values: dict[str, Any]) -> dict[str, Any]:
         if not schema:

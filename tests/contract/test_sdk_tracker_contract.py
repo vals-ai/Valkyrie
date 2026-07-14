@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from services.tracker.main import app
 from tracker.database.models import (
     AgentContractRequest,
@@ -132,6 +132,52 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
     tracker_model: type[BaseModel], sdk_model: type[BaseModel]
 ) -> None:
     assert tracker_model.model_fields.keys() == sdk_model.model_fields.keys()
+
+
+def test_selected_model_gateway_policy_matches_tracker_and_sdk() -> None:
+    payload = {
+        "name": "osworld_agent",
+        "model": "openai/gpt-5.5",
+        "model_gateway_policy": {
+            "kind": "task_capability",
+            "model": "openai/gpt-5.5",
+            "config": {"client_scope": "shared", "max_tokens": 8192},
+            "max_queries": 800,
+            "max_sessions": 4,
+        },
+    }
+
+    tracker = AgentContractRequest.model_validate(payload)
+    sdk = SDKAgentContractRequest.model_validate(payload)
+
+    assert tracker.model_dump(mode="json") == sdk.model_dump(mode="json")
+    assert tracker.model_dump(mode="json")["model_gateway_policy"] == payload["model_gateway_policy"]
+
+
+@pytest.mark.parametrize(
+    "policy_update",
+    [
+        {"model": "openai/other"},
+        {"max_queries": 2001},
+        {"max_sessions": 17},
+        {"routing": "other"},
+        {"config": {"client_scope": "shared", "custom_endpoint": "https://attacker.invalid"}},
+    ],
+)
+def test_selected_model_gateway_policy_rejects_invalid_wire_values(policy_update: dict[str, Any]) -> None:
+    policy = {
+        "kind": "task_capability",
+        "model": "openai/gpt-5.5",
+        "config": {"client_scope": "shared"},
+        "max_queries": 800,
+        "max_sessions": 4,
+        **policy_update,
+    }
+    payload = {"name": "osworld_agent", "model": "openai/gpt-5.5", "model_gateway_policy": policy}
+
+    for request_model in (AgentContractRequest, SDKAgentContractRequest):
+        with pytest.raises(ValidationError):
+            request_model.model_validate(payload)
 
 
 def test_fetch_stream_fixture_matches_tracker_and_sdk_response_models() -> None:

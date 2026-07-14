@@ -175,7 +175,7 @@ benchmarks/run_id/task_0/artifacts/result.json
 
 ### `egress_allowlist: list`
 
-URLs the agent may reach while `run_cmd` is running. Use this to allow model provider requests while denying other outbound requests from the agent sandbox; the sandbox provider resolves each host into its network rules at run time.
+URLs the agent may reach while `run_cmd` is running. Use this to allow model provider requests while denying other outbound requests from the agent sandbox; the sandbox provider resolves each host into its network rules at run time. Dependency installation runs before these rules are applied and retains unrestricted egress.
 
 These rules only apply while the agent command runs. They help keep evaluations clean, but they are not a hard block against data leaks: egress is restored after `run_cmd`, root agents can change sandbox host files, and CDN hosts can share allowed edge IPs with other services.
 
@@ -189,7 +189,9 @@ Omit this field, or set it to an empty list, to keep unrestricted sandbox egress
 
 ### `secrets: dict`
 
-Secrets required by the agent. Maps environment variable names to AWS Secrets Manager secret names. These are resolved at sandbox creation time - raw values are never stored.
+Secrets required by the agent. Maps environment variable names to AWS Secrets Manager secret names. Values are resolved immediately before agent installation and are passed only to the `install_cmd` and `run_cmd` processes; they are not added to the persistent sandbox environment. Valkyrie clears the resolved values from its task frame after the agent command finishes.
+
+This process scope limits accidental persistence; it is not a containment boundary for arbitrary privileged agent code. A root agent can copy, transform, or move a secret into another process or file. Use short-lived, task-scoped credentials for untrusted agents, revoke them when `run_cmd` ends, and rely on sandbox deletion as the final boundary.
 
 ```yaml
 secrets:

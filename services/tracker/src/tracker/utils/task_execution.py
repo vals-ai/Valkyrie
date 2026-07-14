@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import time
 import traceback
 from asyncio import Semaphore
@@ -28,7 +29,9 @@ from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.aws.cloudwatch_logs import write_benchmark_log_event
 from tracker.aws.s3 import (
+    download_from_s3,
     get_agent_result_s3_key,
+    upload_to_s3,
 )
 from tracker.aws.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
@@ -44,9 +47,25 @@ from tracker.database.models import (
 from tracker.database.session import engine
 from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerServiceError
 from tracker.logging import get_logger, task_id_var
+from tracker.model_gateway import (
+    CapabilityEvalResumeState,
+    CapabilityMintRequest,
+    CapabilityUsageSummary,
+    ModelGatewayAdminClient,
+    capability_expires_at,
+    finalize_capability_uninterruptibly,
+    mint_capability_uninterruptibly,
+)
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
-from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import (
+    create_sandbox,
+    execute_agent,
+    install_agent,
+    run_agent,
+    upload_agent_artifacts,
+    upload_agent_outputs,
+)
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -58,6 +77,31 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
+_MODEL_GATEWAY_USAGE_DIRECTORY = "model_gateway_usage"
+_MODEL_GATEWAY_USAGE_RESULT_KEY = "_valkyrie_model_gateway_usage"
+_AGENT_ENV_VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_RESERVED_AGENT_ENV_VAR_NAMES = frozenset(
+    {
+        "LANG",
+        "RUN_ID",
+        "TASK_ID",
+        "TERM",
+        "IDENTITY",
+        "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS",
+        "VALKYRIE_AGENT_SECRET_NAMES",
+        "VALKYRIE_AGENT_SECRET_SCOPE",
+    }
+)
+
+
+def _validate_agent_env_vars(env_vars: dict[str, str]) -> None:
+    invalid_names = sorted(name for name in env_vars if _AGENT_ENV_VAR_NAME.fullmatch(name) is None)
+    if invalid_names:
+        raise SandboxSetupError(f"Invalid agent secret environment variable names: {', '.join(invalid_names)}")
+
+    reserved_names = sorted(env_vars.keys() & _RESERVED_AGENT_ENV_VAR_NAMES)
+    if reserved_names:
+        raise SandboxSetupError(f"Agent secret environment variables use reserved names: {', '.join(reserved_names)}")
 
 
 def _normalized_attempt_time(value: datetime) -> datetime:
@@ -396,9 +440,18 @@ async def process_task(
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
+    capability_usage: CapabilityUsageSummary | None = None
 
     def on_eval_resume_state(state: dict[str, Any]) -> None:
-        save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at)
+        persisted_state = state
+        if start_benchmark_request.contract.model_gateway_policy is not None:
+            assert capability_usage is not None
+            persisted_state = CapabilityEvalResumeState(
+                kind="model_gateway_eval_resume",
+                capability_id=capability_usage.capability_id,
+                benchmark_state=state,
+            ).model_dump(mode="json")
+        save_eval_resume_state(task_row.id, org, persisted_state, expected_started_at=attempt_started_at)
 
     def task_is_stopped() -> bool:
         with Session(bind=engine) as task_session:
@@ -409,17 +462,48 @@ async def process_task(
         if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
+                benchmark_eval_resume_state = task_row.eval_resume_state
+                if start_benchmark_request.contract.model_gateway_policy is not None:
+                    try:
+                        resume_state = CapabilityEvalResumeState.model_validate(task_row.eval_resume_state)
+                    except ValidationError:
+                        raise TrackerServiceError("Model gateway evaluation resume state is invalid") from None
+                    usage_artifact = await download_from_s3(
+                        get_agent_result_s3_key(
+                            str(benchmark_id),
+                            task_id,
+                            f"{_MODEL_GATEWAY_USAGE_DIRECTORY}/{resume_state.capability_id}.json",
+                        ),
+                        harness_config.aws,
+                        harness_config.s3_bucket,
+                    )
+                    try:
+                        capability_usage = CapabilityUsageSummary.model_validate_json(usage_artifact)
+                    except ValidationError:
+                        raise TrackerServiceError("Model gateway usage artifact is invalid") from None
+                    if capability_usage.capability_id != resume_state.capability_id:
+                        raise TrackerServiceError("Model gateway usage artifact does not match resume state")
+                    if capability_usage.state != "revoked" or not capability_usage.drained:
+                        raise TrackerServiceError("Model gateway usage artifact is not finalized")
+                    benchmark_eval_resume_state = resume_state.benchmark_state
+
                 resume_eval_start_time = time.perf_counter()
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 last_log_time = time.monotonic()
                 evaluation_result = await benchmark_service.resume_evaluation(
                     task_row.task_id,
-                    eval_resume_state=task_row.eval_resume_state,
+                    eval_resume_state=benchmark_eval_resume_state,
                     on_message=log_output,
                     on_eval_resume_state=on_eval_resume_state,
                     dataset=start_benchmark_request.dataset,
                     sandbox_provider=sandbox_provider_config,
                 )
+                if capability_usage is not None:
+                    if _MODEL_GATEWAY_USAGE_RESULT_KEY in evaluation_result:
+                        raise TrackerServiceError(
+                            f"Benchmark result uses reserved key {_MODEL_GATEWAY_USAGE_RESULT_KEY!r}"
+                        )
+                    evaluation_result[_MODEL_GATEWAY_USAGE_RESULT_KEY] = capability_usage.model_dump(mode="json")
                 resume_eval_duration = time.perf_counter() - resume_eval_start_time
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
@@ -481,8 +565,7 @@ async def process_task(
         if benchmark_started_by_email:
             identity["email"] = benchmark_started_by_email
 
-        env_vars = {
-            **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
+        sandbox_env_vars = {
             "RUN_ID": str(benchmark_id),
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
@@ -493,6 +576,8 @@ async def process_task(
                 f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
             ),
         }
+        _validate_agent_env_vars(start_benchmark_request.contract.secrets)
+        agent_env_vars: dict[str, str] = {}
 
         # We don't want to track the task until the sandbox is actually created.
         task_breakdown = TaskBreakdown()
@@ -503,7 +588,7 @@ async def process_task(
             sandbox_name=task_row.task_id,
             source=task_data.source,
             labels=labels,
-            env_vars=env_vars,
+            env_vars=sandbox_env_vars,
             resources=task_data.resources,
             creation_semaphore=creation_semaphore,
         ) as sandbox:
@@ -548,20 +633,119 @@ async def process_task(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                exit_reason, agent_run_time = await run_agent(
-                    sandbox,
-                    start_benchmark_request.contract,
-                    task_data.problem_path,
-                    task_id,
-                    log_output,
-                    task_data.cwd,
-                    aws=harness_config.aws,
-                    s3_bucket=harness_config.s3_bucket,
-                    agent_output_s3_key=agent_output_s3_key,
-                    agent_timeout=task_data.agent_timeout,
-                    benchmark_id=str(benchmark_id),
-                    runtime_source=task_data.source,
-                )
+                policy = start_benchmark_request.contract.model_gateway_policy
+                if policy is None:
+                    agent_env_vars = resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws)
+                    try:
+                        exit_reason, agent_run_time = await run_agent(
+                            sandbox,
+                            start_benchmark_request.contract,
+                            task_data.problem_path,
+                            task_id,
+                            log_output,
+                            task_data.cwd,
+                            agent_env_vars=agent_env_vars,
+                            aws=harness_config.aws,
+                            s3_bucket=harness_config.s3_bucket,
+                            agent_output_s3_key=agent_output_s3_key,
+                            agent_timeout=task_data.agent_timeout,
+                            benchmark_id=str(benchmark_id),
+                            runtime_source=task_data.source,
+                        )
+                    finally:
+                        agent_env_vars.clear()
+                else:
+                    if task_data.agent_timeout is None:
+                        raise TrackerServiceError("Task capability requires a finite positive agent_timeout")
+
+                    agent_env_vars = resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws)
+                    try:
+                        await install_agent(
+                            sandbox,
+                            start_benchmark_request.contract,
+                            log_output,
+                            agent_env_vars,
+                            task_data.source,
+                        )
+                    finally:
+                        agent_env_vars.clear()
+
+                    expires_at = capability_expires_at(task_data.agent_timeout, time.time())
+                    async with ModelGatewayAdminClient.from_environment() as gateway:
+
+                        async def write_capability_usage(usage: CapabilityUsageSummary) -> None:
+                            content = (json.dumps(usage.model_dump(mode="json"), sort_keys=True) + "\n").encode()
+                            await upload_to_s3(
+                                content,
+                                get_agent_result_s3_key(
+                                    str(benchmark_id),
+                                    task_id,
+                                    f"{_MODEL_GATEWAY_USAGE_DIRECTORY}/{usage.capability_id}.json",
+                                ),
+                                harness_config.aws,
+                                harness_config.s3_bucket,
+                            )
+                            logger.info(
+                                "model_gateway.capability.finalized",
+                                extra={
+                                    "benchmark_id": str(benchmark_id),
+                                    "task_id": task_id,
+                                    "sandbox_id": sandbox.id,
+                                    **usage.model_dump(mode="json"),
+                                },
+                            )
+
+                        minted = await mint_capability_uninterruptibly(
+                            gateway,
+                            CapabilityMintRequest(
+                                run_id=str(benchmark_id),
+                                task_id=task_id,
+                                model=policy.model,
+                                config=policy.config.model_dump(mode="json"),
+                                sandbox_id=sandbox.id,
+                                identity={"org_id": str(org.id), **identity},
+                                expires_at=expires_at,
+                                max_queries=policy.max_queries,
+                                max_sessions=policy.max_sessions,
+                            ),
+                            write_capability_usage,
+                        )
+                        runtime_env = {
+                            "MODEL_GATEWAY_URL": gateway.gateway_url,
+                            "MODEL_GATEWAY_API_KEY": minted.token,
+                        }
+                        capability_id = minted.capability_id
+                        del minted
+                        try:
+                            exit_reason, agent_run_time = await execute_agent(
+                                sandbox,
+                                start_benchmark_request.contract,
+                                task_data.problem_path,
+                                task_id,
+                                log_output,
+                                task_data.cwd,
+                                runtime_env,
+                                task_data.agent_timeout,
+                                task_data.source,
+                            )
+                        finally:
+                            runtime_env.clear()
+                            capability_usage = await finalize_capability_uninterruptibly(
+                                gateway,
+                                capability_id,
+                                write_capability_usage,
+                            )
+
+                    await upload_agent_outputs(
+                        sandbox,
+                        start_benchmark_request.contract,
+                        task_id,
+                        harness_config.aws,
+                        harness_config.s3_bucket,
+                        agent_output_s3_key,
+                        str(benchmark_id),
+                        task_data.source,
+                    )
                 logger.info(
                     "agent.run.complete",
                     extra={
@@ -610,6 +794,12 @@ async def process_task(
                     dataset=start_benchmark_request.dataset,
                     sandbox_provider=sandbox_provider_config,
                 )
+                if capability_usage is not None:
+                    if _MODEL_GATEWAY_USAGE_RESULT_KEY in evaluation_result:
+                        raise TrackerServiceError(
+                            f"Benchmark result uses reserved key {_MODEL_GATEWAY_USAGE_RESULT_KEY!r}"
+                        )
+                    evaluation_result[_MODEL_GATEWAY_USAGE_RESULT_KEY] = capability_usage.model_dump(mode="json")
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
 
                 task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
@@ -652,6 +842,8 @@ async def process_task(
                         return {task_id: None}
 
                 raise
+            finally:
+                agent_env_vars.clear()
 
     except SandboxSetupError as e:
         if task_is_stopped():

@@ -99,7 +99,6 @@ async def compose_sandbox(
         "RUN_ID": _COMPOSE_RUN_ID,
         "TASK_ID": _COMPOSE_TASK_ID,
         "IDENTITY": _COMPOSE_IDENTITY,
-        "TRACKER_COMPOSE_SECRET": _COMPOSE_SECRET,
     }
 
     assert isinstance(task_data.source, ComposeSource)
@@ -209,6 +208,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         _COMPOSE_TASK_ID,
         logs.append,
         task_data.cwd,
+        agent_env_vars={"TRACKER_COMPOSE_SECRET": _COMPOSE_SECRET},
         aws=aws,
         s3_bucket="unused",
         runtime_source=task_data.source,
@@ -225,6 +225,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
     assert run_proof.stdout == "agent-run"
 
     evaluation = await sandbox.exec(
+        'test -z "${TRACKER_COMPOSE_SECRET+x}" && '
         "test -s /workspace/agent-run.txt && printf '{\"score\":1}' > /workspace/evaluation.json",
         timeout=30,
     )

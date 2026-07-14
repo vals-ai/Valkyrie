@@ -3,6 +3,7 @@ from textwrap import dedent
 from typing import Any, cast
 
 import pytest
+import yaml
 from click.testing import CliRunner
 from pydantic import ValidationError
 from tracker.agent.schemas import AgentConfig, AgentContract, Parameter
@@ -456,6 +457,146 @@ class TestParseYamlContract:
         result = _parse_yaml_contract(path, AgentConfig(model="gpt-4o"))
 
         assert result.model == "gpt-4o"
+        assert result.model_gateway_policy is None
+
+    def test_selects_only_the_exact_model_gateway_policy(self, tmp_path: Path) -> None:
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path}"
+            model_gateway_policies:
+              openai/gpt-5.5:
+                config:
+                  client_scope: shared
+                  max_tokens: 8192
+                max_queries: 800
+                max_sessions: 4
+              anthropic/claude-sonnet-5:
+                config:
+                  client_scope: shared
+                  max_tokens: 16000
+                max_queries: 2000
+                max_sessions: 4
+        """,
+        )
+
+        result = _parse_yaml_contract(path, AgentConfig(model="openai/gpt-5.5"))
+
+        assert result.model_gateway_policy is not None
+        assert result.model_gateway_policy.model_dump(mode="json") == {
+            "kind": "task_capability",
+            "model": "openai/gpt-5.5",
+            "config": {"client_scope": "shared", "max_tokens": 8192},
+            "max_queries": 800,
+            "max_sessions": 4,
+        }
+
+    def test_model_gateway_policies_require_an_exact_model(self, tmp_path: Path) -> None:
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path}"
+            model_gateway_policies:
+              openai/gpt-5.5:
+                config:
+                  client_scope: shared
+                max_queries: 800
+                max_sessions: 4
+        """,
+        )
+
+        with pytest.raises(ValueError, match="agent_config.model is required"):
+            _parse_yaml_contract(path, AgentConfig())
+        with pytest.raises(ValueError, match="no policy for exact model"):
+            _parse_yaml_contract(path, AgentConfig(model="openai/gpt-5.5-preview"))
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [("max_queries", 2001), ("max_queries", 0), ("max_sessions", 17), ("max_sessions", 0)],
+    )
+    def test_model_gateway_policy_limits_are_bounded(self, tmp_path: Path, field: str, value: int) -> None:
+        limits = {"max_queries": 800, "max_sessions": 4, field: value}
+        path = self._write_yaml(
+            tmp_path,
+            f"""\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {{problem_statement_path}}"
+            model_gateway_policies:
+              openai/gpt-5.5:
+                config:
+                  client_scope: shared
+                max_queries: {limits["max_queries"]}
+                max_sessions: {limits["max_sessions"]}
+        """,
+        )
+
+        with pytest.raises(ValueError, match=field):
+            _parse_yaml_contract(path, AgentConfig(model="openai/gpt-5.5"))
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("custom_api_key", "secret"),
+            ("custom_endpoint", "https://attacker.invalid"),
+            ("registry_key", "other/model"),
+            ("provider_config", {}),
+            ("native", False),
+            ("unknown_option", True),
+            ("client_scope", "instance"),
+        ],
+    )
+    def test_model_gateway_policy_rejects_routing_and_unknown_config(
+        self,
+        tmp_path: Path,
+        field: str,
+        value: object,
+    ) -> None:
+        config: dict[str, object] = {"client_scope": "shared", field: value}
+        path = tmp_path / "contract.yaml"
+        path.write_text(
+            yaml.safe_dump(
+                {
+                    "name": "my_agent",
+                    "install_cmd": "bash setup.sh",
+                    "run_cmd": "agent --task {problem_statement_path}",
+                    "model_gateway_policies": {
+                        "openai/gpt-5.5": {
+                            "config": config,
+                            "max_queries": 800,
+                            "max_sessions": 4,
+                        }
+                    },
+                }
+            )
+        )
+
+        with pytest.raises(ValueError, match=field):
+            _parse_yaml_contract(path, AgentConfig(model="openai/gpt-5.5"))
+
+    def test_model_gateway_policy_rejects_extra_row_fields(self, tmp_path: Path) -> None:
+        path = self._write_yaml(
+            tmp_path,
+            """\
+            name: my_agent
+            install_cmd: bash setup.sh
+            run_cmd: "agent --task {problem_statement_path}"
+            model_gateway_policies:
+              openai/gpt-5.5:
+                config:
+                  client_scope: shared
+                max_queries: 800
+                max_sessions: 4
+                endpoint: https://attacker.invalid
+        """,
+        )
+
+        with pytest.raises(ValueError, match="endpoint"):
+            _parse_yaml_contract(path, AgentConfig(model="openai/gpt-5.5"))
 
     def test_no_kwargs_in_schema(self, tmp_path: Path) -> None:
         """

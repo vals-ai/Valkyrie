@@ -1,11 +1,20 @@
 from datetime import datetime
 from enum import Enum
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field as PydanticField,
+    FiniteFloat,
+    field_serializer,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from sqlalchemy import Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -120,6 +129,47 @@ class OutputArtifact(BaseModel):
 OutputArtifactSpec = str | OutputArtifact
 
 
+ModelGatewayConfigValue = bool | float | int | str
+
+
+class ModelGatewayPolicyConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    client_scope: Literal["shared"]
+    max_tokens: int | None = PydanticField(default=None, gt=0)
+    temperature: FiniteFloat | None = None
+    top_p: FiniteFloat | None = None
+    top_k: int | None = PydanticField(default=None, gt=0)
+    reasoning: bool | None = None
+    reasoning_effort: str | bool | None = None
+    compute_effort: str | int | None = None
+
+    @model_serializer(mode="plain")
+    def serialize_config(self) -> dict[str, ModelGatewayConfigValue]:
+        return {
+            name: cast(ModelGatewayConfigValue, getattr(self, name))
+            for name in type(self).model_fields
+            if name in self.model_fields_set and getattr(self, name) is not None
+        }
+
+
+class ModelGatewayTaskCapabilityPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["task_capability"]
+    model: str
+    config: ModelGatewayPolicyConfig
+    max_queries: int = PydanticField(ge=1, le=2000)
+    max_sessions: int = PydanticField(ge=1, le=16)
+
+    @field_validator("model")
+    @classmethod
+    def validate_model(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("model must be a non-blank exact model key")
+        return value
+
+
 class AgentContractRequest(BaseModel):
     name: str
     model: str | None = None
@@ -130,6 +180,7 @@ class AgentContractRequest(BaseModel):
     egress_allowlist: list[str] = []
     secrets: dict[str, str] = {}
     kwargs: dict[str, str] = {}
+    model_gateway_policy: ModelGatewayTaskCapabilityPolicy | None = None
 
     @field_validator("output_artifacts")
     @classmethod
@@ -151,6 +202,12 @@ class AgentContractRequest(BaseModel):
                 normalized_artifacts.append(artifact.model_copy(update={"path": str(path)}))
 
         return normalized_artifacts
+
+    @model_validator(mode="after")
+    def validate_model_gateway_policy(self) -> "AgentContractRequest":
+        if self.model_gateway_policy is not None and self.model_gateway_policy.model != self.model:
+            raise ValueError("model_gateway_policy.model must exactly match contract.model")
+        return self
 
 
 class BenchmarkArguments(BaseModel):
