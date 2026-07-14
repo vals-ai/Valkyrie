@@ -10,6 +10,7 @@ from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session, desc, select
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
+from websockets.frames import Close
 from websockets.http11 import Response
 
 import tracker.utils.task_execution as utils_module
@@ -116,9 +117,46 @@ class TestBenchmarkServiceDisconnect:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
-        assert "Benchmark service has not sent a message, causing the connection to disconnect" in error_message
-        assert "last message received" in error_message
+        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_message
+        assert "last application message received" in error_message
         assert "10s ago" in error_message
+
+    @pytest.mark.parametrize(
+        ("code", "reason"),
+        [
+            (1008, "Unauthorized"),
+            (1011, "keepalive ping timeout"),
+        ],
+    )
+    async def test_connection_closed_preserves_remote_close_details(
+        self,
+        code: int,
+        reason: str,
+        contract: AgentContractRequest,
+        database_session: Session,
+        process_benchmark_env: None,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+            contract, database_session, harness_config
+        )
+
+        async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            raise ConnectionClosedError(Close(code, reason), Close(code, reason), True)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
+
+        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+        assert result == {"task_0": None}
+
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.ERROR
+        error_message = self._latest_task_error(database_session, task_row)
+        assert f"received {code}" in error_message
+        assert reason in error_message
+        assert "last application message received" in error_message
 
     async def test_validation_error_produces_human_readable_message(
         self,
