@@ -188,6 +188,12 @@ valkyrie run fetch <id> --connect --format jsonl
 
 # Lightweight status for several known run IDs
 valkyrie run status --ids <id-1>,<id-2> --format json
+
+# Show stored run and current task error messages
+valkyrie run errors <id>
+
+# Machine-readable error messages
+valkyrie run errors <id> --format json
 ```
 
 Connected text fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
