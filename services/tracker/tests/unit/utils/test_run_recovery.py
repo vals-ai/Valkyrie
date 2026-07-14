@@ -349,7 +349,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 selected_task.task_id,
-                harness_config,
+                AwsRuntime.from_harness_config(harness_config),
                 self._test_org,
                 sandbox_provider_config=DaytonaProviderConfig(
                     DAYTONA_API_KEY="key",
