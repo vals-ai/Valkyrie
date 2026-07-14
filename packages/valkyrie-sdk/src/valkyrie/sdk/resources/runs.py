@@ -281,13 +281,20 @@ class RunsResource:
         except httpx.HTTPError as exc:
             raise ValkyrieTransportError(f"Valkyrie output stream failed: {exc}") from exc
 
-    async def stop(self, run_id: UUID, *, force: bool = False) -> StopBenchmarkResponse:
-        """Stop a run, optionally terminating active sandboxes."""
+    async def stop(
+        self,
+        run_id: UUID,
+        *,
+        force: bool = False,
+        task_ids: Sequence[str] | None = None,
+    ) -> StopBenchmarkResponse:
+        """Stop a run or selected tasks."""
         return await self._sdk.request_model(
             "POST",
             f"/stop-benchmark/{run_id}",
             StopBenchmarkResponse,
             params={"force": force},
+            json={"task_ids": list(task_ids)} if task_ids is not None else None,
         )
 
     async def resume(

@@ -1,15 +1,20 @@
-"""Tests for additional hosted run workflows in SDK V2."""
+"""SDK V2 run workflow tests.
+
+Run: pytest tests/unit/sdk/test_run_workflows_v2.py
+"""
 
 from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
 
 from valkyrie.sdk import ValkyrieAPIError, ValkyrieStreamError
+
+_STOP_RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 
 
 class ChunkStream(httpx.AsyncByteStream):
@@ -65,6 +70,41 @@ async def test_results_exist_returns_typed_s3_state(make_client) -> None:
         result = await client.runs.results_exist(run_id)
 
     assert result.exists is True
+
+
+@pytest.mark.parametrize(
+    ("task_ids", "expected_body"),
+    [
+        (None, None),
+        (["task-1", "task-2"], {"task_ids": ["task-1", "task-2"]}),
+    ],
+)
+async def test_stop_sends_optional_task_scope(
+    make_client,
+    task_ids: list[str] | None,
+    expected_body: dict[str, list[str]] | None,
+) -> None:
+    """Check task-scoped stop bodies.
+
+    Test cases:
+    - No IDs omits the body.
+    - IDs send a task selection.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        assert (request.url.path, request.url.params["force"], body) == (
+            f"/stop-benchmark/{_STOP_RUN_ID}",
+            "true",
+            expected_body,
+        )
+
+        return httpx.Response(200, json={"status": "success"})
+
+    async with make_client(handler) as client:
+        result = await client.runs.stop(_STOP_RUN_ID, force=True, task_ids=task_ids)
+
+    assert result.status == "success"
 
 
 async def test_analyze_normalizes_cached_json_to_a_done_event(make_client) -> None:

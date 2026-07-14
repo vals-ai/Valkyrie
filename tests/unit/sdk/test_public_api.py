@@ -1,4 +1,7 @@
-"""Compatibility tests for the published SDK surface."""
+"""Published SDK compatibility tests.
+
+Run: pytest tests/unit/sdk/test_public_api.py
+"""
 
 from __future__ import annotations
 
@@ -71,7 +74,7 @@ EXPECTED_SIGNATURES = {
     RunsResource.results_exist: "self, run_id",
     RunsResource.analyze: "self, run_id, *, no_cache=False, lambda_function=None",
     RunsResource.stream_outputs: "self, run_id, *, task_ids=None",
-    RunsResource.stop: "self, run_id, *, force=False",
+    RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
     RunsResource.resume: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False"
     ),
