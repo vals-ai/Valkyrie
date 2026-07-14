@@ -1,7 +1,10 @@
 """Logic for executing, tracking, and transitioning the status of a single task."""
 
 import asyncio
+import hashlib
+import ipaddress
 import json
+import math
 import re
 import time
 import traceback
@@ -10,7 +13,8 @@ from collections.abc import Coroutine
 from contextlib import suppress
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -21,7 +25,7 @@ from benchmark_service import (
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from opentelemetry import trace
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlmodel import Session, col, select, update
 from tenacity import retry as tenacity_retry
 from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
@@ -60,10 +64,13 @@ from tracker.model_gateway import (
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import (
+    EgressReadiness,
     create_sandbox,
     execute_agent,
     install_agent,
+    restricted_agent_egress,
     run_agent,
+    runtime_sandbox,
     upload_agent_artifacts,
     upload_agent_outputs,
 )
@@ -80,6 +87,8 @@ logger = get_logger(__name__)
 _PTY_TASK_RETRY_LIMIT: int = 1
 _MODEL_GATEWAY_USAGE_DIRECTORY = "model_gateway_usage"
 _MODEL_GATEWAY_USAGE_RESULT_KEY = "_valkyrie_model_gateway_usage"
+_AGENT_EGRESS_DIRECTORY = "agent_egress"
+_AGENT_EGRESS_RESULT_KEY = "_valkyrie_agent_egress"
 _AGENT_ENV_VAR_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _RESERVED_AGENT_ENV_VAR_NAMES = frozenset(
     {
@@ -93,6 +102,168 @@ _RESERVED_AGENT_ENV_VAR_NAMES = frozenset(
         "VALKYRIE_AGENT_SECRET_SCOPE",
     }
 )
+
+
+class EgressEvalResumeState(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["agent_egress_eval_resume"]
+    egress_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    benchmark_state: dict[str, Any]
+
+
+class CapabilityEgressEvalResumeState(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    kind: Literal["model_gateway_egress_eval_resume"]
+    capability_id: str = Field(pattern=r"^cap_[A-Za-z0-9_-]+$")
+    egress_receipt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    benchmark_state: dict[str, Any]
+
+
+def _canonical_egress_origin(address: str) -> str:
+    value = address.strip()
+    if not value:
+        raise SandboxSetupError("Egress addresses cannot be empty")
+    try:
+        return str(ipaddress.ip_network(value, strict=False))
+    except ValueError:
+        pass
+
+    parsed = urlsplit(value if "://" in value else f"https://{value}")
+    if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+        raise SandboxSetupError(f"Unsupported egress address: {address}")
+    port = parsed.port
+    default_port = 443 if parsed.scheme == "https" else 80
+    suffix = f":{port}" if port is not None and port != default_port else ""
+    return f"{parsed.scheme}://{parsed.hostname.lower()}{suffix}"
+
+
+def _merge_egress_addresses(*sources: list[str]) -> list[str]:
+    merged: dict[str, str] = {}
+    for source in sources:
+        for address in source:
+            merged.setdefault(_canonical_egress_origin(address), address)
+    return list(merged.values())
+
+
+def _egress_origin_set_sha256(addresses: list[str]) -> str:
+    origins = sorted({_canonical_egress_origin(address) for address in addresses})
+    content = json.dumps(origins, separators=(",", ":")).encode()
+    return hashlib.sha256(content).hexdigest()
+
+
+def _egress_readiness_receipt(
+    benchmark_id: UUID,
+    task_id: str,
+    sandbox_id: str,
+    contract_addresses: list[str],
+    setup_addresses: list[str],
+    gateway_addresses: list[str],
+    readiness: EgressReadiness,
+) -> dict[str, Any]:
+    effective = _merge_egress_addresses(contract_addresses, setup_addresses, gateway_addresses)
+    return {
+        "schema_version": 1,
+        "run_id": str(benchmark_id),
+        "task_id": task_id,
+        "sandbox_id": sandbox_id,
+        "allowed_origin_set_sha256": {
+            "contract": _egress_origin_set_sha256(contract_addresses),
+            "setup": _egress_origin_set_sha256(setup_addresses),
+            "model_gateway": _egress_origin_set_sha256(gateway_addresses),
+            "effective": _egress_origin_set_sha256(effective),
+        },
+        "sentinel_sha256": sorted(
+            hashlib.sha256(f"{address}:443".encode()).hexdigest() for address in readiness.sentinel_addresses
+        ),
+        "update_returned_at": readiness.update_returned_at,
+        "ready_at": readiness.ready_at,
+        "readiness_attempts": readiness.attempts,
+        "required_consecutive_observations": 2,
+    }
+
+
+async def _upload_egress_readiness_receipt(
+    receipt: dict[str, Any],
+    benchmark_id: UUID,
+    task_id: str,
+    harness_config: HarnessConfig,
+) -> str:
+    content = (json.dumps(receipt, sort_keys=True) + "\n").encode()
+    await upload_to_s3(
+        content,
+        get_agent_result_s3_key(
+            str(benchmark_id),
+            task_id,
+            f"{_AGENT_EGRESS_DIRECTORY}/readiness-v1.json",
+        ),
+        harness_config.aws,
+        harness_config.s3_bucket,
+    )
+    return hashlib.sha256(content).hexdigest()
+
+
+def _parse_egress_readiness_receipt(content: bytes, benchmark_id: UUID, task_id: str) -> dict[str, Any]:
+    try:
+        raw: object = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise TrackerServiceError("Agent egress readiness artifact is invalid JSON") from exc
+    if not isinstance(raw, dict):
+        raise TrackerServiceError("Agent egress readiness artifact is invalid")
+    receipt = cast(dict[str, Any], raw)
+    origins = receipt.get("allowed_origin_set_sha256")
+    sentinels = receipt.get("sentinel_sha256")
+    update_returned_at = receipt.get("update_returned_at")
+    ready_at = receipt.get("ready_at")
+    attempts = receipt.get("readiness_attempts")
+    schema_version = receipt.get("schema_version")
+    required_observations = receipt.get("required_consecutive_observations")
+    if not isinstance(origins, dict) or not isinstance(sentinels, list):
+        raise TrackerServiceError("Agent egress readiness artifact is invalid")
+    origin_values = cast(dict[str, object], origins)
+    sentinel_values = cast(list[object], sentinels)
+    expected = {
+        "schema_version",
+        "run_id",
+        "task_id",
+        "sandbox_id",
+        "allowed_origin_set_sha256",
+        "sentinel_sha256",
+        "update_returned_at",
+        "ready_at",
+        "readiness_attempts",
+        "required_consecutive_observations",
+    }
+    if (
+        set(receipt) != expected
+        or type(schema_version) is not int
+        or schema_version != 1
+        or receipt.get("run_id") != str(benchmark_id)
+        or receipt.get("task_id") != task_id
+        or not isinstance(receipt.get("sandbox_id"), str)
+        or set(origin_values) != {"contract", "setup", "model_gateway", "effective"}
+        or any(
+            not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
+            for value in origin_values.values()
+        )
+        or len(sentinel_values) != 2
+        or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for value in sentinel_values)
+        or sentinel_values != sorted(set(cast(list[str], sentinel_values)))
+        or isinstance(update_returned_at, bool)
+        or not isinstance(update_returned_at, int | float)
+        or not math.isfinite(update_returned_at)
+        or isinstance(ready_at, bool)
+        or not isinstance(ready_at, int | float)
+        or not math.isfinite(ready_at)
+        or ready_at < update_returned_at
+        or type(attempts) is not int
+        or attempts < 2
+        or type(required_observations) is not int
+        or required_observations != 2
+    ):
+        raise TrackerServiceError("Agent egress readiness artifact is invalid")
+    return receipt
 
 
 def _validate_agent_env_vars(env_vars: dict[str, str]) -> None:
@@ -463,14 +634,30 @@ async def process_task(
 
     flush_task = asyncio.create_task(auto_flush_logs())
     capability_usage: CapabilityUsageSummary | None = None
+    egress_readiness_receipt: dict[str, Any] | None = None
+    egress_receipt_sha256: str | None = None
 
     def on_eval_resume_state(state: dict[str, Any]) -> None:
         persisted_state = state
         if start_benchmark_request.contract.model_gateway_policy is not None:
             assert capability_usage is not None
-            persisted_state = CapabilityEvalResumeState(
-                kind="model_gateway_eval_resume",
-                capability_id=capability_usage.capability_id,
+            if egress_receipt_sha256 is None:
+                persisted_state = CapabilityEvalResumeState(
+                    kind="model_gateway_eval_resume",
+                    capability_id=capability_usage.capability_id,
+                    benchmark_state=state,
+                ).model_dump(mode="json")
+            else:
+                persisted_state = CapabilityEgressEvalResumeState(
+                    kind="model_gateway_egress_eval_resume",
+                    capability_id=capability_usage.capability_id,
+                    egress_receipt_sha256=egress_receipt_sha256,
+                    benchmark_state=state,
+                ).model_dump(mode="json")
+        elif egress_receipt_sha256 is not None:
+            persisted_state = EgressEvalResumeState(
+                kind="agent_egress_eval_resume",
+                egress_receipt_sha256=egress_receipt_sha256,
                 benchmark_state=state,
             ).model_dump(mode="json")
         save_eval_resume_state(task_row.id, org, persisted_state, expected_started_at=attempt_started_at)
@@ -485,16 +672,45 @@ async def process_task(
             try:
                 log_output("Resuming evaluation from durable benchmark state\n")
                 benchmark_eval_resume_state = task_row.eval_resume_state
-                if start_benchmark_request.contract.model_gateway_policy is not None:
+                capability_id: str | None = None
+                kind = task_row.eval_resume_state.get("kind")
+                if kind == "model_gateway_egress_eval_resume":
+                    if start_benchmark_request.contract.model_gateway_policy is None:
+                        raise TrackerServiceError("Model gateway evaluation resume state has no model policy")
                     try:
-                        resume_state = CapabilityEvalResumeState.model_validate(task_row.eval_resume_state)
+                        resume_state = CapabilityEgressEvalResumeState.model_validate(task_row.eval_resume_state)
+                    except ValidationError:
+                        raise TrackerServiceError("Model gateway egress evaluation resume state is invalid") from None
+                    capability_id = resume_state.capability_id
+                    egress_receipt_sha256 = resume_state.egress_receipt_sha256
+                    benchmark_eval_resume_state = resume_state.benchmark_state
+                elif kind == "model_gateway_eval_resume":
+                    if start_benchmark_request.contract.model_gateway_policy is None:
+                        raise TrackerServiceError("Model gateway evaluation resume state has no model policy")
+                    try:
+                        legacy_state = CapabilityEvalResumeState.model_validate(task_row.eval_resume_state)
                     except ValidationError:
                         raise TrackerServiceError("Model gateway evaluation resume state is invalid") from None
+                    capability_id = legacy_state.capability_id
+                    benchmark_eval_resume_state = legacy_state.benchmark_state
+                elif kind == "agent_egress_eval_resume":
+                    if start_benchmark_request.contract.model_gateway_policy is not None:
+                        raise TrackerServiceError("Agent egress evaluation resume state is missing model capability")
+                    try:
+                        egress_state = EgressEvalResumeState.model_validate(task_row.eval_resume_state)
+                    except ValidationError:
+                        raise TrackerServiceError("Agent egress evaluation resume state is invalid") from None
+                    egress_receipt_sha256 = egress_state.egress_receipt_sha256
+                    benchmark_eval_resume_state = egress_state.benchmark_state
+                elif start_benchmark_request.contract.model_gateway_policy is not None:
+                    raise TrackerServiceError("Model gateway evaluation resume state is invalid")
+
+                if capability_id is not None:
                     usage_artifact = await download_from_s3(
                         get_agent_result_s3_key(
                             str(benchmark_id),
                             task_id,
-                            f"{_MODEL_GATEWAY_USAGE_DIRECTORY}/{resume_state.capability_id}.json",
+                            f"{_MODEL_GATEWAY_USAGE_DIRECTORY}/{capability_id}.json",
                         ),
                         harness_config.aws,
                         harness_config.s3_bucket,
@@ -503,11 +719,28 @@ async def process_task(
                         capability_usage = CapabilityUsageSummary.model_validate_json(usage_artifact)
                     except ValidationError:
                         raise TrackerServiceError("Model gateway usage artifact is invalid") from None
-                    if capability_usage.capability_id != resume_state.capability_id:
+                    if capability_usage.capability_id != capability_id:
                         raise TrackerServiceError("Model gateway usage artifact does not match resume state")
                     if capability_usage.state != "revoked" or not capability_usage.drained:
                         raise TrackerServiceError("Model gateway usage artifact is not finalized")
-                    benchmark_eval_resume_state = resume_state.benchmark_state
+
+                if egress_receipt_sha256 is not None:
+                    egress_artifact = await download_from_s3(
+                        get_agent_result_s3_key(
+                            str(benchmark_id),
+                            task_id,
+                            f"{_AGENT_EGRESS_DIRECTORY}/readiness-v1.json",
+                        ),
+                        harness_config.aws,
+                        harness_config.s3_bucket,
+                    )
+                    if hashlib.sha256(egress_artifact).hexdigest() != egress_receipt_sha256:
+                        raise TrackerServiceError("Agent egress readiness artifact does not match resume state")
+                    egress_readiness_receipt = _parse_egress_readiness_receipt(
+                        egress_artifact,
+                        benchmark_id,
+                        task_id,
+                    )
 
                 resume_eval_start_time = time.perf_counter()
                 # Reset timer to keep the last received message from the benchmarks service accurate
@@ -526,6 +759,10 @@ async def process_task(
                             f"Benchmark result uses reserved key {_MODEL_GATEWAY_USAGE_RESULT_KEY!r}"
                         )
                     evaluation_result[_MODEL_GATEWAY_USAGE_RESULT_KEY] = capability_usage.model_dump(mode="json")
+                if egress_readiness_receipt is not None:
+                    if _AGENT_EGRESS_RESULT_KEY in evaluation_result:
+                        raise TrackerServiceError(f"Benchmark result uses reserved key {_AGENT_EGRESS_RESULT_KEY!r}")
+                    evaluation_result[_AGENT_EGRESS_RESULT_KEY] = egress_readiness_receipt
                 resume_eval_duration = time.perf_counter() - resume_eval_start_time
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
@@ -641,7 +878,7 @@ async def process_task(
 
                 # Reset timer to keep the last received message from the benchmarks service accurate
                 last_log_time = time.monotonic()
-                _ = await benchmark_service.setup_task(
+                setup_response = await benchmark_service.setup_task(
                     task_row.task_id,
                     sandbox.id,
                     on_message=log_output,
@@ -652,6 +889,16 @@ async def process_task(
                 # Force flush the logs if anything has been buffered
                 buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
 
+                setup_addresses = setup_response.egress_allowlist
+                contract_with_setup_egress = start_benchmark_request.contract.model_copy(
+                    update={
+                        "egress_allowlist": _merge_egress_addresses(
+                            start_benchmark_request.contract.egress_allowlist,
+                            setup_addresses,
+                        )
+                    }
+                )
+
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
                 if start_benchmark_request.contract.final_output:
@@ -661,22 +908,73 @@ async def process_task(
                 if policy is None:
                     agent_env_vars = resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws)
                     try:
-                        exit_reason, agent_run_time = await run_agent(
-                            sandbox,
-                            start_benchmark_request.contract,
-                            task_data.problem_path,
-                            task_id,
-                            log_output,
-                            task_data.cwd,
-                            agent_env_vars=agent_env_vars,
-                            retry_policy=retry_policy,
-                            aws=harness_config.aws,
-                            s3_bucket=harness_config.s3_bucket,
-                            agent_output_s3_key=agent_output_s3_key,
-                            agent_timeout=task_data.agent_timeout,
-                            benchmark_id=str(benchmark_id),
-                            runtime_source=task_data.source,
-                        )
+                        if not setup_addresses:
+                            exit_reason, agent_run_time = await run_agent(
+                                sandbox,
+                                contract_with_setup_egress,
+                                task_data.problem_path,
+                                task_id,
+                                log_output,
+                                task_data.cwd,
+                                agent_env_vars=agent_env_vars,
+                                retry_policy=retry_policy,
+                                aws=harness_config.aws,
+                                s3_bucket=harness_config.s3_bucket,
+                                agent_output_s3_key=agent_output_s3_key,
+                                agent_timeout=task_data.agent_timeout,
+                                benchmark_id=str(benchmark_id),
+                                runtime_source=task_data.source,
+                            )
+                        else:
+                            await install_agent(
+                                sandbox,
+                                contract_with_setup_egress,
+                                log_output,
+                                agent_env_vars,
+                                task_data.source,
+                                retry_policy=retry_policy,
+                            )
+                            command_contract = contract_with_setup_egress.model_copy(update={"egress_allowlist": []})
+                            agent_sandbox = runtime_sandbox(sandbox, task_data.source)
+                            async with restricted_agent_egress(
+                                agent_sandbox, contract_with_setup_egress.egress_allowlist
+                            ) as readiness:
+                                egress_readiness_receipt = _egress_readiness_receipt(
+                                    benchmark_id,
+                                    task_id,
+                                    sandbox.id,
+                                    start_benchmark_request.contract.egress_allowlist,
+                                    setup_addresses,
+                                    [],
+                                    readiness,
+                                )
+                                egress_receipt_sha256 = await _upload_egress_readiness_receipt(
+                                    egress_readiness_receipt,
+                                    benchmark_id,
+                                    task_id,
+                                    harness_config,
+                                )
+                                exit_reason, agent_run_time = await execute_agent(
+                                    sandbox,
+                                    command_contract,
+                                    task_data.problem_path,
+                                    task_id,
+                                    log_output,
+                                    task_data.cwd,
+                                    agent_env_vars,
+                                    task_data.agent_timeout,
+                                    task_data.source,
+                                )
+                            await upload_agent_outputs(
+                                sandbox,
+                                command_contract,
+                                task_id,
+                                harness_config.aws,
+                                harness_config.s3_bucket,
+                                agent_output_s3_key,
+                                str(benchmark_id),
+                                task_data.source,
+                            )
                     finally:
                         agent_env_vars.clear()
                 else:
@@ -687,7 +985,7 @@ async def process_task(
                     try:
                         await install_agent(
                             sandbox,
-                            start_benchmark_request.contract,
+                            contract_with_setup_egress,
                             log_output,
                             agent_env_vars,
                             task_data.source,
@@ -696,7 +994,6 @@ async def process_task(
                     finally:
                         agent_env_vars.clear()
 
-                    expires_at = capability_expires_at(task_data.agent_timeout, time.time())
                     async with ModelGatewayAdminClient.from_environment() as gateway:
 
                         async def write_capability_usage(usage: CapabilityUsageSummary) -> None:
@@ -721,46 +1018,69 @@ async def process_task(
                                 },
                             )
 
-                        minted = await mint_capability_uninterruptibly(
-                            gateway,
-                            CapabilityMintRequest(
-                                run_id=str(benchmark_id),
-                                task_id=task_id,
-                                model=policy.model,
-                                config=policy.config.model_dump(mode="json"),
-                                sandbox_id=sandbox.id,
-                                identity={"org_id": str(org.id), **identity},
-                                expires_at=expires_at,
-                                max_queries=policy.max_queries,
-                                max_sessions=policy.max_sessions,
-                            ),
-                            write_capability_usage,
+                        effective_addresses = _merge_egress_addresses(
+                            contract_with_setup_egress.egress_allowlist,
+                            [gateway.gateway_url],
                         )
-                        runtime_env = {
-                            "MODEL_GATEWAY_URL": gateway.gateway_url,
-                            "MODEL_GATEWAY_API_KEY": minted.token,
-                        }
-                        capability_id = minted.capability_id
-                        del minted
-                        try:
-                            exit_reason, agent_run_time = await execute_agent(
-                                sandbox,
-                                start_benchmark_request.contract,
-                                task_data.problem_path,
+                        command_contract = contract_with_setup_egress.model_copy(update={"egress_allowlist": []})
+                        agent_sandbox = runtime_sandbox(sandbox, task_data.source)
+                        async with restricted_agent_egress(agent_sandbox, effective_addresses) as readiness:
+                            egress_readiness_receipt = _egress_readiness_receipt(
+                                benchmark_id,
                                 task_id,
-                                log_output,
-                                task_data.cwd,
-                                runtime_env,
-                                task_data.agent_timeout,
-                                task_data.source,
+                                sandbox.id,
+                                start_benchmark_request.contract.egress_allowlist,
+                                setup_addresses,
+                                [gateway.gateway_url],
+                                readiness,
                             )
-                        finally:
-                            runtime_env.clear()
-                            capability_usage = await finalize_capability_uninterruptibly(
+                            egress_receipt_sha256 = await _upload_egress_readiness_receipt(
+                                egress_readiness_receipt,
+                                benchmark_id,
+                                task_id,
+                                harness_config,
+                            )
+                            expires_at = capability_expires_at(task_data.agent_timeout, time.time())
+                            minted = await mint_capability_uninterruptibly(
                                 gateway,
-                                capability_id,
+                                CapabilityMintRequest(
+                                    run_id=str(benchmark_id),
+                                    task_id=task_id,
+                                    model=policy.model,
+                                    config=policy.config.model_dump(mode="json"),
+                                    sandbox_id=sandbox.id,
+                                    identity={"org_id": str(org.id), **identity},
+                                    expires_at=expires_at,
+                                    max_queries=policy.max_queries,
+                                    max_sessions=policy.max_sessions,
+                                ),
                                 write_capability_usage,
                             )
+                            runtime_env = {
+                                "MODEL_GATEWAY_URL": gateway.gateway_url,
+                                "MODEL_GATEWAY_API_KEY": minted.token,
+                            }
+                            capability_id = minted.capability_id
+                            del minted
+                            try:
+                                exit_reason, agent_run_time = await execute_agent(
+                                    sandbox,
+                                    command_contract,
+                                    task_data.problem_path,
+                                    task_id,
+                                    log_output,
+                                    task_data.cwd,
+                                    runtime_env,
+                                    task_data.agent_timeout,
+                                    task_data.source,
+                                )
+                            finally:
+                                runtime_env.clear()
+                                capability_usage = await finalize_capability_uninterruptibly(
+                                    gateway,
+                                    capability_id,
+                                    write_capability_usage,
+                                )
 
                     await upload_agent_outputs(
                         sandbox,
@@ -827,6 +1147,10 @@ async def process_task(
                             f"Benchmark result uses reserved key {_MODEL_GATEWAY_USAGE_RESULT_KEY!r}"
                         )
                     evaluation_result[_MODEL_GATEWAY_USAGE_RESULT_KEY] = capability_usage.model_dump(mode="json")
+                if egress_readiness_receipt is not None:
+                    if _AGENT_EGRESS_RESULT_KEY in evaluation_result:
+                        raise TrackerServiceError(f"Benchmark result uses reserved key {_AGENT_EGRESS_RESULT_KEY!r}")
+                    evaluation_result[_AGENT_EGRESS_RESULT_KEY] = egress_readiness_receipt
                 task_breakdown.evaluation_run_duration = time.perf_counter() - evaluation_start_time
 
                 task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time

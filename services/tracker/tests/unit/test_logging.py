@@ -225,6 +225,7 @@ async def test_request_context_middleware_sets_request_id(monkeypatch: pytest.Mo
     from main import app
 
     monkeypatch.setattr("main.check_database_connection", lambda: True)
+    monkeypatch.setenv("MODEL_GATEWAY_URL", "https://gateway.example.test")
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/health")

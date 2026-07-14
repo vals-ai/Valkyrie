@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+import hashlib
 import io
 import logging
 import tarfile
@@ -60,12 +61,16 @@ class TestFastapiServer:
         """
         # Mock database connection check for unit tests
         monkeypatch.setattr("main.check_database_connection", lambda: True)
+        monkeypatch.setenv("MODEL_GATEWAY_URL", "HTTPS://Gateway.Example.Test:443/")
 
         response = client.get("/health")
 
         assert response.status_code == 200
 
-        assert response.json() == {"status": "ok"}
+        assert response.json() == {
+            "status": "ok",
+            "model_gateway_origin_sha256": hashlib.sha256(b"https://gateway.example.test").hexdigest(),
+        }
 
     async def test_fetch_benchmark_tasks(
         self,

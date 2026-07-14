@@ -75,6 +75,7 @@ from tracker.docent_analysis import (
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
+from tracker.model_gateway import model_gateway_origin_sha256
 from tracker.observability import configure_observability
 from tracker.types import (
     AnalyzeBenchmarkRequest,
@@ -186,23 +187,27 @@ async def benchmark_service_error_handler(_request: Request, exc: BenchmarkServi
 @app.get("/health")
 def health_check() -> dict[str, str]:
     """
-    Health check to ensure that the tracker service is running correctly.
+    Health check for the tracker database and configured model gateway origin.
 
     Usage:
     curl -X GET http://<endpoint>/health
 
     Returns:
     {
-        "status": "ok"
+        "status": "ok",
+        "model_gateway_origin_sha256": "..."
     }
 
     Returns:
-    - 200 OK if the server is running and database is accessible
+    - 200 OK if the database and model gateway origin are valid
     - 503 Service Unavailable if the database is not accessible
     """
     if not check_database_connection():
         raise HTTPException(status_code=503, detail="Database is not accessible")
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "model_gateway_origin_sha256": model_gateway_origin_sha256(),
+    }
 
 
 @app.post("/init")

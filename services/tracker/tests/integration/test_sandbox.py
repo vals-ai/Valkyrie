@@ -24,6 +24,7 @@ from tracker.exceptions import SandboxError
 from tracker.sandbox import (
     create_sandbox,
     install_agent_dependencies,
+    restricted_agent_egress,
     run_agent,
     stream_command_output,
     upload_agent_artifacts,
@@ -320,6 +321,45 @@ class TestSandboxOperations:
         restored_result = await test_sandbox.exec(restored_egress_probe_command)
         assert restored_result.exit_code == 0
         assert "restored=True" in restored_result.stdout
+
+    async def test_restricted_agent_egress_preserves_process_state(self, test_sandbox: Sandbox) -> None:
+        """Prove live policy readiness and restoration without restarting the runtime."""
+        start = await test_sandbox.exec(
+            "nohup sh -c 'while :; do date +%s%N >> /tmp/egress-heartbeat; sleep 0.2; done' "
+            ">/tmp/egress-heartbeat.log 2>&1 & echo $! > /tmp/egress-heartbeat.pid"
+        )
+        assert start.exit_code == 0
+        heartbeat_ready = await test_sandbox.exec(
+            "for i in $(seq 1 30); do test -s /tmp/egress-heartbeat && exit 0; sleep 0.1; done; exit 1"
+        )
+        assert heartbeat_ready.exit_code == 0
+        identity_command = (
+            "pid=$(cat /tmp/egress-heartbeat.pid); "
+            "test -d /proc/$pid; "
+            "printf '%s ' \"$pid\"; "
+            "awk '{print $22}' /proc/$pid/stat; "
+            "wc -l < /tmp/egress-heartbeat"
+        )
+
+        async def identity() -> tuple[str, int]:
+            result = await test_sandbox.exec(identity_command)
+            assert result.exit_code == 0
+            lines = result.stdout.splitlines()
+            return lines[0], int(lines[1])
+
+        try:
+            before = await identity()
+            async with restricted_agent_egress(test_sandbox, ["https://example.com"]) as readiness:
+                await asyncio.sleep(1)
+                restricted = await identity()
+                assert len(readiness.sentinel_addresses) == 2
+                assert readiness.attempts >= 2
+            restored = await identity()
+        finally:
+            await test_sandbox.exec("kill $(cat /tmp/egress-heartbeat.pid) 2>/dev/null || true")
+
+        assert before[0] == restricted[0] == restored[0]
+        assert before[1] < restricted[1] <= restored[1]
 
     async def test_deterministic_timeout_behavior(
         self,

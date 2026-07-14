@@ -1,6 +1,7 @@
 """Administrative client for task-scoped model gateway capabilities."""
 
 import asyncio
+import hashlib
 import math
 import os
 from collections.abc import Awaitable, Callable
@@ -96,24 +97,35 @@ def capability_expires_at(agent_timeout: float, now: float) -> int:
     return math.floor(now) + lifetime
 
 
+def _model_gateway_origin() -> str:
+    gateway_url = os.environ.get("MODEL_GATEWAY_URL", "")
+    parsed_url = httpx.URL(gateway_url)
+    if (
+        parsed_url.scheme != "https"
+        or not parsed_url.host
+        or parsed_url.userinfo
+        or parsed_url.path != "/"
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
+        raise ModelGatewayError("MODEL_GATEWAY_URL must be an absolute HTTPS URL")
+    if parsed_url.port == 443:
+        parsed_url = parsed_url.copy_with(port=None)
+    return str(parsed_url).rstrip("/")
+
+
+def model_gateway_origin_sha256() -> str:
+    return hashlib.sha256(_model_gateway_origin().encode("utf-8")).hexdigest()
+
+
 class ModelGatewayAdminClient:
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client
 
     @classmethod
     def from_environment(cls) -> "ModelGatewayAdminClient":
-        gateway_url = os.environ.get("MODEL_GATEWAY_URL", "").rstrip("/")
+        gateway_url = _model_gateway_origin()
         admin_key = os.environ.get("MODEL_GATEWAY_ADMIN_API_KEY", "")
-        parsed_url = httpx.URL(gateway_url)
-        if (
-            parsed_url.scheme != "https"
-            or not parsed_url.host
-            or parsed_url.userinfo
-            or parsed_url.path != "/"
-            or parsed_url.query
-            or parsed_url.fragment
-        ):
-            raise ModelGatewayError("MODEL_GATEWAY_URL must be an absolute HTTPS URL")
         if not admin_key or admin_key != admin_key.strip():
             raise ModelGatewayError("MODEL_GATEWAY_ADMIN_API_KEY is required for task capabilities")
 

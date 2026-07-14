@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import math
 from decimal import Decimal
@@ -16,6 +17,7 @@ from tracker.model_gateway import (
     capability_expires_at,
     finalize_capability_uninterruptibly,
     mint_capability_uninterruptibly,
+    model_gateway_origin_sha256,
 )
 
 
@@ -326,8 +328,35 @@ def test_environment_requires_https_gateway_and_admin_key(monkeypatch: pytest.Mo
         ModelGatewayAdminClient.from_environment()
 
 
+def test_model_gateway_origin_sha256_hashes_canonical_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MODEL_GATEWAY_URL", "HTTPS://Gateway.Example.Test:443/")
+
+    expected = hashlib.sha256(b"https://gateway.example.test").hexdigest()
+
+    assert model_gateway_origin_sha256() == expected
+
+
+@pytest.mark.parametrize(
+    "gateway_url",
+    [
+        "http://gateway.example.test",
+        "https://gateway.example.test/path",
+        "https://gateway.example.test?query=value",
+        "https://user@gateway.example.test",
+    ],
+)
+def test_model_gateway_origin_sha256_requires_https_origin(
+    monkeypatch: pytest.MonkeyPatch,
+    gateway_url: str,
+) -> None:
+    monkeypatch.setenv("MODEL_GATEWAY_URL", gateway_url)
+
+    with pytest.raises(ModelGatewayError, match="absolute HTTPS"):
+        model_gateway_origin_sha256()
+
+
 async def test_environment_builds_authenticated_admin_client(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MODEL_GATEWAY_URL", "https://gateway.example.test/")
+    monkeypatch.setenv("MODEL_GATEWAY_URL", "HTTPS://Gateway.Example.Test:443/")
     monkeypatch.setenv("MODEL_GATEWAY_ADMIN_API_KEY", "admin-secret-sentinel")
 
     async with ModelGatewayAdminClient.from_environment() as client:

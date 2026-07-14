@@ -1,3 +1,5 @@
+import hashlib
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine
@@ -19,11 +21,15 @@ class TestHealthCheckIntegration:
 
         # Override the engine used by check_database_connection
         monkeypatch.setattr(session_module, "engine", postgres_engine)
+        monkeypatch.setenv("MODEL_GATEWAY_URL", "https://gateway.example.test")
 
         response = client.get("/health")
 
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        assert response.json() == {
+            "status": "ok",
+            "model_gateway_origin_sha256": hashlib.sha256(b"https://gateway.example.test").hexdigest(),
+        }
 
         # Clean up
         app.dependency_overrides.clear()

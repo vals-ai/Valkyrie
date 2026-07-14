@@ -383,8 +383,8 @@ wheels = [
 
 [[package]]
 name = "create-benchmark-service"
-version = "0.15.0"
-source = { git = "https://github.com/vals-ai/create-benchmark-service.git?tag=v0.15.0#3e517a46c7807b6c8c74bbb9f0ca537d34852f1d" }
+version = "0.15.1.dev1+g594964e7e"
+source = { git = "https://github.com/vals-ai/create-benchmark-service.git?rev=594964e7e91a0a27ae3d4e3325f5cb0345e3d07a#594964e7e91a0a27ae3d4e3325f5cb0345e3d07a" }
 dependencies = [
     { name = "boto3" },
     { name = "cachetools" },
@@ -2019,7 +2019,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "boto3", specifier = ">=1.42.20" },
     { name = "boto3-stubs", extras = ["s3"] },
-    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?tag=v0.15.0" },
+    { name = "create-benchmark-service", git = "https://github.com/vals-ai/create-benchmark-service.git?rev=594964e7e91a0a27ae3d4e3325f5cb0345e3d07a" },
     { name = "descope", specifier = ">=0.9.0" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.135.3" },
     { name = "httpx", specifier = ">=0.28.1" },

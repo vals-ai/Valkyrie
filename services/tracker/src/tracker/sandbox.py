@@ -1,6 +1,8 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import ipaddress
+import json
 import shlex
 import time
 import uuid
@@ -8,8 +10,10 @@ from asyncio import Semaphore
 from collections import deque
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import PurePosixPath
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, Literal, cast
+from urllib.parse import urlsplit
 
 import logfire
 import sentry_sdk
@@ -654,6 +658,63 @@ _EGRESS_RETRY = retry(
     stop=stop_after_attempt(3),
     before_sleep=retry_callback("valkyrie.sandbox.egress"),
 )
+_EGRESS_SENTINEL_HOSTS = ("www.iana.org", "www.python.org")
+_EGRESS_READY_TIMEOUT_SECONDS = 30
+_EGRESS_READY_CONSECUTIVE_OBSERVATIONS = 2
+_EGRESS_PROBE_SOURCE = r"""
+import json
+import socket
+import ssl
+import sys
+
+payload = json.loads(sys.argv[1])
+
+
+def connect(host, port, use_tls):
+    try:
+        with socket.create_connection((host, port), timeout=2) as connection:
+            if use_tls:
+                with ssl.create_default_context().wrap_socket(connection, server_hostname=host):
+                    pass
+        return True
+    except OSError:
+        return False
+
+
+if payload["state"] == "baseline":
+    addresses = []
+    for host in payload["sentinel_hosts"]:
+        try:
+            items = socket.getaddrinfo(host, 443, family=socket.AF_INET, type=socket.SOCK_STREAM)
+        except OSError:
+            continue
+        for item in items:
+            address = item[4][0]
+            if connect(address, 443, False):
+                addresses.append(address)
+                break
+    runtime_ready = all(connect(host, 443, True) for host in payload["sentinel_hosts"])
+    print(json.dumps({"runtime_ready": runtime_ready, "sentinels": addresses}))
+elif payload["state"] == "restricted":
+    allowed = all(connect(item["host"], item["port"], item["tls"]) for item in payload["allowed"])
+    blocked = all(not connect(address, 443, False) for address in payload["sentinels"])
+    print(json.dumps({"ready": allowed and blocked}))
+elif payload["state"] == "unrestricted":
+    restored = all(connect(address, 443, False) for address in payload["sentinels"])
+    resolved = all(connect(host, 443, True) for host in payload["sentinel_hosts"])
+    ready = restored and resolved
+    print(json.dumps({"ready": ready}))
+else:
+    raise AssertionError("unknown egress probe state")
+"""
+
+
+@dataclass(frozen=True)
+class EgressReadiness:
+    sentinel_addresses: tuple[str, ...]
+    update_returned_at: float
+    ready_at: float
+    attempts: int
 
 
 @logfire.instrument("sandbox.exec", extract_args=False)
@@ -703,6 +764,158 @@ async def _clear_egress_allowlist(sandbox: Sandbox, fail_on_error: bool) -> None
         logger.warning("failed to clear egress rules for sandbox %s", sandbox.id, exc_info=True)
         if fail_on_error:
             raise SandboxSetupError("Failed to clear egress rules") from e
+
+
+def _egress_probe_command(payload: dict[str, object]) -> str:
+    return f"python3 -c {shlex.quote(_EGRESS_PROBE_SOURCE)} {shlex.quote(json.dumps(payload))}"
+
+
+async def _egress_probe(sandbox: Sandbox, payload: dict[str, object]) -> dict[str, object]:
+    result = await _exec(sandbox, _egress_probe_command(payload))
+    if result.exit_code != 0:
+        raise SandboxSetupError("Egress readiness probe requires python3 and trusted CA certificates")
+    try:
+        value = cast(object, json.loads(result.stdout))
+    except json.JSONDecodeError:
+        raise SandboxSetupError("Egress readiness probe returned invalid output") from None
+    if not isinstance(value, dict):
+        raise SandboxSetupError("Egress readiness probe returned invalid output")
+    return cast(dict[str, object], value)
+
+
+async def _prevalidate_egress_sentinels(sandbox: Sandbox, allowed_addresses: list[str]) -> tuple[str, ...]:
+    networks: list[ipaddress.IPv4Network] = []
+    for address in allowed_addresses:
+        try:
+            network = ipaddress.ip_network(address, strict=False)
+        except ValueError:
+            continue
+        if not isinstance(network, ipaddress.IPv4Network):
+            raise SandboxSetupError("IPv6 egress readiness is not supported")
+        networks.append(network)
+
+    previous: tuple[str, ...] | None = None
+    matches = 0
+    while True:
+        result = await _egress_probe(
+            sandbox,
+            {"state": "baseline", "sentinel_hosts": _EGRESS_SENTINEL_HOSTS},
+        )
+        values = result.get("sentinels")
+        if not isinstance(values, list):
+            raise SandboxSetupError("Egress readiness probe returned invalid sentinels")
+        sentinel_values = cast(list[object], values)
+        if any(not isinstance(value, str) for value in sentinel_values):
+            raise SandboxSetupError("Egress readiness probe returned invalid sentinels")
+        sentinels = tuple(
+            value
+            for value in dict.fromkeys(cast(list[str], sentinel_values))
+            if not any(ipaddress.ip_address(value) in network for network in networks)
+        )
+        ready = result.get("runtime_ready") is True and len(sentinels) == len(_EGRESS_SENTINEL_HOSTS)
+        if not ready:
+            matches = 0
+        elif sentinels == previous:
+            matches += 1
+        else:
+            matches = 1
+        if matches == _EGRESS_READY_CONSECUTIVE_OBSERVATIONS:
+            return sentinels
+        previous = sentinels if ready else None
+        await asyncio.sleep(0.25)
+
+
+def _allowed_egress_probes(allowed_addresses: list[str]) -> list[dict[str, object]]:
+    probes: list[dict[str, object]] = []
+    for address in allowed_addresses:
+        try:
+            _ = ipaddress.ip_network(address, strict=False)
+            continue
+        except ValueError:
+            pass
+
+        parsed = urlsplit(address if "://" in address else f"https://{address}")
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            raise SandboxSetupError(f"Unsupported egress probe address: {address}")
+        probes.append(
+            {
+                "host": parsed.hostname,
+                "port": parsed.port or (443 if parsed.scheme == "https" else 80),
+                "tls": parsed.scheme == "https",
+            }
+        )
+    return probes
+
+
+async def _wait_for_egress(
+    sandbox: Sandbox,
+    state: Literal["restricted", "unrestricted"],
+    allowed_addresses: list[str],
+    sentinels: tuple[str, ...],
+) -> tuple[float, int]:
+    matches = 0
+    attempts = 0
+    try:
+        async with asyncio.timeout(_EGRESS_READY_TIMEOUT_SECONDS):
+            while True:
+                attempts += 1
+                if state == "restricted":
+                    payload: dict[str, object] = {
+                        "state": state,
+                        "allowed": _allowed_egress_probes(allowed_addresses),
+                        "sentinels": sentinels,
+                    }
+                elif state == "unrestricted":
+                    payload = {
+                        "state": state,
+                        "sentinel_hosts": _EGRESS_SENTINEL_HOSTS,
+                        "sentinels": sentinels,
+                    }
+                else:
+                    raise AssertionError(f"Unknown egress state: {state}")
+
+                result = await _egress_probe(sandbox, payload)
+                matches = matches + 1 if result.get("ready") is True else 0
+                if matches == _EGRESS_READY_CONSECUTIVE_OBSERVATIONS:
+                    return time.time(), attempts
+                await asyncio.sleep(0.25)
+    except TimeoutError:
+        raise SandboxSetupError(
+            f"Egress did not become {state} within {_EGRESS_READY_TIMEOUT_SECONDS} seconds"
+        ) from None
+
+
+@asynccontextmanager
+async def restricted_agent_egress(
+    sandbox: Sandbox,
+    allowed_addresses: list[str],
+) -> AsyncGenerator[EgressReadiness, None]:
+    if not allowed_addresses:
+        raise ValueError("restricted_agent_egress requires at least one allowed address")
+
+    try:
+        async with asyncio.timeout(_EGRESS_READY_TIMEOUT_SECONDS):
+            sentinels = await _prevalidate_egress_sentinels(sandbox, allowed_addresses)
+    except TimeoutError:
+        raise SandboxSetupError(
+            f"Egress prevalidation did not complete within {_EGRESS_READY_TIMEOUT_SECONDS} seconds"
+        ) from None
+    await _apply_egress_allowlist(sandbox, allowed_addresses)
+    update_returned_at = time.time()
+    ready_at, attempts = await _wait_for_egress(sandbox, "restricted", allowed_addresses, sentinels)
+    completed = False
+    try:
+        yield EgressReadiness(
+            sentinel_addresses=sentinels,
+            update_returned_at=update_returned_at,
+            ready_at=ready_at,
+            attempts=attempts,
+        )
+        completed = True
+    finally:
+        if completed:
+            await _clear_egress_allowlist(sandbox, fail_on_error=True)
+            _ = await _wait_for_egress(sandbox, "unrestricted", allowed_addresses, sentinels)
 
 
 async def _stream_command_output_with_egress_allowlist(

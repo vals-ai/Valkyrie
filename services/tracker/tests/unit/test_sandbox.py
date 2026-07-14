@@ -42,8 +42,11 @@ _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
 _apply_egress_allowlist = getattr(sandbox_module, "_apply_egress_allowlist")
+_egress_probe = getattr(sandbox_module, "_egress_probe")
+_prevalidate_egress_sentinels = getattr(sandbox_module, "_prevalidate_egress_sentinels")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
 _stream_command_output_with_egress_allowlist = getattr(sandbox_module, "_stream_command_output_with_egress_allowlist")
+_wait_for_egress = getattr(sandbox_module, "_wait_for_egress")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 _AGENT_SCOPE_ENV = getattr(sandbox_module, "_AGENT_SCOPE_ENV")
 _SECRET_NAMES_ENV = getattr(sandbox_module, "_SECRET_NAMES_ENV")
@@ -1003,6 +1006,9 @@ class TestEgressAllowlist:
         async def fail_stream(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             raise SandboxSetupError("credential cleanup failed")
 
+        def ignore_output(_message: str) -> None:
+            pass
+
         monkeypatch.setattr(sandbox_module, "stream_command_output", fail_stream)
         mock_sandbox = Mock(id="sandbox-123")
         mock_sandbox.modify_egress_rules = AsyncMock()
@@ -1012,12 +1018,171 @@ class TestEgressAllowlist:
             await _stream_command_output_with_egress_allowlist(
                 mock_sandbox,
                 "run-agent.sh",
-                on_output=lambda _message: None,
+                on_output=ignore_output,
                 allowed_addresses=["https://api.openai.com"],
                 env_vars={"AGENT_SECRET": "secret"},
             )
 
         mock_sandbox.clear_egress_rules.assert_not_awaited()
+
+    async def test_readiness_timeout_blocks_agent_and_keeps_egress_restricted(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def fail_readiness(*_args: Any, **_kwargs: Any) -> tuple[float, int]:
+            raise SandboxSetupError("Egress did not become restricted")
+
+        async def prevalidate(*_args: Any, **_kwargs: Any) -> tuple[str, ...]:
+            return ("192.0.2.10", "192.0.2.11")
+
+        monkeypatch.setattr(sandbox_module, "_prevalidate_egress_sentinels", prevalidate)
+        monkeypatch.setattr(sandbox_module, "_wait_for_egress", fail_readiness)
+        mock_sandbox = Mock(id="sandbox-123")
+        mock_sandbox.modify_egress_rules = AsyncMock()
+        mock_sandbox.clear_egress_rules = AsyncMock()
+
+        with pytest.raises(SandboxSetupError, match="did not become restricted"):
+            async with sandbox_module.restricted_agent_egress(mock_sandbox, ["https://api.openai.com"]):
+                raise AssertionError("unreachable")
+
+        mock_sandbox.clear_egress_rules.assert_not_awaited()
+
+    async def test_prevalidation_has_a_hard_timeout(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def never_returns(*_args: Any, **_kwargs: Any) -> tuple[str, ...]:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(sandbox_module, "_EGRESS_READY_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(sandbox_module, "_prevalidate_egress_sentinels", never_returns)
+        mock_sandbox = Mock(id="sandbox-123")
+        mock_sandbox.modify_egress_rules = AsyncMock()
+
+        with pytest.raises(SandboxSetupError, match="prevalidation did not complete within 0.01 seconds"):
+            async with sandbox_module.restricted_agent_egress(mock_sandbox, ["https://api.openai.com"]):
+                raise AssertionError("unreachable")
+
+        mock_sandbox.modify_egress_rules.assert_not_awaited()
+
+    async def test_prevalidation_requires_two_matching_vals_sentinel_observations(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        responses = deque[dict[str, object]](
+            (
+                {"runtime_ready": False, "sentinels": []},
+                {"runtime_ready": True, "sentinels": ["192.0.2.10", "192.0.2.11"]},
+                {"runtime_ready": True, "sentinels": ["192.0.2.10", "192.0.2.11"]},
+            )
+        )
+
+        async def probe(_sandbox: Any, payload: dict[str, object]) -> dict[str, object]:
+            assert payload == {
+                "state": "baseline",
+                "sentinel_hosts": ("www.iana.org", "www.python.org"),
+            }
+            return responses.popleft()
+
+        monkeypatch.setattr(sandbox_module, "_egress_probe", probe)
+        monkeypatch.setattr(sandbox_module.asyncio, "sleep", AsyncMock())
+
+        sentinels = await _prevalidate_egress_sentinels(Mock(), [])
+
+        assert sentinels == ("192.0.2.10", "192.0.2.11")
+
+    async def test_wait_for_restricted_egress_requires_two_consecutive_observations(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        results = iter((True, False, True, True))
+        payloads: list[dict[str, object]] = []
+
+        async def probe(_sandbox: Any, payload: dict[str, object]) -> dict[str, object]:
+            payloads.append(payload)
+            return {"ready": next(results)}
+
+        monkeypatch.setattr(sandbox_module, "_egress_probe", probe)
+        monkeypatch.setattr(sandbox_module.asyncio, "sleep", AsyncMock())
+
+        _, attempts = await _wait_for_egress(
+            Mock(),
+            "restricted",
+            ["https://api.openai.com"],
+            ("192.0.2.10", "192.0.2.11"),
+        )
+
+        assert attempts == 4
+        assert (
+            payloads
+            == [
+                {
+                    "state": "restricted",
+                    "allowed": [{"host": "api.openai.com", "port": 443, "tls": True}],
+                    "sentinels": ("192.0.2.10", "192.0.2.11"),
+                }
+            ]
+            * 4
+        )
+
+    async def test_wait_for_unrestricted_egress_checks_cached_ips_and_fresh_dns(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        payloads: list[dict[str, object]] = []
+
+        async def probe(_sandbox: Any, payload: dict[str, object]) -> dict[str, object]:
+            payloads.append(payload)
+            return {"ready": True}
+
+        monkeypatch.setattr(sandbox_module, "_egress_probe", probe)
+        monkeypatch.setattr(sandbox_module.asyncio, "sleep", AsyncMock())
+
+        _, attempts = await _wait_for_egress(
+            Mock(),
+            "unrestricted",
+            ["https://api.openai.com"],
+            ("192.0.2.10", "192.0.2.11"),
+        )
+
+        assert attempts == 2
+        assert (
+            payloads
+            == [
+                {
+                    "state": "unrestricted",
+                    "sentinel_hosts": ("www.iana.org", "www.python.org"),
+                    "sentinels": ("192.0.2.10", "192.0.2.11"),
+                }
+            ]
+            * 2
+        )
+
+    async def test_wait_for_egress_has_a_hard_timeout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def never_returns(*_args: Any, **_kwargs: Any) -> dict[str, object]:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        monkeypatch.setattr(sandbox_module, "_EGRESS_READY_TIMEOUT_SECONDS", 0.01)
+        monkeypatch.setattr(sandbox_module, "_egress_probe", never_returns)
+
+        with pytest.raises(SandboxSetupError, match="within 0.01 seconds"):
+            await _wait_for_egress(
+                Mock(),
+                "restricted",
+                ["https://api.openai.com"],
+                ("192.0.2.10", "192.0.2.11"),
+            )
+
+    async def test_egress_probe_rejects_invalid_output(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def invalid_output(*_args: Any, **_kwargs: Any) -> ExecResult:
+            return ExecResult(exit_code=0, output="not-json")
+
+        monkeypatch.setattr(sandbox_module, "_exec", invalid_output)
+
+        with pytest.raises(SandboxSetupError, match="invalid output"):
+            await _egress_probe(Mock(), {"state": "restricted"})
 
     @pytest.mark.parametrize(
         ("provider_error", "expected_error", "message"),

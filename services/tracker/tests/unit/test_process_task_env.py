@@ -1,19 +1,22 @@
 import asyncio
+import hashlib
 import json
 import math
 import time
 from asyncio import Semaphore
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
 from benchmark_service import ImageSource, Resources
 from benchmark_service.client import BenchmarkServiceClient
-from benchmark_service.schemas import RetrieveTaskResponse
+from benchmark_service.schemas import RetrieveTaskResponse, SetupTaskResponse
 from sqlmodel import Session, select
 
 import tracker.utils.task_execution as utils_module
@@ -31,14 +34,14 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.exceptions import SandboxSetupError
+from tracker.exceptions import SandboxSetupError, TrackerServiceError
 from tracker.model_gateway import (
-    CapabilityEvalResumeState,
     CapabilityMintRequest,
     CapabilityMintResponse,
     CapabilityUsageSummary,
     ModelGatewayError,
 )
+from tracker.sandbox import EgressReadiness
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_status_transition,
@@ -54,6 +57,20 @@ _TEST_STARTER = RequestIdentity(
     email=None,
     name=None,
 )
+
+
+@pytest.fixture(autouse=True)
+def stub_restricted_egress(monkeypatch: pytest.MonkeyPatch) -> None:
+    @asynccontextmanager
+    async def restricted_egress(*_args: Any, **_kwargs: Any) -> AsyncGenerator[EgressReadiness, None]:
+        yield EgressReadiness(
+            sentinel_addresses=("192.0.2.10", "192.0.2.11"),
+            update_returned_at=10.0,
+            ready_at=12.5,
+            attempts=3,
+        )
+
+    monkeypatch.setattr(utils_module, "restricted_agent_egress", restricted_egress)
 
 
 def _task_capability_contract(contract: AgentContractRequest) -> AgentContractRequest:
@@ -536,7 +553,9 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
 ) -> None:
-    contract = _task_capability_contract(contract)
+    contract = _task_capability_contract(
+        contract.model_copy(update={"egress_allowlist": ["https://static.example.test"]})
+    )
     start_benchmark_request, task_row, benchmark_id = _create_task_env(
         contract,
         database_session,
@@ -549,6 +568,7 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
     runtime_env_copies: list[dict[str, str]] = []
     runtime_env_refs: list[dict[str, str]] = []
     usage_uploads: list[tuple[bytes, str]] = []
+    effective_egress: list[list[str]] = []
     persisted_resume_states: list[dict[str, Any] | None] = []
     resolved_install_env = {"INSTALL_SECRET": "install-secret-value"}
     usage = CapabilityUsageSummary(
@@ -572,6 +592,12 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
             resources=Resources(vcpu=2, memory=4, disk=5),
         )
 
+    async def setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+        return SetupTaskResponse(
+            status="ok",
+            egress_allowlist=["https://controller-token.preview.test"],
+        )
+
     def resolve_install_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
         events.append("resolve")
         return resolved_install_env
@@ -586,8 +612,10 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
         *_args: Any,
         **_kwargs: Any,
     ) -> tuple[None, float]:
+        command_contract = cast(AgentContractRequest, _args[1])
         runtime_env = cast(dict[str, str], _args[6])
         events.append("execute")
+        assert command_contract.egress_allowlist == []
         runtime_env_copies.append(dict(runtime_env))
         runtime_env_refs.append(runtime_env)
         return None, 1.5
@@ -596,8 +624,23 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
         events.append("upload")
 
     async def upload_usage(content: bytes, key: str, *_args: Any, **_kwargs: Any) -> None:
-        events.append("usage upload")
+        events.append("egress upload" if "/agent_egress/" in key else "usage upload")
         usage_uploads.append((content, key))
+
+    @asynccontextmanager
+    async def restricted_egress(
+        _sandbox: Any,
+        allowed_addresses: list[str],
+    ) -> AsyncGenerator[EgressReadiness, None]:
+        events.append("egress ready")
+        effective_egress.append(allowed_addresses)
+        yield EgressReadiness(
+            sentinel_addresses=("192.0.2.10", "192.0.2.11"),
+            update_returned_at=10.0,
+            ready_at=12.5,
+            attempts=3,
+        )
+        events.append("egress clear")
 
     async def evaluate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         events.append("evaluate")
@@ -638,12 +681,14 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
             return gateway
 
     monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task)
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate)
     monkeypatch.setattr(utils_module, "resolve_secrets", resolve_install_secrets)
     monkeypatch.setattr(utils_module, "install_agent", install_agent)
     monkeypatch.setattr(utils_module, "execute_agent", execute_agent)
     monkeypatch.setattr(utils_module, "upload_to_s3", upload_usage)
     monkeypatch.setattr(utils_module, "upload_agent_outputs", upload_outputs)
+    monkeypatch.setattr(utils_module, "restricted_agent_egress", restricted_egress)
     monkeypatch.setattr(utils_module, "ModelGatewayAdminClient", FakeGatewayFactory)
 
     before = time.time()
@@ -653,10 +698,13 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
     assert events == [
         "resolve",
         "install",
+        "egress ready",
+        "egress upload",
         "mint",
         "execute",
         "finalize",
         "usage upload",
+        "egress clear",
         "close",
         "upload",
         "evaluate",
@@ -671,19 +719,53 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
         }
     ]
     assert runtime_env_refs == [{}]
+    assert effective_egress == [
+        [
+            "https://static.example.test",
+            "https://controller-token.preview.test",
+            "https://gateway.example.test",
+        ]
+    ]
+    egress_receipt = {
+        "schema_version": 1,
+        "run_id": str(benchmark_id),
+        "task_id": "task_0",
+        "sandbox_id": "mock-sandbox-id",
+        "allowed_origin_set_sha256": {
+            "contract": hashlib.sha256(b'["https://static.example.test"]').hexdigest(),
+            "setup": hashlib.sha256(b'["https://controller-token.preview.test"]').hexdigest(),
+            "model_gateway": hashlib.sha256(b'["https://gateway.example.test"]').hexdigest(),
+            "effective": hashlib.sha256(
+                b'["https://controller-token.preview.test","https://gateway.example.test","https://static.example.test"]'
+            ).hexdigest(),
+        },
+        "sentinel_sha256": sorted(
+            hashlib.sha256(f"{address}:443".encode()).hexdigest() for address in ("192.0.2.10", "192.0.2.11")
+        ),
+        "update_returned_at": 10.0,
+        "ready_at": 12.5,
+        "readiness_attempts": 3,
+        "required_consecutive_observations": 2,
+    }
+    egress_content = (json.dumps(egress_receipt, sort_keys=True) + "\n").encode()
     usage_content = (json.dumps(usage.model_dump(mode="json"), sort_keys=True) + "\n").encode()
     assert usage_uploads == [
+        (
+            egress_content,
+            f"benchmarks/{benchmark_id}/task_0/agent_egress/readiness-v1.json",
+        ),
         (
             usage_content,
             f"benchmarks/{benchmark_id}/task_0/model_gateway_usage/cap_task.json",
         ),
     ]
     assert persisted_resume_states == [
-        CapabilityEvalResumeState(
-            kind="model_gateway_eval_resume",
-            capability_id="cap_task",
-            benchmark_state={"job_id": "eval-job"},
-        ).model_dump(mode="json")
+        {
+            "kind": "model_gateway_egress_eval_resume",
+            "capability_id": "cap_task",
+            "egress_receipt_sha256": hashlib.sha256(egress_content).hexdigest(),
+            "benchmark_state": {"job_id": "eval-job"},
+        }
     ]
 
     assert len(mint_requests) == 1
@@ -707,11 +789,47 @@ async def test_process_task_runs_task_capability_lifecycle_before_upload_and_eva
             "status": "success",
             "score": 1.0,
             "_valkyrie_model_gateway_usage": usage.model_dump(mode="json"),
+            "_valkyrie_agent_egress": egress_receipt,
         }
     }
 
 
-async def test_process_task_resume_restores_task_capability_usage(
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema_version", True),
+        ("schema_version", 1.0),
+        ("required_consecutive_observations", True),
+        ("required_consecutive_observations", 2.0),
+    ],
+)
+def test_egress_readiness_receipt_requires_exact_integer_fields(field: str, value: bool | float) -> None:
+    benchmark_id = UUID("00000000-0000-0000-0000-000000000123")
+    receipt: dict[str, object] = {
+        "schema_version": 1,
+        "run_id": str(benchmark_id),
+        "task_id": "task_0",
+        "sandbox_id": "sandbox-0",
+        "allowed_origin_set_sha256": {
+            "contract": "1" * 64,
+            "setup": "2" * 64,
+            "model_gateway": "3" * 64,
+            "effective": "4" * 64,
+        },
+        "sentinel_sha256": ["5" * 64, "6" * 64],
+        "update_returned_at": 10.0,
+        "ready_at": 12.5,
+        "readiness_attempts": 3,
+        "required_consecutive_observations": 2,
+    }
+    receipt[field] = value
+    parse_receipt = getattr(utils_module, "_parse_egress_readiness_receipt")
+
+    with pytest.raises(TrackerServiceError, match="artifact is invalid"):
+        parse_receipt(json.dumps(receipt).encode(), benchmark_id, "task_0")
+
+
+async def test_process_task_resume_restores_capability_and_egress_receipts(
     contract: AgentContractRequest,
     database_session: Session,
     process_benchmark_env: None,
@@ -725,17 +843,6 @@ async def test_process_task_resume_restores_task_capability_usage(
         harness_config,
     )
     task_row.status = TaskStatus.EVALUATING
-    task_row.eval_resume_state = CapabilityEvalResumeState(
-        kind="model_gateway_eval_resume",
-        capability_id="cap_task",
-        benchmark_state={"job_id": "eval-job"},
-    ).model_dump(mode="json")
-    database_session.add(task_row)
-    database_session.commit()
-    task_row.started_at += timedelta(seconds=1)
-    database_session.add(task_row)
-    database_session.commit()
-
     usage = CapabilityUsageSummary(
         capability_id="cap_task",
         state="revoked",
@@ -747,10 +854,41 @@ async def test_process_task_resume_restores_task_capability_usage(
         total_output_tokens=500,
         cost_usd=Decimal("0.42"),
     )
+    egress_receipt = {
+        "schema_version": 1,
+        "run_id": str(benchmark_id),
+        "task_id": "task_0",
+        "sandbox_id": "sandbox-0",
+        "allowed_origin_set_sha256": {
+            "contract": "1" * 64,
+            "setup": "2" * 64,
+            "model_gateway": "3" * 64,
+            "effective": "4" * 64,
+        },
+        "sentinel_sha256": ["5" * 64, "6" * 64],
+        "update_returned_at": 10.0,
+        "ready_at": 12.5,
+        "readiness_attempts": 3,
+        "required_consecutive_observations": 2,
+    }
+    egress_content = (json.dumps(egress_receipt, sort_keys=True) + "\n").encode()
+    task_row.eval_resume_state = {
+        "kind": "model_gateway_egress_eval_resume",
+        "capability_id": "cap_task",
+        "egress_receipt_sha256": hashlib.sha256(egress_content).hexdigest(),
+        "benchmark_state": {"job_id": "eval-job"},
+    }
+    database_session.add(task_row)
+    database_session.commit()
+    task_row.started_at += timedelta(seconds=1)
+    database_session.add(task_row)
+    database_session.commit()
+
     artifacts = {
         f"benchmarks/{benchmark_id}/task_0/model_gateway_usage/cap_task.json": (
             json.dumps(usage.model_dump(mode="json"), sort_keys=True) + "\n"
         ).encode(),
+        f"benchmarks/{benchmark_id}/task_0/agent_egress/readiness-v1.json": egress_content,
     }
     downloaded: list[str] = []
 
@@ -777,11 +915,361 @@ async def test_process_task_resume_restores_task_capability_usage(
         "status": "success",
         "score": 1.0,
         "_valkyrie_model_gateway_usage": usage.model_dump(mode="json"),
+        "_valkyrie_agent_egress": egress_receipt,
     }
     evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
     assert result == {"task_0": expected}
     assert evaluation.result == expected
     assert downloaded == list(artifacts)
+
+
+async def test_process_task_resume_accepts_legacy_capability_state(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    contract = _task_capability_contract(contract)
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+    )
+    task_row.status = TaskStatus.EVALUATING
+    task_row.eval_resume_state = {
+        "kind": "model_gateway_eval_resume",
+        "capability_id": "cap_task",
+        "benchmark_state": {"job_id": "eval-job"},
+    }
+    database_session.add(task_row)
+    database_session.commit()
+    task_row.started_at += timedelta(seconds=1)
+    database_session.add(task_row)
+    database_session.commit()
+    usage = CapabilityUsageSummary(
+        capability_id="cap_task",
+        state="revoked",
+        drained=True,
+        session_count=1,
+        query_count=1,
+        completed_queries=1,
+        total_input_tokens=1,
+        total_output_tokens=1,
+        cost_usd=Decimal("0.01"),
+    )
+    usage_content = (json.dumps(usage.model_dump(mode="json"), sort_keys=True) + "\n").encode()
+
+    async def download_usage(*_args: Any, **_kwargs: Any) -> bytes:
+        return usage_content
+
+    async def resume_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        assert _kwargs["eval_resume_state"] == {"job_id": "eval-job"}
+        return {"status": "success", "score": 1.0}
+
+    @asynccontextmanager
+    async def unexpected_sandbox(*_args: Any, **_kwargs: Any):
+        raise AssertionError("eval resume should not create a sandbox")
+        yield
+
+    monkeypatch.setattr(utils_module, "download_from_s3", download_usage)
+    monkeypatch.setattr(utils_module, "create_sandbox", unexpected_sandbox)
+    monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", resume_evaluation)
+
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    assert result == {
+        "task_0": {
+            "status": "success",
+            "score": 1.0,
+            "_valkyrie_model_gateway_usage": usage.model_dump(mode="json"),
+        }
+    }
+
+
+async def test_process_task_scopes_dynamic_setup_egress_without_model_gateway(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+    )
+    events: list[str] = []
+    uploads: list[tuple[bytes, str]] = []
+    resume_states: list[dict[str, Any] | None] = []
+    agent_runtime = SimpleNamespace(id="agent-runtime")
+
+    async def setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+        return SetupTaskResponse(status="ok", egress_allowlist=["https://controller.preview.test"])
+
+    async def install_agent(*_args: Any, **_kwargs: Any) -> None:
+        events.append("install")
+
+    async def execute_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        command_contract = cast(AgentContractRequest, _args[1])
+        assert command_contract.egress_allowlist == []
+        events.append("execute")
+        return None, 1.0
+
+    @asynccontextmanager
+    async def restricted_egress(
+        sandbox: Any,
+        allowed_addresses: list[str],
+    ) -> AsyncGenerator[EgressReadiness, None]:
+        assert sandbox is agent_runtime
+        assert allowed_addresses == ["https://controller.preview.test"]
+        events.append("egress ready")
+        yield EgressReadiness(
+            sentinel_addresses=("192.0.2.10", "192.0.2.11"),
+            update_returned_at=10.0,
+            ready_at=12.5,
+            attempts=3,
+        )
+        events.append("egress clear")
+
+    async def upload_receipt(content: bytes, key: str, *_args: Any, **_kwargs: Any) -> None:
+        events.append("egress upload")
+        uploads.append((content, key))
+
+    async def upload_outputs(*_args: Any, **_kwargs: Any) -> None:
+        events.append("upload")
+
+    async def evaluate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        events.append("evaluate")
+        _kwargs["on_eval_resume_state"]({"job_id": "eval-job"})
+        database_session.refresh(task_row)
+        resume_states.append(task_row.eval_resume_state)
+        return {"status": "success", "score": 1.0}
+
+    def resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        return {}
+
+    def adapt_runtime(*_args: Any) -> Any:
+        return agent_runtime
+
+    monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task)
+    monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate)
+    monkeypatch.setattr(utils_module, "resolve_secrets", resolve_no_secrets)
+    monkeypatch.setattr(utils_module, "install_agent", install_agent)
+    monkeypatch.setattr(utils_module, "execute_agent", execute_agent)
+    monkeypatch.setattr(utils_module, "restricted_agent_egress", restricted_egress)
+    monkeypatch.setattr(utils_module, "runtime_sandbox", adapt_runtime)
+    monkeypatch.setattr(utils_module, "upload_to_s3", upload_receipt)
+    monkeypatch.setattr(utils_module, "upload_agent_outputs", upload_outputs)
+    run_agent = AsyncMock()
+    monkeypatch.setattr(utils_module, "run_agent", run_agent)
+
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    assert events == ["install", "egress ready", "egress upload", "execute", "egress clear", "upload", "evaluate"]
+    run_agent.assert_not_awaited()
+    evaluation = cast(dict[str, Any], result["task_0"])
+    receipt = cast(dict[str, Any], evaluation["_valkyrie_agent_egress"])
+    content = (json.dumps(receipt, sort_keys=True) + "\n").encode()
+    assert uploads == [
+        (
+            content,
+            f"benchmarks/{benchmark_id}/task_0/agent_egress/readiness-v1.json",
+        )
+    ]
+    assert receipt["allowed_origin_set_sha256"]["model_gateway"] == hashlib.sha256(b"[]").hexdigest()
+    assert resume_states == [
+        {
+            "kind": "agent_egress_eval_resume",
+            "egress_receipt_sha256": hashlib.sha256(content).hexdigest(),
+            "benchmark_state": {"job_id": "eval-job"},
+        }
+    ]
+
+
+async def test_process_task_resume_restores_dynamic_setup_egress_receipt(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+    )
+    receipt = {
+        "schema_version": 1,
+        "run_id": str(benchmark_id),
+        "task_id": "task_0",
+        "sandbox_id": "sandbox-0",
+        "allowed_origin_set_sha256": {
+            "contract": "1" * 64,
+            "setup": "2" * 64,
+            "model_gateway": "3" * 64,
+            "effective": "4" * 64,
+        },
+        "sentinel_sha256": ["5" * 64, "6" * 64],
+        "update_returned_at": 10.0,
+        "ready_at": 12.5,
+        "readiness_attempts": 3,
+        "required_consecutive_observations": 2,
+    }
+    content = (json.dumps(receipt, sort_keys=True) + "\n").encode()
+    task_row.status = TaskStatus.EVALUATING
+    task_row.eval_resume_state = {
+        "kind": "agent_egress_eval_resume",
+        "egress_receipt_sha256": hashlib.sha256(content).hexdigest(),
+        "benchmark_state": {"job_id": "eval-job"},
+    }
+    database_session.add(task_row)
+    database_session.commit()
+    task_row.started_at += timedelta(seconds=1)
+    database_session.add(task_row)
+    database_session.commit()
+
+    async def download_receipt(*_args: Any, **_kwargs: Any) -> bytes:
+        return content
+
+    async def resume_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        assert _kwargs["eval_resume_state"] == {"job_id": "eval-job"}
+        return {"status": "success", "score": 1.0}
+
+    @asynccontextmanager
+    async def unexpected_sandbox(*_args: Any, **_kwargs: Any):
+        raise AssertionError("eval resume should not create a sandbox")
+        yield
+
+    monkeypatch.setattr(utils_module, "download_from_s3", download_receipt)
+    monkeypatch.setattr(utils_module, "create_sandbox", unexpected_sandbox)
+    monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", resume_evaluation)
+
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    expected = {"status": "success", "score": 1.0, "_valkyrie_agent_egress": receipt}
+    evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
+    assert result == {"task_0": expected}
+    assert evaluation.result == expected
+
+
+async def test_process_task_dynamic_setup_readiness_failure_executes_no_agent(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+    )
+
+    async def setup_task(*_args: Any, **_kwargs: Any) -> SetupTaskResponse:
+        return SetupTaskResponse(status="ok", egress_allowlist=["https://controller.preview.test"])
+
+    @asynccontextmanager
+    async def fail_readiness(*_args: Any, **_kwargs: Any) -> AsyncGenerator[EgressReadiness, None]:
+        raise SandboxSetupError("egress readiness failed")
+        yield
+
+    def resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        return {}
+
+    execute_agent = AsyncMock()
+    run_agent = AsyncMock()
+    upload_outputs = AsyncMock()
+    monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task)
+    monkeypatch.setattr(utils_module, "resolve_secrets", resolve_no_secrets)
+    monkeypatch.setattr(utils_module, "install_agent", AsyncMock())
+    monkeypatch.setattr(utils_module, "execute_agent", execute_agent)
+    monkeypatch.setattr(utils_module, "restricted_agent_egress", fail_readiness)
+    monkeypatch.setattr(utils_module, "run_agent", run_agent)
+    monkeypatch.setattr(utils_module, "upload_agent_outputs", upload_outputs)
+
+    with pytest.raises(SandboxSetupError, match="egress readiness failed"):
+        await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    execute_agent.assert_not_awaited()
+    run_agent.assert_not_awaited()
+    upload_outputs.assert_not_awaited()
+
+
+async def test_process_task_readiness_failure_mints_no_capability(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    contract = _task_capability_contract(contract)
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+    )
+    minted = False
+    executed = False
+
+    async def retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+        return RetrieveTaskResponse(
+            source=ImageSource(image="test-image:latest"),
+            problem_path="/tmp/problem_statement.txt",
+            cwd="/testbed",
+            agent_timeout=120.0,
+            resources=Resources(vcpu=2, memory=4, disk=5),
+        )
+
+    @asynccontextmanager
+    async def fail_readiness(*_args: Any, **_kwargs: Any) -> AsyncGenerator[EgressReadiness, None]:
+        raise SandboxSetupError("egress readiness failed")
+        yield
+
+    async def execute_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        nonlocal executed
+        executed = True
+        return None, 1.0
+
+    class FakeGateway:
+        gateway_url = "https://gateway.example.test"
+
+        async def __aenter__(self) -> "FakeGateway":
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
+        async def mint(self, request: CapabilityMintRequest) -> CapabilityMintResponse:
+            nonlocal minted
+            minted = True
+            return CapabilityMintResponse(
+                capability_id="unreachable",
+                token="unreachable",
+                state="active",
+                expires_at=request.expires_at,
+            )
+
+    class FakeGatewayFactory:
+        @classmethod
+        def from_environment(cls) -> FakeGateway:
+            return FakeGateway()
+
+    def resolve_no_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        return {}
+
+    monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve_task)
+    monkeypatch.setattr(utils_module, "resolve_secrets", resolve_no_secrets)
+    monkeypatch.setattr(utils_module, "install_agent", AsyncMock())
+    monkeypatch.setattr(utils_module, "execute_agent", execute_agent)
+    monkeypatch.setattr(utils_module, "restricted_agent_egress", fail_readiness)
+    monkeypatch.setattr(utils_module, "ModelGatewayAdminClient", FakeGatewayFactory)
+
+    with pytest.raises(SandboxSetupError, match="egress readiness failed"):
+        await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    assert not minted
+    assert not executed
 
 
 async def test_process_task_preserves_out_of_order_usage_from_two_attempts(
@@ -822,7 +1310,10 @@ async def test_process_task_preserves_out_of_order_usage_from_two_attempts(
         return {}
 
     async def capture_upload(content: bytes, key: str, *_args: Any, **_kwargs: Any) -> None:
-        if json.loads(content)["capability_id"] == "cap_attempt_1":
+        payload = json.loads(content)
+        if "capability_id" not in payload:
+            return
+        if payload["capability_id"] == "cap_attempt_1":
             first_attempt_upload_started.set()
             await release_first_attempt_upload.wait()
         uploads.append((content, key))
@@ -944,6 +1435,8 @@ async def test_process_task_cancellation_during_finalization_persists_usage_befo
         return {}
 
     async def upload_usage(_content: bytes, key: str, *_args: Any, **_kwargs: Any) -> None:
+        if "/agent_egress/" in key:
+            return
         events.append("usage upload")
         upload_keys.append(key)
 
@@ -1047,7 +1540,9 @@ async def test_process_task_finalizes_capability_after_agent_error_and_blocks_ou
     async def unexpected_upload(*_args: Any, **_kwargs: Any) -> None:
         events.append("unexpected upload")
 
-    async def upload_usage(*_args: Any, **_kwargs: Any) -> None:
+    async def upload_usage(_content: bytes, key: str, *_args: Any, **_kwargs: Any) -> None:
+        if "/agent_egress/" in key:
+            return
         events.append("usage upload")
 
     async def unexpected_evaluate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
@@ -1146,6 +1641,9 @@ async def test_process_task_blocks_outputs_when_capability_does_not_drain(
     async def unexpected(*_args: Any, **_kwargs: Any) -> None:
         events.append("unexpected")
 
+    async def upload_receipt(*_args: Any, **_kwargs: Any) -> None:
+        pass
+
     class FakeGateway:
         gateway_url = "https://gateway.example.test"
 
@@ -1184,6 +1682,7 @@ async def test_process_task_blocks_outputs_when_capability_does_not_drain(
     monkeypatch.setattr(utils_module, "resolve_secrets", resolve_no_secrets)
     monkeypatch.setattr(utils_module, "install_agent", install_agent)
     monkeypatch.setattr(utils_module, "execute_agent", execute_agent)
+    monkeypatch.setattr(utils_module, "upload_to_s3", upload_receipt)
     monkeypatch.setattr(utils_module, "upload_agent_outputs", unexpected)
     monkeypatch.setattr(utils_module, "ModelGatewayAdminClient", FakeGatewayFactory)
 
