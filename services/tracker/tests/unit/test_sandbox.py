@@ -1254,7 +1254,7 @@ class TestAgentSecretProcessCleanup:
         command_text, cleanup_env = calls[0]
         assert command_text == _AGENT_SECRET_CLEANUP_COMMAND
         assert env_vars["API_KEY"] not in command_text
-        assert cleanup_env[_SECRET_NAMES_ENV] == '["API_KEY"]'
+        assert cleanup_env[_SECRET_NAMES_ENV] == "API_KEY"
         assert cleanup_env["API_KEY"] == env_vars["API_KEY"]
         assert cleanup_env[_AGENT_SCOPE_ENV] == "scope-123"
 

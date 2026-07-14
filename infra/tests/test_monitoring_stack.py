@@ -341,6 +341,80 @@ class MonitoringStackTest(unittest.TestCase):
                     },
                 )
 
+    def test_model_gateway_admin_secret_is_worker_only(self) -> None:
+        for stage_name, gateway_url, secret_export in (
+            (
+                PROD,
+                "https://model-gateway.vals.ai",
+                "ProdGateway-ProdGatewayService:CapabilityAdminKeySecretArn",
+            ),
+            (
+                DEV,
+                "https://dev.model-gateway.vals.ai",
+                "DevGateway-DevGatewayService:CapabilityAdminKeySecretArn",
+            ),
+        ):
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, {}, clear=True):
+                tracker_template, worker_template = _service_templates(stage_name)
+
+                worker_template.has_resource_properties(
+                    "AWS::ECS::TaskDefinition",
+                    {
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [
+                                assertions.Match.object_like(
+                                    {
+                                        "Name": "WorkerContainer",
+                                        "Environment": assertions.Match.array_with(
+                                            [{"Name": "MODEL_GATEWAY_URL", "Value": gateway_url}]
+                                        ),
+                                        "Secrets": assertions.Match.array_with(
+                                            [
+                                                {
+                                                    "Name": "MODEL_GATEWAY_ADMIN_API_KEY",
+                                                    "ValueFrom": {"Fn::ImportValue": secret_export},
+                                                }
+                                            ]
+                                        ),
+                                    }
+                                )
+                            ]
+                        )
+                    },
+                )
+                worker_template.has_resource_properties(
+                    "AWS::IAM::Policy",
+                    {
+                        "PolicyDocument": assertions.Match.object_like(
+                            {
+                                "Statement": assertions.Match.array_with(
+                                    [
+                                        assertions.Match.object_like(
+                                            {
+                                                "Action": assertions.Match.array_with(
+                                                    ["secretsmanager:GetSecretValue"]
+                                                ),
+                                                "Effect": "Allow",
+                                                "Resource": {"Fn::ImportValue": secret_export},
+                                            }
+                                        )
+                                    ]
+                                )
+                            }
+                        )
+                    },
+                )
+
+                tracker_task = next(iter(tracker_template.find_resources("AWS::ECS::TaskDefinition").values()))
+                tracker_names = {
+                    item["Name"]
+                    for container in tracker_task["Properties"]["ContainerDefinitions"]
+                    for field in ("Environment", "Secrets")
+                    for item in container.get(field, [])
+                }
+                self.assertNotIn("MODEL_GATEWAY_URL", tracker_names)
+                self.assertNotIn("MODEL_GATEWAY_ADMIN_API_KEY", tracker_names)
+
 
 if __name__ == "__main__":
     unittest.main()

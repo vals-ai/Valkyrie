@@ -103,6 +103,12 @@ class WorkerStack(Stack):
             "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
         }
 
+        model_gateway_admin_secret = aws_secretsmanager.Secret.from_secret_complete_arn(
+            self,
+            "ModelGatewayAdminSecret",
+            cdk.Fn.import_value(stage_config.model_gateway_admin_secret_export),
+        )
+
         # ── Worker service ────────────────────────────────────────────────
 
         worker_task_def = aws_ecs.FargateTaskDefinition(
@@ -130,11 +136,13 @@ class WorkerStack(Stack):
                 **shared_env,
                 **db_env,
                 "REDIS_URL": redis_url,
+                "MODEL_GATEWAY_URL": stage_config.model_gateway_url,
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
             secrets={
                 **db_secrets,
                 **sentry_secrets,
+                "MODEL_GATEWAY_ADMIN_API_KEY": aws_ecs.Secret.from_secrets_manager(model_gateway_admin_secret),
             },
             command=[
                 "uv",

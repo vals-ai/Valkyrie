@@ -188,6 +188,8 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         install_cmd="sh setup.sh",
         egress_allowlist=["example.com"],
         run_cmd=(
+            "sh -c 'while :; do sleep 3600; done' </dev/null >/dev/null 2>&1 & "
+            "printf '%s' \"$!\" > /workspace/agent-secret-pid && "
             "printf 'agent-run' > /workspace/agent-run.txt && "
             f"test \"$RUN_ID\" = '{_COMPOSE_RUN_ID}' && "
             f"test \"$TASK_ID\" = '{_COMPOSE_TASK_ID}' && "
@@ -226,6 +228,9 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
 
     evaluation = await sandbox.exec(
         'test -z "${TRACKER_COMPOSE_SECRET+x}" && '
+        "pid=$(cat /workspace/agent-secret-pid) && "
+        'if [ -r "/proc/$pid/stat" ]; then '
+        'IFS= read -r stat < "/proc/$pid/stat"; fields=${stat##*) }; set -- $fields; [ "$1" = "Z" ]; fi && '
         "test -s /workspace/agent-run.txt && printf '{\"score\":1}' > /workspace/evaluation.json",
         timeout=30,
     )

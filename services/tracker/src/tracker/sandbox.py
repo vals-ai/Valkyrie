@@ -1,7 +1,6 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
-import json
 import shlex
 import time
 import uuid
@@ -79,15 +78,14 @@ CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
 _REDACTED = "[REDACTED]"
 _AGENT_SCOPE_ENV = "VALKYRIE_AGENT_SECRET_SCOPE"
 _SECRET_NAMES_ENV = "VALKYRIE_AGENT_SECRET_NAMES"
-_AGENT_SECRET_CLEANUP_SOURCE = r"""
-import json
+_AGENT_SECRET_CLEANUP_PYTHON_SOURCE = r"""
 import os
 import signal
 import time
 from pathlib import Path
 
 scope_name = "VALKYRIE_AGENT_SECRET_SCOPE"
-names = json.loads(os.environ["VALKYRIE_AGENT_SECRET_NAMES"])
+names = os.environ["VALKYRIE_AGENT_SECRET_NAMES"].splitlines()
 scope_entry = f"{scope_name}={os.environ[scope_name]}".encode()
 secret_entries = {
     f"{name}={os.environ[name]}".encode()
@@ -160,7 +158,150 @@ for signum in (signal.SIGTERM, signal.SIGKILL):
 if matching_processes():
     raise RuntimeError("agent credential processes remain")
 """
-_AGENT_SECRET_CLEANUP_COMMAND = f"python3 -c {shlex.quote(_AGENT_SECRET_CLEANUP_SOURCE)}"
+_AGENT_SECRET_CLEANUP_SHELL_SOURCE = r"""
+set -u
+command -v sleep >/dev/null 2>&1 || exit 1
+IFS= read -r -d '' cleanup_read </dev/null 2>/dev/null
+[ "$?" -eq 1 ] || exit 1
+
+process_fields() {
+    path=$1
+    IFS= read -r stat_line < "$path/stat" || return 1
+    fields=${stat_line##*) }
+    old_ifs=$IFS
+    IFS=' '
+    set -- $fields
+    IFS=$old_ifs
+    [ "$#" -ge 20 ] || return 1
+    PROCESS_STATE=$1
+    PROCESS_PARENT_PID=$2
+    shift 19
+    PROCESS_START_TIME=$1
+}
+
+process_uid() {
+    path=$1
+    while read -r field real_uid _; do
+        if [ "$field" = "Uid:" ]; then
+            PROCESS_UID=$real_uid
+            return 0
+        fi
+    done < "$path/status"
+    return 1
+}
+
+matches_environment() {
+    path=$1
+    if [ ! -r "$path/environ" ]; then
+        [ ! -d "$path" ] && return 1
+        return 2
+    fi
+
+    while IFS= read -r -d '' entry; do
+        [ "$entry" = "VALKYRIE_AGENT_SECRET_SCOPE=$VALKYRIE_AGENT_SECRET_SCOPE" ] && return 0
+
+        entry_name=${entry%%=*}
+        is_secret=0
+        old_ifs=$IFS
+        IFS='
+'
+        for name in $VALKYRIE_AGENT_SECRET_NAMES; do
+            [ "$entry_name" = "$name" ] && is_secret=1
+        done
+        IFS=$old_ifs
+        [ "$is_secret" -eq 0 ] && continue
+
+        while IFS= read -r -d '' cleanup_entry; do
+            [ "$cleanup_entry" = "$entry_name=" ] && continue
+            [ "$entry" = "$cleanup_entry" ] && return 0
+        done < "/proc/$$/environ"
+    done < "$path/environ"
+    return 1
+}
+
+ancestors=" "
+ancestor=$$
+while [ "$ancestor" -gt 1 ]; do
+    ancestors="$ancestors$ancestor "
+    path="/proc/$ancestor"
+    process_fields "$path" || {
+        [ ! -d "$path" ] && break
+        exit 1
+    }
+    ancestor=$PROCESS_PARENT_PID
+done
+
+process_uid "/proc/$$" || exit 1
+uid=$PROCESS_UID
+
+still_matches() {
+    pid=$1
+    expected_start_time=$2
+    path="/proc/$pid"
+    process_fields "$path" || {
+        [ ! -d "$path" ] && return 1
+        return 2
+    }
+    [ "$PROCESS_STATE" = "Z" ] && return 1
+    [ "$PROCESS_START_TIME" = "$expected_start_time" ] || return 1
+    matches_environment "$path"
+}
+
+cleanup_pass() {
+    signal=$1
+    CLEANUP_MATCH_FOUND=0
+    for path in /proc/[0-9]*; do
+        pid=${path##*/}
+        case "$ancestors" in
+            *" $pid "*) continue ;;
+        esac
+
+        process_uid "$path" || {
+            [ ! -d "$path" ] && continue
+            return 2
+        }
+        [ "$PROCESS_UID" = "$uid" ] || continue
+
+        process_fields "$path" || {
+            [ ! -d "$path" ] && continue
+            return 2
+        }
+        [ "$PROCESS_STATE" = "Z" ] && continue
+
+        if matches_environment "$path"; then
+            expected_start_time=$PROCESS_START_TIME
+            if still_matches "$pid" "$expected_start_time"; then
+                CLEANUP_MATCH_FOUND=1
+                [ -z "$signal" ] || kill "-$signal" "$pid" 2>/dev/null || true
+            else
+                result=$?
+                [ "$result" -eq 1 ] || return "$result"
+            fi
+        else
+            result=$?
+            [ "$result" -eq 1 ] || return "$result"
+        fi
+    done
+}
+
+for signal in TERM KILL; do
+    attempt=0
+    while [ "$attempt" -lt 20 ]; do
+        cleanup_pass "$signal" || exit 1
+        [ "$CLEANUP_MATCH_FOUND" -eq 0 ] && break
+        sleep 0.05
+        attempt=$((attempt + 1))
+    done
+done
+
+cleanup_pass "" || exit 1
+[ "$CLEANUP_MATCH_FOUND" -eq 0 ] || exit 1
+"""
+_AGENT_SECRET_CLEANUP_COMMAND = (
+    "if command -v python3 >/dev/null 2>&1; then "
+    f"python3 -c {shlex.quote(_AGENT_SECRET_CLEANUP_PYTHON_SOURCE)}; "
+    f"else sh -c {shlex.quote(_AGENT_SECRET_CLEANUP_SHELL_SOURCE)}; fi"
+)
 
 
 class _SecretRedactor:
@@ -527,7 +668,7 @@ async def _exec(sandbox: Sandbox, command: str) -> ExecResult:
 
 async def _cleanup_agent_secret_processes(sandbox: Sandbox, env_vars: Mapping[str, str]) -> None:
     cleanup_env = dict(env_vars)
-    cleanup_env[_SECRET_NAMES_ENV] = json.dumps([name for name in env_vars if name != _AGENT_SCOPE_ENV])
+    cleanup_env[_SECRET_NAMES_ENV] = "\n".join(name for name in env_vars if name != _AGENT_SCOPE_ENV)
     try:
         async for _output in sandbox.command(_AGENT_SECRET_CLEANUP_COMMAND, env_vars=cleanup_env):
             pass

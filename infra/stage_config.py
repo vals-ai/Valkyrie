@@ -27,6 +27,8 @@ class DatabaseConfig:
 @dataclass(frozen=True)
 class StageConfig:
     runtime_environment: str
+    model_gateway_url: str
+    model_gateway_admin_secret_export: str
     tracker: ServiceConfig
     worker: ServiceConfig
     database: DatabaseConfig
@@ -35,6 +37,8 @@ class StageConfig:
 
 PROD_CONFIG = StageConfig(
     runtime_environment="production",
+    model_gateway_url="https://model-gateway.vals.ai",
+    model_gateway_admin_secret_export="ProdGateway-ProdGatewayService:CapabilityAdminKeySecretArn",
     tracker=ServiceConfig(cpu=1024, memory_mib=2048, min_tasks=1, max_tasks=2),
     worker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=2, max_tasks=4),
     database=DatabaseConfig(
@@ -48,6 +52,8 @@ PROD_CONFIG = StageConfig(
 
 DEV_CONFIG = StageConfig(
     runtime_environment="dev",
+    model_gateway_url="https://dev.model-gateway.vals.ai",
+    model_gateway_admin_secret_export="DevGateway-DevGatewayService:CapabilityAdminKeySecretArn",
     tracker=ServiceConfig(cpu=1024, memory_mib=2048, min_tasks=1, max_tasks=1),
     worker=ServiceConfig(cpu=4096, memory_mib=8192, min_tasks=1, max_tasks=2),
     database=DatabaseConfig(

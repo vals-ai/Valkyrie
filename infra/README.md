@@ -12,6 +12,7 @@ AWS CDK infrastructure for the Agentic Harness benchmark platform.
 - AWS CLI configured with appropriate credentials
 - Python 3.12+
 - [uv](https://github.com/astral-sh/uv) package manager
+- The matching model-proxy stage stack, which exports its capability admin secret ARN. Worker deployment fails closed when that export is missing.
 
 ## Setup
 
