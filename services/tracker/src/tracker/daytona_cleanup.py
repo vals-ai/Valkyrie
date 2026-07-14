@@ -11,10 +11,21 @@ from datetime import UTC, datetime, timedelta
 from typing import Literal, Protocol, cast
 
 import boto3
-from benchmark_service.sandbox.daytona import DaytonaProviderConfig
-from daytona import AsyncDaytona, AsyncSandbox, DaytonaConfig, DaytonaNotFoundError, ListSandboxesQuery
+from benchmark_service.sandbox.daytona import DaytonaProviderConfig, daytona_retry_after_seconds
+from daytona import (
+    AsyncDaytona,
+    AsyncSandbox,
+    DaytonaConfig,
+    DaytonaConnectionError,
+    DaytonaNotFoundError,
+    DaytonaRateLimitError,
+    DaytonaTimeoutError,
+    ListSandboxesQuery,
+)
+from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_fixed
 
 from tracker.logging import configure_logging, get_logger
+from tracker.observability import retry_callback
 
 logger = get_logger(__name__)
 
@@ -24,6 +35,10 @@ _MAX_SANDBOX_AGE = timedelta(hours=48)
 _DELETE_TIMEOUT_SECONDS = 120
 _LAMBDA_SHUTDOWN_MARGIN_SECONDS = 60
 _REQUIRED_SECRET_FIELDS = ("DAYTONA_API_KEY", "DAYTONA_API_URL", "DAYTONA_TARGET")
+_TRANSIENT_DAYTONA_READ_ERRORS = (DaytonaConnectionError, DaytonaRateLimitError, DaytonaTimeoutError)
+_DAYTONA_READ_ATTEMPTS = 3
+_DAYTONA_READ_WAIT = wait_fixed(2)
+_DAYTONA_RATE_LIMIT_WAIT = wait_exponential(multiplier=1, min=1, max=30)
 CandidateExclusion = Literal["exempted", "target_mismatch", "not_old", "invalid_metadata"]
 
 
@@ -86,6 +101,39 @@ class DaytonaCleanupError(RuntimeError):
             f"target_mismatch={report.target_mismatch}, "
             f"invalid_metadata={report.invalid_metadata}, failures={len(report.failures)}"
         )
+
+
+def _daytona_read_retry_wait(retry_state: RetryCallState) -> float:
+    assert retry_state.outcome is not None
+    exc = retry_state.outcome.exception()
+    assert exc is not None
+
+    if isinstance(exc, DaytonaRateLimitError):
+        retry_after = daytona_retry_after_seconds(exc)
+        if retry_after is not None:
+            return retry_after
+        return _DAYTONA_RATE_LIMIT_WAIT(retry_state)
+
+    return _DAYTONA_READ_WAIT(retry_state)
+
+
+_DAYTONA_READ_RETRY = retry(
+    retry=retry_if_exception_type(_TRANSIENT_DAYTONA_READ_ERRORS),
+    stop=stop_after_attempt(_DAYTONA_READ_ATTEMPTS),
+    wait=_daytona_read_retry_wait,
+    before_sleep=retry_callback("valkyrie.daytona.cleanup.read"),
+    reraise=True,
+)
+
+
+@_DAYTONA_READ_RETRY
+async def _list_sandboxes(client: DaytonaListClient, query: ListSandboxesQuery) -> list[AsyncSandbox]:
+    return [sandbox async for sandbox in client.list(query)]
+
+
+@_DAYTONA_READ_RETRY
+async def _get_sandbox(client: DaytonaListClient, sandbox_id: str) -> AsyncSandbox:
+    return await client.get(sandbox_id)
 
 
 def _parse_created_at(value: str | None) -> datetime | None:
@@ -157,7 +205,7 @@ async def cleanup_old_sandboxes(
     failures: list[CleanupFailure] = []
 
     query = ListSandboxesQuery(targets=[target], created_at_before=cutoff, limit=200)
-    sandboxes = [sandbox async for sandbox in client.list(query)]
+    sandboxes = await _list_sandboxes(client, query)
     for sandbox in sandboxes:
         scanned += 1
         exclusion = _candidate_exclusion(sandbox, target=target, cutoff=cutoff)
@@ -175,7 +223,7 @@ async def cleanup_old_sandboxes(
             continue
 
         try:
-            current_sandbox = await client.get(sandbox.id)
+            current_sandbox = await _get_sandbox(client, sandbox.id)
         except DaytonaNotFoundError:
             deletion_completed += 1
             logger.info(
