@@ -1,3 +1,4 @@
+import hashlib
 import os
 import unittest
 from unittest import mock
@@ -406,12 +407,21 @@ class MonitoringStackTest(unittest.TestCase):
                 )
 
                 tracker_task = next(iter(tracker_template.find_resources("AWS::ECS::TaskDefinition").values()))
+                tracker_environment = {
+                    item["Name"]: item["Value"]
+                    for container in tracker_task["Properties"]["ContainerDefinitions"]
+                    for item in container.get("Environment", [])
+                }
                 tracker_names = {
                     item["Name"]
                     for container in tracker_task["Properties"]["ContainerDefinitions"]
                     for field in ("Environment", "Secrets")
                     for item in container.get(field, [])
                 }
+                self.assertEqual(
+                    tracker_environment["MODEL_GATEWAY_ORIGIN_SHA256"],
+                    hashlib.sha256(gateway_url.encode()).hexdigest(),
+                )
                 self.assertNotIn("MODEL_GATEWAY_URL", tracker_names)
                 self.assertNotIn("MODEL_GATEWAY_ADMIN_API_KEY", tracker_names)
 

@@ -21,14 +21,15 @@ class TestHealthCheckIntegration:
 
         # Override the engine used by check_database_connection
         monkeypatch.setattr(session_module, "engine", postgres_engine)
-        monkeypatch.setenv("MODEL_GATEWAY_URL", "https://gateway.example.test")
+        gateway_sha256 = hashlib.sha256(b"https://gateway.example.test").hexdigest()
+        monkeypatch.setenv("MODEL_GATEWAY_ORIGIN_SHA256", gateway_sha256)
 
         response = client.get("/health")
 
         assert response.status_code == 200
         assert response.json() == {
             "status": "ok",
-            "model_gateway_origin_sha256": hashlib.sha256(b"https://gateway.example.test").hexdigest(),
+            "model_gateway_origin_sha256": gateway_sha256,
         }
 
         # Clean up

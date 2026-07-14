@@ -75,7 +75,7 @@ from tracker.docent_analysis import (
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
-from tracker.model_gateway import model_gateway_origin_sha256
+from tracker.model_gateway import configured_model_gateway_origin_sha256
 from tracker.observability import configure_observability
 from tracker.types import (
     AnalyzeBenchmarkRequest,
@@ -206,7 +206,7 @@ def health_check() -> dict[str, str]:
         raise HTTPException(status_code=503, detail="Database is not accessible")
     return {
         "status": "ok",
-        "model_gateway_origin_sha256": model_gateway_origin_sha256(),
+        "model_gateway_origin_sha256": configured_model_gateway_origin_sha256(),
     }
 
 

@@ -1,5 +1,6 @@
 """Tracker service stack - public-facing API with ALB and shared RDS database."""
 
+import hashlib
 import os
 from typing import Any
 
@@ -181,6 +182,7 @@ class TrackerStack(Stack):
                 "AUTH_REQUIRED": os.environ.get("AUTH_REQUIRED", "false"),
                 "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL", ""),
                 "DESCOPE_PROJECT_ID": os.environ.get("DESCOPE_PROJECT_ID", ""),
+                "MODEL_GATEWAY_ORIGIN_SHA256": hashlib.sha256(stage_config.model_gateway_url.encode()).hexdigest(),
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
             secrets={

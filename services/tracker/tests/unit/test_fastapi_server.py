@@ -61,7 +61,8 @@ class TestFastapiServer:
         """
         # Mock database connection check for unit tests
         monkeypatch.setattr("main.check_database_connection", lambda: True)
-        monkeypatch.setenv("MODEL_GATEWAY_URL", "HTTPS://Gateway.Example.Test:443/")
+        gateway_sha256 = hashlib.sha256(b"https://gateway.example.test").hexdigest()
+        monkeypatch.setenv("MODEL_GATEWAY_ORIGIN_SHA256", gateway_sha256)
 
         response = client.get("/health")
 
@@ -69,7 +70,7 @@ class TestFastapiServer:
 
         assert response.json() == {
             "status": "ok",
-            "model_gateway_origin_sha256": hashlib.sha256(b"https://gateway.example.test").hexdigest(),
+            "model_gateway_origin_sha256": gateway_sha256,
         }
 
     async def test_fetch_benchmark_tasks(

@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import math
 import os
+import re
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any, Literal
@@ -97,8 +98,7 @@ def capability_expires_at(agent_timeout: float, now: float) -> int:
     return math.floor(now) + lifetime
 
 
-def _model_gateway_origin() -> str:
-    gateway_url = os.environ.get("MODEL_GATEWAY_URL", "")
+def _canonical_model_gateway_origin(gateway_url: str) -> str:
     parsed_url = httpx.URL(gateway_url)
     if (
         parsed_url.scheme != "https"
@@ -114,8 +114,16 @@ def _model_gateway_origin() -> str:
     return str(parsed_url).rstrip("/")
 
 
-def model_gateway_origin_sha256() -> str:
-    return hashlib.sha256(_model_gateway_origin().encode("utf-8")).hexdigest()
+def model_gateway_origin_sha256(gateway_url: str) -> str:
+    origin = _canonical_model_gateway_origin(gateway_url)
+    return hashlib.sha256(origin.encode("utf-8")).hexdigest()
+
+
+def configured_model_gateway_origin_sha256() -> str:
+    digest = os.environ.get("MODEL_GATEWAY_ORIGIN_SHA256", "")
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        raise ModelGatewayError("MODEL_GATEWAY_ORIGIN_SHA256 must be a SHA-256 digest")
+    return digest
 
 
 class ModelGatewayAdminClient:
@@ -124,7 +132,7 @@ class ModelGatewayAdminClient:
 
     @classmethod
     def from_environment(cls) -> "ModelGatewayAdminClient":
-        gateway_url = _model_gateway_origin()
+        gateway_url = _canonical_model_gateway_origin(os.environ.get("MODEL_GATEWAY_URL", ""))
         admin_key = os.environ.get("MODEL_GATEWAY_ADMIN_API_KEY", "")
         if not admin_key or admin_key != admin_key.strip():
             raise ModelGatewayError("MODEL_GATEWAY_ADMIN_API_KEY is required for task capabilities")
