@@ -61,7 +61,6 @@ def _create_benchmark(
         request,
         RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
         aws_managed=False,
-        verified_task_ids=task_ids or _TASK_IDS,
     )
     session.add(benchmark)
     session.commit()

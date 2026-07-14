@@ -245,7 +245,6 @@ class Benchmark(SQLModel, table=True):
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
     aws_managed: bool = Field(default=False, nullable=False)
-    verified_task_ids: list[str] | None = Field(default=None, sa_column=Column(JSON))
 
     error_message: str | None = Field(default=None)
     webhook_secret_name: str | None = Field(default=None)

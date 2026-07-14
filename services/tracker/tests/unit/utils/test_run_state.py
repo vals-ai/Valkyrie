@@ -325,7 +325,6 @@ class TestRunState:
             original_start_benchmark_request,
             self._test_starter,
             aws_managed=False,
-            verified_task_ids=["task_0", "task_1", "task_2", "task_3", "task_4"],
         )
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
