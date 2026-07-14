@@ -136,8 +136,6 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     assert resume_context["verified_task_ids"] == ["task-2"]
     assert resume_context["start_benchmark_request"]["harness_config"] is None
     _assert_no_aws_authority(resume_context)
-    database_session.refresh(benchmark)
-    assert benchmark.verified_task_ids == ["task-1", "task-2"]
 
 
 def test_managed_start_rejects_aws_authority_before_persistence(

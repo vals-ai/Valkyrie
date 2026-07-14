@@ -71,7 +71,6 @@ def start_benchmark_request_to_benchmark(
     run_starter: RequestIdentity,
     *,
     aws_managed: bool,
-    verified_task_ids: list[str],
 ) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     if aws_managed != (request.harness_config is None):
@@ -88,7 +87,6 @@ def start_benchmark_request_to_benchmark(
         label=request.label,
         custom_benchmark_service=request.custom_benchmark_service,
         aws_managed=aws_managed,
-        verified_task_ids=verified_task_ids,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
         arguments=BenchmarkArguments(

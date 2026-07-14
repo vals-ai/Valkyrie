@@ -69,7 +69,6 @@ def _persist_benchmark(
         request,
         starter,
         aws_managed=aws_managed,
-        verified_task_ids=_TASK_IDS,
     )
     session.add(benchmark)
     session.commit()
@@ -175,38 +174,6 @@ async def test_ineligible_managed_worker_marks_run_error(
     assert "Managed AWS access is not available for this organization" in (benchmark.error_message or "")
 
 
-@pytest.mark.parametrize(
-    ("request_update", "task_ids", "expected_error"),
-    [
-        pytest.param({"lambda_function": "different-handler"}, _TASK_IDS, "stored run inputs", id="request"),
-        pytest.param({}, ["unknown-task"], "stored run inputs", id="task-ids"),
-    ],
-)
-async def test_managed_worker_rejects_inputs_that_disagree_with_the_row(
-    contract: AgentContractRequest,
-    database_session: Session,
-    process_benchmark_env: None,
-    request_update: dict[str, Any],
-    task_ids: list[str],
-    expected_error: str,
-) -> None:
-    request = _managed_request(contract)
-    benchmark = _persist_benchmark(database_session, request, aws_managed=True)
-    queued_request = request.model_copy(update=request_update)
-    context = ManagedExecutionContext(
-        version=2,
-        benchmark_id=benchmark.id,
-        verified_task_ids=task_ids,
-        start_benchmark_request=queued_request,
-    ).model_dump(mode="json")
-
-    await process_benchmark(execution_context_json=context)
-
-    database_session.refresh(benchmark)
-    assert benchmark.status == BenchmarkStatus.ERROR
-    assert expected_error in (benchmark.error_message or "")
-
-
 async def test_managed_worker_completes_with_the_deployment_runtime(
     contract: AgentContractRequest,
     aws_runtime: AWSRuntime,
@@ -266,7 +233,13 @@ async def test_managed_worker_completes_with_the_deployment_runtime(
     monkeypatch.setattr("tracker.utils.run_orchestration.upload_final_view", upload_results)
     monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", invoke_post_run)
 
-    await process_benchmark(execution_context_json=_execution_context(request, benchmark.id))
+    execution_context = _execution_context(request, benchmark.id)
+    # A resume may change stored inputs while this job is queued; the queued job must still run.
+    benchmark.arguments = benchmark.arguments.model_copy(update={"concurrency": 20})
+    database_session.add(benchmark)
+    database_session.commit()
+
+    await process_benchmark(execution_context_json=execution_context)
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.FINISHED

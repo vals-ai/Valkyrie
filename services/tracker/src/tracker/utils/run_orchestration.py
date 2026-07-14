@@ -22,8 +22,8 @@ from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     copy_agent_to_benchmark,
 )
-from tracker.config import broker
 from tracker.aws.secrets import fetch_aws_secret, resolve_secrets
+from tracker.config import broker
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -256,30 +256,6 @@ class _WorkerExecution:
     managed: bool
 
 
-_TRANSIENT_MANAGED_REQUEST_FIELDS = {
-    "service_headers",
-    "service_auth_header_name",
-    "service_auth_secret_name",
-}
-
-
-def _validate_managed_worker_execution(execution: _WorkerExecution, benchmark_row: Benchmark) -> None:
-    expected_request = benchmark_row.managed_start_benchmark_request()
-    expected_inputs = expected_request.model_dump(exclude=_TRANSIENT_MANAGED_REQUEST_FIELDS)
-    actual_inputs = execution.request.model_dump(exclude=_TRANSIENT_MANAGED_REQUEST_FIELDS)
-    if actual_inputs != expected_inputs:
-        raise TrackerServiceError("Managed worker input does not match the stored run inputs")
-
-    persisted_task_ids = benchmark_row.verified_task_ids
-    queued_task_ids = execution.verified_task_ids
-    if (
-        persisted_task_ids is None
-        or len(queued_task_ids) != len(set(queued_task_ids))
-        or not set(queued_task_ids).issubset(persisted_task_ids)
-    ):
-        raise TrackerServiceError("Managed worker task IDs do not match the stored run inputs")
-
-
 def _parse_worker_execution(
     start_benchmark_request_json: dict[str, Any] | None,
     benchmark_id_str: str | None,
@@ -380,7 +356,6 @@ async def process_benchmark(
         if execution.managed:
             if not benchmark_row.aws_managed:
                 raise TrackerServiceError("Managed worker input does not match the stored run mode")
-            _validate_managed_worker_execution(execution, benchmark_row)
             aws_runtime = deployment_aws_runtime(org.id)
             sandbox_provider_config = _managed_worker_preflight(execution, aws_runtime)
         else:

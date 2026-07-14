@@ -457,7 +457,6 @@ class TestRunRecovery:
             start_benchmark_request,
             self._test_starter,
             aws_managed=False,
-            verified_task_ids=task_ids,
         )
         database_session.add(benchmark_row)
         database_session.commit()
@@ -772,7 +771,6 @@ class TestRunRecovery:
             start_benchmark_request,
             self._test_starter,
             aws_managed=False,
-            verified_task_ids=existing_task_ids,
         )
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
@@ -868,7 +866,6 @@ class TestRunRecovery:
             request,
             self._test_starter,
             aws_managed=False,
-            verified_task_ids=["task_0"],
         )
         database_session.add(benchmark_row)
         database_session.commit()
@@ -954,7 +951,6 @@ class TestRunRecovery:
             request,
             self._test_starter,
             aws_managed=False,
-            verified_task_ids=["task_0"],
         )
         database_session.add(benchmark_row)
         database_session.commit()

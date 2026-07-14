@@ -413,7 +413,6 @@ async def start_benchmark(
         request,
         run_starter,
         aws_managed=aws_runtime.managed,
-        verified_task_ids=verify_response.task_ids,
     )
     session.add(benchmark_row)
     session.commit()
@@ -970,10 +969,6 @@ async def retry_or_resume_benchmark(
         )
 
     if benchmark_row.aws_managed:
-        persisted_task_ids = benchmark_row.verified_task_ids or []
-        benchmark_row.verified_task_ids = list(dict.fromkeys([*persisted_task_ids, *verified_task_ids]))
-        session.add(benchmark_row)
-        session.commit()
         resume_request = benchmark_row.managed_start_benchmark_request(
             service_headers=effective_service_headers,
         )
