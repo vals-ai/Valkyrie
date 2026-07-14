@@ -22,10 +22,12 @@ from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,
     BenchmarkStatus,
+    ErrorResult,
     EvaluationResult,
     ModelGatewayPolicyConfig,
     ModelGatewayTaskCapabilityPolicy,
     Org,
+    RetryPolicy,
     Task,
     TaskStatus,
 )
@@ -38,7 +40,12 @@ from tracker.model_gateway import (
     ModelGatewayError,
 )
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
+from tracker.utils import (
+    commit_task_status_transition,
+    fetch_sandbox_provider_config,
+    process_task,
+    start_benchmark_request_to_benchmark,
+)
 
 _TEST_ORG = Org(id=TEST_ORG_ID, name="default")
 _TEST_STARTER = RequestIdentity(
@@ -71,12 +78,14 @@ def _create_task_env(
     database_session: Session,
     harness_config: HarnessConfig,
     run_starter: RequestIdentity | None = None,
+    retry_policy: RetryPolicy = RetryPolicy.ALLOW,
 ) -> tuple[StartBenchmarkRequest, Task, UUID]:
     """Create a benchmark request, benchmark row, and task row for process_task tests."""
     start_benchmark_request = StartBenchmarkRequest(
         benchmark_name="swebench",
         contract=contract,
         concurrency=1,
+        retry_policy=retry_policy,
         task_ids=["task_0"],
         harness_config=harness_config,
     )
@@ -91,6 +100,200 @@ def _create_task_env(
     database_session.commit()
 
     return start_benchmark_request, task_row, benchmark_row.id
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        TaskStatus.BUILDING,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.EVALUATING,
+        TaskStatus.ERROR,
+        TaskStatus.FINISHED,
+    ],
+)
+async def test_process_task_forbid_ignores_stale_duplicate(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+    status: TaskStatus,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+        retry_policy=RetryPolicy.FORBID,
+    )
+    resume_state = {"job_id": "existing-evaluation"} if status == TaskStatus.EVALUATING else None
+    task_row.status = status
+    task_row.eval_resume_state = resume_state
+    database_session.add(task_row)
+    database_session.commit()
+
+    evaluator_calls = 0
+
+    async def unexpected_resume_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal evaluator_calls
+        evaluator_calls += 1
+        return {"status": "success", "score": 1.0}
+
+    monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", unexpected_resume_evaluation)
+
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    database_session.refresh(task_row)
+    assert result == {"task_0": None}
+    assert evaluator_calls == 0
+    assert task_row.status == status
+    assert task_row.eval_resume_state == resume_state
+    assert database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).all() == []
+    assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
+
+
+async def test_process_task_rejects_pending_request_policy_mismatch(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    harness_config: HarnessConfig,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+        retry_policy=RetryPolicy.FORBID,
+    )
+    start_benchmark_request = start_benchmark_request.model_copy(update={"retry_policy": RetryPolicy.ALLOW})
+
+    result = await _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+    database_session.refresh(task_row)
+    assert result == {"task_0": None}
+    assert task_row.status == TaskStatus.ERROR
+    assert len(database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()) == 1
+    assert database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).all() == []
+
+
+def test_policy_mismatch_error_does_not_overwrite_atomic_claim(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+) -> None:
+    _request, task_row, _benchmark_id = _create_task_env(contract, database_session, harness_config)
+    stale_pending = Task.model_validate(task_row.model_dump())
+    task_row.status = TaskStatus.BUILDING
+    database_session.add(task_row)
+    database_session.commit()
+
+    transitioned = utils_module.commit_task_error(
+        stale_pending,
+        database_session,
+        "stale queued policy",
+        expected_started_at=stale_pending.started_at,
+        expected_status=TaskStatus.PENDING,
+    )
+
+    database_session.refresh(task_row)
+    assert not transitioned
+    assert task_row.status == TaskStatus.BUILDING
+    assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
+
+
+async def test_process_task_forbid_atomically_claims_duplicate_delivery(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+    harness_config: HarnessConfig,
+) -> None:
+    start_benchmark_request, task_row, benchmark_id = _create_task_env(
+        contract,
+        database_session,
+        harness_config,
+        retry_policy=RetryPolicy.FORBID,
+    )
+    barrier = asyncio.Barrier(2)
+    sandbox_count = 0
+    agent_count = 0
+    evaluation_count = 0
+
+    async def synchronized_retrieve(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+        await barrier.wait()
+        return RetrieveTaskResponse(
+            source=ImageSource(image="test-image:latest"),
+            problem_path="/tmp/problem_statement.txt",
+            cwd="/testbed",
+            resources=Resources(vcpu=2, memory=4, disk=5),
+        )
+
+    @asynccontextmanager
+    async def count_sandbox(*_args: Any, **_kwargs: Any):
+        nonlocal sandbox_count
+        sandbox_count += 1
+        yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
+
+    async def count_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+        nonlocal agent_count
+        agent_count += 1
+        return None, 0.0
+
+    async def count_evaluation(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        nonlocal evaluation_count
+        evaluation_count += 1
+        return {"status": "success", "score": 1.0}
+
+    monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", synchronized_retrieve)
+    monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", count_evaluation)
+    monkeypatch.setattr(utils_module, "create_sandbox", count_sandbox)
+    monkeypatch.setattr(utils_module, "run_agent", count_agent)
+
+    results = await asyncio.gather(
+        _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config),
+        _run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config),
+    )
+
+    database_session.refresh(task_row)
+    assert results.count({"task_0": {"status": "success", "score": 1.0}}) == 1
+    assert results.count({"task_0": None}) == 1
+    assert sandbox_count == 1
+    assert agent_count == 1
+    assert evaluation_count == 1
+    assert task_row.status == TaskStatus.FINISHED
+    assert len(database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).all()) == 1
+    assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
+
+
+def test_finished_transition_does_not_overwrite_task_error(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+) -> None:
+    _request, task_row, _benchmark_id = _create_task_env(contract, database_session, harness_config)
+    task_row.status = TaskStatus.ERROR
+    database_session.add(task_row)
+    database_session.commit()
+
+    progressed = commit_task_status_transition(
+        task_row.id,
+        database_session,
+        _TEST_ORG,
+        TaskStatus.IN_PROGRESS,
+        expected_started_at=task_row.started_at,
+        expected_status=TaskStatus.BUILDING,
+    )
+    transitioned = commit_task_status_transition(
+        task_row.id,
+        database_session,
+        _TEST_ORG,
+        TaskStatus.FINISHED,
+        expected_started_at=task_row.started_at,
+    )
+
+    database_session.refresh(task_row)
+    assert not progressed
+    assert not transitioned
+    assert task_row.status == TaskStatus.ERROR
 
 
 async def _run_process_task(

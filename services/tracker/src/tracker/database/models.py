@@ -90,6 +90,11 @@ class RetryMode(str, Enum):
     FROM_SCRATCH = "from_scratch"
 
 
+class RetryPolicy(str, Enum):
+    ALLOW = "allow"
+    FORBID = "forbid"
+
+
 MAX_OUTPUT_ARTIFACT_BYTES = 50 * 1024 * 1024
 MAX_OUTPUT_ARTIFACT_COUNT = 10
 
@@ -215,6 +220,7 @@ class BenchmarkArguments(BaseModel):
 
     contract: AgentContractRequest
     concurrency: int
+    retry_policy: RetryPolicy = RetryPolicy.ALLOW
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
@@ -343,6 +349,7 @@ class Benchmark(SQLModel, table=True):
             contract=self.arguments.contract,
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,
+            retry_policy=self.arguments.retry_policy,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,

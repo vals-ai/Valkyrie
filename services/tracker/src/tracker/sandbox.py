@@ -49,6 +49,7 @@ from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
     OutputArtifactSpec,
+    RetryPolicy,
 )
 from tracker.exceptions import (
     AgentRunFailedError,
@@ -953,10 +954,16 @@ async def install_agent(
     log_output: Callable[[str], None],
     agent_env_vars: Mapping[str, str],
     runtime_source: SandboxSource | None,
+    retry_policy: RetryPolicy,
 ) -> None:
     if runtime_source is not None:
         sandbox = runtime_sandbox(sandbox, runtime_source)
-    await install_agent_dependencies(
+    installer = install_agent_dependencies
+    if retry_policy == RetryPolicy.FORBID:
+        installer = install_agent_dependencies.retry_with(  # pyright: ignore[reportFunctionMemberAccess]
+            stop=stop_after_attempt(1)
+        )
+    await installer(
         sandbox,
         contract,
         log_output,
@@ -1059,6 +1066,7 @@ async def run_agent(
     aws: AWSCredentials,
     s3_bucket: str,
     agent_env_vars: Mapping[str, str],
+    retry_policy: RetryPolicy,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
@@ -1091,6 +1099,7 @@ async def run_agent(
         log_output,
         agent_env_vars,
         runtime_source,
+        retry_policy,
     )
     exit_reason, agent_run_time = await execute_agent(
         sandbox,

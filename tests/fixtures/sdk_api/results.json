@@ -25,6 +25,7 @@
         "model_gateway_policy": null
       },
       "concurrency": 2,
+      "retry_policy": "allow",
       "task_ids": [
         "task-1",
         "task-2"

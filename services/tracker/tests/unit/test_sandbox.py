@@ -21,6 +21,7 @@ from tracker.database.models import (
     AgentContractRequest,
     MAX_OUTPUT_ARTIFACT_BYTES,
     OutputArtifact,
+    RetryPolicy,
 )
 from tracker.exceptions import (
     AgentRunFailedError,
@@ -272,6 +273,7 @@ class TestAgentOutputTelemetry:
             lambda _msg: None,
             "/testbed",
             agent_env_vars={},
+            retry_policy=RetryPolicy.ALLOW,
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             benchmark_id="benchmark-123",
@@ -328,6 +330,7 @@ class TestAgentOutputTelemetry:
             lambda _msg: None,
             "/testbed",
             agent_env_vars={},
+            retry_policy=RetryPolicy.ALLOW,
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             agent_output_s3_key="benchmarks/run/task/agent_output.tar.gz",
@@ -386,6 +389,7 @@ class TestAgentOutputTelemetry:
             lambda _msg: None,
             "/workspace",
             agent_env_vars={},
+            retry_policy=RetryPolicy.ALLOW,
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             runtime_source=ComposeSource(
@@ -445,6 +449,7 @@ class TestAgentOutputTelemetry:
             lambda _msg: None,
             "/workspace",
             agent_env_vars={},
+            retry_policy=RetryPolicy.ALLOW,
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
             agent_timeout=2.5,
@@ -493,6 +498,7 @@ class TestAgentOutputTelemetry:
             lambda _msg: None,
             "/workspace",
             agent_env_vars={"AGENT_SECRET": secret},
+            retry_policy=RetryPolicy.ALLOW,
             aws=harness_config.aws,
             s3_bucket=harness_config.s3_bucket,
         )
@@ -555,6 +561,42 @@ class TestAgentOutputTelemetry:
 
         expected_command = "cd /bundle/test-agent && timeout 600 sh -c 'apt-get update -qq && echo done'"
         assert observed_commands == [expected_command, expected_command]
+
+    async def test_forbid_install_policy_does_not_repeat_install_command(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="initialize-once",
+            run_cmd="echo done",
+        )
+        observed_commands: list[str] = []
+
+        async def fail_install(
+            _sandbox: Any,
+            command: str,
+            _log_output: Any,
+            *,
+            env_vars: dict[str, str],
+        ) -> tuple[AgentCausedExitReason, float]:
+            observed_commands.append(command)
+            assert env_vars == {}
+            return AgentCausedExitReason.TIMEOUT, 600.0
+
+        monkeypatch.setattr(sandbox_module, "stream_command_output", fail_install)
+
+        with pytest.raises(SandboxError, match="timed out"):
+            await sandbox_module.install_agent(
+                Mock(),
+                contract,
+                lambda _message: None,
+                {},
+                None,
+                retry_policy=RetryPolicy.FORBID,
+            )
+
+        assert observed_commands == ["cd /bundle/test-agent && timeout 600 sh -c initialize-once"]
 
     def test_metric_source_name_drops_high_cardinality_tag_and_digest(self) -> None:
         metric_source_name = getattr(sandbox_module, "_metric_source_name")

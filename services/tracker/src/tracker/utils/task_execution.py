@@ -40,6 +40,7 @@ from tracker.database.models import (
     ErrorResult,
     EvaluationResult,
     Org,
+    RetryPolicy,
     Task,
     TaskBreakdown,
     TaskStatus,
@@ -313,6 +314,7 @@ def _commit_task_status(
     error_message: str | None = None,
     extra: dict[str, Any] | None = None,
     expected_started_at: datetime | None = None,
+    expected_status: TaskStatus | None = None,
 ) -> bool:
     from_status = task.status
     span_attributes = {
@@ -337,6 +339,10 @@ def _commit_task_status(
             task_update = task_update.where(col(Task.status) != TaskStatus.STOPPED)
         if expected_started_at is not None:
             task_update = task_update.where(col(Task.started_at) == expected_started_at)
+        if expected_status is not None:
+            task_update = task_update.where(col(Task.status) == expected_status)
+        if to_status == TaskStatus.FINISHED:
+            task_update = task_update.where(col(Task.status) == TaskStatus.EVALUATING)
 
         result = session.exec(task_update.values(**values))
         if result.rowcount == 0:
@@ -354,6 +360,7 @@ def commit_task_status_transition(
     to_status: TaskStatus,
     *,
     expected_started_at: datetime | None = None,
+    expected_status: TaskStatus | None = None,
 ) -> bool:
     fetch_start = time.monotonic()
     task = fetch_task_row(task_row_id, session, org)
@@ -363,6 +370,7 @@ def commit_task_status_transition(
         to_status,
         extra={"fetch_duration_ms": elapsed_ms(fetch_start)},
         expected_started_at=expected_started_at,
+        expected_status=expected_status,
     )
 
 
@@ -411,6 +419,18 @@ async def process_task(
         if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
             return {task_id: None}
         attempt_started_at = task_row.started_at
+        retry_policy = benchmark_row.arguments.retry_policy
+        if retry_policy == RetryPolicy.FORBID and task_row.status != TaskStatus.PENDING:
+            return {task_id: None}
+        if retry_policy != start_benchmark_request.retry_policy:
+            commit_task_error(
+                task_row,
+                task_session,
+                "Start request retry_policy does not match the stored run",
+                expected_started_at=attempt_started_at,
+                expected_status=TaskStatus.PENDING,
+            )
+            return {task_id: None}
         if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
             handle_early_exit(task_row, task_session)
             return {task_id: None}
@@ -557,6 +577,7 @@ async def process_task(
                 org,
                 TaskStatus.BUILDING,
                 expected_started_at=attempt_started_at,
+                expected_status=TaskStatus.PENDING if retry_policy == RetryPolicy.FORBID else None,
             ):
                 return {task_id: None}
 
@@ -605,6 +626,7 @@ async def process_task(
                         org,
                         TaskStatus.IN_PROGRESS,
                         expected_started_at=attempt_started_at,
+                        expected_status=TaskStatus.BUILDING if retry_policy == RetryPolicy.FORBID else None,
                     ):
                         return {task_id: None}
 
@@ -647,6 +669,7 @@ async def process_task(
                             log_output,
                             task_data.cwd,
                             agent_env_vars=agent_env_vars,
+                            retry_policy=retry_policy,
                             aws=harness_config.aws,
                             s3_bucket=harness_config.s3_bucket,
                             agent_output_s3_key=agent_output_s3_key,
@@ -668,6 +691,7 @@ async def process_task(
                             log_output,
                             agent_env_vars,
                             task_data.source,
+                            retry_policy=retry_policy,
                         )
                     finally:
                         agent_env_vars.clear()
@@ -770,6 +794,7 @@ async def process_task(
                         org,
                         TaskStatus.EVALUATING,
                         expected_started_at=attempt_started_at,
+                        expected_status=TaskStatus.IN_PROGRESS if retry_policy == RetryPolicy.FORBID else None,
                     ):
                         return {task_id: None}
 
@@ -850,7 +875,13 @@ async def process_task(
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
-        log_output(f"\n[ERROR] {_exception_message(e)}")
+        error_message = _exception_message(e)
+        log_output(f"\n[ERROR] {error_message}")
+        if retry_policy == RetryPolicy.FORBID:
+            with Session(bind=engine) as task_session:
+                task = fetch_task_row(task_row.id, task_session, org)
+                commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+            return {task_id: None}
         raise
     except OutputArtifactError as e:
         if task_is_stopped():
@@ -946,6 +977,7 @@ def commit_task_error(
     error_message: str,
     *,
     expected_started_at: datetime | None = None,
+    expected_status: TaskStatus | None = None,
 ) -> bool:
     session.add(ErrorResult(org_id=task_row.org_id, task=task_row.id, error_message=error_message))
     return _commit_task_status(
@@ -954,4 +986,5 @@ def commit_task_error(
         TaskStatus.ERROR,
         error_message=error_message,
         expected_started_at=expected_started_at,
+        expected_status=expected_status,
     )

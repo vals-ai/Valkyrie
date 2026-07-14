@@ -35,6 +35,7 @@ from tracker.database.models import (
     EvaluationResult,
     Org,
     RetryMode,
+    RetryPolicy,
     Task,
     TaskStatus,
 )
@@ -1125,6 +1126,37 @@ class TestStopAndResume:
 
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
+
+    @pytest.mark.parametrize("retry", [False, True])
+    async def test_forbid_retry_policy_rejects_running_resume_and_retry_before_mutation(
+        self,
+        retry: bool,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"retry_policy": RetryPolicy.FORBID})
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        async def _unexpected_reset(*_args: Any, **_kwargs: Any) -> list[str]:
+            raise AssertionError("forbidden retries and resumes must reject before task mutation")
+
+        monkeypatch.setattr("main.reset_to_in_progress_status", _unexpected_reset)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            params={"retry": retry},
+        )
+
+        assert response.status_code == 409
+        assert response.json() == {
+            "detail": f"Run {benchmark_row.id} has retry_policy=forbid and cannot be retried or resumed."
+        }
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.arguments.retry_policy == RetryPolicy.FORBID
 
     async def test_running_resume_noops(
         self,

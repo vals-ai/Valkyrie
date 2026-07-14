@@ -19,7 +19,7 @@ from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundEr
 
 from tests.utils import random_task_id
 from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, RetryPolicy
 from tracker.exceptions import SandboxError
 from tracker.sandbox import (
     create_sandbox,
@@ -263,6 +263,7 @@ class TestSandboxOperations:
             log_output=log_callback,
             cwd="/",
             agent_env_vars={},
+            retry_policy=RetryPolicy.ALLOW,
             aws=aws_credentials,
             s3_bucket=harness_config.s3_bucket,
         )
@@ -308,6 +309,7 @@ class TestSandboxOperations:
             log_output=log_callback,
             cwd="/",
             agent_env_vars={},
+            retry_policy=RetryPolicy.ALLOW,
             aws=aws_credentials,
             s3_bucket=harness_config.s3_bucket,
         )

@@ -7,11 +7,20 @@ import pytest
 from benchmark_service import ImageSource, Resources
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    BenchmarkStatus,
+    ErrorResult,
+    EvaluationResult,
+    Org,
+    RetryPolicy,
+    Task,
+    TaskStatus,
+)
 from tracker.exceptions import SandboxSetupError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
@@ -37,7 +46,14 @@ class TestPtyRetry:
             ),
         ],
     )
-    async def test_process_task_retries_on_sandbox_setup_error(
+    @pytest.mark.parametrize(
+        "retry_policy,expected_sandbox_count,expected_status",
+        [
+            (RetryPolicy.ALLOW, 2, TaskStatus.FINISHED),
+            (RetryPolicy.FORBID, 1, TaskStatus.ERROR),
+        ],
+    )
+    async def test_process_task_applies_retry_policy_to_sandbox_setup_error(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -45,21 +61,15 @@ class TestPtyRetry:
         harness_config: HarnessConfig,
         fail_target: str,
         error: SandboxSetupError,
+        retry_policy: RetryPolicy,
+        expected_sandbox_count: int,
+        expected_status: TaskStatus,
     ) -> None:
-        """
-        When a SandboxSetupError subclass is raised during sandbox setup or agent execution,
-        process_task should delete the sandbox, create a fresh one, and complete successfully.
-
-        Test Cases:
-            - SandboxSetupError is raised on the first attempt
-            - process_task retries with a new sandbox
-            - Task ends in FINISHED state after the retry succeeds
-            - The sandbox context manager is entered twice (one per attempt)
-        """
         start_benchmark_request = StartBenchmarkRequest(
             benchmark_name="swebench",
             contract=contract,
             concurrency=1,
+            retry_policy=retry_policy,
             task_ids=["task_0"],
             harness_config=harness_config,
         )
@@ -140,12 +150,19 @@ class TestPtyRetry:
             creation_semaphore=Semaphore(1),
         )
 
-        assert result == {"task_0": {"status": "success", "score": 1.0}}
-        assert sandbox_entry_count == 2
-        assert call_count == 2
+        expected_result = {"status": "success", "score": 1.0} if retry_policy == RetryPolicy.ALLOW else None
+        assert result == {"task_0": expected_result}
+        assert sandbox_entry_count == expected_sandbox_count
+        assert call_count == expected_sandbox_count
 
         database_session.refresh(task_row)
-        assert task_row.status == TaskStatus.FINISHED
+        assert task_row.status == expected_status
+        evaluation_results = database_session.exec(
+            select(EvaluationResult).where(EvaluationResult.task == task_row.id)
+        ).all()
+        assert len(evaluation_results) == (1 if retry_policy == RetryPolicy.ALLOW else 0)
+        error_results = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
+        assert len(error_results) == (1 if retry_policy == RetryPolicy.FORBID else 0)
 
     async def test_process_task_spans_timed_status_transitions(
         self,

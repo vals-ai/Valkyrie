@@ -64,6 +64,7 @@ from tracker.database.models import (
     FinalEvaluation,
     Org,
     RetryMode,
+    RetryPolicy,
     Task,
 )
 from tracker.database.scoping import assert_org, get_scoped
@@ -742,6 +743,12 @@ async def retry_or_resume_benchmark(
         RetryOrResumeBenchmarkResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+
+    if benchmark_row.arguments.retry_policy == RetryPolicy.FORBID:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {benchmark_id} has retry_policy=forbid and cannot be retried or resumed.",
+        )
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(

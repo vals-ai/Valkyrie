@@ -1,7 +1,18 @@
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task, TaskStatus
+from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, RetryPolicy, Task, TaskStatus
+
+
+def test_legacy_benchmark_arguments_default_retry_policy_to_allow() -> None:
+    arguments = BenchmarkArguments.model_validate(
+        {
+            "contract": AgentContractRequest(name="agent"),
+            "concurrency": 1,
+        }
+    )
+
+    assert arguments.retry_policy == RetryPolicy.ALLOW
 
 
 def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_session: Session) -> None:

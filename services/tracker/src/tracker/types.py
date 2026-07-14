@@ -17,6 +17,7 @@ from tracker.database.models import (
     BenchmarkStatus,
     DocentReadingStatus,
     FinalEvaluation,
+    RetryPolicy,
     TaskStatus,
 )
 
@@ -59,6 +60,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    retry_policy: RetryPolicy = RetryPolicy.ALLOW
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None

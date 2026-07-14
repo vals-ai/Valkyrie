@@ -19,6 +19,7 @@ from valkyrie.sdk import (
     AgentContractRequest,
     FetchBenchmarksRequest,
     FinalViewResponse,
+    RetryPolicy,
     S3UploadResultsResponse,
     ValkyrieAPIError,
     ValkyrieClient,
@@ -187,6 +188,7 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
             "swebench",
             model="claude-sonnet",
             concurrency=10,
+            retry_policy=RetryPolicy.FORBID,
             task_ids=["task-1", "task-2"],
             dataset="default",
             label="nightly",
@@ -210,6 +212,7 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert body["custom_benchmark_service"] == "https://local.swebench"
     assert body["service_headers"] == {"Authorization": "benchmark-token", "X-Custom": "explicit"}
     assert body["sandbox_provider"] == "modal"
+    assert body["retry_policy"] == "forbid"
     assert body["harness_config"]["sandbox_provider_secret_name"] == "ModalSecret"
     assert body["webhook_secret_name"] == "SlackWebhook"
     assert body["webhook_intervals"] == [25, 100]
@@ -239,6 +242,7 @@ async def test_start_can_omit_optional_run_configuration(make_client, sdk_config
         await client.runs.start("sweagent", "swebench", ignore_custom_services=True)
 
     assert captured_body["custom_benchmark_service"] is None
+    assert captured_body["retry_policy"] == "allow"
     assert captured_body["service_headers"] == {}
     assert captured_body["webhook_secret_name"] is None
     assert captured_body["webhook_intervals"] is None

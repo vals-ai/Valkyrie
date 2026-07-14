@@ -29,6 +29,7 @@ from tracker.database.models import (
     EvaluationResult,
     FinalEvaluation,
     Org,
+    RetryPolicy,
     Task,
     TaskStatus,
 )
@@ -108,6 +109,7 @@ class TestFastapiServer:
             contract=contract,
             benchmark_name="swebench",
             concurrency=10,
+            retry_policy=RetryPolicy.FORBID,
             task_ids=None,
             harness_config=harness_config,
         )
@@ -134,11 +136,13 @@ class TestFastapiServer:
         # Test case 2. Benchmark row has been created and pushed to the database
         benchmark_row = database_session.get(Benchmark, UUID(json_response["benchmark_id"]))
         assert benchmark_row
+        database_session.expire(benchmark_row, ["arguments"])
 
         # Secondary test. Arguments is correct serialized into the database
         assert benchmark_row.arguments == BenchmarkArguments(
             contract=request.contract,
             concurrency=request.concurrency,
+            retry_policy=RetryPolicy.FORBID,
             task_ids=None,
             slice_str=None,
             sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
@@ -154,6 +158,20 @@ class TestFastapiServer:
         assert json_response["benchmark_name"] == request.benchmark_name
         assert json_response["agent_name"] == request.contract.name
         assert json_response["concurrency"] == request.concurrency
+        assert benchmark_row.arguments.retry_policy == RetryPolicy.FORBID
+
+    def test_start_request_defaults_retry_policy_to_allow(
+        self,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+    ) -> None:
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            harness_config=harness_config,
+        )
+
+        assert request.retry_policy == RetryPolicy.ALLOW
 
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
         self,

@@ -20,6 +20,7 @@ EXPECTED_ALL = [
     "FetchBenchmarksResponse",
     "FinalViewResponse",
     "RetryMode",
+    "RetryPolicy",
     "RetryOrResumeBenchmarkResponse",
     "S3UploadResultsResponse",
     "StartBenchmarkResponse",
@@ -40,7 +41,8 @@ EXPECTED_SIGNATURES = {
         "path=~/.config/valkyrie/valkyrie.yaml, *, base_url=None, timeout=120, transport=None"
     ),
     RunsResource.start: (
-        "self, agent, benchmark, *, model=None, concurrency=5, task_ids=None, slice_str=None, dataset=None, "
+        "self, agent, benchmark, *, model=None, concurrency=5, retry_policy=<RetryPolicy.ALLOW: 'allow'>, "
+        "task_ids=None, slice_str=None, dataset=None, "
         "label=None, lambda_function=None, provider=None, agent_kwargs=None, secrets=None, service_headers=None, "
         "webhook_intervals=None, ignore_custom_services=False"
     ),

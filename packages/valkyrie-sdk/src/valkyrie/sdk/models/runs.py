@@ -52,6 +52,13 @@ class RetryMode(str, Enum):
     FROM_SCRATCH = "from_scratch"
 
 
+class RetryPolicy(str, Enum):
+    """Whether a run may be retried or resumed."""
+
+    ALLOW = "allow"
+    FORBID = "forbid"
+
+
 class Order(str, Enum):
     """Sort order for run listings."""
 
@@ -65,6 +72,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    retry_policy: RetryPolicy = RetryPolicy.ALLOW
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
@@ -180,6 +188,7 @@ class BenchmarkArguments(ResponseModel):
 
     contract: AgentContractRequest
     concurrency: int
+    retry_policy: RetryPolicy = RetryPolicy.ALLOW
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None

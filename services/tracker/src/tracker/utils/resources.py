@@ -63,6 +63,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
         arguments=BenchmarkArguments(
             contract=request.contract,
             concurrency=request.concurrency,
+            retry_policy=request.retry_policy,
             task_ids=request.task_ids,
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,

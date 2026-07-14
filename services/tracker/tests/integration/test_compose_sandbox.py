@@ -11,7 +11,7 @@ import pytest
 from benchmark_service import ComposeSource, ImageSource, Sandbox, SandboxProvider
 from benchmark_service.schemas import RetrieveTaskResponse
 
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, RetryPolicy
 from tracker.sandbox import create_sandbox, run_agent, runtime_sandbox
 from tracker.types import AWSCredentials
 
@@ -211,6 +211,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         logs.append,
         task_data.cwd,
         agent_env_vars={"TRACKER_COMPOSE_SECRET": _COMPOSE_SECRET},
+        retry_policy=RetryPolicy.ALLOW,
         aws=aws,
         s3_bucket="unused",
         runtime_source=task_data.source,
