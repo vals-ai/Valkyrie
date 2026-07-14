@@ -19,8 +19,14 @@ from tests.conftest import TEST_ORG_ID
 from tracker.auth import get_current_org
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
-from tracker.database.models import DEFAULT_ORG_NAME, Org
+from tracker.database.models import DEFAULT_ORG_NAME, AgentContractRequest, Org
 from tracker.database.session import get_session
+from tests.integration_agent_artifacts import (
+    create_s3_client,
+    delete_test_agent_artifact,
+    integration_test_agent_name,
+    seed_test_agent_artifact,
+)
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import create_benchmark_service_client, fetch_harness_config, fetch_sandbox_provider_config
 
@@ -178,6 +184,30 @@ def harness_config(daytona_secret_name: str, aws_credentials: AWSCredentials) ->
         log_group=log_group,
         log_retention_policy=log_retention_policy,
         s3_bucket=aws_s3_bucket,
+    )
+
+
+@pytest.fixture(scope="session")
+def test_agent_name(worker_id: str) -> str:
+    return integration_test_agent_name(worker_id)
+
+
+@pytest.fixture(scope="session")
+def seeded_test_agent_artifact(test_agent_name: str, harness_config: HarnessConfig) -> Generator[None, None, None]:
+    s3_client = create_s3_client(harness_config.aws)
+    key = seed_test_agent_artifact(s3_client, harness_config.s3_bucket, test_agent_name)
+
+    yield
+
+    delete_test_agent_artifact(s3_client, harness_config.s3_bucket, key)
+
+
+@pytest.fixture
+def contract(test_agent_name: str, seeded_test_agent_artifact: None) -> AgentContractRequest:
+    return AgentContractRequest(
+        name=test_agent_name,
+        install_cmd="echo installing dependencies...",
+        run_cmd="echo running agent...",
     )
 
 
