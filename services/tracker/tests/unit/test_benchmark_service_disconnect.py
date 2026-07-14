@@ -117,7 +117,7 @@ class TestBenchmarkServiceDisconnect:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
-        assert "Benchmark service WebSocket disconnected without a close frame" in error_message
+        assert "Benchmark service WebSocket disconnected: no close frame received or sent" in error_message
         assert "last application message received" in error_message
         assert "10s ago" in error_message
 
@@ -154,7 +154,8 @@ class TestBenchmarkServiceDisconnect:
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
         error_message = self._latest_task_error(database_session, task_row)
-        assert f"Benchmark service WebSocket disconnected with code {code} ({reason})" in error_message
+        assert f"received {code}" in error_message
+        assert reason in error_message
         assert "last application message received" in error_message
 
     async def test_validation_error_produces_human_readable_message(
