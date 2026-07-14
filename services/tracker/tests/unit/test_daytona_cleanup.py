@@ -12,7 +12,16 @@ from typing import cast
 import pytest
 from benchmark_service import SandboxError
 from benchmark_service.sandbox.daytona import DaytonaProviderConfig
-from daytona import AsyncSandbox, DaytonaConnectionError, DaytonaNotFoundError, ListSandboxesQuery
+from daytona import (
+    AsyncSandbox,
+    DaytonaConnectionError,
+    DaytonaNotFoundError,
+    DaytonaRateLimitError,
+    DaytonaTimeoutError,
+    DaytonaValidationError,
+    ListSandboxesQuery,
+)
+from tenacity import RetryCallState, wait_none
 
 import tracker.daytona_cleanup as cleanup_module
 from tracker.daytona_cleanup import CleanupFailure, CleanupReport, DaytonaCleanupError, cleanup_old_sandboxes
@@ -174,7 +183,7 @@ async def test_cleanup_treats_candidate_disappearing_before_deletion_as_complete
     assert report.succeeded
 
 
-async def test_cleanup_records_refresh_failure_and_continues() -> None:
+async def test_cleanup_records_refresh_failure_and_continues(monkeypatch: pytest.MonkeyPatch) -> None:
     failed = _sandbox("refresh-failed", created_at=NOW - timedelta(hours=49))
     deleted = _sandbox("deleted", created_at=NOW - timedelta(hours=49))
     client = FakeDaytona(
@@ -185,15 +194,78 @@ async def test_cleanup_records_refresh_failure_and_continues() -> None:
         },
     )
 
+    monkeypatch.setattr(
+        cleanup_module,
+        "_get_sandbox",
+        cleanup_module._get_sandbox.retry_with(wait=wait_none()),  # pyright: ignore[reportPrivateUsage,reportFunctionMemberAccess]
+    )
+
     report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
 
-    assert client.get_calls == [failed.id, deleted.id]
+    assert client.get_calls == [failed.id] * 3 + [deleted.id]
     assert client.delete_calls == [deleted.id]
     assert report.deletion_completed == 1
     assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [
         (failed.id, "DaytonaConnectionError")
     ]
     assert not report.succeeded
+
+
+@pytest.mark.parametrize(
+    "transient_error",
+    [
+        DaytonaConnectionError("connection failed transiently"),
+        DaytonaRateLimitError("rate limited transiently", headers={"retry-after-sandbox-lifecycle": "0"}),
+        DaytonaTimeoutError("refresh timed out transiently"),
+    ],
+)
+async def test_cleanup_retries_transient_refresh_before_deletion(
+    monkeypatch: pytest.MonkeyPatch,
+    transient_error: BaseException,
+) -> None:
+    class TransientGetDaytona(FakeDaytona):
+        get_attempts = 0
+
+        async def get(self, sandbox_id_or_name: str) -> AsyncSandbox:
+            self.get_calls.append(sandbox_id_or_name)
+            self.get_attempts += 1
+            if self.get_attempts == 1:
+                raise transient_error
+            sandbox = self.current_sandboxes[sandbox_id_or_name]
+            if isinstance(sandbox, BaseException):
+                raise sandbox
+            return sandbox
+
+    sandbox = _sandbox("transient-refresh", created_at=NOW - timedelta(hours=49))
+    client = TransientGetDaytona([sandbox])
+    monkeypatch.setattr(
+        cleanup_module,
+        "_get_sandbox",
+        cleanup_module._get_sandbox.retry_with(wait=wait_none()),  # pyright: ignore[reportPrivateUsage,reportFunctionMemberAccess]
+    )
+
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
+
+    assert client.get_calls == [sandbox.id, sandbox.id]
+    assert client.delete_calls == [sandbox.id]
+    assert report.deletion_completed == 1
+    assert report.succeeded
+
+
+async def test_cleanup_does_not_retry_non_transient_refresh_failure() -> None:
+    sandbox = _sandbox("invalid-refresh", created_at=NOW - timedelta(hours=49))
+    client = FakeDaytona(
+        [sandbox],
+        current_sandboxes={sandbox.id: DaytonaValidationError("invalid request")},
+    )
+
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
+
+    assert client.get_calls == [sandbox.id]
+    assert client.delete_calls == []
+    assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [
+        (sandbox.id, "DaytonaValidationError")
+    ]
 
 
 async def test_cleanup_uses_provider_delete_and_continues_after_failures() -> None:
@@ -234,19 +306,107 @@ async def test_cleanup_bounds_each_delete_and_continues(
     assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [("blocked", "TimeoutError")]
 
 
-async def test_cleanup_materializes_listing_before_any_deletion() -> None:
+async def test_cleanup_retries_complete_listing_before_any_deletion(monkeypatch: pytest.MonkeyPatch) -> None:
     class FailingListDaytona(FakeDaytona):
+        list_calls = 0
+
         async def list(self, query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]:
+            self.list_calls += 1
             self.query = query
             yield self.sandboxes[0]
             raise DaytonaConnectionError("pagination failed")
 
     client = FailingListDaytona([_sandbox("first", created_at=NOW - timedelta(hours=49))])
+    monkeypatch.setattr(
+        cleanup_module,
+        "_list_sandboxes",
+        cleanup_module._list_sandboxes.retry_with(wait=wait_none()),  # pyright: ignore[reportPrivateUsage,reportFunctionMemberAccess]
+    )
 
     with pytest.raises(DaytonaConnectionError, match="pagination failed"):
         await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET)
 
+    assert client.list_calls == 3
     assert client.delete_calls == []
+
+
+async def test_cleanup_honors_retry_after_and_restarts_listing_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RateLimitedListDaytona(FakeDaytona):
+        list_calls = 0
+
+        async def list(self, query: ListSandboxesQuery | None = None) -> AsyncIterator[AsyncSandbox]:
+            self.list_calls += 1
+            self.query = query
+            if self.list_calls == 1:
+                yield self.sandboxes[0]
+                raise DaytonaRateLimitError(
+                    "rate limited",
+                    headers={"Retry-After-Sandbox-Lifecycle": "0"},
+                )
+            for sandbox in self.sandboxes:
+                yield sandbox
+
+    client = RateLimitedListDaytona(
+        [
+            _sandbox("first", created_at=NOW - timedelta(hours=49)),
+            _sandbox("second", created_at=NOW - timedelta(hours=49)),
+        ]
+    )
+    retry_after_errors: list[DaytonaRateLimitError] = []
+
+    def fake_retry_after(exc: DaytonaRateLimitError) -> float:
+        retry_after_errors.append(exc)
+        return 0
+
+    monkeypatch.setattr(cleanup_module, "daytona_retry_after_seconds", fake_retry_after)
+
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
+
+    assert client.list_calls == 2
+    assert len(retry_after_errors) == 1
+    assert client.delete_calls == ["first", "second"]
+    assert report.deletion_completed == 2
+    assert report.succeeded
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_wait"),
+    [
+        (
+            DaytonaRateLimitError(
+                "rate limited",
+                headers={"Retry-After-Sandbox-Lifecycle": "7.25"},
+            ),
+            7.25,
+        ),
+        (
+            DaytonaRateLimitError(
+                "rate limited without a usable header",
+                headers={"Retry-After-Sandbox-Lifecycle": "invalid"},
+            ),
+            2,
+        ),
+        (DaytonaConnectionError("connection failed"), 2),
+    ],
+)
+def test_daytona_read_retry_wait_honors_retry_after_and_falls_back(
+    error: BaseException,
+    expected_wait: float,
+) -> None:
+    state = cast(
+        RetryCallState,
+        SimpleNamespace(
+            outcome=SimpleNamespace(exception=lambda: error),
+            attempt_number=2,
+        ),
+    )
+
+    assert (
+        cleanup_module._daytona_read_retry_wait(state)  # pyright: ignore[reportPrivateUsage]
+        == expected_wait
+    )
 
 
 async def test_cleanup_normalizes_offset_aware_creation_timestamps() -> None:
