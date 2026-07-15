@@ -753,10 +753,9 @@ async def stop_benchmark(
         org_id=org.id,
         legacy_harness_config=legacy_harness_config,
     )
-    await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
+    provider_secret_name: str | None = None
     if force:
-        aws_runtime = runtime_resolution.runtime
         resolved_harness_config = runtime_resolution.legacy_harness_config
         provider_secret_name = benchmark_row.arguments.sandbox_provider_secret_name or (
             resolved_harness_config.sandbox_provider_secret_name if resolved_harness_config is not None else None
@@ -766,11 +765,16 @@ async def stop_benchmark(
             if resolved_harness_config is not None:
                 detail += " Provide the x-harness-sandbox-provider-secret-name header and retry."
             raise HTTPException(status_code=400, detail=detail)
+
+    await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
+
+    if force:
+        assert provider_secret_name is not None
         await force_stop_sandboxes(
             benchmark_row,
             session,
             provider_secret_name,
-            aws_runtime,
+            runtime_resolution.runtime,
             org,
             sandbox_provider=benchmark_row.arguments.sandbox_provider,
             task_ids=selected_task_ids,
