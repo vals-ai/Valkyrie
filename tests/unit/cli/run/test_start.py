@@ -117,7 +117,8 @@ class MockTrackerService:
 class StartTestbed:
     """Hold observable boundary activity for one CLI test."""
 
-    def __init__(self) -> None:
+    def __init__(self, cli_runner: CliRunner) -> None:
+        self.cli_runner = cli_runner
         self.remote_resolutions: list[tuple[str, AgentConfig]] = []
         self.task_resolutions: list[tuple[str | None, str | None]] = []
         self.service_header_resolutions: list[tuple[str, tuple[tuple[str, str], ...]]] = []
@@ -131,13 +132,23 @@ class StartTestbed:
         MockTrackerService.provider_validations = []
 
     def invoke(self, arguments: list[str]) -> Result:
-        return CliRunner().invoke(start_command, ["--agent", "remote-agent", "--benchmark", "swebench", *arguments])
+        return self.cli_runner.invoke(
+            start_command,
+            ["--agent", "remote-agent", "--benchmark", "swebench", *arguments],
+        )
 
 
 @pytest.fixture
-def start_testbed(monkeypatch: pytest.MonkeyPatch) -> StartTestbed:
+def cli_runner() -> CliRunner:
+    """Provide an isolated Click runner for each test."""
+
+    return CliRunner()
+
+
+@pytest.fixture
+def start_testbed(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> StartTestbed:
     """Isolate the command from tracker, S3, task-file, and config boundaries."""
-    testbed = StartTestbed()
+    testbed = StartTestbed(cli_runner)
 
     async def get_contract_from_s3(agent: str, agent_config: AgentConfig) -> AgentContractRequest:
         testbed.remote_resolutions.append((agent, agent_config))
@@ -182,6 +193,7 @@ class TestCountedStarts:
         - Count one with connect streams the accepted run.
         - Help displays the count default and accepted range.
         """
+        # Run each single-start form against a fresh response.
         results: list[Result] = []
         for arguments in ([], ["--count", "1"], ["-n", "1", "--connect"]):
             start_testbed.set_responses([_start_response(_FIRST_RUN_ID)])
@@ -192,11 +204,14 @@ class TestCountedStarts:
                 results[-1].output + repr(results[-1].exception)
             )
 
+        # Confirm all forms succeeded and only connect streamed.
         assert all(result.exit_code == 0 for result in results)
         assert start_testbed.streamed_run_ids == [_FIRST_RUN_ID]
         assert "Track progress:" not in results[-1].output
 
-        help_result = CliRunner().invoke(start_command, ["--help"])
+        # Inspect the count option shown to users.
+        help_result = start_testbed.cli_runner.invoke(start_command, ["--help"])
+
         assert help_result.exit_code == 0
         assert "-n, --count INTEGER RANGE" in help_result.output
         assert "default:" in help_result.output
@@ -215,10 +230,13 @@ class TestCountedStarts:
         - Agent kwargs remain owned by `-k` and reach one shared resolved contract.
         - Output lists each run and the ordered combined status command.
         """
+        # Arrange two accepted tracker responses in a fixed order.
         start_testbed.set_responses([_start_response(_FIRST_RUN_ID), _start_response(_SECOND_RUN_ID)])
 
+        # Start the requested independent runs through the public command.
         result = start_testbed.invoke(["-k", "temperature", "1", "--label", "stable-label", count_option, "2"])
 
+        # Verify the tracker boundary reused one resolved contract and label.
         assert result.exit_code == 0, result.output
         assert len(MockTrackerService.start_calls) == 2
         assert MockTrackerService.init_calls == 1
@@ -229,11 +247,23 @@ class TestCountedStarts:
         assert agent_config.kwargs == {"temperature": "1"}
 
         contracts = [call["contract"] for call in MockTrackerService.start_calls]
+
         assert contracts[0] is contracts[1]
         assert [call["label"] for call in MockTrackerService.start_calls] == ["stable-label", "stable-label"]
-        assert result.output.index(str(_FIRST_RUN_ID)) < result.output.index(str(_SECOND_RUN_ID))
-        assert f"Confirmed started run IDs: {_FIRST_RUN_ID},{_SECOND_RUN_ID}" in result.output
-        assert f"valkyrie run status --ids {_FIRST_RUN_ID},{_SECOND_RUN_ID}" in result.output
+
+        # Isolate individual details from the final combined summary.
+        details_output, summary_output = result.output.split("Confirmed started run IDs:", maxsplit=1)
+        run_id_rows = [line for line in details_output.splitlines() if line.startswith("│ Run ID:")]
+        expected_run_ids = f"{_FIRST_RUN_ID},{_SECOND_RUN_ID}"
+
+        # Require one ordered Run ID row per response before the summary.
+        assert details_output.count("┌─ Run Details ") == 2
+        assert run_id_rows == [
+            f"│ {'Run ID:':<17} {_FIRST_RUN_ID}",
+            f"│ {'Run ID:':<17} {_SECOND_RUN_ID}",
+        ]
+        assert summary_output.startswith(f" {expected_run_ids}")
+        assert f"valkyrie run status --ids {expected_run_ids}" in summary_output
 
     def test_local_and_remote_contracts_resolve_once(self, start_testbed: StartTestbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """Resolve either agent source once before multiple starts.
@@ -242,13 +272,17 @@ class TestCountedStarts:
         - A remote contract is downloaded once and reused.
         - A local contract is built and uploaded once and reused.
         """
+        # Arrange two successful remote-agent starts.
         start_testbed.set_responses([_start_response(_FIRST_RUN_ID), _start_response(_SECOND_RUN_ID)])
 
+        # Start the remote agent twice.
         remote_result = start_testbed.invoke(["--count", "2"])
 
+        # Confirm the remote contract was resolved once.
         assert remote_result.exit_code == 0, remote_result.output
         assert len(start_testbed.remote_resolutions) == 1
 
+        # Arrange a local agent and record its contract/upload boundaries.
         local_agent = tmp_path / "local-agent"
         local_agent.mkdir()
         (local_agent / "contract.yaml").write_text("name: local-agent\n", encoding="utf-8")
@@ -267,11 +301,13 @@ class TestCountedStarts:
         monkeypatch.setattr(start_module, "push_agent", push_agent)
         start_testbed.set_responses([_start_response(_FIRST_RUN_ID), _start_response(_SECOND_RUN_ID)])
 
-        local_result = CliRunner().invoke(
+        # Start the local agent twice through the same runner fixture.
+        local_result = start_testbed.cli_runner.invoke(
             start_command,
             ["--agent", str(local_agent), "--benchmark", "swebench", "--count", "2"],
         )
 
+        # Confirm local resolution and upload each happened once.
         assert local_result.exit_code == 0, local_result.output
         assert len(contract_resolutions) == 1
         assert uploads == [("local-agent", local_agent)]
@@ -290,8 +326,10 @@ class TestCountValidation:
         - Non-integer input fails integer parsing.
         - Validation occurs before command side effects.
         """
+        # Invoke the command with an invalid count value.
         result = start_testbed.invoke(["--count", count])
 
+        # Confirm Click rejected it before reaching any boundary.
         assert result.exit_code == 2
         assert not start_testbed.task_resolutions
         assert not start_testbed.service_header_resolutions
@@ -305,10 +343,12 @@ class TestCountValidation:
         - The conflict exits with Click usage status two.
         - Task, config, provider, agent, and tracker boundaries remain untouched.
         """
+        # Supply options that would cause side effects if the guard ran late.
         result = start_testbed.invoke(
             ["--count", "2", "--connect", "--task-ids-file", "must-not-be-read.txt", "--provider", "modal"]
         )
 
+        # Confirm the callback rejected the conflict before side effects.
         assert result.exit_code == 2
         assert "--connect" in result.output
         assert not start_testbed.task_resolutions
@@ -349,12 +389,15 @@ class TestStartFailures:
         - Prior confirmed IDs and their status command are reported.
         - No request is made after the failure.
         """
+        # Arrange one success, one rejection, and an unreachable response.
         start_testbed.set_responses(
             [_start_response(_FIRST_RUN_ID), response, _start_response(_THIRD_RUN_ID)]
         )
 
+        # Start the batch through the command.
         result = start_testbed.invoke(["--count", "3"])
 
+        # Confirm partial progress and immediate termination are visible.
         assert result.exit_code != 0
         assert len(MockTrackerService.start_calls) == 2
         assert expected_category in result.output
@@ -370,12 +413,15 @@ class TestStartFailures:
         - The prior run remains confirmed and queryable.
         - The latest outcome is marked unknown with run-list verification guidance.
         """
+        # Arrange a transport failure after one confirmed start.
         start_testbed.set_responses(
             [_start_response(_FIRST_RUN_ID), TrackerServiceError("connection reset"), _start_response(_THIRD_RUN_ID)]
         )
 
+        # Start the batch through the command.
         result = start_testbed.invoke(["--count", "3"])
 
+        # Confirm prior progress and uncertain-outcome guidance are shown.
         assert result.exit_code != 0
         assert len(MockTrackerService.start_calls) == 2
         assert f"Confirmed started run IDs: {_FIRST_RUN_ID}" in result.output
@@ -403,10 +449,13 @@ class TestStartFailures:
         - A first-request failure reports zero confirmed starts.
         - No empty combined status command is printed.
         """
+        # Arrange a rejection for the first requested start.
         start_testbed.set_responses([response])
 
+        # Start a two-run batch through the command.
         result = start_testbed.invoke(["--count", "2"])
 
+        # Confirm useful detail without an invalid empty status command.
         assert result.exit_code != 0
         assert expected_detail in result.output
         assert "zero confirmed starts" in result.output
@@ -420,12 +469,15 @@ class TestStartFailures:
         - The malformed response exits cleanly without another request.
         - The latest outcome is marked unknown with run-list verification guidance.
         """
+        # Arrange one valid response followed by a malformed success body.
         start_testbed.set_responses(
             [_start_response(_FIRST_RUN_ID), httpx.Response(200, json={"benchmark_id": str(_SECOND_RUN_ID)})]
         )
 
+        # Start the two-run batch through the command.
         result = start_testbed.invoke(["--count", "2"])
 
+        # Confirm prior progress and malformed-response guidance are shown.
         assert result.exit_code != 0
         assert len(MockTrackerService.start_calls) == 2
         assert f"Confirmed started run IDs: {_FIRST_RUN_ID}" in result.output
@@ -442,10 +494,13 @@ class TestStartFailures:
         - Count one exits nonzero.
         - A server response warns that acceptance may be unknown.
         """
+        # Arrange a plain-text server error.
         start_testbed.set_responses([httpx.Response(503, text="tracker unavailable")])
 
+        # Start the default single run.
         result = start_testbed.invoke([])
 
+        # Confirm clean failure detail and uncertain-outcome guidance.
         assert result.exit_code != 0
         assert "tracker unavailable" in result.output
         assert "outcome may be unknown" in result.output
