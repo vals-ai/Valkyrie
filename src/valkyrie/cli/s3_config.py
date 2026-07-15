@@ -11,7 +11,7 @@ from tracker.exceptions import S3Error
 
 from valkyrie.cli.config.state import load_config
 
-_CLIENT_CONFIG = Config(max_pool_connections=200)
+_CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
 
 
 def fetch_bucket_name() -> str:
