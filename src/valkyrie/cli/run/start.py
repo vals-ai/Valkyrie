@@ -5,7 +5,6 @@ from uuid import UUID
 
 import click
 from httpx import Response
-from pydantic import ValidationError
 from tracker.agent.contract import get_contract
 from tracker.agent.schemas import AgentConfig
 from tracker.types import StartBenchmarkResponse
@@ -428,7 +427,7 @@ def start(
 
                 try:
                     start_response = StartBenchmarkResponse.model_validate(response.json())
-                except (ValueError, ValidationError) as error:
+                except ValueError as error:
                     if count > 1:
                         format_confirmed_start_summary(confirmed_run_ids)
                     format_unknown_start_outcome()
