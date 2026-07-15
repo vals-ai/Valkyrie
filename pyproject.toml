@@ -89,6 +89,9 @@ omit = ["*/tests/*", "*/__pycache__/*"]
 fail_under = 1
 show_missing = true
 
+[tool.uv]
+prerelease = "allow"
+
 [tool.uv.workspace]
 members = ["packages/valkyrie-sdk"]
 

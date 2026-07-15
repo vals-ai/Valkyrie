@@ -2,6 +2,9 @@ version = 1
 revision = 3
 requires-python = "==3.12.*"
 
+[options]
+prerelease-mode = "allow"
+
 [[package]]
 name = "aioboto3"
 version = "7.0.0"
