@@ -33,7 +33,6 @@ from tracker.types import (
 
 from valkyrie.cli import main as cli_main
 from valkyrie.cli import service_headers
-import valkyrie.cli.config.state as config_state
 import valkyrie.cli.config.benchmark_services as config_benchmark_services
 from valkyrie.cli import tracker_client as tracker_client_module
 from valkyrie.cli.config.benchmark_services import paginate_services
@@ -41,7 +40,34 @@ from valkyrie.cli.exceptions import TrackerNotFoundError
 from valkyrie.cli.run import list_runs, start
 from valkyrie.cli.run.list_runs import format_fetch_benchmarks_response
 from valkyrie.cli.run.progress import format_benchmark_status
+from valkyrie.cli.runtime_config import (
+    DEV_TRACKER_URL,
+    TRACKER_SERVICE_URL_ENV_VAR,
+    VALKYRIE_CONFIG_PATH_ENV_VAR,
+    VALKYRIE_ENV_ENV_VAR,
+)
 from valkyrie.cli.tracker_client import TrackerService, TrackerServiceError
+
+
+@pytest.fixture(autouse=True)
+def clear_runtime_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(VALKYRIE_ENV_ENV_VAR, raising=False)
+    monkeypatch.delenv(TRACKER_SERVICE_URL_ENV_VAR, raising=False)
+    monkeypatch.delenv(VALKYRIE_CONFIG_PATH_ENV_VAR, raising=False)
+
+
+def test_tracker_client_uses_selected_environment_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+
+    monkeypatch.setenv(VALKYRIE_ENV_ENV_VAR, "dev")
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", lambda **_kwargs: client)
+
+    tracker = TrackerService()
+    tracker.health_check()
+
+    assert client.url == f"{DEV_TRACKER_URL}/health"
 
 
 def _handle_catalog_service_request(requests: list[httpx.Request], request: httpx.Request) -> httpx.Response:
@@ -441,7 +467,7 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
 def test_tracker_client_accepts_legacy_daytona_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", DAYTONA_SECRET_NAME="DaytonaSecrets")
 
-    monkeypatch.setattr(tracker_client_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
     client = FakeClient()
 
     def build_client(**_kwargs: object) -> FakeClient:
@@ -473,7 +499,7 @@ def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypa
     """
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
 
-    monkeypatch.setattr(tracker_client_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
 
     with pytest.raises(TrackerServiceError) as error:
         TrackerService(base_url="http://tracker")
@@ -494,7 +520,7 @@ def test_tracker_client_uses_first_named_provider_as_default(tmp_path: Path, mon
         sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
     )
 
-    monkeypatch.setattr(tracker_client_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
     client = FakeClient()
 
     def build_client(**_kwargs: object) -> FakeClient:
@@ -531,7 +557,7 @@ def test_tracker_client_uses_configured_default_provider(tmp_path: Path, monkeyp
         default_sandbox_provider="modal",
     )
 
-    monkeypatch.setattr(tracker_client_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", lambda **_kwargs: client)
 
     tracker = TrackerService(base_url="http://tracker")
@@ -564,7 +590,7 @@ def test_start_benchmark_uses_runtime_provider_override(tmp_path: Path, monkeypa
         sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
     )
 
-    monkeypatch.setattr(tracker_client_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", lambda **_kwargs: client)
 
     tracker = TrackerService(base_url="http://tracker")
@@ -600,7 +626,7 @@ def test_start_benchmark_allows_configured_provider_names_without_tracker_enum(
         sandbox_providers={"future": "FutureSecrets"},
     )
 
-    monkeypatch.setattr(tracker_client_module, "_CONFIG_LOCATION", config_path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", lambda **_kwargs: client)
 
     tracker = TrackerService(base_url="http://tracker")
@@ -632,7 +658,7 @@ def test_config_provider_commands_manage_named_provider_secrets(
     - provider remove deletes only the requested provider.
     """
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml")
-    monkeypatch.setattr(config_state, "CONFIG_LOCATION", config_path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
     runner = CliRunner()
 
     result = runner.invoke(cli_main.cli, ["config", "provider", "set", "daytona", "DaytonaSecrets"])
@@ -870,7 +896,7 @@ def test_service_list_merges_hosted_and_custom_services(
             sort_keys=False,
         )
     )
-    monkeypatch.setattr(config_state, "CONFIG_LOCATION", config_path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
 
     captured_services: list[BenchmarkServiceHealth] = []
 

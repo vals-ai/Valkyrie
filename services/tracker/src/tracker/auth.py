@@ -17,6 +17,7 @@ from tracker.config import AUTH_REQUIRED, DESCOPE_MANAGEMENT_KEY, DESCOPE_PROJEC
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
 from tracker.logging import get_logger
+from tracker.outbound_security import validate_service_headers
 
 logger = get_logger(__name__)
 
@@ -186,10 +187,12 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
     try:
         jwt_response = _exchange_access_key(api_key, _descope_client)
-    except AuthException as e:
-        raise HTTPException(status_code=401, detail=f"Invalid API key: {e.error_message}") from e
-    except Exception as e:
-        raise HTTPException(status_code=503, detail="Auth service unavailable") from e
+    except AuthException as exc:
+        logger.warning("Descope API key validation failed: %s", exc.error_message)
+        raise HTTPException(status_code=401, detail="Invalid API key") from exc
+    except Exception as exc:
+        logger.exception("Descope API key validation failed")
+        raise HTTPException(status_code=503, detail="Auth service unavailable") from exc
 
     tenants = list(jwt_response.get("tenants", {}).keys())
     if len(tenants) != 1:
@@ -231,6 +234,10 @@ def forward_tracker_api_key(
     header is already reserved for Daytona sandbox credentials.
     """
     forwarded_headers = dict(service_headers or {})
+    try:
+        validate_service_headers(forwarded_headers)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Unsupported benchmark service header") from exc
     if not tracker_api_key:
         return forwarded_headers
 
@@ -258,8 +265,9 @@ def resolve_bearer_session(jwt: str, session: Session) -> Org:
 
     try:
         jwt_response = _descope_client.validate_session(jwt)
-    except AuthException as e:
-        raise HTTPException(status_code=401, detail=f"Invalid session: {e.error_message}") from e
+    except AuthException as exc:
+        logger.warning("Descope session validation failed: %s", exc.error_message)
+        raise HTTPException(status_code=401, detail="Invalid session") from exc
 
     tenants = list(jwt_response.get("tenants", {}).keys())
     if not tenants:

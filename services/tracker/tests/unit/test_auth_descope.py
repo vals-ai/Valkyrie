@@ -1,3 +1,8 @@
+"""Tests for Tracker Descope authentication boundaries.
+
+Run: uv run pytest tests/unit/test_auth_descope.py
+"""
+
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -12,6 +17,7 @@ from tracker.auth import (
     find_org_by_tenant,
     get_current_org,
     get_current_starter,
+    resolve_bearer_session,
     resolve_descope_identity,
 )
 from tracker.database.models import DEFAULT_ORG_NAME, Org
@@ -88,7 +94,23 @@ def test_resolve_descope_identity_invalid_api_key_raises_401(mock_descope):
 
     with pytest.raises(HTTPException) as exc_info:
         resolve_descope_identity("bad-key")
+
     assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid API key"
+    assert "Invalid key" not in str(exc_info.value.detail)
+
+
+def test_resolve_bearer_session_invalid_token_raises_safe_401(mock_descope, session: Session) -> None:
+    mock_descope.validate_session.side_effect = AuthException(
+        status_code=401, error_message="Sensitive provider detail"
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_bearer_session("bad-session", session)
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "Invalid session"
+    assert "Sensitive provider detail" not in str(exc_info.value.detail)
 
 
 def test_org_not_in_db_returns_none(mock_descope, session):
@@ -188,14 +210,18 @@ def test_resolve_descope_identity_retries_read_timeout(mock_descope):
     assert mock_descope.exchange_access_key.call_count == 2
 
 
-def test_resolve_descope_identity_returns_503_when_retries_exhausted(mock_descope):
+def test_resolve_descope_identity_returns_503_when_retries_exhausted(mock_descope) -> None:
     mock_descope.exchange_access_key.side_effect = ReadTimeout(
         "HTTPSConnectionPool(host='api.descope.com', port=443): Read timed out. (read timeout=60)"
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        resolve_descope_identity("some-key")
+    with patch("tracker.auth.logger.exception") as log_exception:
+        with pytest.raises(HTTPException) as exc_info:
+            resolve_descope_identity("some-key")
+
     assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Auth service unavailable"
+    log_exception.assert_called_once_with("Descope API key validation failed")
     assert mock_descope.exchange_access_key.call_count == 3
 
 

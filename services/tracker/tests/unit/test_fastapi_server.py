@@ -1,3 +1,8 @@
+"""Tests for Tracker FastAPI route behavior.
+
+Run: uv run pytest tests/unit/test_fastapi_server.py
+"""
+
 from collections.abc import AsyncIterator
 import io
 import logging
@@ -9,15 +14,20 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
-from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceUnauthenticatedError
+from benchmark_service.client import (
+    BenchmarkServiceClient,
+    BenchmarkServiceError,
+    BenchmarkServiceUnauthenticatedError,
+)
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
 from descope import DescopeClient
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
-from main import app
+from main import app, tracker_service_error_handler
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity, get_current_starter
 from tracker.database.models import (
@@ -32,6 +42,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.exceptions import TrackerServiceError
 from tracker.types import (
     AWSCredentials,
     BenchmarkTableRow,
@@ -65,6 +76,73 @@ class TestFastapiServer:
         assert response.status_code == 200
 
         assert response.json() == {"status": "ok"}
+
+    def test_trailing_slash_does_not_redirect(self, monkeypatch: MonkeyPatch) -> None:
+        """
+        Verify non-canonical route paths cannot construct redirects from forwarded request data.
+
+        Test cases:
+        - The canonical health path remains available.
+        - The trailing-slash variant returns not found without a Location header.
+        """
+        monkeypatch.setattr("main.check_database_connection", lambda: True)
+
+        canonical_response = client.get("/health")
+        slash_response = client.get(
+            "/health/",
+            headers={"Host": "example.invalid", "X-Forwarded-Proto": "https"},
+            follow_redirects=False,
+        )
+
+        assert canonical_response.status_code == 200
+        assert slash_response.status_code == 404
+        assert "location" not in slash_response.headers
+
+    async def test_tracker_service_error_hides_internal_detail(
+        self,
+        caplog: pytest.LogCaptureFixture,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """
+        Verify internal Tracker errors retain diagnostics only in server logs.
+
+        Test cases:
+        - The client receives a stable generic detail.
+        - The full exception remains available to operators in logs.
+        """
+        sensitive_detail = "sensitive-internal-tracker-detail"
+        monkeypatch.setattr("sentry_sdk.capture_exception", lambda _exc: None)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await tracker_service_error_handler(MagicMock(), TrackerServiceError(sensitive_detail))
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == "Tracker service operation failed"
+        assert sensitive_detail in caplog.text
+
+    async def test_fetch_benchmark_tasks_hides_downstream_error(self, monkeypatch: MonkeyPatch) -> None:
+        """
+        Verify downstream benchmark-service diagnostics are not reflected to callers.
+
+        Test cases:
+        - The endpoint retains its gateway-error status.
+        - The downstream sentinel is absent from the stable response detail.
+        """
+        sensitive_detail = "sensitive-downstream-provider-detail"
+
+        async def _raise_downstream_error(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            raise BenchmarkServiceError(sensitive_detail)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _raise_downstream_error)
+
+        response = client.post(
+            "/fetch-benchmark-tasks",
+            json={"benchmark_name": "swebench", "dataset": "verified"},
+        )
+
+        assert response.status_code == 502
+        assert response.json() == {"detail": "Failed to fetch task ids from benchmark service"}
+        assert sensitive_detail not in response.text
 
     async def test_fetch_benchmark_tasks(
         self,
@@ -607,9 +685,10 @@ class TestFastapiServer:
 
         response = client.post("/start-benchmark", json=request.model_dump())
 
-        # Test case 1. Verify failure returns 502 with the error message
+        # Test case 1. Verify failure returns a stable 502 without internal detail
         assert response.status_code == 502
-        assert "Error verifying task ids" in response.json()["detail"]
+        assert response.json() == {"detail": "Failed to verify task ids"}
+        assert "Error verifying task ids" not in response.text
 
         # Test case 2. No benchmark row is created when pre-flight checks fail
         row_count_after = len(database_session.exec(select(Benchmark)).all())
@@ -1145,6 +1224,63 @@ class TestFastapiServer:
             assert task_file is not None
             assert task_file.read() == b"output contents"
 
+    async def test_fetch_run_outputs_omits_unsafe_tar_members(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        """Never copy unsafe S3 key suffixes into a downloaded tar."""
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        async def _mock_list_s3_objects(prefix: str, *_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            yield f"{prefix}task/../../outside.txt"
+            yield f"{prefix}task/..\\outside.txt"
+            yield f"{prefix}C:/outside.txt"
+            yield f"{prefix}task//outside.txt"
+            yield f"{prefix}task/hidden\x00.txt"
+            yield f"{prefix}task/output.txt"
+
+        async def _mock_download_many_from_s3(
+            keys: AsyncIterator[str], *_args: Any, **_kwargs: Any
+        ) -> AsyncIterator[tuple[str, bytes]]:
+            async for key in keys:
+                yield key, b"output contents"
+
+        monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
+        monkeypatch.setattr("main.download_many_from_s3", _mock_download_many_from_s3)
+
+        response = client.get(f"/fetch-run-outputs/{example_benchmark_object.id}")
+
+        assert response.status_code == 200
+        with tarfile.open(fileobj=io.BytesIO(response.content), mode="r:") as tar:
+            assert tar.getnames() == ["task/output.txt"]
+
+    async def test_fetch_run_outputs_returns_404_when_all_members_are_unsafe(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        """Do not download outputs when every listed tar member name is unsafe."""
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        async def _mock_list_s3_objects(prefix: str, *_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            yield f"{prefix}task/../../outside.txt"
+            yield f"{prefix}task/hidden\x00.txt"
+
+        download_many_from_s3 = MagicMock()
+        monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
+        monkeypatch.setattr("main.download_many_from_s3", download_many_from_s3)
+
+        response = client.get(f"/fetch-run-outputs/{example_benchmark_object.id}")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": f"No outputs found for run '{example_benchmark_object.id}'"}
+        download_many_from_s3.assert_not_called()
+
     async def test_fetch_run_outputs_returns_404_when_empty(
         self,
         monkeypatch: MonkeyPatch,
@@ -1201,6 +1337,8 @@ class TestFastapiServer:
 
         response = no_raise_client.post("/start-benchmark", json=request.model_dump())
         assert response.status_code == 502
+        assert response.json() == {"detail": "Benchmark service authentication failed"}
+        assert "401 Unauthorized" not in response.text
 
         # Case 2: /fetch-benchmark-tasks
         response = no_raise_client.post(
@@ -1208,6 +1346,8 @@ class TestFastapiServer:
             json={"benchmark_name": "swebench"},
         )
         assert response.status_code == 502
+        assert response.json() == {"detail": "Failed to fetch task ids from benchmark service"}
+        assert "401 Unauthorized" not in response.text
 
         # Case 3: /retry-or-resume-benchmark — needs at least one task so verify_task_ids is reached
         benchmark = Benchmark(
@@ -1229,6 +1369,8 @@ class TestFastapiServer:
             params={"retry": "true"},
         )
         assert response.status_code == 502
+        assert response.json() == {"detail": "Benchmark service authentication failed"}
+        assert "401 Unauthorized" not in response.text
 
         # None of the three cases should have reached Sentry
         assert captured == []

@@ -10,8 +10,8 @@ from tracker.aws.cloudwatch_logs import (
     handle_cloudwatch_error,
     write_benchmark_log_event,
 )
+from tracker.aws.s3 import handle_s3_error, s3_client
 from tracker.exceptions import CloudWatchError, S3Error
-from tracker.aws.s3 import handle_s3_error
 from tracker.types import AWSCredentials
 
 _AWS = AWSCredentials(
@@ -50,6 +50,12 @@ class TestS3DecoratorClient:
 
         assert "Failed to connect to S3" in str(exc_info.value)
         assert exc_info.value.__cause__ == botocore_error
+
+
+class TestS3ClientRetry:
+    async def test_uses_standard_retry_mode(self):
+        async with s3_client(_AWS) as client:
+            assert client.meta.config.retries["mode"] == "standard"
 
 
 class TestCloudWatchClient:

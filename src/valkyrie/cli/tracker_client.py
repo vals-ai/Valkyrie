@@ -1,10 +1,8 @@
 """Client for interacting with the tracker service."""
 
 import json
-import os
 import re
 from collections.abc import Generator, Iterator
-from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -34,9 +32,8 @@ from tracker.types import (
 )
 
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
+from valkyrie.cli.runtime_config import config_location, tracker_service_url
 
-TRACKER_URL = os.environ.get("TRACKER_SERVICE_URL", "https://benchmark-tracker.vals.ai")
-_CONFIG_LOCATION = Path("~/.config/valkyrie/valkyrie.yaml")
 _REQUIRED_CONFIG_KEYS = {
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
@@ -52,8 +49,7 @@ def _resolve_tracker_url(base_url: str | None) -> str:
         return base_url.rstrip("/")
 
     load_dotenv()
-    resolved_url = os.environ.get("TRACKER_SERVICE_URL", TRACKER_URL)
-    return resolved_url.rstrip("/")
+    return tracker_service_url().rstrip("/")
 
 
 def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
@@ -153,7 +149,7 @@ class TrackerService:
     @staticmethod
     def _load_config() -> dict[str, Any]:
         """Load the valkyrie config file if it exists."""
-        config_path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         if not config_path.exists():
             return {}
 
@@ -178,7 +174,7 @@ class TrackerService:
         Returns:
             Custom URL if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         if not config_path.exists():
             return None
 
@@ -199,7 +195,7 @@ class TrackerService:
         Returns:
             Auth credential if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         if not config_path.exists():
             return None
 
@@ -217,7 +213,7 @@ class TrackerService:
         Returns:
             Webhook secret name if configured, None otherwise
         """
-        config_path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         if not config_path.exists():
             return None
 
@@ -230,10 +226,10 @@ class TrackerService:
     @staticmethod
     def parse_config_keys() -> dict[str, str]:
         """Parses expected config keys and handles edge cases"""
-        config_path: Path = _CONFIG_LOCATION.expanduser()
+        config_path = config_location()
         config_keys: dict[str, str] = {}
         if not config_path.exists():
-            raise TrackerServiceError(f"Could not find the config at {_CONFIG_LOCATION}, run `valkyrie config init`")
+            raise TrackerServiceError(f"Could not find the config at {config_path}, run `valkyrie config init`")
 
         with open(config_path) as f:
             harness_config: dict[str, Any] = yaml.safe_load(f) or {}
