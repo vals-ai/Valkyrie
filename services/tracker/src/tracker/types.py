@@ -19,6 +19,7 @@ from tracker.database.models import (
     FinalEvaluation,
     TaskStatus,
 )
+from tracker.outbound_security import validate_benchmark_name, validate_service_url_syntax
 
 
 def _serialize_utc(value: datetime | None) -> str | None:
@@ -74,6 +75,16 @@ class StartBenchmarkRequest(BaseModel):
     webhook_secret_name: str | None = None
     webhook_intervals: list[int] | None = None
 
+    @field_validator("benchmark_name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return validate_benchmark_name(value)
+
+    @field_validator("custom_benchmark_service")
+    @classmethod
+    def validate_custom_service(cls, value: str | None) -> str | None:
+        return validate_service_url_syntax(value) if value is not None else None
+
     @property
     def benchmark_service(self) -> BenchmarkServiceClient:
         from tracker.utils import create_benchmark_service_client
@@ -91,6 +102,16 @@ class FetchBenchmarkTasksRequest(BaseModel):
     dataset: str | None = None
     custom_benchmark_service: str | None = None
     service_headers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("benchmark_name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return validate_benchmark_name(value)
+
+    @field_validator("custom_benchmark_service")
+    @classmethod
+    def validate_custom_service(cls, value: str | None) -> str | None:
+        return validate_service_url_syntax(value) if value is not None else None
 
 
 class StartBenchmarkErrorResponse(BaseModel):
@@ -243,7 +264,7 @@ class BenchmarkServiceEntry(BaseModel):
     @field_validator("url")
     @classmethod
     def remove_trailing_slashes(cls, value: str) -> str:
-        return value.rstrip("/")
+        return validate_service_url_syntax(value)
 
 
 class BenchmarkServiceHealth(BaseModel):

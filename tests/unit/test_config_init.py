@@ -5,15 +5,15 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
+from valkyrie.cli.runtime_config import VALKYRIE_CONFIG_PATH_ENV_VAR
+
 settings = import_module("valkyrie.cli.config.settings")
-state = import_module("valkyrie.cli.config.state")
 
 
 @pytest.fixture
 def config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     path = tmp_path / "valkyrie.yaml"
-    monkeypatch.setattr(state, "CONFIG_LOCATION", path)
-    monkeypatch.setattr(settings, "CONFIG_LOCATION", path)
+    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(path))
     return path
 
 
@@ -54,6 +54,18 @@ def test_init_hosted_strips_api_key(config_path: Path, monkeypatch: pytest.Monke
     for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("VALKYRIE_API_KEY", raising=False)
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "api_key": "old-key",
+                "benchmark_auth": {
+                    "raw-key-service": "old-key",
+                    "bearer-service": "Bearer old-key",
+                    "independent-service": "independent-key",
+                },
+            }
+        )
+    )
 
     init_org_calls: list[str] = []
 
@@ -87,6 +99,11 @@ def test_init_hosted_strips_api_key(config_path: Path, monkeypatch: pytest.Monke
     assert init_org_calls == ["secret-key"]
     config = yaml.safe_load(config_path.read_text())
     assert config["api_key"] == "secret-key"
+    assert config["benchmark_auth"] == {
+        "raw-key-service": "secret-key",
+        "bearer-service": "Bearer secret-key",
+        "independent-service": "independent-key",
+    }
 
 
 def test_init_whitespace_only_required_value_aborts(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,3 +115,42 @@ def test_init_whitespace_only_required_value_aborts(config_path: Path, monkeypat
 
     assert result.exit_code != 0
     assert "AWS_ACCESS_KEY_ID is required" in result.output
+
+
+def test_set_api_key_rotates_matching_benchmark_auth(config_path: Path) -> None:
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "api_key": "old-key",
+                "benchmark_auth": {
+                    "raw-key-service": "old-key",
+                    "bearer-service": "Bearer old-key",
+                    "independent-service": "independent-key",
+                },
+            }
+        )
+    )
+
+    result = CliRunner().invoke(settings.set, ["api_key", "new-key"])
+
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load(config_path.read_text())
+    assert config["api_key"] == "new-key"
+    assert config["benchmark_auth"] == {
+        "raw-key-service": "new-key",
+        "bearer-service": "Bearer new-key",
+        "independent-service": "independent-key",
+    }
+    assert "Updated benchmark service auth for 2 benchmarks." in result.output
+
+
+def test_set_api_key_without_previous_key_preserves_benchmark_auth(config_path: Path) -> None:
+    config_path.write_text(yaml.safe_dump({"benchmark_auth": {"independent-service": "independent-key"}}))
+
+    result = CliRunner().invoke(settings.set, ["api_key", "new-key"])
+
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load(config_path.read_text())
+    assert config["api_key"] == "new-key"
+    assert config["benchmark_auth"] == {"independent-service": "independent-key"}
+    assert "Updated benchmark service auth" not in result.output

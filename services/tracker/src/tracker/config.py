@@ -11,6 +11,7 @@ from taskiq_redis.redis_backend import RedisAsyncResultBackend
 from tracker.logging import configure_logging
 from tracker.middleware import LoggingContextMiddleware, TaskProtectionMiddleware, TracingContextMiddleware
 from tracker.observability import configure_observability
+from tracker.outbound_security import validate_benchmark_name
 
 load_dotenv()
 configure_logging()
@@ -29,6 +30,8 @@ def create_benchmark_service_url(benchmark_name: str) -> str:
     NOTE: If BENCHMARK_SERVICE_BASE_URL is set (e.g. benchmarks.vals.ai), use HTTPS subdomains.
     Otherwise fall back to CloudMap internal DNS (only works inside the VPC).
     """
+    benchmark_name = validate_benchmark_name(benchmark_name)
+
     if _BENCHMARK_SERVICE_BASE_URL:
         return f"https://{benchmark_name}.{_BENCHMARK_SERVICE_BASE_URL}"
 

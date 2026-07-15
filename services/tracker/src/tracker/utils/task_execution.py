@@ -670,13 +670,12 @@ async def process_task(
             commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
 
         return {task_id: None}
-    except ConnectionClosedError:
+    except ConnectionClosedError as e:
         if task_is_stopped():
             return {task_id: None}
         seconds = int(time.monotonic() - last_log_time)
         error_message = (
-            f"Benchmark service has not sent a message, causing the connection to disconnect: "
-            f"last message received {seconds}s ago"
+            f"Benchmark service WebSocket disconnected: {e}; last application message received {seconds}s ago"
         )
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
