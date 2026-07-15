@@ -1085,23 +1085,24 @@ class TestRunRecovery:
             "task_ids": None,
         }
 
-    async def test_force_stop_names_missing_provider_secret_for_managed_run(
+    async def test_force_stop_missing_provider_secret_does_not_mutate_run(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
     ) -> None:
-        """A managed run without a stored provider secret names the run record as the problem.
-
-        Test cases:
-        - The 400 detail names the missing sandbox provider secret name.
-        - The detail does not ask a managed caller for legacy AWS configuration.
-        """
+        """Reject an invalid managed force stop without changing run state."""
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
         benchmark_row.aws_managed = True
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"sandbox_provider_secret_name": ""})
-        database_session.add(benchmark_row)
+        pending_task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.PENDING,
+        )
+        database_session.add_all([benchmark_row, pending_task])
         database_session.commit()
 
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
@@ -1109,6 +1110,8 @@ class TestRunRecovery:
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30")
+        force_stop = AsyncMock()
+        monkeypatch.setattr("main.force_stop_sandboxes", force_stop)
 
         response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true")
 
@@ -1116,6 +1119,14 @@ class TestRunRecovery:
         detail = response.json()["detail"]
         assert "sandbox provider secret name" in detail
         assert "legacy AWS configuration" not in detail
+        database_session.expire_all()
+        stored_benchmark = database_session.get(Benchmark, benchmark_row.id)
+        stored_task = database_session.get(Task, pending_task.id)
+        assert stored_benchmark is not None
+        assert stored_benchmark.status == BenchmarkStatus.IN_PROGRESS
+        assert stored_task is not None
+        assert stored_task.status == TaskStatus.PENDING
+        force_stop.assert_not_awaited()
 
     async def test_retry_or_resume_applies_secrets_to_stored_contract(
         self,
