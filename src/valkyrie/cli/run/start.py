@@ -1,8 +1,11 @@
 import asyncio
 from pathlib import Path
 from typing import Any
+from uuid import UUID
 
 import click
+from httpx import Response
+from pydantic import ValidationError
 from tracker.agent.contract import get_contract
 from tracker.agent.schemas import AgentConfig
 from tracker.types import StartBenchmarkResponse
@@ -13,7 +16,7 @@ from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
 from valkyrie.cli.display import local_time
 from valkyrie.cli.service_headers import benchmark_service_headers
-from valkyrie.cli.tracker_client import TrackerService
+from valkyrie.cli.tracker_client import TrackerService, response_error_detail
 
 
 COLUMN_WIDTH = 14
@@ -102,6 +105,40 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo(f"│ {'Retry:':<17} " + click.style(f"valkyrie run retry {run_id}", fg="cyan"))
     click.echo(f"│ {'Run outputs:':<17} " + click.style(f"valkyrie run outputs {run_id} --output-dir .", fg="cyan"))
     click.echo("└" + "─" * 79)
+
+
+def format_confirmed_start_summary(run_ids: list[UUID]) -> None:
+    """Display confirmed run IDs and their combined status command."""
+    click.echo()
+    if not run_ids:
+        click.echo("Confirmed started run IDs: none (zero confirmed starts).")
+        return
+
+    joined_run_ids = ",".join(str(run_id) for run_id in run_ids)
+    click.echo(f"Confirmed started run IDs: {joined_run_ids}")
+    click.echo(f"valkyrie run status --ids {joined_run_ids}")
+
+
+def format_unknown_start_outcome() -> None:
+    """Explain how to check a request that may have been accepted."""
+    click.echo(
+        click.style(
+            "The latest start request's outcome may be unknown. Verify with `valkyrie run list`.",
+            fg="yellow",
+        )
+    )
+
+
+def start_response_error(response: Response) -> str:
+    """Preserve useful error categories for rejected start responses."""
+    detail = str(response_error_detail(response))
+    match response.status_code:
+        case 401 | 403:
+            return f"Authentication error: {detail}"
+        case 502:
+            return f"Benchmark service error: {detail}"
+        case _:
+            return detail
 
 
 def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
@@ -267,6 +304,14 @@ def resolve_webhook_config(
     required=False,
     help="Connect to the tracker service to stream run updates after starting",
 )
+@click.option(
+    "--count",
+    "-n",
+    type=click.IntRange(1, 10),
+    default=1,
+    show_default=True,
+    help="Number of independent runs to start",
+)
 def start(
     agent: str,
     model: str | None,
@@ -285,13 +330,17 @@ def start(
     intervals: tuple[int, ...],
     ignore_custom_services: bool,
     connect: bool,
-):
+    count: int,
+) -> None:
     """
     Run an agent on a benchmark.
 
     Example:
         valkyrie run start --agent agents/claude_code --benchmark swebench
     """
+    if count > 1 and connect:
+        raise click.UsageError("--connect cannot be used when --count is greater than 1")
+
     formatted_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
     try:
@@ -340,41 +389,57 @@ def start(
         if secrets:
             contract.secrets.update({key: value for key, value in secrets})
 
+        confirmed_run_ids: list[UUID] = []
         with TrackerService() as tracker:
-            click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False)
+            for _ in range(count):
+                click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False)
 
-            response = tracker.start_benchmark(
-                contract,
-                benchmark,
-                concurrency,
-                ignore_custom_services,
-                formatted_task_ids,
-                slice_str,
-                label,
-                lambda_function,
-                dataset,
-                service_headers=service_headers or None,
-                provider=provider,
-                webhook_secret_name=webhook_secret if webhook_intervals else None,
-                webhook_intervals=webhook_intervals,
-            )
+                try:
+                    response = tracker.start_benchmark(
+                        contract,
+                        benchmark,
+                        concurrency,
+                        ignore_custom_services,
+                        formatted_task_ids,
+                        slice_str,
+                        label,
+                        lambda_function,
+                        dataset,
+                        service_headers=service_headers or None,
+                        provider=provider,
+                        webhook_secret_name=webhook_secret if webhook_intervals else None,
+                        webhook_intervals=webhook_intervals,
+                    )
+                except TrackerServiceError as error:
+                    click.echo("\r\033[K", nl=False)
+                    if count > 1:
+                        format_confirmed_start_summary(confirmed_run_ids)
+                    format_unknown_start_outcome()
+                    raise click.ClickException(str(error)) from error
 
-            click.echo("\r\033[K", nl=False)
-            if response.status_code != 200:
-                click.echo(click.style("Run failed to start!", fg="red", bold=True))
-                detail = str(response.json().get("detail", response.text))
-                match response.status_code:
-                    case 401 | 403:
-                        click.echo(click.style("Authentication error: ", fg="yellow", bold=True) + detail)
-                    case 502:
-                        click.echo(click.style("Benchmark service error: ", fg="yellow", bold=True) + detail)
-                    case _:
-                        click.echo(detail)
-                return
+                click.echo("\r\033[K", nl=False)
+                if response.status_code != 200:
+                    click.echo(click.style("Run failed to start!", fg="red", bold=True))
+                    if count > 1:
+                        format_confirmed_start_summary(confirmed_run_ids)
+                    if response.status_code >= 500:
+                        format_unknown_start_outcome()
+                    raise click.ClickException(start_response_error(response))
 
-            start_response = StartBenchmarkResponse.model_validate(response.json())
-            format_start_benchmark_response(start_response, connect)
-            if connect:
-                stream_benchmark_status(tracker, start_response.benchmark_id)
+                try:
+                    start_response = StartBenchmarkResponse.model_validate(response.json())
+                except (ValueError, ValidationError) as error:
+                    if count > 1:
+                        format_confirmed_start_summary(confirmed_run_ids)
+                    format_unknown_start_outcome()
+                    raise click.ClickException("Tracker returned a malformed 200 start response.") from error
+
+                confirmed_run_ids.append(start_response.benchmark_id)
+                format_start_benchmark_response(start_response, connect)
+                if connect:
+                    stream_benchmark_status(tracker, start_response.benchmark_id)
+
+        if count > 1:
+            format_confirmed_start_summary(confirmed_run_ids)
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))
