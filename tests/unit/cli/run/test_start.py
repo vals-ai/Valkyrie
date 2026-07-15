@@ -200,9 +200,7 @@ class TestCountedStarts:
 
             results.append(start_testbed.invoke(arguments))
 
-            assert len(MockTrackerService.start_calls) == 1, (
-                results[-1].output + repr(results[-1].exception)
-            )
+            assert len(MockTrackerService.start_calls) == 1, results[-1].output + repr(results[-1].exception)
 
         # Confirm all forms succeeded and only connect streamed.
         assert all(result.exit_code == 0 for result in results)
@@ -265,7 +263,9 @@ class TestCountedStarts:
         assert summary_output.startswith(f" {expected_run_ids}")
         assert f"valkyrie run status --ids {expected_run_ids}" in summary_output
 
-    def test_local_and_remote_contracts_resolve_once(self, start_testbed: StartTestbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_local_and_remote_contracts_resolve_once(
+        self, start_testbed: StartTestbed, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Resolve either agent source once before multiple starts.
 
         Test cases:
@@ -390,9 +390,7 @@ class TestStartFailures:
         - No request is made after the failure.
         """
         # Arrange one success, one rejection, and an unreachable response.
-        start_testbed.set_responses(
-            [_start_response(_FIRST_RUN_ID), response, _start_response(_THIRD_RUN_ID)]
-        )
+        start_testbed.set_responses([_start_response(_FIRST_RUN_ID), response, _start_response(_THIRD_RUN_ID)])
 
         # Start the batch through the command.
         result = start_testbed.invoke(["--count", "3"])
