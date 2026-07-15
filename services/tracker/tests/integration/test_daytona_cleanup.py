@@ -10,7 +10,7 @@ from typing import cast
 import pytest
 from benchmark_service import ImageSource, Resources, SandboxProvider
 from benchmark_service.sandbox.daytona import DaytonaProviderConfig
-from daytona import AsyncDaytona, AsyncSandbox, DaytonaConfig, DaytonaNotFoundError, ListSandboxesQuery, SandboxState
+from daytona import AsyncDaytona, AsyncSandbox, DaytonaConfig, DaytonaNotFoundError, ListSandboxesQuery
 
 from tracker.daytona_cleanup import cleanup_old_sandboxes
 from tracker.sandbox import create_sandbox
@@ -138,7 +138,7 @@ async def test_cleanup_deletes_eligible_sandbox_and_preserves_exemption(
     test_resources: Resources,
     creation_semaphore: asyncio.Semaphore,
 ) -> None:
-    """Prove target-wide paused-sandbox cleanup and the issue #120 opt-out on isolated sandboxes."""
+    """Prove target-wide default cleanup and the issue #120 opt-out on isolated sandboxes."""
     provider_config = cast(
         DaytonaProviderConfig,
         fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona"),
@@ -171,8 +171,6 @@ async def test_cleanup_deletes_eligible_sandbox_and_preserves_exemption(
         ) as exempt,
         AsyncDaytona(config=daytona_config) as daytona,
     ):
-        await (await daytona.get(eligible.id)).pause()
-        assert (await daytona.get(eligible.id)).state == SandboxState.PAUSED
         cleanup_now = datetime.now(UTC) + timedelta(hours=49)
         await _wait_until_daytona_sandboxes_are_listed(
             daytona,
