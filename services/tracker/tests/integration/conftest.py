@@ -36,7 +36,6 @@ def tracker_database(
     """Connect tracker background work to the per-test SQLite database."""
     monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
     monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-
     existing = database_session.get(Org, TEST_ORG_ID)
     if not existing:
         database_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
