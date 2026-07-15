@@ -17,12 +17,13 @@ from daytona import (
     AsyncSandbox,
     DaytonaConfig,
     DaytonaConnectionError,
+    DaytonaError,
     DaytonaNotFoundError,
     DaytonaRateLimitError,
     DaytonaTimeoutError,
     ListSandboxesQuery,
 )
-from tenacity import RetryCallState, retry, retry_if_exception_type, stop_after_attempt, wait_exponential, wait_fixed
+from tenacity import RetryCallState, retry, retry_if_exception, stop_after_attempt, wait_exponential, wait_fixed
 
 from tracker.logging import configure_logging, get_logger
 from tracker.observability import retry_callback
@@ -117,8 +118,18 @@ def _daytona_read_retry_wait(retry_state: RetryCallState) -> float:
     return _DAYTONA_READ_WAIT(retry_state)
 
 
+def _is_transient_daytona_read_error(exc: BaseException) -> bool:
+    if isinstance(exc, _TRANSIENT_DAYTONA_READ_ERRORS):
+        return True
+    return (
+        isinstance(exc, DaytonaError)
+        and exc.status_code is not None
+        and (exc.status_code in (408, 429) or exc.status_code >= 500)
+    )
+
+
 _DAYTONA_READ_RETRY = retry(
-    retry=retry_if_exception_type(_TRANSIENT_DAYTONA_READ_ERRORS),
+    retry=retry_if_exception(_is_transient_daytona_read_error),
     stop=stop_after_attempt(_DAYTONA_READ_ATTEMPTS),
     wait=_daytona_read_retry_wait,
     before_sleep=retry_callback("valkyrie.daytona.cleanup.read"),

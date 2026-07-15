@@ -15,6 +15,7 @@ from benchmark_service.sandbox.daytona import DaytonaProviderConfig
 from daytona import (
     AsyncSandbox,
     DaytonaConnectionError,
+    DaytonaError,
     DaytonaNotFoundError,
     DaytonaRateLimitError,
     DaytonaTimeoutError,
@@ -217,6 +218,7 @@ async def test_cleanup_records_refresh_failure_and_continues(monkeypatch: pytest
         DaytonaConnectionError("connection failed transiently"),
         DaytonaRateLimitError("rate limited transiently", headers={"retry-after-sandbox-lifecycle": "0"}),
         DaytonaTimeoutError("refresh timed out transiently"),
+        DaytonaError("gateway failed transiently", status_code=502),
     ],
 )
 async def test_cleanup_retries_transient_refresh_before_deletion(
@@ -314,7 +316,7 @@ async def test_cleanup_retries_complete_listing_before_any_deletion(monkeypatch:
             self.list_calls += 1
             self.query = query
             yield self.sandboxes[0]
-            raise DaytonaConnectionError("pagination failed")
+            raise DaytonaError("pagination failed", status_code=502)
 
     client = FailingListDaytona([_sandbox("first", created_at=NOW - timedelta(hours=49))])
     monkeypatch.setattr(
@@ -323,7 +325,7 @@ async def test_cleanup_retries_complete_listing_before_any_deletion(monkeypatch:
         cleanup_module._list_sandboxes.retry_with(wait=wait_none()),  # pyright: ignore[reportPrivateUsage,reportFunctionMemberAccess]
     )
 
-    with pytest.raises(DaytonaConnectionError, match="pagination failed"):
+    with pytest.raises(DaytonaError, match="pagination failed"):
         await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET)
 
     assert client.list_calls == 3
