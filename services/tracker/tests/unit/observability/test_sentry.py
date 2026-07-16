@@ -1,3 +1,5 @@
+"""Unit tests for tracker Sentry configuration."""
+
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import cast

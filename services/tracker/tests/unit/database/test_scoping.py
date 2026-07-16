@@ -1,3 +1,5 @@
+"""Unit tests for organization-scoped database queries."""
+
 from uuid import uuid4
 
 import pytest

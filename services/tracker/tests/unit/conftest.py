@@ -1,3 +1,5 @@
+"""Shared fixtures for tracker unit tests."""
+
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -20,7 +22,7 @@ from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_harness_config
+from tracker.utils import TaskMonitor, fetch_harness_config
 
 # Sets default aws credentials in the environment for moto to work
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -200,9 +202,7 @@ def mock_broker(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> None:
-    """Common process_benchmark deps: test DB engine, no-op sandbox, echo verify, static
-    retrieve/evaluate/final_score. Tests requesting this fixture can override any one method
-    with their own monkeypatch.setattr call."""
+    """Use deterministic local dependencies for run-orchestration behavior tests."""
 
     @asynccontextmanager
     async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
@@ -234,6 +234,7 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
 
     monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
     monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
+    monkeypatch.setattr(TaskMonitor, "_TRACK_INTERVAL", 0)
     monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
     monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
     monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)

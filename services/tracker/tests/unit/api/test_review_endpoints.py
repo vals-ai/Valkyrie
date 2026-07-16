@@ -1,6 +1,6 @@
 """Tests for Tracker API review endpoints.
 
-Run: uv run pytest tests/unit/test_api_review_endpoints.py
+Run: uv run pytest tests/unit/api/test_review_endpoints.py
 """
 
 from __future__ import annotations

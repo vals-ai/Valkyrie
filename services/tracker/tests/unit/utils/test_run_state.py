@@ -1,3 +1,5 @@
+"""Unit tests for benchmark state transitions and queries."""
+
 from datetime import datetime
 from typing import Any, Sequence
 from uuid import uuid4
@@ -12,7 +14,8 @@ from sqlmodel import Session, col, func, select, update
 from starlette.requests import Request
 
 from tests.conftest import TEST_ORG_ID
-from tests.unit.test_fastapi_server import client
+from main import app
+from fastapi.testclient import TestClient
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,
@@ -40,6 +43,8 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
 )
 from tracker.utils.harness_config import _parse_log_retention_policy
+
+client = TestClient(app)
 
 
 class TestBenchmarkUtils:

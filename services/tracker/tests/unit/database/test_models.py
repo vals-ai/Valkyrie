@@ -1,3 +1,5 @@
+"""Unit tests for tracker database model behavior."""
+
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID

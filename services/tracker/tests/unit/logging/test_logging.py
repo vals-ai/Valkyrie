@@ -1,3 +1,5 @@
+"""Unit tests for tracker logging configuration and context."""
+
 import json
 import logging
 import os

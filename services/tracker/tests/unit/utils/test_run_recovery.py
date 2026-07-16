@@ -1,6 +1,6 @@
 """Tests for stopping, resuming, and retrying benchmark runs.
 
-Run: uv run pytest tests/unit/test_stop_and_resume.py
+Run: uv run pytest tests/unit/utils/test_run_recovery.py
 
 Covers task state transitions, sandbox cleanup, and run-control API behavior.
 """

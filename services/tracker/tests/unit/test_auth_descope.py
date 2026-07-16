@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/test_auth_descope.py
 """
 
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
@@ -11,7 +12,9 @@ from descope import AuthException
 from fastapi import HTTPException
 from requests.exceptions import ReadTimeout
 from sqlmodel import Session, SQLModel, create_engine
+from tenacity import wait_none
 
+import tracker.auth as auth_module
 from tracker.auth import (
     RequestIdentity,
     find_org_by_tenant,
@@ -70,6 +73,12 @@ def descope_access_key_response(
         "keyId": key_id,
         "sessionToken": session_token,
     }
+
+
+def disable_auth_retry_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep retry behavior while removing production backoff from unit tests."""
+    exchange_access_key = cast(Any, getattr(auth_module, "_exchange_access_key"))
+    monkeypatch.setattr(exchange_access_key.retry, "wait", wait_none())
 
 
 def test_valid_api_key_resolves_identity(mock_descope):
@@ -198,7 +207,14 @@ def test_resolve_descope_identity_multiple_tenants_raises_400(mock_descope):
     assert exc_info.value.status_code == 400
 
 
-def test_resolve_descope_identity_retries_read_timeout(mock_descope):
+def test_resolve_descope_identity_retries_read_timeout(mock_descope, monkeypatch: pytest.MonkeyPatch):
+    """Transient Descope timeouts must retry and return the eventual identity.
+
+    Test cases:
+    - The first exchange times out.
+    - The second exchange succeeds without a real retry delay.
+    """
+    disable_auth_retry_wait(monkeypatch)
     mock_descope.exchange_access_key.side_effect = [
         ReadTimeout("HTTPSConnectionPool(host='api.descope.com', port=443): Read timed out. (read timeout=60)"),
         descope_access_key_response(),
@@ -210,7 +226,16 @@ def test_resolve_descope_identity_retries_read_timeout(mock_descope):
     assert mock_descope.exchange_access_key.call_count == 2
 
 
-def test_resolve_descope_identity_returns_503_when_retries_exhausted(mock_descope) -> None:
+def test_resolve_descope_identity_returns_503_when_retries_exhausted(
+    mock_descope, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exhausted Descope retries must return a stable service-unavailable error.
+
+    Test cases:
+    - All three exchanges time out.
+    - The client receives a safe 503 response after immediate test retries.
+    """
+    disable_auth_retry_wait(monkeypatch)
     mock_descope.exchange_access_key.side_effect = ReadTimeout(
         "HTTPSConnectionPool(host='api.descope.com', port=443): Read timed out. (read timeout=60)"
     )

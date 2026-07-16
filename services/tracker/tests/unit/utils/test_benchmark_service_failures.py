@@ -1,3 +1,5 @@
+"""Unit tests for benchmark-service failure handling."""
+
 import time
 from asyncio import Semaphore
 from typing import Any

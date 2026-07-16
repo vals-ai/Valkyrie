@@ -1,3 +1,5 @@
+"""Unit tests for tracker metrics, tracing, and retry observability."""
+
 import logging
 import importlib
 from collections.abc import Mapping

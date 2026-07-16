@@ -1,3 +1,5 @@
+"""Unit tests for task execution retries and timing signals."""
+
 from asyncio import Semaphore
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -8,6 +10,7 @@ from benchmark_service import ImageSource, Resources
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
+from tenacity import wait_none
 
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
@@ -63,6 +66,8 @@ class TestPtyRetry:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
+
+        monkeypatch.setattr(cast(Any, process_task).retry, "wait", wait_none())
 
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS

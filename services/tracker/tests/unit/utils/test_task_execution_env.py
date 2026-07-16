@@ -1,3 +1,5 @@
+"""Unit tests for task execution environment assembly."""
+
 import json
 from asyncio import Semaphore
 from contextlib import asynccontextmanager

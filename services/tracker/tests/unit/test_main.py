@@ -1,6 +1,6 @@
 """Tests for Tracker FastAPI route behavior.
 
-Run: uv run pytest tests/unit/test_fastapi_server.py
+Run: uv run pytest tests/unit/test_main.py
 """
 
 from collections.abc import AsyncIterator

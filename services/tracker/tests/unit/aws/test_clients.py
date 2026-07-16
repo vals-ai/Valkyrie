@@ -1,3 +1,5 @@
+"""Unit tests for tracker AWS client boundaries."""
+
 from unittest.mock import MagicMock
 
 import pytest
