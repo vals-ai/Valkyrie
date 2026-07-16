@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator, Generator
 from uuid import uuid4
 
 import pytest
-from benchmark_service import Resources, SandboxProvider
+from benchmark_service import Resources, SandboxProvider, SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient
 from dotenv import load_dotenv
 from sqlmodel import Session
@@ -161,14 +161,21 @@ async def benchmark_service(service_headers: dict[str, str]) -> AsyncGenerator[B
 
 
 @pytest.fixture
-async def sandbox_provider(
-    benchmark_service: BenchmarkServiceClient,
+def sandbox_provider_config(
     daytona_secret_name: str,
     aws_credentials: AWSCredentials,
-) -> AsyncGenerator[SandboxProvider, None]:
+) -> SandboxProviderConfig:
+    """Return the real provider configuration used by live service calls."""
+    return fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona")
+
+
+@pytest.fixture
+def sandbox_provider(
+    benchmark_service: BenchmarkServiceClient,
+    sandbox_provider_config: SandboxProviderConfig,
+) -> SandboxProvider:
     """Provide the real configured sandbox provider for live tests."""
-    provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona")
-    yield benchmark_service.get_sandbox_provider(provider_config)
+    return benchmark_service.get_sandbox_provider(sandbox_provider_config)
 
 
 @pytest.fixture

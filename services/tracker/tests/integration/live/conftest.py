@@ -1,4 +1,4 @@
-"""FastAPI fixtures that retain live AWS boundaries."""
+"""Shared live-integration fixtures."""
 
 from collections.abc import Generator
 

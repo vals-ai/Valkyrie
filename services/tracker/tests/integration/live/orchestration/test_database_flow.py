@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from benchmark_service import SandboxProvider
+from benchmark_service import SandboxProvider, SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
 from sqlmodel import Session, col, select
@@ -69,6 +69,7 @@ async def evaluate_instance(
     database_session: Session,
     benchmark_service: BenchmarkServiceClient,
     sandbox_provider: SandboxProvider,
+    sandbox_provider_config: SandboxProviderConfig,
     task_row: Task,
     task_data: RetrieveTaskResponse,
     creation_semaphore: Semaphore,
@@ -85,7 +86,11 @@ async def evaluate_instance(
         task_data.resources,
         creation_semaphore,
     ) as sandbox:
-        setup_response = await benchmark_service.setup_task(task_id=task_row.task_id, instance_id=str(sandbox.id))
+        setup_response = await benchmark_service.setup_task(
+            task_id=task_row.task_id,
+            instance_id=str(sandbox.id),
+            sandbox_provider=sandbox_provider_config,
+        )
         assert setup_response.status == "ok"
         return await benchmark_service.evaluate_instance(task_id=task_row.task_id, instance_id=sandbox.id)
 
@@ -95,6 +100,7 @@ async def test_live_results_round_trip_through_tracker_database(
     database_session: Session,
     benchmark_service: BenchmarkServiceClient,
     sandbox_provider: SandboxProvider,
+    sandbox_provider_config: SandboxProviderConfig,
     example_benchmark_object: Benchmark,
     creation_semaphore: Semaphore,
 ) -> None:
@@ -127,6 +133,7 @@ async def test_live_results_round_trip_through_tracker_database(
                 database_session,
                 benchmark_service,
                 sandbox_provider,
+                sandbox_provider_config,
                 task_row,
                 task_data,
                 creation_semaphore,

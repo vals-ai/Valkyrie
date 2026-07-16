@@ -12,14 +12,13 @@ from benchmark_service.client import BenchmarkServiceClient
 from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
-from main import app
 from tests.conftest import TEST_ORG_ID
 from tests.utils import random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_harness_config, force_stop_sandboxes, process_benchmark  # pyright: ignore[reportUnknownVariableType]
+from tracker.utils import force_stop_sandboxes, process_benchmark  # pyright: ignore[reportUnknownVariableType]
 from tracker.utils import fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
@@ -291,7 +290,7 @@ class TestForceStop:
         daytona_secret_name: str,
         harness_config: HarnessConfig,
         service_headers: dict[str, str],
-        monkeypatch: pytest.MonkeyPatch,
+        live_api_client: TestClient,
     ) -> None:
         """Verify the HTTP force-stop path interrupts a live benchmark without task errors.
 
@@ -304,8 +303,6 @@ class TestForceStop:
         example_benchmark_object.arguments.concurrency = 2
         database_session.add(example_benchmark_object)
         database_session.commit()
-
-        monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: harness_config)
 
         benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
         benchmark_task: Optional[asyncio.Task[None]] = None
@@ -331,8 +328,7 @@ class TestForceStop:
             provider = benchmark_service.get_sandbox_provider(provider_config)
             await _wait_for_running_benchmark(example_benchmark_object, database_session, provider)
 
-            with TestClient(app) as client:
-                response = client.post(f"/stop-benchmark/{example_benchmark_object.id}?force=true")
+            response = live_api_client.post(f"/stop-benchmark/{example_benchmark_object.id}?force=true")
 
             assert response.status_code == 200
             assert response.json() == {"status": "success"}
