@@ -4,7 +4,6 @@ from typing import Any
 from uuid import UUID
 
 import click
-from httpx import Response
 from tracker.agent.contract import get_contract
 from tracker.agent.schemas import AgentConfig
 from tracker.types import StartBenchmarkResponse
@@ -19,6 +18,7 @@ from valkyrie.cli.tracker_client import TrackerService, response_error_detail
 
 
 COLUMN_WIDTH = 14
+_UNKNOWN_START_OUTCOME = "The latest start request's outcome may be unknown. Verify with `valkyrie run list`."
 
 
 def row(label: str, value: str) -> str:
@@ -116,28 +116,6 @@ def format_confirmed_start_summary(run_ids: list[UUID]) -> None:
     joined_run_ids = ",".join(str(run_id) for run_id in run_ids)
     click.echo(f"Confirmed started run IDs: {joined_run_ids}")
     click.echo(f"valkyrie run status --ids {joined_run_ids}")
-
-
-def format_unknown_start_outcome() -> None:
-    """Explain how to check a request that may have been accepted."""
-    click.echo(
-        click.style(
-            "The latest start request's outcome may be unknown. Verify with `valkyrie run list`.",
-            fg="yellow",
-        )
-    )
-
-
-def start_response_error(response: Response) -> str:
-    """Preserve useful error categories for rejected start responses."""
-    detail = str(response_error_detail(response))
-    match response.status_code:
-        case 401 | 403:
-            return f"Authentication error: {detail}"
-        case 502:
-            return f"Benchmark service error: {detail}"
-        case _:
-            return detail
 
 
 def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
@@ -413,7 +391,7 @@ def start(
                     click.echo("\r\033[K", nl=False)
                     if count > 1:
                         format_confirmed_start_summary(confirmed_run_ids)
-                    format_unknown_start_outcome()
+                    click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
                     raise click.ClickException(str(error)) from error
 
                 click.echo("\r\033[K", nl=False)
@@ -422,15 +400,21 @@ def start(
                     if count > 1:
                         format_confirmed_start_summary(confirmed_run_ids)
                     if response.status_code >= 500:
-                        format_unknown_start_outcome()
-                    raise click.ClickException(start_response_error(response))
+                        click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
+
+                    detail = str(response_error_detail(response))
+                    if response.status_code in {401, 403}:
+                        detail = f"Authentication error: {detail}"
+                    elif response.status_code == 502:
+                        detail = f"Benchmark service error: {detail}"
+                    raise click.ClickException(detail)
 
                 try:
                     start_response = StartBenchmarkResponse.model_validate(response.json())
                 except ValueError as error:
                     if count > 1:
                         format_confirmed_start_summary(confirmed_run_ids)
-                    format_unknown_start_outcome()
+                    click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
                     raise click.ClickException("Tracker returned a malformed 200 start response.") from error
 
                 confirmed_run_ids.append(start_response.benchmark_id)
