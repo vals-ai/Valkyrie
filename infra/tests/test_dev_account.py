@@ -12,11 +12,21 @@ from aws_cdk import assertions
 
 from constants import (
     DEV_DESCOPE_PROJECT_ID_PARAMETER,
+    DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
+    DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
+    DEV_SHARED_CLUSTER_NAME_PARAMETER,
+    DEV_SHARED_NAMESPACE_ARN_PARAMETER,
+    DEV_SHARED_NAMESPACE_ID_PARAMETER,
+    DEV_SHARED_NAMESPACE_NAME_PARAMETER,
+    DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
+    DEV_SHARED_VPC_ID_PARAMETER,
+    DEV_TRACKER_ALB_DNS_PARAMETER,
     DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
+    DEV_TRACKER_SECURITY_GROUP_PARAMETER,
 )
 from shared import SharedStack
-from stage import DEV, Stage
+from stage import DEV, PROD, Stage
 from tracker_stack import TrackerStack
 
 TEST_ACCOUNT = "123456789012"
@@ -28,6 +38,37 @@ TEST_CONTEXT = {
         f"{TEST_REGION}b",
     ]
 }
+PROD_CONTEXT = {
+    **TEST_CONTEXT,
+    f"hosted-zone:account={TEST_ACCOUNT}:domainName=vals.ai:region={TEST_REGION}": {
+        "Id": "/hostedzone/Z0000000000000000000",
+        "Name": "vals.ai.",
+    },
+}
+
+DEV_SHARED_CONTRACT_PARAMETERS = {
+    DEV_SHARED_VPC_ID_PARAMETER,
+    DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
+    DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
+    DEV_SHARED_CLUSTER_NAME_PARAMETER,
+    DEV_SHARED_NAMESPACE_NAME_PARAMETER,
+    DEV_SHARED_NAMESPACE_ID_PARAMETER,
+    DEV_SHARED_NAMESPACE_ARN_PARAMETER,
+    DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
+}
+DEV_TRACKER_CONTRACT_PARAMETERS = {
+    DEV_TRACKER_SECURITY_GROUP_PARAMETER,
+    DEV_TRACKER_ALB_DNS_PARAMETER,
+}
+
+
+def published_parameter_names(template: assertions.Template) -> set[str]:
+    resources = template.find_resources("AWS::SSM::Parameter")
+    return {
+        cast(dict[str, object], cast(dict[str, object], resource)["Properties"])["Name"]
+        for resource in resources.values()
+        if isinstance(resource, dict)
+    }  # pyright: ignore[reportReturnType]
 
 
 def dev_shared_stack() -> tuple[cdk.App, SharedStack]:
@@ -163,6 +204,21 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                 )
             },
         )
+
+    def test_dev_stacks_publish_the_shared_resource_contract(self) -> None:
+        _, shared = dev_shared_stack()
+        shared_template = assertions.Template.from_stack(shared)
+        self.assertEqual(published_parameter_names(shared_template), DEV_SHARED_CONTRACT_PARAMETERS)
+
+        tracker_template = dev_tracker_template()
+        self.assertEqual(published_parameter_names(tracker_template), DEV_TRACKER_CONTRACT_PARAMETERS)
+
+    def test_prod_shared_stack_publishes_no_contract_parameters(self) -> None:
+        app = cdk.App(context=PROD_CONTEXT)
+        stage = Stage(PROD)
+        shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=TEST_ENV)
+        template = assertions.Template.from_stack(shared)
+        self.assertFalse(template.find_resources("AWS::SSM::Parameter"))
 
 
 if __name__ == "__main__":

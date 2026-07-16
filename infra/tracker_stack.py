@@ -30,8 +30,10 @@ from constants import (
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
     DEV_DESCOPE_PROJECT_ID_PARAMETER,
+    DEV_TRACKER_ALB_DNS_PARAMETER,
     DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
+    DEV_TRACKER_SECURITY_GROUP_PARAMETER,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
@@ -310,3 +312,17 @@ class TrackerStack(Stack):
             connection=aws_ec2.Port.tcp(POSTGRES_PORT),
             description="Allow VPC services to connect to RDS",
         )
+
+        if not stage.is_prod:
+            aws_ssm.StringParameter(
+                self,
+                "TrackerSecurityGroupParameter",
+                parameter_name=DEV_TRACKER_SECURITY_GROUP_PARAMETER,
+                string_value=self.service.service.connections.security_groups[0].security_group_id,
+            )
+            aws_ssm.StringParameter(
+                self,
+                "TrackerAlbDnsParameter",
+                parameter_name=DEV_TRACKER_ALB_DNS_PARAMETER,
+                string_value=self.service.load_balancer.load_balancer_dns_name,
+            )

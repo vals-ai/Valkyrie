@@ -15,10 +15,19 @@ from aws_cdk import (
     aws_s3,
     aws_servicediscovery,
     aws_sns,
+    aws_ssm,
 )
 from constants import (
     CLUSTER_NAME,
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
+    DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
+    DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
+    DEV_SHARED_CLUSTER_NAME_PARAMETER,
+    DEV_SHARED_NAMESPACE_ARN_PARAMETER,
+    DEV_SHARED_NAMESPACE_ID_PARAMETER,
+    DEV_SHARED_NAMESPACE_NAME_PARAMETER,
+    DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
+    DEV_SHARED_VPC_ID_PARAMETER,
     ELASTICACHE_NODE_TYPE,
     NAMESPACE,
     REDIS_PORT,
@@ -160,6 +169,60 @@ class SharedStack(Stack):
                 ":",
                 self.redis_cluster.attr_redis_endpoint_port,
             ],
+        )
+
+        if not self.stage.is_prod:
+            self._publish_shared_contract()
+
+    def _publish_shared_contract(self) -> None:
+        """Publish the account-local resource contract consumed by benchmark-service stacks."""
+        aws_ssm.StringParameter(
+            self,
+            "SharedVpcIdParameter",
+            parameter_name=DEV_SHARED_VPC_ID_PARAMETER,
+            string_value=self.vpc.vpc_id,
+        )
+        aws_ssm.StringListParameter(
+            self,
+            "SharedAvailabilityZonesParameter",
+            parameter_name=DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
+            string_list_value=self.vpc.availability_zones,
+        )
+        aws_ssm.StringListParameter(
+            self,
+            "SharedPublicSubnetIdsParameter",
+            parameter_name=DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
+            string_list_value=[subnet.subnet_id for subnet in self.vpc.public_subnets],
+        )
+        aws_ssm.StringParameter(
+            self,
+            "SharedClusterNameParameter",
+            parameter_name=DEV_SHARED_CLUSTER_NAME_PARAMETER,
+            string_value=self.cluster.cluster_name,
+        )
+        aws_ssm.StringParameter(
+            self,
+            "SharedNamespaceNameParameter",
+            parameter_name=DEV_SHARED_NAMESPACE_NAME_PARAMETER,
+            string_value=self.namespace.namespace_name,
+        )
+        aws_ssm.StringParameter(
+            self,
+            "SharedNamespaceIdParameter",
+            parameter_name=DEV_SHARED_NAMESPACE_ID_PARAMETER,
+            string_value=self.namespace.namespace_id,
+        )
+        aws_ssm.StringParameter(
+            self,
+            "SharedNamespaceArnParameter",
+            parameter_name=DEV_SHARED_NAMESPACE_ARN_PARAMETER,
+            string_value=self.namespace.namespace_arn,
+        )
+        aws_ssm.StringParameter(
+            self,
+            "SharedArtifactBucketParameter",
+            parameter_name=DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
+            string_value=self.bucket.bucket_name,
         )
 
     def _create_deployment_notifications(self, slack_workspace_id: str, slack_channel_id: str) -> None:
