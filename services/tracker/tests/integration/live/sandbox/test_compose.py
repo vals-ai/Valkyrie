@@ -1,6 +1,6 @@
 """Integration tests for compose-backed sandbox operations.
 
-Run: pytest services/tracker/tests/integration/test_compose_sandbox.py
+Run: uv run pytest tests/integration/live/sandbox/test_compose.py
 """
 
 import asyncio

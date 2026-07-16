@@ -1,3 +1,5 @@
+"""Local integration tests for single-benchmark routes."""
+
 from uuid import uuid4
 
 from tests.conftest import TEST_ORG_ID
@@ -26,6 +28,11 @@ def _make_bench(name="bench-1", status=BenchmarkStatus.FINISHED) -> Benchmark:
 
 
 def test_get_single_benchmark_returns_payload(client, database_session):
+    """Run detail must combine persisted benchmark metadata and task progress.
+
+    Test cases:
+    - An authenticated request returns the expected run payload and counts.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -41,6 +48,11 @@ def test_get_single_benchmark_returns_payload(client, database_session):
 
 
 def test_get_single_benchmark_includes_final_score(client, database_session):
+    """Completed run detail must include its persisted final score.
+
+    Test cases:
+    - A final-evaluation row appears in the API response.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -52,12 +64,22 @@ def test_get_single_benchmark_includes_final_score(client, database_session):
 
 
 def test_get_single_benchmark_unknown_returns_404(client):
+    """Unknown run IDs must return a stable not-found response.
+
+    Test cases:
+    - A missing benchmark UUID receives 404.
+    """
     bogus = uuid4()
     resp = client.get(f"/benchmarks/{bogus}", headers={"Authorization": "Bearer fake"})
     assert resp.status_code == 404
 
 
 def test_get_benchmark_tasks_paginates(client, database_session):
+    """Task listing must honor limit and offset while reporting the full count.
+
+    Test cases:
+    - A page contains the requested rows and the unpaginated total.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -76,6 +98,11 @@ def test_get_benchmark_tasks_paginates(client, database_session):
 
 
 def test_get_benchmark_tasks_filters_by_status(client, database_session):
+    """Task listing must apply comma-separated status filters.
+
+    Test cases:
+    - Only tasks in the requested statuses are returned and counted.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -107,6 +134,11 @@ def test_get_benchmark_tasks_filters_by_status(client, database_session):
 
 
 def test_get_benchmark_tasks_sort_by_status_surfaces_errors_first(client, database_session):
+    """Attention sorting must place task errors ahead of less urgent states.
+
+    Test cases:
+    - Descending status order returns errors before terminal and active tasks.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -140,6 +172,11 @@ _HARNESS_HEADERS = {
 
 
 def test_get_single_benchmark_builds_run_console_urls_from_harness_headers(client, database_session):
+    """Run detail must build CloudWatch and S3 links from valid harness headers.
+
+    Test cases:
+    - A complete header set returns both console URLs for the benchmark.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -152,6 +189,11 @@ def test_get_single_benchmark_builds_run_console_urls_from_harness_headers(clien
 
 
 def test_get_single_benchmark_omits_console_urls_without_harness_headers(client, database_session):
+    """Run detail must remain usable when optional harness headers are absent.
+
+    Test cases:
+    - Missing headers return null CloudWatch and S3 links instead of an error.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -162,6 +204,11 @@ def test_get_single_benchmark_omits_console_urls_without_harness_headers(client,
 
 
 def test_get_single_benchmark_s3_url_without_log_group_skips_cloudwatch(client, database_session):
+    """S3 navigation must not depend on an optional CloudWatch log group.
+
+    Test cases:
+    - Complete AWS headers without a log group return only the S3 link.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -173,6 +220,11 @@ def test_get_single_benchmark_s3_url_without_log_group_skips_cloudwatch(client, 
 
 
 def test_get_benchmark_tasks_sort_by_task_id_ascending(client, database_session):
+    """Task listing must support stable ascending task-ID order.
+
+    Test cases:
+    - Ascending task sort returns IDs in lexical order.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -188,12 +240,22 @@ def test_get_benchmark_tasks_sort_by_task_id_ascending(client, database_session)
 
 
 def test_unauth_returns_401(client):
+    """Single-run routes must require authentication.
+
+    Test cases:
+    - A request without a bearer session receives 401.
+    """
     bogus = uuid4()
     assert client.get(f"/benchmarks/{bogus}").status_code == 401
     assert client.get(f"/benchmarks/{bogus}/tasks").status_code == 401
 
 
 def test_get_benchmark_tasks_filters_by_task_id_search(client, database_session):
+    """Task-ID search must narrow a run without changing the original rows.
+
+    Test cases:
+    - A substring query returns only matching task IDs.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -221,6 +283,11 @@ def test_get_benchmark_tasks_filters_by_task_id_search(client, database_session)
 
 
 def test_get_benchmark_tasks_search_treats_like_wildcards_literally(client, database_session):
+    """Task-ID search must treat SQL wildcard characters as user text.
+
+    Test cases:
+    - Percent and underscore characters match only literal task IDs.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -249,6 +316,11 @@ def test_get_benchmark_tasks_search_treats_like_wildcards_literally(client, data
 
 
 def test_get_benchmark_tasks_search_case_insensitive(client, database_session):
+    """Task-ID search must be case-insensitive for CLI and UI parity.
+
+    Test cases:
+    - A differently cased query still finds the persisted task ID.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()
@@ -266,6 +338,11 @@ def test_get_benchmark_tasks_search_case_insensitive(client, database_session):
 
 
 def test_get_benchmark_tasks_search_combines_with_status(client, database_session):
+    """Task search and status filters must compose as an intersection.
+
+    Test cases:
+    - Results satisfy both the task-ID substring and requested status.
+    """
     b = _make_bench()
     database_session.add(b)
     database_session.commit()

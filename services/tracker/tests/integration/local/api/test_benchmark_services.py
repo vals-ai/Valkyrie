@@ -1,7 +1,15 @@
+"""Local integration tests for benchmark-service health aggregation."""
+
 from unittest.mock import AsyncMock
 
 
 def test_benchmark_services_returns_pings(client, monkeypatch):
+    """Service health aggregation must keep healthy and failed entries distinct.
+
+    Test cases:
+    - A reachable service returns latency while a timeout returns its safe error.
+    """
+
     async def fake_ping(_client, name: str, url: str):
         if name == "swebench":
             return {"name": "swebench", "url": url, "healthy": True, "latency_ms": 12, "error": None}
@@ -29,5 +37,10 @@ def test_benchmark_services_returns_pings(client, monkeypatch):
 
 
 def test_benchmark_services_unauth_401(client):
+    """Benchmark-service health data must require authentication.
+
+    Test cases:
+    - A request without a bearer session receives 401.
+    """
     resp = client.post("/benchmark-services", json={"services": []})
     assert resp.status_code == 401

@@ -1,3 +1,5 @@
+"""Local health-check tests against disposable Postgres."""
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.engine import Engine

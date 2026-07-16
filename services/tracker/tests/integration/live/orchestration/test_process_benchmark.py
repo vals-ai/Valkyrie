@@ -1,3 +1,5 @@
+"""Live tracker orchestration tests against real services and sandboxes."""
+
 from asyncio import gather
 from collections.abc import Callable
 from sqlite3 import OperationalError

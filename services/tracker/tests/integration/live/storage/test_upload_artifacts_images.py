@@ -1,3 +1,5 @@
+"""Live artifact image upload tests."""
+
 import asyncio
 from uuid import uuid4
 

@@ -1,3 +1,5 @@
+"""Local integration tests for single-task routes."""
+
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -106,6 +108,11 @@ def test_get_single_task_returns_current_result_or_error(client: TestClient, dat
 
 
 def test_get_single_task_404_unknown(client: TestClient, database_session: Session) -> None:
+    """Unknown tasks must return not found inside an existing benchmark.
+
+    Test cases:
+    - A missing task ID receives 404 without altering the benchmark.
+    """
     b, _ = _make_bench_with_task(database_session)
     resp = client.get(
         f"/benchmarks/{b.id}/tasks/nonexistent",
@@ -115,5 +122,10 @@ def test_get_single_task_404_unknown(client: TestClient, database_session: Sessi
 
 
 def test_unauthenticated_returns_401(client: TestClient, database_session: Session) -> None:
+    """Single-task detail must require authentication.
+
+    Test cases:
+    - A request without a bearer session receives 401.
+    """
     b, t = _make_bench_with_task(database_session)
     assert client.get(f"/benchmarks/{b.id}/tasks/{t.task_id}").status_code == 401

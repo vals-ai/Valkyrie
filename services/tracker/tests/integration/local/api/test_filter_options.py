@@ -1,3 +1,5 @@
+"""Local integration tests for benchmark filter options."""
+
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
@@ -25,6 +27,11 @@ def _make(session: Session, name: str, agent: str) -> Benchmark:
 
 
 def test_filter_options_returns_distinct(client, database_session):
+    """Filter options must collapse repeated benchmark metadata into distinct values.
+
+    Test cases:
+    - Authenticated results contain each available filter value once.
+    """
     _make(database_session, "swebench", "mini_sweagent")
     _make(database_session, "swebench", "claude_code")
     _make(database_session, "fab", "mini_sweagent")
@@ -41,5 +48,10 @@ def test_filter_options_returns_distinct(client, database_session):
 
 
 def test_filter_options_unauth_401(client):
+    """Benchmark filter metadata must require authentication.
+
+    Test cases:
+    - A request without a bearer session receives 401.
+    """
     resp = client.get("/benchmarks/filter-options")
     assert resp.status_code == 401

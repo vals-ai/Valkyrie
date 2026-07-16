@@ -1,3 +1,5 @@
+"""Live S3 archive upload tests."""
+
 import asyncio
 import io
 import tarfile

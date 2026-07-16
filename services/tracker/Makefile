@@ -1,5 +1,5 @@
 .PHONY: help setup build run stop clean logs tracker-service \
-        test test-integration test-unit test-alembic \
+        test test-integration test-integration-local test-integration-live test-unit test-alembic \
         migrate-gen venv-check env-check
 
 PYTHON_VERSION := 3.12
@@ -59,7 +59,14 @@ test-unit: venv-check
 test-alembic: venv-check
 	$(PYTEST) --test-alembic -m alembic
 test-integration: venv-check env-check
-	$(PYTEST) tests/integration -n auto
+	$(PYTEST) tests/integration/local/api -n auto
+	$(PYTEST) tests/integration/local/database
+	$(PYTEST) tests/integration/live -n auto
+test-integration-local: venv-check
+	$(PYTEST) tests/integration/local/api -n auto
+	$(PYTEST) tests/integration/local/database
+test-integration-live: venv-check env-check
+	$(PYTEST) tests/integration/live -n auto
 
 # --- Migrations ---
 migrate-gen: venv-check

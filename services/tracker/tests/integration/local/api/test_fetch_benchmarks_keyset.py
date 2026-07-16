@@ -1,3 +1,5 @@
+"""Local integration tests for benchmark keyset pagination."""
+
 import importlib
 from collections.abc import Generator
 from datetime import datetime, timedelta, timezone
@@ -93,6 +95,11 @@ def _seed(session: Session, n: int, started_by_email: str | None = None, start_s
 
 
 def test_keyset_paginates_with_cursor(client, database_session):
+    """Cursor pagination must return every benchmark once in stable order.
+
+    Test cases:
+    - Following the next cursor returns the remaining rows without overlap.
+    """
     _seed(database_session, 5)
     resp = client.get("/fetch-benchmarks?limit=2&cursor=", headers={"x-api-key": "fake-key"})
     assert resp.status_code == 200, resp.text
@@ -111,6 +118,11 @@ def test_keyset_paginates_with_cursor(client, database_session):
 
 
 def test_filter_by_status(client, database_session):
+    """Benchmark listing must apply status filters before pagination.
+
+    Test cases:
+    - A status query returns only matching benchmark rows.
+    """
     _seed(database_session, 4)
     resp = client.get(
         "/fetch-benchmarks?status=IN_PROGRESS",
@@ -121,6 +133,11 @@ def test_filter_by_status(client, database_session):
 
 
 def test_filter_by_started_after(client, database_session):
+    """Benchmark listing must exclude rows older than the requested start boundary.
+
+    Test cases:
+    - The started-after filter returns only newer runs.
+    """
     _seed(database_session, 5)
     # Use params dict so httpx handles URL-encoding (+ in timezone offset must not become space)
     resp = client.get(
@@ -135,6 +152,11 @@ def test_filter_by_started_after(client, database_session):
 
 
 def test_legacy_offset_limit_still_works(client, database_session):
+    """Existing offset clients must keep working alongside cursor pagination.
+
+    Test cases:
+    - Offset and limit select the expected legacy page.
+    """
     _seed(database_session, 3)
     resp = client.get(
         "/fetch-benchmarks?offset=0&limit=10",
@@ -146,6 +168,11 @@ def test_legacy_offset_limit_still_works(client, database_session):
 
 
 def test_table_row_includes_started_by_email(client, database_session):
+    """Run attribution must survive the benchmark list serialization path.
+
+    Test cases:
+    - A persisted starter email is returned in its benchmark table row.
+    """
     _seed(database_session, 1, started_by_email="emailtest@x.com")
 
     resp = client.get("/fetch-benchmarks", headers={"x-api-key": "fake-key"})

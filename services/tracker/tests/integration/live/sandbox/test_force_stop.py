@@ -1,3 +1,5 @@
+"""Live force-stop tests against real sandbox infrastructure."""
+
 import asyncio
 
 import pytest
@@ -69,6 +71,7 @@ def _assert_no_task_errors(benchmark: Benchmark, database_session: Session) -> N
 class TestForceStop:
     async def test_force_stop_sandbox(
         self,
+        tracker_database: None,
         example_benchmark_object: Benchmark,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
@@ -146,6 +149,7 @@ class TestForceStop:
 
     async def test_force_stop_sandboxes(
         self,
+        tracker_database: None,
         example_benchmark_object: Benchmark,
         database_session: Session,
         aws_credentials: AWSCredentials,
@@ -236,6 +240,7 @@ class TestForceStop:
     @pytest.mark.slow
     async def test_force_stop_end_to_end(
         self,
+        tracker_database: None,
         example_benchmark_object: Benchmark,
         database_session: Session,
         aws_credentials: AWSCredentials,

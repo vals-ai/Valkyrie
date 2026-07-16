@@ -1,26 +1,18 @@
-import importlib
+"""Shared fixtures for tracker integration tests."""
+
 import os
 import uuid
 from asyncio import Semaphore
 from collections.abc import AsyncGenerator, Generator
-from typing import Any
-from unittest.mock import patch
-
 import pytest
 from benchmark_service import Resources, SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
 from dotenv import load_dotenv
-from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
-from testcontainers.postgres import PostgresContainer
+from sqlmodel import Session
 
-from main import app
 from tests.conftest import TEST_ORG_ID
-from tracker.auth import get_current_org
 from tracker.config import create_benchmark_service_url
-from tracker.database.models import *  # noqa: F403 # type: ignore[attr-defined]
 from tracker.database.models import DEFAULT_ORG_NAME, AgentContractRequest, Org
-from tracker.database.session import get_session
 from tests.integration_agent_artifacts import (
     create_s3_client,
     delete_test_agent_artifact,
@@ -28,107 +20,24 @@ from tests.integration_agent_artifacts import (
     seed_test_agent_artifact,
 )
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import create_benchmark_service_client, fetch_harness_config, fetch_sandbox_provider_config
+from tracker.utils import create_benchmark_service_client, fetch_sandbox_provider_config
 
 _ = load_dotenv()
 
-# Used for the app's fetch_harness_config override so endpoint tests run without real
-# AWS env vars. Tests that exercise AWS directly use the session-scoped fixtures below.
-FAKE_HARNESS_CONFIG = HarnessConfig(
-    aws=AWSCredentials(
-        aws_access_key_id="test-aws-access-key-id",
-        aws_secret_access_key="test-aws-secret-access-key",
-        aws_default_region="us-east-1",
-    ),
-    s3_bucket="test-bucket",
-    log_group="test-log-group",
-    log_retention_policy=30,
-    sandbox_provider_secret_name="test-daytona-secret",
-)
 
-
-@pytest.fixture(autouse=True)
-def setup_app_dependencies(
+@pytest.fixture
+def tracker_database(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wire FastAPI dependency overrides and tracker engine for every integration test."""
-
-    def get_test_session() -> Generator[Session, None, None]:
-        yield database_session
-
+    """Connect tracker background work to the per-test SQLite database."""
     monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
     monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-    monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
-    monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: FAKE_HARNESS_CONFIG)
 
-    # Ensure the default org exists in the test database and override the dependency
     existing = database_session.get(Org, TEST_ORG_ID)
     if not existing:
         database_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
         database_session.commit()
-    vals_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
-    monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: vals_org)
-
-
-@pytest.fixture
-def client(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> Generator[TestClient, None, None]:
-    """TestClient with AUTH_REQUIRED=true and a mocked Descope session validator.
-
-    Reloads config/auth/main so AUTH_REQUIRED takes effect, then routes the app at the
-    test database and a fake harness config.
-    """
-    monkeypatch.setenv("AUTH_REQUIRED", "true")
-    monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
-
-    import tracker.config as config_mod
-
-    importlib.reload(config_mod)
-    import tracker.auth as auth_mod
-
-    importlib.reload(auth_mod)
-    import main as main_mod
-
-    importlib.reload(main_mod)
-
-    def get_test_session() -> Generator[Session, None, None]:
-        yield database_session
-
-    main_mod.app.dependency_overrides[get_session] = get_test_session
-    main_mod.app.dependency_overrides[fetch_harness_config] = lambda: FAKE_HARNESS_CONFIG
-    monkeypatch.setattr("tracker.database.session.engine", database_session.bind)
-
-    with patch.object(auth_mod, "_descope_client") as mock_client:
-        mock_client.validate_session.return_value = {
-            "tenants": {"default": {}},
-            "userId": "U_caller",
-            "user": {"email": "caller@example.com"},
-        }
-        yield TestClient(main_mod.app)
-
-    main_mod.app.dependency_overrides.clear()
-
-
-@pytest.fixture(scope="session")
-def postgres_container() -> Generator[PostgresContainer, Any, None]:
-    """Spin up a postgres container for integration tests."""
-    with PostgresContainer("postgres:16-alpine") as postgres:
-        yield postgres
-
-
-@pytest.fixture(scope="session")
-def postgres_engine(postgres_container: PostgresContainer):
-    """Create an engine connected to the test postgres container."""
-    engine = create_engine(postgres_container.get_connection_url())
-    SQLModel.metadata.create_all(engine)
-    return engine
-
-
-@pytest.fixture
-def postgres_session(postgres_engine: Any) -> Generator[Session, Any, None]:
-    """Create a session for the test postgres database."""
-    with Session(postgres_engine, expire_on_commit=False) as session:
-        yield session
 
 
 @pytest.fixture(scope="session")

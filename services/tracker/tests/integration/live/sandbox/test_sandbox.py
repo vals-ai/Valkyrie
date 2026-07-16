@@ -1,6 +1,6 @@
 """Integration tests for live sandbox operations.
 
-Run: uv run pytest tests/integration/test_sandbox.py
+Run: uv run pytest tests/integration/live/sandbox/test_sandbox.py
 
 Covers real provider sandbox creation, artifact movement, command streaming,
 and agent execution. Add cases here when behavior must be proven against a live
