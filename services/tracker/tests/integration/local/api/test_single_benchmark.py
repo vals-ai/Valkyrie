@@ -3,6 +3,7 @@
 Exercise single-benchmark routes through the real app and local database.
 """
 
+import json
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
@@ -63,6 +64,49 @@ class TestSingleBenchmark:
         response = client.get(f"/benchmarks/{unknown_benchmark_id}", headers={"Authorization": "Bearer fake"})
 
         assert response.status_code == 404
+
+
+class TestBenchmarkStatusStream:
+    """Single-benchmark status streaming."""
+
+    def test_terminal_benchmark_streams_status_and_completes(
+        self,
+        client: TestClient,
+        database_session: Session,
+    ) -> None:
+        """Terminal run streams must return persisted state and close without polling.
+
+        Test cases:
+        - A finished benchmark emits its current payload as a data event.
+        - The stream emits a completion event with SSE response headers.
+        """
+        benchmark = make_benchmark(name="streamed-benchmark", status=BenchmarkStatus.FINISHED, session=database_session)
+        database_session.add_all(
+            [
+                make_task(benchmark, "completed-task", status=TaskStatus.FINISHED),
+                FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=0.75),
+            ]
+        )
+        database_session.commit()
+
+        with client.stream(
+            "GET",
+            "/fetch-benchmark",
+            params={"benchmark_id": str(benchmark.id), "connect": "true"},
+            headers={"Authorization": "Bearer fake"},
+        ) as response:
+            event_lines = [line for line in response.iter_lines() if line]
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        assert response.headers["cache-control"] == "no-cache"
+        assert event_lines[-1] == "event: complete"
+
+        streamed_status = json.loads(event_lines[0].removeprefix("data: "))
+        assert streamed_status["benchmark_id"] == str(benchmark.id)
+        assert streamed_status["benchmark_name"] == "streamed-benchmark"
+        assert streamed_status["details"]["status"] == "FINISHED"
+        assert streamed_status["final_score"] == 0.75
 
 
 class TestBenchmarkTaskListing:

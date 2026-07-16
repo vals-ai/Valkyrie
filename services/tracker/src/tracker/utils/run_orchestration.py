@@ -333,15 +333,18 @@ async def process_benchmark(
         )
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+            if has_runnable_tasks(session, benchmark_row, org):
+                finalization_deferred = True
+                return
+
             # Delete existing final evaluation if re-running
             if benchmark_row.final_evaluation:
                 session.delete(benchmark_row.final_evaluation)
                 session.flush()
 
             session.add(final_evaluation_row)
-            session.commit()
-
+            # Commit the final score and terminal status together while retry/resume is blocked.
             set_benchmark_final_status(benchmark_row, session, org)
 
             # Push the final benchmark view to the bucket

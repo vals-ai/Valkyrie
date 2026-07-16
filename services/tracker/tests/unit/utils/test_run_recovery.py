@@ -34,6 +34,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     EvaluationResult,
+    FinalEvaluation,
     Org,
     RetryMode,
     Task,
@@ -678,8 +679,11 @@ class TestRunRecovery:
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        """A FINISHED run + new --task-ids: the new task runs to completion and the final
-        score is recomputed over the merged set (existing + new).
+        """Resuming a finished run must clear its old score before recomputing all tasks.
+
+        Test cases:
+        - Reset removes the stale final evaluation while new work is pending.
+        - Finalization scores the existing and newly completed tasks together.
         """
         existing_task_ids = ["task_0", "task_1"]
         new_task_id = "task_2"
@@ -695,6 +699,8 @@ class TestRunRecovery:
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
         database_session.add(benchmark_row)
+        database_session.flush()
+        database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=2.0))
 
         # Seed pre-existing FINISHED tasks with stored EvaluationResults
         for task_id in existing_task_ids:
@@ -739,6 +745,11 @@ class TestRunRecovery:
             org=self._test_org,
         )
         assert verified_task_ids == [new_task_id]
+
+        stale_final_evaluation = database_session.exec(
+            select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
+        ).first()
+        assert stale_final_evaluation is None
 
         # Run the worker — the new task should make it through evaluation
         await process_benchmark(
