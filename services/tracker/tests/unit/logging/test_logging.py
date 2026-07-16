@@ -5,12 +5,12 @@ Run: uv run pytest tests/unit/logging/test_logging.py
 
 import json
 import logging
-import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from main import app
 from tracker.logging import (
     ContextFilter,
     DevFormatter,
@@ -19,6 +19,7 @@ from tracker.logging import (
     request_id_var,
     task_id_var,
 )
+from tracker.middleware import LoggingContextMiddleware
 
 
 class ContextLogRecord(logging.LogRecord):
@@ -29,222 +30,202 @@ class ContextLogRecord(logging.LogRecord):
     task_id: str
 
 
+def _log_record(
+    *,
+    name: str = "test",
+    level: int = logging.INFO,
+    message: str = "hello",
+) -> ContextLogRecord:
+    return ContextLogRecord(
+        name=name,
+        level=level,
+        pathname="",
+        lineno=0,
+        msg=message,
+        args=(),
+        exc_info=None,
+    )
+
+
+def _configure_test_logging(monkeypatch: pytest.MonkeyPatch, environment: str) -> None:
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    monkeypatch.setenv("LOG_LEVEL", "INFO")
+    configure_logging()
+
+
 class TestContextFilter:
     """Log record enrichment from request context."""
 
-    def test_context_filter_injects_vars(self) -> None:
-        """ContextFilter copies ContextVar values onto log records."""
-        f = ContextFilter()
-        record = ContextLogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="hello",
-            args=(),
-            exc_info=None,
-        )
+    def test_context_filter_injects_current_values(self) -> None:
+        """ContextFilter copies empty and populated ContextVar values onto log records.
 
-        # Default values (empty string)
-        f.filter(record)
+        Test cases:
+        - Unset context variables produce empty record fields.
+        - Set context variables are copied onto the record.
+        """
+        context_filter = ContextFilter()
+        record = _log_record()
+
+        context_filter.filter(record)
+
         assert record.request_id == ""
         assert record.benchmark_id == ""
         assert record.task_id == ""
 
-    def test_context_filter_picks_up_set_values(self) -> None:
-        """ContextFilter reads values that were set on ContextVars."""
-        f = ContextFilter()
-        record = ContextLogRecord(
-            name="test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="hello",
-            args=(),
-            exc_info=None,
-        )
-
-        token_r = request_id_var.set("req-123")
-        token_b = benchmark_id_var.set("bench-456")
-        token_t = task_id_var.set("task-789")
+        request_token = request_id_var.set("req-123")
+        benchmark_token = benchmark_id_var.set("bench-456")
+        task_token = task_id_var.set("task-789")
         try:
-            f.filter(record)
+            context_filter.filter(record)
+
             assert record.request_id == "req-123"
             assert record.benchmark_id == "bench-456"
             assert record.task_id == "task-789"
         finally:
-            request_id_var.reset(token_r)
-            benchmark_id_var.reset(token_b)
-            task_id_var.reset(token_t)
+            request_id_var.reset(request_token)
+            benchmark_id_var.reset(benchmark_token)
+            task_id_var.reset(task_token)
 
 
 class TestConfigureLogging:
     """Logging configuration across deployment environments."""
 
-    def test_configure_logging_development_format(self, capfd: pytest.CaptureFixture[str]) -> None:
-        """Development mode produces colored human-readable output."""
-        with patch.dict(os.environ, {"ENVIRONMENT": "development", "LOG_LEVEL": "INFO"}):
-            configure_logging()
+    @pytest.mark.parametrize(
+        ("environment", "logger_name", "message", "structured", "expects_request_id"),
+        [
+            ("development", "tracker.test_dev", "hello dev", False, False),
+            ("production", "tracker.test_prod", "hello prod", True, True),
+            ("dev", "tracker.test_deployed_dev", "hello deployed dev", True, False),
+        ],
+    )
+    def test_configure_logging_formats_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+        environment: str,
+        logger_name: str,
+        message: str,
+        structured: bool,
+        expects_request_id: bool,
+    ) -> None:
+        """Each supported environment selects its expected human or JSON format."""
+        _configure_test_logging(monkeypatch, environment)
 
-        logger = logging.getLogger("tracker.test_dev")
-        logger.info("hello dev")
-        captured = capfd.readouterr()
-        assert "hello dev" in captured.out
-        assert "tracker.test_dev" in captured.out
+        logging.getLogger(logger_name).info(message)
+        output = capfd.readouterr().out
 
-    def test_configure_logging_production_json(self, capfd: pytest.CaptureFixture[str]) -> None:
-        """Production mode produces JSON output with renamed fields."""
-        with patch.dict(os.environ, {"ENVIRONMENT": "production", "LOG_LEVEL": "INFO"}):
-            configure_logging()
+        if not structured:
+            assert message in output
+            assert logger_name in output
+            return
 
-        logger = logging.getLogger("tracker.test_prod")
-        logger.info("hello prod")
-        captured = capfd.readouterr()
-        line = json.loads(captured.out.strip())
-        assert line["message"] == "hello prod"
-        assert "timestamp" in line
-        assert "level" in line
-        assert "request_id" in line
+        log_payload = json.loads(output.strip())
+        assert log_payload["message"] == message
+        assert "timestamp" in log_payload
+        assert "level" in log_payload
+        if expects_request_id:
+            assert "request_id" in log_payload
 
-    def test_configure_logging_dev_stage_json(self, capfd: pytest.CaptureFixture[str]) -> None:
-        """Deployed dev stage uses structured logs."""
-        with patch.dict(os.environ, {"ENVIRONMENT": "dev", "LOG_LEVEL": "INFO"}):
-            configure_logging()
-
-        logger = logging.getLogger("tracker.test_deployed_dev")
-        logger.info("hello deployed dev")
-        captured = capfd.readouterr()
-        line = json.loads(captured.out.strip())
-        assert line["message"] == "hello deployed dev"
-        assert "timestamp" in line
-        assert "level" in line
-
-    def test_configure_logging_includes_context_vars(self, capfd: pytest.CaptureFixture[str]) -> None:
+    def test_configure_logging_includes_context_vars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capfd: pytest.CaptureFixture[str],
+    ) -> None:
         """Context variables appear in structured JSON output."""
-        with patch.dict(os.environ, {"ENVIRONMENT": "production", "LOG_LEVEL": "INFO"}):
-            configure_logging()
+        _configure_test_logging(monkeypatch, "production")
 
         token = request_id_var.set("req-abc")
         try:
-            logger = logging.getLogger("tracker.test_ctx")
-            logger.info("with context")
-            captured = capfd.readouterr()
-            line = json.loads(captured.out.strip())
-            assert line["request_id"] == "req-abc"
+            logging.getLogger("tracker.test_ctx").info("with context")
+
+            log_payload = json.loads(capfd.readouterr().out.strip())
+            assert log_payload["request_id"] == "req-abc"
         finally:
             request_id_var.reset(token)
 
-    def test_configure_logging_rejects_unknown_environment(self) -> None:
+    def test_configure_logging_rejects_unknown_environment(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Unknown ENVIRONMENT values raise ValueError."""
-        with patch.dict(os.environ, {"ENVIRONMENT": "staging"}):
-            try:
-                configure_logging()
-                assert False, "Should have raised ValueError"
-            except ValueError as e:
-                assert "staging" in str(e)
+        monkeypatch.setenv("ENVIRONMENT", "staging")
+
+        with pytest.raises(ValueError, match="staging"):
+            configure_logging()
 
 
 class TestDevelopmentFormatter:
     """Development log formatting with optional context."""
 
-    def test_dev_formatter_shows_context(self) -> None:
-        """DevFormatter includes non-empty context fields."""
-        fmt = DevFormatter("%(message)s")
-        record = ContextLogRecord(
-            name="tracker.test",
-            level=logging.INFO,
-            pathname="",
-            lineno=0,
-            msg="test msg",
-            args=(),
-            exc_info=None,
-        )
-        record.request_id = "req-1"
-        record.benchmark_id = ""
-        record.task_id = "task-2"
-        output = fmt.format(record)
-        assert "request_id=req-1" in output
-        assert "task_id=task-2" in output
+    def test_dev_formatter_handles_optional_context(self) -> None:
+        """DevFormatter includes populated context and omits empty context.
 
-        # Empty context fields are omitted.
-        assert "benchmark_id" not in output
+        Test cases:
+        - Populated request and task IDs appear without an empty benchmark ID.
+        - A record without context omits the context bracket.
+        """
+        formatter = DevFormatter("%(message)s")
+        context_record = _log_record(name="tracker.test", message="test msg")
+        context_record.request_id = "req-1"
+        context_record.benchmark_id = ""
+        context_record.task_id = "task-2"
 
-    def test_dev_formatter_no_context(self) -> None:
-        """DevFormatter works cleanly with no context set."""
-        fmt = DevFormatter("%(message)s")
-        record = ContextLogRecord(
-            name="tracker.test",
-            level=logging.WARNING,
-            pathname="",
-            lineno=0,
-            msg="no ctx",
-            args=(),
-            exc_info=None,
-        )
-        record.request_id = ""
-        record.benchmark_id = ""
-        record.task_id = ""
-        output = fmt.format(record)
-        assert "no ctx" in output
+        context_output = formatter.format(context_record)
 
-        # Empty context omits the context bracket.
-        assert " [" not in output
+        assert "request_id=req-1" in context_output
+        assert "task_id=task-2" in context_output
+        assert "benchmark_id" not in context_output
+
+        plain_record = _log_record(name="tracker.test", level=logging.WARNING, message="no ctx")
+        plain_record.request_id = ""
+        plain_record.benchmark_id = ""
+        plain_record.task_id = ""
+
+        plain_output = formatter.format(plain_record)
+
+        assert "no ctx" in plain_output
+        assert " [" not in plain_output
 
 
 class TestLoggingContextMiddleware:
     """Benchmark logging context setup and cleanup."""
 
-    @pytest.mark.anyio
     async def test_logging_context_middleware_pre_execute(self) -> None:
         """Taskiq middleware binds benchmark_id and request_id from message."""
-        from tracker.middleware import LoggingContextMiddleware
-
-        mw = LoggingContextMiddleware()
+        middleware = LoggingContextMiddleware()
 
         message = MagicMock()
         message.kwargs = {"benchmark_id_str": "bench-123"}
         message.labels = {"request_id": "req-456"}
 
-        result = await mw.pre_execute(message)
+        result = await middleware.pre_execute(message)
 
         assert benchmark_id_var.get() == "bench-123"
         assert request_id_var.get() == "req-456"
         assert result is message
 
-    @pytest.mark.anyio
     async def test_logging_context_middleware_post_execute_clears(self) -> None:
         """post_execute clears all context vars."""
-        from tracker.middleware import LoggingContextMiddleware
-
-        mw = LoggingContextMiddleware()
+        middleware = LoggingContextMiddleware()
         benchmark_id_var.set("leftover")
         request_id_var.set("leftover")
         task_id_var.set("leftover")
 
-        await mw.post_execute(MagicMock(), MagicMock())
+        await middleware.post_execute(MagicMock(), MagicMock())
 
         assert benchmark_id_var.get() == ""
         assert request_id_var.get() == ""
         assert task_id_var.get() == ""
 
-    @pytest.mark.anyio
     async def test_logging_context_middleware_on_error_clears(self) -> None:
         """on_error clears context vars so failed jobs don't leak."""
-        from tracker.middleware import LoggingContextMiddleware
-
-        mw = LoggingContextMiddleware()
+        middleware = LoggingContextMiddleware()
         benchmark_id_var.set("leaked")
 
-        await mw.on_error(MagicMock(), MagicMock(), RuntimeError("boom"))
+        await middleware.on_error(MagicMock(), MagicMock(), RuntimeError("boom"))
 
         assert benchmark_id_var.get() == ""
 
 
-@pytest.mark.anyio
 async def test_request_context_middleware_sets_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """Middleware generates request_id and returns it in response header."""
-    from main import app
-
     monkeypatch.setattr("main.check_database_connection", lambda: True)
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

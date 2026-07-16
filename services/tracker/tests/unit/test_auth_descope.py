@@ -11,7 +11,7 @@ import pytest
 from descope.exceptions import AuthException
 from fastapi import HTTPException
 from requests.exceptions import ReadTimeout
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session
 from tenacity import wait_none
 
 import tracker.auth as auth_module
@@ -27,18 +27,10 @@ from tracker.database.models import DEFAULT_ORG_NAME, Org
 
 
 @pytest.fixture
-def session() -> Generator[Session, None, None]:
-    engine = create_engine("sqlite://", echo=False)
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as s:
-        yield s
-
-
-@pytest.fixture
-def test_org(session: Session) -> Org:
+def test_org(empty_database_session: Session) -> Org:
     org = Org(id=uuid4(), name="test-tenant")
-    session.add(org)
-    session.commit()
+    empty_database_session.add(org)
+    empty_database_session.commit()
     return org
 
 
@@ -91,11 +83,13 @@ class TestDescopeIdentityResolution:
         assert identity.tenant_name == "test-tenant"
         assert identity.access_key_id == "K2abc"
 
-    def test_valid_api_key_finds_org(self, mock_descope: MagicMock, session: Session, test_org: Org) -> None:
+    def test_valid_api_key_finds_org(
+        self, mock_descope: MagicMock, empty_database_session: Session, test_org: Org
+    ) -> None:
         mock_descope.exchange_access_key.return_value = descope_access_key_response()
 
         identity = resolve_descope_identity("valid-key")
-        org = find_org_by_tenant(identity.tenant_name, session)
+        org = find_org_by_tenant(identity.tenant_name, empty_database_session)
         assert org is not None
         assert org.id == test_org.id
 
@@ -110,21 +104,21 @@ class TestDescopeIdentityResolution:
         assert "Invalid key" not in str(exc_info.value.detail)
 
     def test_resolve_bearer_session_invalid_token_raises_safe_401(
-        self, mock_descope: MagicMock, session: Session
+        self, mock_descope: MagicMock, empty_database_session: Session
     ) -> None:
         mock_descope.validate_session.side_effect = AuthException(
             status_code=401, error_message="Sensitive provider detail"
         )
 
         with pytest.raises(HTTPException) as exc_info:
-            resolve_bearer_session("bad-session", session)
+            resolve_bearer_session("bad-session", empty_database_session)
 
         assert exc_info.value.status_code == 401
         assert exc_info.value.detail == "Invalid session"
         assert "Sensitive provider detail" not in str(exc_info.value.detail)
 
-    def test_org_not_in_db_returns_none(self, session: Session) -> None:
-        org = find_org_by_tenant("nonexistent-org", session)
+    def test_org_not_in_db_returns_none(self, empty_database_session: Session) -> None:
+        org = find_org_by_tenant("nonexistent-org", empty_database_session)
         assert org is None
 
     def test_resolve_descope_identity_full_claims(self, mock_descope: MagicMock) -> None:
@@ -247,15 +241,17 @@ class TestDescopeIdentityResolution:
 class TestCurrentStarterResolution:
     """Starter and organization dependencies across hosting modes."""
 
-    def test_get_current_starter_self_hosted(self, monkeypatch: pytest.MonkeyPatch, session: Session) -> None:
-        session.add(Org(id=uuid4(), name=DEFAULT_ORG_NAME))
-        session.commit()
+    def test_get_current_starter_self_hosted(
+        self, monkeypatch: pytest.MonkeyPatch, empty_database_session: Session
+    ) -> None:
+        empty_database_session.add(Org(id=uuid4(), name=DEFAULT_ORG_NAME))
+        empty_database_session.commit()
 
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", False)
         monkeypatch.setattr("tracker.auth._cached_default_org", None)
 
         mock_request = MagicMock()
-        identity = get_current_starter(mock_request, session)
+        identity = get_current_starter(mock_request, empty_database_session)
 
         assert isinstance(identity, RequestIdentity)
         assert identity.org.name == DEFAULT_ORG_NAME
@@ -267,7 +263,7 @@ class TestCurrentStarterResolution:
         self,
         monkeypatch: pytest.MonkeyPatch,
         mock_descope: MagicMock,
-        session: Session,
+        empty_database_session: Session,
         test_org: Org,
     ) -> None:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
@@ -276,7 +272,7 @@ class TestCurrentStarterResolution:
         mock_request = MagicMock()
         mock_request.headers = {"x-api-key": "valid-key"}
 
-        identity = get_current_starter(mock_request, session)
+        identity = get_current_starter(mock_request, empty_database_session)
 
         assert isinstance(identity, RequestIdentity)
         assert identity.org.id == test_org.id
@@ -288,7 +284,7 @@ class TestCurrentStarterResolution:
         self,
         monkeypatch: pytest.MonkeyPatch,
         mock_descope: MagicMock,
-        session: Session,
+        empty_database_session: Session,
         test_org: Org,
     ) -> None:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
@@ -303,7 +299,7 @@ class TestCurrentStarterResolution:
         mock_request = MagicMock()
         mock_request.headers = {"x-api-key": "valid-key"}
 
-        identity = get_current_starter(mock_request, session)
+        identity = get_current_starter(mock_request, empty_database_session)
 
         assert identity.org.id == test_org.id
         assert identity.access_key_id == "K2abc"
@@ -314,7 +310,7 @@ class TestCurrentStarterResolution:
         self,
         monkeypatch: pytest.MonkeyPatch,
         mock_descope: MagicMock,
-        session: Session,
+        empty_database_session: Session,
         test_org: Org,
     ) -> None:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
@@ -323,7 +319,7 @@ class TestCurrentStarterResolution:
         mock_request = MagicMock()
         mock_request.headers = {"x-api-key": "valid-key"}
 
-        org = get_current_org(mock_request, session)
+        org = get_current_org(mock_request, empty_database_session)
 
         assert org.id == test_org.id
         mock_descope.mgmt.user.load_by_user_id.assert_not_called()

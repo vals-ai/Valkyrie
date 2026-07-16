@@ -19,7 +19,7 @@ help:
 	@echo "  make migrate-gen     - Generate a new migration from model changes"
 
 # --- Setup ---
-venv_check:
+venv-check:
 	@if [ ! -f .venv/bin/activate ]; then \
 		echo "❌ Virtualenv not found! Run \`make install\` first."; \
 		exit 1; \
@@ -55,6 +55,7 @@ logs:
 tracker-service: build run logs
 
 # --- Tests ---
+test: test-unit test-integration-local
 test-unit: venv-check
 	$(PYTEST) tests/unit --test-alembic --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml
 test-coverage: venv-check

@@ -723,6 +723,7 @@ class TestUploadAgentArtifacts:
         self,
         contract: AgentContractRequest,
         monkeypatch: pytest.MonkeyPatch,
+        aws_credentials: AWSCredentials,
         exit_code: int,
         retryable: bool,
     ) -> None:
@@ -747,15 +748,15 @@ class TestUploadAgentArtifacts:
             AsyncMock(return_value="https://example.com/presigned"),
         )
 
-        aws = AWSCredentials(
-            aws_access_key_id="test",
-            aws_secret_access_key="test",
-            aws_default_region="us-east-1",
-        )
-
         expected = SSLConnectionError if retryable else SandboxError
         with pytest.raises(expected) as exc_info:
-            await upload_agent_artifacts(mock_sandbox, contract, "bench-123", aws, "test-bucket")
+            await upload_agent_artifacts(
+                mock_sandbox,
+                contract,
+                "bench-123",
+                aws_credentials,
+                "test-bucket",
+            )
 
         if not retryable:
             assert not isinstance(exc_info.value, SandboxSetupError)

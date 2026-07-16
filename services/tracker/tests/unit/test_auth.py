@@ -4,44 +4,35 @@ Run: uv run pytest tests/unit/test_auth.py
 """
 
 import pytest
-from collections.abc import Generator
 from fastapi import HTTPException
-from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import forward_tracker_api_key
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 
 
-@pytest.fixture
-def session() -> Generator[Session, None, None]:
-    engine = create_engine("sqlite://", echo=False)
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as s:
-        yield s
-
-
 class TestGetDefaultOrg:
     """Default organization resolution."""
 
-    def test_get_default_org_returns_vals_org(self, session: Session) -> None:
+    def test_get_default_org_returns_vals_org(self, empty_database_session: Session) -> None:
         from tracker.auth import get_default_org
 
         vals_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
-        session.add(vals_org)
-        session.commit()
+        empty_database_session.add(vals_org)
+        empty_database_session.commit()
 
-        result = get_default_org(session)
+        result = get_default_org(empty_database_session)
         assert result.id == TEST_ORG_ID
         assert result.name == DEFAULT_ORG_NAME
 
-    def test_get_default_org_raises_if_missing(self, session: Session) -> None:
+    def test_get_default_org_raises_if_missing(self, empty_database_session: Session) -> None:
         import tracker.auth as auth_module
 
         setattr(auth_module, "_cached_default_org", None)
 
         with pytest.raises(RuntimeError, match="Default org not found"):
-            auth_module.get_default_org(session)
+            auth_module.get_default_org(empty_database_session)
 
 
 class TestForwardTrackerApiKey:

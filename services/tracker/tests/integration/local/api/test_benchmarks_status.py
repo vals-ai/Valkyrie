@@ -8,26 +8,8 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.utils import TEST_ORG_ID
-from tracker.database.models import (
-    AgentContractRequest,
-    Benchmark,
-    BenchmarkArguments,
-    BenchmarkStatus,
-)
-
-
-def _make_bench(name: str, status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS) -> Benchmark:
-    """Build a benchmark with the status relevant to the polling scenario."""
-    return Benchmark(
-        org_id=TEST_ORG_ID,
-        name=name,
-        status=status,
-        arguments=BenchmarkArguments(
-            contract=AgentContractRequest(name="x", install_cmd="i", run_cmd="r"),
-            concurrency=1,
-        ),
-    )
+from tests.factories import make_benchmark
+from tracker.database.models import BenchmarkStatus
 
 
 class TestBenchmarksStatus:
@@ -39,8 +21,8 @@ class TestBenchmarksStatus:
         Test cases:
         - An authenticated request receives entries for its requested benchmark IDs.
         """
-        running_benchmark = _make_bench("running", BenchmarkStatus.IN_PROGRESS)
-        finished_benchmark = _make_bench("finished", BenchmarkStatus.FINISHED)
+        running_benchmark = make_benchmark("running", status=BenchmarkStatus.IN_PROGRESS)
+        finished_benchmark = make_benchmark("finished", status=BenchmarkStatus.FINISHED)
         database_session.add_all([running_benchmark, finished_benchmark])
         database_session.commit()
 
@@ -60,7 +42,7 @@ class TestBenchmarksStatus:
         Test cases:
         - Requested foreign benchmark IDs are omitted from the response.
         """
-        benchmark = _make_bench("own")
+        benchmark = make_benchmark("own", status=BenchmarkStatus.IN_PROGRESS)
         database_session.add(benchmark)
         database_session.commit()
         foreign_benchmark_id = uuid4()

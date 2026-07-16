@@ -16,64 +16,15 @@ from sqlmodel import Session
 
 import tracker.api.single_task as single_task_module
 from main import app
-from tests.utils import TEST_ORG_ID
+from tests.factories import make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
     AgentCausedExitReason,
     Benchmark,
-    ErrorResult,
-    EvaluationResult,
     Org,
-    Task,
     TaskStatus,
 )
 
 _client = TestClient(app)
-
-
-def _make_task(
-    benchmark: Benchmark,
-    task_id: str,
-    *,
-    status: TaskStatus = TaskStatus.PENDING,
-    finished_at: datetime | None = None,
-) -> Task:
-    """Build a task while keeping scenario-specific state visible at the call site."""
-    return Task(
-        org_id=TEST_ORG_ID,
-        benchmark=benchmark.id,
-        task_id=task_id,
-        status=status,
-        finished_at=finished_at,
-    )
-
-
-def _make_evaluation_result(
-    task: Task,
-    instance_id: str,
-    result: dict[str, object],
-    created_at: datetime,
-    *,
-    exit_reason: AgentCausedExitReason | None = None,
-) -> EvaluationResult:
-    """Build one evaluation attempt for a task."""
-    return EvaluationResult(
-        org_id=TEST_ORG_ID,
-        task=task.id,
-        instance_id=instance_id,
-        result=result,
-        agent_caused_exit_reason=exit_reason,
-        created_at=created_at,
-    )
-
-
-def _make_error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
-    """Build one error attempt for a task."""
-    return ErrorResult(
-        org_id=TEST_ORG_ID,
-        task=task.id,
-        error_message=error_message,
-        created_at=created_at,
-    )
 
 
 def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
@@ -92,38 +43,38 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     database_session.add(benchmark)
     database_session.flush()
 
-    finished_task = _make_task(
+    finished_task = make_task(
         benchmark,
         "finished-task",
         status=TaskStatus.FINISHED,
         finished_at=now,
     )
-    error_task = _make_task(
+    error_task = make_task(
         benchmark,
         "error-task",
         status=TaskStatus.ERROR,
         finished_at=now,
     )
-    pending_task = _make_task(benchmark, "pending-task")
+    pending_task = make_task(benchmark, "pending-task")
     database_session.add_all([finished_task, error_task, pending_task])
     database_session.flush()
     database_session.add_all(
         [
-            _make_evaluation_result(
+            make_evaluation_result(
                 finished_task,
                 "old-attempt",
                 {"score": 0.0},
                 now - timedelta(minutes=1),
             ),
-            _make_evaluation_result(
+            make_evaluation_result(
                 finished_task,
                 "new-attempt",
                 {"score": 1.0},
                 now,
                 exit_reason=AgentCausedExitReason.TIMEOUT,
             ),
-            _make_error_result(error_task, "old failure", now - timedelta(minutes=1)),
-            _make_error_result(error_task, "latest failure", now),
+            make_error_result(error_task, "old failure", now - timedelta(minutes=1)),
+            make_error_result(error_task, "latest failure", now),
         ]
     )
 
@@ -166,7 +117,7 @@ def test_task_artifacts_only_presign_existing_output(
     - Missing output returns no S3 URL and does not call the signer again.
     """
     benchmark = example_benchmark_object
-    task = _make_task(benchmark, "task-with-output")
+    task = make_task(benchmark, "task-with-output")
     database_session.add_all([benchmark, task])
     database_session.commit()
 

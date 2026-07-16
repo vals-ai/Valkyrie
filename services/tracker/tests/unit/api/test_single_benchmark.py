@@ -13,50 +13,16 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from main import app
+from tests.factories import make_error_result, make_task
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
     Benchmark,
-    ErrorResult,
     FinalEvaluation,
     Org,
-    Task,
     TaskStatus,
 )
 
 _client = TestClient(app)
-
-
-def _make_task(
-    benchmark: Benchmark,
-    task_id: str,
-    *,
-    status: TaskStatus = TaskStatus.PENDING,
-    started_at: datetime | None = None,
-    finished_at: datetime | None = None,
-) -> Task:
-    """Build a task while keeping scenario-specific state visible at the call site."""
-    task = Task(
-        org_id=TEST_ORG_ID,
-        benchmark=benchmark.id,
-        task_id=task_id,
-        status=status,
-    )
-    if started_at is not None:
-        task.started_at = started_at
-    if finished_at is not None:
-        task.finished_at = finished_at
-
-    return task
-
-
-def _make_error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
-    """Build an error-history row for a task."""
-    return ErrorResult(
-        org_id=TEST_ORG_ID,
-        task=task.id,
-        error_message=error_message,
-        created_at=created_at,
-    )
 
 
 def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
@@ -75,20 +41,20 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
     database_session.flush()
     database_session.add_all(
         [
-            _make_task(
+            make_task(
                 benchmark,
                 "finished",
                 status=TaskStatus.FINISHED,
                 finished_at=benchmark.started_at,
             ),
-            _make_task(
+            make_task(
                 benchmark,
                 "error",
                 status=TaskStatus.ERROR,
                 finished_at=benchmark.started_at,
             ),
-            _make_task(benchmark, "stopped", status=TaskStatus.STOPPED),
-            _make_task(benchmark, "pending"),
+            make_task(benchmark, "stopped", status=TaskStatus.STOPPED),
+            make_task(benchmark, "pending"),
             FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark.id, final_score=0.75),
         ]
     )
@@ -140,21 +106,21 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     benchmark = example_benchmark_object
     database_session.add(benchmark)
     database_session.flush()
-    literal_task = _make_task(
+    literal_task = make_task(
         benchmark,
         "literal_%_match",
         status=TaskStatus.ERROR,
         started_at=now,
         finished_at=now,
     )
-    other_error = _make_task(
+    other_error = make_task(
         benchmark,
         "ordinary-error",
         status=TaskStatus.ERROR,
         started_at=now - timedelta(minutes=1),
         finished_at=now,
     )
-    finished_task = _make_task(
+    finished_task = make_task(
         benchmark,
         "finished",
         status=TaskStatus.FINISHED,
@@ -165,9 +131,9 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     database_session.flush()
     database_session.add_all(
         [
-            _make_error_result(literal_task, "old failure", now - timedelta(minutes=1)),
-            _make_error_result(literal_task, "latest failure", now),
-            _make_error_result(other_error, "other failure", now),
+            make_error_result(literal_task, "old failure", now - timedelta(minutes=1)),
+            make_error_result(literal_task, "latest failure", now),
+            make_error_result(other_error, "other failure", now),
         ]
     )
     database_session.commit()

@@ -127,6 +127,7 @@ async def compose_sandbox(
 
 async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
     compose_sandbox: tuple[Sandbox, Sandbox, RetrieveTaskResponse],
+    aws_credentials: AWSCredentials,
 ) -> None:
     """Compose sandbox methods should work through the Daytona-created outer sandbox.
 
@@ -196,12 +197,6 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
             'case "$IDENTITY" in *compose-agent*) true;; *) exit 1;; esac'
         ),
     )
-    aws = AWSCredentials(
-        aws_access_key_id="test",
-        aws_secret_access_key="test",
-        aws_default_region="us-east-1",
-    )
-
     exit_reason, agent_run_time = await run_agent(
         outer_sandbox,
         contract,
@@ -209,7 +204,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         _COMPOSE_TASK_ID,
         logs.append,
         task_data.cwd,
-        aws=aws,
+        aws=aws_credentials,
         s3_bucket="unused",
         runtime_source=task_data.source,
     )

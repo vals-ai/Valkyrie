@@ -131,7 +131,10 @@ class TestSandboxOperations:
             await sandbox_provider.get_sandbox(actual_name)
 
     async def test_upload_agent_artifacts(
-        self, test_sandbox: Sandbox, aws_credentials: AWSCredentials, harness_config: HarnessConfig
+        self,
+        test_sandbox: Sandbox,
+        live_aws_credentials: AWSCredentials,
+        harness_config: HarnessConfig,
     ) -> None:
         """Verify benchmark-scoped agent artifacts are downloaded from S3 into the sandbox.
 
@@ -160,10 +163,10 @@ class TestSandboxOperations:
         # Upload zip to real S3
         s3 = boto3.client(  # type: ignore
             "s3",
-            region_name=aws_credentials.aws_default_region,
-            aws_access_key_id=aws_credentials.aws_access_key_id,
-            aws_secret_access_key=aws_credentials.aws_secret_access_key,
-            aws_session_token=aws_credentials.aws_session_token,
+            region_name=live_aws_credentials.aws_default_region,
+            aws_access_key_id=live_aws_credentials.aws_access_key_id,
+            aws_secret_access_key=live_aws_credentials.aws_secret_access_key,
+            aws_session_token=live_aws_credentials.aws_session_token,
         )
         agent_key = get_contract_s3_key(contract_name)
         frozen_key = get_benchmark_contract_s3_key(benchmark_id, contract_name)
@@ -181,7 +184,11 @@ class TestSandboxOperations:
 
         try:
             await upload_agent_artifacts(
-                test_sandbox, contract, benchmark_id, aws_credentials, harness_config.s3_bucket
+                test_sandbox,
+                contract,
+                benchmark_id,
+                live_aws_credentials,
+                harness_config.s3_bucket,
             )
 
             # Verify files exist in sandbox
@@ -229,7 +236,7 @@ class TestSandboxOperations:
     async def test_run_agent(
         self,
         test_sandbox: Sandbox,
-        aws_credentials: AWSCredentials,
+        live_aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
     ) -> None:
         """Verify run_agent streams output while executing a contract command.
@@ -262,7 +269,7 @@ class TestSandboxOperations:
             task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
-            aws=aws_credentials,
+            aws=live_aws_credentials,
             s3_bucket=harness_config.s3_bucket,
         )
 
@@ -274,7 +281,7 @@ class TestSandboxOperations:
     async def test_run_agent_applies_egress_allowlist_and_restores_egress(
         self,
         test_sandbox: Sandbox,
-        aws_credentials: AWSCredentials,
+        live_aws_credentials: AWSCredentials,
         harness_config: HarnessConfig,
         egress_allowlist_probe_command: str,
         restored_egress_probe_command: str,
@@ -306,7 +313,7 @@ class TestSandboxOperations:
             task_id=random_task_id(),
             log_output=log_callback,
             cwd="/",
-            aws=aws_credentials,
+            aws=live_aws_credentials,
             s3_bucket=harness_config.s3_bucket,
         )
 

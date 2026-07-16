@@ -18,12 +18,6 @@ from tracker.aws.s3 import handle_s3_error, s3_client
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.types import AWSCredentials
 
-_AWS = AWSCredentials(
-    aws_access_key_id="test-key",
-    aws_secret_access_key="test-secret",
-    aws_default_region="us-east-1",
-)
-
 _sanitize_log_stream_name = getattr(cloudwatch_logs, "_sanitize_log_stream_name")
 
 
@@ -63,8 +57,8 @@ class TestS3DecoratorClient:
 class TestS3ClientRetry:
     """S3 client retry configuration."""
 
-    async def test_uses_standard_retry_mode(self) -> None:
-        async with s3_client(_AWS) as client:
+    async def test_uses_standard_retry_mode(self, aws_credentials: AWSCredentials) -> None:
+        async with s3_client(aws_credentials) as client:
             assert client.meta.config.retries["mode"] == "standard"
 
 
@@ -152,23 +146,36 @@ class TestWriteBenchmarkLogEvent:
         monkeypatch.setattr(cloudwatch_logs, "_created_streams", created_streams)
         return client
 
-    def test_creates_stream_and_puts_event_with_sanitized_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_creates_stream_and_puts_event_with_sanitized_name(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_credentials: AWSCredentials,
+    ) -> None:
         client = self._mock_client(monkeypatch)
 
         # stream_key splits on the first ':' -> task_id keeps its own ':'
-        write_benchmark_log_event("bench123:provider/model:fast", "hello", _AWS, "/valkyrie/worker")
+        write_benchmark_log_event("bench123:provider/model:fast", "hello", aws_credentials, "/valkyrie/worker")
 
         client.create_log_stream.assert_called_once_with(
             logGroupName="/valkyrie/worker/bench123", logStreamName="provider/model_fast"
         )
         assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model_fast"
 
-    def test_create_stream_botocore_error_reports_sanitized_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_create_stream_botocore_error_reports_sanitized_name(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_credentials: AWSCredentials,
+    ) -> None:
         client = self._mock_client(monkeypatch)
         client.create_log_stream.side_effect = BotoCoreError()
 
         with pytest.raises(CloudWatchError) as exc_info:
-            write_benchmark_log_event("bench123:provider/model:fast", "hello", _AWS, "/valkyrie/worker")
+            write_benchmark_log_event(
+                "bench123:provider/model:fast",
+                "hello",
+                aws_credentials,
+                "/valkyrie/worker",
+            )
 
         assert "provider/model_fast" in str(exc_info.value)
         client.put_log_events.assert_not_called()

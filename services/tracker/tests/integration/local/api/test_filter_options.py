@@ -6,30 +6,8 @@ Exercise benchmark filter options through the real app and local database.
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.utils import TEST_ORG_ID
-from tracker.database.models import (
-    AgentContractRequest,
-    Benchmark,
-    BenchmarkArguments,
-    BenchmarkStatus,
-)
-
-
-def _persist_benchmark(session: Session, name: str, agent: str) -> Benchmark:
-    """Persist one benchmark contributing filter metadata."""
-    benchmark = Benchmark(
-        org_id=TEST_ORG_ID,
-        name=name,
-        status=BenchmarkStatus.FINISHED,
-        arguments=BenchmarkArguments(
-            contract=AgentContractRequest(name=agent, install_cmd="i", run_cmd="r"),
-            concurrency=1,
-        ),
-    )
-    session.add(benchmark)
-    session.commit()
-
-    return benchmark
+from tests.factories import make_benchmark
+from tracker.database.models import BenchmarkStatus
 
 
 class TestFilterOptions:
@@ -47,7 +25,12 @@ class TestFilterOptions:
             ("fab", "mini_sweagent"),
             ("swebench", "mini_sweagent"),
         ]:
-            _persist_benchmark(database_session, benchmark_name, agent_name)
+            make_benchmark(
+                name=benchmark_name,
+                status=BenchmarkStatus.FINISHED,
+                agent_name=agent_name,
+                session=database_session,
+            )
 
         response = client.get(
             "/benchmarks/filter-options",

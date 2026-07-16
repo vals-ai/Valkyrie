@@ -10,14 +10,10 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.utils import TEST_ORG_ID
+from tests.factories import make_benchmark, make_error_result, make_evaluation_result, make_task
 from tracker.database.models import (
-    AgentContractRequest,
     Benchmark,
-    BenchmarkArguments,
     BenchmarkStatus,
-    ErrorResult,
-    EvaluationResult,
     Task,
     TaskStatus,
 )
@@ -30,23 +26,10 @@ def _persist_benchmark_with_task(
     task_id: str = "astropy__12907",
 ) -> tuple[Benchmark, Task]:
     """Persist a benchmark and finished task for one route scenario."""
-    benchmark = Benchmark(
-        org_id=TEST_ORG_ID,
-        name="swebench",
-        status=BenchmarkStatus.IN_PROGRESS,
-        arguments=BenchmarkArguments(
-            contract=AgentContractRequest(name="a", install_cmd="i", run_cmd="r"),
-            concurrency=1,
-        ),
-    )
+    benchmark = make_benchmark(status=BenchmarkStatus.IN_PROGRESS)
     database_session.add(benchmark)
     database_session.commit()
-    task = Task(
-        org_id=benchmark.org_id,
-        benchmark=benchmark.id,
-        task_id=task_id,
-        status=TaskStatus.FINISHED,
-    )
+    task = make_task(benchmark, task_id, status=TaskStatus.FINISHED)
     database_session.add(task)
     database_session.commit()
 
@@ -56,23 +39,6 @@ def _persist_benchmark_with_task(
 def _created_at(hour: int) -> datetime:
     """Return a stable timestamp for ordering result history."""
     return datetime(2026, 6, 24, hour, tzinfo=_UTC)
-
-
-def _evaluation_result(
-    task: Task,
-    instance_id: str,
-    result: dict[str, Any],
-    created_at: datetime,
-) -> EvaluationResult:
-    """Build one evaluation attempt for a task."""
-    return EvaluationResult(
-        org_id=task.org_id, task=task.id, instance_id=instance_id, result=result, created_at=created_at
-    )
-
-
-def _error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
-    """Build one error attempt for a task."""
-    return ErrorResult(org_id=task.org_id, task=task.id, error_message=error_message, created_at=created_at)
 
 
 class TestSingleTask:
@@ -88,19 +54,19 @@ class TestSingleTask:
         - An errored task returns its latest error message and no stale evaluation result.
         """
         benchmark, finished_task = _persist_benchmark_with_task(database_session, task_id="finished")
-        error_task = Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id="errored", status=TaskStatus.ERROR)
+        error_task = make_task(benchmark, "errored", status=TaskStatus.ERROR)
         database_session.add(error_task)
         database_session.flush()
 
         old_created_at = _created_at(12)
         new_created_at = _created_at(13)
         for result_row in (
-            _error_result(finished_task, "old finished task error", old_created_at),
-            _evaluation_result(finished_task, "finished-old", {"attempt": "old"}, old_created_at),
-            _evaluation_result(finished_task, "finished-new", {"attempt": "new"}, new_created_at),
-            _evaluation_result(error_task, "errored-old", {"attempt": "old success"}, old_created_at),
-            _error_result(error_task, "old error", old_created_at),
-            _error_result(error_task, "new error", new_created_at),
+            make_error_result(finished_task, "old finished task error", old_created_at),
+            make_evaluation_result(finished_task, "finished-old", {"attempt": "old"}, old_created_at),
+            make_evaluation_result(finished_task, "finished-new", {"attempt": "new"}, new_created_at),
+            make_evaluation_result(error_task, "errored-old", {"attempt": "old success"}, old_created_at),
+            make_error_result(error_task, "old error", old_created_at),
+            make_error_result(error_task, "new error", new_created_at),
         ):
             database_session.add(result_row)
         database_session.commit()

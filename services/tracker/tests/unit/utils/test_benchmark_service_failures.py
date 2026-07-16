@@ -4,9 +4,7 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 """
 
 import time
-from asyncio import Semaphore
 from typing import Any, Never
-from uuid import UUID
 
 import httpx
 import pytest
@@ -19,52 +17,18 @@ from websockets.frames import Close
 from websockets.http11 import Response
 
 import tracker.utils.task_execution as utils_module
-from tests.utils import TEST_ORG_ID
-from tracker.auth import RequestIdentity
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Org, Task, TaskStatus
+from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
+from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
 from tracker.exceptions import OutputArtifactError
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import HarnessConfig
 from tracker.utils import (
     fetch_benchmark_row,
-    fetch_sandbox_provider_config,
     process_benchmark,
-    process_task,
-    start_benchmark_request_to_benchmark,
 )
 
 
 class TestBenchmarkServiceFailures:
     """Benchmark service disconnect, validation, and task error handling."""
-
-    _test_org = Org(id=TEST_ORG_ID, name="default")
-    _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
-
-    def _create_task_env(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        harness_config: HarnessConfig,
-        run_starter: RequestIdentity | None = None,
-    ) -> tuple[StartBenchmarkRequest, Task, UUID]:
-        """Create a benchmark request, benchmark row, and task row for process_task tests."""
-        start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench",
-            contract=contract,
-            concurrency=1,
-            task_ids=["task_0"],
-            harness_config=harness_config,
-        )
-
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, run_starter or self._test_starter)
-        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(benchmark_row)
-        database_session.commit()
-
-        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id)
-        database_session.add(task_row)
-        database_session.commit()
-
-        return start_benchmark_request, task_row, benchmark_row.id
 
     def _latest_task_error(self, database_session: Session, task_row: Task) -> str:
         error_message = database_session.exec(
@@ -75,29 +39,6 @@ class TestBenchmarkServiceFailures:
         ).one()
         return error_message
 
-    async def _run_process_task(
-        self,
-        start_benchmark_request: StartBenchmarkRequest,
-        task_row: Task,
-        benchmark_id: UUID,
-        harness_config: HarnessConfig,
-    ) -> dict[str, dict[str, Any] | None]:
-        return await process_task(
-            task_row=task_row,
-            start_benchmark_request=start_benchmark_request,
-            benchmark_service=start_benchmark_request.benchmark_service,
-            benchmark_id=benchmark_id,
-            task_id="task_0",
-            harness_config=harness_config,
-            org=self._test_org,
-            sandbox_provider_config=fetch_sandbox_provider_config(
-                harness_config.sandbox_provider_secret_name,
-                harness_config.aws,
-                start_benchmark_request.sandbox_provider,
-            ),
-            creation_semaphore=Semaphore(1),
-        )
-
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
         self,
@@ -106,7 +47,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -117,7 +58,7 @@ class TestBenchmarkServiceFailures:
         real_monotonic = time.monotonic
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": None}
 
@@ -145,7 +86,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -154,7 +95,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": None}
 
@@ -174,7 +115,7 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
     ) -> None:
         """VALKYRIE-5D: ValidationError from retrieve_task is caught with field names."""
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -185,7 +126,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_invalid)
 
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": None}
 
@@ -205,7 +146,7 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
     ) -> None:
         """VALKYRIE-5A: InvalidStatus from WebSocket rejection is caught with HTTP status."""
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -214,7 +155,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
 
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": None}
 
@@ -232,7 +173,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -241,7 +182,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(utils_module, "run_agent", _mock_run_agent)
 
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": None}
 
@@ -260,7 +201,7 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
     ) -> None:
         """VALKYRIE-59: BenchmarkServiceError from setup_task is caught and stored."""
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -271,7 +212,7 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
 
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": None}
 
@@ -294,7 +235,7 @@ class TestBenchmarkServiceFailures:
         - Empty-string httpx.ConnectTimeout stores its exception type in the DB.
         - The task log path receives the same visible exception type.
         """
-        start_benchmark_request, task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
         )
         logged_messages: list[str] = []
@@ -308,7 +249,7 @@ class TestBenchmarkServiceFailures:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task_timeout)
         monkeypatch.setattr(utils_module, "write_benchmark_log_event", _mock_write_benchmark_log_event)
 
-        result = await self._run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": None}
 
@@ -326,7 +267,7 @@ class TestBenchmarkServiceFailures:
         harness_config: HarnessConfig,
     ) -> None:
         """VALKYRIE-1Z: BenchmarkServiceError from final_score is caught at the benchmark level."""
-        start_benchmark_request, _task_row, benchmark_id = self._create_task_env(
+        start_benchmark_request, _task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
         )
 
@@ -346,7 +287,7 @@ class TestBenchmarkServiceFailures:
         )
 
         with Session(bind=database_session.bind) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, self._test_org)
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
             assert benchmark_row.status == BenchmarkStatus.ERROR
             assert benchmark_row.error_message is not None
             assert "Final score failed with status code 404" in benchmark_row.error_message

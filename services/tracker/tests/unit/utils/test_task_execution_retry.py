@@ -3,32 +3,30 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 """
 
-from asyncio import Semaphore
-from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from benchmark_service import ImageSource, Resources
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
 from tenacity import wait_none
 
-from tests.utils import TEST_ORG_ID
-from tracker.auth import RequestIdentity
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
+from tests.unit.utils.task_execution_support import (
+    create_task_environment,
+    make_retrieve_task_response,
+    run_process_task,
+)
+from tracker.database.models import AgentContractRequest, TaskStatus
 from tracker.exceptions import SandboxSetupError
-from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
+from tracker.types import HarnessConfig
+from tracker.utils import process_task
 
 
 class TestTaskExecutionRetry:
     """Task execution retries, callbacks, and transition spans."""
-
-    _test_org = Org(id=TEST_ORG_ID, name="default")
-    _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     @pytest.mark.parametrize(
         "fail_target,error",
@@ -58,24 +56,13 @@ class TestTaskExecutionRetry:
             - Task ends in FINISHED state after the retry succeeds
             - The sandbox context manager is entered twice (one per attempt)
         """
-        start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench",
-            contract=contract,
-            concurrency=1,
-            task_ids=["task_0"],
-            harness_config=harness_config,
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
         )
 
         monkeypatch.setattr(cast(Any, process_task).retry, "wait", wait_none())
-
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
-        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(benchmark_row)
-        database_session.commit()
-
-        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id)
-        database_session.add(task_row)
-        database_session.commit()
 
         sandbox_entry_count = 0
 
@@ -107,12 +94,7 @@ class TestTaskExecutionRetry:
             return None, 0.0
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-            return RetrieveTaskResponse(
-                source=ImageSource(image="test-image:latest"),
-                problem_path="/tmp/problem.txt",
-                cwd="/testbed",
-                resources=Resources(vcpu=2, memory=4, disk=5),
-            )
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
 
         async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
             return {"status": "success", "score": 1.0}
@@ -128,21 +110,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await process_task(
-            task_row=task_row,
-            start_benchmark_request=start_benchmark_request,
-            benchmark_service=start_benchmark_request.benchmark_service,
-            benchmark_id=benchmark_row.id,
-            task_id="task_0",
-            harness_config=harness_config,
-            org=self._test_org,
-            sandbox_provider_config=fetch_sandbox_provider_config(
-                harness_config.sandbox_provider_secret_name,
-                harness_config.aws,
-                start_benchmark_request.sandbox_provider,
-            ),
-            creation_semaphore=Semaphore(1),
-        )
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         assert result == {"task_0": {"status": "success", "score": 1.0}}
         assert sandbox_entry_count == 2
@@ -158,22 +126,11 @@ class TestTaskExecutionRetry:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request = StartBenchmarkRequest(
-            benchmark_name="swebench",
-            contract=contract,
-            concurrency=1,
-            task_ids=["task_0"],
-            harness_config=harness_config,
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
         )
-
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
-        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(benchmark_row)
-        database_session.commit()
-
-        task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id)
-        database_session.add(task_row)
-        database_session.commit()
 
         @asynccontextmanager
         async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
@@ -183,12 +140,7 @@ class TestTaskExecutionRetry:
             yield mock_sandbox
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-            return RetrieveTaskResponse(
-                source=ImageSource(image="test-image:latest"),
-                problem_path="/tmp/problem.txt",
-                cwd="/testbed",
-                resources=Resources(vcpu=2, memory=4, disk=5),
-            )
+            return make_retrieve_task_response(problem_path="/tmp/problem.txt")
 
         async def _mock_upload_agent_artifacts(*_args: Any, **_kwargs: Any) -> None:
             return None
@@ -213,21 +165,15 @@ class TestTaskExecutionRetry:
         ) -> None:
             log_records.append({"message": message, **(extra or {})})
 
-        class _MockSpan:
-            def __init__(self, record: dict[str, Any]) -> None:
-                self._record = record
-
-            def __enter__(self) -> "_MockSpan":
-                self._record["entered"] = True
-                return self
-
-            def __exit__(self, *_args: object) -> None:
-                self._record["exited"] = True
-
-        def _mock_span(message: str, **attributes: Any) -> _MockSpan:
+        @contextmanager
+        def _mock_span(message: str, **attributes: Any) -> Generator[None, None, None]:
             record = {"message": message, **attributes}
             span_records.append(record)
-            return _MockSpan(record)
+            record["entered"] = True
+            try:
+                yield
+            finally:
+                record["exited"] = True
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
@@ -240,21 +186,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        await process_task(
-            task_row=task_row,
-            start_benchmark_request=start_benchmark_request,
-            benchmark_service=start_benchmark_request.benchmark_service,
-            benchmark_id=benchmark_row.id,
-            task_id="task_0",
-            harness_config=harness_config,
-            org=self._test_org,
-            sandbox_provider_config=fetch_sandbox_provider_config(
-                harness_config.sandbox_provider_secret_name,
-                harness_config.aws,
-                start_benchmark_request.sandbox_provider,
-            ),
-            creation_semaphore=Semaphore(1),
-        )
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
 
         transition_records = [record for record in span_records if record["message"] == "task.status_transition"]
 
@@ -265,10 +197,10 @@ class TestTaskExecutionRetry:
             (TaskStatus.EVALUATING.value, TaskStatus.FINISHED.value),
         ]
         assert all(record["task_id"] == "task_0" for record in transition_records)
-        assert all(record["benchmark_id"] == str(benchmark_row.id) for record in transition_records)
+        assert all(record["benchmark_id"] == str(benchmark_id) for record in transition_records)
         assert all(record["entered"] and record["exited"] for record in transition_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
-        assert run_agent_kwargs["benchmark_id"] == str(benchmark_row.id)
+        assert run_agent_kwargs["benchmark_id"] == str(benchmark_id)
 
         event_names = [record["message"] for record in log_records]
         assert "agent.run.complete" in event_names
@@ -276,10 +208,10 @@ class TestTaskExecutionRetry:
 
         agent_run_record = next(record for record in log_records if record["message"] == "agent.run.complete")
         assert agent_run_record["task_id"] == "task_0"
-        assert agent_run_record["benchmark_id"] == str(benchmark_row.id)
+        assert agent_run_record["benchmark_id"] == str(benchmark_id)
         assert agent_run_record["exit_reason"] is None
 
         evaluation_start_record = next(record for record in log_records if record["message"] == "task.evaluation.start")
         assert evaluation_start_record["task_id"] == "task_0"
-        assert evaluation_start_record["benchmark_id"] == str(benchmark_row.id)
+        assert evaluation_start_record["benchmark_id"] == str(benchmark_id)
         assert evaluation_start_record["sandbox_id"] == "mock-sandbox-id"

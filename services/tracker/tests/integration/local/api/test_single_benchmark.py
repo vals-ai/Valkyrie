@@ -8,43 +8,13 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.utils import TEST_ORG_ID
+from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
-    AgentContractRequest,
-    Benchmark,
-    BenchmarkArguments,
     BenchmarkStatus,
     ErrorResult,
     FinalEvaluation,
-    Task,
     TaskStatus,
 )
-
-
-def _persist_benchmark(
-    database_session: Session,
-    name: str = "bench-1",
-    status: BenchmarkStatus = BenchmarkStatus.FINISHED,
-) -> Benchmark:
-    """Create and persist a benchmark for one route scenario."""
-    benchmark = Benchmark(
-        org_id=TEST_ORG_ID,
-        name=name,
-        status=status,
-        arguments=BenchmarkArguments(
-            contract=AgentContractRequest(name="a", install_cmd="i", run_cmd="r"),
-            concurrency=1,
-        ),
-    )
-    database_session.add(benchmark)
-    database_session.commit()
-
-    return benchmark
-
-
-def _make_task(benchmark: Benchmark, task_id: str, status: TaskStatus = TaskStatus.PENDING) -> Task:
-    """Build a task with the scenario-defining status visible at the call site."""
-    return Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id=task_id, status=status)
 
 
 class TestSingleBenchmark:
@@ -56,7 +26,7 @@ class TestSingleBenchmark:
         Test cases:
         - An authenticated request returns the expected run payload and counts.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
 
         response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
 
@@ -74,7 +44,7 @@ class TestSingleBenchmark:
         Test cases:
         - A final-evaluation row appears in the API response.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
         database_session.add(FinalEvaluation(org_id=benchmark.org_id, benchmark=benchmark.id, final_score=0.42))
         database_session.commit()
 
@@ -104,9 +74,9 @@ class TestBenchmarkTaskListing:
         Test cases:
         - A page contains the requested rows and the unpaginated total.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
         for task_index in range(3):
-            database_session.add(_make_task(benchmark, f"task-{task_index}"))
+            database_session.add(make_task(benchmark, f"task-{task_index}"))
         database_session.commit()
 
         response = client.get(
@@ -125,9 +95,9 @@ class TestBenchmarkTaskListing:
         Test cases:
         - Only tasks in the requested statuses are returned and counted.
         """
-        benchmark = _persist_benchmark(database_session)
-        finished_task = _make_task(benchmark, "ok", TaskStatus.FINISHED)
-        error_task = _make_task(benchmark, "err", TaskStatus.ERROR)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
+        finished_task = make_task(benchmark, "ok", status=TaskStatus.FINISHED)
+        error_task = make_task(benchmark, "err", status=TaskStatus.ERROR)
         database_session.add_all([finished_task, error_task])
         database_session.flush()
         database_session.add(ErrorResult(org_id=benchmark.org_id, task=finished_task.id, error_message="old boom"))
@@ -163,7 +133,7 @@ class TestBenchmarkTaskListing:
         Test cases:
         - Descending status order returns errors before terminal and active tasks.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
 
         # Seed tasks out of priority order to prove the route performs the sort.
         for task_id, status in [
@@ -172,7 +142,7 @@ class TestBenchmarkTaskListing:
             ("c-error", TaskStatus.ERROR),
             ("d-in-progress", TaskStatus.IN_PROGRESS),
         ]:
-            database_session.add(_make_task(benchmark, task_id, status))
+            database_session.add(make_task(benchmark, task_id, status=status))
         database_session.commit()
 
         response = client.get(
@@ -193,9 +163,9 @@ class TestBenchmarkTaskListing:
         Test cases:
         - Ascending task sort returns IDs in lexical order.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
         for task_id in ["t-c", "t-a", "t-b"]:
-            database_session.add(_make_task(benchmark, task_id))
+            database_session.add(make_task(benchmark, task_id))
         database_session.commit()
 
         response_body = client.get(
@@ -230,7 +200,7 @@ class TestBenchmarkConsoleUrls:
         Test cases:
         - A complete header set returns both console URLs for the benchmark.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
 
         response_body = client.get(f"/benchmarks/{benchmark.id}", headers=_HARNESS_HEADERS).json()
 
@@ -249,7 +219,7 @@ class TestBenchmarkConsoleUrls:
         Test cases:
         - Missing headers return null CloudWatch and S3 links instead of an error.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
 
         response_body = client.get(
             f"/benchmarks/{benchmark.id}",
@@ -269,7 +239,7 @@ class TestBenchmarkConsoleUrls:
         Test cases:
         - Complete AWS headers without a log group return only the S3 link.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
 
         headers = {header: value for header, value in _HARNESS_HEADERS.items() if header != "X-Harness-Log-Group"}
         response_body = client.get(f"/benchmarks/{benchmark.id}", headers=headers).json()
@@ -299,12 +269,12 @@ class TestBenchmarkTaskSearch:
         Test cases:
         - A substring query returns only matching task IDs.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
         database_session.add_all(
             [
-                _make_task(benchmark, "astropy__astropy-12907", TaskStatus.FINISHED),
-                _make_task(benchmark, "django__django-11400", TaskStatus.FINISHED),
-                _make_task(benchmark, "astropy__astropy-13033", TaskStatus.ERROR),
+                make_task(benchmark, "astropy__astropy-12907", status=TaskStatus.FINISHED),
+                make_task(benchmark, "django__django-11400", status=TaskStatus.FINISHED),
+                make_task(benchmark, "astropy__astropy-13033", status=TaskStatus.ERROR),
             ]
         )
         database_session.commit()
@@ -330,12 +300,12 @@ class TestBenchmarkTaskSearch:
         Test cases:
         - Percent and underscore characters match only literal task IDs.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
         database_session.add_all(
             [
-                _make_task(benchmark, "task_1"),
-                _make_task(benchmark, "taskA1"),
-                _make_task(benchmark, "task%1"),
+                make_task(benchmark, "task_1"),
+                make_task(benchmark, "taskA1"),
+                make_task(benchmark, "task%1"),
             ]
         )
         database_session.commit()
@@ -363,11 +333,11 @@ class TestBenchmarkTaskSearch:
         Test cases:
         - A differently cased query still finds the persisted task ID.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
         database_session.add_all(
             [
-                _make_task(benchmark, "DJANGO__django-1"),
-                _make_task(benchmark, "astropy__1"),
+                make_task(benchmark, "DJANGO__django-1"),
+                make_task(benchmark, "astropy__1"),
             ]
         )
         database_session.commit()
@@ -389,12 +359,12 @@ class TestBenchmarkTaskSearch:
         Test cases:
         - Results satisfy both the task-ID substring and requested status.
         """
-        benchmark = _persist_benchmark(database_session)
+        benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
         database_session.add_all(
             [
-                _make_task(benchmark, "astropy__12907", TaskStatus.FINISHED),
-                _make_task(benchmark, "astropy__13033", TaskStatus.ERROR),
-                _make_task(benchmark, "django__11400", TaskStatus.ERROR),
+                make_task(benchmark, "astropy__12907", status=TaskStatus.FINISHED),
+                make_task(benchmark, "astropy__13033", status=TaskStatus.ERROR),
+                make_task(benchmark, "django__11400", status=TaskStatus.ERROR),
             ]
         )
         database_session.commit()

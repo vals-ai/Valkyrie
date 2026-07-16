@@ -14,16 +14,6 @@ from tracker.types import AWSCredentials
 from tracker.utils import catch_errors_during_cleanup
 
 
-@pytest.fixture
-def aws() -> AWSCredentials:
-    return AWSCredentials(
-        aws_access_key_id="x",
-        aws_secret_access_key="y",
-        aws_session_token=None,
-        aws_default_region="us-east-1",
-    )
-
-
 @pytest.fixture(autouse=True)
 def patch_engine(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> None:
     """Point analyzer sessions at the in-memory test database."""
@@ -38,7 +28,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws: AWSCredentials,
+        aws_credentials: AWSCredentials,
     ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -54,7 +44,7 @@ class TestInvokeAnalyzer:
             benchmark_id=example_benchmark_object.id,
             lambda_function="analysis-foo",
             payload={"benchmark_id": "x"},
-            aws=aws,
+            aws=aws_credentials,
         )
 
         database_session.refresh(example_benchmark_object)
@@ -67,7 +57,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws: AWSCredentials,
+        aws_credentials: AWSCredentials,
     ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -82,7 +72,7 @@ class TestInvokeAnalyzer:
                 benchmark_id=example_benchmark_object.id,
                 lambda_function="analysis-foo",
                 payload={"benchmark_id": "x"},
-                aws=aws,
+                aws=aws_credentials,
             )
 
         database_session.refresh(example_benchmark_object)
@@ -94,7 +84,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws: AWSCredentials,
+        aws_credentials: AWSCredentials,
     ) -> None:
         """Lambda returned successfully but no reading_plan_url — still DONE; URL remains untouched."""
         database_session.add(example_benchmark_object)
@@ -109,7 +99,7 @@ class TestInvokeAnalyzer:
             benchmark_id=example_benchmark_object.id,
             lambda_function="analysis-foo",
             payload={},
-            aws=aws,
+            aws=aws_credentials,
         )
 
         database_session.refresh(example_benchmark_object)

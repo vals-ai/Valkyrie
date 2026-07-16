@@ -4,9 +4,8 @@ import os
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, Mock
 
-from benchmark_service import ImageSource, Resources
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import (
     FinalScoreResponse,
@@ -16,8 +15,9 @@ from benchmark_service.schemas import (
     VerifyTaskIdsResponse,
 )
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, SQLModel, create_engine
 
+from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
@@ -35,13 +35,9 @@ from main import app
 
 
 @pytest.fixture
-def harness_config() -> HarnessConfig:
+def harness_config(aws_credentials: AWSCredentials) -> HarnessConfig:
     return HarnessConfig(
-        aws=AWSCredentials(
-            aws_access_key_id="test-aws-access-key-id",
-            aws_secret_access_key="test-aws-secret-access-key",
-            aws_default_region="test-aws-default-region",
-        ),
+        aws=aws_credentials,
         s3_bucket="test-bucket",
         log_group="test-log-group",
         log_retention_policy=30,
@@ -49,18 +45,18 @@ def harness_config() -> HarnessConfig:
     )
 
 
-@pytest.fixture(autouse=True)
-def unit_test_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Replace AWS Secrets Manager with deterministic Daytona credentials."""
+@pytest.fixture
+def empty_database_session() -> Generator[Session, None, None]:
+    """Provide an isolated database without the default organization seed."""
+    engine = create_engine("sqlite://")
+    SQLModel.metadata.create_all(engine)
 
-    def _mock_fetch_aws_secret(_secret_name: str, _aws: AWSCredentials) -> dict[str, str]:
-        return {
-            "DAYTONA_API_KEY": "test_key",
-            "DAYTONA_API_URL": "http://test.url",
-            "DAYTONA_TARGET": "test_target",
-        }
-
-    monkeypatch.setattr("tracker.utils.resources.fetch_aws_secret", _mock_fetch_aws_secret)
+    try:
+        with Session(engine) as session:
+            yield session
+    finally:
+        SQLModel.metadata.drop_all(engine)
+        engine.dispose()
 
 
 @pytest.fixture(autouse=True)
@@ -193,14 +189,12 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def mock_broker(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def _mock_kiq(*_args: Any, **_kwargs: Any) -> None:
-        return None
+def mock_kicker(monkeypatch: pytest.MonkeyPatch) -> MockKicker:
+    """Record queued benchmark work without starting the broker."""
+    kicker = MockKicker()
+    monkeypatch.setattr("main.process_benchmark.kicker", lambda: kicker)
 
-    mock_kicker = MagicMock()
-    mock_kicker.return_value.with_labels.return_value.kiq = _mock_kiq
-
-    monkeypatch.setattr("main.process_benchmark.kicker", mock_kicker)
+    return kicker
 
 
 @pytest.fixture
@@ -214,12 +208,7 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
         yield mock_sandbox
 
     async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
-        return RetrieveTaskResponse(
-            source=ImageSource(image="test-image:latest"),
-            problem_path="/tmp/problem_statement.txt",
-            cwd="/testbed",
-            resources=Resources(vcpu=2, memory=4, disk=5),
-        )
+        return make_retrieve_task_response()
 
     async def _mock_evaluate_instance(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         return {"status": "success", "score": 1.0}

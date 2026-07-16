@@ -3,10 +3,10 @@
 Run: uv run pytest tests/unit/test_main.py
 """
 
-from collections.abc import AsyncIterator
 import io
 import logging
 import tarfile
+from collections.abc import AsyncIterator
 from datetime import timezone
 from typing import Any
 from unittest.mock import MagicMock
@@ -28,7 +28,8 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app, tracker_service_error_handler
-from tests.utils import TEST_ORG_ID
+from tests.unit.utils.task_execution_support import MockKicker
+from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_starter
 from tracker.database.models import (
     AgentContractRequest,
@@ -45,7 +46,6 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.types import (
-    AWSCredentials,
     BenchmarkTableRow,
     FetchBenchmarksRequest,
     FinalViewResponse,
@@ -55,6 +55,11 @@ from tracker.types import (
 from tracker.utils import fetch_harness_config
 
 client = TestClient(app)
+
+
+async def _verify_single_task_id(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+    """Return the single task used by benchmark start route tests."""
+    return VerifyTaskIdsResponse(task_ids=["task_0"])
 
 
 class TestTrackerAPI:
@@ -308,9 +313,9 @@ class TestTrackerAPI:
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
+        mock_kicker: MockKicker,
     ) -> None:
         observed_headers: dict[str, str] = {}
-        captured_request_json: dict[str, Any] = {}
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -332,16 +337,8 @@ class TestTrackerAPI:
             observed_headers.update(getattr(service_client, "_headers"))
             return VerifyTaskIdsResponse(task_ids=["task_0"])
 
-        class _MockKicker:
-            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
-                return self
-
-            async def kiq(self, **kwargs: Any) -> None:
-                captured_request_json.update(kwargs["start_benchmark_request_json"])
-
         monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
 
         response = client.post(
             "/start-benchmark",
@@ -351,7 +348,9 @@ class TestTrackerAPI:
 
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
-        assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
 
     async def test_start_benchmark_keeps_selected_provider_secret_with_harness_headers(
         self,
@@ -359,6 +358,7 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
+        mock_kicker: MockKicker,
     ) -> None:
         """Start requests should keep the provider secret chosen by the client.
 
@@ -366,7 +366,6 @@ class TestTrackerAPI:
         - Harness headers provide AWS config without a provider secret.
         - The selected provider secret from the request body is stored and queued.
         """
-        captured_request_json: dict[str, Any] = {}
         selected_harness_config = harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"})
         request = StartBenchmarkRequest(
             contract=contract,
@@ -377,18 +376,7 @@ class TestTrackerAPI:
             sandbox_provider="modal",
         )
 
-        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=["task_0"])
-
-        class _MockKicker:
-            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
-                return self
-
-            async def kiq(self, **kwargs: Any) -> None:
-                captured_request_json.update(kwargs["start_benchmark_request_json"])
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
         response = client.post(
             "/start-benchmark",
@@ -408,8 +396,10 @@ class TestTrackerAPI:
         assert benchmark_row
         assert benchmark_row.arguments.sandbox_provider == "modal"
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
-        assert captured_request_json["sandbox_provider"] == "modal"
-        assert captured_request_json["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
+
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["sandbox_provider"] == "modal"
+        assert queued_request["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
 
     async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark) -> None:
         """Test fetch benchmark of the fastapi server.
@@ -928,10 +918,7 @@ class TestTrackerAPI:
             name="Alice",
         )
 
-        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=["task_0"])
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -958,10 +945,7 @@ class TestTrackerAPI:
         harness_config: HarnessConfig,
     ) -> None:
         # The autouse override_starter fixture already returns a self-hosted identity.
-        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=["task_0"])
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -998,10 +982,7 @@ class TestTrackerAPI:
             name=None,
         )
 
-        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=["task_0"])
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -1169,10 +1150,7 @@ class TestTrackerAPI:
             - Fetch and list responses expose the label, and list can filter by it.
         """
 
-        async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
-            return VerifyTaskIdsResponse(task_ids=["task_0"])
-
-        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -1336,9 +1314,8 @@ class TestTrackerAPI:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        async def _mock_list_s3_objects(*_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
-            if False:
-                yield ""
+        def _mock_list_s3_objects(*_args: Any, **_kwargs: Any) -> AsyncIterator[str]:
+            return async_iterator(())
 
         monkeypatch.setattr("main.list_s3_objects", _mock_list_s3_objects)
 
@@ -1424,7 +1401,10 @@ class TestTrackerAPI:
         # None of the three cases should have reached Sentry
         assert captured == []
 
-    def test_fetch_benchmark_returns_400_when_harness_headers_missing(self) -> None:
+    def test_fetch_benchmark_returns_400_when_harness_headers_missing(
+        self,
+        harness_config: HarnessConfig,
+    ) -> None:
         """Missing X-Harness-* headers should return 400, not 500 KeyError."""
         app.dependency_overrides.pop(fetch_harness_config)
         try:
@@ -1432,14 +1412,4 @@ class TestTrackerAPI:
             assert response.status_code == 400
             assert "Missing harness config header" in response.json()["detail"]
         finally:
-            app.dependency_overrides[fetch_harness_config] = lambda: HarnessConfig(
-                aws=AWSCredentials(
-                    aws_access_key_id="test-aws-access-key-id",
-                    aws_secret_access_key="test-aws-secret-access-key",
-                    aws_default_region="test-aws-default-region",
-                ),
-                s3_bucket="test-bucket",
-                log_group="test-log-group",
-                log_retention_policy=30,
-                sandbox_provider_secret_name="test-daytona-secret",
-            )
+            app.dependency_overrides[fetch_harness_config] = lambda: harness_config

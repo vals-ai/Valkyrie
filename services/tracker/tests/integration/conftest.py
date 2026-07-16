@@ -11,7 +11,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from dotenv import load_dotenv
 from sqlmodel import Session
 
-from tests.integration_agent_artifacts import (
+from tests.integration.seed_agent_artifacts import (
     create_s3_client,
     delete_test_agent_artifact,
     integration_test_agent_name,
@@ -55,7 +55,7 @@ def daytona_secret_name() -> str:
 
 
 @pytest.fixture(scope="session")
-def aws_credentials() -> AWSCredentials:
+def live_aws_credentials() -> AWSCredentials:
     """Require and return the AWS credentials used by live integration tests."""
     aws_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
     if not aws_access_key_id:
@@ -69,18 +69,16 @@ def aws_credentials() -> AWSCredentials:
     if not aws_default_region:
         pytest.fail("AWS_DEFAULT_REGION must be set to run live integration tests.")
 
-    aws_credentials = AWSCredentials(
+    return AWSCredentials(
         aws_access_key_id=aws_access_key_id,
         aws_secret_access_key=aws_secret_access_key,
         aws_default_region=aws_default_region,
         aws_session_token=os.getenv("AWS_SESSION_TOKEN"),
     )
 
-    return aws_credentials
-
 
 @pytest.fixture(scope="session")
-def harness_config(daytona_secret_name: str, aws_credentials: AWSCredentials) -> HarnessConfig:
+def harness_config(daytona_secret_name: str, live_aws_credentials: AWSCredentials) -> HarnessConfig:
     """Require and assemble the harness configuration for live integration tests."""
     aws_s3_bucket = os.getenv("TEST_AWS_S3_BUCKET")
 
@@ -96,7 +94,7 @@ def harness_config(daytona_secret_name: str, aws_credentials: AWSCredentials) ->
 
     return HarnessConfig(
         sandbox_provider_secret_name=daytona_secret_name,
-        aws=aws_credentials,
+        aws=live_aws_credentials,
         log_group=log_group,
         log_retention_policy=log_retention_policy,
         s3_bucket=aws_s3_bucket,
@@ -165,10 +163,10 @@ async def benchmark_service(service_headers: dict[str, str]) -> AsyncGenerator[B
 @pytest.fixture
 def sandbox_provider_config(
     daytona_secret_name: str,
-    aws_credentials: AWSCredentials,
+    live_aws_credentials: AWSCredentials,
 ) -> SandboxProviderConfig:
     """Return the real provider configuration used by live service calls."""
-    return fetch_sandbox_provider_config(daytona_secret_name, aws_credentials, "daytona")
+    return fetch_sandbox_provider_config(daytona_secret_name, live_aws_credentials, "daytona")
 
 
 @pytest.fixture

@@ -6,7 +6,7 @@ Covers task state transitions, sandbox cleanup, and run-control API behavior.
 """
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
@@ -16,7 +16,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
-from benchmark_service import ImageSource, Resources, SandboxQuery
+from benchmark_service import SandboxQuery
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse, VerifyTaskIdsResponse
@@ -25,13 +25,14 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app
-from tests.utils import TEST_ORG_ID
+from tests.factories import make_error_result, make_evaluation_result
+from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
+from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     BenchmarkStatus,
-    ErrorResult,
     EvaluationResult,
     Org,
     RetryMode,
@@ -62,21 +63,6 @@ def _created_at(day: int) -> datetime:
     return datetime(2026, 6, day, tzinfo=UTC)
 
 
-def _evaluation_result(
-    task: Task,
-    instance_id: str,
-    result: dict[str, Any],
-    created_at: datetime,
-) -> EvaluationResult:
-    return EvaluationResult(
-        org_id=task.org_id, task=task.id, created_at=created_at, instance_id=instance_id, result=result
-    )
-
-
-def _error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
-    return ErrorResult(org_id=task.org_id, task=task.id, created_at=created_at, error_message=error_message)
-
-
 class MockSubsetSandboxProvider:
     """Expose task-labeled sandboxes and record deletions."""
 
@@ -96,16 +82,6 @@ class MockSubsetSandboxProvider:
 
     async def delete_sandbox(self, sandbox_id: str) -> None:
         self.deleted_sandbox_ids.append(sandbox_id)
-
-
-class MockKicker:
-    """Accept task dispatch without starting another worker."""
-
-    def with_labels(self, **_labels: str) -> "MockKicker":
-        return self
-
-    async def kiq(self, **_kwargs: Any) -> None:
-        return None
 
 
 class TestRunRecovery:
@@ -272,28 +248,17 @@ class TestRunRecovery:
 
         retrieval_started = asyncio.Event()
         continue_retrieval = asyncio.Event()
-        sandbox_created = False
 
         async def delayed_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
             retrieval_started.set()
             await continue_retrieval.wait()
 
-            return RetrieveTaskResponse(
-                source=ImageSource(image="test-image:latest"),
-                problem_path="/tmp/problem_statement.txt",
-                cwd="/testbed",
-                resources=Resources(vcpu=2, memory=4, disk=5),
-            )
+            return make_retrieve_task_response()
 
-        @asynccontextmanager
-        async def record_sandbox_creation(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
-            nonlocal sandbox_created
-            sandbox_created = True
-            raise AssertionError("stopped task attempted to create a sandbox")
-            yield AsyncMock()
+        create_sandbox = Mock(side_effect=AssertionError("stopped task attempted to create a sandbox"))
 
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", delayed_retrieve_task)
-        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", record_sandbox_creation)
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
 
         def get_sandbox_provider(*_args: object, **_kwargs: object) -> MockSubsetSandboxProvider:
             return MockSubsetSandboxProvider([])
@@ -302,7 +267,6 @@ class TestRunRecovery:
             return _RESUMED_ATTEMPT_AT
 
         monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: MockKicker())
         monkeypatch.setattr(
             "tracker.utils.run_control.datetime",
             SimpleNamespace(now=resumed_attempt_time),
@@ -353,7 +317,7 @@ class TestRunRecovery:
         assert original_started_at == _ORIGINAL_ATTEMPT_AT
         assert selected_task.started_at == _RESUMED_ATTEMPT_AT
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
-        assert sandbox_created is False
+        create_sandbox.assert_not_called()
 
         selected_task.status = TaskStatus.IN_PROGRESS
         selected_task.started_at = _ORIGINAL_ATTEMPT_AT
@@ -403,11 +367,10 @@ class TestRunRecovery:
             "django__django-12325",
             "django__django-12858",
         ]
-        captured_lambda_payload: dict[str, Any] | None = None
+        captured_lambda_payloads: list[dict[str, Any]] = []
 
         def _capture_lambda_payload(_client: Any, _function_name: str, payload: dict[str, Any]) -> None:
-            nonlocal captured_lambda_payload
-            captured_lambda_payload = payload
+            captured_lambda_payloads.append(payload)
 
         monkeypatch.setattr("tracker.utils.run_orchestration.lambda_client", Mock(return_value=object()))
         monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", _capture_lambda_payload)
@@ -492,8 +455,8 @@ class TestRunRecovery:
 
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
-        assert captured_lambda_payload is not None
-        assert captured_lambda_payload["benchmark_name"] == "swebench"
+        assert len(captured_lambda_payloads) == 1
+        assert captured_lambda_payloads[0]["benchmark_name"] == "swebench"
 
     @pytest.mark.parametrize(
         ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),
@@ -582,9 +545,9 @@ class TestRunRecovery:
         database_session.add_all([task_error, task_result])
         database_session.flush()
         for result_row in (
-            _evaluation_result(task_error, "older-task-error-result", {"score": 0.25}, _created_at(1)),
-            _error_result(task_error, "retry failed before", _created_at(2)),
-            _evaluation_result(task_result, "previous-task-result", {"score": 0.5}, _created_at(1)),
+            make_evaluation_result(task_error, "older-task-error-result", {"score": 0.25}, _created_at(1)),
+            make_error_result(task_error, "retry failed before", _created_at(2)),
+            make_evaluation_result(task_result, "previous-task-result", {"score": 0.5}, _created_at(1)),
         ):
             database_session.add(result_row)
         database_session.commit()
@@ -611,7 +574,9 @@ class TestRunRecovery:
         for task in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all():
             task.status = TaskStatus.FINISHED
             database_session.add(task)
-            database_session.add(_evaluation_result(task, f"current-{task.task_id}", {"score": 1.0}, _created_at(3)))
+            database_session.add(
+                make_evaluation_result(task, f"current-{task.task_id}", {"score": 1.0}, _created_at(3))
+            )
         database_session.commit()
 
         response = client.get("/retrieve-results", params={"benchmark_id": str(benchmark_row.id)})
@@ -824,10 +789,7 @@ class TestRunRecovery:
         database_session.add(task_row)
         database_session.commit()
 
-        @asynccontextmanager
-        async def _unexpected_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[None, None]:
-            raise AssertionError("eval resume should not create a sandbox")
-            yield
+        create_sandbox = Mock(side_effect=AssertionError("eval resume should not create a sandbox"))
 
         sandbox_provider_config = DaytonaProviderConfig(
             DAYTONA_API_KEY="key",
@@ -853,7 +815,7 @@ class TestRunRecovery:
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
-        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _unexpected_create_sandbox)
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", _mock_resume_evaluation, raising=False)
 
         benchmark_service = request.benchmark_service
@@ -875,6 +837,7 @@ class TestRunRecovery:
         database_session.refresh(task_row)
         evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
         assert result == {"task_0": {"score": 1.0}}
+        create_sandbox.assert_not_called()
         assert task_row.status == TaskStatus.FINISHED
         assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         assert evaluation.instance_id is None
@@ -959,6 +922,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -969,7 +933,6 @@ class TestRunRecovery:
         database_session.commit()
 
         observed_headers: dict[str, str] = {}
-        captured_request_json: dict[str, Any] = {}
 
         async def _mock_reset_to_in_progress_status(
             *_args: Any, benchmark_service: BenchmarkServiceClient, **_kwargs: Any
@@ -977,15 +940,7 @@ class TestRunRecovery:
             observed_headers.update(getattr(benchmark_service, "_headers"))
             return ["task_0"]
 
-        class _MockKicker:
-            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
-                return self
-
-            async def kiq(self, **kwargs: Any) -> None:
-                captured_request_json.update(kwargs["start_benchmark_request_json"])
-
         monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?concurrency=20",
@@ -995,10 +950,12 @@ class TestRunRecovery:
 
         assert response.status_code == 200
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
-        assert captured_request_json["concurrency"] == 20
-        assert captured_request_json["sandbox_provider"] == "modal"
-        assert captured_request_json["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
-        assert captured_request_json["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
+
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["concurrency"] == 20
+        assert queued_request["sandbox_provider"] == "modal"
+        assert queued_request["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
+        assert queued_request["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.concurrency == 20
 
@@ -1054,6 +1011,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
     ) -> None:
         """Resume secrets should update the contract used by resumed tasks.
 
@@ -1070,20 +1028,10 @@ class TestRunRecovery:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        captured_request_json: dict[str, Any] = {}
-
         async def _mock_reset_to_in_progress_status(*_args: Any, **_kwargs: Any) -> list[str]:
             return ["task_0"]
 
-        class _MockKicker:
-            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
-                return self
-
-            async def kiq(self, **kwargs: Any) -> None:
-                captured_request_json.update(kwargs["start_benchmark_request_json"])
-
         monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
 
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}",
@@ -1098,13 +1046,15 @@ class TestRunRecovery:
         )
 
         assert response.status_code == 200
-        assert captured_request_json["contract"]["secrets"] == {
+
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["contract"]["secrets"] == {
             "ANTHROPIC_API_KEY": "new-secret",
             "OPENAI_API_KEY": "openai-secret",
             "GEMINI_API_KEY": "gemini-secret",
         }
         database_session.refresh(benchmark_row)
-        assert benchmark_row.arguments.contract.secrets == captured_request_json["contract"]["secrets"]
+        assert benchmark_row.arguments.contract.secrets == queued_request["contract"]["secrets"]
 
     async def test_running_retry_noops_without_error_tasks(
         self,
@@ -1166,6 +1116,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
@@ -1187,22 +1138,12 @@ class TestRunRecovery:
         async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=["task_error"])
 
-        captured_task_ids: list[str] = []
-
-        class _MockKicker:
-            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
-                return self
-
-            async def kiq(self, **kwargs: Any) -> None:
-                captured_task_ids.extend(kwargs["verified_task_ids"])
-
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
         assert response.status_code == 200
-        assert captured_task_ids == ["task_error"]
+        assert mock_kicker.queued_calls[0]["verified_task_ids"] == ["task_error"]
 
         task_statuses = {
             task.task_id: task.status
@@ -1222,6 +1163,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
+        mock_kicker: MockKicker,
     ) -> None:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.IN_PROGRESS
@@ -1240,16 +1182,8 @@ class TestRunRecovery:
         async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=task_ids)
 
-        captured_retry_task_ids: list[str] = []
         final_score_inputs: list[dict[str, Any]] = []
         sandbox_count = 0
-
-        class _MockKicker:
-            def with_labels(self, **_kwargs: Any) -> "_MockKicker":
-                return self
-
-            async def kiq(self, **kwargs: Any) -> None:
-                captured_retry_task_ids.extend(kwargs["verified_task_ids"])
 
         @asynccontextmanager
         async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
@@ -1282,17 +1216,18 @@ class TestRunRecovery:
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: _MockKicker())
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
         assert response.status_code == 200
-        assert captured_retry_task_ids == ["task_retry"]
+
+        queued_task_ids = mock_kicker.queued_calls[0]["verified_task_ids"]
+        assert queued_task_ids == ["task_retry"]
 
         await process_benchmark(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=captured_retry_task_ids,
+            verified_task_ids=queued_task_ids,
         )
 
         database_session.refresh(benchmark_row)
@@ -1384,9 +1319,8 @@ class TestRunRecovery:
         await initiate_stop_benchmark(benchmark_row, database_session, force=True, org=self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
-        async def _empty_list_sandboxes(*_args: Any, **_kwargs: Any) -> AsyncGenerator[None, None]:
-            if False:
-                yield None
+        def _empty_list_sandboxes(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:
+            return async_iterator(())
 
         mock_provider = Mock()
         mock_provider.list_sandboxes = _empty_list_sandboxes

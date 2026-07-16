@@ -1,16 +1,29 @@
 from collections.abc import Generator
 from sqlite3 import Connection, Cursor
 from typing import cast
+
 import pytest
 from dotenv import load_dotenv
 from sqlalchemy import event
 from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
+from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, DEFAULT_ORG_NAME, Org
+from tracker.database.models import AgentContractRequest, Benchmark, DEFAULT_ORG_NAME, Org
+from tracker.types import AWSCredentials
 
 _ = load_dotenv()
+
+
+@pytest.fixture
+def aws_credentials() -> AWSCredentials:
+    """Provide deterministic AWS credentials for non-live tests."""
+    return AWSCredentials(
+        aws_access_key_id="test-aws-access-key-id",
+        aws_secret_access_key="test-aws-secret-access-key",
+        aws_default_region="us-east-1",
+    )
 
 
 @pytest.fixture(scope="function")
@@ -50,9 +63,5 @@ def contract() -> AgentContractRequest:
 
 @pytest.fixture
 def example_benchmark_object(contract: AgentContractRequest) -> Benchmark:
-    """Provide a pending benchmark with the shared test organization and contract."""
-    return Benchmark(
-        org_id=TEST_ORG_ID,
-        name="swebench",
-        arguments=BenchmarkArguments(contract=contract, concurrency=5, task_ids=None, slice_str=None),
-    )
+    """Provide a benchmark with the shared test organization and contract."""
+    return make_benchmark(contract=contract, concurrency=5)
