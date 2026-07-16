@@ -57,6 +57,12 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 # S3
 S3_BUCKET_NAME = "agentic-harness"
 
+# Dev account contracts
+DEV_DESCOPE_PROJECT_ID_PARAMETER = "/vals/dev/descope/project-id"
+DEV_DESCOPE_MANAGEMENT_KEY_SECRET = "devEvalInfraDescopeManagementKey"
+DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "/valkyrie/dev/dns/tracker/certificate-arn"
+DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER = "/valkyrie/dev/dns/tracker/hosted-zone-id"
+
 # Slack notifications
 SLACK_WORKSPACE_ID_ENV = "SLACK_WORKSPACE_ID"
 VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV = "VALKYRIE_ALERTS_SLACK_CHANNEL_ID"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from aws_cdk import aws_logs
+from constants import DEV_DESCOPE_MANAGEMENT_KEY_SECRET, DEV_DESCOPE_PROJECT_ID_PARAMETER
 from stage import DEV, PROD, Stage
 
 
@@ -25,11 +26,20 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
+class AuthenticationConfig:
+    managed: bool
+    required: bool
+    project_id_parameter_name: str | None
+    management_key_secret_name: str
+
+
+@dataclass(frozen=True)
 class StageConfig:
     runtime_environment: str
     tracker: ServiceConfig
     worker: ServiceConfig
     database: DatabaseConfig
+    authentication: AuthenticationConfig
     service_log_retention: aws_logs.RetentionDays
 
 
@@ -43,6 +53,12 @@ PROD_CONFIG = StageConfig(
         backup_retention_days=7,
         connection_alarm_threshold=135,
     ),
+    authentication=AuthenticationConfig(
+        managed=False,
+        required=False,
+        project_id_parameter_name=None,
+        management_key_secret_name=DEV_DESCOPE_MANAGEMENT_KEY_SECRET,
+    ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
 )
 
@@ -55,6 +71,12 @@ DEV_CONFIG = StageConfig(
         allocated_storage_gb=20,
         backup_retention_days=1,
         connection_alarm_threshold=65,
+    ),
+    authentication=AuthenticationConfig(
+        managed=True,
+        required=True,
+        project_id_parameter_name=DEV_DESCOPE_PROJECT_ID_PARAMETER,
+        management_key_secret_name=DEV_DESCOPE_MANAGEMENT_KEY_SECRET,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_WEEK,
 )

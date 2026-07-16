@@ -86,21 +86,35 @@ class SharedStack(Stack):
             vpc=self.vpc,
         )
 
-        # Route53 hosted zone for vals.ai (shared by all services)
-        self.hosted_zone = aws_route53.HostedZone.from_lookup(
-            self,
-            "HostedZone",
-            domain_name="vals.ai",
-        )
+        self.hosted_zone: aws_route53.IHostedZone | None = None
+        if self.stage.is_prod:
+            self.hosted_zone = aws_route53.HostedZone.from_lookup(
+                self,
+                "HostedZone",
+                domain_name="vals.ai",
+            )
 
         # S3 bucket
-        self.bucket = aws_s3.Bucket(
-            self,
-            "AgenticHarnessBucket",
-            bucket_name=self.stage.phys(S3_BUCKET_NAME),
-            removal_policy=cdk.RemovalPolicy.RETAIN,
-            block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
-        )
+        if self.stage.is_prod:
+            self.bucket = aws_s3.Bucket(
+                self,
+                "AgenticHarnessBucket",
+                bucket_name=S3_BUCKET_NAME,
+                removal_policy=cdk.RemovalPolicy.RETAIN,
+                block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
+            )
+        else:
+            self.bucket = aws_s3.Bucket(
+                self,
+                "AgenticHarnessBucket",
+                bucket_name=f"{S3_BUCKET_NAME}-dev-{self.account}",
+                removal_policy=cdk.RemovalPolicy.RETAIN,
+                block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
+                encryption=aws_s3.BucketEncryption.S3_MANAGED,
+                enforce_ssl=True,
+                object_ownership=aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+                versioned=True,
+            )
 
         # ── ElastiCache Redis ─────────────────────────────────────────────
         # Single-node Redis used as the Taskiq message broker, shared by
