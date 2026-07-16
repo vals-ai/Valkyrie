@@ -169,7 +169,7 @@ jobs:
 
       - name: Install CDK
         if: inputs.operation != 'credentials-only'
-        run: npm install -g aws-cdk
+        run: npm install -g aws-cdk@2.1132.0
 
       - name: Install infra dependencies
         if: inputs.operation != 'credentials-only'

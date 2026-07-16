@@ -83,6 +83,18 @@ def validate_sts_caller(target: DeploymentTarget, sts_client: StsClient) -> None
     validate_caller_identity(target, caller_identity)
 
 
+def enforce_deployment_target(stage_name: str, environment: Mapping[str, str]) -> DeploymentTarget:
+    """Validate target environment consistency for a CDK app whose stage comes from context.
+
+    Performs no AWS calls: the CDK CLI itself refuses to deploy when the active
+    credentials do not belong to the stack's account, and the STS check runs in
+    the Make preflight. This keeps offline synth with a synthetic account working.
+    """
+    merged = dict(environment)
+    merged["STAGE"] = stage_name
+    return target_from_environment(merged)
+
+
 def _required(environment: Mapping[str, str], variable: str) -> str:
     value = environment.get(variable, "").strip()
     if not value:

@@ -37,6 +37,10 @@ jobs:
         working-directory: infra
         run: make install
 
+      - name: Run infrastructure lint
+        working-directory: infra
+        run: make lint
+
       - name: Run infrastructure tests
         working-directory: infra
         run: make test
