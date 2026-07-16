@@ -77,7 +77,7 @@ test-integration-local-coverage: venv-check
 	$(PYTEST) tests/integration/local/database --cov=src/tracker --cov=main --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=0
 test-integration-live: venv-check env-check
 	$(PYTEST) tests/integration/live -n auto
-test-integration-live-coverage: venv-check env-check
+test-integration-live-coverage: venv-check
 	uv run coverage erase
 	$(PYTEST) tests/integration/live -n auto --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml --cov-fail-under=0
 
