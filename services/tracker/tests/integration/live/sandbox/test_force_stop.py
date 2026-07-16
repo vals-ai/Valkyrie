@@ -284,7 +284,6 @@ class TestForceStop:
 
         await _wait_until_no_sandboxes(example_benchmark_object, provider)
 
-    @pytest.mark.slow
     async def test_force_stop_end_to_end(
         self,
         example_benchmark_object: Benchmark,

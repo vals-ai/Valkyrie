@@ -87,10 +87,6 @@ pythonpath = ["."]
 env = [
     "BROKER_ENVIRONMENT=testing",
 ]
-markers = [
-    "slow: marks tests as slow (require Daytona/external services)",
-]
-
 [tool.coverage.run]
 source = ["src/tracker", "main"]
 branch = true

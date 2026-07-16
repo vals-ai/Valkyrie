@@ -99,7 +99,6 @@ async def evaluate_instance(
         )
 
 
-@pytest.mark.slow
 async def test_live_results_round_trip_through_tracker_database(
     database_session: Session,
     benchmark_service: BenchmarkServiceClient,
