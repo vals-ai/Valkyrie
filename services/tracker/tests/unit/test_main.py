@@ -35,6 +35,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     ErrorResult,
     EvaluationResult,
     FinalEvaluation,
@@ -97,6 +98,46 @@ class TestFastapiServer:
         assert canonical_response.status_code == 200
         assert slash_response.status_code == 404
         assert "location" not in slash_response.headers
+
+    def test_analyze_benchmark_enforces_state_and_reuses_cached_result(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        """Docent analysis must reject invalid runs and return a completed cached result.
+
+        Test cases:
+        - An active run cannot be analyzed.
+        - A finished uncached run requires an analyzer Lambda.
+        - A finished cached run returns its stored reading-plan URL without invoking Lambda.
+        """
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        active_response = client.post(
+            f"/analyze-benchmark/{example_benchmark_object.id}",
+            json={"lambda_function": "docent-analyzer"},
+        )
+        assert active_response.status_code == 400
+        assert "must be FINISHED" in active_response.json()["detail"]
+
+        example_benchmark_object.status = BenchmarkStatus.FINISHED
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        missing_lambda_response = client.post(f"/analyze-benchmark/{example_benchmark_object.id}", json={})
+        assert missing_lambda_response.status_code == 400
+        assert "No ingest_lambda provided" in missing_lambda_response.json()["detail"]
+
+        example_benchmark_object.docent_reading_status = DocentReadingStatus.DONE
+        example_benchmark_object.docent_reading_url = "https://results.example/reading-plan"
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        cached_response = client.post(f"/analyze-benchmark/{example_benchmark_object.id}", json={})
+        assert cached_response.status_code == 200
+        assert cached_response.json() == {
+            "status": "done",
+            "reading_plan_url": "https://results.example/reading-plan",
+        }
 
     async def test_tracker_service_error_hides_internal_detail(
         self,

@@ -34,7 +34,14 @@ jobs:
       - name: Run local integration tests
         run: |
           cd services/tracker
-          make test-integration-local
+          make test-integration-local-coverage
+
+      - name: Upload local integration coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: services/tracker/coverage.xml
+          flags: tracker-integration
 
   tracker-live-integration-tests:
     runs-on: ubuntu-latest
@@ -76,7 +83,7 @@ jobs:
       - name: Run live integration tests
         run: |
           cd services/tracker
-          uv run pytest tests/integration/live -n auto
+          make test-integration-live-coverage
         env:
           TEST_AWS_S3_BUCKET: ${{ secrets.TEST_AWS_S3_BUCKET }}
           TEST_LOG_GROUP: ${{ secrets.TEST_LOG_GROUP }}
@@ -84,3 +91,10 @@ jobs:
           BENCHMARK_SERVICE_BASE_URL: ${{ secrets.BENCHMARK_SERVICE_BASE_URL }}
           BENCHMARK_SERVICE_AUTH_KEY: ${{ secrets.BENCHMARK_SERVICE_AUTH_KEY }}
           AWS_DEFAULT_REGION: us-east-1
+
+      - name: Upload live integration coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: services/tracker/coverage.xml
+          flags: tracker-live-integration

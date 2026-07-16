@@ -17,20 +17,20 @@ from tracker.types import HarnessConfig
 
 async def test_agent_catalog_and_download_url_round_trip_real_s3(
     live_api_client: TestClient,
+    test_agent_name: str,
+    seeded_test_agent_artifact: None,
 ) -> None:
-    """Agent listing and download signing must agree on a deployed S3 object.
+    """Agent listing and download signing must agree on the seeded S3 object.
 
     Test cases:
-    - The live catalog contains at least one named agent with its last-modified value.
-    - The route's five-minute presigned URL downloads the original valid agent archive.
+    - The live catalog contains the uniquely seeded agent with its last-modified value.
+    - The route's five-minute presigned URL downloads that valid agent archive.
     - A name absent from the real bucket returns 404.
     """
     catalog_response = live_api_client.get("/agents")
 
     assert catalog_response.status_code == 200
-    named_agents = [agent for agent in catalog_response.json()["agents"] if agent["name"]]
-    assert named_agents
-    selected_agent = next((agent for agent in named_agents if agent["name"] == "agent"), named_agents[0])
+    selected_agent = next(agent for agent in catalog_response.json()["agents"] if agent["name"] == test_agent_name)
     assert selected_agent["last_modified"] is not None
 
     download_response = live_api_client.get(f"/agents/{selected_agent['name']}/download-url")

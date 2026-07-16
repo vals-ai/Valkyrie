@@ -1,5 +1,6 @@
 .PHONY: help setup build run stop clean logs tracker-service \
-        test test-integration test-integration-local test-integration-live test-unit test-alembic \
+        test test-integration test-integration-local test-integration-local-coverage test-integration-live \
+        test-integration-live-coverage test-unit test-coverage test-alembic \
         migrate-gen venv-check env-check
 
 PYTHON_VERSION := 3.12
@@ -56,6 +57,11 @@ tracker-service: build run logs
 # --- Tests ---
 test-unit: venv-check
 	$(PYTEST) tests/unit --test-alembic --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml
+test-coverage: venv-check
+	uv run coverage erase
+	$(PYTEST) tests/unit --test-alembic --cov=src/tracker --cov=main --cov-report= --cov-fail-under=0
+	$(PYTEST) tests/integration/local/api -n auto --cov=src/tracker --cov=main --cov-append --cov-report= --cov-fail-under=0
+	$(PYTEST) tests/integration/local/database --cov=src/tracker --cov=main --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=85
 test-alembic: venv-check
 	$(PYTEST) --test-alembic -m alembic
 test-integration: venv-check env-check
@@ -65,8 +71,15 @@ test-integration: venv-check env-check
 test-integration-local: venv-check
 	$(PYTEST) tests/integration/local/api -n auto
 	$(PYTEST) tests/integration/local/database
+test-integration-local-coverage: venv-check
+	uv run coverage erase
+	$(PYTEST) tests/integration/local/api -n auto --cov=src/tracker --cov=main --cov-report= --cov-fail-under=0
+	$(PYTEST) tests/integration/local/database --cov=src/tracker --cov=main --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=0
 test-integration-live: venv-check env-check
 	$(PYTEST) tests/integration/live -n auto
+test-integration-live-coverage: venv-check env-check
+	uv run coverage erase
+	$(PYTEST) tests/integration/live -n auto --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml --cov-fail-under=0
 
 # --- Migrations ---
 migrate-gen: venv-check
