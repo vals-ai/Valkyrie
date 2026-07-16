@@ -15,9 +15,11 @@ from aws_cdk import (
     aws_s3,
     aws_servicediscovery,
     aws_sns,
+    aws_ssm,
 )
 from constants import (
     CLUSTER_NAME,
+    DEV_SHARED_PARAMETER_PREFIX,
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
     ELASTICACHE_NODE_TYPE,
     NAMESPACE,
@@ -161,6 +163,46 @@ class SharedStack(Stack):
                 self.redis_cluster.attr_redis_endpoint_port,
             ],
         )
+
+        if not self.stage.is_prod:
+            self._publish_dev_parameters()
+
+    def _publish_dev_parameters(self) -> None:
+        parameters = {
+            "VpcId": (f"{DEV_SHARED_PARAMETER_PREFIX}/vpc-id", self.vpc.vpc_id),
+            "AvailabilityZones": (
+                f"{DEV_SHARED_PARAMETER_PREFIX}/availability-zones",
+                cdk.Fn.join(",", self.vpc.availability_zones),
+            ),
+            "PublicSubnetIds": (
+                f"{DEV_SHARED_PARAMETER_PREFIX}/public-subnet-ids",
+                cdk.Fn.join(",", [subnet.subnet_id for subnet in self.vpc.public_subnets]),
+            ),
+            "ClusterName": (f"{DEV_SHARED_PARAMETER_PREFIX}/cluster-name", self.cluster.cluster_name),
+            "CloudMapNamespaceName": (
+                f"{DEV_SHARED_PARAMETER_PREFIX}/cloud-map-namespace-name",
+                self.namespace.namespace_name,
+            ),
+            "CloudMapNamespaceId": (
+                f"{DEV_SHARED_PARAMETER_PREFIX}/cloud-map-namespace-id",
+                self.namespace.namespace_id,
+            ),
+            "CloudMapNamespaceArn": (
+                f"{DEV_SHARED_PARAMETER_PREFIX}/cloud-map-namespace-arn",
+                self.namespace.namespace_arn,
+            ),
+            "ArtifactBucketName": (
+                f"{DEV_SHARED_PARAMETER_PREFIX}/artifact-bucket-name",
+                self.bucket.bucket_name,
+            ),
+        }
+        for construct_id, (parameter_name, string_value) in parameters.items():
+            aws_ssm.StringParameter(
+                self,
+                f"{construct_id}Parameter",
+                parameter_name=parameter_name,
+                string_value=string_value,
+            )
 
     def _create_deployment_notifications(self, slack_workspace_id: str, slack_channel_id: str) -> None:
         notification_topic = aws_sns.Topic(

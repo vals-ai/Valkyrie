@@ -122,6 +122,25 @@ class DevSharedInfrastructureTest(unittest.TestCase):
             },
         )
 
+    def test_dev_shared_resource_contract_is_complete(self) -> None:
+        template = _shared_template(DEV)
+        parameters = template.find_resources("AWS::SSM::Parameter")
+
+        self.assertEqual(
+            {resource["Properties"]["Name"] for resource in parameters.values()},
+            {
+                "/valkyrie/dev/shared/vpc-id",
+                "/valkyrie/dev/shared/availability-zones",
+                "/valkyrie/dev/shared/public-subnet-ids",
+                "/valkyrie/dev/shared/cluster-name",
+                "/valkyrie/dev/shared/cloud-map-namespace-name",
+                "/valkyrie/dev/shared/cloud-map-namespace-id",
+                "/valkyrie/dev/shared/cloud-map-namespace-arn",
+                "/valkyrie/dev/shared/artifact-bucket-name",
+            },
+        )
+        template.resource_count_is("AWS::EC2::NatGateway", 0)
+
     def test_production_bucket_and_ssm_behavior_is_unchanged(self) -> None:
         template = _shared_template(PROD)
 
@@ -183,6 +202,18 @@ class DevTrackerInfrastructureTest(unittest.TestCase):
         template.has_resource_properties(
             "AWS::RDS::DBInstance",
             {"PubliclyAccessible": False},
+        )
+
+    def test_dev_tracker_resource_contract_is_complete(self) -> None:
+        template = _dev_tracker_template()
+        parameters = template.find_resources("AWS::SSM::Parameter")
+
+        self.assertEqual(
+            {resource["Properties"]["Name"] for resource in parameters.values()},
+            {
+                "/valkyrie/dev/tracker/security-group-id",
+                "/valkyrie/dev/tracker/alb-dns-name",
+            },
         )
 
 

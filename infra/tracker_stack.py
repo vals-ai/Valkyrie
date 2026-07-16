@@ -31,6 +31,7 @@ from constants import (
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
     DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
+    DEV_TRACKER_PARAMETER_PREFIX,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
@@ -271,6 +272,20 @@ class TrackerStack(Stack):
         # Expose the inner FargateService for cross-stack security group rules
         self.tracker_fargate_service = self.service.service
         tracker_security_group = self.tracker_fargate_service.connections.security_groups[0]
+
+        if not stage.is_prod:
+            aws_ssm.StringParameter(
+                self,
+                "TrackerSecurityGroupIdParameter",
+                parameter_name=f"{DEV_TRACKER_PARAMETER_PREFIX}/security-group-id",
+                string_value=tracker_security_group.security_group_id,
+            )
+            aws_ssm.StringParameter(
+                self,
+                "TrackerAlbDnsNameParameter",
+                parameter_name=f"{DEV_TRACKER_PARAMETER_PREFIX}/alb-dns-name",
+                string_value=self.service.load_balancer.load_balancer_dns_name,
+            )
 
         # Cloud Map registration for internal access.
         # Intentionally unstaged: dev gets its own namespace, and benchmark

@@ -62,6 +62,8 @@ DEV_DESCOPE_PROJECT_ID_PARAMETER = "/vals/dev/descope/project-id"
 DEV_DESCOPE_MANAGEMENT_KEY_SECRET = "devEvalInfraDescopeManagementKey"
 DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "/valkyrie/dev/dns/tracker/certificate-arn"
 DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER = "/valkyrie/dev/dns/tracker/hosted-zone-id"
+DEV_SHARED_PARAMETER_PREFIX = "/valkyrie/dev/shared"
+DEV_TRACKER_PARAMETER_PREFIX = "/valkyrie/dev/tracker"
 
 # Slack notifications
 SLACK_WORKSPACE_ID_ENV = "SLACK_WORKSPACE_ID"
