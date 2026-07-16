@@ -1,4 +1,7 @@
-"""Live database flow through the benchmark service and sandbox provider."""
+"""Run with `uv run pytest tests/integration/live/orchestration/test_database_flow.py`.
+
+Exercise the live database flow through the benchmark service and sandbox provider.
+"""
 
 import uuid
 from asyncio import Semaphore, gather
@@ -14,6 +17,8 @@ from sqlmodel import Session, col, select
 from tests.conftest import TEST_ORG_ID
 from tracker.database.models import Benchmark, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.sandbox import create_sandbox
+
+pytestmark = pytest.mark.usefixtures("tracker_database")
 
 
 def create_task_row(database_session: Session, task_id: str, benchmark_id: UUID) -> Task:

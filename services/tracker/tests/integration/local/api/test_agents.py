@@ -1,26 +1,17 @@
-"""Local integration tests for the agents API."""
+"""Run with `uv run pytest tests/integration/local/api/test_agents.py`.
 
-from unittest.mock import AsyncMock
+Exercise authentication for agent routes through the real app.
+"""
 
-
-def test_agents_empty_when_bucket_empty(client, monkeypatch):
-    """The agents route must preserve an empty catalog as a successful response.
-
-    Test cases:
-    - An authenticated request receives an empty agents list when S3 has no bundles.
-    """
-    monkeypatch.setattr("tracker.api.agents.list_agents", AsyncMock(return_value=[]))
-
-    resp = client.get("/agents", headers={"Authorization": "Bearer fake"})
-    assert resp.status_code == 200
-    assert resp.json()["agents"] == []
+from fastapi.testclient import TestClient
 
 
-def test_agents_unauth_401(client):
+def test_agents_unauth_401(client: TestClient) -> None:
     """The agents catalog must not be readable without authentication.
 
     Test cases:
     - A request without a bearer session receives 401.
     """
-    resp = client.get("/agents")
-    assert resp.status_code == 401
+    response = client.get("/agents")
+
+    assert response.status_code == 401

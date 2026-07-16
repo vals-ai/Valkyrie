@@ -1,5 +1,9 @@
-"""Local integration tests for benchmark filter options."""
+"""Run with `uv run pytest tests/integration/local/api/test_filter_options.py`.
 
+Exercise benchmark filter options through the real app and local database.
+"""
+
+from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
@@ -11,8 +15,9 @@ from tracker.database.models import (
 )
 
 
-def _make(session: Session, name: str, agent: str) -> Benchmark:
-    b = Benchmark(
+def _persist_benchmark(session: Session, name: str, agent: str) -> Benchmark:
+    """Persist one benchmark contributing filter metadata."""
+    benchmark = Benchmark(
         org_id=TEST_ORG_ID,
         name=name,
         status=BenchmarkStatus.FINISHED,
@@ -21,37 +26,43 @@ def _make(session: Session, name: str, agent: str) -> Benchmark:
             concurrency=1,
         ),
     )
-    session.add(b)
+    session.add(benchmark)
     session.commit()
-    return b
+
+    return benchmark
 
 
-def test_filter_options_returns_distinct(client, database_session):
+def test_filter_options_returns_distinct(client: TestClient, database_session: Session) -> None:
     """Filter options must collapse repeated benchmark metadata into distinct values.
 
     Test cases:
     - Authenticated results contain each available filter value once.
     """
-    _make(database_session, "swebench", "mini_sweagent")
-    _make(database_session, "swebench", "claude_code")
-    _make(database_session, "fab", "mini_sweagent")
-    _make(database_session, "swebench", "mini_sweagent")  # duplicate
+    for benchmark_name, agent_name in [
+        ("swebench", "mini_sweagent"),
+        ("swebench", "claude_code"),
+        ("fab", "mini_sweagent"),
+        ("swebench", "mini_sweagent"),
+    ]:
+        _persist_benchmark(database_session, benchmark_name, agent_name)
 
-    resp = client.get(
+    response = client.get(
         "/benchmarks/filter-options",
         headers={"Authorization": "Bearer fake"},
     )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["benchmark_names"] == ["fab", "swebench"]
-    assert sorted(data["agent_names"]) == ["claude_code", "mini_sweagent"]
+
+    assert response.status_code == 200, response.text
+    response_body = response.json()
+    assert response_body["benchmark_names"] == ["fab", "swebench"]
+    assert sorted(response_body["agent_names"]) == ["claude_code", "mini_sweagent"]
 
 
-def test_filter_options_unauth_401(client):
+def test_filter_options_unauth_401(client: TestClient) -> None:
     """Benchmark filter metadata must require authentication.
 
     Test cases:
     - A request without a bearer session receives 401.
     """
-    resp = client.get("/benchmarks/filter-options")
-    assert resp.status_code == 401
+    response = client.get("/benchmarks/filter-options")
+
+    assert response.status_code == 401

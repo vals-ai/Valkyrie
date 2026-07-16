@@ -1,4 +1,9 @@
-"""Live tracker orchestration tests against real services and sandboxes."""
+"""Run with `uv run pytest tests/integration/live/orchestration/test_process_benchmark.py`.
+
+Exercise tracker orchestration against real services and sandboxes.
+"""
+
+from __future__ import annotations
 
 from asyncio import gather
 from collections.abc import Callable
@@ -7,7 +12,7 @@ from typing import Any
 
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import SetupTaskResponse
-from pytest import MonkeyPatch
+import pytest
 from sqlmodel import Session, select
 
 from tests.conftest import TEST_ORG_ID
@@ -23,11 +28,13 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark
+from tracker.utils import process_benchmark, start_benchmark_request_to_benchmark  # pyright: ignore[reportUnknownVariableType]
 
 _TASK_ID: str = "astropy__astropy-12907"
 _TASK_IDS: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
 _BENCHMARK: str = "swebench"
+
+pytestmark = pytest.mark.usefixtures("tracker_database")
 
 
 def _create_benchmark(
@@ -76,7 +83,7 @@ async def test_process_benchmark(
     database_session: Session,
     harness_config: HarnessConfig,
     service_headers: dict[str, str],
-):
+) -> None:
     """Multiple tasks run concurrently and produce a complete benchmark result.
 
     Test cases:
@@ -93,7 +100,6 @@ async def test_process_benchmark(
     assert benchmark.status == BenchmarkStatus.FINISHED
     assert benchmark.error_message is None
 
-    # All tasks finished
     tasks = _task_rows(benchmark, database_session)
     assert len(tasks) == len(_TASK_IDS)
     assert all(task.status == TaskStatus.FINISHED for task in tasks)
@@ -103,11 +109,9 @@ async def test_process_benchmark(
         assert task_breakdown is not None
         _assert_task_breakdown_complete(task_breakdown)
 
-    # Evaluation results exist for every task
     results = benchmark.fetch_evaluation_results(database_session)
     assert set(results.keys()) == set(_TASK_IDS)
 
-    # Final evaluation was calculated
     assert benchmark.final_evaluation is not None
 
 
@@ -115,9 +119,9 @@ async def test_process_benchmark_error(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
-    monkeypatch: MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
     service_headers: dict[str, str],
-):
+) -> None:
     """Benchmark-level errors set the benchmark status and error message.
 
     Test cases:
@@ -129,12 +133,14 @@ async def test_process_benchmark_error(
     )
 
     original_commit = Session.commit
-    commit_count = {"n": 0}
+    commit_count = 0
 
     def failing_commit(self: Session) -> None:
-        commit_count["n"] += 1
-        if commit_count["n"] == 1:
+        nonlocal commit_count
+        commit_count += 1
+        if commit_count == 1:
             raise OperationalError("Simulated database error")
+
         original_commit(self)
 
     monkeypatch.setattr(Session, "commit", failing_commit)
@@ -150,9 +156,9 @@ async def test_process_task_error(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
-    monkeypatch: MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch,
     service_headers: dict[str, str],
-):
+) -> None:
     """One task can fail setup while the other still completes through the real service path.
 
     Test cases:
@@ -177,7 +183,8 @@ async def test_process_task_error(
         **kwargs: Any,
     ) -> SetupTaskResponse:
         if task_id == failing_task:
-            raise Exception("Simulated setup failure")
+            raise RuntimeError("Simulated setup failure")
+
         return await original_setup_task(
             self,
             task_id,
@@ -195,7 +202,6 @@ async def test_process_task_error(
     assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
     assert benchmark.error_message is None
 
-    # The failing task errored with our message
     error_tasks = database_session.exec(
         select(Task).where(Task.benchmark == benchmark.id).where(Task.status == TaskStatus.ERROR)
     ).all()
@@ -205,14 +211,12 @@ async def test_process_task_error(
     assert task_errors is not None
     assert "Simulated setup failure" in task_errors[failing_task]
 
-    # The valid task still finished
     finished_tasks = database_session.exec(
         select(Task).where(Task.benchmark == benchmark.id).where(Task.status == TaskStatus.FINISHED)
     ).all()
     assert len(finished_tasks) == 1
     assert finished_tasks[0].task_id == _TASK_ID
 
-    # Evaluation exists for the successful task only
     results = benchmark.fetch_evaluation_results(database_session)
     assert len(results) == 1
     assert _TASK_ID in results
@@ -224,7 +228,7 @@ async def test_process_benchmark_errors_when_all_tasks_fail_before_evaluation(
     database_session: Session,
     harness_config: HarnessConfig,
     service_headers: dict[str, str],
-):
+) -> None:
     """A run with no successful task results fails before final scoring.
 
     Test cases:
@@ -257,7 +261,7 @@ async def test_concurrent_benchmarks_same_task(
     database_session: Session,
     harness_config: HarnessConfig,
     service_headers: dict[str, str],
-):
+) -> None:
     """Same task ID can run across two separate benchmarks concurrently without result collisions.
 
     Test cases:

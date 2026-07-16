@@ -1,4 +1,9 @@
-"""Local integration tests for benchmark keyset pagination."""
+"""Run with `uv run pytest tests/integration/local/api/test_fetch_benchmarks_keyset.py`.
+
+Exercise benchmark keyset pagination through the real app and local database.
+"""
+
+from __future__ import annotations
 
 import importlib
 from collections.abc import Generator
@@ -36,27 +41,31 @@ def harness_config() -> HarnessConfig:
 
 
 @pytest.fixture
-def client(monkeypatch, database_session: Session):
+def client(
+    monkeypatch: pytest.MonkeyPatch,
+    database_session: Session,
+) -> Generator[TestClient, None, None]:
+    """Use access-key authentication with the local app and database."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
-    import tracker.config as config_mod
+    import tracker.config as config_module
 
-    importlib.reload(config_mod)
-    import tracker.auth as auth_mod
+    importlib.reload(config_module)
+    import tracker.auth as auth_module
 
-    importlib.reload(auth_mod)
-    import main as main_mod
+    importlib.reload(auth_module)
+    import main as main_module
 
-    importlib.reload(main_mod)
-    from tracker.database.session import get_session as get_session_dep
+    importlib.reload(main_module)
+    from tracker.database.session import get_session as get_session_dependency
 
     def get_test_session() -> Generator[Session, None, None]:
         yield database_session
 
-    main_mod.app.dependency_overrides[get_session_dep] = get_test_session
+    main_module.app.dependency_overrides[get_session_dependency] = get_test_session
     monkeypatch.setattr("tracker.database.session.engine", database_session.bind)
 
-    with patch.object(auth_mod, "_descope_client") as mock_client:
+    with patch.object(auth_module, "_descope_client") as mock_client:
         mock_client.exchange_access_key.return_value = {
             "tenants": {"default": {}},
             "keyId": "K_caller",
@@ -65,22 +74,31 @@ def client(monkeypatch, database_session: Session):
             "user_id": "U_caller",
             "email": "caller@example.com",
         }
-        yield TestClient(main_mod.app)
+        try:
+            with TestClient(main_module.app) as test_client:
+                yield test_client
+        finally:
+            main_module.app.dependency_overrides.clear()
 
-    main_mod.app.dependency_overrides.clear()
 
-
-def _seed(session: Session, n: int, started_by_email: str | None = None, start_status=None) -> list[Benchmark]:
+def _seed_benchmarks(
+    database_session: Session,
+    count: int,
+    started_by_email: str | None = None,
+    start_status: BenchmarkStatus | None = None,
+) -> list[Benchmark]:
+    """Persist ordered benchmarks for pagination and filter scenarios."""
     base = datetime(2026, 1, 1, tzinfo=timezone.utc)
-    rows = []
-    for i in range(n):
-        status = (
-            start_status if start_status else (BenchmarkStatus.IN_PROGRESS if i % 2 == 0 else BenchmarkStatus.FINISHED)
-        )
-        b = Benchmark(
+    benchmarks: list[Benchmark] = []
+    for benchmark_index in range(count):
+        status = start_status
+        if status is None:
+            status = BenchmarkStatus.IN_PROGRESS if benchmark_index % 2 == 0 else BenchmarkStatus.FINISHED
+
+        benchmark = Benchmark(
             org_id=TEST_ORG_ID,
-            name=f"bench-{i}",
-            started_at=base + timedelta(minutes=i),
+            name=f"bench-{benchmark_index}",
+            started_at=base + timedelta(minutes=benchmark_index),
             status=status,
             started_by_email=started_by_email,
             arguments=BenchmarkArguments(
@@ -88,93 +106,120 @@ def _seed(session: Session, n: int, started_by_email: str | None = None, start_s
                 concurrency=1,
             ),
         )
-        session.add(b)
-        rows.append(b)
-    session.commit()
-    return rows
+        database_session.add(benchmark)
+        benchmarks.append(benchmark)
+    database_session.commit()
+
+    return benchmarks
 
 
-def test_keyset_paginates_with_cursor(client, database_session):
+def test_keyset_paginates_with_cursor(client: TestClient, database_session: Session) -> None:
     """Cursor pagination must return every benchmark once in stable order.
 
     Test cases:
     - Following the next cursor returns the remaining rows without overlap.
     """
-    _seed(database_session, 5)
-    resp = client.get("/fetch-benchmarks?limit=2&cursor=", headers={"x-api-key": "fake-key"})
-    assert resp.status_code == 200, resp.text
-    page1 = resp.json()
-    assert len(page1["benchmarks"]) == 2
-    assert page1["next_cursor"] is not None
+    seeded_benchmarks = _seed_benchmarks(database_session, 5)
+    first_response = client.get("/fetch-benchmarks?limit=2&cursor=", headers={"x-api-key": "fake-key"})
 
-    resp2 = client.get(
-        f"/fetch-benchmarks?limit=2&cursor={page1['next_cursor']}",
+    assert first_response.status_code == 200, first_response.text
+    first_page = first_response.json()
+    assert len(first_page["benchmarks"]) == 2
+    assert first_page["next_cursor"] is not None
+
+    second_response = client.get(
+        f"/fetch-benchmarks?limit=2&cursor={first_page['next_cursor']}",
         headers={"x-api-key": "fake-key"},
     )
-    page2 = resp2.json()
-    assert len(page2["benchmarks"]) == 2
-    ids_seen = {row["id"] for row in page1["benchmarks"]} | {row["id"] for row in page2["benchmarks"]}
-    assert len(ids_seen) == 4  # no duplicates across pages
+
+    assert second_response.status_code == 200, second_response.text
+    second_page = second_response.json()
+    assert len(second_page["benchmarks"]) == 2
+    assert second_page["next_cursor"] is not None
+
+    third_response = client.get(
+        f"/fetch-benchmarks?limit=2&cursor={second_page['next_cursor']}",
+        headers={"x-api-key": "fake-key"},
+    )
+
+    assert third_response.status_code == 200, third_response.text
+    third_page = third_response.json()
+    assert len(third_page["benchmarks"]) == 1
+    assert third_page["next_cursor"] is None
+
+    returned_ids = {
+        benchmark["id"] for page in (first_page, second_page, third_page) for benchmark in page["benchmarks"]
+    }
+    assert returned_ids == {str(benchmark.id) for benchmark in seeded_benchmarks}
 
 
-def test_filter_by_status(client, database_session):
+def test_filter_by_status(client: TestClient, database_session: Session) -> None:
     """Benchmark listing must apply status filters before pagination.
 
     Test cases:
     - A status query returns only matching benchmark rows.
     """
-    _seed(database_session, 4)
-    resp = client.get(
+    seeded_benchmarks = _seed_benchmarks(database_session, 4)
+    response = client.get(
         "/fetch-benchmarks?status=IN_PROGRESS",
         headers={"x-api-key": "fake-key"},
     )
-    data = resp.json()
-    assert all(r["status"] == "IN_PROGRESS" for r in data["benchmarks"])
+    assert response.status_code == 200, response.text
+    response_body = response.json()
+
+    assert {benchmark["id"] for benchmark in response_body["benchmarks"]} == {
+        str(benchmark.id) for benchmark in seeded_benchmarks[::2]
+    }
+    assert all(benchmark["status"] == "IN_PROGRESS" for benchmark in response_body["benchmarks"])
 
 
-def test_filter_by_started_after(client, database_session):
+def test_filter_by_started_after(client: TestClient, database_session: Session) -> None:
     """Benchmark listing must exclude rows older than the requested start boundary.
 
     Test cases:
     - The started-after filter returns only newer runs.
     """
-    _seed(database_session, 5)
-    # Use params dict so httpx handles URL-encoding (+ in timezone offset must not become space)
-    resp = client.get(
+    seeded_benchmarks = _seed_benchmarks(database_session, 5)
+
+    # Let HTTPX encode the plus sign in the timezone offset.
+    response = client.get(
         "/fetch-benchmarks",
         params={"started_after": "2026-01-01T00:02:00+00:00"},
         headers={"x-api-key": "fake-key"},
     )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    # Rows started at 00:00..00:04, after 00:02 means started_at > 00:02 (2 rows: 00:03, 00:04)
-    assert 2 <= len(data["benchmarks"]) <= 3
+    assert response.status_code == 200, response.text
+    response_body = response.json()
+    assert {benchmark["id"] for benchmark in response_body["benchmarks"]} == {
+        str(benchmark.id) for benchmark in seeded_benchmarks[3:]
+    }
 
 
-def test_legacy_offset_limit_still_works(client, database_session):
+def test_legacy_offset_limit_still_works(client: TestClient, database_session: Session) -> None:
     """Existing offset clients must keep working alongside cursor pagination.
 
     Test cases:
     - Offset and limit select the expected legacy page.
     """
-    _seed(database_session, 3)
-    resp = client.get(
+    _seed_benchmarks(database_session, 3)
+    response = client.get(
         "/fetch-benchmarks?offset=0&limit=10",
         headers={"x-api-key": "fake-key"},
     )
-    data = resp.json()
-    assert len(data["benchmarks"]) == 3
-    assert data["total_count"] == 3
+    response_body = response.json()
+
+    assert len(response_body["benchmarks"]) == 3
+    assert response_body["total_count"] == 3
 
 
-def test_table_row_includes_started_by_email(client, database_session):
+def test_table_row_includes_started_by_email(client: TestClient, database_session: Session) -> None:
     """Run attribution must survive the benchmark list serialization path.
 
     Test cases:
     - A persisted starter email is returned in its benchmark table row.
     """
-    _seed(database_session, 1, started_by_email="emailtest@x.com")
+    _seed_benchmarks(database_session, 1, started_by_email="emailtest@x.com")
 
-    resp = client.get("/fetch-benchmarks", headers={"x-api-key": "fake-key"})
-    data = resp.json()
-    assert data["benchmarks"][0]["started_by_email"] == "emailtest@x.com"
+    response = client.get("/fetch-benchmarks", headers={"x-api-key": "fake-key"})
+
+    response_body = response.json()
+    assert response_body["benchmarks"][0]["started_by_email"] == "emailtest@x.com"

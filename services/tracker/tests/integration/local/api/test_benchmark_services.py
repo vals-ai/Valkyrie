@@ -1,25 +1,33 @@
-"""Local integration tests for benchmark-service health aggregation."""
+"""Run with `uv run pytest tests/integration/local/api/test_benchmark_services.py`.
 
-from unittest.mock import AsyncMock
+Exercise benchmark-service routes through the real app and outbound HTTP boundary.
+"""
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
 
 
-def test_benchmark_services_returns_pings(client, monkeypatch):
+def test_benchmark_services_returns_pings(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """Service health aggregation must keep healthy and failed entries distinct.
 
     Test cases:
-    - A reachable service returns latency while a timeout returns its safe error.
+    - A reachable service reports healthy while a failing service retains its HTTP status.
     """
 
-    async def fake_ping(_client, name: str, url: str):
-        if name == "swebench":
-            return {"name": "swebench", "url": url, "healthy": True, "latency_ms": 12, "error": None}
-        return {"name": name, "url": url, "healthy": False, "latency_ms": None, "error": "timeout"}
+    async def handle_request(request: httpx.Request) -> httpx.Response:
+        status_code = 200 if request.url.host == "up" else 503
+        return httpx.Response(status_code, request=request)
 
-    import tracker.api.benchmark_services as bs
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.AsyncClient
 
-    monkeypatch.setattr(bs, "_ping_service", AsyncMock(side_effect=fake_ping))
+    def build_client(*, timeout: float) -> httpx.AsyncClient:
+        return original_client(transport=transport, timeout=timeout)
 
-    resp = client.post(
+    monkeypatch.setattr(httpx, "AsyncClient", build_client)
+
+    response = client.post(
         "/benchmark-services",
         headers={"Authorization": "Bearer fake"},
         json={
@@ -29,18 +37,20 @@ def test_benchmark_services_returns_pings(client, monkeypatch):
             ]
         },
     )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    by_name = {s["name"]: s for s in data["services"]}
-    assert by_name["swebench"]["healthy"] is True
-    assert by_name["fab"]["healthy"] is False
+    assert response.status_code == 200, response.text
+    response_body = response.json()
+    services_by_name = {service["name"]: service for service in response_body["services"]}
+    assert services_by_name["swebench"]["healthy"] is True
+    assert services_by_name["fab"]["healthy"] is False
+    assert services_by_name["fab"]["error"] == "HTTP 503"
 
 
-def test_benchmark_services_unauth_401(client):
+def test_benchmark_services_unauth_401(client: TestClient) -> None:
     """Benchmark-service health data must require authentication.
 
     Test cases:
     - A request without a bearer session receives 401.
     """
-    resp = client.post("/benchmark-services", json={"services": []})
-    assert resp.status_code == 401
+    response = client.post("/benchmark-services", json={"services": []})
+
+    assert response.status_code == 401

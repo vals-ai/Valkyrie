@@ -1,6 +1,12 @@
-"""Local integration tests for benchmark status polling."""
+"""Run with `uv run pytest tests/integration/local/api/test_benchmarks_status.py`.
+
+Exercise benchmark status polling through the real app and local database.
+"""
 
 from uuid import uuid4
+
+from fastapi.testclient import TestClient
+from sqlmodel import Session
 
 from tests.conftest import TEST_ORG_ID
 from tracker.database.models import (
@@ -12,6 +18,7 @@ from tracker.database.models import (
 
 
 def _make_bench(name: str, status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS) -> Benchmark:
+    """Build a benchmark with the status relevant to the polling scenario."""
     return Benchmark(
         org_id=TEST_ORG_ID,
         name=name,
@@ -23,63 +30,67 @@ def _make_bench(name: str, status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS
     )
 
 
-def test_status_returns_requested_ids(client, database_session):
+def test_status_returns_requested_ids(client: TestClient, database_session: Session) -> None:
     """Status polling must return current counts for each requested run.
 
     Test cases:
     - An authenticated request receives entries for its requested benchmark IDs.
     """
-    a = _make_bench("a", BenchmarkStatus.IN_PROGRESS)
-    b = _make_bench("b", BenchmarkStatus.FINISHED)
-    database_session.add_all([a, b])
+    running_benchmark = _make_bench("running", BenchmarkStatus.IN_PROGRESS)
+    finished_benchmark = _make_bench("finished", BenchmarkStatus.FINISHED)
+    database_session.add_all([running_benchmark, finished_benchmark])
     database_session.commit()
 
-    resp = client.get(
-        f"/benchmarks/status?ids={a.id},{b.id}",
+    response = client.get(
+        f"/benchmarks/status?ids={running_benchmark.id},{finished_benchmark.id}",
         headers={"Authorization": "Bearer fake"},
     )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    ids = {e["id"] for e in data["entries"]}
-    assert ids == {str(a.id), str(b.id)}
+
+    assert response.status_code == 200, response.text
+    response_body = response.json()
+    returned_ids = {entry["id"] for entry in response_body["entries"]}
+    assert returned_ids == {str(running_benchmark.id), str(finished_benchmark.id)}
 
 
-def test_status_ignores_foreign_ids(client, database_session):
+def test_status_ignores_foreign_ids(client: TestClient, database_session: Session) -> None:
     """Status polling must not reveal runs from another organization.
 
     Test cases:
     - Requested foreign benchmark IDs are omitted from the response.
     """
-    bench = _make_bench("own")
-    database_session.add(bench)
+    benchmark = _make_bench("own")
+    database_session.add(benchmark)
     database_session.commit()
-    foreign = uuid4()
+    foreign_benchmark_id = uuid4()
 
-    resp = client.get(
-        f"/benchmarks/status?ids={bench.id},{foreign}",
+    response = client.get(
+        f"/benchmarks/status?ids={benchmark.id},{foreign_benchmark_id}",
         headers={"Authorization": "Bearer fake"},
     )
-    data = resp.json()
-    assert len(data["entries"]) == 1
-    assert data["entries"][0]["id"] == str(bench.id)
+
+    response_body = response.json()
+    assert len(response_body["entries"]) == 1
+    assert response_body["entries"][0]["id"] == str(benchmark.id)
 
 
-def test_status_no_ids_returns_empty(client):
+def test_status_no_ids_returns_empty(client: TestClient) -> None:
     """An empty status request must be a successful no-op.
 
     Test cases:
     - Omitting benchmark IDs returns an empty entries list.
     """
-    resp = client.get("/benchmarks/status", headers={"Authorization": "Bearer fake"})
-    assert resp.status_code == 200
-    assert resp.json() == {"entries": []}
+    response = client.get("/benchmarks/status", headers={"Authorization": "Bearer fake"})
+
+    assert response.status_code == 200
+    assert response.json() == {"entries": []}
 
 
-def test_status_unauthenticated_returns_401(client):
+def test_status_unauthenticated_returns_401(client: TestClient) -> None:
     """Benchmark status polling must require authentication.
 
     Test cases:
     - A request without a bearer session receives 401.
     """
-    resp = client.get("/benchmarks/status?ids=00000000-0000-0000-0000-000000000001")
-    assert resp.status_code == 401
+    response = client.get("/benchmarks/status?ids=00000000-0000-0000-0000-000000000001")
+
+    assert response.status_code == 401

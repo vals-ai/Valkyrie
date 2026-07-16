@@ -1,9 +1,13 @@
-"""Live force-stop tests against real sandbox infrastructure."""
+"""Run with `uv run pytest tests/integration/live/sandbox/test_force_stop.py`.
+
+Exercise force-stop behavior against real sandbox infrastructure.
+"""
 
 import asyncio
+from typing import Optional
 
 import pytest
-from benchmark_service import ImageSource, Resources, SandboxNotFoundError, SandboxProvider, SandboxQuery
+from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundError, SandboxProvider, SandboxQuery
 from benchmark_service.client import BenchmarkServiceClient
 from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
@@ -15,16 +19,18 @@ from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskS
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import fetch_harness_config, force_stop_sandboxes, process_benchmark
+from tracker.utils import fetch_harness_config, force_stop_sandboxes, process_benchmark  # pyright: ignore[reportUnknownVariableType]
 from tracker.utils import fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
+
+pytestmark = pytest.mark.usefixtures("tracker_database")
 
 _ACTIVE_TASK_STATUSES = [TaskStatus.BUILDING, TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
 _TERMINAL_TASK_STATUSES = [TaskStatus.STOPPED, TaskStatus.FINISHED]
 
 
-async def _sandboxes_for_benchmark(benchmark: Benchmark, provider: SandboxProvider):
+async def _sandboxes_for_benchmark(benchmark: Benchmark, provider: SandboxProvider) -> list[Sandbox]:
     query = SandboxQuery(labels={"Benchmark": benchmark.name, "Id": str(benchmark.id)})
     return [sandbox async for sandbox in provider.list_sandboxes(query)]
 
@@ -63,15 +69,36 @@ async def _wait_until_no_sandboxes(benchmark: Benchmark, provider: SandboxProvid
     pytest.fail(f"Sandboxes still existed after force stop: {remaining}")
 
 
+async def _wait_for_sandbox_setup(
+    all_sandboxes_created: asyncio.Event,
+    sandbox_creation_failed: asyncio.Event,
+) -> None:
+    """Wait until every sandbox is ready, failing promptly if creation fails."""
+    ready_waiter = asyncio.create_task(all_sandboxes_created.wait())
+    failure_waiter = asyncio.create_task(sandbox_creation_failed.wait())
+    waiters = {ready_waiter, failure_waiter}
+
+    try:
+        completed, _ = await asyncio.wait(waiters, timeout=120, return_when=asyncio.FIRST_COMPLETED)
+        if not completed:
+            pytest.fail("Sandboxes were not created before the force-stop timeout")
+        if failure_waiter in completed:
+            pytest.fail("A sandbox failed during force-stop test setup")
+    finally:
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
+
+
 def _assert_no_task_errors(benchmark: Benchmark, database_session: Session) -> None:
     database_session.expire_all()
     assert benchmark.fetch_tasks_with_errors(database_session) is None
 
 
 class TestForceStop:
-    async def test_force_stop_sandbox(
+    async def test_force_stop_active_sandbox(
         self,
-        tracker_database: None,
         example_benchmark_object: Benchmark,
         database_session: Session,
         benchmark_service: BenchmarkServiceClient,
@@ -81,7 +108,7 @@ class TestForceStop:
         test_image: str,
         creation_semaphore: asyncio.Semaphore,
     ) -> None:
-        """Verify force_stop_sandboxes can stop a sandbox while creation is racing.
+        """Verify force_stop_sandboxes stops a sandbox whose context is still active.
 
         Test cases:
         - A task already marked in progress is moved to STOPPED while its sandbox context is active.
@@ -90,7 +117,6 @@ class TestForceStop:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        # Create a single task
         task = Task(
             org_id=TEST_ORG_ID,
             benchmark=example_benchmark_object.id,
@@ -108,21 +134,27 @@ class TestForceStop:
             "Task": task.task_id,
         }
 
-        async def force_stop_sandbox() -> None:
-            await asyncio.sleep(0.5)
+        sandbox_created = asyncio.Event()
+        release_sandbox = asyncio.Event()
 
-            await force_stop_sandboxes(
-                example_benchmark_object,
-                database_session,
-                daytona_secret_name,
-                aws_credentials,
-                Org(id=TEST_ORG_ID, name="default"),
-                sandbox_provider="daytona",
-            )
+        async def force_stop_sandbox() -> None:
+            await asyncio.wait_for(sandbox_created.wait(), timeout=120)
+
+            try:
+                await force_stop_sandboxes(
+                    example_benchmark_object,
+                    database_session,
+                    daytona_secret_name,
+                    aws_credentials,
+                    Org(id=TEST_ORG_ID, name="default"),
+                    sandbox_provider="daytona",
+                )
+            finally:
+                release_sandbox.set()
 
         created_sandbox_name: list[str] = []
 
-        async def _generator_to_courtine():
+        async def create_sandbox_until_stopped() -> None:
             async with create_sandbox(
                 provider,
                 task.task_id,
@@ -132,24 +164,29 @@ class TestForceStop:
                 labels=labels,
             ) as sandbox:
                 created_sandbox_name.append(sandbox.name)
+                sandbox_created.set()
+                await release_sandbox.wait()
 
-        # Start sandbox and immediately try to stop it, expected to wait until its started to delete
-        await asyncio.gather(
-            _generator_to_courtine(),
-            force_stop_sandbox(),
-        )
+        sandbox_tasks = [
+            asyncio.create_task(create_sandbox_until_stopped()),
+            asyncio.create_task(force_stop_sandbox()),
+        ]
+        try:
+            await asyncio.gather(*sandbox_tasks)
+        finally:
+            for sandbox_task in sandbox_tasks:
+                if not sandbox_task.done():
+                    sandbox_task.cancel()
+            await asyncio.gather(*sandbox_tasks, return_exceptions=True)
 
-        # Ensure that the task is in the stopped state
-        task = database_session.exec(select(Task).where(Task.id == task.id)).one()
-        assert task.status == TaskStatus.STOPPED
+        persisted_task = database_session.exec(select(Task).where(Task.id == task.id)).one()
+        assert persisted_task.status == TaskStatus.STOPPED
 
-        # Ensure that the sandbox does not exist anymore
         with pytest.raises(SandboxNotFoundError):
             await provider.get_sandbox(created_sandbox_name[0])
 
     async def test_force_stop_sandboxes(
         self,
-        tracker_database: None,
         example_benchmark_object: Benchmark,
         database_session: Session,
         aws_credentials: AWSCredentials,
@@ -174,25 +211,37 @@ class TestForceStop:
 
         labels = {"Benchmark": example_benchmark_object.name, "Id": str(example_benchmark_object.id)}
         release_sandboxes = asyncio.Event()
+        all_sandboxes_created = asyncio.Event()
+        sandbox_creation_failed = asyncio.Event()
+        created_sandbox_count = 0
 
         async def create_sandbox_with_delay(sandbox_name: str) -> None:
-            """Create sandbox that will not be closed automatically"""
-            async with create_sandbox(
-                provider=provider,
-                sandbox_name=sandbox_name,
-                source=ImageSource(image=test_image),
-                resources=test_resources,
-                creation_semaphore=creation_semaphore,
-                labels=labels,
-            ) as sandbox:
-                result = await sandbox.exec("true")
-                assert result.exit_code == 0
-                await release_sandboxes.wait()
+            """Keep a created sandbox open until force-stop completes."""
+            nonlocal created_sandbox_count
 
-        # Create 12 tasks that are in progress and evaluating
+            try:
+                async with create_sandbox(
+                    provider=provider,
+                    sandbox_name=sandbox_name,
+                    source=ImageSource(image=test_image),
+                    resources=test_resources,
+                    creation_semaphore=creation_semaphore,
+                    labels=labels,
+                ) as sandbox:
+                    result = await sandbox.exec("true")
+                    assert result.exit_code == 0
+                    created_sandbox_count += 1
+                    if created_sandbox_count == 12:
+                        all_sandboxes_created.set()
+
+                    await release_sandboxes.wait()
+            except Exception:
+                sandbox_creation_failed.set()
+                raise
+
         tasks: list[Task] = []
-        for i in range(12):
-            status = TaskStatus.IN_PROGRESS if i < 6 else TaskStatus.EVALUATING
+        for task_index in range(12):
+            status = TaskStatus.IN_PROGRESS if task_index < 6 else TaskStatus.EVALUATING
             task = Task(
                 org_id=TEST_ORG_ID, benchmark=example_benchmark_object.id, task_id=random_task_id(), status=status
             )
@@ -201,18 +250,11 @@ class TestForceStop:
 
         database_session.commit()
 
-        # Test force_stop_sandboxes util by running all 12 sandboxes in parallel and
-        # See if we can close them all
-        created_sandboxes = asyncio.gather(
-            *[asyncio.create_task(create_sandbox_with_delay(task.task_id)) for task in tasks],
-            return_exceptions=True,
-        )
-
-        # Pause for 2 seconds to ensure that the sandboxes are being created
-        await asyncio.sleep(2)
-
+        sandbox_tasks: list[asyncio.Task[None]] = []
+        created_results: list[Optional[BaseException]] = []
         try:
-            # Force stop the benchmark run with all sandboxes
+            sandbox_tasks = [asyncio.create_task(create_sandbox_with_delay(task.task_id)) for task in tasks]
+            await _wait_for_sandbox_setup(all_sandboxes_created, sandbox_creation_failed)
             await force_stop_sandboxes(
                 example_benchmark_object,
                 database_session,
@@ -223,8 +265,12 @@ class TestForceStop:
             )
         finally:
             release_sandboxes.set()
+            if sandbox_tasks:
+                created_results = await asyncio.wait_for(
+                    asyncio.gather(*sandbox_tasks, return_exceptions=True),
+                    timeout=30,
+                )
 
-        created_results = await asyncio.wait_for(created_sandboxes, timeout=30)
         unexpected_errors = [
             result
             for result in created_results
@@ -234,19 +280,18 @@ class TestForceStop:
 
         _assert_no_task_errors(example_benchmark_object, database_session)
 
-        # Ensure that there are no more sandboxes left running
         await _wait_until_no_sandboxes(example_benchmark_object, provider)
 
     @pytest.mark.slow
     async def test_force_stop_end_to_end(
         self,
-        tracker_database: None,
         example_benchmark_object: Benchmark,
         database_session: Session,
         aws_credentials: AWSCredentials,
         daytona_secret_name: str,
         harness_config: HarnessConfig,
         service_headers: dict[str, str],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Verify the HTTP force-stop path interrupts a live benchmark without task errors.
 
@@ -255,18 +300,16 @@ class TestForceStop:
         - The force stop endpoint returns success and leaves no active or error tasks.
         - The benchmark status becomes STOPPED and no benchmark-labeled sandboxes remain.
         """
-        # Max concurrency at 2 with 5 tasks
         example_benchmark_object.arguments.slice_str = ":5"
         example_benchmark_object.arguments.concurrency = 2
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        client = TestClient(app)
-        # This end-to-end test drives the real force-stop endpoint against real AWS,
-        # so the endpoint needs the real harness config — not the autouse FAKE one.
-        app.dependency_overrides[fetch_harness_config] = lambda: harness_config
+        monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: harness_config)
 
         benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
+        benchmark_task: Optional[asyncio.Task[None]] = None
+        provider: Optional[SandboxProvider] = None
 
         try:
             verify_response = await benchmark_service.verify_task_ids(
@@ -274,7 +317,6 @@ class TestForceStop:
                 slice_str=example_benchmark_object.arguments.slice_str,
             )
 
-            # Start the benchmark run with just 5 tasks
             benchmark_task = asyncio.create_task(
                 process_benchmark(
                     start_benchmark_request_json=example_benchmark_object.start_benchmark_request(
@@ -289,31 +331,28 @@ class TestForceStop:
             provider = benchmark_service.get_sandbox_provider(provider_config)
             await _wait_for_running_benchmark(example_benchmark_object, database_session, provider)
 
-            # Force stop the benchmark run with all sandboxes
-            response = client.post(f"/stop-benchmark/{example_benchmark_object.id}?force=true")
+            with TestClient(app) as client:
+                response = client.post(f"/stop-benchmark/{example_benchmark_object.id}?force=true")
+
             assert response.status_code == 200
             assert response.json() == {"status": "success"}
 
             await benchmark_task
 
-            # All tasks are stopped
-            pending_tasks = database_session.exec(
+            active_tasks = database_session.exec(
                 select(Task)
                 .where(Task.benchmark == example_benchmark_object.id)
                 .where(col(Task.status).in_(_ACTIVE_TASK_STATUSES))
             ).all()
-            assert len(pending_tasks) == 0
+            assert active_tasks == []
 
-            # No tasks have error status or captured error messages
             error_tasks = database_session.exec(
                 select(Task).where(Task.benchmark == example_benchmark_object.id).where(Task.status == TaskStatus.ERROR)
             ).all()
 
-            assert len(error_tasks) == 0, f"Tasks have error status: {', '.join(task.task_id for task in error_tasks)}"
+            assert error_tasks == [], f"Tasks have error status: {', '.join(task.task_id for task in error_tasks)}"
             _assert_no_task_errors(example_benchmark_object, database_session)
 
-            # All tasks should be in a finished state (STOPPED or FINISHED)
-            # Some tasks will finish quickly since the agent is a dummy model
             terminal_tasks = database_session.exec(
                 select(Task)
                 .where(Task.benchmark == example_benchmark_object.id)
@@ -322,11 +361,25 @@ class TestForceStop:
 
             assert len(terminal_tasks) == 5
 
-            # Fetch the benchmark and ensure that it is in the stopped state
             database_session.refresh(example_benchmark_object)
             assert example_benchmark_object.status == BenchmarkStatus.STOPPED
 
-            # Try to fetch the sandboxes and see if any of them are still running
             await _wait_until_no_sandboxes(example_benchmark_object, provider)
         finally:
-            await benchmark_service.close()
+            if benchmark_task is not None and not benchmark_task.done():
+                benchmark_task.cancel()
+                await asyncio.gather(benchmark_task, return_exceptions=True)
+
+            try:
+                if provider is not None and await _sandboxes_for_benchmark(example_benchmark_object, provider):
+                    await force_stop_sandboxes(
+                        example_benchmark_object,
+                        database_session,
+                        daytona_secret_name,
+                        aws_credentials,
+                        Org(id=TEST_ORG_ID, name="default"),
+                        sandbox_provider="daytona",
+                    )
+                    await _wait_until_no_sandboxes(example_benchmark_object, provider)
+            finally:
+                await benchmark_service.close()

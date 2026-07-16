@@ -1,4 +1,9 @@
-"""Behavior tests for the single-benchmark API."""
+"""Run with `uv run pytest tests/unit/api/test_single_benchmark.py`.
+
+Cover single-benchmark details and task listing behavior.
+"""
+
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 from uuid import uuid4
@@ -18,7 +23,40 @@ from tracker.database.models import (
     TaskStatus,
 )
 
-client = TestClient(app)
+_client = TestClient(app)
+
+
+def _make_task(
+    benchmark: Benchmark,
+    task_id: str,
+    *,
+    status: TaskStatus = TaskStatus.PENDING,
+    started_at: datetime | None = None,
+    finished_at: datetime | None = None,
+) -> Task:
+    """Build a task while keeping scenario-specific state visible at the call site."""
+    task = Task(
+        org_id=TEST_ORG_ID,
+        benchmark=benchmark.id,
+        task_id=task_id,
+        status=status,
+    )
+    if started_at is not None:
+        task.started_at = started_at
+    if finished_at is not None:
+        task.finished_at = finished_at
+
+    return task
+
+
+def _make_error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
+    """Build an error-history row for a task."""
+    return ErrorResult(
+        org_id=TEST_ORG_ID,
+        task=task.id,
+        error_message=error_message,
+        created_at=created_at,
+    )
 
 
 def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
@@ -37,22 +75,20 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
     database_session.flush()
     database_session.add_all(
         [
-            Task(
-                org_id=TEST_ORG_ID,
-                benchmark=benchmark.id,
-                task_id="finished",
+            _make_task(
+                benchmark,
+                "finished",
                 status=TaskStatus.FINISHED,
                 finished_at=benchmark.started_at,
             ),
-            Task(
-                org_id=TEST_ORG_ID,
-                benchmark=benchmark.id,
-                task_id="error",
+            _make_task(
+                benchmark,
+                "error",
                 status=TaskStatus.ERROR,
                 finished_at=benchmark.started_at,
             ),
-            Task(org_id=TEST_ORG_ID, benchmark=benchmark.id, task_id="stopped", status=TaskStatus.STOPPED),
-            Task(org_id=TEST_ORG_ID, benchmark=benchmark.id, task_id="pending"),
+            _make_task(benchmark, "stopped", status=TaskStatus.STOPPED),
+            _make_task(benchmark, "pending"),
             FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark.id, final_score=0.75),
         ]
     )
@@ -61,7 +97,7 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
     database_session.add_all([other_org, other_benchmark])
     database_session.commit()
 
-    response = client.get(
+    response = _client.get(
         f"/benchmarks/{benchmark.id}",
         headers={
             "x-harness-aws-access-key-id": "test-key",
@@ -71,21 +107,21 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
             "x-harness-log-group": "test-log-group",
         },
     )
-    other_org_response = client.get(f"/benchmarks/{other_benchmark.id}")
+    other_org_response = _client.get(f"/benchmarks/{other_benchmark.id}")
 
-    body = response.json()
+    response_body = response.json()
     assert response.status_code == 200
-    assert body["total_tasks"] == 4
-    assert body["finished_tasks"] == 3
-    assert body["task_state_counts"] == {
+    assert response_body["total_tasks"] == 4
+    assert response_body["finished_tasks"] == 3
+    assert response_body["task_state_counts"] == {
         "ERROR": 1,
         "FINISHED": 1,
         "PENDING": 1,
         "STOPPED": 1,
     }
-    assert body["final_score"] == 0.75
-    assert str(benchmark.id) in body["cloudwatch_url"]
-    assert str(benchmark.id) in body["s3_bucket_url"]
+    assert response_body["final_score"] == 0.75
+    assert str(benchmark.id) in response_body["cloudwatch_url"]
+    assert str(benchmark.id) in response_body["s3_bucket_url"]
     assert other_org_response.status_code == 404
 
 
@@ -104,56 +140,43 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     benchmark = example_benchmark_object
     database_session.add(benchmark)
     database_session.flush()
-    literal_task = Task(
-        org_id=TEST_ORG_ID,
-        benchmark=benchmark.id,
-        task_id="literal_%_match",
+    literal_task = _make_task(
+        benchmark,
+        "literal_%_match",
         status=TaskStatus.ERROR,
         started_at=now,
         finished_at=now,
     )
-    other_error = Task(
-        org_id=TEST_ORG_ID,
-        benchmark=benchmark.id,
-        task_id="ordinary-error",
+    other_error = _make_task(
+        benchmark,
+        "ordinary-error",
         status=TaskStatus.ERROR,
         started_at=now - timedelta(minutes=1),
         finished_at=now,
     )
-    finished = Task(
-        org_id=TEST_ORG_ID,
-        benchmark=benchmark.id,
-        task_id="finished",
+    finished_task = _make_task(
+        benchmark,
+        "finished",
         status=TaskStatus.FINISHED,
         started_at=now,
         finished_at=now,
     )
-    database_session.add_all([literal_task, other_error, finished])
+    database_session.add_all([literal_task, other_error, finished_task])
     database_session.flush()
     database_session.add_all(
         [
-            ErrorResult(
-                org_id=TEST_ORG_ID,
-                task=literal_task.id,
-                error_message="old failure",
-                created_at=now - timedelta(minutes=1),
-            ),
-            ErrorResult(
-                org_id=TEST_ORG_ID,
-                task=literal_task.id,
-                error_message="latest failure",
-                created_at=now,
-            ),
-            ErrorResult(org_id=TEST_ORG_ID, task=other_error.id, error_message="other failure", created_at=now),
+            _make_error_result(literal_task, "old failure", now - timedelta(minutes=1)),
+            _make_error_result(literal_task, "latest failure", now),
+            _make_error_result(other_error, "other failure", now),
         ]
     )
     database_session.commit()
 
-    sorted_response = client.get(
+    sorted_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks",
         params={"status": "ERROR,FINISHED", "sort": "status", "sort_dir": "desc"},
     )
-    literal_search = client.get(
+    literal_search_response = _client.get(
         f"/benchmarks/{benchmark.id}/tasks",
         params={"task_id_search": "_%"},
     )
@@ -164,6 +187,6 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     assert [task["status"] for task in sorted_body["tasks"]] == ["ERROR", "ERROR", "FINISHED"]
     literal_row = next(task for task in sorted_body["tasks"] if task["task_id"] == literal_task.task_id)
     assert literal_row["error_message"] == "latest failure"
-    assert literal_search.status_code == 200
-    assert literal_search.json()["total_count"] == 1
-    assert literal_search.json()["tasks"][0]["task_id"] == "literal_%_match"
+    assert literal_search_response.status_code == 200
+    assert literal_search_response.json()["total_count"] == 1
+    assert literal_search_response.json()["tasks"][0]["task_id"] == "literal_%_match"

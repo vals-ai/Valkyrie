@@ -1,4 +1,9 @@
-"""Behavior tests for the single-task API."""
+"""Run with `uv run pytest tests/unit/api/test_single_task.py`.
+
+Cover task details and artifact-link behavior.
+"""
+
+from __future__ import annotations
 
 from datetime import datetime, timedelta
 from unittest.mock import ANY, AsyncMock, Mock
@@ -22,7 +27,53 @@ from tracker.database.models import (
     TaskStatus,
 )
 
-client = TestClient(app)
+_client = TestClient(app)
+
+
+def _make_task(
+    benchmark: Benchmark,
+    task_id: str,
+    *,
+    status: TaskStatus = TaskStatus.PENDING,
+    finished_at: datetime | None = None,
+) -> Task:
+    """Build a task while keeping scenario-specific state visible at the call site."""
+    return Task(
+        org_id=TEST_ORG_ID,
+        benchmark=benchmark.id,
+        task_id=task_id,
+        status=status,
+        finished_at=finished_at,
+    )
+
+
+def _make_evaluation_result(
+    task: Task,
+    instance_id: str,
+    result: dict[str, object],
+    created_at: datetime,
+    *,
+    exit_reason: AgentCausedExitReason | None = None,
+) -> EvaluationResult:
+    """Build one evaluation attempt for a task."""
+    return EvaluationResult(
+        org_id=TEST_ORG_ID,
+        task=task.id,
+        instance_id=instance_id,
+        result=result,
+        agent_caused_exit_reason=exit_reason,
+        created_at=created_at,
+    )
+
+
+def _make_error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
+    """Build one error attempt for a task."""
+    return ErrorResult(
+        org_id=TEST_ORG_ID,
+        task=task.id,
+        error_message=error_message,
+        created_at=created_at,
+    )
 
 
 def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
@@ -41,52 +92,38 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     database_session.add(benchmark)
     database_session.flush()
 
-    finished_task = Task(
-        org_id=TEST_ORG_ID,
-        benchmark=benchmark.id,
-        task_id="finished-task",
+    finished_task = _make_task(
+        benchmark,
+        "finished-task",
         status=TaskStatus.FINISHED,
         finished_at=now,
     )
-    error_task = Task(
-        org_id=TEST_ORG_ID,
-        benchmark=benchmark.id,
-        task_id="error-task",
+    error_task = _make_task(
+        benchmark,
+        "error-task",
         status=TaskStatus.ERROR,
         finished_at=now,
     )
-    pending_task = Task(org_id=TEST_ORG_ID, benchmark=benchmark.id, task_id="pending-task")
+    pending_task = _make_task(benchmark, "pending-task")
     database_session.add_all([finished_task, error_task, pending_task])
     database_session.flush()
     database_session.add_all(
         [
-            EvaluationResult(
-                org_id=TEST_ORG_ID,
-                task=finished_task.id,
-                instance_id="old-attempt",
-                result={"score": 0.0},
-                created_at=now - timedelta(minutes=1),
+            _make_evaluation_result(
+                finished_task,
+                "old-attempt",
+                {"score": 0.0},
+                now - timedelta(minutes=1),
             ),
-            EvaluationResult(
-                org_id=TEST_ORG_ID,
-                task=finished_task.id,
-                instance_id="new-attempt",
-                result={"score": 1.0},
-                agent_caused_exit_reason=AgentCausedExitReason.TIMEOUT,
-                created_at=now,
+            _make_evaluation_result(
+                finished_task,
+                "new-attempt",
+                {"score": 1.0},
+                now,
+                exit_reason=AgentCausedExitReason.TIMEOUT,
             ),
-            ErrorResult(
-                org_id=TEST_ORG_ID,
-                task=error_task.id,
-                error_message="old failure",
-                created_at=now - timedelta(minutes=1),
-            ),
-            ErrorResult(
-                org_id=TEST_ORG_ID,
-                task=error_task.id,
-                error_message="latest failure",
-                created_at=now,
-            ),
+            _make_error_result(error_task, "old failure", now - timedelta(minutes=1)),
+            _make_error_result(error_task, "latest failure", now),
         ]
     )
 
@@ -99,21 +136,21 @@ def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
     database_session.add_all([other_org, other_benchmark])
     database_session.commit()
 
-    finished = client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}")
-    error = client.get(f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}")
-    pending = client.get(f"/benchmarks/{benchmark.id}/tasks/{pending_task.task_id}")
-    other_org_response = client.get(f"/benchmarks/{other_benchmark.id}/tasks/unknown")
+    finished_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{finished_task.task_id}")
+    error_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}")
+    pending_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{pending_task.task_id}")
+    other_org_response = _client.get(f"/benchmarks/{other_benchmark.id}/tasks/unknown")
 
-    assert finished.status_code == 200
-    assert finished.json()["evaluation_result"] == {"score": 1.0}
-    assert finished.json()["agent_caused_exit_reason"] == "TIMEOUT"
-    assert finished.json()["error_message"] is None
-    assert error.status_code == 200
-    assert error.json()["error_message"] == "latest failure"
-    assert error.json()["evaluation_result"] is None
-    assert pending.status_code == 200
-    assert pending.json()["error_message"] is None
-    assert pending.json()["evaluation_result"] is None
+    assert finished_response.status_code == 200
+    assert finished_response.json()["evaluation_result"] == {"score": 1.0}
+    assert finished_response.json()["agent_caused_exit_reason"] == "TIMEOUT"
+    assert finished_response.json()["error_message"] is None
+    assert error_response.status_code == 200
+    assert error_response.json()["error_message"] == "latest failure"
+    assert error_response.json()["evaluation_result"] is None
+    assert pending_response.status_code == 200
+    assert pending_response.json()["error_message"] is None
+    assert pending_response.json()["evaluation_result"] is None
     assert other_org_response.status_code == 404
 
 
@@ -129,7 +166,7 @@ def test_task_artifacts_only_presign_existing_output(
     - Missing output returns no S3 URL and does not call the signer again.
     """
     benchmark = example_benchmark_object
-    task = Task(org_id=TEST_ORG_ID, benchmark=benchmark.id, task_id="task-with-output")
+    task = _make_task(benchmark, "task-with-output")
     database_session.add_all([benchmark, task])
     database_session.commit()
 
@@ -140,13 +177,13 @@ def test_task_artifacts_only_presign_existing_output(
     monkeypatch.setattr(single_task_module, "create_presigned_url", create_presigned_url)
     monkeypatch.setattr(single_task_module, "get_benchmark_log_url", get_log_url)
 
-    found = client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
+    found_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
     object_exists.return_value = False
-    missing = client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
+    missing_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
 
     expected_key = f"benchmarks/{benchmark.id}/{task.task_id}/agent_output.tar.gz"
-    assert found.status_code == 200
-    assert found.json() == {
+    assert found_response.status_code == 200
+    assert found_response.json() == {
         "cloudwatch_url": "https://example.test/cloudwatch",
         "agent_output_url": "https://example.test/presigned",
         "agent_output_expires_in": 300,
@@ -162,7 +199,7 @@ def test_task_artifacts_only_presign_existing_output(
         s3_bucket="test-bucket",
         expiration=300,
     )
-    assert missing.status_code == 200
-    assert missing.json()["agent_output_url"] is None
-    assert missing.json()["agent_output_expires_in"] is None
+    assert missing_response.status_code == 200
+    assert missing_response.json()["agent_output_url"] is None
+    assert missing_response.json()["agent_output_expires_in"] is None
     assert create_presigned_url.await_count == 1

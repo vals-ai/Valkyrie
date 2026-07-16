@@ -1,4 +1,7 @@
-"""Local integration tests for single-task routes."""
+"""Run with `uv run pytest tests/integration/local/api/test_single_task.py`.
+
+Exercise single-task routes through the real app and local database.
+"""
 
 from datetime import datetime
 from typing import Any
@@ -19,11 +22,15 @@ from tracker.database.models import (
     TaskStatus,
 )
 
-UTC = ZoneInfo("UTC")
+_UTC = ZoneInfo("UTC")
 
 
-def _make_bench_with_task(session: Session, task_id: str = "astropy__12907") -> tuple[Benchmark, Task]:
-    b = Benchmark(
+def _persist_benchmark_with_task(
+    database_session: Session,
+    task_id: str = "astropy__12907",
+) -> tuple[Benchmark, Task]:
+    """Persist a benchmark and finished task for one route scenario."""
+    benchmark = Benchmark(
         org_id=TEST_ORG_ID,
         name="swebench",
         status=BenchmarkStatus.IN_PROGRESS,
@@ -32,16 +39,23 @@ def _make_bench_with_task(session: Session, task_id: str = "astropy__12907") -> 
             concurrency=1,
         ),
     )
-    session.add(b)
-    session.commit()
-    t = Task(org_id=b.org_id, benchmark=b.id, task_id=task_id, status=TaskStatus.FINISHED)
-    session.add(t)
-    session.commit()
-    return b, t
+    database_session.add(benchmark)
+    database_session.commit()
+    task = Task(
+        org_id=benchmark.org_id,
+        benchmark=benchmark.id,
+        task_id=task_id,
+        status=TaskStatus.FINISHED,
+    )
+    database_session.add(task)
+    database_session.commit()
+
+    return benchmark, task
 
 
 def _created_at(hour: int) -> datetime:
-    return datetime(2026, 6, 24, hour, tzinfo=UTC)
+    """Return a stable timestamp for ordering result history."""
+    return datetime(2026, 6, 24, hour, tzinfo=_UTC)
 
 
 def _evaluation_result(
@@ -50,12 +64,14 @@ def _evaluation_result(
     result: dict[str, Any],
     created_at: datetime,
 ) -> EvaluationResult:
+    """Build one evaluation attempt for a task."""
     return EvaluationResult(
         org_id=task.org_id, task=task.id, instance_id=instance_id, result=result, created_at=created_at
     )
 
 
 def _error_result(task: Task, error_message: str, created_at: datetime) -> ErrorResult:
+    """Build one error attempt for a task."""
     return ErrorResult(org_id=task.org_id, task=task.id, error_message=error_message, created_at=created_at)
 
 
@@ -66,7 +82,7 @@ def test_get_single_task_returns_current_result_or_error(client: TestClient, dat
     - A finished task returns its latest evaluation result and no stale error message.
     - An errored task returns its latest error message and no stale evaluation result.
     """
-    benchmark, finished_task = _make_bench_with_task(database_session, task_id="finished")
+    benchmark, finished_task = _persist_benchmark_with_task(database_session, task_id="finished")
     error_task = Task(org_id=benchmark.org_id, benchmark=benchmark.id, task_id="errored", status=TaskStatus.ERROR)
     database_session.add(error_task)
     database_session.flush()
@@ -113,12 +129,14 @@ def test_get_single_task_404_unknown(client: TestClient, database_session: Sessi
     Test cases:
     - A missing task ID receives 404 without altering the benchmark.
     """
-    b, _ = _make_bench_with_task(database_session)
-    resp = client.get(
-        f"/benchmarks/{b.id}/tasks/nonexistent",
+    benchmark, _task = _persist_benchmark_with_task(database_session)
+
+    response = client.get(
+        f"/benchmarks/{benchmark.id}/tasks/nonexistent",
         headers={"Authorization": "Bearer fake"},
     )
-    assert resp.status_code == 404
+
+    assert response.status_code == 404
 
 
 def test_unauthenticated_returns_401(client: TestClient, database_session: Session) -> None:
@@ -127,5 +145,6 @@ def test_unauthenticated_returns_401(client: TestClient, database_session: Sessi
     Test cases:
     - A request without a bearer session receives 401.
     """
-    b, t = _make_bench_with_task(database_session)
-    assert client.get(f"/benchmarks/{b.id}/tasks/{t.task_id}").status_code == 401
+    benchmark, task = _persist_benchmark_with_task(database_session)
+
+    assert client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}").status_code == 401

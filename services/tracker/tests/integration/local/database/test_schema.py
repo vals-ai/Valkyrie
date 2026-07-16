@@ -1,4 +1,7 @@
-"""Local Postgres schema integration tests."""
+"""Run with `uv run pytest tests/integration/local/database/test_schema.py`.
+
+Exercise schema and model events against disposable Postgres.
+"""
 
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, inspect

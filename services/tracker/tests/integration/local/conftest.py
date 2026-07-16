@@ -16,7 +16,7 @@ from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import fetch_harness_config
 
-FAKE_HARNESS_CONFIG = HarnessConfig(
+_FAKE_HARNESS_CONFIG = HarnessConfig(
     aws=AWSCredentials(
         aws_access_key_id="test-aws-access-key-id",
         aws_secret_access_key="test-aws-secret-access-key",
@@ -41,9 +41,9 @@ def setup_app_dependencies(
         yield database_session
 
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
-    monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: FAKE_HARNESS_CONFIG)
-    vals_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
-    monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: vals_org)
+    monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: _FAKE_HARNESS_CONFIG)
+    test_org = Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME)
+    monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: test_org)
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def client(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> Genera
         yield database_session
 
     main_module.app.dependency_overrides[get_session] = get_test_session
-    main_module.app.dependency_overrides[fetch_harness_config] = lambda: FAKE_HARNESS_CONFIG
+    main_module.app.dependency_overrides[fetch_harness_config] = lambda: _FAKE_HARNESS_CONFIG
     monkeypatch.setattr("tracker.database.session.engine", database_session.bind)
 
     with patch.object(auth_module, "_descope_client") as mock_client:
@@ -75,6 +75,8 @@ def client(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> Genera
             "userId": "U_caller",
             "user": {"email": "caller@example.com"},
         }
-        yield TestClient(main_module.app)
-
-    main_module.app.dependency_overrides.clear()
+        try:
+            with TestClient(main_module.app) as test_client:
+                yield test_client
+        finally:
+            main_module.app.dependency_overrides.clear()
