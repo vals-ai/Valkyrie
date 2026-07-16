@@ -1,61 +1,75 @@
 # Infrastructure
 
-AWS CDK infrastructure for the Agentic Harness benchmark platform.
+AWS CDK infrastructure for Valkyrie.
 
-## Architecture
+## Stacks
 
-- **Shared Stack**: VPC, ECS cluster, service discovery namespace, S3 bucket, Route53 hosted zone
-- **Tracker Stack**: Public-facing API (benchmark-tracker.vals.ai) with ALB, Fargate, and Redis/Postgres sidecars
+- **SharedStack** -- VPC, ECS cluster, service discovery, S3, and Redis.
+- **TrackerStack** -- Tracker API, load balancer, PostgreSQL, and public DNS record.
+- **WorkerStack** -- Taskiq worker service.
+- **MonitoringStack** -- Dashboards, alarms, and notifications.
+- **DeploymentAccessStack** -- Development-account GitHub OIDC provider and Valkyrie deployment role.
+- **DnsZoneStack** -- Retained `benchmark-tracker-dev.vals.ai` child hosted zone.
 
-## Prerequisites
+The `all` scope contains only the four application stacks. The deployment-access and DNS-zone stacks are explicit development-account prerequisites.
 
-- AWS CLI configured with appropriate credentials
-- Python 3.12+
-- [uv](https://github.com/astral-sh/uv) package manager
-
-## Setup
-
-Install cdk
-
-```bash
-brew install cdk
-```
-
-Install dev dependencies
+## Setup and verification
 
 ```bash
 make install
+make test
+make lint
+make typecheck
 ```
 
-## Deployment
+The AWS targets require an explicit stage, expected account, and Region. `PROFILE` selects local AWS credentials; leave it empty when GitHub Actions has already assumed the deployment role.
 
 ```bash
-# Deploy all stacks
-make deploy
-
-# Deploy individual stacks
-make deploy-shared
-make deploy-tracker
-# Preview changes
-make diff
-
-# Fast deployment (skips CloudFormation for code changes)
-# ONLY FOR CODE CHANGES
-make hotswap
+make preflight \
+  STAGE=dev \
+  DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" \
+  AWS_REGION=us-east-1 \
+  PROFILE=vals-dev-admin
 ```
 
-## Benchmark Catalog
+The preflight stops unless the CDK account, CDK Region, and STS caller match the selected target.
 
-`BENCHMARK_CATALOG_URL` points tracker-service at a benchmark catalog API. Set it for deployed tracker-service so `valkyrie config service list` can show the catalog of benchmarks hosted at that endpoint.
+## Development deployment
+
+Bootstrap the new account once with administrator credentials:
 
 ```bash
-export BENCHMARK_CATALOG_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com
+make bootstrap \
+  DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" \
+  AWS_REGION=us-east-1 \
+  PROFILE=vals-dev-admin
 ```
 
-## Teardown
-
-- Don't do this
+The deployment-access stack is also deployed once with administrator credentials. The GitHub deployment role cannot deploy this stack through the generic workflow path.
 
 ```bash
-make destroy
+make diff-deployment-access STAGE=dev DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION=us-east-1 PROFILE=vals-dev-admin
+make deploy-deployment-access STAGE=dev DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION=us-east-1 PROFILE=vals-dev-admin
+make diff-dns-zone STAGE=dev DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION=us-east-1 PROFILE=vals-dev-admin
+make deploy-dns-zone STAGE=dev DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION=us-east-1 PROFILE=vals-dev-admin
 ```
+
+Application plans and deployments use the protected `dev` GitHub Environment and the manual deployment workflow. The workflow accepts `credentials-only`, `plan`, and `deploy` operations with an explicit component scope. A push to `dev` does not deploy infrastructure.
+
+The protected Environment supplies:
+
+- `AWS_DEPLOY_ROLE_ARN`
+- `DEV_ACCOUNT_ID`
+- `AWS_REGION=us-east-1`
+
+Dev authentication configuration is account-local:
+
+- Descope project ID: SSM `/vals/dev/descope/project-id`
+- Descope management key: Secrets Manager `devEvalInfraDescopeManagementKey`
+- Tracker certificate ARN: SSM `/valkyrie/dev/dns/tracker/certificate-arn`
+
+## Production deployment
+
+A push to `prod` deploys the four application stacks to account `613431292675` in `us-east-1`. Production continues to use its existing environment-based authentication and Slack configuration.
+
+`BENCHMARK_CATALOG_URL` points the tracker service at the benchmark catalog API used by `valkyrie config service list`.
