@@ -60,7 +60,8 @@ def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
     return {str(name): str(secret_name) for name, secret_name in providers.items()}
 
 
-def _response_error_detail(response: Response) -> Any:
+def response_error_detail(response: Response) -> Any:
+    """Return useful tracker error detail for JSON and plain-text responses."""
     try:
         body = response.json()
     except ValueError:
@@ -74,7 +75,7 @@ def _response_error_detail(response: Response) -> Any:
 def _parse_response(response: Response, action: str) -> Any:
     """Parse a tracker JSON response, raising when the request failed."""
     if response.status_code != 200:
-        details = _response_error_detail(response)
+        details = response_error_detail(response)
         raise TrackerServiceError(f"{action}: {details}")
     return response.json()
 
@@ -319,7 +320,7 @@ class TrackerService:
         if response.status_code == 200:
             return
 
-        detail = _response_error_detail(response)
+        detail = response_error_detail(response)
         if not isinstance(detail, str):
             detail = json.dumps(detail, indent=4, default=str)
         raise TrackerNotFoundError(f"Tracker service failed to respond!\n{detail}")
@@ -463,7 +464,7 @@ class TrackerService:
             with self._client.stream("POST", url, json=body, timeout=None) as response:
                 if response.status_code != 200:
                     response.read()
-                    details = _response_error_detail(response)
+                    details = response_error_detail(response)
                     raise TrackerServiceError(f"analyze-benchmark failed: {details}")
 
                 # Cached short-circuit returns a single JSON body; fresh
@@ -515,7 +516,7 @@ class TrackerService:
             ) as response:
                 if response.status_code != 200:
                     response.read()
-                    details = _response_error_detail(response)
+                    details = response_error_detail(response)
                     raise TrackerServiceError(f"Failed to stream run: {details}")
 
                 for line in response.iter_lines():
@@ -720,7 +721,7 @@ class TrackerService:
                 params["task_ids"] = task_ids
             response = self._client.get(f"{self._base_url}/fetch-run-outputs/{benchmark_id}", params=params)
             if response.status_code != 200:
-                details = _response_error_detail(response)
+                details = response_error_detail(response)
                 raise TrackerServiceError(f"Failed to fetch run outputs: {details}")
 
             return response
