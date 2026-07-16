@@ -1,6 +1,6 @@
 from asyncio import Semaphore
 from contextlib import asynccontextmanager
-from typing import Any, cast
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -12,8 +12,10 @@ from sqlmodel import Session
 from tests.conftest import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
-from tracker.exceptions import SandboxSetupError
+from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
+from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.utils import task_execution as task_execution_module
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
 
 
@@ -22,18 +24,42 @@ class TestPtyRetry:
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     def test_process_task_retry_decorator_uses_observability_retry_callback(self) -> None:
-        before_sleep = cast(Any, process_task).retry.before_sleep
+        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
+        before_sleep = retryable_process_task.retry.before_sleep
 
         assert before_sleep is not None
         assert callable(before_sleep)
 
     @pytest.mark.parametrize(
-        "fail_target,error",
+        "fail_target,error,second_error,expected_dependency_modes,expected_status",
         [
-            ("tracker.utils.task_execution.run_agent", SandboxSetupError("Failed to create command stream")),
+            (
+                "tracker.utils.task_execution.run_agent",
+                SandboxSetupError("Failed to create command stream"),
+                None,
+                [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.IN_PLACE_RETRIES],
+                TaskStatus.FINISHED,
+            ),
             (
                 "tracker.utils.task_execution.upload_agent_artifacts",
                 SandboxSetupError("Command failed with exit code 35"),
+                None,
+                [DependencySetupMode.IN_PLACE_RETRIES],
+                TaskStatus.FINISHED,
+            ),
+            (
+                "tracker.utils.task_execution.run_agent",
+                DependencySetupExhaustedError("dependency setup exhausted"),
+                None,
+                [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.FINAL_FRESH_SANDBOX],
+                TaskStatus.FINISHED,
+            ),
+            (
+                "tracker.utils.task_execution.run_agent",
+                DependencySetupExhaustedError("dependency setup exhausted"),
+                AgentRunFailedError("fresh sandbox setup failed"),
+                [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.FINAL_FRESH_SANDBOX],
+                TaskStatus.ERROR,
             ),
         ],
     )
@@ -45,6 +71,9 @@ class TestPtyRetry:
         harness_config: HarnessConfig,
         fail_target: str,
         error: SandboxSetupError,
+        second_error: Exception | None,
+        expected_dependency_modes: list[DependencySetupMode],
+        expected_status: TaskStatus,
     ) -> None:
         """
         When a SandboxSetupError subclass is raised during sandbox setup or agent execution,
@@ -85,12 +114,16 @@ class TestPtyRetry:
             yield mock_sandbox
 
         call_count = 0
+        dependency_modes: list[DependencySetupMode] = []
 
         async def _fails_first_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             nonlocal call_count
             call_count += 1
+            dependency_modes.append(_kwargs["dependency_setup_mode"])
             if call_count == 1:
                 raise error
+            if second_error:
+                raise second_error
             return None, 0.0
 
         async def _fails_first_other(*_args: Any, **_kwargs: Any) -> None:
@@ -100,6 +133,7 @@ class TestPtyRetry:
                 raise error
 
         async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            dependency_modes.append(_kwargs["dependency_setup_mode"])
             return None, 0.0
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
@@ -140,12 +174,14 @@ class TestPtyRetry:
             creation_semaphore=Semaphore(1),
         )
 
-        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        expected_result = None if expected_status is TaskStatus.ERROR else {"status": "success", "score": 1.0}
+        assert result == {"task_0": expected_result}
         assert sandbox_entry_count == 2
         assert call_count == 2
+        assert dependency_modes == expected_dependency_modes
 
         database_session.refresh(task_row)
-        assert task_row.status == TaskStatus.FINISHED
+        assert task_row.status == expected_status
 
     async def test_process_task_spans_timed_status_transitions(
         self,

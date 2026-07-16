@@ -67,6 +67,10 @@ class SandboxSetupError(SandboxError):
     """Exception raised when sandbox setup fails after all retry attempts — triggers a new sandbox."""
 
 
+class DependencySetupExhaustedError(SandboxSetupError):
+    """Dependency setup exhausted in-place retries and needs one clean sandbox."""
+
+
 class SSLConnectionError(SandboxSetupError):
     """Exception raised when a sandbox command fails due to an SSL/TLS connection error (curl exit code 35)."""
 
