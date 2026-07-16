@@ -68,7 +68,7 @@ _PTY_TASK_RETRY_LIMIT: int = 1
 
 @dataclass
 class _DependencySetupRecoveryState:
-    final_fresh_sandbox: bool = False
+    mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES
 
 
 def _normalized_attempt_time(value: datetime) -> datetime:
@@ -586,11 +586,6 @@ async def _process_task_attempt(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                dependency_setup_mode = (
-                    DependencySetupMode.FINAL_FRESH_SANDBOX
-                    if dependency_setup_recovery.final_fresh_sandbox
-                    else DependencySetupMode.IN_PLACE_RETRIES
-                )
                 try:
                     exit_reason, agent_run_time = await run_agent(
                         sandbox,
@@ -605,10 +600,10 @@ async def _process_task_attempt(
                         agent_timeout=task_data.agent_timeout,
                         benchmark_id=str(benchmark_id),
                         runtime_source=task_data.source,
-                        dependency_setup_mode=dependency_setup_mode,
+                        dependency_setup_mode=dependency_setup_recovery.mode,
                     )
                 except DependencySetupExhaustedError:
-                    dependency_setup_recovery.final_fresh_sandbox = True
+                    dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
                     raise
                 logger.info(
                     "agent.run.complete",
