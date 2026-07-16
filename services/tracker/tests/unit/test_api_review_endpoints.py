@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -19,6 +19,7 @@ from sqlmodel import Session
 import tracker.api.benchmark_services as benchmark_services_api
 from main import app
 from tests.conftest import TEST_ORG_ID
+from tracker.api.parsing import parse_csv
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -29,6 +30,7 @@ from tracker.database.models import (
 )
 
 client = TestClient(app)
+_RESULTS_RUN_ID = UUID("22222222-2222-4222-8222-222222222222")
 
 
 def test_benchmark_services_endpoint_fetches_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -394,10 +396,6 @@ def test_benchmark_services_endpoint_returns_empty_services(monkeypatch: pytest.
 
 
 def test_benchmarks_status_empty_ids_returns_empty_entries() -> None:
-    from uuid import UUID
-
-    from tracker.api.parsing import parse_csv
-
     assert parse_csv(" , ", UUID) == []
 
     response = client.get("/benchmarks/status?ids=")
@@ -411,6 +409,29 @@ def test_benchmarks_status_unknown_id_returns_empty_entries() -> None:
 
     assert response.status_code == 200
     assert response.json() == {"entries": []}
+
+
+def test_results_exist_checks_the_benchmark_named_final_view(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Check the final-view S3 key.
+
+    Test cases:
+    - The key uses the benchmark name.
+    """
+    example_benchmark_object.id = _RESULTS_RUN_ID
+    database_session.add(example_benchmark_object)
+    database_session.commit()
+    exists_mock = AsyncMock(return_value=True)
+    monkeypatch.setattr("main.s3_object_exists", exists_mock)
+
+    response = client.get(f"/check-results-exist?benchmark_id={_RESULTS_RUN_ID}")
+
+    assert response.status_code == 200
+    assert response.json() == {"exists": True}
+    assert exists_mock.await_args.args[0] == f"benchmarks/{_RESULTS_RUN_ID}/swebench.json"
 
 
 def test_benchmarks_status_counts_stopped_tasks(

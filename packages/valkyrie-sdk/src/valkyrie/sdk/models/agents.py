@@ -4,6 +4,8 @@ from pathlib import PurePosixPath
 
 from pydantic import BaseModel, Field, field_validator
 
+from valkyrie.sdk.models._base import ResponseModel
+
 MAX_OUTPUT_ARTIFACT_COUNT = 10
 
 
@@ -75,3 +77,24 @@ class AgentContractRequest(BaseModel):
                 str(path) if isinstance(artifact, str) else artifact.model_copy(update={"path": str(path)})
             )
         return normalized_artifacts
+
+
+class AgentEntry(ResponseModel):
+    """One uploaded agent visible to the configured tenant."""
+
+    name: str
+    last_modified: str | None = None
+
+
+class AgentsResponse(ResponseModel):
+    """Uploaded agents visible to the configured tenant."""
+
+    agents: list[AgentEntry]
+
+
+class AgentDownloadURLResponse(ResponseModel):
+    """Temporary URL for downloading an uploaded agent archive."""
+
+    name: str
+    download_url: str
+    expires_in: int

@@ -6,6 +6,7 @@ Covers config validation, request construction, response parsing, streaming, and
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, assert_type
 from uuid import uuid4
@@ -491,7 +492,17 @@ async def test_stream_converts_error_and_malformed_events(make_client) -> None:
             _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
 
 
-async def test_stream_converts_status_and_transport_failures(make_client) -> None:
+async def test_stream_converts_status_and_transport_failures(
+    make_client,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Convert stream failures to SDK errors.
+
+    Test cases:
+    - API failures retain their response detail.
+    - HTTPX failures are logged before conversion.
+    """
+
     def status_error(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"detail": "run missing"})
 
@@ -504,9 +515,12 @@ async def test_stream_converts_status_and_transport_failures(make_client) -> Non
         raise httpx.ReadError("stream interrupted", request=request)
 
     client = make_client(transport_error)
-    async with client:
-        with pytest.raises(ValkyrieTransportError, match="stream interrupted"):
-            _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
+    with caplog.at_level(logging.WARNING, logger="valkyrie.sdk.errors"):
+        async with client:
+            with pytest.raises(ValkyrieTransportError, match="stream interrupted"):
+                _ = [snapshot async for snapshot in client.runs.stream(uuid4())]
+
+    assert "Valkyrie stream failed: stream interrupted" in caplog.text
 
 
 async def test_api_and_transport_failures_use_sdk_exceptions(make_client) -> None:

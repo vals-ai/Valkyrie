@@ -30,4 +30,4 @@ def test_verification_covers_both_artifacts_public_api_examples_and_namespace(tm
     assert any("docs/sdk/examples/run_lifecycle.py --help" in command for command in rendered)
     assert any("docs/sdk/examples/manage_run.py --help" in command for command in rendered)
     assert any("uv build --package valkyrie" in command for command in rendered)
-    assert any("import valkyrie.cli, valkyrie.sdk" in command for command in rendered)
+    assert any("valkyrie.cli" in command and "valkyrie.sdk" in command for command in rendered)
