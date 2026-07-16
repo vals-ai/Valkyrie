@@ -13,7 +13,7 @@ from httpx._models import Response
 from sqlmodel import Session, col, func, select, update
 from starlette.requests import Request
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from main import app
 from fastapi.testclient import TestClient
 from tracker.auth import RequestIdentity
@@ -81,7 +81,7 @@ class TestBenchmarkUtils:
         }
 
     async def _mock_request_final_score(
-        self, *args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **kwargs: Any
+        self, *_args: Any, final_score: float, metadata: dict[str, Any], tasks_evaluated: list[str], **_kwargs: Any
     ) -> FinalScoreResponse:
         return FinalScoreResponse(final_score=final_score, metadata=metadata, tasks_evaluated=tasks_evaluated)
 
@@ -467,7 +467,7 @@ class TestBenchmarkUtils:
         log_records: list[dict[str, Any]] = []
         span_records: list[dict[str, Any]] = []
 
-        def fake_info(message: str, *args: object, extra: dict[str, Any] | None = None, **kwargs: Any) -> None:
+        def fake_info(message: str, *_args: object, extra: dict[str, Any] | None = None, **_kwargs: Any) -> None:
             log_records.append({"message": message, **(extra or {})})
 
         class MockSpan:

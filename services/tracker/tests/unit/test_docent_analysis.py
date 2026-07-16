@@ -39,7 +39,7 @@ def test_invoke_analyzer_success_sets_done_and_url(
     database_session.commit()
 
     fake_response = {"reading_plan_url": "https://x.test/r/123", "ingested": 5}
-    monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", lambda *a, **kw: fake_response)
+    monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", lambda *_args, **_kwargs: fake_response)
 
     result = invoke_analyzer(
         benchmark_id=example_benchmark_object.id,
@@ -63,7 +63,7 @@ def test_invoke_analyzer_failure_sets_error_and_raises(
     database_session.add(example_benchmark_object)
     database_session.commit()
 
-    def boom(*a: object, **kw: object) -> None:
+    def boom(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("lambda exploded")
 
     monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", boom)
@@ -91,7 +91,7 @@ def test_invoke_analyzer_no_url_still_marks_done(
     database_session.add(example_benchmark_object)
     database_session.commit()
 
-    monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", lambda *a, **kw: {"ingested": 0})
+    monkeypatch.setattr("tracker.docent_analysis.invoke_lambda", lambda *_args, **_kwargs: {"ingested": 0})
 
     invoke_analyzer(
         benchmark_id=example_benchmark_object.id,
@@ -111,7 +111,7 @@ def test_cleanup_sweeps_running_docent_status_to_error(
 ) -> None:
     """A benchmark stuck at IN_PROGRESS with docent_reading_status=RUNNING is
     swept to ERROR (both the benchmark itself and the analyzer status)."""
-    from tests.conftest import TEST_ORG_ID
+    from tests.utils import TEST_ORG_ID
     from tracker.database.models import Org
 
     example_benchmark_object.status = BenchmarkStatus.IN_PROGRESS

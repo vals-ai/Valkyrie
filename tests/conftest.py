@@ -15,7 +15,9 @@ run_resume = import_module("valkyrie.cli.run.resume")
 run_start = import_module("valkyrie.cli.run.start")
 
 
-class FakeClient:
+class MockClient:
+    """Record tracker HTTP requests and return deterministic responses."""
+
     def __init__(self) -> None:
         self.params: dict[str, object] | None = None
         self.json: dict[str, object] | None = None
@@ -76,7 +78,9 @@ def write_valkyrie_config(config_path: Path, **overrides: object) -> Path:
     return config_path
 
 
-class FakeTrackerService:
+class MockTrackerService:
+    """Provide deterministic tracker behavior for CLI tests."""
+
     start_response: dict[str, object] = {}
     start_calls: list[dict[str, object]] = []
     init_calls: int = 0
@@ -107,7 +111,7 @@ class FakeTrackerService:
     def get_webhook_secret() -> None:
         return None
 
-    def __enter__(self) -> "FakeTrackerService":
+    def __enter__(self) -> "MockTrackerService":
         return self
 
     def __exit__(self, *_exc_info: object) -> None:
@@ -160,11 +164,11 @@ class FakeTrackerService:
 def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[str]]:
     started_run_id = uuid4()
     streamed_run_ids: list[str] = []
-    FakeTrackerService.start_calls = []
-    FakeTrackerService.init_calls = 0
-    FakeTrackerService.provider_validations = []
-    FakeTrackerService.require_config_values = []
-    FakeTrackerService.start_response = {
+    MockTrackerService.start_calls = []
+    MockTrackerService.init_calls = 0
+    MockTrackerService.provider_validations = []
+    MockTrackerService.require_config_values = []
+    MockTrackerService.start_response = {
         "benchmark_name": "swebench",
         "agent_name": "agent",
         "benchmark_id": str(started_run_id),
@@ -178,13 +182,13 @@ def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[
     async def get_contract_from_s3(_agent: str, _agent_config: object) -> AgentContractRequest:
         return AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run")
 
-    def stream_benchmark_status(_tracker: FakeTrackerService, run_id: object) -> None:
+    def stream_benchmark_status(_tracker: MockTrackerService, run_id: object) -> None:
         streamed_run_ids.append(str(run_id))
 
-    monkeypatch.setattr(run_start, "TrackerService", FakeTrackerService)
+    monkeypatch.setattr(run_start, "TrackerService", MockTrackerService)
     monkeypatch.setattr(run_start, "get_contract_from_s3", get_contract_from_s3)
     monkeypatch.setattr(run_start, "stream_benchmark_status", stream_benchmark_status)
-    monkeypatch.setattr(run_resume, "TrackerService", FakeTrackerService)
+    monkeypatch.setattr(run_resume, "TrackerService", MockTrackerService)
     monkeypatch.setattr(run_resume, "stream_benchmark_status", stream_benchmark_status)
 
     return started_run_id, streamed_run_ids

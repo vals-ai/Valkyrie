@@ -515,11 +515,13 @@ class TestAgentOutputTelemetry:
     def test_sandbox_span_helpers_set_safe_fields(self, monkeypatch: pytest.MonkeyPatch) -> None:
         span_attributes: dict[str, str | int] = {}
 
-        class FakeSpan:
-            def set_attribute(self, key: str, value: str | int) -> None:
-                span_attributes[key] = value
+        mock_span = Mock()
 
-        monkeypatch.setattr("tracker.sandbox.trace.get_current_span", lambda: FakeSpan())
+        def mock_set_attribute(key: str, value: str | int) -> None:
+            span_attributes[key] = value
+
+        mock_span.set_attribute.side_effect = mock_set_attribute
+        monkeypatch.setattr("tracker.sandbox.trace.get_current_span", lambda: mock_span)
 
         create_span_attrs = getattr(sandbox_module, "_set_sandbox_create_span_attributes")
         sandbox_span_attrs = getattr(sandbox_module, "_set_sandbox_span_attributes")
@@ -682,7 +684,7 @@ class TestAgentOutputTelemetry:
         async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
             raise create_error
 
-        def fake_incr(name: str, value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
+        def fake_incr(name: str, _value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
             increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
 
         monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)

@@ -28,7 +28,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app, tracker_service_error_handler
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity, get_current_starter
 from tracker.database.models import (
     AgentContractRequest,
@@ -58,7 +58,7 @@ client = TestClient(app)
 
 
 class TestFastapiServer:
-    async def _mock_verify_task_ids_error(self, *args: Any, **kwargs: Any) -> VerifyTaskIdsResponse:
+    async def _mock_verify_task_ids_error(self, *_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
     def test_health_check(self, monkeypatch: MonkeyPatch):
@@ -316,11 +316,11 @@ class TestFastapiServer:
             harness_config=harness_config,
         )
 
-        async def _mock_health_check(service_client: BenchmarkServiceClient, *args: Any, **kwargs: Any):
+        async def _mock_health_check(service_client: BenchmarkServiceClient, *_args: Any, **_kwargs: Any):
             observed_headers.update(service_client._headers)
             return {"status": "ok"}
 
-        async def _mock_verify_task_ids(service_client: BenchmarkServiceClient, *args: Any, **kwargs: Any):
+        async def _mock_verify_task_ids(service_client: BenchmarkServiceClient, *_args: Any, **_kwargs: Any):
             observed_headers.update(service_client._headers)
             return VerifyTaskIdsResponse(task_ids=["task_0"])
 
@@ -1016,7 +1016,6 @@ class TestFastapiServer:
     async def test_init_org_returns_email_claim_present(
         self,
         monkeypatch: MonkeyPatch,
-        database_session: Session,
     ):
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)
@@ -1043,7 +1042,6 @@ class TestFastapiServer:
     async def test_init_org_returns_email_claim_missing(
         self,
         monkeypatch: MonkeyPatch,
-        database_session: Session,
     ):
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)
@@ -1066,7 +1064,6 @@ class TestFastapiServer:
     async def test_init_org_uses_bound_user_email_when_email_claim_missing(
         self,
         monkeypatch: MonkeyPatch,
-        database_session: Session,
     ):
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)

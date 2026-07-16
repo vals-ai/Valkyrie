@@ -16,7 +16,7 @@ from websockets.frames import Close
 from websockets.http11 import Response
 
 import tracker.utils.task_execution as utils_module
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Org, Task, TaskStatus
 from tracker.exceptions import OutputArtifactError
@@ -93,11 +93,11 @@ class TestBenchmarkServiceDisconnect:
             creation_semaphore=Semaphore(1),
         )
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
@@ -130,13 +130,13 @@ class TestBenchmarkServiceDisconnect:
             (1011, "keepalive ping timeout"),
         ],
     )
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_connection_closed_preserves_remote_close_details(
         self,
         code: int,
         reason: str,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
@@ -160,11 +160,11 @@ class TestBenchmarkServiceDisconnect:
         assert reason in error_message
         assert "last application message received" in error_message
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_validation_error_produces_human_readable_message(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
@@ -191,11 +191,11 @@ class TestBenchmarkServiceDisconnect:
         assert "source.image.image" in error_message
         assert "resources.vcpu" in error_message
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_invalid_status_produces_human_readable_message(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
@@ -219,11 +219,11 @@ class TestBenchmarkServiceDisconnect:
         assert "rejected the WebSocket connection" in error_message
         assert "404" in error_message
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_output_artifact_error_marks_task_error_without_generic_exception(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
@@ -246,11 +246,11 @@ class TestBenchmarkServiceDisconnect:
         assert "Output artifact error" in error_message
         assert "Required output artifact missing" in error_message
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_produces_human_readable_message(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
@@ -275,11 +275,11 @@ class TestBenchmarkServiceDisconnect:
         error_message = self._latest_task_error(database_session, task_row)
         assert "ProgramBench task container failed to start" in error_message
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_empty_network_error_stores_visible_message(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
@@ -312,11 +312,11 @@ class TestBenchmarkServiceDisconnect:
         assert self._latest_task_error(database_session, task_row) == "ConnectTimeout"
         assert any("[ERROR] ConnectTimeout" in message for message in logged_messages)
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_in_process_benchmark(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:

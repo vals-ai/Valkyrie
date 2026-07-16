@@ -9,7 +9,7 @@ import httpx
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.aws.s3 import delete_from_s3, upload_to_s3
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task
 from tracker.types import HarnessConfig
@@ -17,8 +17,7 @@ from tracker.types import HarnessConfig
 
 async def test_agent_catalog_and_download_url_round_trip_real_s3(
     live_api_client: TestClient,
-    test_agent_name: str,
-    seeded_test_agent_artifact: None,
+    seeded_test_agent_artifact: str,
 ) -> None:
     """Agent listing and download signing must agree on the seeded S3 object.
 
@@ -30,7 +29,9 @@ async def test_agent_catalog_and_download_url_round_trip_real_s3(
     catalog_response = live_api_client.get("/agents")
 
     assert catalog_response.status_code == 200
-    selected_agent = next(agent for agent in catalog_response.json()["agents"] if agent["name"] == test_agent_name)
+    selected_agent = next(
+        agent for agent in catalog_response.json()["agents"] if agent["name"] == seeded_test_agent_artifact
+    )
     assert selected_agent["last_modified"] is not None
 
     download_response = live_api_client.get(f"/agents/{selected_agent['name']}/download-url")

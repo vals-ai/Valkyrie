@@ -11,7 +11,7 @@ import pytest
 from sqlmodel import Session
 
 from main import app
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.api.parsing import parse_csv
 from tracker.database.models import (
     AgentContractRequest,

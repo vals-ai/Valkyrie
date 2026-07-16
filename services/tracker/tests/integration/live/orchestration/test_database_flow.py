@@ -14,7 +14,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse
 from sqlmodel import Session, col, select
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, EvaluationResult, FinalEvaluation, Task, TaskStatus
 from tracker.sandbox import create_sandbox
 

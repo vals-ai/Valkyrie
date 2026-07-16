@@ -175,21 +175,21 @@ async def test_ping_service_appends_health_path() -> None:
     Test cases:
     - A healthy response records the expected URL and returns healthy status.
     """
-    fake_client = SimpleNamespace(requested_url=None)
+    mock_client = SimpleNamespace(requested_url=None)
 
-    async def fake_get(url: str) -> httpx.Response:
-        fake_client.requested_url = url
+    async def mock_get(url: str) -> httpx.Response:
+        mock_client.requested_url = url
         return httpx.Response(200, request=httpx.Request("GET", url))
 
-    fake_client.get = fake_get
+    mock_client.get = mock_get
 
     result = await benchmark_services_api._ping_service(  # pyright: ignore[reportPrivateUsage]
-        cast(httpx.AsyncClient, fake_client),
+        cast(httpx.AsyncClient, mock_client),
         "swebench",
         "http://benchmark-service",
     )
 
-    assert fake_client.requested_url == "http://benchmark-service/health"
+    assert mock_client.requested_url == "http://benchmark-service/health"
     assert result.healthy is True
     assert result.error is None
 
@@ -206,15 +206,15 @@ async def test_ping_service_hides_request_errors_and_logs_detail(monkeypatch: py
         request=httpx.Request("GET", "http://benchmark-service/health"),
     )
 
-    async def fake_get(_url: str) -> httpx.Response:
+    async def mock_get(_url: str) -> httpx.Response:
         raise error
 
-    fake_client = SimpleNamespace(get=fake_get)
+    mock_client = SimpleNamespace(get=mock_get)
     warning = Mock()
     monkeypatch.setattr(benchmark_services_api.logger, "warning", warning)
 
     result = await benchmark_services_api._ping_service(  # pyright: ignore[reportPrivateUsage]
-        cast(httpx.AsyncClient, fake_client),
+        cast(httpx.AsyncClient, mock_client),
         "swebench",
         "http://benchmark-service",
     )

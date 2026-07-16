@@ -122,7 +122,7 @@ def test_resolve_bearer_session_invalid_token_raises_safe_401(mock_descope, sess
     assert "Sensitive provider detail" not in str(exc_info.value.detail)
 
 
-def test_org_not_in_db_returns_none(mock_descope, session):
+def test_org_not_in_db_returns_none(session):
     org = find_org_by_tenant("nonexistent-org", session)
     assert org is None
 
@@ -257,8 +257,8 @@ def test_get_current_starter_self_hosted(monkeypatch, session):
     monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", False)
     monkeypatch.setattr("tracker.auth._cached_default_org", None)
 
-    fake_request = MagicMock()
-    identity = get_current_starter(fake_request, session)
+    mock_request = MagicMock()
+    identity = get_current_starter(mock_request, session)
 
     assert isinstance(identity, RequestIdentity)
     assert identity.org.name == DEFAULT_ORG_NAME
@@ -271,10 +271,10 @@ def test_get_current_starter_hosted_full_claims(monkeypatch, mock_descope, sessi
     monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
     mock_descope.exchange_access_key.return_value = descope_access_key_response(email="alice@vals.ai", name="Alice")
 
-    fake_request = MagicMock()
-    fake_request.headers = {"x-api-key": "valid-key"}
+    mock_request = MagicMock()
+    mock_request.headers = {"x-api-key": "valid-key"}
 
-    identity = get_current_starter(fake_request, session)
+    identity = get_current_starter(mock_request, session)
 
     assert isinstance(identity, RequestIdentity)
     assert identity.org.id == test_org.id
@@ -293,10 +293,10 @@ def test_get_current_starter_hosted_missing_email(monkeypatch, mock_descope, ses
         },
     }
 
-    fake_request = MagicMock()
-    fake_request.headers = {"x-api-key": "valid-key"}
+    mock_request = MagicMock()
+    mock_request.headers = {"x-api-key": "valid-key"}
 
-    identity = get_current_starter(fake_request, session)
+    identity = get_current_starter(mock_request, session)
 
     assert identity.org.id == test_org.id
     assert identity.access_key_id == "K2abc"
@@ -308,10 +308,10 @@ def test_get_current_org_hosted_skips_user_profile_lookup(monkeypatch, mock_desc
     monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
     mock_descope.exchange_access_key.return_value = descope_access_key_response(user_id="U2abc")
 
-    fake_request = MagicMock()
-    fake_request.headers = {"x-api-key": "valid-key"}
+    mock_request = MagicMock()
+    mock_request.headers = {"x-api-key": "valid-key"}
 
-    org = get_current_org(fake_request, session)
+    org = get_current_org(mock_request, session)
 
     assert org.id == test_org.id
     mock_descope.mgmt.user.load_by_user_id.assert_not_called()

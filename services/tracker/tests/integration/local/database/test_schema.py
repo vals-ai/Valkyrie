@@ -6,7 +6,7 @@ Exercise schema and model events against disposable Postgres.
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, inspect
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,

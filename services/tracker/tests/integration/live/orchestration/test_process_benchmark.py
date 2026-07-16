@@ -15,7 +15,7 @@ from benchmark_service.schemas import SetupTaskResponse
 import pytest
 from sqlmodel import Session, select
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,

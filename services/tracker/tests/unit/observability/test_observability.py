@@ -216,18 +216,14 @@ def test_retry_callback_logs_attempt_and_emits_retry_metric(monkeypatch: pytest.
     increments: list[tuple[str, dict[str, str]]] = []
     log_records: list[dict[str, Any]] = []
 
-    def fake_incr(name: str, value: float = 1, tags: dict[str, str] | None = None) -> None:
+    def fake_incr(name: str, _value: float = 1, tags: dict[str, str] | None = None) -> None:
         increments.append((name, tags or {}))
 
     def retried_function() -> None:
         raise RuntimeError("unused")
 
-    class FakeOutcome:
-        def exception(self) -> Exception:
-            return TimeoutError("timed out")
-
     state = SimpleNamespace(
-        outcome=FakeOutcome(),
+        outcome=SimpleNamespace(exception=lambda: TimeoutError("timed out")),
         fn=retried_function,
         attempt_number=2,
         idle_for=1.25,

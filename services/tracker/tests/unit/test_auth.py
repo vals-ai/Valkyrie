@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from sqlmodel import Session, SQLModel, create_engine
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import forward_tracker_api_key
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 

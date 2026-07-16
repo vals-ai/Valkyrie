@@ -12,7 +12,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tests.utils import random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger

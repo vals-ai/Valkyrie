@@ -11,7 +11,7 @@ import pytest
 from sqlmodel import Session
 
 import tracker.utils.task_execution as utils_module
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
 from tracker.types import HarnessConfig, StartBenchmarkRequest
@@ -76,10 +76,10 @@ async def _run_process_task(
     )
 
 
+@pytest.mark.usefixtures("process_benchmark_env")
 async def test_process_task_injects_tracker_owned_attribution_env(
     contract: AgentContractRequest,
     database_session: Session,
-    process_benchmark_env: None,
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
 ) -> None:
@@ -140,10 +140,10 @@ async def test_process_task_injects_tracker_owned_attribution_env(
     assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
 
 
+@pytest.mark.usefixtures("process_benchmark_env")
 async def test_process_task_omits_identity_email_when_unavailable(
     contract: AgentContractRequest,
     database_session: Session,
-    process_benchmark_env: None,
     monkeypatch: pytest.MonkeyPatch,
     harness_config: HarnessConfig,
 ) -> None:

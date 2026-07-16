@@ -19,7 +19,7 @@ import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
-from conftest import FakeClient, FakeTrackerService, empty_config, empty_config_keys, write_valkyrie_config
+from conftest import MockClient, MockTrackerService, empty_config, empty_config_keys, write_valkyrie_config
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
@@ -57,7 +57,7 @@ def clear_runtime_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_tracker_client_uses_selected_environment_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = FakeClient()
+    client = MockClient()
 
     monkeypatch.setenv(VALKYRIE_ENV_ENV_VAR, "dev")
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
@@ -141,9 +141,9 @@ def test_tracker_client_lists_catalog_services_through_tracker(monkeypatch: pyte
 
 
 def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = FakeClient()
+    client = MockClient()
 
-    def build_client(**_kwargs: object) -> FakeClient:
+    def build_client(**_kwargs: object) -> MockClient:
         return client
 
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
@@ -160,9 +160,9 @@ def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyP
 
 
 def test_fetch_run_outputs_omits_empty_task_ids(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = FakeClient()
+    client = MockClient()
 
-    def build_client(**_kwargs: object) -> FakeClient:
+    def build_client(**_kwargs: object) -> MockClient:
         return client
 
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
@@ -185,9 +185,9 @@ def test_stop_benchmark_sends_task_selection(monkeypatch: pytest.MonkeyPatch) ->
     - Force remains a query parameter.
     - Task IDs are sent in the request body.
     """
-    client = FakeClient()
+    client = MockClient()
 
-    def build_client(**_kwargs: object) -> FakeClient:
+    def build_client(**_kwargs: object) -> MockClient:
         return client
 
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
@@ -273,7 +273,7 @@ def test_parse_response_returns_json_and_raises_tracker_errors(
 
 
 def test_fetch_run_outputs_raises_tracker_error_for_non_ok_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    class ErrorClient(FakeClient):
+    class ErrorClient(MockClient):
         def get(
             self,
             url: str,
@@ -299,7 +299,7 @@ def test_fetch_run_outputs_raises_tracker_error_for_non_ok_response(monkeypatch:
 
 
 def test_fetch_run_outputs_raises_tracker_error_for_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    class FailingClient(FakeClient):
+    class FailingClient(MockClient):
         def get(
             self,
             url: str,
@@ -363,12 +363,12 @@ def test_paginate_services_renders_latency_as_response_status(monkeypatch: pytes
 
     paginate_services(
         [
-            FakeTrackerService.benchmark_service_health(
+            MockTrackerService.benchmark_service_health(
                 "swebench",
                 "https://swebench.benchmarks.vals.ai",
                 latency_ms=23,
             ),
-            FakeTrackerService.benchmark_service_health(
+            MockTrackerService.benchmark_service_health(
                 "vcb",
                 "http://localhost:9000",
                 healthy=False,
@@ -405,7 +405,7 @@ def test_paginate_services_health_checks_visible_pages_only(
     def check_services(entries: list[BenchmarkServiceEntry]) -> list[BenchmarkServiceHealth]:
         checked_pages.append([entry.name for entry in entries])
         return [
-            FakeTrackerService.benchmark_service_health(entry.name, entry.url, latency_ms=len(checked_pages))
+            MockTrackerService.benchmark_service_health(entry.name, entry.url, latency_ms=len(checked_pages))
             for entry in entries
         ]
 
@@ -436,9 +436,9 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
     - Retry mode and concurrency are query parameters.
     - Secret overrides are sent in the JSON body with task IDs and service headers.
     """
-    client = FakeClient()
+    client = MockClient()
 
-    def build_client(**_kwargs: object) -> FakeClient:
+    def build_client(**_kwargs: object) -> MockClient:
         return client
 
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
@@ -468,9 +468,9 @@ def test_tracker_client_accepts_legacy_daytona_secret_config(tmp_path: Path, mon
     config_path = write_valkyrie_config(tmp_path / "valkyrie.yaml", DAYTONA_SECRET_NAME="DaytonaSecrets")
 
     monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-    client = FakeClient()
+    client = MockClient()
 
-    def build_client(**_kwargs: object) -> FakeClient:
+    def build_client(**_kwargs: object) -> MockClient:
         return client
 
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
@@ -521,9 +521,9 @@ def test_tracker_client_uses_first_named_provider_as_default(tmp_path: Path, mon
     )
 
     monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-    client = FakeClient()
+    client = MockClient()
 
-    def build_client(**_kwargs: object) -> FakeClient:
+    def build_client(**_kwargs: object) -> MockClient:
         return client
 
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
@@ -550,7 +550,7 @@ def test_tracker_client_uses_configured_default_provider(tmp_path: Path, monkeyp
     Test cases:
     - default_sandbox_provider selects the modal provider and secret.
     """
-    client = FakeClient()
+    client = MockClient()
     config_path = write_valkyrie_config(
         tmp_path / "valkyrie.yaml",
         sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
@@ -584,7 +584,7 @@ def test_start_benchmark_uses_runtime_provider_override(tmp_path: Path, monkeypa
     - provider='modal' resolves to the modal cloud secret.
     - StartBenchmarkRequest carries the selected secret in the harness config.
     """
-    client = FakeClient()
+    client = MockClient()
     config_path = write_valkyrie_config(
         tmp_path / "valkyrie.yaml",
         sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
@@ -620,7 +620,7 @@ def test_start_benchmark_allows_configured_provider_names_without_tracker_enum(
     - A provider configured in Valkyrie is forwarded in the request body.
     - Tracker does not need code changes for a newly configured provider name.
     """
-    client = FakeClient()
+    client = MockClient()
     config_path = write_valkyrie_config(
         tmp_path / "valkyrie.yaml",
         sandbox_providers={"future": "FutureSecrets"},
@@ -717,7 +717,8 @@ def test_run_commands_connect_after_success(connect_stream_testbed: tuple[UUID, 
     assert streamed_run_ids == [str(started_run_id), str(resume_run_id), str(retry_run_id)]
 
 
-def test_run_start_provider_option_reaches_tracker(connect_stream_testbed: tuple[UUID, list[str]]) -> None:
+@pytest.mark.usefixtures("connect_stream_testbed")
+def test_run_start_provider_option_reaches_tracker() -> None:
     """The CLI provider option should reach the tracker start request.
 
     Test cases:
@@ -732,17 +733,15 @@ def test_run_start_provider_option_reaches_tracker(connect_stream_testbed: tuple
     )
 
     assert result.exit_code == 0, result.output
-    assert FakeTrackerService.provider_validations == ["modal"]
-    assert FakeTrackerService.init_calls == 1
-    start_kwargs = FakeTrackerService.start_calls[-1]["kwargs"]
+    assert MockTrackerService.provider_validations == ["modal"]
+    assert MockTrackerService.init_calls == 1
+    start_kwargs = MockTrackerService.start_calls[-1]["kwargs"]
     assert isinstance(start_kwargs, dict)
     assert start_kwargs["provider"] == "modal"
 
 
-def test_run_start_sends_configured_service_auth_and_cli_headers(
-    connect_stream_testbed: tuple[UUID, list[str]],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+@pytest.mark.usefixtures("connect_stream_testbed")
+def test_run_start_sends_configured_service_auth_and_cli_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run start should send configured benchmark auth and CLI headers to the tracker.
 
     Test cases:
@@ -768,7 +767,7 @@ def test_run_start_sends_configured_service_auth_and_cli_headers(
         )
 
         assert result.exit_code == 0, result.output
-        start_kwargs = FakeTrackerService.start_calls[-1]["kwargs"]
+        start_kwargs = MockTrackerService.start_calls[-1]["kwargs"]
         assert isinstance(start_kwargs, dict)
         assert start_kwargs["service_headers"] == expected_headers
 
@@ -783,9 +782,9 @@ def test_run_label_cli_options_and_client_requests(monkeypatch: pytest.MonkeyPat
     assert _command_option_flags(start, "label") >= {"--label", "-l"}
     assert _command_option_flags(list_runs, "label") >= {"--label", "-l"}
 
-    client = FakeClient()
+    client = MockClient()
 
-    def build_client(**_kwargs: object) -> FakeClient:
+    def build_client(**_kwargs: object) -> MockClient:
         return client
 
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
@@ -907,14 +906,14 @@ def test_service_list_merges_hosted_and_custom_services(
     ) -> None:
         captured_services.extend(check_services(services))
 
-    monkeypatch.setattr(config_benchmark_services, "TrackerService", FakeTrackerService)
+    monkeypatch.setattr(config_benchmark_services, "TrackerService", MockTrackerService)
     monkeypatch.setattr(config_benchmark_services, "paginate_services", capture_paginated_services)
-    FakeTrackerService.require_config_values = []
+    MockTrackerService.require_config_values = []
 
     result = CliRunner().invoke(cli_main.cli, ["config", "service", "list"])
 
     assert result.exit_code == 0, result.output
-    assert FakeTrackerService.require_config_values == [False]
+    assert MockTrackerService.require_config_values == [False]
     by_name = {service.name: service for service in captured_services}
     assert list(by_name) == ["swebench", "fab", "custombench"]
     assert by_name["swebench"].url == "http://local-swebench"

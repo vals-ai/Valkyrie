@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from main import app
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import get_current_org
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
@@ -31,14 +31,13 @@ _FAKE_HARNESS_CONFIG = HarnessConfig(
 
 @pytest.fixture(autouse=True)
 def setup_app_dependencies(
-    database_session: Session,
-    tracker_database: None,
+    tracker_database: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Route the app through the local database and organization."""
 
     def get_test_session() -> Generator[Session, None, None]:
-        yield database_session
+        yield tracker_database
 
     monkeypatch.setitem(app.dependency_overrides, get_session, get_test_session)
     monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, lambda: _FAKE_HARNESS_CONFIG)

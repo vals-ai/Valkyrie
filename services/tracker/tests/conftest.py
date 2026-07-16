@@ -1,18 +1,14 @@
 from collections.abc import Generator
 from sqlite3 import Connection, Cursor
 from typing import cast
-from uuid import UUID
-
 import pytest
 from dotenv import load_dotenv
 from sqlalchemy import event
 from sqlalchemy.pool import ConnectionPoolEntry
 from sqlmodel import Session, SQLModel, StaticPool, create_engine
 
+from tests.utils import TEST_ORG_ID
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, DEFAULT_ORG_NAME, Org
-
-# Match the default organization seeded by the database fixture.
-TEST_ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 _ = load_dotenv()
 

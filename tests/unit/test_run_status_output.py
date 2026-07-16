@@ -44,6 +44,38 @@ class StubStatusTracker:
         return BenchmarkStatusResponse(entries=[entry for entry in self.entries if entry.id in requested])
 
 
+class MockStatusClient:
+    """Return one deterministic batch-status response."""
+
+    def __init__(self, run_id: UUID) -> None:
+        self.run_id = run_id
+        self.url: str | None = None
+        self.params: dict[str, str] | None = None
+
+    def get(self, url: str, *, params: dict[str, str]) -> httpx.Response:
+        self.url = url
+        self.params = params
+
+        return httpx.Response(
+            200,
+            json={
+                "entries": [
+                    {
+                        "id": str(self.run_id),
+                        "status": "IN_PROGRESS",
+                        "finished_at": None,
+                        "total_tasks": 1,
+                        "finished_tasks": 0,
+                        "task_state_counts": {"PENDING": 1},
+                    }
+                ]
+            },
+        )
+
+    def close(self) -> None:
+        return None
+
+
 def invoke_with_tracker(monkeypatch: pytest.MonkeyPatch, tracker: StubStatusTracker, args: list[str]):
     monkeypatch.setattr(status_module, "TrackerService", lambda: tracker)
     return CliRunner().invoke(status_runs, args)
@@ -126,35 +158,7 @@ def test_status_rejects_invalid_ids_before_tracker_construction(
 
 def test_tracker_client_fetches_batch_status_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = UUID(int=1)
-
-    class FakeStatusClient:
-        def __init__(self) -> None:
-            self.url: str | None = None
-            self.params: dict[str, str] | None = None
-
-        def get(self, url: str, *, params: dict[str, str]) -> httpx.Response:
-            self.url = url
-            self.params = params
-            return httpx.Response(
-                200,
-                json={
-                    "entries": [
-                        {
-                            "id": str(run_id),
-                            "status": "IN_PROGRESS",
-                            "finished_at": None,
-                            "total_tasks": 1,
-                            "finished_tasks": 0,
-                            "task_state_counts": {"PENDING": 1},
-                        }
-                    ]
-                },
-            )
-
-        def close(self) -> None:
-            return None
-
-    client = FakeStatusClient()
+    client = MockStatusClient(run_id)
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(lambda: {}))
     monkeypatch.setattr(TrackerService, "parse_config_keys", lambda _self: {})
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", lambda **_kwargs: client)

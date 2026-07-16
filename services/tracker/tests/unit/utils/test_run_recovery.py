@@ -25,7 +25,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import (
     AgentContractRequest,
@@ -371,11 +371,11 @@ class TestStopAndResume:
         assert selected_task.status == TaskStatus.PENDING
         assert selected_task.started_at == _RESUMED_ATTEMPT_AT
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_stop_and_resume(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         harness_config: HarnessConfig,
         monkeypatch: MonkeyPatch,
     ):
@@ -511,7 +511,6 @@ class TestStopAndResume:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        harness_config: HarnessConfig,
     ):
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -623,12 +622,11 @@ class TestStopAndResume:
         assert len(result_history) == 1
         assert result_history[0]["result"] == {"score": 0.5}
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_reset_lazily_creates_rows_for_unregistered_task_ids(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        process_benchmark_env: None,
-        harness_config: HarnessConfig,
     ):
         """rerun_task_ids that don't have a row yet become fresh PENDING rows."""
         benchmark_row = example_benchmark_object
@@ -661,11 +659,11 @@ class TestStopAndResume:
             "task_2": TaskStatus.PENDING,
         }
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_error_retry_with_task_ids_only_resets_requested_tasks(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
-        process_benchmark_env: None,
     ):
         """Explicit retry task ids on errored runs must not pull in every ERROR task.
 
@@ -701,11 +699,11 @@ class TestStopAndResume:
         assert verified_task_ids == ["task_requested"]
         assert task_statuses == {"task_requested": TaskStatus.PENDING, "task_other": TaskStatus.ERROR}
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_resume_runs_lazily_added_task_and_recomputes_final_score(
         self,
         contract: AgentContractRequest,
         database_session: Session,
-        process_benchmark_env: None,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
     ):
@@ -954,7 +952,6 @@ class TestStopAndResume:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        harness_config: HarnessConfig,
     ):
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
@@ -1210,13 +1207,13 @@ class TestStopAndResume:
             "task_finished": TaskStatus.FINISHED,
         }
 
+    @pytest.mark.usefixtures("process_benchmark_env")
     async def test_running_retry_repairs_error_and_later_finalizes_same_run(
         self,
         contract: AgentContractRequest,
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
-        process_benchmark_env: None,
         harness_config: HarnessConfig,
     ):
         benchmark_row = example_benchmark_object

@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from sqlmodel import Session
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
 

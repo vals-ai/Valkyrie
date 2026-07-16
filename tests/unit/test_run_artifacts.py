@@ -10,7 +10,9 @@ from tracker.types import AWSCredentials
 from valkyrie.cli.run.artifacts import download_s3_path
 
 
-class FakeBody:
+class MockBody:
+    """Track concurrent reads of one S3 response body."""
+
     def __init__(self, payload: bytes, tracker: "ConcurrencyTracker") -> None:
         self._payload = payload
         self._tracker = tracker
@@ -29,15 +31,17 @@ class ConcurrencyTracker:
         self.max_active = 0
 
 
-class FakeS3Client:
+class MockS3Client:
+    """Serve deterministic S3 pages and response bodies."""
+
     def __init__(self, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
         self._payloads = payloads
         self._tracker = tracker
 
-    def client(self, _name: str) -> "FakeS3Client":
+    def client(self, _name: str) -> "MockS3Client":
         return self
 
-    async def __aenter__(self) -> "FakeS3Client":
+    async def __aenter__(self) -> "MockS3Client":
         return self
 
     async def __aexit__(
@@ -48,20 +52,20 @@ class FakeS3Client:
     ) -> None:
         return None
 
-    def get_paginator(self, _name: str) -> "FakeS3Client":
+    def get_paginator(self, _name: str) -> "MockS3Client":
         return self
 
     async def paginate(self, **_kwargs: object) -> Any:
         yield {"Contents": [{"Key": key} for key in self._payloads]}
 
-    async def get_object(self, *, Bucket: str, Key: str) -> dict[str, FakeBody]:
+    async def get_object(self, *, Bucket: str, Key: str) -> dict[str, MockBody]:
         assert Bucket == "test-bucket"
-        return {"Body": FakeBody(self._payloads[Key], self._tracker)}
+        return {"Body": MockBody(self._payloads[Key], self._tracker)}
 
 
 def patch_s3(monkeypatch: pytest.MonkeyPatch, payloads: dict[str, bytes], tracker: ConcurrencyTracker) -> None:
-    def tracker_s3_client(_credentials: AWSCredentials) -> FakeS3Client:
-        return FakeS3Client(payloads, tracker)
+    def tracker_s3_client(_credentials: AWSCredentials) -> MockS3Client:
+        return MockS3Client(payloads, tracker)
 
     monkeypatch.setattr(
         "valkyrie.cli.s3_config.load_config",

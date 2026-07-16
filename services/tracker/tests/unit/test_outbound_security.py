@@ -71,8 +71,10 @@ def test_benchmark_name_rejects_url_parser_control(benchmark_name: str) -> None:
         _start_benchmark_request(benchmark_name=benchmark_name)
 
 
-def test_benchmark_name_preserves_supported_dns_label() -> None:
+def test_benchmark_name_preserves_supported_dns_label(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep a normal hosted benchmark name unchanged in the derived URL."""
+    monkeypatch.setattr("tracker.config._BENCHMARK_SERVICE_BASE_URL", None)
+
     assert create_benchmark_service_url("swebench") == "http://swebench.local:8001"
     assert FetchBenchmarkTasksRequest(benchmark_name="swebench").benchmark_name == "swebench"
     assert _start_benchmark_request().benchmark_name == "swebench"

@@ -69,13 +69,12 @@ def test_init_hosted_strips_api_key(config_path: Path, monkeypatch: pytest.Monke
 
     init_org_calls: list[str] = []
 
-    class FakeTrackerService:
-        @staticmethod
-        def init_org(api_key: str) -> dict[str, object]:
-            init_org_calls.append(api_key)
-            return {"org_name": "test-org"}
+    def mock_init_org(api_key: str) -> dict[str, object]:
+        init_org_calls.append(api_key)
 
-    monkeypatch.setattr(settings, "TrackerService", FakeTrackerService)
+        return {"org_name": "test-org"}
+
+    monkeypatch.setattr(settings.TrackerService, "init_org", mock_init_org)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -106,7 +105,8 @@ def test_init_hosted_strips_api_key(config_path: Path, monkeypatch: pytest.Monke
     }
 
 
-def test_init_whitespace_only_required_value_aborts(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.usefixtures("config_path")
+def test_init_whitespace_only_required_value_aborts(monkeypatch: pytest.MonkeyPatch) -> None:
     for key in settings._REQUIRED_ENVIRONMENT_VARIABLES:
         monkeypatch.delenv(key, raising=False)
 

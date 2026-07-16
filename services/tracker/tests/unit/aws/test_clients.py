@@ -129,7 +129,7 @@ class TestGetBenchmarkLogUrl:
 class TestWriteBenchmarkLogEvent:
     def _mock_client(self, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
         client = MagicMock()
-        monkeypatch.setattr(cloudwatch_logs, "_cloudwatch_client", lambda aws: client)
+        monkeypatch.setattr(cloudwatch_logs, "_cloudwatch_client", lambda _aws: client)
         monkeypatch.setattr(cloudwatch_logs, "_created_streams", set())
         return client
 

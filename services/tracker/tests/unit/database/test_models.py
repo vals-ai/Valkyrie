@@ -2,7 +2,7 @@
 
 from sqlmodel import Session
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task, TaskStatus
 
 

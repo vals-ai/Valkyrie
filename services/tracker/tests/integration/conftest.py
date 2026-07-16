@@ -11,7 +11,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from dotenv import load_dotenv
 from sqlmodel import Session
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tests.integration_agent_artifacts import (
     create_s3_client,
     delete_test_agent_artifact,
@@ -31,7 +31,7 @@ _ = load_dotenv()
 def tracker_database(
     database_session: Session,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> Session:
     """Connect tracker background work to the per-test SQLite database."""
     monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
     monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
@@ -40,6 +40,8 @@ def tracker_database(
     if not existing:
         database_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
         database_session.commit()
+
+    return database_session
 
 
 @pytest.fixture(scope="session")
@@ -108,14 +110,14 @@ def test_agent_name(worker_id: str) -> str:
 
 
 @pytest.fixture(scope="session")
-def seeded_test_agent_artifact(test_agent_name: str, harness_config: HarnessConfig) -> Generator[None, None, None]:
+def seeded_test_agent_artifact(test_agent_name: str, harness_config: HarnessConfig) -> Generator[str, None, None]:
     """Seed the live S3 agent artifact and always delete it after the session."""
     s3_client = create_s3_client(harness_config.aws)
     key = get_contract_s3_key(test_agent_name)
 
     try:
         seed_test_agent_artifact(s3_client, harness_config.s3_bucket, test_agent_name)
-        yield
+        yield test_agent_name
     finally:
         try:
             delete_test_agent_artifact(s3_client, harness_config.s3_bucket, key)
@@ -124,10 +126,10 @@ def seeded_test_agent_artifact(test_agent_name: str, harness_config: HarnessConf
 
 
 @pytest.fixture
-def contract(test_agent_name: str, seeded_test_agent_artifact: None) -> AgentContractRequest:
+def contract(seeded_test_agent_artifact: str) -> AgentContractRequest:
     """Return the contract whose artifact is seeded for live integration tests."""
     return AgentContractRequest(
-        name=test_agent_name,
+        name=seeded_test_agent_artifact,
         install_cmd="echo installing dependencies...",
         run_cmd="echo running agent...",
     )

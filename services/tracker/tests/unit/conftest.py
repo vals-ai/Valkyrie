@@ -18,7 +18,7 @@ from benchmark_service.schemas import (
 import pytest
 from sqlmodel import Session
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session

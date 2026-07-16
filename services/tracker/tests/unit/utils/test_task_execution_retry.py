@@ -12,7 +12,7 @@ from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
 from tenacity import wait_none
 
-from tests.conftest import TEST_ORG_ID
+from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.exceptions import SandboxSetupError
@@ -208,9 +208,9 @@ class TestPtyRetry:
 
         def _mock_logger_info(
             message: str,
-            *args: object,
+            *_args: object,
             extra: dict[str, Any] | None = None,
-            **kwargs: Any,
+            **_kwargs: Any,
         ) -> None:
             log_records.append({"message": message, **(extra or {})})
 
