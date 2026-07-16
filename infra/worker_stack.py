@@ -5,7 +5,7 @@ tasks can finish while a new worker version is rolled out.
 """
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -92,9 +92,10 @@ class WorkerStack(Stack):
             "DB_NAME": POSTGRES_DB,
         }
 
+        db_credentials_secret = cast(aws_secretsmanager.ISecret, db_credentials)
         db_secrets = {
-            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials, field="username"),
-            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
+            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="username"),
+            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
         sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")
@@ -150,7 +151,7 @@ class WorkerStack(Stack):
         )
 
         # Allow the worker to toggle ECS Task Protection while benchmarks run
-        worker_task_def.task_role.add_to_policy(
+        cast(aws_iam.Role, worker_task_def.task_role).add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["ecs:UpdateTaskProtection"],
                 resources=["*"],
