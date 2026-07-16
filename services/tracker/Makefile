@@ -1,7 +1,6 @@
-.PHONY: help setup build run stop clean logs tracker-service \
-        test test-integration test-integration-local test-integration-local-coverage test-integration-live \
-        test-integration-live-coverage test-unit test-coverage test-alembic \
-        migrate-gen venv-check env-check
+.PHONY: help build run stop clean logs tracker-service \
+        test test-integration-local test-integration-live test-unit test-coverage test-alembic \
+        migrate-gen venv-check
 
 PYTHON_VERSION := 3.12
 PYTEST := uv run pytest
@@ -22,11 +21,6 @@ help:
 venv-check:
 	@if [ ! -f .venv/bin/activate ]; then \
 		echo "❌ Virtualenv not found! Run \`make install\` first."; \
-		exit 1; \
-	fi
-env-check:
-	@if [ ! -f .env ]; then \
-		echo "❌ Env not found! Create a .env file first."; \
 		exit 1; \
 	fi
 install:
@@ -55,7 +49,7 @@ logs:
 tracker-service: build run logs
 
 # --- Tests ---
-test: test-unit test-integration-local
+test: test-coverage
 test-unit: venv-check
 	$(PYTEST) tests/unit --test-alembic --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml
 test-coverage: venv-check
@@ -65,20 +59,11 @@ test-coverage: venv-check
 	$(PYTEST) tests/integration/local/database --cov=src/tracker --cov=main --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=85
 test-alembic: venv-check
 	$(PYTEST) --test-alembic -m alembic
-test-integration: venv-check env-check
-	$(PYTEST) tests/integration/local/api -n auto
-	$(PYTEST) tests/integration/local/database
-	$(PYTEST) tests/integration/live -n auto
 test-integration-local: venv-check
-	$(PYTEST) tests/integration/local/api -n auto
-	$(PYTEST) tests/integration/local/database
-test-integration-local-coverage: venv-check
 	uv run coverage erase
 	$(PYTEST) tests/integration/local/api -n auto --cov=src/tracker --cov=main --cov-report= --cov-fail-under=0
 	$(PYTEST) tests/integration/local/database --cov=src/tracker --cov=main --cov-append --cov-report=term-missing --cov-report=xml --cov-fail-under=0
-test-integration-live: venv-check env-check
-	$(PYTEST) tests/integration/live -n auto
-test-integration-live-coverage: venv-check
+test-integration-live: venv-check
 	uv run coverage erase
 	$(PYTEST) tests/integration/live -n auto --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml --cov-fail-under=0
 
