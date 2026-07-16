@@ -639,7 +639,7 @@ class TestSandboxLifecycle:
         distributions: list[tuple[str, float, dict[str, str]]] = []
         context_calls: list[tuple[str, str]] = []
 
-        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncMock:
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncMock:
             return mock_sandbox
 
         def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
@@ -655,7 +655,7 @@ class TestSandboxLifecycle:
                 return monotonic_values.popleft()
             return 13.5
 
-        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
         monkeypatch.setattr(sandbox_module, "delete_sandbox", AsyncMock())
         monkeypatch.setattr(sandbox_module, "distribution", fake_distribution, raising=False)
         monkeypatch.setattr(sandbox_module, "set_sandbox_context", fake_set_sandbox_context, raising=False)
@@ -684,13 +684,13 @@ class TestSandboxLifecycle:
         create_error = RuntimeError("create failed")
         increments: list[tuple[str, dict[str, str]]] = []
 
-        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Never:
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> Never:
             raise create_error
 
         def fake_incr(name: str, _value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
             increments.append((name, {str(k): str(v) for k, v in (tags or {}).items()}))
 
-        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
         monkeypatch.setattr(sandbox_module, "incr", fake_incr, raising=False)
 
         resources = Resources(vcpu=2, memory=4, disk=5)
@@ -705,6 +705,66 @@ class TestSandboxLifecycle:
                 pass
 
         assert increments == [("valkyrie.sandbox.create.errors", {"error_class": "RuntimeError"})]
+
+    async def test_create_sandbox_deletes_resource_when_cancelled_during_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cancellation during remote creation must not leave a sandbox running.
+
+        Test cases:
+        - Remote creation completes after the caller is cancelled.
+        - The completed sandbox is deleted before cancellation reaches the caller.
+        """
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        active_sandbox_ids: set[str] = set()
+        creation_started = asyncio.Event()
+        release_creation = asyncio.Event()
+        remote_creation_task: asyncio.Task[AsyncMock] | None = None
+
+        async def remote_create() -> AsyncMock:
+            creation_started.set()
+            await release_creation.wait()
+            active_sandbox_ids.add(mock_sandbox.id)
+
+            return mock_sandbox
+
+        async def mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncMock:
+            nonlocal remote_creation_task
+            remote_creation_task = asyncio.create_task(remote_create())
+
+            return await asyncio.shield(remote_creation_task)
+
+        async def mock_delete_sandbox(sandbox: AsyncMock, _provider: Any) -> None:
+            active_sandbox_ids.remove(sandbox.id)
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", mock_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", mock_delete_sandbox)
+
+        async def use_sandbox() -> None:
+            async with create_sandbox(
+                provider=AsyncMock(),
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                pass
+
+        context_task = asyncio.create_task(use_sandbox())
+        await creation_started.wait()
+
+        context_task.cancel()
+        release_creation.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await context_task
+
+        assert remote_creation_task is not None
+        await remote_creation_task
+        assert active_sandbox_ids == set()
 
 
 class TestUploadAgentArtifacts:

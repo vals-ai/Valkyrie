@@ -70,6 +70,7 @@ async def evaluate_instance(
     benchmark_service: BenchmarkServiceClient,
     sandbox_provider: SandboxProvider,
     sandbox_provider_config: SandboxProviderConfig,
+    benchmark_row: Benchmark,
     task_row: Task,
     task_data: RetrieveTaskResponse,
     creation_semaphore: Semaphore,
@@ -85,6 +86,7 @@ async def evaluate_instance(
         task_data.source,
         task_data.resources,
         creation_semaphore,
+        labels={"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id), "Task": task_row.task_id},
     ) as sandbox:
         setup_response = await benchmark_service.setup_task(
             task_id=task_row.task_id,
@@ -137,6 +139,7 @@ async def test_live_results_round_trip_through_tracker_database(
                 benchmark_service,
                 sandbox_provider,
                 sandbox_provider_config,
+                benchmark_row,
                 task_row,
                 task_data,
                 creation_semaphore,

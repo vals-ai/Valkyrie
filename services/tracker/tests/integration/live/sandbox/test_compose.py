@@ -50,7 +50,8 @@ async def _wait_for_docker(sandbox: Sandbox) -> None:
             return
         await asyncio.sleep(1)
 
-    raise AssertionError("Docker daemon did not become ready inside Daytona sandbox")
+    dockerd_logs = await sandbox.exec("tail -n 200 /var/log/dockerd.log", timeout=10)
+    raise AssertionError(f"Docker daemon did not become ready inside Daytona sandbox:\n{dockerd_logs.stdout}")
 
 
 async def _wait_for_compose_service(sandbox: Sandbox, compose_command: str) -> None:
@@ -105,6 +106,7 @@ async def compose_sandbox(
     assert isinstance(task_data.source, ComposeSource)
     assert isinstance(task_data.source.outer, ImageSource)
 
+    runtime_started = False
     async with create_sandbox(
         sandbox_provider,
         random_sandbox_name,
@@ -115,14 +117,16 @@ async def compose_sandbox(
     ) as outer_sandbox:
         try:
             await _start_compose_runtime(outer_sandbox, task_data.source, compose_file)
+            runtime_started = True
             yield runtime_sandbox(outer_sandbox, task_data.source), outer_sandbox, task_data
         finally:
-            await outer_sandbox.exec(f"{task_data.source.compose_command} down -v --remove-orphans", timeout=120)
-            containers = await outer_sandbox.exec(
-                f"docker ps -a --filter label=com.docker.compose.project={project_name} -q",
-                timeout=30,
-            )
-            assert containers.stdout.strip() == ""
+            if runtime_started:
+                await outer_sandbox.exec(f"{task_data.source.compose_command} down -v --remove-orphans", timeout=120)
+                containers = await outer_sandbox.exec(
+                    f"docker ps -a --filter label=com.docker.compose.project={project_name} -q",
+                    timeout=30,
+                )
+                assert containers.stdout.strip() == ""
 
 
 async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(

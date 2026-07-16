@@ -142,8 +142,8 @@ def service_headers() -> dict[str, str]:
 
 @pytest.fixture
 def creation_semaphore() -> Semaphore:
-    """Limit live sandbox creation to a safe level within each test."""
-    return Semaphore(10)
+    """Limit each live test worker to five concurrent sandbox creations."""
+    return Semaphore(5)
 
 
 @pytest.fixture(scope="function")
