@@ -55,7 +55,7 @@ tracker-service: build run logs
 
 # --- Tests ---
 test-unit: venv-check
-	$(PYTEST) tests/unit --test-alembic
+	$(PYTEST) tests/unit --test-alembic --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml
 test-alembic: venv-check
 	$(PYTEST) --test-alembic -m alembic
 test-integration: venv-check env-check

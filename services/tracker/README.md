@@ -42,10 +42,12 @@ Tracker-service reads this when running `valkyrie config service list` to show t
 ## Tests
 
 ```bash
-make test-unit          # Unit tests + Alembic migration tests
+make test-unit          # Unit tests + Alembic migrations + branch coverage
 make test-alembic       # Alembic migration tests only
-make test-integration   # Integration tests
+make test-integration   # Full integration suite (requires the variables below)
 ```
+
+Unit coverage includes both the `tracker` package and the FastAPI entrypoint in `main.py`. The configured coverage floor prevents tracker application coverage from dropping below the current baseline.
 
 Integration tests run against live AWS infrastructure and the public benchmark service. They require a `.env` file at `services/tracker/.env`:
 
