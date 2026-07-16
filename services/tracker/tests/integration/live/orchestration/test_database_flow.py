@@ -92,7 +92,11 @@ async def evaluate_instance(
             sandbox_provider=sandbox_provider_config,
         )
         assert setup_response.status == "ok"
-        return await benchmark_service.evaluate_instance(task_id=task_row.task_id, instance_id=sandbox.id)
+        return await benchmark_service.evaluate_instance(
+            task_id=task_row.task_id,
+            instance_id=sandbox.id,
+            sandbox_provider=sandbox_provider_config,
+        )
 
 
 @pytest.mark.slow
