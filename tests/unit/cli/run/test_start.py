@@ -132,7 +132,7 @@ class TestCountedStarts:
 
         assert result.exit_code == 0, result.output
         assert start_testbed.tracker.start_benchmark.call_count == 1
-        assert "Confirmed started run IDs:" not in result.output
+        assert "requested runs successfully started" not in result.output
 
         # Exercise the short alias with the compatible connect mode.
         start_testbed.set_responses([_start_response(_FIRST_RUN_ID)])
@@ -183,13 +183,13 @@ class TestCountedStarts:
         assert start_requests[0].args[0] is start_requests[1].args[0]
         assert [request.args[6] for request in start_requests] == ["stable", "stable"]
 
-        details, summary = result.output.split("Confirmed started run IDs:", maxsplit=1)
+        details, summary = result.output.split("2 / 2 requested runs successfully started.", maxsplit=1)
         expected_ids = f"{_FIRST_RUN_ID},{_SECOND_RUN_ID}"
 
         assert str(_FIRST_RUN_ID) in details
         assert str(_SECOND_RUN_ID) in details
-        assert summary.startswith(f" {expected_ids}")
-        assert f"valkyrie run status --ids {expected_ids}" in summary
+        assert f"Track progress: valkyrie run status --ids {expected_ids}" in summary
+        assert "Confirmed started run IDs:" not in result.output
 
     def test_counted_local_start_uploads_once(
         self,
@@ -257,7 +257,7 @@ class TestCountedStarts:
                 3,
                 (_FIRST_RUN_ID,),
                 httpx.Response(403, json={"detail": "invalid token"}),
-                "Authentication error: invalid token",
+                "invalid token",
                 False,
                 id="authentication",
             ),
@@ -265,7 +265,7 @@ class TestCountedStarts:
                 3,
                 (_FIRST_RUN_ID,),
                 httpx.Response(502, json={"detail": "benchmark unavailable"}),
-                "Benchmark service error: benchmark unavailable",
+                "benchmark unavailable",
                 True,
                 id="benchmark-service",
             ),
@@ -320,6 +320,8 @@ class TestCountedStarts:
         assert result.exit_code != 0
         assert start_testbed.tracker.start_benchmark.call_count == len(prior_ids) + 1
         assert expected_detail in result.output
+        assert "Authentication error:" not in result.output
+        assert "Benchmark service error:" not in result.output
         assert str(_THIRD_RUN_ID) not in result.output
         assert (_UNKNOWN_OUTCOME in result.output) is unknown_outcome
         assert ("valkyrie run list" in result.output) is unknown_outcome
@@ -327,10 +329,10 @@ class TestCountedStarts:
         if prior_ids:
             confirmed_ids = ",".join(str(run_id) for run_id in prior_ids)
 
-            assert f"Confirmed started run IDs: {confirmed_ids}" in result.output
-            assert f"valkyrie run status --ids {confirmed_ids}" in result.output
+            assert f"{len(prior_ids)} / {count} requested runs successfully started." in result.output
+            assert f"Track progress: valkyrie run status --ids {confirmed_ids}" in result.output
         elif count > 1:
-            assert "zero confirmed starts" in result.output
+            assert f"0 / {count} requested runs successfully started." in result.output
             assert "valkyrie run status --ids" not in result.output
         else:
-            assert "Confirmed started run IDs:" not in result.output
+            assert "requested runs successfully started" not in result.output

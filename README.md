@@ -157,13 +157,13 @@ $ valkyrie run start --agent sweagent --benchmark swebench --count 3
 Run ID: <id-1>
 Run ID: <id-2>
 Run ID: <id-3>
-Confirmed started run IDs: <id-1>,<id-2>,<id-3>
-valkyrie run status --ids <id-1>,<id-2>,<id-3>
+3 / 3 requested runs successfully started.
+Track progress: valkyrie run status --ids <id-1>,<id-2>,<id-3>
 ```
 
 Start requests are sent sequentially, but accepted runs execute independently and may overlap. Approximate simultaneous task pressure and cost can scale with `count × concurrency`. `--connect` is only supported when count is `1`; it is rejected when count is greater than `1`.
 
-Starts are fail-fast: if a request fails, no later requests are attempted. The command exits nonzero and reports confirmed prior run IDs. After a transport/server response failure, the latest request's outcome can be unknown; verify with `valkyrie run list`.
+Starts are fail-fast: if a request fails, no later requests are attempted. The command exits nonzero and reports confirmed progress with a combined status command. After a transport/server response failure, the latest request's outcome can be unknown; verify with `valkyrie run list`.
 
 | Flag | Description |
 | --- | --- |

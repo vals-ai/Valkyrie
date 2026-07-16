@@ -106,16 +106,18 @@ def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResp
     click.echo("└" + "─" * 79)
 
 
-def format_confirmed_start_summary(run_ids: list[UUID]) -> None:
+def format_confirmed_start_summary(run_ids: list[UUID], count: int) -> None:
     """Display confirmed run IDs and their combined status command."""
+    if count == 1:
+        return
+
     click.echo()
+    click.echo(f"{len(run_ids)} / {count} requested runs successfully started.")
     if not run_ids:
-        click.echo("Confirmed started run IDs: none (zero confirmed starts).")
         return
 
     joined_run_ids = ",".join(str(run_id) for run_id in run_ids)
-    click.echo(f"Confirmed started run IDs: {joined_run_ids}")
-    click.echo(f"valkyrie run status --ids {joined_run_ids}")
+    click.echo(f"Track progress: valkyrie run status --ids {joined_run_ids}")
 
 
 def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
@@ -389,31 +391,22 @@ def start(
                     )
                 except TrackerServiceError as error:
                     click.echo("\r\033[K", nl=False)
-                    if count > 1:
-                        format_confirmed_start_summary(confirmed_run_ids)
+                    format_confirmed_start_summary(confirmed_run_ids, count)
                     click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
                     raise click.ClickException(str(error)) from error
 
                 click.echo("\r\033[K", nl=False)
                 if response.status_code != 200:
                     click.echo(click.style("Run failed to start!", fg="red", bold=True))
-                    if count > 1:
-                        format_confirmed_start_summary(confirmed_run_ids)
+                    format_confirmed_start_summary(confirmed_run_ids, count)
                     if response.status_code >= 500:
                         click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
-
-                    detail = str(response_error_detail(response))
-                    if response.status_code in {401, 403}:
-                        detail = f"Authentication error: {detail}"
-                    elif response.status_code == 502:
-                        detail = f"Benchmark service error: {detail}"
-                    raise click.ClickException(detail)
+                    raise click.ClickException(str(response_error_detail(response)))
 
                 try:
                     start_response = StartBenchmarkResponse.model_validate(response.json())
                 except ValueError as error:
-                    if count > 1:
-                        format_confirmed_start_summary(confirmed_run_ids)
+                    format_confirmed_start_summary(confirmed_run_ids, count)
                     click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
                     raise click.ClickException("Tracker returned a malformed 200 start response.") from error
 
@@ -422,7 +415,6 @@ def start(
                 if connect:
                     stream_benchmark_status(tracker, start_response.benchmark_id)
 
-        if count > 1:
-            format_confirmed_start_summary(confirmed_run_ids)
+        format_confirmed_start_summary(confirmed_run_ids, count)
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))
