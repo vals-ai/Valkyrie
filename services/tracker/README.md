@@ -42,17 +42,14 @@ Tracker-service reads this when running `valkyrie config service list` to show t
 ## Tests
 
 ```bash
-make test                    # Unit + local integration tests; requires Docker
-make test-unit               # Unit tests + Alembic migrations + coverage
-make test-coverage           # Unit + local integration coverage with the 85% gate
+make test                    # Unit + local integration tests with 85% total coverage
+make test-unit               # Unit tests + Alembic migrations
 make test-alembic            # Alembic migration tests only
-make test-integration-local  # Local API + Postgres tests with coverage
-make test-integration-live   # AWS + benchmark service + sandbox tests with coverage
+make test-integration-local  # Local API + Postgres tests
+make test-integration-live   # AWS + benchmark service + sandbox tests
 ```
 
-Unit and integration coverage include both the `tracker` package and the FastAPI entrypoint in `main.py`. `make test` runs the same combined unit and local coverage gate as `make test-coverage`. CI uploads unit, local integration, and gated live integration reports separately so each layer contributes to the tracker coverage view without rerunning a suite.
-
-Local integration tests live under `tests/integration/local` and use the FastAPI app, SQLite, and disposable Postgres. They require Docker for the Postgres container but do not need cloud credentials. Live tests are grouped by orchestration, sandbox, and storage under `tests/integration/live`; they require a `.env` file at `services/tracker/.env`:
+`tests/integration/live` requires a `.env` file at `services/tracker/.env`:
 
 ```env
 # AWS — used to fetch sandbox provider credentials from Secrets Manager and write to S3/CloudWatch

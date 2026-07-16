@@ -1,4 +1,4 @@
-name: Tracker integration tests
+name: Tracker live integration tests
 on:
   pull_request:
     types: [opened, reopened, synchronize]
@@ -10,39 +10,6 @@ permissions:
   id-token: write
 
 jobs:
-  tracker-local-integration-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: "services/tracker/uv.lock"
-
-      - name: Install tracker dependencies
-        run: |
-          cd services/tracker
-          uv venv --python 3.12
-          uv sync --group dev
-
-      - name: Run local integration tests
-        run: |
-          cd services/tracker
-          make test-integration-local
-
-      - name: Upload local integration coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: services/tracker/coverage.xml
-          flags: tracker-integration
-
   tracker-live-integration-tests:
     runs-on: ubuntu-latest
     steps:
@@ -91,10 +58,3 @@ jobs:
           BENCHMARK_SERVICE_BASE_URL: ${{ secrets.BENCHMARK_SERVICE_BASE_URL }}
           BENCHMARK_SERVICE_AUTH_KEY: ${{ secrets.BENCHMARK_SERVICE_AUTH_KEY }}
           AWS_DEFAULT_REGION: us-east-1
-
-      - name: Upload live integration coverage to Codecov
-        uses: codecov/codecov-action@v4
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: services/tracker/coverage.xml
-          flags: tracker-live-integration
