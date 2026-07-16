@@ -334,7 +334,11 @@ class TestRunState:
         database_session.commit()
 
         # Task id is provided as a force parameter but does not exist in dataset
-        async def _verify_rejecting_task_5(*_args: Any, task_ids: list[str] | None, **_kwargs: Any) -> Any:
+        async def _verify_rejecting_task_5(
+            *_args: Any,
+            task_ids: list[str] | None,
+            **_kwargs: Any,
+        ) -> VerifyTaskIdsResponse:
             if task_ids and "task_5" in task_ids:
                 raise BenchmarkServiceError("task_5 does not exist in the dataset")
             return VerifyTaskIdsResponse(task_ids=task_ids or [])

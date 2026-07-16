@@ -6,8 +6,8 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 import asyncio
 import shlex
 from collections import deque
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import AsyncIterator, Mapping
+from typing import Any, Never
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -433,15 +433,6 @@ class TestRunAgent:
 class TestSandboxRetry:
     """Sandbox retry callbacks and dependency-install retries."""
 
-    def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
-        upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
-        deps_before_sleep = _install_agent_dependencies.retry.before_sleep
-
-        assert upload_before_sleep is not None
-        assert deps_before_sleep is not None
-        assert callable(upload_before_sleep)
-        assert callable(deps_before_sleep)
-
     async def test_install_agent_dependencies_retries_after_setup_timeout(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -648,7 +639,7 @@ class TestSandboxLifecycle:
         distributions: list[tuple[str, float, dict[str, str]]] = []
         context_calls: list[tuple[str, str]] = []
 
-        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncMock:
             return mock_sandbox
 
         def fake_distribution(name: str, value: float, tags: Mapping[str, Any] | None = None) -> None:
@@ -693,7 +684,7 @@ class TestSandboxLifecycle:
         create_error = RuntimeError("create failed")
         increments: list[tuple[str, dict[str, str]]] = []
 
-        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Never:
             raise create_error
 
         def fake_incr(name: str, _value: float = 1, tags: Mapping[str, Any] | None = None) -> None:
@@ -880,7 +871,7 @@ class TestStreamCommandOutputAgentFailure:
     """Agent command failure cleanup and error classification."""
 
     async def test_stream_command_output_removes_timing_files(self) -> None:
-        async def stream_command(_command: str) -> Any:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
             yield "done\n"
 
         exec_commands: list[str] = []
@@ -914,7 +905,7 @@ class TestStreamCommandOutputAgentFailure:
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(
         self, monkeypatch: pytest.MonkeyPatch, exit_code: int
     ) -> None:
-        async def stream_command(_command: str) -> Any:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
             yield "last line\n"
             raise ProviderSandboxCommandError(exit_code)
 

@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 
 import time
 from asyncio import Semaphore
-from typing import Any
+from typing import Any, Never
 from uuid import UUID
 
 import httpx
@@ -209,7 +209,7 @@ class TestBenchmarkServiceFailures:
             contract, database_session, harness_config
         )
 
-        async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> Any:
+        async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> Never:
             raise InvalidStatus(Response(404, "Not Found", Headers()))
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", _mock_setup_task)
@@ -264,7 +264,7 @@ class TestBenchmarkServiceFailures:
             contract, database_session, harness_config
         )
 
-        async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> Any:
+        async def _mock_setup_task(*_args: Any, **_kwargs: Any) -> Never:
             raise BenchmarkServiceError(
                 "ProgramBench task container failed to start: task_cleanroom: Pulling from programbench/test"
             )
@@ -334,7 +334,7 @@ class TestBenchmarkServiceFailures:
             "Final score failed with status code 404, response: <!DOCTYPE html><html><body>404 Not Found</body></html>"
         )
 
-        async def _mock_final_score(*_args: Any, **_kwargs: Any) -> Any:
+        async def _mock_final_score(*_args: Any, **_kwargs: Any) -> Never:
             raise BenchmarkServiceError(html_error)
 
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)

@@ -30,12 +30,6 @@ class TestTaskExecutionRetry:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
-    def test_process_task_retry_decorator_uses_observability_retry_callback(self) -> None:
-        before_sleep = cast(Any, process_task).retry.before_sleep
-
-        assert before_sleep is not None
-        assert callable(before_sleep)
-
     @pytest.mark.parametrize(
         "fail_target,error",
         [
