@@ -1,4 +1,7 @@
-"""Unit tests for tracker database model behavior."""
+"""Unit tests for tracker database model behavior.
+
+Run: uv run pytest tests/unit/database/test_models.py
+"""
 
 from sqlmodel import Session
 

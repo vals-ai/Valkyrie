@@ -1,4 +1,7 @@
-"""Unit tests for benchmark-service failure handling."""
+"""Unit tests for benchmark-service failure handling.
+
+Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
+"""
 
 import time
 from asyncio import Semaphore
@@ -30,7 +33,9 @@ from tracker.utils import (
 )
 
 
-class TestBenchmarkServiceDisconnect:
+class TestBenchmarkServiceFailures:
+    """Benchmark service disconnect, validation, and task error handling."""
+
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 

@@ -1,6 +1,10 @@
-"""Unit tests for task execution retries and timing signals."""
+"""Unit tests for task execution retries and timing signals.
+
+Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
+"""
 
 from asyncio import Semaphore
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
@@ -20,7 +24,9 @@ from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
 
 
-class TestPtyRetry:
+class TestTaskExecutionRetry:
+    """Task execution retries, callbacks, and transition spans."""
+
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
@@ -49,8 +55,7 @@ class TestPtyRetry:
         fail_target: str,
         error: SandboxSetupError,
     ) -> None:
-        """
-        When a SandboxSetupError subclass is raised during sandbox setup or agent execution,
+        """When a SandboxSetupError subclass is raised during sandbox setup or agent execution,
         process_task should delete the sandbox, create a fresh one, and complete successfully.
 
         Test Cases:
@@ -81,7 +86,7 @@ class TestPtyRetry:
         sandbox_entry_count = 0
 
         @asynccontextmanager
-        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
             nonlocal sandbox_entry_count
             sandbox_entry_count += 1
             mock_sandbox = AsyncMock()
@@ -177,7 +182,7 @@ class TestPtyRetry:
         database_session.commit()
 
         @asynccontextmanager
-        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any):
+        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
             mock_sandbox = AsyncMock()
             mock_sandbox.id = "mock-sandbox-id"
             mock_sandbox.name = "mock-sandbox-name"

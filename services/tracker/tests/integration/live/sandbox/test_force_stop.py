@@ -12,14 +12,15 @@ from benchmark_service.client import BenchmarkServiceClient
 from fastapi.testclient import TestClient
 from sqlmodel import Session, col, select
 
-from tests.utils import TEST_ORG_ID
-from tests.utils import random_task_id
+import tracker.utils as tracker_utils
+from tests.utils import TEST_ORG_ID, random_task_id
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import force_stop_sandboxes, process_benchmark  # pyright: ignore[reportUnknownVariableType]
-from tracker.utils import fetch_sandbox_provider_config
+from tracker.utils import fetch_sandbox_provider_config, force_stop_sandboxes
+
+process_benchmark = getattr(tracker_utils, "process_benchmark")
 
 logger = get_logger(__name__)
 
@@ -96,6 +97,8 @@ def _assert_no_task_errors(benchmark: Benchmark, database_session: Session) -> N
 
 
 class TestForceStop:
+    """Live graceful and forced sandbox stop flows."""
+
     async def test_force_stop_active_sandbox(
         self,
         example_benchmark_object: Benchmark,

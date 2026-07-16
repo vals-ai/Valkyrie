@@ -1,4 +1,7 @@
-"""Unit tests for ECS task-protection reference counting."""
+"""Unit tests for ECS task-protection reference counting.
+
+Run: uv run pytest tests/unit/middleware/test_task_protection.py
+"""
 
 from typing import Any, cast
 from unittest.mock import Mock

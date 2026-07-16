@@ -32,37 +32,39 @@ def _persist_benchmark(session: Session, name: str, agent: str) -> Benchmark:
     return benchmark
 
 
-def test_filter_options_returns_distinct(client: TestClient, database_session: Session) -> None:
-    """Filter options must collapse repeated benchmark metadata into distinct values.
+class TestFilterOptions:
+    """Filter option responses and authentication."""
 
-    Test cases:
-    - Authenticated results contain each available filter value once.
-    """
-    for benchmark_name, agent_name in [
-        ("swebench", "mini_sweagent"),
-        ("swebench", "claude_code"),
-        ("fab", "mini_sweagent"),
-        ("swebench", "mini_sweagent"),
-    ]:
-        _persist_benchmark(database_session, benchmark_name, agent_name)
+    def test_filter_options_returns_distinct(self, client: TestClient, database_session: Session) -> None:
+        """Filter options must collapse repeated benchmark metadata into distinct values.
 
-    response = client.get(
-        "/benchmarks/filter-options",
-        headers={"Authorization": "Bearer fake"},
-    )
+        Test cases:
+        - Authenticated results contain each available filter value once.
+        """
+        for benchmark_name, agent_name in [
+            ("swebench", "mini_sweagent"),
+            ("swebench", "claude_code"),
+            ("fab", "mini_sweagent"),
+            ("swebench", "mini_sweagent"),
+        ]:
+            _persist_benchmark(database_session, benchmark_name, agent_name)
 
-    assert response.status_code == 200, response.text
-    response_body = response.json()
-    assert response_body["benchmark_names"] == ["fab", "swebench"]
-    assert sorted(response_body["agent_names"]) == ["claude_code", "mini_sweagent"]
+        response = client.get(
+            "/benchmarks/filter-options",
+            headers={"Authorization": "Bearer fake"},
+        )
 
+        assert response.status_code == 200, response.text
+        response_body = response.json()
+        assert response_body["benchmark_names"] == ["fab", "swebench"]
+        assert sorted(response_body["agent_names"]) == ["claude_code", "mini_sweagent"]
 
-def test_filter_options_unauth_401(client: TestClient) -> None:
-    """Benchmark filter metadata must require authentication.
+    def test_filter_options_unauth_401(self, client: TestClient) -> None:
+        """Benchmark filter metadata must require authentication.
 
-    Test cases:
-    - A request without a bearer session receives 401.
-    """
-    response = client.get("/benchmarks/filter-options")
+        Test cases:
+        - A request without a bearer session receives 401.
+        """
+        response = client.get("/benchmarks/filter-options")
 
-    assert response.status_code == 401
+        assert response.status_code == 401

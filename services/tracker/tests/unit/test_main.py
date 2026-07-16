@@ -21,7 +21,7 @@ from benchmark_service.client import (
 )
 from benchmark_service.schemas import FinalScoreResponse, VerifyTaskIdsResponse
 from dateutil.parser import isoparse
-from descope import DescopeClient
+from descope.descope_client import DescopeClient
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
@@ -57,13 +57,14 @@ from tracker.utils import fetch_harness_config
 client = TestClient(app)
 
 
-class TestFastapiServer:
+class TestTrackerAPI:
+    """Tracker API route behavior and error responses."""
+
     async def _mock_verify_task_ids_error(self, *_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
         raise Exception("Error verifying task ids")
 
-    def test_health_check(self, monkeypatch: MonkeyPatch):
-        """
-        Test health check of the fastapi server.
+    def test_health_check(self, monkeypatch: MonkeyPatch) -> None:
+        """Test health check of the fastapi server.
 
         Test Cases:
             - Returns 200 OK
@@ -152,7 +153,11 @@ class TestFastapiServer:
         - The full exception remains available to operators in logs.
         """
         sensitive_detail = "sensitive-internal-tracker-detail"
-        monkeypatch.setattr("sentry_sdk.capture_exception", lambda _exc: None)
+
+        def capture_exception(_exception: BaseException) -> None:
+            return None
+
+        monkeypatch.setattr("sentry_sdk.capture_exception", capture_exception)
 
         with pytest.raises(HTTPException) as exc_info:
             await tracker_service_error_handler(MagicMock(), TrackerServiceError(sensitive_detail))
@@ -188,7 +193,7 @@ class TestFastapiServer:
     async def test_fetch_benchmark_tasks(
         self,
         monkeypatch: MonkeyPatch,
-    ):
+    ) -> None:
         async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=["task_1", "task_2"])
 
@@ -211,9 +216,8 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
-    ):
-        """
-        Test start benchmark of the fastapi server.
+    ) -> None:
+        """Test start benchmark of the fastapi server.
 
         Test Cases:
             - Returns 200 OK
@@ -279,7 +283,7 @@ class TestFastapiServer:
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
-    ):
+    ) -> None:
         request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
@@ -288,7 +292,7 @@ class TestFastapiServer:
             harness_config=harness_config,
         )
 
-        async def _mock_health_check(*_args: Any, **_kwargs: Any):
+        async def _mock_health_check(*_args: Any, **_kwargs: Any) -> None:
             raise httpx.ConnectError("Name or service not known")
 
         monkeypatch.setattr(BenchmarkServiceClient, "health_check", _mock_health_check)
@@ -304,7 +308,7 @@ class TestFastapiServer:
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
-    ):
+    ) -> None:
         observed_headers: dict[str, str] = {}
         captured_request_json: dict[str, Any] = {}
 
@@ -316,12 +320,16 @@ class TestFastapiServer:
             harness_config=harness_config,
         )
 
-        async def _mock_health_check(service_client: BenchmarkServiceClient, *_args: Any, **_kwargs: Any):
-            observed_headers.update(service_client._headers)
+        async def _mock_health_check(
+            service_client: BenchmarkServiceClient, *_args: Any, **_kwargs: Any
+        ) -> dict[str, str]:
+            observed_headers.update(getattr(service_client, "_headers"))
             return {"status": "ok"}
 
-        async def _mock_verify_task_ids(service_client: BenchmarkServiceClient, *_args: Any, **_kwargs: Any):
-            observed_headers.update(service_client._headers)
+        async def _mock_verify_task_ids(
+            service_client: BenchmarkServiceClient, *_args: Any, **_kwargs: Any
+        ) -> VerifyTaskIdsResponse:
+            observed_headers.update(getattr(service_client, "_headers"))
             return VerifyTaskIdsResponse(task_ids=["task_0"])
 
         class _MockKicker:
@@ -351,7 +359,7 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
-    ):
+    ) -> None:
         """Start requests should keep the provider secret chosen by the client.
 
         Test cases:
@@ -403,9 +411,8 @@ class TestFastapiServer:
         assert captured_request_json["sandbox_provider"] == "modal"
         assert captured_request_json["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
 
-    async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark):
-        """
-        Test fetch benchmark of the fastapi server.
+    async def test_fetch_benchmark(self, database_session: Session, example_benchmark_object: Benchmark) -> None:
+        """Test fetch benchmark of the fastapi server.
 
         Test Cases:
             - Returns 200 OK
@@ -505,9 +512,8 @@ class TestFastapiServer:
 
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
-    ):
-        """
-        Test the retrieve results endpoint of the fastapi server.
+    ) -> None:
+        """Test the retrieve results endpoint of the fastapi server.
 
         Test Cases:
             - 404 on invalid benchmark id
@@ -664,7 +670,7 @@ class TestFastapiServer:
         observed_results: dict[str, Any] = {}
 
         async def _mock_final_score(client: BenchmarkServiceClient, **kwargs: Any) -> FinalScoreResponse:
-            observed_headers.update(client._headers)
+            observed_headers.update(getattr(client, "_headers"))
             observed_results.clear()
             observed_results.update(kwargs["evaluation_results"])
             ids = list(kwargs["evaluation_results"].keys())
@@ -701,9 +707,8 @@ class TestFastapiServer:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
-    ):
-        """
-        Test benchmark error handling of the fastapi server.
+    ) -> None:
+        """Test benchmark error handling of the fastapi server.
 
         Test Cases:
             - Verify failure returns 502 with the error message
@@ -735,9 +740,8 @@ class TestFastapiServer:
         row_count_after = len(database_session.exec(select(Benchmark)).all())
         assert row_count_after == row_count_before
 
-    async def test_fetch_benchmarks(self, database_session: Session, example_benchmark_object: Benchmark):
-        """
-        Test fetch benchmarks of the fastapi server.
+    async def test_fetch_benchmarks(self, database_session: Session, example_benchmark_object: Benchmark) -> None:
+        """Test fetch benchmarks of the fastapi server.
 
         Test Cases:
             - Fetch using no filters all all, returns 5 benchmarks with total count
@@ -857,7 +861,7 @@ class TestFastapiServer:
         self,
         contract: AgentContractRequest,
         harness_config: HarnessConfig,
-    ):
+    ) -> None:
         allowed_url = "http://internal-swebench.example.com:8001"
         request = StartBenchmarkRequest(
             contract=contract,
@@ -872,7 +876,9 @@ class TestFastapiServer:
 
         assert response.status_code == 200
 
-    async def test_fetch_benchmarks_filters_by_dataset(self, database_session: Session, contract: AgentContractRequest):
+    async def test_fetch_benchmarks_filters_by_dataset(
+        self, database_session: Session, contract: AgentContractRequest
+    ) -> None:
         benchmark_rows = [
             Benchmark(
                 org_id=TEST_ORG_ID,
@@ -913,7 +919,7 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
-    ):
+    ) -> None:
         test_org = Org(id=TEST_ORG_ID, name="default")
         app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
             org=test_org,
@@ -950,7 +956,7 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
-    ):
+    ) -> None:
         # The autouse override_starter fixture already returns a self-hosted identity.
         async def _mock_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=["task_0"])
@@ -979,10 +985,11 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
         caplog: pytest.LogCaptureFixture,
-    ):
+    ) -> None:
         """Hosted-mode start with an email-less access key emits a one-shot warning. Self-hosted
         identity (access_key_id is None) must NOT warn — that's the bug fix for the warning
-        firing on every authenticated request."""
+        firing on every authenticated request.
+        """
         test_org = Org(id=TEST_ORG_ID, name="default")
         app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
             org=test_org,
@@ -1011,12 +1018,12 @@ class TestFastapiServer:
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "email" in r.message]
         assert len(warnings) == 1
         assert "K2abc" in warnings[0].message
-        assert warnings[0].benchmark_id == benchmark_id
+        assert getattr(warnings[0], "benchmark_id") == benchmark_id
 
     async def test_init_org_returns_email_claim_present(
         self,
         monkeypatch: MonkeyPatch,
-    ):
+    ) -> None:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)
 
@@ -1042,7 +1049,7 @@ class TestFastapiServer:
     async def test_init_org_returns_email_claim_missing(
         self,
         monkeypatch: MonkeyPatch,
-    ):
+    ) -> None:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)
 
@@ -1064,7 +1071,7 @@ class TestFastapiServer:
     async def test_init_org_uses_bound_user_email_when_email_claim_missing(
         self,
         monkeypatch: MonkeyPatch,
-    ):
+    ) -> None:
         monkeypatch.setattr("tracker.auth.AUTH_REQUIRED", True)
         monkeypatch.setattr("main.AUTH_REQUIRED", True)
 
@@ -1095,7 +1102,7 @@ class TestFastapiServer:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-    ):
+    ) -> None:
         bench = Benchmark(
             org_id=TEST_ORG_ID,
             name="swebench",
@@ -1116,9 +1123,10 @@ class TestFastapiServer:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-    ):
+    ) -> None:
         """Regression: FastAPI's Depends(PydanticModel) doesn't bind list[str] from query params;
-        started_by must be declared as a separate Query() parameter on the endpoint."""
+        started_by must be declared as a separate Query() parameter on the endpoint.
+        """
         for email in ("alice@vals.ai", "bob@vals.ai", None):
             database_session.add(
                 Benchmark(
@@ -1153,7 +1161,7 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
-    ):
+    ) -> None:
         """Run labels should persist on start and be visible through fetch and list.
 
         Test cases:
@@ -1202,7 +1210,7 @@ class TestFastapiServer:
         self,
         contract: AgentContractRequest,
         database_session: Session,
-    ):
+    ) -> None:
         bench = Benchmark(
             org_id=TEST_ORG_ID,
             name="swebench",
@@ -1222,7 +1230,7 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-    ):
+    ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
@@ -1324,7 +1332,7 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-    ):
+    ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
@@ -1345,9 +1353,8 @@ class TestFastapiServer:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
-    ):
-        """
-        Test that BenchmarkServiceUnauthenticatedError returns 502 without capturing to Sentry.
+    ) -> None:
+        """Test that BenchmarkServiceUnauthenticatedError returns 502 without capturing to Sentry.
 
         Test Cases:
             - /start-benchmark returns 502 when benchmark service returns 401
@@ -1356,7 +1363,11 @@ class TestFastapiServer:
             - None of the above cases capture the exception to Sentry
         """
         captured: list[Exception] = []
-        monkeypatch.setattr("sentry_sdk.capture_exception", lambda exc: captured.append(exc))  # type: ignore
+
+        def capture_exception(exception: Exception) -> None:
+            captured.append(exception)
+
+        monkeypatch.setattr("sentry_sdk.capture_exception", capture_exception)
 
         async def _raise_unauth(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
             raise BenchmarkServiceUnauthenticatedError("401 Unauthorized")
@@ -1413,7 +1424,7 @@ class TestFastapiServer:
         # None of the three cases should have reached Sentry
         assert captured == []
 
-    def test_fetch_benchmark_returns_400_when_harness_headers_missing(self):
+    def test_fetch_benchmark_returns_400_when_harness_headers_missing(self) -> None:
         """Missing X-Harness-* headers should return 400, not 500 KeyError."""
         app.dependency_overrides.pop(fetch_harness_config)
         try:

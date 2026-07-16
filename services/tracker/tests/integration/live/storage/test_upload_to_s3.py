@@ -1,4 +1,7 @@
-"""Live S3 archive upload tests."""
+"""Live S3 archive upload tests.
+
+Run: uv run pytest tests/integration/live/storage/test_upload_to_s3.py
+"""
 
 import asyncio
 import io
@@ -32,6 +35,8 @@ def _member_content(members: dict[str, bytes], suffix: str) -> bytes:
 
 
 class TestUploadToS3:
+    """Live archive uploads for files and directories."""
+
     async def test_archive_and_upload_file_and_directory(
         self,
         example_benchmark_object: Benchmark,

@@ -324,7 +324,7 @@ class TestSandboxOperations:
         test_image: str,
         random_sandbox_name: str,
         creation_semaphore: asyncio.Semaphore,
-    ):
+    ) -> None:
         """Verify stream_command_output classifies timeout exits without raising.
 
         Test cases:

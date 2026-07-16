@@ -1,4 +1,7 @@
-"""Live S3 coverage for tracker API routes."""
+"""Live S3 coverage for tracker API routes.
+
+Run: uv run pytest tests/integration/live/api/test_s3_routes.py
+"""
 
 from io import BytesIO
 from typing import Any, cast

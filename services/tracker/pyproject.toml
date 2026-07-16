@@ -70,6 +70,7 @@ indent-style = "space"
 [tool.basedpyright]
 venvPath="."
 venv=".venv"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 
 reportExplicitAny = false
@@ -80,6 +81,7 @@ enableTypeIgnoreComments = true
 exclude=["src/tracker/database/migrations/versions"]
 
 [tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
 asyncio_mode = "auto"
 pythonpath = ["."]
 env = [

@@ -11,13 +11,13 @@ from benchmark_service.client import BenchmarkServiceClient
 from dotenv import load_dotenv
 from sqlmodel import Session
 
-from tests.utils import TEST_ORG_ID
 from tests.integration_agent_artifacts import (
     create_s3_client,
     delete_test_agent_artifact,
     integration_test_agent_name,
     seed_test_agent_artifact,
 )
+from tests.utils import TEST_ORG_ID
 from tracker.aws.s3 import get_contract_s3_key
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import DEFAULT_ORG_NAME, AgentContractRequest, Org

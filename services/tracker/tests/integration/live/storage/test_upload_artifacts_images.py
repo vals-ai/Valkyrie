@@ -1,4 +1,7 @@
-"""Live artifact image upload tests."""
+"""Live artifact image upload tests.
+
+Run: uv run pytest tests/integration/live/storage/test_upload_artifacts_images.py
+"""
 
 import asyncio
 from uuid import uuid4
@@ -7,8 +10,8 @@ import boto3
 from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
-from tracker.database.models import AgentContractRequest
 from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
+from tracker.database.models import AgentContractRequest
 from tracker.sandbox import create_sandbox, upload_agent_artifacts
 from tracker.types import AWSCredentials, HarnessConfig
 
@@ -37,6 +40,8 @@ def _format_failure(exc: BaseException) -> str:
 
 
 class TestUploadArtifactsAcrossImages:
+    """Live artifact uploads across supported sandbox images."""
+
     async def test_upload_all_images(
         self,
         sandbox_provider: SandboxProvider,

@@ -1,4 +1,7 @@
-"""Unit tests for tracked task scheduling and monitoring."""
+"""Unit tests for tracked task scheduling and monitoring.
+
+Run: uv run pytest tests/unit/utils/test_task_execution.py
+"""
 
 import asyncio
 from asyncio import Semaphore
@@ -13,7 +16,9 @@ from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
 
 
-class TestTracker:
+class TestTaskExecution:
+    """Task monitoring and tracked task state transitions."""
+
     _test_org = Org(id=TEST_ORG_ID, name="default")
 
     async def test_task_monitor(
@@ -46,20 +51,23 @@ class TestTracker:
         monkeypatch.setattr(monitor, "_TRACK_INTERVAL", 0)
 
         # Change task status to running and add a task to the object
-        task_tracking["task_id_1"]._status = TrackedTaskStatus.RUNNING  # type: ignore
+        tracked_task = task_tracking["task_id_1"]
+        setattr(tracked_task, "_status", TrackedTaskStatus.RUNNING)
         cancel_mock = Mock()
 
         def _cancel(*_args: Any, **_kwargs: Any) -> None:
-            task_tracking["task_id_1"]._status = TrackedTaskStatus.DONE  # type: ignore
+            setattr(tracked_task, "_status", TrackedTaskStatus.DONE)
 
         cancel_mock.side_effect = _cancel
-        task_tracking["task_id_1"]._task = Mock(cancel=cancel_mock, done=lambda: False)  # type: ignore
+        setattr(tracked_task, "_task", Mock(cancel=cancel_mock, done=lambda: False))
 
         # Test case 1. Validate task returns true if the task is not stopped
-        assert monitor._validate_task("task_id_1")  # type: ignore
+        validate_task = getattr(monitor, "_validate_task")
+        assert validate_task("task_id_1")
 
         # Change the task status to stopped to make sure that it gets invalidated inside of the validate task method
-        task_row = monitor._fetch_task_row("task_id_1")  # type: ignore
+        fetch_task_row = getattr(monitor, "_fetch_task_row")
+        task_row = fetch_task_row("task_id_1")
 
         # Commit the changes to the database, will be available from any session
         task_row.status = TaskStatus.STOPPED
@@ -68,7 +76,7 @@ class TestTracker:
 
         # Test case 2. Validate task returns false if the task status has been set to stopped
         # NOTE: ensures that the database change gets picked up by the session
-        assert not monitor._validate_task("task_id_1")  # type: ignore
+        assert not validate_task("task_id_1")
 
         # Test case 3. Running tasks stay tracked until they are done
         await monitor.track_tasks()
@@ -76,7 +84,7 @@ class TestTracker:
         cancel_mock.assert_called_once()
 
         assert getattr(monitor, "_task_tracking") == {}
-        task_tracking["task_id_1"]._coro.close()  # type: ignore[attr-defined]
+        getattr(tracked_task, "_coro").close()
 
     async def test_tracked_task(self) -> None:
         """Tracked task states must match semaphore scheduling and cancellation.

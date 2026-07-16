@@ -30,67 +30,67 @@ def _make_bench(name: str, status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS
     )
 
 
-def test_status_returns_requested_ids(client: TestClient, database_session: Session) -> None:
-    """Status polling must return current counts for each requested run.
+class TestBenchmarksStatus:
+    """Bulk benchmark status responses, scoping, and authentication."""
 
-    Test cases:
-    - An authenticated request receives entries for its requested benchmark IDs.
-    """
-    running_benchmark = _make_bench("running", BenchmarkStatus.IN_PROGRESS)
-    finished_benchmark = _make_bench("finished", BenchmarkStatus.FINISHED)
-    database_session.add_all([running_benchmark, finished_benchmark])
-    database_session.commit()
+    def test_status_returns_requested_ids(self, client: TestClient, database_session: Session) -> None:
+        """Status polling must return current counts for each requested run.
 
-    response = client.get(
-        f"/benchmarks/status?ids={running_benchmark.id},{finished_benchmark.id}",
-        headers={"Authorization": "Bearer fake"},
-    )
+        Test cases:
+        - An authenticated request receives entries for its requested benchmark IDs.
+        """
+        running_benchmark = _make_bench("running", BenchmarkStatus.IN_PROGRESS)
+        finished_benchmark = _make_bench("finished", BenchmarkStatus.FINISHED)
+        database_session.add_all([running_benchmark, finished_benchmark])
+        database_session.commit()
 
-    assert response.status_code == 200, response.text
-    response_body = response.json()
-    returned_ids = {entry["id"] for entry in response_body["entries"]}
-    assert returned_ids == {str(running_benchmark.id), str(finished_benchmark.id)}
+        response = client.get(
+            f"/benchmarks/status?ids={running_benchmark.id},{finished_benchmark.id}",
+            headers={"Authorization": "Bearer fake"},
+        )
 
+        assert response.status_code == 200, response.text
+        response_body = response.json()
+        returned_ids = {entry["id"] for entry in response_body["entries"]}
+        assert returned_ids == {str(running_benchmark.id), str(finished_benchmark.id)}
 
-def test_status_ignores_foreign_ids(client: TestClient, database_session: Session) -> None:
-    """Status polling must not reveal runs from another organization.
+    def test_status_ignores_foreign_ids(self, client: TestClient, database_session: Session) -> None:
+        """Status polling must not reveal runs from another organization.
 
-    Test cases:
-    - Requested foreign benchmark IDs are omitted from the response.
-    """
-    benchmark = _make_bench("own")
-    database_session.add(benchmark)
-    database_session.commit()
-    foreign_benchmark_id = uuid4()
+        Test cases:
+        - Requested foreign benchmark IDs are omitted from the response.
+        """
+        benchmark = _make_bench("own")
+        database_session.add(benchmark)
+        database_session.commit()
+        foreign_benchmark_id = uuid4()
 
-    response = client.get(
-        f"/benchmarks/status?ids={benchmark.id},{foreign_benchmark_id}",
-        headers={"Authorization": "Bearer fake"},
-    )
+        response = client.get(
+            f"/benchmarks/status?ids={benchmark.id},{foreign_benchmark_id}",
+            headers={"Authorization": "Bearer fake"},
+        )
 
-    response_body = response.json()
-    assert len(response_body["entries"]) == 1
-    assert response_body["entries"][0]["id"] == str(benchmark.id)
+        response_body = response.json()
+        assert len(response_body["entries"]) == 1
+        assert response_body["entries"][0]["id"] == str(benchmark.id)
 
+    def test_status_no_ids_returns_empty(self, client: TestClient) -> None:
+        """An empty status request must be a successful no-op.
 
-def test_status_no_ids_returns_empty(client: TestClient) -> None:
-    """An empty status request must be a successful no-op.
+        Test cases:
+        - Omitting benchmark IDs returns an empty entries list.
+        """
+        response = client.get("/benchmarks/status", headers={"Authorization": "Bearer fake"})
 
-    Test cases:
-    - Omitting benchmark IDs returns an empty entries list.
-    """
-    response = client.get("/benchmarks/status", headers={"Authorization": "Bearer fake"})
+        assert response.status_code == 200
+        assert response.json() == {"entries": []}
 
-    assert response.status_code == 200
-    assert response.json() == {"entries": []}
+    def test_status_unauthenticated_returns_401(self, client: TestClient) -> None:
+        """Benchmark status polling must require authentication.
 
+        Test cases:
+        - A request without a bearer session receives 401.
+        """
+        response = client.get("/benchmarks/status?ids=00000000-0000-0000-0000-000000000001")
 
-def test_status_unauthenticated_returns_401(client: TestClient) -> None:
-    """Benchmark status polling must require authentication.
-
-    Test cases:
-    - A request without a bearer session receives 401.
-    """
-    response = client.get("/benchmarks/status?ids=00000000-0000-0000-0000-000000000001")
-
-    assert response.status_code == 401
+        assert response.status_code == 401

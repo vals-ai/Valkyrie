@@ -1,4 +1,7 @@
-"""Unit tests for benchmark state transitions and queries."""
+"""Unit tests for benchmark state transitions and queries.
+
+Run: uv run pytest tests/unit/utils/test_run_state.py
+"""
 
 from datetime import datetime
 from typing import Any, Sequence
@@ -42,12 +45,16 @@ from tracker.utils import (
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
-from tracker.utils.harness_config import _parse_log_retention_policy
+import tracker.utils.harness_config as harness_config_module
+
+_parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
 client = TestClient(app)
 
 
-class TestBenchmarkUtils:
+class TestRunState:
+    """Benchmark state transitions, task rows, and finalization."""
+
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
@@ -85,9 +92,8 @@ class TestBenchmarkUtils:
     ) -> FinalScoreResponse:
         return FinalScoreResponse(final_score=final_score, metadata=metadata, tasks_evaluated=tasks_evaluated)
 
-    def test_stop_benchmark(self, example_benchmark_object: Benchmark, database_session: Session):
-        """
-        Tests the flow of updating the benchmark related objects to the proper states when stopping a benchmark
+    def test_stop_benchmark(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+        """Tests the flow of updating the benchmark related objects to the proper states when stopping a benchmark
 
         Test Cases:
             - Benchmark can be stopped if it is in progress and tasks that have not pending yet exist
@@ -153,9 +159,8 @@ class TestBenchmarkUtils:
 
         assert task_rows == 3
 
-    def test_stop_benchmark_edge_cases(self, example_benchmark_object: Benchmark, database_session: Session):
-        """
-        Tests edge cases for stopping a benchmark
+    def test_stop_benchmark_edge_cases(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+        """Tests edge cases for stopping a benchmark
 
         Test Cases:
             - Cannot stop a benchmark that is not in progress
@@ -173,9 +178,8 @@ class TestBenchmarkUtils:
         response: Response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=false")
         assert response.status_code == 400
 
-    def test_resume_benchmark(self, example_benchmark_object: Benchmark, database_session: Session):
-        """
-        Tests the flow of updating the benchmark related objects to the proper states when resuming a benchmark
+    def test_resume_benchmark(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+        """Tests the flow of updating the benchmark related objects to the proper states when resuming a benchmark
 
         Test Cases:
             - Benchmark can be resumed if it is in a stopped state and a single task with the stopped status exists
@@ -262,9 +266,8 @@ class TestBenchmarkUtils:
         database_session: Session,
         harness_config: HarnessConfig,
         monkeypatch: pytest.MonkeyPatch,
-    ):
-        """
-        Tests edge cases for resuming a benchmark
+    ) -> None:
+        """Tests edge cases for resuming a benchmark
 
         Test Cases:
             - Running benchmark retry with no error tasks is a no-op
@@ -369,9 +372,8 @@ class TestBenchmarkUtils:
         assert len(task_rows) == 5
         assert all(task_row.status == TaskStatus.PENDING for task_row in task_rows)
 
-    def test_create_task_rows(self, example_benchmark_object: Benchmark, database_session: Session):
-        """
-        Tests different scenarios for creating task rows
+    def test_create_task_rows(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+        """Tests different scenarios for creating task rows
 
         Test Cases:
             - No tasks exist in the database already
@@ -412,7 +414,7 @@ class TestBenchmarkUtils:
 
     def test_fetch_final_score_inputs_waits_for_runnable_tasks(
         self, example_benchmark_object: Benchmark, database_session: Session
-    ):
+    ) -> None:
         benchmark_row = example_benchmark_object
         database_session.add(benchmark_row)
         database_session.commit()
@@ -463,7 +465,7 @@ class TestBenchmarkUtils:
 
     def test_commit_task_error_spans_status_transition(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
-    ):
+    ) -> None:
         log_records: list[dict[str, Any]] = []
         span_records: list[dict[str, Any]] = []
 
@@ -517,9 +519,10 @@ class TestBenchmarkUtils:
         assert transition_record["has_error_message"] is True
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
 
-    async def test_set_benchmark_final_status(self, example_benchmark_object: Benchmark, database_session: Session):
-        """
-        Tests the end to end flow when stopping and resuming a benchmark
+    async def test_set_benchmark_final_status(
+        self, example_benchmark_object: Benchmark, database_session: Session
+    ) -> None:
+        """Tests the end to end flow when stopping and resuming a benchmark
 
         Test Cases:
             - Error is raised if tasks are still in the pending or in progress state
@@ -597,116 +600,124 @@ def _make_benchmark(
     return bench
 
 
-def test_fetch_filtered_started_by_single(database_session: Session, contract: AgentContractRequest):
-    org = database_session.get(Org, TEST_ORG_ID)
-    assert org is not None
-    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
-    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
-    _make_benchmark(database_session, contract, started_by_email=None)
+class TestFetchStartedByFilter:
+    """Run filtering by starter email."""
 
-    rows, total, _ = fetch_filtered_benchmark_rows(
-        FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
-        database_session,
-        org,
-    )
-    assert total == 1
-    assert [r.started_by_email for r in rows] == ["alice@vals.ai"]
+    def test_fetch_filtered_started_by_single(self, database_session: Session, contract: AgentContractRequest) -> None:
+        org = database_session.get(Org, TEST_ORG_ID)
+        assert org is not None
+        _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+        _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
+        _make_benchmark(database_session, contract, started_by_email=None)
+
+        rows, total, _ = fetch_filtered_benchmark_rows(
+            FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
+            database_session,
+            org,
+        )
+        assert total == 1
+        assert [r.started_by_email for r in rows] == ["alice@vals.ai"]
+
+    def test_fetch_filtered_started_by_multiple(
+        self, database_session: Session, contract: AgentContractRequest
+    ) -> None:
+        org = database_session.get(Org, TEST_ORG_ID)
+        assert org is not None
+        _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+        _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
+        _make_benchmark(database_session, contract, started_by_email="carol@vals.ai")
+
+        rows, total, _ = fetch_filtered_benchmark_rows(
+            FetchBenchmarksRequest(started_by=["alice@vals.ai", "bob@vals.ai"], limit=10),
+            database_session,
+            org,
+        )
+        assert total == 2
+        assert sorted(email for r in rows if (email := r.started_by_email) is not None) == [
+            "alice@vals.ai",
+            "bob@vals.ai",
+        ]
+
+    def test_fetch_filtered_started_by_case_insensitive(
+        self, database_session: Session, contract: AgentContractRequest
+    ) -> None:
+        """Uppercase input matches the lower-cased rows in the DB."""
+        org = database_session.get(Org, TEST_ORG_ID)
+        assert org is not None
+        _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+        rows, total, _ = fetch_filtered_benchmark_rows(
+            FetchBenchmarksRequest(started_by=["ALICE@VALS.AI"], limit=10),
+            database_session,
+            org,
+        )
+        assert total == 1
+        assert rows[0].started_by_email == "alice@vals.ai"
+
+    def test_fetch_filtered_started_by_none_skips_filter(
+        self, database_session: Session, contract: AgentContractRequest
+    ) -> None:
+        org = database_session.get(Org, TEST_ORG_ID)
+        assert org is not None
+        _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+        _make_benchmark(database_session, contract, started_by_email=None)
+
+        _, total, _ = fetch_filtered_benchmark_rows(
+            FetchBenchmarksRequest(started_by=None, limit=10),
+            database_session,
+            org,
+        )
+        assert total == 2
+
+    def test_fetch_filtered_started_by_strips_whitespace(
+        self, database_session: Session, contract: AgentContractRequest
+    ) -> None:
+        """Trailing whitespace on a filter email matches the clean DB row."""
+        org = database_session.get(Org, TEST_ORG_ID)
+        assert org is not None
+        _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+        rows, total, _ = fetch_filtered_benchmark_rows(
+            FetchBenchmarksRequest(started_by=["  alice@vals.ai  "], limit=10),
+            database_session,
+            org,
+        )
+        assert total == 1
+        assert rows[0].started_by_email == "alice@vals.ai"
+
+    def test_fetch_filtered_started_by_does_not_leak_across_orgs(
+        self, database_session: Session, contract: AgentContractRequest
+    ) -> None:
+        """Filter applies on top of scoped_select(Benchmark, org) — cross-org rows must not leak."""
+
+        other_org = Org(id=uuid4(), name="other-tenant")
+        database_session.add(other_org)
+        database_session.commit()
+
+        other_org_bench = Benchmark(
+            org_id=other_org.id,
+            name="swebench",
+            arguments=BenchmarkArguments(contract=contract, concurrency=1),
+            started_by_email="alice@vals.ai",
+            started_by_id="K-other",
+        )
+        database_session.add(other_org_bench)
+        database_session.commit()
+
+        default_org = database_session.get(Org, TEST_ORG_ID)
+        assert default_org is not None
+        _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
+
+        rows, total, _ = fetch_filtered_benchmark_rows(
+            FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
+            database_session,
+            default_org,
+        )
+        assert total == 1
+        assert rows[0].org_id == TEST_ORG_ID
 
 
-def test_fetch_filtered_started_by_multiple(database_session: Session, contract: AgentContractRequest):
-    org = database_session.get(Org, TEST_ORG_ID)
-    assert org is not None
-    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
-    _make_benchmark(database_session, contract, started_by_email="bob@vals.ai")
-    _make_benchmark(database_session, contract, started_by_email="carol@vals.ai")
-
-    rows, total, _ = fetch_filtered_benchmark_rows(
-        FetchBenchmarksRequest(started_by=["alice@vals.ai", "bob@vals.ai"], limit=10),
-        database_session,
-        org,
-    )
-    assert total == 2
-    assert sorted(email for r in rows if (email := r.started_by_email) is not None) == [
-        "alice@vals.ai",
-        "bob@vals.ai",
-    ]
-
-
-def test_fetch_filtered_started_by_case_insensitive(database_session: Session, contract: AgentContractRequest):
-    """Uppercase input matches the lower-cased rows in the DB."""
-    org = database_session.get(Org, TEST_ORG_ID)
-    assert org is not None
-    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
-
-    rows, total, _ = fetch_filtered_benchmark_rows(
-        FetchBenchmarksRequest(started_by=["ALICE@VALS.AI"], limit=10),
-        database_session,
-        org,
-    )
-    assert total == 1
-    assert rows[0].started_by_email == "alice@vals.ai"
-
-
-def test_fetch_filtered_started_by_none_skips_filter(database_session: Session, contract: AgentContractRequest):
-    org = database_session.get(Org, TEST_ORG_ID)
-    assert org is not None
-    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
-    _make_benchmark(database_session, contract, started_by_email=None)
-
-    _, total, _ = fetch_filtered_benchmark_rows(
-        FetchBenchmarksRequest(started_by=None, limit=10),
-        database_session,
-        org,
-    )
-    assert total == 2
-
-
-def test_fetch_filtered_started_by_strips_whitespace(database_session: Session, contract: AgentContractRequest):
-    """Trailing whitespace on a filter email matches the clean DB row."""
-    org = database_session.get(Org, TEST_ORG_ID)
-    assert org is not None
-    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
-
-    rows, total, _ = fetch_filtered_benchmark_rows(
-        FetchBenchmarksRequest(started_by=["  alice@vals.ai  "], limit=10),
-        database_session,
-        org,
-    )
-    assert total == 1
-    assert rows[0].started_by_email == "alice@vals.ai"
-
-
-def test_fetch_filtered_started_by_does_not_leak_across_orgs(database_session: Session, contract: AgentContractRequest):
-    """Filter applies on top of scoped_select(Benchmark, org) — cross-org rows must not leak."""
-
-    other_org = Org(id=uuid4(), name="other-tenant")
-    database_session.add(other_org)
-    database_session.commit()
-
-    other_org_bench = Benchmark(
-        org_id=other_org.id,
-        name="swebench",
-        arguments=BenchmarkArguments(contract=contract, concurrency=1),
-        started_by_email="alice@vals.ai",
-        started_by_id="K-other",
-    )
-    database_session.add(other_org_bench)
-    database_session.commit()
-
-    default_org = database_session.get(Org, TEST_ORG_ID)
-    assert default_org is not None
-    _make_benchmark(database_session, contract, started_by_email="alice@vals.ai")
-
-    rows, total, _ = fetch_filtered_benchmark_rows(
-        FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
-        database_session,
-        default_org,
-    )
-    assert total == 1
-    assert rows[0].org_id == TEST_ORG_ID
-
-
-def test_fetch_filtered_by_label(database_session: Session, contract: AgentContractRequest):
+def test_fetch_filtered_by_label(database_session: Session, contract: AgentContractRequest) -> None:
     """Label filtering should ignore case while preserving stored label casing.
 
     Test cases:
@@ -729,28 +740,30 @@ def test_fetch_filtered_by_label(database_session: Session, contract: AgentContr
     assert rows[0].label == "Nightly"
 
 
-def test_parse_log_retention_policy_rejects_invalid_value():
-    with pytest.raises(HTTPException) as exc_info:
-        _parse_log_retention_policy("not-a-number", source="test")
+class TestLogRetentionPolicy:
+    """Log retention policy validation at helper and request boundaries."""
 
-    assert exc_info.value.status_code == 400
+    def test_parse_log_retention_policy_rejects_invalid_value(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            _parse_log_retention_policy("not-a-number", source="test")
 
+        assert exc_info.value.status_code == 400
 
-def test_fetch_harness_config_rejects_invalid_retention_header():
-    request = Request(
-        {
-            "type": "http",
-            "headers": [
-                (b"x-harness-aws-access-key-id", b"A"),
-                (b"x-harness-aws-secret-access-key", b"s"),
-                (b"x-harness-aws-default-region", b"us-east-1"),
-                (b"x-harness-s3-bucket", b"bucket"),
-                (b"x-harness-log-retention-policy", b"not-a-number"),
-            ],
-        }
-    )
+    def test_fetch_harness_config_rejects_invalid_retention_header(self) -> None:
+        request = Request(
+            {
+                "type": "http",
+                "headers": [
+                    (b"x-harness-aws-access-key-id", b"A"),
+                    (b"x-harness-aws-secret-access-key", b"s"),
+                    (b"x-harness-aws-default-region", b"us-east-1"),
+                    (b"x-harness-s3-bucket", b"bucket"),
+                    (b"x-harness-log-retention-policy", b"not-a-number"),
+                ],
+            }
+        )
 
-    with pytest.raises(HTTPException) as exc_info:
-        fetch_harness_config(request)
+        with pytest.raises(HTTPException) as exc_info:
+            fetch_harness_config(request)
 
-    assert exc_info.value.status_code == 400
+        assert exc_info.value.status_code == 400

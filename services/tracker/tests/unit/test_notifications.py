@@ -1,4 +1,7 @@
-"""Unit tests for tracker notification behavior."""
+"""Unit tests for tracker notification behavior.
+
+Run: uv run pytest tests/unit/test_notifications.py
+"""
 
 from datetime import datetime
 from unittest.mock import AsyncMock, patch
@@ -8,9 +11,13 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 
+import tracker.notifications as notifications_module
 from tracker.database.models import BenchmarkStatus
-from tracker.notifications import NotificationContext, SlackNotifier, _build_progress_message, _build_terminal_message
+from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.types import AWSCredentials
+
+_build_progress_message = getattr(notifications_module, "_build_progress_message")
+_build_terminal_message = getattr(notifications_module, "_build_terminal_message")
 
 
 _TEST_AWS = AWSCredentials(
@@ -22,20 +29,21 @@ _TEST_AWS = AWSCredentials(
 
 def _make_context(**overrides: object) -> NotificationContext:
     """Helper to build a NotificationContext with sensible defaults."""
-    defaults = {
-        "benchmark_name": "swebench",
-        "agent_name": "claude_code",
-        "benchmark_id": uuid4(),
-        "started_at": datetime.now(ZoneInfo("UTC")),
-        "total_tasks": 100,
-        "finished_tasks": 0,
-        "model": "anthropic/claude-sonnet-4-20250514",
-    }
-    defaults.update(overrides)
-    return NotificationContext(**defaults)
+    context = NotificationContext(
+        benchmark_name="swebench",
+        agent_name="claude_code",
+        benchmark_id=uuid4(),
+        started_at=datetime.now(ZoneInfo("UTC")),
+        total_tasks=100,
+        finished_tasks=0,
+        model="anthropic/claude-sonnet-4-20250514",
+    )
+    return NotificationContext.model_validate({**context.model_dump(), **overrides})
 
 
 class TestSlackNotifierThresholds:
+    """Progress notifications at configured completion thresholds."""
+
     @pytest.fixture
     def notifier(self) -> SlackNotifier:
         return SlackNotifier(
@@ -86,6 +94,8 @@ class TestSlackNotifierThresholds:
 
 
 class TestSlackNotifierTerminal:
+    """Terminal benchmark notifications for finished, error, and stopped runs."""
+
     @pytest.fixture
     def notifier(self) -> SlackNotifier:
         return SlackNotifier(
@@ -133,6 +143,8 @@ class TestSlackNotifierTerminal:
 
 
 class TestMessageContent:
+    """Progress and terminal notification message fields."""
+
     def test_progress_message_contains_all_fields(self) -> None:
         context = _make_context(finished_tasks=25, model="anthropic/claude-sonnet-4-20250514")
         message = _build_progress_message(context, percent=25)
@@ -166,6 +178,8 @@ class TestMessageContent:
 
 
 class TestSlackNotifierFireAndForget:
+    """Webhook failures that must not interrupt benchmark work."""
+
     async def test_webhook_timeout_does_not_raise(self) -> None:
         """Webhook timeout should be caught and logged, not raised."""
         notifier = SlackNotifier(
@@ -204,6 +218,8 @@ class TestSlackNotifierFireAndForget:
 
 
 class TestSlackNotifierSecretResolution:
+    """Webhook secret resolution and invalid-secret handling."""
+
     @pytest.fixture
     def aws(self) -> AWSCredentials:
         return AWSCredentials(

@@ -47,6 +47,8 @@ _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 
 
 class TestOutputArtifacts:
+    """Declared output artifact collection and size validation."""
+
     async def test_upload_output_artifacts_downloads_file_without_exec_output(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -214,7 +216,9 @@ class TestOutputArtifacts:
         upload_mock.assert_not_awaited()
 
 
-class TestAgentOutputTelemetry:
+class TestRunAgent:
+    """Agent execution, output collection, and runtime command construction."""
+
     async def test_run_agent_uploads_declared_output_artifacts(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -425,6 +429,10 @@ class TestAgentOutputTelemetry:
 
         assert observed_commands == [f"cd /workspace && PYTHONSAFEPATH=1 timeout 2.5 sh -c {shlex.quote(run_cmd)}"]
 
+
+class TestSandboxRetry:
+    """Sandbox retry callbacks and dependency-install retries."""
+
     def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
         upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
         deps_before_sleep = _install_agent_dependencies.retry.before_sleep
@@ -472,6 +480,10 @@ class TestAgentOutputTelemetry:
 
         expected_command = "cd /bundle/test-agent && timeout 600 sh -c 'apt-get update -qq && echo done'"
         assert observed_commands == [expected_command, expected_command]
+
+
+class TestSandboxLifecycle:
+    """Sandbox creation, execution, deletion, and telemetry behavior."""
 
     def test_metric_source_name_drops_high_cardinality_tag_and_digest(self) -> None:
         metric_source_name = getattr(sandbox_module, "_metric_source_name")
@@ -705,11 +717,15 @@ class TestAgentOutputTelemetry:
 
 
 class TestUploadAgentArtifacts:
+    """Agent artifact upload failure classification."""
+
     @pytest.mark.parametrize(
         "exit_code,retryable",
         [
-            (35, True),  # curl SSL/TLS error — transient, retry with new sandbox
-            (1, False),  # generic failure — deterministic, fail the task
+            # Curl SSL failures are transient and need a new sandbox.
+            (35, True),
+            # Generic failures are deterministic and fail the task.
+            (1, False),
         ],
     )
     async def test_exit_code_maps_to_retryable_exception(
@@ -719,8 +735,7 @@ class TestUploadAgentArtifacts:
         exit_code: int,
         retryable: bool,
     ) -> None:
-        """
-        Exit code 35 (curl SSL/TLS) raises SandboxSetupError so process_task retries
+        """Exit code 35 (curl SSL/TLS) raises SandboxSetupError so process_task retries
         with a fresh sandbox. All other non-zero exit codes raise the base SandboxError,
         which marks the task as failed without a sandbox retry.
 
@@ -862,6 +877,8 @@ class TestEgressAllowlist:
 
 
 class TestStreamCommandOutputAgentFailure:
+    """Agent command failure cleanup and error classification."""
+
     async def test_stream_command_output_removes_timing_files(self) -> None:
         async def stream_command(_command: str) -> Any:
             yield "done\n"

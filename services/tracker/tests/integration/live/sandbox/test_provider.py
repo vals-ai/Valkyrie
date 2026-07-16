@@ -1,4 +1,7 @@
-"""Live sandbox-provider lifecycle tests."""
+"""Live sandbox-provider lifecycle tests.
+
+Run: uv run pytest tests/integration/live/sandbox/test_provider.py
+"""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -58,6 +61,8 @@ async def _read_stream_until_ready(sandbox: Sandbox, ready: asyncio.Event) -> No
 
 
 class TestProvider:
+    """Live sandbox provider behavior after remote deletion and failure."""
+
     async def test_destroyed_sandbox_operations_raise_not_found(
         self,
         sandbox_provider: SandboxProvider,

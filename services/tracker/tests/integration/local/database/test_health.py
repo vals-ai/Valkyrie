@@ -13,6 +13,8 @@ _client = TestClient(app)
 
 
 class TestHealthCheckIntegration:
+    """Health endpoint behavior against available and unavailable databases."""
+
     def test_health_check_with_database(
         self,
         postgres_engine: Engine,
