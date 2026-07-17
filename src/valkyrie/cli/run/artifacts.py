@@ -33,7 +33,7 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
             relative = key.removeprefix(prefix).lstrip("/")
             destination = (output_dir / relative if relative else output_dir / Path(key).name).resolve()
             if not destination.is_relative_to(output_dir):
-                raise S3Error(f"Unsafe S3 object key '{key}'")
+                raise S3Error(f"Fix requested path traversal to only the output directory for '{key}'")
             destination.parent.mkdir(parents=True, exist_ok=True)
 
             response = await client.get_object(Bucket=bucket_name, Key=key)
