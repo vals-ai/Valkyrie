@@ -4,7 +4,6 @@ Run: uv run pytest tests/integration/live/api/test_s3_routes.py
 """
 
 from io import BytesIO
-from typing import Any, cast
 from uuid import uuid4
 from zipfile import ZipFile
 
@@ -13,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
+from tracker.aws.runtime import AwsRuntime
 from tracker.aws.s3 import delete_from_s3, upload_to_s3
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task
 from tracker.types import HarnessConfig
@@ -78,11 +78,11 @@ async def test_task_artifact_route_round_trips_real_s3_and_handles_missing_outpu
 
     object_key = f"benchmarks/{benchmark.id}/{task.task_id}/agent_output.tar.gz"
     expected_content = b"live tracker output artifact"
-    await cast(Any, upload_to_s3)(
+    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    await upload_to_s3(
         file_content=expected_content,
         s3_key=object_key,
-        aws=harness_config.aws,
-        s3_bucket=harness_config.s3_bucket,
+        runtime=aws_runtime,
     )
 
     try:
@@ -97,10 +97,9 @@ async def test_task_artifact_route_round_trips_real_s3_and_handles_missing_outpu
         assert download_response.status_code == 200
         assert download_response.content == expected_content
     finally:
-        await cast(Any, delete_from_s3)(
+        await delete_from_s3(
             s3_key=object_key,
-            aws=harness_config.aws,
-            s3_bucket=harness_config.s3_bucket,
+            runtime=aws_runtime,
         )
 
     missing_response = live_api_client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/artifacts")
