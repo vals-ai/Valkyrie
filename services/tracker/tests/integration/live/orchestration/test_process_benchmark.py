@@ -292,14 +292,14 @@ class TestProcessBenchmark:
 
         await gather(
             *[
-            process_benchmark(
-                benchmark.legacy_start_benchmark_request(
-                    harness_config,
-                    service_headers=service_headers,
-                ).model_dump(),
-                str(benchmark.id),
-                [_TASK_ID],
-            )
+                process_benchmark(
+                    benchmark.legacy_start_benchmark_request(
+                        harness_config,
+                        service_headers=service_headers,
+                    ).model_dump(),
+                    str(benchmark.id),
+                    [_TASK_ID],
+                )
                 for benchmark in benchmarks
             ]
         )
