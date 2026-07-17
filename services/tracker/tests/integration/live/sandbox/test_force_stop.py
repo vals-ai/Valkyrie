@@ -293,6 +293,7 @@ class TestForceStop:
         database_session: Session,
         daytona_secret_name: str,
         harness_config: HarnessConfig,
+        harness_headers: dict[str, str],
         service_headers: dict[str, str],
         live_api_client: TestClient,
     ) -> None:
@@ -307,18 +308,6 @@ class TestForceStop:
         example_benchmark_object.arguments.concurrency = 2
         database_session.add(example_benchmark_object)
         database_session.commit()
-
-        harness_headers = {
-            "X-Harness-AWS-Access-Key-Id": harness_config.aws.aws_access_key_id,
-            "X-Harness-AWS-Secret-Access-Key": harness_config.aws.aws_secret_access_key,
-            "X-Harness-AWS-Default-Region": harness_config.aws.aws_default_region,
-            "X-Harness-S3-Bucket": harness_config.s3_bucket,
-            "X-Harness-Log-Group": harness_config.log_group,
-            "X-Harness-Log-Retention-Policy": str(harness_config.log_retention_policy),
-            "X-Harness-Sandbox-Provider-Secret-Name": harness_config.sandbox_provider_secret_name,
-        }
-        if harness_config.aws.aws_session_token:
-            harness_headers["X-Harness-AWS-Session-Token"] = harness_config.aws.aws_session_token
 
         benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
         benchmark_task: Optional[asyncio.Task[None]] = None
