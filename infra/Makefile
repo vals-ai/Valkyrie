@@ -1,7 +1,7 @@
 .PHONY: help install lint typecheck test venv_check validate-scope preflight \
 	plan diff deploy deploy-shared deploy-tracker hotswap destroy
 
-PRODUCTION_ACCOUNT_ID := 613431292675
+PRODUCTION_ACCOUNT_ID ?= 613431292675
 
 STAGE ?=
 AWS_REGION ?=
@@ -23,7 +23,7 @@ CDK_DEFAULT_REGION ?= $(AWS_REGION)
 CDK_CTX = -c stage=$(STAGE)
 CDK_PROFILE = $(if $(strip $(PROFILE)),--profile "$(PROFILE)",)
 
-export STAGE AWS_REGION DEV_ACCOUNT_ID PROFILE
+export STAGE AWS_REGION DEV_ACCOUNT_ID PRODUCTION_ACCOUNT_ID PROFILE
 export CDK_DEFAULT_ACCOUNT CDK_DEFAULT_REGION
 
 help:

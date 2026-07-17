@@ -4,7 +4,6 @@ import unittest
 
 from deployment_target import (
     DEPLOYMENT_REGION,
-    PRODUCTION_ACCOUNT_ID,
     DeploymentTarget,
     DeploymentTargetError,
     target_from_environment,
@@ -12,6 +11,7 @@ from deployment_target import (
 )
 
 DEV_ACCOUNT_ID = "123456789012"
+PRODUCTION_ACCOUNT_ID = "210987654321"
 
 
 def environment_for(stage: str) -> dict[str, str]:
@@ -20,6 +20,7 @@ def environment_for(stage: str) -> dict[str, str]:
         "STAGE": stage,
         "AWS_REGION": DEPLOYMENT_REGION,
         "DEV_ACCOUNT_ID": DEV_ACCOUNT_ID,
+        "PRODUCTION_ACCOUNT_ID": PRODUCTION_ACCOUNT_ID,
         "CDK_DEFAULT_ACCOUNT": account_id,
         "CDK_DEFAULT_REGION": DEPLOYMENT_REGION,
     }

@@ -12,7 +12,6 @@ from boto3.session import Session
 from botocore.exceptions import BotoCoreError, ClientError
 from mypy_boto3_sts import STSClient as BotoStsClient
 
-PRODUCTION_ACCOUNT_ID = "613431292675"
 DEPLOYMENT_REGION = "us-east-1"
 
 _ACCOUNT_ID_PATTERN = re.compile(r"^[0-9]{12}$")
@@ -43,12 +42,18 @@ def target_from_environment(environment: Mapping[str, str]) -> DeploymentTarget:
     if region != DEPLOYMENT_REGION:
         raise DeploymentTargetError(f"AWS_REGION must be {DEPLOYMENT_REGION}; got {region}.")
 
-    account_id = _required(environment, "DEV_ACCOUNT_ID") if stage == "dev" else PRODUCTION_ACCOUNT_ID
-    if not _ACCOUNT_ID_PATTERN.fullmatch(account_id):
-        variable = "DEV_ACCOUNT_ID" if stage == "dev" else "production account ID"
-        raise DeploymentTargetError(f"{variable} must be a 12-digit AWS account ID.")
-    if stage == "dev" and account_id == PRODUCTION_ACCOUNT_ID:
-        raise DeploymentTargetError("DEV_ACCOUNT_ID must not be the production AWS account.")
+    production_account_id = _required(environment, "PRODUCTION_ACCOUNT_ID")
+    if not _ACCOUNT_ID_PATTERN.fullmatch(production_account_id):
+        raise DeploymentTargetError("PRODUCTION_ACCOUNT_ID must be a 12-digit AWS account ID.")
+
+    if stage == "dev":
+        account_id = _required(environment, "DEV_ACCOUNT_ID")
+        if not _ACCOUNT_ID_PATTERN.fullmatch(account_id):
+            raise DeploymentTargetError("DEV_ACCOUNT_ID must be a 12-digit AWS account ID.")
+        if account_id == production_account_id:
+            raise DeploymentTargetError("DEV_ACCOUNT_ID must not be the production AWS account.")
+    else:
+        account_id = production_account_id
 
     cdk_account_id = _required(environment, "CDK_DEFAULT_ACCOUNT")
     if cdk_account_id != account_id:

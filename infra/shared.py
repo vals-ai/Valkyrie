@@ -103,27 +103,21 @@ class SharedStack(Stack):
                 domain_name="vals.ai",
             )
 
-        # S3 bucket
-        if self.stage.is_prod:
-            self.bucket = aws_s3.Bucket(
-                self,
-                "AgenticHarnessBucket",
-                bucket_name=self.stage.phys(S3_BUCKET_NAME),
-                removal_policy=cdk.RemovalPolicy.RETAIN,
-                block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
-            )
-        else:
-            self.bucket = aws_s3.Bucket(
-                self,
-                "AgenticHarnessBucket",
-                bucket_name=f"{self.stage.phys(S3_BUCKET_NAME)}-{self.account}",
-                removal_policy=cdk.RemovalPolicy.RETAIN,
-                block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
-                encryption=aws_s3.BucketEncryption.S3_MANAGED,
-                enforce_ssl=True,
-                object_ownership=aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
-                versioned=True,
-            )
+        bucket_name = self.stage.phys(S3_BUCKET_NAME)
+        if not self.stage.is_prod:
+            bucket_name = f"{bucket_name}-{self.account}"
+
+        self.bucket = aws_s3.Bucket(
+            self,
+            "AgenticHarnessBucket",
+            bucket_name=bucket_name,
+            removal_policy=cdk.RemovalPolicy.RETAIN,
+            block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
+            encryption=None if self.stage.is_prod else aws_s3.BucketEncryption.S3_MANAGED,
+            enforce_ssl=None if self.stage.is_prod else True,
+            object_ownership=None if self.stage.is_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+            versioned=None if self.stage.is_prod else True,
+        )
 
         # ── ElastiCache Redis ─────────────────────────────────────────────
         # Single-node Redis used as the Taskiq message broker, shared by

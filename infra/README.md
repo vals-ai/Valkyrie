@@ -63,7 +63,10 @@ make deploy STAGE=dev SCOPE=shared AWS_REGION=us-east-1 \
 ```
 
 `SCOPE` accepts `shared`, `tracker`, `worker`, `monitoring`, or `all`. CDK follows
-the existing stack dependencies when an individual stack is selected.
+the existing stack dependencies when an individual stack is selected. The
+Makefile defaults `PRODUCTION_ACCOUNT_ID` to the Vals production account so a
+dev target cannot select it accidentally. Self-hosted operators can override
+that value for their own production account.
 
 ## Benchmark Catalog
 
