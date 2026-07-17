@@ -100,7 +100,7 @@ class TestBenchmarkStatusStream:
             "GET",
             "/fetch-benchmark",
             params={"benchmark_id": str(benchmark.id), "connect": "true"},
-            headers={"Authorization": "Bearer fake"},
+            headers=_HARNESS_HEADERS,
         ) as response:
             event_lines = [line for line in response.iter_lines() if line]
 

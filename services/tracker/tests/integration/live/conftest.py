@@ -16,6 +16,23 @@ from tracker.utils import fetch_harness_config
 
 
 @pytest.fixture
+def harness_headers(harness_config: HarnessConfig) -> dict[str, str]:
+    """Build complete legacy AWS request headers from the live configuration."""
+    headers = {
+        "X-Harness-AWS-Access-Key-Id": harness_config.aws.aws_access_key_id,
+        "X-Harness-AWS-Secret-Access-Key": harness_config.aws.aws_secret_access_key,
+        "X-Harness-AWS-Default-Region": harness_config.aws.aws_default_region,
+        "X-Harness-S3-Bucket": harness_config.s3_bucket,
+        "X-Harness-Log-Group": harness_config.log_group,
+        "X-Harness-Log-Retention-Policy": str(harness_config.log_retention_policy),
+        "X-Harness-Sandbox-Provider-Secret-Name": harness_config.sandbox_provider_secret_name,
+    }
+    if harness_config.aws.aws_session_token:
+        headers["X-Harness-AWS-Session-Token"] = harness_config.aws.aws_session_token
+    return headers
+
+
+@pytest.fixture
 def live_api_client(
     tracker_database: Session,
     harness_config: HarnessConfig,
