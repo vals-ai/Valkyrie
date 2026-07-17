@@ -272,25 +272,6 @@ class TestCountedStarts:
                 True,
                 id="malformed-success",
             ),
-            pytest.param(
-                2,
-                (_FIRST_RUN_ID,),
-                httpx.Response(
-                    422,
-                    json={
-                        "detail": [
-                            {
-                                "type": "missing",
-                                "loc": ["body", "harness_config", "sandbox_provider_secret_name"],
-                                "msg": "Field required",
-                            }
-                        ]
-                    },
-                ),
-                "body.harness_config.sandbox_provider_secret_name: Field required",
-                False,
-                id="validation-detail",
-            ),
             pytest.param(2, (), httpx.Response(400, text="plain rejection"), "plain rejection", False, id="first"),
             pytest.param(
                 1, (), httpx.Response(503, text="tracker unavailable"), "tracker unavailable", True, id="single"

@@ -103,11 +103,11 @@ def download_run_outputs(run_outputs_response: Response, output_dir: Path) -> No
     """Download run outputs from a response and extract them to a directory."""
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    tmp_path: Path | None = None
+    tmp_file = tempfile.NamedTemporaryFile(suffix=".tar", delete=False)
+    tmp_path = Path(tmp_file.name)
 
     try:
-        with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_file:
-            tmp_path = Path(tmp_file.name)
+        with tmp_file:
             click.echo("\r\033[KDownloading...", nl=False)
 
             for chunk in run_outputs_response.iter_bytes():
@@ -132,5 +132,4 @@ def download_run_outputs(run_outputs_response: Response, output_dir: Path) -> No
                 nested_tar.unlink()
 
     finally:
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
+        tmp_path.unlink(missing_ok=True)

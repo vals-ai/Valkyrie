@@ -4,7 +4,6 @@ Run: uv run pytest tests/integration/local/cli/test_write_commands.py
 """
 
 import json
-import warnings
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -62,9 +61,7 @@ def test_cli_exports_tracker_results_without_private_contract_values(
     _running, finished = seeded_runs
     output_path = tmp_path / "results.json"
 
-    with warnings.catch_warnings():
-        warnings.filterwarnings("error", message="Pydantic serializer warnings")
-        result = cli_runner.invoke(cli, ["run", "results", str(finished.id), "--path", str(output_path)])
+    result = cli_runner.invoke(cli, ["run", "results", str(finished.id), "--path", str(output_path)])
 
     assert result.exit_code == 0, result.output
     saved_payload = json.loads(output_path.read_text(encoding="utf-8"))

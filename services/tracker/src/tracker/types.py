@@ -160,14 +160,6 @@ class FinalViewResponse(BaseModel):
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
 
-    @field_validator("final_evaluation", mode="before")
-    @classmethod
-    def validate_final_evaluation(cls, value: Any) -> FinalEvaluation | None:
-        """Coerce tracker JSON into a fully validated nested evaluation."""
-        if value is None or isinstance(value, FinalEvaluation):
-            return value
-        return FinalEvaluation.model_validate(value)
-
 
 class S3UploadResultsResponse(BaseModel):
     s3_url: str

@@ -71,24 +71,7 @@ def response_error_detail(response: Response) -> Any:
         return response.text
 
     if isinstance(body, dict):
-        detail = body.get("detail", response.text)
-        if isinstance(detail, list):
-            formatted_errors: list[str] = []
-            for error in detail:
-                if not isinstance(error, dict):
-                    return detail
-                location = error.get("loc")
-                message = error.get("msg")
-                if (
-                    not isinstance(location, list)
-                    or not all(isinstance(part, (str, int)) for part in location)
-                    or not isinstance(message, str)
-                ):
-                    return detail
-                location_parts = cast(list[str | int], location)
-                formatted_errors.append(f"{'.'.join(str(part) for part in location_parts)}: {message}")
-            return "\n".join(formatted_errors)
-        return detail
+        return body.get("detail", response.text)
     return response.text
 
 
