@@ -135,6 +135,30 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
     with pytest.raises(ValueError, match="managed execution context is invalid"):
         _parse_worker_execution(None, None, None, context_with_credentials)
 
+    with pytest.raises(ValueError, match="incomplete"):
+        _parse_worker_execution(
+            _legacy_request(contract, harness_config).model_dump(mode="json"),
+            None,
+            _TASK_IDS,
+            None,
+        )
+
+    with pytest.raises(ValueError, match="legacy benchmark request has no AWS configuration"):
+        _parse_worker_execution(
+            request.model_dump(mode="json"),
+            str(benchmark_id),
+            _TASK_IDS,
+            None,
+        )
+
+    request_without_provider = request.model_copy(update={"sandbox_provider": "", "sandbox_provider_secret_name": None})
+    context_without_provider = {
+        **context,
+        "start_benchmark_request": request_without_provider.model_dump(mode="json"),
+    }
+    with pytest.raises(ValueError, match="managed execution context is invalid"):
+        _parse_worker_execution(None, None, None, context_without_provider)
+
 
 async def test_managed_worker_input_for_legacy_row_marks_run_error(
     contract: AgentContractRequest,
@@ -151,6 +175,27 @@ async def test_managed_worker_input_for_legacy_row_marks_run_error(
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
     assert "Managed worker input does not match the stored run mode" in (benchmark.error_message or "")
+
+
+async def test_legacy_worker_input_for_managed_row_marks_run_error(
+    contract: AgentContractRequest,
+    harness_config: HarnessConfig,
+    database_session: Session,
+    process_benchmark_env: None,
+) -> None:
+    managed_request = _managed_request(contract)
+    benchmark = _persist_benchmark(database_session, managed_request, aws_managed=True)
+    legacy_request = _legacy_request(contract, harness_config)
+
+    await process_benchmark(
+        start_benchmark_request_json=legacy_request.model_dump(mode="json"),
+        benchmark_id_str=str(benchmark.id),
+        verified_task_ids=_TASK_IDS,
+    )
+
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.ERROR
+    assert "Legacy worker input does not match the stored run mode" in (benchmark.error_message or "")
 
 
 async def test_ineligible_managed_worker_marks_run_error(
