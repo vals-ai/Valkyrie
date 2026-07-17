@@ -91,6 +91,8 @@ from tracker.types import (
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
 )
 from tracker.utils import (
     BenchmarkContext,
@@ -110,6 +112,7 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
     stream_benchmark_results,
     upload_final_view,
+    update_benchmark_concurrency,
 )
 
 configure_logging()
@@ -711,6 +714,40 @@ def _apply_resume_secrets(benchmark_row: Benchmark, secrets: dict[str, str]) -> 
     benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
 
 
+def _update_benchmark_concurrency(
+    benchmark_id: UUID,
+    concurrency: int,
+    session: Session,
+    org: Org,
+) -> Benchmark:
+    try:
+        benchmark_row = update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Not found") from exc
+
+    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state.",
+        )
+    return benchmark_row
+
+
+@app.patch("/benchmarks/{benchmark_id}/concurrency")
+def patch_benchmark_concurrency(
+    benchmark_id: TrackedBenchmarkId,
+    request: UpdateBenchmarkConcurrencyRequest,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> UpdateBenchmarkConcurrencyResponse:
+    benchmark_row = _update_benchmark_concurrency(benchmark_id, request.concurrency, session, org)
+    return UpdateBenchmarkConcurrencyResponse(
+        benchmark_id=benchmark_row.id,
+        status=benchmark_row.status,
+        concurrency=benchmark_row.arguments.concurrency,
+    )
+
+
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
 async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
@@ -750,13 +787,18 @@ async def retry_or_resume_benchmark(
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
 
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+        assert concurrency is not None
+        _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+        return RetryOrResumeBenchmarkResponse(status="success")
 
     effective_service_headers = forward_tracker_api_key(
         service_headers,

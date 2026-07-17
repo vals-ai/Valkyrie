@@ -42,6 +42,7 @@ from tracker.database.models import (
 )
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    ResizableLimiter,
     TaskMonitor,
     TrackedTask,
     TrackedTaskStatus,
@@ -90,6 +91,41 @@ class TestRunRecovery:
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_benchmark_initializes_limiter_from_persisted_concurrency(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=7,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 2})
+        database_session.add(benchmark_row)
+        database_session.commit()
+        observed_limits: list[int] = []
+
+        def recording_limiter(limit: int) -> ResizableLimiter:
+            observed_limits.append(limit)
+            return ResizableLimiter(limit)
+
+        monkeypatch.setattr("tracker.utils.run_orchestration.ResizableLimiter", recording_limiter)
+
+        await process_benchmark(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=["task_0"],
+        )
+
+        assert observed_limits == [2]
 
     async def test_stop_selected_tasks_scopes_graceful_and_force(
         self,
@@ -1121,6 +1157,31 @@ class TestRunRecovery:
 
         task_row = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
         assert task_row.status == TaskStatus.ERROR
+
+    async def test_running_resume_updates_concurrency_without_enqueuing_work(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        def _unexpected_kicker() -> None:
+            raise AssertionError("updating active-run concurrency should not enqueue duplicate work")
+
+        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?concurrency=8")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        assert persisted.arguments.concurrency == 8
 
     async def test_running_retry_only_resets_error_tasks(
         self,

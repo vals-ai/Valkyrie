@@ -7,7 +7,7 @@ from benchmark_service import (
     sandbox_provider_config_from_mapping,
 )
 from benchmark_service.client import BenchmarkServiceClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
 from tracker.aws.secrets import fetch_aws_secret
@@ -15,6 +15,7 @@ from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
+    BenchmarkStatus,
     Org,
     Task,
 )
@@ -108,6 +109,28 @@ def fetch_benchmark_row(
         raise ValueError(f"Run with id {benchmark_id} not found")
     if benchmark_row.org_id != org.id:
         raise ValueError(f"Run {benchmark_id} does not belong to org {org.id}")
+    return benchmark_row
+
+
+def update_benchmark_concurrency(
+    benchmark_id: UUID,
+    concurrency: int,
+    session: Session,
+    org: Org,
+) -> Benchmark:
+    """Lock an org-scoped run and persist a new active-run concurrency limit."""
+    benchmark_row = session.exec(
+        select(Benchmark).where(Benchmark.id == benchmark_id).where(Benchmark.org_id == org.id).with_for_update()
+    ).one_or_none()
+    if benchmark_row is None:
+        raise ValueError(f"Run with id {benchmark_id} not found")
+    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+        return benchmark_row
+
+    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
+    session.add(benchmark_row)
+    session.commit()
+    session.refresh(benchmark_row)
     return benchmark_row
 
 

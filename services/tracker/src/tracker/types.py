@@ -182,6 +182,16 @@ class RetryOrResumeBenchmarkResponse(StatusResponse):
     pass
 
 
+class UpdateBenchmarkConcurrencyRequest(BaseModel):
+    concurrency: int = Field(ge=1, strict=True)
+
+
+class UpdateBenchmarkConcurrencyResponse(BaseModel):
+    benchmark_id: UUID
+    status: BenchmarkStatus
+    concurrency: int
+
+
 class Order(str, Enum):
     ASC = "asc"
     DESC = "desc"

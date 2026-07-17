@@ -4,7 +4,6 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 """
 
 import asyncio
-from asyncio import Semaphore
 from typing import Any
 from unittest.mock import MagicMock, Mock
 
@@ -13,13 +12,104 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
-from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
+from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
 
 class TestTaskExecution:
     """Task monitoring and tracked task state transitions."""
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
+
+    async def test_resizable_limiter_increase_wakes_waiting_admission(self) -> None:
+        limiter = ResizableLimiter(limit=1)
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+
+        async def worker(started: asyncio.Event, release: asyncio.Event | None = None) -> None:
+            async with limiter:
+                started.set()
+                if release is not None:
+                    await release.wait()
+
+        first = asyncio.create_task(worker(first_started, release_first))
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        second = asyncio.create_task(worker(second_started))
+        await asyncio.sleep(0)
+        assert not second_started.is_set()
+
+        await limiter.resize(2)
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+
+        release_first.set()
+        await asyncio.gather(first, second)
+        assert limiter.in_flight == 0
+
+    async def test_resizable_limiter_decrease_is_non_preemptive(self) -> None:
+        limiter = ResizableLimiter(limit=2)
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        third_started = asyncio.Event()
+        release_first = asyncio.Event()
+        release_second = asyncio.Event()
+
+        async def worker(started: asyncio.Event, release: asyncio.Event | None = None) -> None:
+            async with limiter:
+                started.set()
+                if release is not None:
+                    await release.wait()
+
+        first = asyncio.create_task(worker(first_started, release_first))
+        second = asyncio.create_task(worker(second_started, release_second))
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+
+        await limiter.resize(1)
+        third = asyncio.create_task(worker(third_started))
+        await asyncio.sleep(0)
+        assert limiter.in_flight == 2
+        assert not first.done()
+        assert not second.done()
+        assert not third_started.is_set()
+
+        release_first.set()
+        await first
+        await asyncio.sleep(0)
+        assert limiter.in_flight == 1
+        assert not third_started.is_set()
+
+        release_second.set()
+        await second
+        await asyncio.wait_for(third_started.wait(), timeout=1)
+        await third
+        assert limiter.in_flight == 0
+
+    async def test_task_monitor_refreshes_limiter_from_persisted_concurrency(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(update={"concurrency": 2})
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        tracked_task = TrackedTask(coro=asyncio.sleep(0), org=self._test_org)
+        setattr(tracked_task, "_status", TrackedTaskStatus.DONE)
+        limiter = ResizableLimiter(limit=5)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monitor = TaskMonitor(
+            example_benchmark_object.id,
+            {"task_id_1": tracked_task},
+            org=self._test_org,
+            limiter=limiter,
+        )
+        monkeypatch.setattr(monitor, "_TRACK_INTERVAL", 0)
+
+        await monitor.track_tasks()
+
+        assert limiter.limit == 2
+        getattr(tracked_task, "_coro").close()
 
     async def test_task_monitor(
         self, database_session: Session, example_benchmark_object: Benchmark, monkeypatch: pytest.MonkeyPatch
@@ -104,7 +194,7 @@ class TestTaskExecution:
             await release.wait()
             return {task_id: {"result": task_id}}
 
-        semaphore = Semaphore(value=1)
+        limiter = ResizableLimiter(limit=1)
         running_started = asyncio.Event()
         release_running = asyncio.Event()
         waiting_started = asyncio.Event()
@@ -117,9 +207,9 @@ class TestTaskExecution:
         assert running.status == TrackedTaskStatus.WAITING
         assert running.task is None
 
-        running_call = asyncio.create_task(running.run(semaphore, running_row))
+        running_call = asyncio.create_task(running.run(limiter, running_row))
         await running_started.wait()
-        waiting_call = asyncio.create_task(waiting.run(semaphore, waiting_row))
+        waiting_call = asyncio.create_task(waiting.run(limiter, waiting_row))
         await asyncio.sleep(0)
 
         assert running.status == TrackedTaskStatus.RUNNING
