@@ -29,6 +29,7 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
+    FinalViewResponse,
 )
 
 from valkyrie.cli import main as cli_main
@@ -68,6 +69,122 @@ def test_tracker_client_uses_selected_environment_url(monkeypatch: pytest.Monkey
     tracker.health_check()
 
     assert client.url == f"{DEV_TRACKER_URL}/health"
+
+
+def test_retrieve_results_adapts_canonical_wire_response_to_legacy_cli_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = uuid4()
+
+    class CanonicalResultsClient(FakeClient):
+        def get(
+            self,
+            url: str,
+            *,
+            params: dict[str, object] | None = None,
+        ) -> httpx.Response:
+            self.url = url
+            self.params = params
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": str(run_id),
+                    "benchmark_name": "swebench",
+                    "started_at": "2026-07-08T12:00:00Z",
+                    "finished_at": None,
+                    "status": "IN_PROGRESS",
+                    "error_message": None,
+                    "run_arguments": {"contract": {"name": "agent"}, "concurrency": 1},
+                    "tasks_stopped": None,
+                    "final_evaluation": None,
+                    "average_task_breakdown": None,
+                    "evaluation_results": {},
+                    "task_errors": None,
+                },
+            )
+
+    fake_client = CanonicalResultsClient()
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", lambda **_kwargs: fake_client)
+
+    response = TrackerService(base_url="http://tracker").retrieve_results(run_id, s3=False)
+
+    assert isinstance(response, FinalViewResponse)
+    assert fake_client.url == f"http://tracker/runs/{run_id}/results"
+    assert response.benchmark_id == run_id
+    assert response.model_dump(mode="json")["benchmark_arguments"]["contract"]["name"] == "agent"
+
+
+def test_tracker_client_falls_back_to_legacy_routes_on_canonical_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = uuid4()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.startswith("/runs/"):
+            return httpx.Response(404, json={"detail": "Not Found"})
+        if request.url.path == "/fetch-benchmark":
+            if request.url.params.get("connect") == "true":
+                return httpx.Response(200, text="data: legacy-update\n\n")
+            return httpx.Response(
+                200,
+                json={
+                    "benchmark_name": "swebench",
+                    "benchmark_id": str(run_id),
+                    "details": {
+                        "status": "IN_PROGRESS",
+                        "started_at": "2026-07-08T12:00:00Z",
+                        "total_tasks": 1,
+                        "finished_tasks": 0,
+                        "task_breakdown": {"IN_PROGRESS": 1},
+                        "docent_reading_status": "IDLE",
+                        "docent_reading_url": None,
+                    },
+                    "s3_bucket_url": "s3://bucket/run",
+                    "label": None,
+                    "final_score": None,
+                },
+            )
+        if request.url.path == f"/stop-benchmark/{run_id}":
+            return httpx.Response(200, json={"status": "success"})
+        raise AssertionError(f"Unexpected request: {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.Client
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    fetched = tracker.fetch_benchmark(run_id)
+    stopped = tracker.stop_benchmark(run_id, force=True, task_ids=["task-1"])
+    streamed = list(tracker.stream_benchmark(run_id))
+    tracker.close()
+
+    assert fetched.benchmark_id == run_id
+    assert stopped.status == "success"
+    assert streamed == ["data: legacy-update"]
+    assert [request.url.path for request in requests] == [
+        f"/runs/{run_id}",
+        "/fetch-benchmark",
+        f"/runs/{run_id}/stop",
+        f"/stop-benchmark/{run_id}",
+        f"/runs/{run_id}/events",
+        "/fetch-benchmark",
+    ]
+    assert requests[1].url.params["benchmark_id"] == str(run_id)
+    assert requests[3].url.params["force"] == "true"
+    assert json.loads(requests[3].content) == {"task_ids": ["task-1"]}
+    assert dict(requests[5].url.params) == {"benchmark_id": str(run_id), "connect": "true"}
 
 
 def _handle_catalog_service_request(requests: list[httpx.Request], request: httpx.Request) -> httpx.Response:
@@ -155,7 +272,7 @@ def test_fetch_run_outputs_uses_run_outputs_endpoint(monkeypatch: pytest.MonkeyP
     response = tracker.fetch_run_outputs(run_id, task_ids=["task-1", "task-2"])
 
     assert response.content == b"tar"
-    assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
+    assert client.url == f"http://tracker/runs/{run_id}/outputs"
     assert client.params == {"task_ids": ["task-1", "task-2"]}
 
 
@@ -174,7 +291,7 @@ def test_fetch_run_outputs_omits_empty_task_ids(monkeypatch: pytest.MonkeyPatch)
     response = tracker.fetch_run_outputs(run_id)
 
     assert response.content == b"tar"
-    assert client.url == f"http://tracker/fetch-run-outputs/{run_id}"
+    assert client.url == f"http://tracker/runs/{run_id}/outputs"
     assert client.params == {}
 
 
@@ -203,7 +320,7 @@ def test_stop_benchmark_sends_task_selection(monkeypatch: pytest.MonkeyPatch) ->
         task_ids=["task-a", "task-b"],
     )
 
-    assert client.url == f"http://tracker/stop-benchmark/{run_id}"
+    assert client.url == f"http://tracker/runs/{run_id}/stop"
     assert client.params == {"force": True}
     assert client.json == {"task_ids": ["task-a", "task-b"]}
 
@@ -456,7 +573,8 @@ def test_retry_or_resume_sends_retry_mode(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     assert result.status == "success"
-    assert client.params == {"retry": True, "retry_mode": "from_scratch", "concurrency": 3}
+    assert client.url is not None and client.url.endswith("/retry")
+    assert client.params == {"retry_mode": "from_scratch", "concurrency": 3}
     assert client.json == {
         "task_ids": ["task-1"],
         "service_headers": {},

@@ -138,9 +138,9 @@ def test_tracker_client_fetches_batch_status_endpoint(monkeypatch: pytest.Monkey
             return httpx.Response(
                 200,
                 json={
-                    "entries": [
+                    "runs": [
                         {
-                            "id": str(run_id),
+                            "run_id": str(run_id),
                             "status": "IN_PROGRESS",
                             "finished_at": None,
                             "total_tasks": 1,
@@ -162,7 +162,7 @@ def test_tracker_client_fetches_batch_status_endpoint(monkeypatch: pytest.Monkey
     tracker = TrackerService(base_url="http://tracker")
     response = tracker.fetch_benchmark_statuses([run_id])
 
-    assert client.url == "http://tracker/benchmarks/status"
+    assert client.url == "http://tracker/runs/status"
     assert client.params == {"ids": str(run_id)}
     assert [entry.id for entry in response.entries] == [run_id]
 

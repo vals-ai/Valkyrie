@@ -18,11 +18,20 @@ EXPECTED_ALL = [
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",
     "FinalViewResponse",
+    "GetRunResponse",
+    "ListRunsRequest",
+    "ListRunsResponse",
+    "RetrieveRunResultsResponse",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
+    "RetryOrResumeRunResponse",
+    "RunResultsResponse",
+    "RunStatus",
     "S3UploadResultsResponse",
     "StartBenchmarkResponse",
+    "StartRunResponse",
     "StopBenchmarkResponse",
+    "StopRunResponse",
     "ValkyrieAPIError",
     "ValkyrieClient",
     "ValkyrieConfig",
@@ -89,6 +98,17 @@ def test_public_exports_and_constants_are_stable() -> None:
     assert str(DEFAULT_CONFIG_PATH) == "~/.config/valkyrie/valkyrie.yaml"
     assert sdk.ValkyrieClient is ValkyrieClient
     assert sdk.ValkyrieConfig is ValkyrieConfig
+
+
+def test_legacy_sdk_names_are_direct_aliases_of_canonical_run_types() -> None:
+    assert sdk.BenchmarkStatus is sdk.RunStatus
+    assert sdk.FetchBenchmarkResponse is sdk.GetRunResponse
+    assert sdk.FetchBenchmarksRequest is sdk.ListRunsRequest
+    assert sdk.FetchBenchmarksResponse is sdk.ListRunsResponse
+    assert sdk.FinalViewResponse is sdk.RunResultsResponse
+    assert sdk.RetryOrResumeBenchmarkResponse is sdk.RetryOrResumeRunResponse
+    assert sdk.StartBenchmarkResponse is sdk.StartRunResponse
+    assert sdk.StopBenchmarkResponse is sdk.StopRunResponse
 
 
 def test_public_signatures_are_stable() -> None:

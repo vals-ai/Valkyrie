@@ -11,17 +11,17 @@ import httpx
 from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, ValkyrieTransportError
 from valkyrie.sdk.models import (
     AgentContractRequest,
-    FetchBenchmarkResponse,
-    FetchBenchmarksRequest,
-    FetchBenchmarksResponse,
-    FinalViewResponse,
-    RetrieveResultsResponse,
+    GetRunResponse,
+    ListRunsRequest,
+    ListRunsResponse,
+    RetrieveRunResultsResponse,
     RetryMode,
-    RetryOrResumeBenchmarkResponse,
+    RetryOrResumeRunResponse,
+    RunResultsResponse,
     S3UploadResultsResponse,
-    StartBenchmarkRequest,
-    StartBenchmarkResponse,
-    StopBenchmarkResponse,
+    StartRunRequest,
+    StartRunResponse,
+    StopRunResponse,
 )
 
 if TYPE_CHECKING:
@@ -52,7 +52,7 @@ class RunsResource:
         service_headers: Mapping[str, str] | None = None,
         webhook_intervals: Sequence[int] | None = None,
         ignore_custom_services: bool = False,
-    ) -> StartBenchmarkResponse:
+    ) -> StartRunResponse:
         """Start a run from an uploaded agent name or complete contract."""
         if concurrency < 1:
             raise ValkyrieRunError("concurrency must be greater than 0")
@@ -66,7 +66,7 @@ class RunsResource:
         intervals = self._resolve_webhook_intervals(webhook_intervals)
         effective_service_headers = self._service_headers(benchmark, service_headers)
 
-        payload = StartBenchmarkRequest(
+        payload = StartRunRequest(
             contract=contract,
             benchmark_name=benchmark,
             concurrency=concurrency,
@@ -86,63 +86,71 @@ class RunsResource:
         )
         return await self._sdk.request_model(
             "POST",
-            "/start-benchmark",
-            StartBenchmarkResponse,
+            "/runs",
+            StartRunResponse,
             json=payload.model_dump(mode="json"),
+            fallback_path="/start-benchmark",
         )
 
-    async def fetch(self, run_id: UUID) -> FetchBenchmarkResponse:
+    async def fetch(self, run_id: UUID) -> GetRunResponse:
         """Fetch the latest state of a run."""
         return await self._sdk.request_model(
             "GET",
-            "/fetch-benchmark",
-            FetchBenchmarkResponse,
-            params={"benchmark_id": str(run_id)},
+            f"/runs/{run_id}",
+            GetRunResponse,
+            fallback_path="/fetch-benchmark",
+            fallback_params={"benchmark_id": str(run_id)},
         )
 
-    async def list(self, request: FetchBenchmarksRequest | None = None) -> FetchBenchmarksResponse:
+    async def list(self, request: ListRunsRequest | None = None) -> ListRunsResponse:
         """List runs using typed filters and pagination."""
-        resolved_request = request or FetchBenchmarksRequest()
+        resolved_request = request or ListRunsRequest()
         return await self._sdk.request_model(
             "GET",
-            "/fetch-benchmarks",
-            FetchBenchmarksResponse,
+            "/runs",
+            ListRunsResponse,
             params=resolved_request.model_dump(exclude_none=True, mode="json"),
+            fallback_path="/fetch-benchmarks",
         )
 
-    async def stream(self, run_id: UUID) -> AsyncIterator[FetchBenchmarkResponse]:
+    async def stream(self, run_id: UUID) -> AsyncIterator[GetRunResponse]:
         """Yield typed updates until the run completes or disconnects."""
         try:
-            async with self._sdk.stream_response(
-                "GET",
-                "/fetch-benchmark",
-                params={"benchmark_id": str(run_id), "connect": "true"},
-            ) as response:
-                if not response.is_success:
-                    await response.aread()
-                    self._sdk.raise_for_status(response)
+            routes = (
+                (f"/runs/{run_id}/events", None),
+                ("/fetch-benchmark", {"benchmark_id": str(run_id), "connect": "true"}),
+            )
+            for route_index, (path, params) in enumerate(routes):
+                async with self._sdk.stream_response("GET", path, params=params) as response:
+                    if response.status_code == 404 and route_index == 0:
+                        await response.aread()
+                        continue
+                    if not response.is_success:
+                        await response.aread()
+                        self._sdk.raise_for_status(response)
 
-                event_name = ""
-                data_lines: list[str] = []
-                async for line in response.aiter_lines():
-                    if line == "":
-                        if event_name or data_lines:
-                            snapshot = self._parse_stream_event(event_name, data_lines)
-                            if snapshot is not None:
-                                yield snapshot
-                            if event_name in {"complete", "disconnect"}:
-                                return
-                        event_name = ""
-                        data_lines = []
-                    elif line.startswith("event:"):
-                        event_name = line.removeprefix("event:").strip()
-                    elif line.startswith("data:"):
-                        data_lines.append(line.removeprefix("data:").lstrip())
+                    event_name = ""
+                    data_lines: list[str] = []
+                    async for line in response.aiter_lines():
+                        if line == "":
+                            if event_name or data_lines:
+                                snapshot = self._parse_stream_event(event_name, data_lines)
+                                if snapshot is not None:
+                                    yield snapshot
+                                if event_name in {"complete", "disconnect"}:
+                                    return
+                            event_name = ""
+                            data_lines = []
+                        elif line.startswith("event:"):
+                            event_name = line.removeprefix("event:").strip()
+                        elif line.startswith("data:"):
+                            data_lines.append(line.removeprefix("data:").lstrip())
 
-                if event_name or data_lines:
-                    snapshot = self._parse_stream_event(event_name, data_lines)
-                    if snapshot is not None:
-                        yield snapshot
+                    if event_name or data_lines:
+                        snapshot = self._parse_stream_event(event_name, data_lines)
+                        if snapshot is not None:
+                            yield snapshot
+                    return
         except httpx.HTTPError as exc:
             raise ValkyrieTransportError(f"Valkyrie stream failed: {exc}") from exc
 
@@ -153,7 +161,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: Literal[False] = False,
-    ) -> FinalViewResponse: ...
+    ) -> RunResultsResponse: ...
 
     @overload
     async def results(
@@ -171,7 +179,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: bool,
-    ) -> RetrieveResultsResponse: ...
+    ) -> RetrieveRunResultsResponse: ...
 
     async def results(
         self,
@@ -179,21 +187,30 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: bool = False,
-    ) -> RetrieveResultsResponse:
+    ) -> RetrieveRunResultsResponse:
         """Fetch final results or upload them and return S3 links."""
-        params: dict[str, Any] = {"benchmark_id": str(run_id), "s3": upload_to_s3}
+        params: dict[str, Any] = {"s3": upload_to_s3}
         if task_ids:
             params["task_ids"] = list(task_ids)
-        response_model = S3UploadResultsResponse if upload_to_s3 else FinalViewResponse
-        return await self._sdk.request_model("GET", "/retrieve-results", response_model, params=params)
+        response_model = S3UploadResultsResponse if upload_to_s3 else RunResultsResponse
+        fallback_params = {"benchmark_id": str(run_id), **params}
+        return await self._sdk.request_model(
+            "GET",
+            f"/runs/{run_id}/results",
+            response_model,
+            params=params,
+            fallback_path="/retrieve-results",
+            fallback_params=fallback_params,
+        )
 
-    async def stop(self, run_id: UUID, *, force: bool = False) -> StopBenchmarkResponse:
+    async def stop(self, run_id: UUID, *, force: bool = False) -> StopRunResponse:
         """Stop a run, optionally terminating active sandboxes."""
         return await self._sdk.request_model(
             "POST",
-            f"/stop-benchmark/{run_id}",
-            StopBenchmarkResponse,
+            f"/runs/{run_id}/stop",
+            StopRunResponse,
             params={"force": force},
+            fallback_path=f"/stop-benchmark/{run_id}",
         )
 
     async def resume(
@@ -205,7 +222,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
-    ) -> RetryOrResumeBenchmarkResponse:
+    ) -> RetryOrResumeRunResponse:
         """Resume unfinished work for a run."""
         return await self._retry_or_resume(
             run_id,
@@ -226,7 +243,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None = None,
         service_headers: Mapping[str, str] | None = None,
         from_scratch: bool = False,
-    ) -> RetryOrResumeBenchmarkResponse:
+    ) -> RetryOrResumeRunResponse:
         """Retry failed or selected work for a run."""
         return await self._retry_or_resume(
             run_id,
@@ -248,7 +265,7 @@ class RunsResource:
         secrets: Mapping[str, str] | None,
         service_headers: Mapping[str, str] | None,
         from_scratch: bool,
-    ) -> RetryOrResumeBenchmarkResponse:
+    ) -> RetryOrResumeRunResponse:
         """Send a retry or resume request."""
         if concurrency is not None and concurrency < 1:
             raise ValkyrieRunError("concurrency must be greater than 0")
@@ -256,7 +273,6 @@ class RunsResource:
         run = await self.fetch(run_id)
         effective_headers = self._service_headers(run.benchmark_name, service_headers)
         params: dict[str, Any] = {
-            "retry": retry,
             "retry_mode": RetryMode.FROM_SCRATCH.value if from_scratch else RetryMode.AUTO.value,
         }
         if concurrency is not None:
@@ -264,14 +280,16 @@ class RunsResource:
 
         return await self._sdk.request_model(
             "POST",
-            f"/retry-or-resume-benchmark/{run_id}",
-            RetryOrResumeBenchmarkResponse,
+            f"/runs/{run_id}/{'retry' if retry else 'resume'}",
+            RetryOrResumeRunResponse,
             params=params,
             json={
                 "task_ids": list(task_ids or []),
                 "service_headers": effective_headers,
                 "secrets": dict(secrets or {}),
             },
+            fallback_path=f"/retry-or-resume-benchmark/{run_id}",
+            fallback_params={"retry": retry, **params},
         )
 
     def _service_headers(self, benchmark: str, explicit_headers: Mapping[str, str] | None) -> dict[str, str]:
@@ -320,7 +338,7 @@ class RunsResource:
         return contract.model_copy(update=updates)
 
     @staticmethod
-    def _parse_stream_event(event_name: str, data_lines: Sequence[str]) -> FetchBenchmarkResponse | None:
+    def _parse_stream_event(event_name: str, data_lines: Sequence[str]) -> GetRunResponse | None:
         """Parse one server-sent event."""
         data = "\n".join(data_lines)
         if event_name == "error":
@@ -335,6 +353,6 @@ class RunsResource:
         if not data:
             return None
         try:
-            return FetchBenchmarkResponse.model_validate_json(data)
+            return GetRunResponse.model_validate_json(data)
         except (ValueError, TypeError) as exc:
             raise ValkyrieStreamError(f"Invalid Valkyrie run stream event: {data}") from exc

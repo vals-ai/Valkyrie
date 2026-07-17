@@ -17,6 +17,7 @@ from valkyrie.sdk.models import (
     HarnessConfig,
     OutputArtifact,
     StartBenchmarkRequest,
+    StartRunResponse,
 )
 
 FIXTURES = Path(__file__).parents[2] / "fixtures" / "sdk_api"
@@ -107,3 +108,23 @@ def test_non_empty_list_and_final_results_parse() -> None:
     assert len(list_response.benchmarks) == 1
     assert result.final_evaluation is not None
     assert result.benchmark_arguments.contract.output_artifacts
+
+
+def test_canonical_run_models_accept_both_id_names_and_keep_legacy_aliases() -> None:
+    run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    payload = {
+        "benchmark_name": "swebench",
+        "agent_name": "agent",
+        "run_id": run_id,
+        "concurrency": 1,
+        "started_at": "2026-07-08T12:00:00Z",
+        "task_count": 1,
+        "cloudwatch_url": "https://logs.test",
+        "s3_bucket_url": "s3://bucket/run",
+    }
+
+    response = StartRunResponse.model_validate(payload)
+
+    assert response.run_id == response.benchmark_id
+    assert response.model_dump(mode="json")["benchmark_id"] == run_id
+    assert response.model_dump(mode="json", by_alias=True)["run_id"] == run_id

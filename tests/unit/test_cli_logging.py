@@ -75,10 +75,10 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
             path = urlparse(self.path).path
             if path == "/health":
                 payload: object = {"status": "healthy"}
-            elif path == "/fetch-benchmark":
+            elif path == f"/runs/{run_id}":
                 payload = {
                     "benchmark_name": "swebench",
-                    "benchmark_id": str(run_id),
+                    "run_id": str(run_id),
                     "details": {
                         "status": "IN_PROGRESS",
                         "started_at": "2026-07-09T12:30:00Z",
@@ -89,11 +89,11 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
                     },
                     "s3_bucket_url": "s3://example/run",
                 }
-            elif path == f"/fetch-benchmark-metadata/{run_id}":
+            elif path == f"/runs/{run_id}/metadata":
                 payload = {
-                    "benchmark_id": str(run_id),
+                    "run_id": str(run_id),
                     "benchmark_name": "swebench",
-                    "benchmark_arguments": {
+                    "run_arguments": {
                         "contract": {"name": "agent", "model": "openai/gpt-5"},
                         "concurrency": 1,
                         "dataset": "default",

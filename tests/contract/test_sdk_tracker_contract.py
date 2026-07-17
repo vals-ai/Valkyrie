@@ -24,11 +24,15 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
+    GetRunResponse,
     HarnessConfig,
+    ListRunsResponse,
     RetryOrResumeBenchmarkResponse,
+    RunResultsResponse,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
+    StartRunResponse,
     StopBenchmarkResponse,
 )
 from valkyrie.sdk.models import (
@@ -43,12 +47,16 @@ from valkyrie.sdk.models import (
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
     FinalEvaluation as SDKFinalEvaluation,
     FinalViewResponse as SDKFinalViewResponse,
+    GetRunResponse as SDKGetRunResponse,
     HarnessConfig as SDKHarnessConfig,
+    ListRunsResponse as SDKListRunsResponse,
     OutputArtifact as SDKOutputArtifact,
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
+    RunResultsResponse as SDKRunResultsResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
     StartBenchmarkRequest as SDKStartBenchmarkRequest,
     StartBenchmarkResponse as SDKStartBenchmarkResponse,
+    StartRunResponse as SDKStartRunResponse,
     StopBenchmarkResponse as SDKStopBenchmarkResponse,
 )
 
@@ -210,6 +218,77 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         "FinalViewResponse",
         "S3UploadResultsResponse",
     }
+
+
+def test_tracker_exposes_canonical_run_routes_without_changing_legacy_routes() -> None:
+    schema = app.openapi()
+
+    expected_run_routes = {
+        "/runs": {"get", "post"},
+        "/runs/status": {"get"},
+        "/runs/filter-options": {"get"},
+        "/runs/{run_id}": {"get"},
+        "/runs/{run_id}/events": {"get"},
+        "/runs/{run_id}/results": {"get"},
+        "/runs/{run_id}/results/exists": {"get"},
+        "/runs/{run_id}/metadata": {"get"},
+        "/runs/{run_id}/outputs": {"get"},
+        "/runs/{run_id}/analysis": {"post"},
+        "/runs/{run_id}/stop": {"post"},
+        "/runs/{run_id}/resume": {"post"},
+        "/runs/{run_id}/retry": {"post"},
+        "/runs/{run_id}/tasks": {"get"},
+        "/runs/{run_id}/tasks/{task_id}": {"get"},
+        "/runs/{run_id}/tasks/{task_id}/artifacts": {"get"},
+    }
+    for path, methods in expected_run_routes.items():
+        assert path in schema["paths"]
+        assert set(schema["paths"][path]) == methods
+
+    assert "/start-benchmark" in schema["paths"]
+    assert "/fetch-benchmark" in schema["paths"]
+    assert "/fetch-benchmarks" in schema["paths"]
+
+    start_schema = schema["paths"]["/runs"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+    list_schema = schema["paths"]["/runs"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    assert start_schema == {"$ref": "#/components/schemas/StartRunResponse"}
+    assert list_schema == {"$ref": "#/components/schemas/ListRunsResponse"}
+    assert "run_id" in schema["components"]["schemas"]["StartRunResponse"]["properties"]
+    assert "benchmark_id" not in schema["components"]["schemas"]["StartRunResponse"]["properties"]
+    assert "runs" in schema["components"]["schemas"]["ListRunsResponse"]["properties"]
+    assert "benchmarks" not in schema["components"]["schemas"]["ListRunsResponse"]["properties"]
+
+    for path, operations in expected_run_routes.items():
+        if "{run_id}" not in path:
+            continue
+        for method in operations:
+            parameter = next(item for item in schema["paths"][path][method]["parameters"] if item["name"] == "run_id")
+            assert parameter["in"] == "path"
+            assert parameter["required"] is True
+            assert parameter["schema"]["format"] == "uuid"
+
+
+def test_canonical_run_dtos_translate_legacy_payloads_without_changing_default_dumps() -> None:
+    start_legacy = StartBenchmarkResponse.model_validate(load_fixture("start.json")["response"])
+    fetch_legacy = FetchBenchmarkResponse.model_validate(load_fixture("fetch.json")["response"])
+    list_legacy = FetchBenchmarksResponse.model_validate(load_fixture("list.json")["response"])
+    results_legacy = FinalViewResponse.model_validate(load_fixture("results.json")["inline"])
+
+    pairs = (
+        (StartRunResponse.from_legacy(start_legacy), SDKStartRunResponse),
+        (GetRunResponse.from_legacy(fetch_legacy), SDKGetRunResponse),
+        (ListRunsResponse.from_legacy(list_legacy), SDKListRunsResponse),
+        (RunResultsResponse.from_legacy(results_legacy), SDKRunResultsResponse),
+    )
+    for tracker_value, sdk_model in pairs:
+        canonical_payload = tracker_value.model_dump(mode="json", by_alias=True, warnings=False)
+        sdk_value = sdk_model.model_validate(canonical_payload)
+
+        assert "benchmark_id" not in canonical_payload
+        assert sdk_value.model_dump(mode="json") == tracker_value.model_dump(mode="json", warnings=False)
+
+    canonical_start = pairs[0][0].model_dump(mode="json", by_alias=True, warnings=False)
+    assert StartBenchmarkResponse.model_validate(canonical_start).benchmark_id == start_legacy.benchmark_id
 
 
 def test_final_evaluation_preserves_tracker_runtime_string_ids() -> None:

@@ -4,7 +4,7 @@ import tarfile
 import traceback
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 import httpx
@@ -22,10 +22,10 @@ from sqlmodel import Session, col, select
 
 from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
-from tracker.api.benchmarks_status import router as benchmarks_status_router
-from tracker.api.filter_options import router as filter_options_router
-from tracker.api.single_benchmark import router as single_benchmark_router
-from tracker.api.single_task import router as single_task_router
+from tracker.api.benchmarks_status import get_benchmarks_status, router as benchmarks_status_router
+from tracker.api.filter_options import FilterOptionsResponse, get_filter_options, router as filter_options_router
+from tracker.api.single_benchmark import get_benchmark_tasks, router as single_benchmark_router
+from tracker.api.single_task import get_single_task, get_task_artifacts, router as single_task_router
 from tracker.auth import (
     RequestIdentity,
     extract_api_key,
@@ -77,20 +77,35 @@ from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
     AnalyzeBenchmarkRequest,
+    AnalyzeRunRequest,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
+    GetRunResponse,
     HarnessConfig,
+    ListRunsResponse,
     Order,
     RetrieveResultsResponse,
+    RetrieveRunResultsResponse,
     RetryOrResumeBenchmarkResponse,
+    RetryOrResumeRunResponse,
+    RunMetadataResponse,
+    RunResultsResponse,
+    RunStatus,
+    RunStatusResponse,
     S3UploadResultsResponse,
+    SingleTaskResponse,
     StartBenchmarkErrorResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
+    StartRunRequest,
+    StartRunResponse,
     StopBenchmarkResponse,
+    StopRunResponse,
+    TaskArtifactsResponse,
+    TasksResponse,
 )
 from tracker.utils import (
     BenchmarkContext,
@@ -154,6 +169,15 @@ def bind_benchmark_id(benchmark_id: UUID) -> UUID:
 
 
 TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
+
+
+def bind_run_id(run_id: UUID) -> UUID:
+    """Bind the canonical run id to the existing internal logging context."""
+    benchmark_id_var.set(str(run_id))
+    return run_id
+
+
+TrackedRunId = Annotated[UUID, Depends(bind_run_id)]
 
 
 def _taskiq_labels() -> dict[str, str]:
@@ -605,7 +629,7 @@ async def check_results_exist(
     org: Org = Depends(get_current_org),
 ) -> dict[str, bool]:
     """
-    Check if results.json already exists in S3 for the given benchmark.
+    Check if uploaded results already exist in S3 for the given benchmark.
 
     Usage:
     curl -X GET http://<endpoint>/check-results-exist?benchmark_id=<uuid>
@@ -613,9 +637,9 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
     exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
     return {"exists": exists}
 
@@ -967,4 +991,355 @@ async def fetch_run_outputs(
         tar_generator(),
         media_type="application/x-tar",
         headers={"Content-Disposition": f"attachment; filename=benchmark_{benchmark_id}_outputs.tar"},
+    )
+
+
+# Canonical run API. These adapters intentionally stop at the HTTP boundary: database,
+# queue, storage, and legacy endpoint names remain stable during the compatibility window.
+@app.get("/runs/status", response_model=RunStatusResponse)
+def get_runs_status(
+    ids: str = Query(default=""),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> RunStatusResponse:
+    return RunStatusResponse.from_legacy(get_benchmarks_status(ids=ids, org=org, session=session))
+
+
+@app.get("/runs/filter-options", response_model=FilterOptionsResponse)
+def get_run_filter_options(
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> FilterOptionsResponse:
+    return get_filter_options(org=org, session=session)
+
+
+@app.get("/runs", response_model=ListRunsResponse)
+async def list_runs(
+    agent_name: list[str] | None = Query(default=None),
+    benchmark_name: list[str] | None = Query(default=None),
+    status: list[RunStatus] | None = Query(default=None),
+    started_by: list[str] | None = Query(default=None),
+    model: str | None = Query(default=None),
+    dataset: str | None = Query(default=None),
+    label: str | None = Query(default=None),
+    started_after: datetime | None = Query(default=None),
+    started_before: datetime | None = Query(default=None),
+    order_by: Order = Query(default=Order.DESC),
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> ListRunsResponse:
+    response = await fetch_benchmarks(
+        agent_name=agent_name,
+        benchmark_name=benchmark_name,
+        status=[BenchmarkStatus(value.value) for value in status] if status else None,
+        started_by=started_by,
+        model=model,
+        dataset=dataset,
+        label=label,
+        started_after=started_after,
+        started_before=started_before,
+        order_by=order_by,
+        cursor=cursor,
+        limit=limit,
+        offset=offset,
+        session=session,
+        org=org,
+    )
+    return ListRunsResponse.from_legacy(response)
+
+
+@app.post("/runs", response_model=StartRunResponse)
+async def start_run(
+    http_request: Request,
+    request: StartRunRequest,
+    session: Session = Depends(get_session),
+    run_starter: RequestIdentity = Depends(get_current_starter),
+) -> StartRunResponse:
+    response = await start_benchmark(
+        http_request=http_request,
+        request=request,
+        session=session,
+        run_starter=run_starter,
+    )
+    return StartRunResponse.from_legacy(response)
+
+
+@app.get("/runs/{run_id}", response_model=GetRunResponse)
+async def get_run(
+    run_id: TrackedRunId,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> GetRunResponse:
+    response = await fetch_benchmark(
+        benchmark_id=run_id,
+        connect=False,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+    )
+    assert isinstance(response, FetchBenchmarkResponse)
+    return GetRunResponse.from_legacy(response)
+
+
+@app.get("/runs/{run_id}/events", response_model=None)
+async def get_run_events(
+    run_id: TrackedRunId,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> StreamingResponse:
+    get_scoped(Benchmark, run_id, session, org)
+    return StreamingResponse(
+        stream_benchmark_results(run_id, session, harness_config, org, canonical=True),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/runs/{run_id}/results", response_model=RetrieveRunResultsResponse)
+async def get_run_results(
+    run_id: TrackedRunId,
+    http_request: Request,
+    s3: bool = Query(default=False),
+    task_ids: list[str] | None = Query(default=None),
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> RetrieveRunResultsResponse:
+    response = await retrieve_results(
+        benchmark_id=run_id,
+        http_request=http_request,
+        s3=s3,
+        task_ids=task_ids,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+    )
+    if isinstance(response, S3UploadResultsResponse):
+        return response
+    return RunResultsResponse.from_legacy(response)
+
+
+@app.get("/runs/{run_id}/results/exists")
+async def get_run_results_exists(
+    run_id: TrackedRunId,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> dict[str, bool]:
+    return await check_results_exist(
+        benchmark_id=run_id,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+    )
+
+
+@app.get("/runs/{run_id}/metadata", response_model=RunMetadataResponse)
+async def get_run_metadata(
+    run_id: TrackedRunId,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> RunMetadataResponse:
+    response = await fetch_benchmark_metadata(benchmark_id=run_id, session=session, org=org)
+    return RunMetadataResponse.from_legacy(response)
+
+
+@app.get("/runs/{run_id}/outputs", response_model=None)
+async def get_run_outputs(
+    run_id: TrackedRunId,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+    task_ids: list[str] | None = Query(default=None),
+) -> StreamingResponse:
+    return await fetch_run_outputs(
+        benchmark_id=run_id,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+        task_ids=task_ids,
+    )
+
+
+@app.post("/runs/{run_id}/analysis", response_model=None)
+async def analyze_run(
+    run_id: TrackedRunId,
+    body: AnalyzeRunRequest,
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> dict[str, str] | StreamingResponse:
+    return await analyze_benchmark(
+        benchmark_id=run_id,
+        body=body,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+    )
+
+
+@app.post("/runs/{run_id}/stop", response_model=StopRunResponse)
+async def stop_run(
+    run_id: TrackedRunId,
+    force: bool = Query(default=False),
+    task_ids: list[str] | None = Body(default=None, embed=True),
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> StopRunResponse:
+    response = await stop_benchmark(
+        benchmark_id=run_id,
+        force=force,
+        task_ids=task_ids,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+    )
+    return StopRunResponse(status=response.status)
+
+
+async def _continue_run(
+    *,
+    run_id: UUID,
+    http_request: Request,
+    retry: bool,
+    retry_mode: RetryMode,
+    concurrency: int | None,
+    task_ids: list[str],
+    service_headers: dict[str, str],
+    secrets: dict[str, str],
+    session: Session,
+    harness_config: HarnessConfig,
+    org: Org,
+) -> RetryOrResumeRunResponse:
+    response = await retry_or_resume_benchmark(
+        benchmark_id=run_id,
+        http_request=http_request,
+        retry=retry,
+        retry_mode=retry_mode,
+        concurrency=concurrency,
+        task_ids=task_ids,
+        service_headers=service_headers,
+        secrets=secrets,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+    )
+    return RetryOrResumeRunResponse(status=response.status)
+
+
+@app.post("/runs/{run_id}/resume", response_model=RetryOrResumeRunResponse)
+async def resume_run(
+    run_id: TrackedRunId,
+    http_request: Request,
+    retry_mode: RetryMode = Query(default=RetryMode.AUTO),
+    concurrency: int | None = Query(default=None),
+    task_ids: list[str] = Body(default=[]),
+    service_headers: dict[str, str] = Body(default={}),
+    secrets: dict[str, str] = Body(default={}),
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> RetryOrResumeRunResponse:
+    return await _continue_run(
+        run_id=run_id,
+        http_request=http_request,
+        retry=False,
+        retry_mode=retry_mode,
+        concurrency=concurrency,
+        task_ids=task_ids,
+        service_headers=service_headers,
+        secrets=secrets,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+    )
+
+
+@app.post("/runs/{run_id}/retry", response_model=RetryOrResumeRunResponse)
+async def retry_run(
+    run_id: TrackedRunId,
+    http_request: Request,
+    retry_mode: RetryMode = Query(default=RetryMode.AUTO),
+    concurrency: int | None = Query(default=None),
+    task_ids: list[str] = Body(default=[]),
+    service_headers: dict[str, str] = Body(default={}),
+    secrets: dict[str, str] = Body(default={}),
+    session: Session = Depends(get_session),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    org: Org = Depends(get_current_org),
+) -> RetryOrResumeRunResponse:
+    return await _continue_run(
+        run_id=run_id,
+        http_request=http_request,
+        retry=True,
+        retry_mode=retry_mode,
+        concurrency=concurrency,
+        task_ids=task_ids,
+        service_headers=service_headers,
+        secrets=secrets,
+        session=session,
+        harness_config=harness_config,
+        org=org,
+    )
+
+
+@app.get("/runs/{run_id}/tasks", response_model=TasksResponse)
+def get_run_tasks(
+    run_id: TrackedRunId,
+    status: str = Query(default=""),
+    task_id_search: str | None = None,
+    sort: Literal["task_id", "started_at", "duration", "status"] = Query(default="started_at"),
+    sort_dir: Literal["asc", "desc"] = Query(default="desc"),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> TasksResponse:
+    return get_benchmark_tasks(
+        benchmark_id=run_id,
+        status=status,
+        task_id_search=task_id_search,
+        sort=sort,
+        sort_dir=sort_dir,
+        limit=limit,
+        offset=offset,
+        org=org,
+        session=session,
+    )
+
+
+@app.get("/runs/{run_id}/tasks/{task_id}", response_model=SingleTaskResponse)
+def get_run_task(
+    run_id: TrackedRunId,
+    task_id: str,
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> SingleTaskResponse:
+    return get_single_task(benchmark_id=run_id, task_id=task_id, org=org, session=session)
+
+
+@app.get("/runs/{run_id}/tasks/{task_id}/artifacts", response_model=TaskArtifactsResponse)
+async def get_run_task_artifacts(
+    run_id: TrackedRunId,
+    task_id: str,
+    org: Org = Depends(get_current_org),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    session: Session = Depends(get_session),
+) -> TaskArtifactsResponse:
+    return await get_task_artifacts(
+        benchmark_id=run_id,
+        task_id=task_id,
+        org=org,
+        harness_config=harness_config,
+        session=session,
     )

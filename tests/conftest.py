@@ -41,9 +41,9 @@ class FakeClient:
     ) -> httpx.Response:
         self.url = url
         self.params = params
-        if "/fetch-run-outputs/" in url:
+        if "/runs/" in url and url.endswith("/outputs"):
             return httpx.Response(200, content=b"tar")
-        return httpx.Response(200, json={"benchmarks": [], "total_count": 0})
+        return httpx.Response(200, json={"runs": [], "total_count": 0})
 
     def close(self) -> None:
         pass

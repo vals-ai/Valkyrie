@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
-from pydantic import BaseModel, Field, field_serializer, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_serializer, field_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -122,7 +122,7 @@ class StartBenchmarkErrorResponse(BaseModel):
 class StartBenchmarkResponse(BaseModel):
     benchmark_name: str
     agent_name: str
-    benchmark_id: UUID
+    benchmark_id: UUID = Field(validation_alias=AliasChoices("benchmark_id", "run_id"))
     concurrency: int
     started_at: datetime
     task_count: int
@@ -132,7 +132,7 @@ class StartBenchmarkResponse(BaseModel):
 
 class FetchBenchmarkResponse(BaseModel):
     benchmark_name: str
-    benchmark_id: UUID
+    benchmark_id: UUID = Field(validation_alias=AliasChoices("benchmark_id", "run_id"))
     details: BenchmarkDetails
     s3_bucket_url: str
     label: str | None = None
@@ -206,8 +206,8 @@ class FetchBenchmarksRequest(BaseModel):
 
 
 class BenchmarkTableRow(BaseModel):
-    id: UUID
-    name: str
+    id: UUID = Field(validation_alias=AliasChoices("id", "run_id"))
+    name: str = Field(validation_alias=AliasChoices("name", "benchmark_name"))
     agent_name: str
     label: str | None = None
     model: str | None
@@ -236,15 +236,17 @@ class BenchmarkTableRow(BaseModel):
 
 
 class FetchBenchmarksResponse(BaseModel):
-    benchmarks: list[BenchmarkTableRow]
+    benchmarks: list[BenchmarkTableRow] = Field(validation_alias=AliasChoices("benchmarks", "runs"))
     total_count: int | None = None
     next_cursor: str | None = None
 
 
 class FetchBenchmarkMetadataResponse(BaseModel):
-    benchmark_id: UUID
+    benchmark_id: UUID = Field(validation_alias=AliasChoices("benchmark_id", "run_id"))
     benchmark_name: str
-    benchmark_arguments: BenchmarkArguments
+    benchmark_arguments: BenchmarkArguments = Field(
+        validation_alias=AliasChoices("benchmark_arguments", "run_arguments")
+    )
     started_by_email: str | None = None
 
 
@@ -288,7 +290,7 @@ class BenchmarkServicesRequest(BaseModel):
 
 
 class BenchmarkStatusEntry(BaseModel):
-    id: UUID
+    id: UUID = Field(validation_alias=AliasChoices("id", "run_id"))
     status: BenchmarkStatus
     finished_at: datetime | None
     total_tasks: int
@@ -302,7 +304,164 @@ class BenchmarkStatusEntry(BaseModel):
 
 
 class BenchmarkStatusResponse(BaseModel):
-    entries: list[BenchmarkStatusEntry]
+    entries: list[BenchmarkStatusEntry] = Field(validation_alias=AliasChoices("entries", "runs"))
+
+
+class RunStatus(str, Enum):
+    """Lifecycle states for one run."""
+
+    IN_PROGRESS = "IN_PROGRESS"
+    STOPPING = "STOPPING"
+    STOPPED = "STOPPED"
+    FINISHED = "FINISHED"
+    ERROR = "ERROR"
+
+
+class CanonicalRunModel(BaseModel):
+    """Canonical wire aliases with legacy default dumps for compatibility tooling."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    @classmethod
+    def from_legacy(cls, value: BaseModel) -> Self:
+        """Validate a legacy DTO through its JSON-compatible field names."""
+        return cls.model_validate(value.model_dump(mode="json", warnings=False))
+
+
+class RunDetails(CanonicalRunModel):
+    """Canonical progress details for one run."""
+
+    status: RunStatus
+    started_at: datetime
+    total_tasks: int
+    finished_tasks: int
+    task_breakdown: dict[TaskStatus, int]
+    docent_reading_status: DocentReadingStatus
+    docent_reading_url: str | None = None
+
+
+class StartRunRequest(StartBenchmarkRequest):
+    """Canonical request for starting a run."""
+
+
+class StartRunResponse(CanonicalRunModel):
+    benchmark_name: str
+    agent_name: str
+    benchmark_id: UUID = Field(alias="run_id")
+    concurrency: int
+    started_at: datetime
+    task_count: int
+    cloudwatch_url: str
+    s3_bucket_url: str
+
+
+class GetRunResponse(CanonicalRunModel):
+    benchmark_name: str
+    benchmark_id: UUID = Field(alias="run_id")
+    details: RunDetails
+    s3_bucket_url: str
+    label: str | None = None
+    final_score: float | None = None
+
+
+class RunSummary(CanonicalRunModel):
+    id: UUID = Field(alias="run_id")
+    name: str = Field(alias="benchmark_name")
+    agent_name: str
+    label: str | None = None
+    model: str | None
+    dataset: str = "default"
+    started_by_email: str | None
+    started_at: datetime
+    finished_at: datetime | None
+    status: RunStatus
+    total_tasks: int
+    finished_tasks: int
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
+    final_score: float | None = None
+    error_message: str | None = None
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+    @field_serializer("finished_at")
+    def _serialize_finished_at(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class ListRunsResponse(CanonicalRunModel):
+    benchmarks: list[RunSummary] = Field(alias="runs")
+    total_count: int | None = None
+    next_cursor: str | None = None
+
+
+class RunArguments(BenchmarkArguments):
+    """Arguments retained with a run."""
+
+
+class RunFinalEvaluation(CanonicalRunModel):
+    id: str
+    org_id: str
+    benchmark: str = Field(alias="run_id")
+    final_score: float
+    properties: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunResultsResponse(CanonicalRunModel):
+    benchmark_id: UUID = Field(alias="run_id")
+    benchmark_name: str
+    started_at: datetime
+    finished_at: datetime | None
+    status: RunStatus
+    error_message: str | None
+    benchmark_arguments: RunArguments = Field(alias="run_arguments")
+    tasks_stopped: int | None
+    final_evaluation: RunFinalEvaluation | None
+    average_task_breakdown: AverageTaskBreakdown | None
+    evaluation_results: dict[str, dict[str, Any]] | None
+    task_errors: dict[str, str] | None
+
+
+RetrieveRunResultsResponse = RunResultsResponse | S3UploadResultsResponse
+
+
+class RunMetadataResponse(CanonicalRunModel):
+    benchmark_id: UUID = Field(alias="run_id")
+    benchmark_name: str
+    benchmark_arguments: RunArguments = Field(alias="run_arguments")
+    started_by_email: str | None = None
+
+
+class AnalyzeRunRequest(AnalyzeBenchmarkRequest):
+    """Canonical request for generating run analysis."""
+
+
+class StopRunResponse(StatusResponse):
+    pass
+
+
+class RetryOrResumeRunResponse(StatusResponse):
+    pass
+
+
+class RunStatusEntry(CanonicalRunModel):
+    id: UUID = Field(alias="run_id")
+    status: RunStatus
+    finished_at: datetime | None
+    total_tasks: int
+    finished_tasks: int
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
+
+    @field_serializer("finished_at")
+    def _serialize_dt(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
+
+
+class RunStatusResponse(CanonicalRunModel):
+    entries: list[RunStatusEntry] = Field(alias="runs")
 
 
 class SingleBenchmarkResponse(BaseModel):

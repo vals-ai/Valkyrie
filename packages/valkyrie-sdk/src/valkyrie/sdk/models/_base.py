@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict
 class ResponseModel(BaseModel):
     """Forward-compatible model for data returned by the Valkyrie API."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 def serialize_utc(value: datetime | None) -> str | None:

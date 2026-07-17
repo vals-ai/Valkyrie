@@ -57,7 +57,7 @@ def fetch_response() -> FetchResponseFactory:
     def factory(run_id: UUID, *, status: str = "IN_PROGRESS") -> dict[str, object]:
         return {
             "benchmark_name": "swebench",
-            "benchmark_id": str(run_id),
+            "run_id": str(run_id),
             "details": {
                 "status": status,
                 "started_at": "2026-07-08T12:00:00Z",

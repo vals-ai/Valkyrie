@@ -463,6 +463,13 @@ Webhook configuration is persisted per-benchmark in the database. On resume or r
 
 ## Documentation
 
+The canonical tracker lifecycle API is `/runs` and uses `run_id`. Legacy benchmark-run routes and fields remain
+available for at least three months after canonical clients ship. `benchmark_name` is unchanged because it names the
+benchmark definition.
+
+When components are deployed separately, upgrade the tracker before publishing the matching SDK or CLI. Older clients
+continue to use retained legacy routes, and new clients fall back to them on a canonical-route 404 during rollout or rollback.
+
 | Topic | Link |
 | --- | --- |
 | Python SDK | [Guide](docs/sdk/README.md) |

@@ -50,6 +50,8 @@ from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
     StartBenchmarkRequest,
+    StartBenchmarkResponse,
+    StatusResponse,
 )
 from tracker.utils import fetch_harness_config
 
@@ -461,6 +463,134 @@ class TestFastapiServer:
         # Test case 6. Final score is returned when the benchmark has a final evaluation
         assert response.status_code == 200
         assert response.json().get("final_score") == 83.25
+
+    async def test_canonical_run_read_routes_translate_only_the_http_boundary(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+        database_session.add(Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id))
+        database_session.commit()
+
+        checked_keys: list[str] = []
+
+        async def _results_exist(key: str, *_args: Any, **_kwargs: Any) -> bool:
+            checked_keys.append(key)
+            return True
+
+        monkeypatch.setattr("main.s3_object_exists", _results_exist)
+
+        fetched = client.get(f"/runs/{benchmark_row.id}")
+        listed = client.get("/runs")
+        results = client.get(f"/runs/{benchmark_row.id}/results")
+        results_exist = client.get(f"/runs/{benchmark_row.id}/results/exists")
+        metadata = client.get(f"/runs/{benchmark_row.id}/metadata")
+        statuses = client.get("/runs/status", params={"ids": str(benchmark_row.id)})
+
+        assert fetched.status_code == 200
+        assert fetched.json()["run_id"] == str(benchmark_row.id)
+        assert "benchmark_id" not in fetched.json()
+
+        assert listed.status_code == 200
+        assert listed.json()["runs"][0]["run_id"] == str(benchmark_row.id)
+        assert listed.json()["runs"][0]["benchmark_name"] == benchmark_row.name
+        assert "benchmarks" not in listed.json()
+
+        assert results.status_code == 200
+        assert results.json()["run_id"] == str(benchmark_row.id)
+        assert "run_arguments" in results.json()
+        assert "benchmark_arguments" not in results.json()
+
+        assert results_exist.json() == {"exists": True}
+        assert checked_keys == [f"benchmarks/{benchmark_row.id}/{benchmark_row.name}.json"]
+
+        assert metadata.status_code == 200
+        assert metadata.json()["run_id"] == str(benchmark_row.id)
+        assert "run_arguments" in metadata.json()
+
+        assert statuses.status_code == 200
+        assert statuses.json()["runs"][0]["run_id"] == str(benchmark_row.id)
+
+    async def test_canonical_run_actions_forward_to_legacy_handlers(
+        self,
+        monkeypatch: MonkeyPatch,
+        contract: AgentContractRequest,
+        harness_config: HarnessConfig,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        run_id = example_benchmark_object.id
+        calls: list[tuple[str, dict[str, Any]]] = []
+
+        async def _start_benchmark(**kwargs: Any) -> StartBenchmarkResponse:
+            calls.append(("start", kwargs))
+            request = kwargs["request"]
+            assert isinstance(request, StartBenchmarkRequest)
+            return StartBenchmarkResponse(
+                benchmark_name=request.benchmark_name,
+                agent_name=request.contract.name,
+                benchmark_id=run_id,
+                concurrency=request.concurrency,
+                started_at=example_benchmark_object.started_at,
+                task_count=1,
+                cloudwatch_url="https://logs.example",
+                s3_bucket_url="s3://bucket",
+            )
+
+        async def _stop_benchmark(**kwargs: Any) -> StatusResponse:
+            calls.append(("stop", kwargs))
+            return StatusResponse(status="success")
+
+        async def _retry_or_resume_benchmark(**kwargs: Any) -> StatusResponse:
+            calls.append(("continue", kwargs))
+            return StatusResponse(status="success")
+
+        monkeypatch.setattr("main.start_benchmark", _start_benchmark)
+        monkeypatch.setattr("main.stop_benchmark", _stop_benchmark)
+        monkeypatch.setattr("main.retry_or_resume_benchmark", _retry_or_resume_benchmark)
+
+        start_request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=3,
+            task_ids=["task-1"],
+            harness_config=harness_config,
+        )
+        started = client.post("/runs", json=start_request.model_dump(mode="json"))
+        stopped = client.post(f"/runs/{run_id}/stop", params={"force": True}, json={"task_ids": ["task-1"]})
+        resumed = client.post(
+            f"/runs/{run_id}/resume",
+            params={"retry_mode": "auto", "concurrency": 2},
+            json={"task_ids": ["task-2"], "service_headers": {"X-Test": "value"}, "secrets": {}},
+        )
+        retried = client.post(
+            f"/runs/{run_id}/retry",
+            params={"retry_mode": "from_scratch"},
+            json={"task_ids": [], "service_headers": {}, "secrets": {"TOKEN": "secret-name"}},
+        )
+
+        assert started.status_code == 200
+        assert started.json()["run_id"] == str(run_id)
+        assert "benchmark_id" not in started.json()
+        assert stopped.json() == {"status": "success"}
+        assert resumed.json() == {"status": "success"}
+        assert retried.json() == {"status": "success"}
+
+        assert calls[1][0] == "stop"
+        assert calls[1][1]["benchmark_id"] == run_id
+        assert calls[1][1]["force"] is True
+        assert calls[1][1]["task_ids"] == ["task-1"]
+        assert calls[2][1]["retry"] is False
+        assert calls[2][1]["retry_mode"].value == "auto"
+        assert calls[2][1]["concurrency"] == 2
+        assert calls[2][1]["task_ids"] == ["task-2"]
+        assert calls[2][1]["service_headers"] == {"X-Test": "value"}
+        assert calls[3][1]["retry"] is True
+        assert calls[3][1]["retry_mode"].value == "from_scratch"
+        assert calls[3][1]["secrets"] == {"TOKEN": "secret-name"}
 
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark

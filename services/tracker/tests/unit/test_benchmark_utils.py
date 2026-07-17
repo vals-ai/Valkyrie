@@ -19,6 +19,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    DocentReadingStatus,
     ErrorResult,
     EvaluationResult,
     Org,
@@ -26,7 +27,14 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
+from tracker.types import (
+    AWSCredentials,
+    BenchmarkDetails,
+    FetchBenchmarkResponse,
+    FetchBenchmarksRequest,
+    HarnessConfig,
+    StartBenchmarkRequest,
+)
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
@@ -40,6 +48,32 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
 )
 from tracker.utils.harness_config import _parse_log_retention_policy
+from tracker.utils.reporting import serialize_benchmark_snapshot
+
+
+def test_run_snapshot_serialization_is_canonical_only_when_requested() -> None:
+    run_id = uuid4()
+    response = FetchBenchmarkResponse(
+        benchmark_name="swebench",
+        benchmark_id=run_id,
+        details=BenchmarkDetails(
+            status=BenchmarkStatus.IN_PROGRESS,
+            started_at=datetime.now(ZoneInfo("UTC")),
+            total_tasks=1,
+            finished_tasks=0,
+            task_breakdown={TaskStatus.PENDING: 1},
+            docent_reading_status=DocentReadingStatus.IDLE,
+        ),
+        s3_bucket_url="s3://bucket/run",
+    )
+
+    legacy = serialize_benchmark_snapshot(response, canonical=False)
+    canonical = serialize_benchmark_snapshot(response, canonical=True)
+
+    assert '"benchmark_id"' in legacy
+    assert '"run_id"' not in legacy
+    assert '"run_id"' in canonical
+    assert '"benchmark_id"' not in canonical
 
 
 class TestBenchmarkUtils:

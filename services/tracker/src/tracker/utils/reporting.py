@@ -39,6 +39,7 @@ from tracker.types import (
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
     FinalViewResponse,
+    GetRunResponse,
     HarnessConfig,
     Order,
 )
@@ -259,7 +260,12 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, harness_config: HarnessConfig, org: Org
+    benchmark_id: UUID,
+    session: Session,
+    harness_config: HarnessConfig,
+    org: Org,
+    *,
+    canonical: bool = False,
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -301,7 +307,8 @@ async def stream_benchmark_results(
                     else None,
                 )
 
-                yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"
+                response_json = serialize_benchmark_snapshot(response_data, canonical=canonical)
+                yield f"{DATA_PREFIX} {response_json}\n\n"
 
                 if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
                     yield EVENT_COMPLETE
@@ -312,6 +319,13 @@ async def stream_benchmark_results(
     except asyncio.CancelledError:
         logger.info(f"Client disconnected from benchmark {benchmark_id} stream")
         yield DISCONNECT
+
+
+def serialize_benchmark_snapshot(response: FetchBenchmarkResponse, *, canonical: bool) -> str:
+    """Serialize one SSE snapshot without changing the stored or legacy result shape."""
+    if canonical:
+        return GetRunResponse.from_legacy(response).model_dump_json(by_alias=True)
+    return response.model_dump_json()
 
 
 def encode_cursor(started_at: datetime, row_id: UUID) -> str:

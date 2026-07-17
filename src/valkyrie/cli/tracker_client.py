@@ -3,6 +3,7 @@
 import json
 import re
 from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from typing import Any, cast
 from uuid import UUID
 
@@ -26,6 +27,7 @@ from tracker.types import (
     HarnessConfig,
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
+    RunResultsResponse,
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StopBenchmarkResponse,
@@ -145,6 +147,56 @@ class TrackerService:
     def close(self) -> None:
         """Close the HTTP client."""
         self._client.close()
+
+    def _get_with_legacy_fallback(
+        self,
+        canonical_url: str,
+        legacy_url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        legacy_params: dict[str, Any] | None = None,
+    ) -> Response:
+        response = self._client.get(canonical_url, params=params)
+        if response.status_code == 404:
+            return self._client.get(legacy_url, params=legacy_params if legacy_params is not None else params)
+        return response
+
+    def _post_with_legacy_fallback(
+        self,
+        canonical_url: str,
+        legacy_url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        legacy_params: dict[str, Any] | None = None,
+        json: dict[str, Any],
+    ) -> Response:
+        response = self._client.post(canonical_url, params=params, json=json)
+        if response.status_code == 404:
+            return self._client.post(
+                legacy_url,
+                params=legacy_params if legacy_params is not None else params,
+                json=json,
+            )
+        return response
+
+    @contextmanager
+    def _stream_with_legacy_fallback(
+        self,
+        method: str,
+        canonical_url: str,
+        legacy_url: str,
+        *,
+        params: dict[str, Any] | None = None,
+        legacy_params: dict[str, Any] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> Generator[Response, None, None]:
+        with self._client.stream(method, canonical_url, params=params, json=json, timeout=None) as response:
+            if response.status_code != 404:
+                yield response
+                return
+            response.read()
+        with self._client.stream(method, legacy_url, params=legacy_params, json=json, timeout=None) as response:
+            yield response
 
     @staticmethod
     def _load_config() -> dict[str, Any]:
@@ -424,7 +476,11 @@ class TrackerService:
 
             body = payload.model_dump()
 
-            response = self._client.post(f"{self._base_url}/start-benchmark", json=body)
+            response = self._post_with_legacy_fallback(
+                f"{self._base_url}/runs",
+                f"{self._base_url}/start-benchmark",
+                json=body,
+            )
 
             return response
         except httpx.HTTPError as e:
@@ -441,7 +497,11 @@ class TrackerService:
             FetchBenchmarkResponse with benchmark information
         """
         try:
-            response = self._client.get(f"{self._base_url}/fetch-benchmark", params={"benchmark_id": str(benchmark_id)})
+            response = self._get_with_legacy_fallback(
+                f"{self._base_url}/runs/{benchmark_id}",
+                f"{self._base_url}/fetch-benchmark",
+                legacy_params={"benchmark_id": str(benchmark_id)},
+            )
 
             return FetchBenchmarkResponse.model_validate(_parse_response(response, "Failed to fetch run"))
         except httpx.HTTPError as e:
@@ -456,11 +516,16 @@ class TrackerService:
     ) -> Iterator[tuple[str, dict[str, Any]]]:
         """Trigger Docent analysis. Yields ``(event_name, data)`` SSE events
         (``started``, ``heartbeat``, ``done``, ``error``) until terminal."""
-        url = f"{self._base_url}/analyze-benchmark/{benchmark_id}"
+        url = f"{self._base_url}/runs/{benchmark_id}/analysis"
         body = {"no_cache": no_cache, "lambda_function": lambda_function}
 
         try:
-            with self._client.stream("POST", url, json=body, timeout=None) as response:
+            with self._stream_with_legacy_fallback(
+                "POST",
+                url,
+                f"{self._base_url}/analyze-benchmark/{benchmark_id}",
+                json=body,
+            ) as response:
                 if response.status_code != 200:
                     response.read()
                     details = _response_error_detail(response)
@@ -507,11 +572,11 @@ class TrackerService:
             Generator[str, None, None]
         """
         try:
-            with self._client.stream(
+            with self._stream_with_legacy_fallback(
                 "GET",
+                f"{self._base_url}/runs/{benchmark_id}/events",
                 f"{self._base_url}/fetch-benchmark",
-                params={"benchmark_id": str(benchmark_id), "connect": "true"},
-                timeout=None,
+                legacy_params={"benchmark_id": str(benchmark_id), "connect": "true"},
             ) as response:
                 if response.status_code != 200:
                     response.read()
@@ -537,15 +602,21 @@ class TrackerService:
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
         """
         try:
-            params: dict[str, Any] = {"benchmark_id": str(benchmark_id), "s3": s3}
+            params: dict[str, Any] = {"s3": s3}
             if task_ids:
                 params["task_ids"] = task_ids
 
-            response = self._client.get(f"{self._base_url}/retrieve-results", params=params)
+            response = self._get_with_legacy_fallback(
+                f"{self._base_url}/runs/{benchmark_id}/results",
+                f"{self._base_url}/retrieve-results",
+                params=params,
+                legacy_params={"benchmark_id": str(benchmark_id), **params},
+            )
 
             response_data = _parse_response(response, "Failed to retrieve results")
             if not s3:
-                return FinalViewResponse.model_validate(response_data)
+                canonical_response = RunResultsResponse.model_validate(response_data)
+                return FinalViewResponse.model_validate(canonical_response.model_dump(mode="json"))
 
             return S3UploadResultsResponse.model_validate(response_data)
 
@@ -591,8 +662,10 @@ class TrackerService:
             TrackerServiceError if request fails
         """
         try:
-            response = self._client.get(
-                f"{self._base_url}/check-results-exist", params={"benchmark_id": str(benchmark_id)}
+            response = self._get_with_legacy_fallback(
+                f"{self._base_url}/runs/{benchmark_id}/results/exists",
+                f"{self._base_url}/check-results-exist",
+                legacy_params={"benchmark_id": str(benchmark_id)},
             )
 
             return _parse_response(response, "Failed to check S3 results")["exists"]
@@ -617,7 +690,8 @@ class TrackerService:
             StopBenchmarkResponse with status and message
         """
         try:
-            response = self._client.post(
+            response = self._post_with_legacy_fallback(
+                f"{self._base_url}/runs/{benchmark_id}/stop",
                 f"{self._base_url}/stop-benchmark/{benchmark_id}",
                 params={"force": force},
                 json={"task_ids": task_ids},
@@ -653,7 +727,7 @@ class TrackerService:
             RetryOrResumeBenchmarkResponse with status and message
         """
         try:
-            params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
+            params: dict[str, Any] = {"retry_mode": retry_mode.value}
 
             # NOTE: 0 is not acceptable
             if concurrency:
@@ -663,9 +737,11 @@ class TrackerService:
             if secrets:
                 body["secrets"] = secrets
 
-            response = self._client.post(
+            response = self._post_with_legacy_fallback(
+                f"{self._base_url}/runs/{benchmark_id}/{'retry' if retry else 'resume'}",
                 f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",
                 params=params,
+                legacy_params={"retry": retry, **params},
                 json=body,
             )
 
@@ -684,8 +760,11 @@ class TrackerService:
             FetchBenchmarksResponse
         """
         try:
-            response = self._client.get(
-                f"{self._base_url}/fetch-benchmarks", params=request.model_dump(exclude_none=True, mode="json")
+            params = request.model_dump(exclude_none=True, mode="json")
+            response = self._get_with_legacy_fallback(
+                f"{self._base_url}/runs",
+                f"{self._base_url}/fetch-benchmarks",
+                params=params,
             )
 
             return FetchBenchmarksResponse.model_validate(_parse_response(response, "Failed to fetch runs"))
@@ -695,9 +774,11 @@ class TrackerService:
     def fetch_benchmark_statuses(self, benchmark_ids: list[UUID]) -> BenchmarkStatusResponse:
         """Fetch lightweight status and task counts for multiple runs."""
         try:
-            response = self._client.get(
+            params = {"ids": ",".join(str(benchmark_id) for benchmark_id in benchmark_ids)}
+            response = self._get_with_legacy_fallback(
+                f"{self._base_url}/runs/status",
                 f"{self._base_url}/benchmarks/status",
-                params={"ids": ",".join(str(benchmark_id) for benchmark_id in benchmark_ids)},
+                params=params,
             )
             return BenchmarkStatusResponse.model_validate(_parse_response(response, "Failed to fetch run statuses"))
         except httpx.HTTPError as e:
@@ -718,7 +799,11 @@ class TrackerService:
             params: dict[str, Any] = {}
             if task_ids:
                 params["task_ids"] = task_ids
-            response = self._client.get(f"{self._base_url}/fetch-run-outputs/{benchmark_id}", params=params)
+            response = self._get_with_legacy_fallback(
+                f"{self._base_url}/runs/{benchmark_id}/outputs",
+                f"{self._base_url}/fetch-run-outputs/{benchmark_id}",
+                params=params,
+            )
             if response.status_code != 200:
                 details = _response_error_detail(response)
                 raise TrackerServiceError(f"Failed to fetch run outputs: {details}")
@@ -738,7 +823,10 @@ class TrackerService:
             FetchBenchmarkMetadataResponse with benchmark metadata
         """
         try:
-            response = self._client.get(f"{self._base_url}/fetch-benchmark-metadata/{benchmark_id}")
+            response = self._get_with_legacy_fallback(
+                f"{self._base_url}/runs/{benchmark_id}/metadata",
+                f"{self._base_url}/fetch-benchmark-metadata/{benchmark_id}",
+            )
 
             return FetchBenchmarkMetadataResponse.model_validate(
                 _parse_response(response, "Failed to fetch run metadata")

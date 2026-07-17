@@ -81,10 +81,15 @@ class ValkyrieClient:
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
+        fallback_path: str | None = None,
+        fallback_params: dict[str, Any] | None = None,
     ) -> ResponseModel:
-        """Send a request and validate its response as a Pydantic model."""
+        """Send a request, optionally retrying a legacy route on a canonical 404."""
         try:
             response = await self._client.request(method, path, params=params, json=json)
+            if response.status_code == 404 and fallback_path is not None:
+                fallback_request_params = fallback_params if fallback_params is not None else params
+                response = await self._client.request(method, fallback_path, params=fallback_request_params, json=json)
         except httpx.HTTPError as exc:
             raise ValkyrieTransportError(f"Valkyrie request failed: {exc}") from exc
 
