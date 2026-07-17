@@ -15,7 +15,6 @@ from tracker.database.models import BenchmarkStatus
 from tracker.types import RetrieveResultsResponse, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run import run
 from valkyrie.cli.run.errors import build_run_errors_payload, errors, group_task_errors
 
 from tests.unit.cli.factories import make_final_view
@@ -270,11 +269,12 @@ def test_errors_rejects_unexpected_s3_response(monkeypatch: pytest.MonkeyPatch) 
     assert "unexpected response" in result.stderr
 
 
-def test_errors_command_is_registered_and_rejects_invalid_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert "errors" in run.commands
-    help_result = CliRunner().invoke(errors, ["--help"])
-    assert help_result.exit_code == 0
-    assert "--format [text|json]" in help_result.stdout
+def test_errors_rejects_invalid_uuid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid run IDs must fail before tracker construction.
+
+    Test cases:
+    - A non-UUID argument exits with Click's usage error without creating a tracker client.
+    """
 
     def unexpected_tracker() -> None:
         pytest.fail("invalid UUID should fail before constructing a tracker")

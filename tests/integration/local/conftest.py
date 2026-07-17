@@ -20,6 +20,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
     BenchmarkStatus,
+    EvaluationResult,
     FinalEvaluation,
     Org,
     Task,
@@ -159,9 +160,21 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
         finished_at=datetime(2026, 1, 3, tzinfo=timezone.utc),
         started_by_email="reviewer@example.com",
         arguments=BenchmarkArguments(
-            contract=AgentContractRequest(name="review-agent", install_cmd="install", run_cmd="run"),
+            contract=AgentContractRequest(
+                name="review-agent",
+                install_cmd="install",
+                run_cmd="run",
+                secrets={"TOKEN": "finished-secret-must-not-leak"},
+                kwargs={"private": "finished-kwarg-must-not-leak"},
+            ),
             concurrency=1,
         ),
+    )
+    completed_task = Task(
+        org_id=TEST_ORG_ID,
+        benchmark=finished.id,
+        task_id="complete",
+        status=TaskStatus.FINISHED,
     )
     database_session.add_all(
         [
@@ -169,8 +182,15 @@ def seeded_runs(database_session: Session) -> tuple[Benchmark, Benchmark]:
             finished,
             Task(org_id=TEST_ORG_ID, benchmark=running.id, task_id="done", status=TaskStatus.FINISHED),
             Task(org_id=TEST_ORG_ID, benchmark=running.id, task_id="active", status=TaskStatus.IN_PROGRESS),
+            Task(org_id=TEST_ORG_ID, benchmark=running.id, task_id="pending", status=TaskStatus.PENDING),
             Task(org_id=TEST_ORG_ID, benchmark=running.id, task_id="error", status=TaskStatus.ERROR),
-            Task(org_id=TEST_ORG_ID, benchmark=finished.id, task_id="complete", status=TaskStatus.FINISHED),
+            completed_task,
+            EvaluationResult(
+                org_id=TEST_ORG_ID,
+                task=completed_task.id,
+                instance_id="complete",
+                result={"score": 1},
+            ),
             FinalEvaluation(org_id=TEST_ORG_ID, benchmark=finished.id, final_score=0.75),
         ]
     )

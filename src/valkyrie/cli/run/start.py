@@ -179,7 +179,7 @@ def resolve_webhook_config(
 )
 @click.option(
     "--concurrency",
-    type=int,
+    type=click.IntRange(min=1),
     default=5,
     required=False,
     help="Number of concurrent tasks to run (e.g., 5)",

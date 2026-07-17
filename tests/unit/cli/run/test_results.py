@@ -73,6 +73,7 @@ class TestResultsCommand:
         - Evaluation results and task errors are written to the selected JSON path.
         - The subset summary reports scored and requested task counts.
         - Task selection is forwarded once to the tracker.
+        - Agent secrets and private runtime kwargs are excluded from the saved file.
         """
         response = make_final_view(
             _RUN_ID,
@@ -98,6 +99,8 @@ class TestResultsCommand:
         assert saved_payload["benchmark_id"] == str(_RUN_ID)
         assert saved_payload["evaluation_results"] == {"task-a": {"score": 1}}
         assert saved_payload["task_errors"] == {"task-b": "evaluation failed"}
+        assert "secrets" not in saved_payload["benchmark_arguments"]["contract"]
+        assert "kwargs" not in saved_payload["benchmark_arguments"]["contract"]
 
     def test_s3_results_render_links_and_protect_existing_uploads(
         self,

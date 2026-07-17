@@ -10,6 +10,7 @@ from typing import Any
 
 import click
 import pytest
+from tracker.exceptions import S3Error
 from tracker.types import AWSCredentials
 
 from valkyrie.cli.run.artifacts import download_s3_path
@@ -113,6 +114,27 @@ async def test_download_s3_path_handles_exact_file_path(monkeypatch: pytest.Monk
 
     assert count == 1
     assert (tmp_path / "results.json").read_bytes() == b"results"
+
+
+async def test_download_s3_path_rejects_keys_outside_output_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """S3 object keys must not write outside the requested output directory.
+
+    Test cases:
+    - A key containing a parent-directory segment raises an S3 error.
+    - No file is written beside the output directory.
+    """
+    tracker = ConcurrencyTracker()
+    payloads = {"benchmarks/run-1/../escaped.txt": b"escaped"}
+    output_dir = tmp_path / "output"
+    patch_s3(monkeypatch, payloads, tracker)
+
+    with pytest.raises(S3Error, match="Unsafe S3 object key"):
+        await download_s3_path("benchmarks/run-1", output_dir)
+
+    assert not (tmp_path / "escaped.txt").exists()
 
 
 async def test_download_s3_path_requires_configured_bucket(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

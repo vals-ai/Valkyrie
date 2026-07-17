@@ -5,6 +5,7 @@ Run: uv run pytest tests/unit/cli/run/test_output_helpers.py
 
 import io
 import tarfile
+import tempfile
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
@@ -14,13 +15,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import (
-    AgentContractRequest,
-    BenchmarkArguments,
-    BenchmarkStatus,
-    DocentReadingStatus,
-    TaskStatus,
-)
+from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import (
     BenchmarkDetails,
     FetchBenchmarkMetadataResponse,
@@ -35,6 +30,8 @@ from valkyrie.cli.run.outputs import download_run_outputs
 from valkyrie.cli.run.progress import format_benchmark_status, stream_benchmark_status
 from valkyrie.cli.run.start import format_start_benchmark_response
 from valkyrie.cli.tracker_client import TrackerService
+
+from tests.unit.cli.factories import make_fetch_metadata, make_fetch_response
 
 fetch_module = import_module("valkyrie.cli.run.fetch")
 
@@ -60,36 +57,6 @@ class StubProgressTracker:
 
     def stream_benchmark(self, _run_id: UUID):
         yield "event: disconnect"
-
-
-def make_fetch_response(run_id: UUID) -> FetchBenchmarkResponse:
-    return FetchBenchmarkResponse(
-        benchmark_name="swebench",
-        benchmark_id=run_id,
-        details=BenchmarkDetails(
-            status=BenchmarkStatus.IN_PROGRESS,
-            started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
-            total_tasks=4,
-            finished_tasks=1,
-            task_breakdown={TaskStatus.IN_PROGRESS: 3, TaskStatus.FINISHED: 1},
-            docent_reading_status=DocentReadingStatus.IDLE,
-        ),
-        s3_bucket_url="https://example.com/run",
-        label="release-candidate",
-    )
-
-
-def make_fetch_metadata(run_id: UUID) -> FetchBenchmarkMetadataResponse:
-    return FetchBenchmarkMetadataResponse(
-        benchmark_id=run_id,
-        benchmark_name="swebench",
-        benchmark_arguments=BenchmarkArguments(
-            contract=AgentContractRequest(name="mini_sweagent", model="openai/gpt-5", secrets={"API_KEY": "secret"}),
-            concurrency=20,
-            dataset="verified",
-        ),
-        started_by_email="runner@vals.ai",
-    )
 
 
 def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixture[str]) -> None:
@@ -237,6 +204,51 @@ def test_download_run_outputs_extracts_archive_and_nested_tars(tmp_path: Path) -
     assert (tmp_path / "task" / "output.txt").read_bytes() == b"run output"
     assert (tmp_path / "task" / "artifacts" / "nested.txt").read_bytes() == b"nested contents"
     assert not (tmp_path / "task" / "artifacts.tar.gz").exists()
+
+
+@pytest.mark.parametrize("nested", [False, True], ids=["outer-archive", "nested-archive"])
+def test_download_run_outputs_rejects_archive_traversal(
+    nested: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Run output archives must not write outside their extraction directory.
+
+    Test cases:
+    - A parent-directory member in the response archive is rejected.
+    - A parent-directory member in a nested task archive is rejected.
+    - The temporary response archive is removed after either failure.
+    """
+    response_bytes = io.BytesIO()
+    if nested:
+        nested_bytes = io.BytesIO()
+        with tarfile.open(fileobj=nested_bytes, mode="w:gz") as nested_tar:
+            content = b"escaped"
+            info = tarfile.TarInfo("../../escaped.txt")
+            info.size = len(content)
+            nested_tar.addfile(info, io.BytesIO(content))
+
+        with tarfile.open(fileobj=response_bytes, mode="w") as outer_tar:
+            payload = nested_bytes.getvalue()
+            info = tarfile.TarInfo("task/artifacts.tar.gz")
+            info.size = len(payload)
+            outer_tar.addfile(info, io.BytesIO(payload))
+        escaped_path = tmp_path / "output" / "escaped.txt"
+    else:
+        with tarfile.open(fileobj=response_bytes, mode="w") as outer_tar:
+            content = b"escaped"
+            info = tarfile.TarInfo("../escaped.txt")
+            info.size = len(content)
+            outer_tar.addfile(info, io.BytesIO(content))
+        escaped_path = tmp_path / "escaped.txt"
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+
+    with pytest.raises(tarfile.FilterError):
+        download_run_outputs(httpx.Response(200, content=response_bytes.getvalue()), tmp_path / "output")
+
+    assert not escaped_path.exists()
+    assert not list(tmp_path.glob("tmp*.tar"))
 
 
 def test_paginate_cli_pages_clears_between_pages_and_handles_filtered_totals(

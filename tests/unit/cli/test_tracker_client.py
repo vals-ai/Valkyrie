@@ -6,12 +6,13 @@ Covers tracker client request construction, config handling, and CLI output help
 tracker-client behavior or CLI rendering that can regress without requiring live services.
 """
 
+from collections.abc import Callable
 from datetime import datetime
 from functools import partial
-from collections.abc import Callable
+from importlib import import_module
 import json
 from pathlib import Path
-from typing import Protocol
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
@@ -25,6 +26,7 @@ from tracker.types import (
     BenchmarkDetails,
     BenchmarkServiceEntry,
     BenchmarkServiceHealth,
+    BenchmarkServicesResponse,
     BenchmarkTableRow,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
@@ -47,29 +49,175 @@ from valkyrie.cli.runtime_config import (
 )
 from valkyrie.cli.tracker_client import TrackerService, TrackerServiceError
 
-
-class MockTrackerServiceType(Protocol):
-    """Describe shared tracker mock state asserted by CLI tests."""
-
-    start_calls: list[dict[str, object]]
-    init_calls: int
-    provider_validations: list[str | None]
-    require_config_values: list[bool]
+run_resume = import_module("valkyrie.cli.run.resume")
+run_start = import_module("valkyrie.cli.run.start")
 
 
-class MockClientType(Protocol):
-    """Describe request state recorded by the shared HTTP client mock."""
+class MockClient:
+    """Record tracker HTTP requests and return deterministic responses."""
 
-    params: dict[str, object] | None
-    json: dict[str, object] | None
-    url: str | None
+    def __init__(self) -> None:
+        self.params: dict[str, object] | None = None
+        self.json: dict[str, object] | None = None
+        self.url: str | None = None
+
+    def post(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+        json: dict[str, object],
+    ) -> httpx.Response:
+        self.url = url
+        self.params = params
+        self.json = json
+        return httpx.Response(200, json={"status": "success"})
+
+    def get(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+    ) -> httpx.Response:
+        self.url = url
+        self.params = params
+        if "/fetch-run-outputs/" in url:
+            return httpx.Response(200, content=b"tar")
+        return httpx.Response(200, json={"benchmarks": [], "total_count": 0})
+
+    def close(self) -> None:
+        return None
 
 
-def _mock_client_builder(mock_client: MockClientType) -> Callable[..., MockClientType]:
-    def build_client(**_kwargs: object) -> MockClientType:
+@pytest.fixture
+def mock_client() -> MockClient:
+    """Provide a fresh recording HTTP client."""
+    return MockClient()
+
+
+def _mock_client_builder(mock_client: MockClient) -> Callable[..., MockClient]:
+    def build_client(**_kwargs: object) -> MockClient:
         return mock_client
 
     return build_client
+
+
+class MockTrackerService:
+    """Provide deterministic tracker behavior for command tests in this module."""
+
+    start_response: dict[str, object] = {}
+    start_calls: list[dict[str, object]] = []
+    init_calls = 0
+    provider_validations: list[str | None] = []
+    require_config_values: list[bool] = []
+
+    def __init__(self, *, require_config: bool = True) -> None:
+        self.__class__.init_calls += 1
+        self.require_config_values.append(require_config)
+
+    @staticmethod
+    def benchmark_service_health(
+        name: str,
+        url: str,
+        *,
+        healthy: bool = True,
+        latency_ms: int | None = None,
+        error: str | None = None,
+    ) -> BenchmarkServiceHealth:
+        return BenchmarkServiceHealth(name=name, url=url, healthy=healthy, latency_ms=latency_ms, error=error)
+
+    @staticmethod
+    def get_benchmark_auth(_benchmark_name: str) -> None:
+        return None
+
+    @staticmethod
+    def get_webhook_secret() -> None:
+        return None
+
+    def __enter__(self) -> "MockTrackerService":
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        return None
+
+    def start_benchmark(self, *_args: object, **_kwargs: object) -> httpx.Response:
+        self.start_calls.append({"args": _args, "kwargs": _kwargs})
+        return httpx.Response(200, json=self.start_response)
+
+    def fetch_benchmark(self, _run_id: object) -> SimpleNamespace:
+        return SimpleNamespace(benchmark_name="swebench")
+
+    def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(status="success")
+
+    @classmethod
+    def validate_sandbox_provider(cls, provider: str | None = None) -> tuple[str, str]:
+        cls.provider_validations.append(provider)
+        return provider or "daytona", "DaytonaSecrets"
+
+    def catalog_benchmark_services(self) -> list[BenchmarkServiceEntry]:
+        return [
+            BenchmarkServiceEntry(name="swebench", url="https://swebench.benchmarks.vals.ai"),
+            BenchmarkServiceEntry(name="fab", url="https://fab.benchmarks.vals.ai"),
+        ]
+
+    def check_benchmark_services(self, services: list[BenchmarkServiceEntry]) -> BenchmarkServicesResponse:
+        assert [(service.name, service.url) for service in services] == [
+            ("swebench", "http://local-swebench"),
+            ("fab", "https://fab.benchmarks.vals.ai"),
+            ("custombench", "http://custombench"),
+        ]
+        return BenchmarkServicesResponse(
+            services=[
+                self.benchmark_service_health("swebench", "http://local-swebench", healthy=False, error="timeout"),
+                self.benchmark_service_health("fab", "https://fab.benchmarks.vals.ai", latency_ms=20),
+                self.benchmark_service_health("custombench", "http://custombench", latency_ms=5),
+            ]
+        )
+
+
+@pytest.fixture
+def mock_tracker_service() -> type[MockTrackerService]:
+    """Reset and provide the tracker service mock used by this module."""
+    MockTrackerService.start_calls = []
+    MockTrackerService.init_calls = 0
+    MockTrackerService.provider_validations = []
+    MockTrackerService.require_config_values = []
+    return MockTrackerService
+
+
+@pytest.fixture
+def connect_stream_testbed(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_tracker_service: type[MockTrackerService],
+) -> tuple[UUID, list[str], type[MockTrackerService]]:
+    """Connect start and resume commands to a shared tracker mock."""
+    started_run_id = uuid4()
+    streamed_run_ids: list[str] = []
+    mock_tracker_service.start_response = {
+        "benchmark_name": "swebench",
+        "agent_name": "agent",
+        "benchmark_id": str(started_run_id),
+        "concurrency": 5,
+        "started_at": datetime.now(ZoneInfo("UTC")).isoformat(),
+        "task_count": 1,
+        "cloudwatch_url": "https://cloudwatch.example/run",
+        "s3_bucket_url": "s3://bucket/benchmarks/run",
+    }
+
+    async def get_contract_from_s3(_agent: str, _agent_config: object) -> AgentContractRequest:
+        return AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run")
+
+    def stream_benchmark_status(_tracker: MockTrackerService, run_id: object) -> None:
+        streamed_run_ids.append(str(run_id))
+
+    monkeypatch.setattr(run_start, "TrackerService", mock_tracker_service)
+    monkeypatch.setattr(run_start, "get_contract_from_s3", get_contract_from_s3)
+    monkeypatch.setattr(run_start, "stream_benchmark_status", stream_benchmark_status)
+    monkeypatch.setattr(run_resume, "TrackerService", mock_tracker_service)
+    monkeypatch.setattr(run_resume, "stream_benchmark_status", stream_benchmark_status)
+
+    return started_run_id, streamed_run_ids, mock_tracker_service
 
 
 def _empty_config() -> dict[str, object]:
@@ -109,7 +257,7 @@ def clear_runtime_config_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_tracker_client_uses_selected_environment_url(
     monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
+    mock_client: MockClient,
 ) -> None:
     monkeypatch.setenv(VALKYRIE_ENV_ENV_VAR, "dev")
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
@@ -194,7 +342,7 @@ def test_tracker_client_lists_catalog_services_through_tracker(monkeypatch: pyte
 
 def test_fetch_run_outputs_uses_run_outputs_endpoint(
     monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
+    mock_client: MockClient,
 ) -> None:
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
     monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
@@ -211,7 +359,7 @@ def test_fetch_run_outputs_uses_run_outputs_endpoint(
 
 def test_fetch_run_outputs_omits_empty_task_ids(
     monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
+    mock_client: MockClient,
 ) -> None:
     monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
     monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
@@ -228,7 +376,7 @@ def test_fetch_run_outputs_omits_empty_task_ids(
 
 def test_stop_benchmark_sends_task_selection(
     monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
+    mock_client: MockClient,
 ) -> None:
     """Send selected task IDs in stop requests.
 
@@ -450,12 +598,13 @@ def test_paginate_services_health_checks_visible_pages_only(
 
 def test_retry_or_resume_sends_retry_mode(
     monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
+    mock_client: MockClient,
 ) -> None:
     """Resume requests should carry retry mode and override secrets.
 
     Test cases:
     - Retry mode and concurrency are query parameters.
+    - An explicit zero is forwarded instead of silently using the stored concurrency.
     - Secret overrides are sent in the JSON body with task IDs and service headers.
     """
 
@@ -481,32 +630,15 @@ def test_retry_or_resume_sends_retry_mode(
         "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
     }
 
-
-def test_tracker_client_accepts_legacy_daytona_secret_config(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
-) -> None:
-    config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml", DAYTONA_SECRET_NAME="DaytonaSecrets")
-
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
-
-    tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
-        benchmark_name="swebench",
-        concurrency=1,
-        ignore_custom_services=True,
-        task_ids=None,
-        slice_str=None,
+    tracker.retry_or_resume_benchmark(
+        uuid4(),
+        retry=False,
+        retry_mode=RetryMode.AUTO,
+        concurrency=0,
+        task_ids=[],
     )
 
-    assert mock_client.json is not None
-    harness_config = mock_client.json["harness_config"]
-    assert isinstance(harness_config, dict)
-    assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
+    assert mock_client.params == {"retry": False, "retry_mode": "auto", "concurrency": 0}
 
 
 def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -526,93 +658,65 @@ def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypa
     assert "valkyrie config provider set <provider> <secret-name>" in str(error.value)
 
 
-def test_tracker_client_uses_first_named_provider_as_default(
+@pytest.mark.parametrize(
+    ("config_overrides", "runtime_provider", "expected_provider", "expected_secret"),
+    [
+        pytest.param(
+            {"DAYTONA_SECRET_NAME": "DaytonaSecrets"},
+            None,
+            "daytona",
+            "DaytonaSecrets",
+            id="legacy-daytona",
+        ),
+        pytest.param(
+            {"sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}},
+            None,
+            "daytona",
+            "DaytonaSecrets",
+            id="first-named-provider",
+        ),
+        pytest.param(
+            {
+                "sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
+                "default_sandbox_provider": "modal",
+            },
+            None,
+            "modal",
+            "ModalSecrets",
+            id="configured-default",
+        ),
+        pytest.param(
+            {"sandbox_providers": {"daytona": "DaytonaSecrets", "modal": "ModalSecrets"}},
+            "modal",
+            "modal",
+            "ModalSecrets",
+            id="runtime-override",
+        ),
+        pytest.param(
+            {"sandbox_providers": {"future": "FutureSecrets"}},
+            "future",
+            "future",
+            "FutureSecrets",
+            id="provider-not-in-tracker-enum",
+        ),
+    ],
+)
+def test_start_benchmark_resolves_provider_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
+    mock_client: MockClient,
+    config_overrides: dict[str, object],
+    runtime_provider: str | None,
+    expected_provider: str,
+    expected_secret: str,
 ) -> None:
-    """Named sandbox providers should provide a deterministic default.
+    """Start requests must resolve every supported provider configuration into the API payload.
 
     Test cases:
-    - sandbox_providers satisfies provider config requirements.
-    - The first configured provider supplies the default secret name.
+    - Legacy, first-named, configured-default, and runtime-selected providers resolve their secrets.
+    - A newly configured provider name is forwarded without a tracker enum change.
     """
-    config_path = _write_valkyrie_config(
-        tmp_path / "valkyrie.yaml",
-        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
-    )
-
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
-
-    tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
-        benchmark_name="swebench",
-        concurrency=1,
-        ignore_custom_services=True,
-        task_ids=None,
-        slice_str=None,
-    )
-
-    assert mock_client.json is not None
-    harness_config = mock_client.json["harness_config"]
-    assert isinstance(harness_config, dict)
-    assert harness_config["sandbox_provider_secret_name"] == "DaytonaSecrets"
-
-
-def test_tracker_client_uses_configured_default_provider(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
-) -> None:
-    """A configured default provider should be used when runtime provider is omitted.
-
-    Test cases:
-    - default_sandbox_provider selects the modal provider and secret.
-    """
-    config_path = _write_valkyrie_config(
-        tmp_path / "valkyrie.yaml",
-        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
-        default_sandbox_provider="modal",
-    )
-
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
-
-    tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
-        benchmark_name="swebench",
-        concurrency=1,
-        ignore_custom_services=True,
-        task_ids=None,
-        slice_str=None,
-    )
-
-    assert mock_client.json is not None
-    assert mock_client.json["sandbox_provider"] == "modal"
-    harness_config = mock_client.json["harness_config"]
-    assert isinstance(harness_config, dict)
-    assert harness_config["sandbox_provider_secret_name"] == "ModalSecrets"
-
-
-def test_start_benchmark_uses_runtime_provider_override(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
-) -> None:
-    """Runtime provider selection should choose a configured provider secret.
-
-    Test cases:
-    - provider='modal' resolves to the modal cloud secret.
-    - StartBenchmarkRequest carries the selected secret in the harness config.
-    """
-    config_path = _write_valkyrie_config(
-        tmp_path / "valkyrie.yaml",
-        sandbox_providers={"daytona": "DaytonaSecrets", "modal": "ModalSecrets"},
-    )
+    config_path = _write_valkyrie_config(tmp_path / "valkyrie.yaml", **config_overrides)
 
     monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
@@ -625,51 +729,14 @@ def test_start_benchmark_uses_runtime_provider_override(
         ignore_custom_services=True,
         task_ids=None,
         slice_str=None,
-        provider="modal",
+        provider=runtime_provider,
     )
 
     assert mock_client.json is not None
-    assert mock_client.json["sandbox_provider"] == "modal"
+    assert mock_client.json["sandbox_provider"] == expected_provider
     harness_config = mock_client.json["harness_config"]
     assert isinstance(harness_config, dict)
-    assert harness_config["sandbox_provider_secret_name"] == "ModalSecrets"
-
-
-def test_start_benchmark_allows_configured_provider_names_without_tracker_enum(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
-) -> None:
-    """Provider names should be validated by create-benchmark-service, not tracker.
-
-    Test cases:
-    - A provider configured in Valkyrie is forwarded in the request body.
-    - Tracker does not need code changes for a newly configured provider name.
-    """
-    config_path = _write_valkyrie_config(
-        tmp_path / "valkyrie.yaml",
-        sandbox_providers={"future": "FutureSecrets"},
-    )
-
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(config_path))
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
-
-    tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
-        contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
-        benchmark_name="swebench",
-        concurrency=1,
-        ignore_custom_services=True,
-        task_ids=None,
-        slice_str=None,
-        provider="future",
-    )
-
-    assert mock_client.json is not None
-    assert mock_client.json["sandbox_provider"] == "future"
-    harness_config = mock_client.json["harness_config"]
-    assert isinstance(harness_config, dict)
-    assert harness_config["sandbox_provider_secret_name"] == "FutureSecrets"
+    assert harness_config["sandbox_provider_secret_name"] == expected_secret
 
 
 def test_config_provider_commands_manage_named_provider_secrets(
@@ -718,7 +785,7 @@ def _command_option_flags(command: click.Command, param_name: str) -> set[str]:
 
 
 def test_run_commands_connect_after_success(
-    connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerServiceType]],
+    connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerService]],
 ) -> None:
     """Connect should stream the run once start, resume, or retry succeeds.
 
@@ -745,7 +812,7 @@ def test_run_commands_connect_after_success(
 
 
 def test_run_start_provider_option_reaches_tracker(
-    connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerServiceType]],
+    connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerService]],
 ) -> None:
     """The CLI provider option should reach the tracker start request.
 
@@ -771,7 +838,7 @@ def test_run_start_provider_option_reaches_tracker(
 
 def test_run_start_sends_configured_service_auth_and_cli_headers(
     monkeypatch: pytest.MonkeyPatch,
-    connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerServiceType]],
+    connect_stream_testbed: tuple[UUID, list[str], type[MockTrackerService]],
 ) -> None:
     """Run start should send configured benchmark auth and CLI headers to the tracker.
 
@@ -807,7 +874,7 @@ def test_run_start_sends_configured_service_auth_and_cli_headers(
 
 def test_run_label_cli_options_and_client_requests(
     monkeypatch: pytest.MonkeyPatch,
-    mock_client: MockClientType,
+    mock_client: MockClient,
 ) -> None:
     """Run labels should be accepted by start and sent as list filters.
 
@@ -906,7 +973,7 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
 def test_service_list_merges_hosted_and_custom_services(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    mock_tracker_service: type[MockTrackerServiceType],
+    mock_tracker_service: type[MockTrackerService],
 ) -> None:
     """Service list should show hosted services plus local custom overrides.
 

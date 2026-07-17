@@ -80,6 +80,23 @@ def _metadata_payload() -> dict[str, object]:
 class TestTrackerJsonEndpoints:
     """Typed parsing and request contracts for tracker JSON endpoints."""
 
+    def test_malformed_success_response_raises_tracker_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Successful HTTP responses with an invalid tracker payload need a stable CLI error.
+
+        Test cases:
+        - A partial fetch response raises TrackerServiceError instead of leaking model validation internals.
+        """
+
+        def handle_request(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"benchmark_name": "swebench"}, request=request)
+
+        with _tracker_with_handler(monkeypatch, handle_request) as tracker:
+            with pytest.raises(
+                TrackerServiceError,
+                match="Failed to fetch run: tracker returned a malformed response",
+            ):
+                tracker.fetch_benchmark(_RUN_ID)
+
     def test_run_read_endpoints_parse_real_http_responses(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Run reads must preserve typed payloads, filters, and task selections over HTTP.
 

@@ -35,7 +35,7 @@ def test_cli_reads_persisted_tracker_state(
         "EVALUATING": 0,
         "FINISHED": 1,
         "IN_PROGRESS": 1,
-        "PENDING": 0,
+        "PENDING": 1,
         "STOPPED": 0,
     }
 

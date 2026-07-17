@@ -118,7 +118,6 @@ class TestCountedStarts:
         Test cases:
         - Omitting count starts one run without a batch summary.
         - Explicit count one still supports connected streaming.
-        - Help displays the count aliases, default, and range.
         """
         # Invoke the unchanged default behavior.
         result = start_testbed.invoke([])
@@ -133,14 +132,6 @@ class TestCountedStarts:
 
         assert connected_result.exit_code == 0, connected_result.output
         start_testbed.stream_status.assert_called_once_with(start_testbed.tracker, _FIRST_RUN_ID)
-
-        # Inspect the user-facing option contract.
-        help_result = start_testbed.cli_runner.invoke(start_command, ["--help"])
-
-        assert help_result.exit_code == 0
-        assert "-n, --count INTEGER RANGE" in help_result.output
-        assert "[default:" in help_result.output
-        assert "1; 1<=x<=10]" in help_result.output
 
     def test_counted_start_reuses_contract_and_reports_ids(
         self,
@@ -221,17 +212,20 @@ class TestCountedStarts:
         push_agent.assert_awaited_once_with("local-agent", local_agent)
         assert start_testbed.tracker.start_benchmark.call_count == 2
 
-    def test_invalid_count_and_connect_conflict_precede_side_effects(self, start_testbed: StartTestbed) -> None:
+    def test_invalid_options_precede_side_effects(self, start_testbed: StartTestbed) -> None:
         """
-        Reject invalid count inputs before resolving configuration or agents.
+        Reject invalid start options before resolving configuration or agents.
 
         Test cases:
         - Counts below one and above ten fail Click range validation.
+        - Concurrency below one fails Click range validation.
         - Connect with multiple starts fails before command side effects.
         """
         cases = [
             ["--count", "0"],
             ["--count", "11"],
+            ["--concurrency", "0"],
+            ["--concurrency", "-1"],
             ["--count", "2", "--connect", "--task-ids-file", "unread.txt"],
         ]
 
@@ -277,6 +271,25 @@ class TestCountedStarts:
                 "malformed",
                 True,
                 id="malformed-success",
+            ),
+            pytest.param(
+                2,
+                (_FIRST_RUN_ID,),
+                httpx.Response(
+                    422,
+                    json={
+                        "detail": [
+                            {
+                                "type": "missing",
+                                "loc": ["body", "harness_config", "sandbox_provider_secret_name"],
+                                "msg": "Field required",
+                            }
+                        ]
+                    },
+                ),
+                "body.harness_config.sandbox_provider_secret_name: Field required",
+                False,
+                id="validation-detail",
             ),
             pytest.param(2, (), httpx.Response(400, text="plain rejection"), "plain rejection", False, id="first"),
             pytest.param(

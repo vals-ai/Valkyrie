@@ -10,67 +10,17 @@ from importlib import import_module
 from uuid import UUID, uuid4
 
 import pytest
-from click.testing import CliRunner
-from tracker.database.models import (
-    AgentContractRequest,
-    BenchmarkArguments,
-    BenchmarkStatus,
-    DocentReadingStatus,
-    TaskStatus,
-)
-from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
+from click.testing import CliRunner, Result
+from tracker.database.models import BenchmarkStatus
+from tracker.types import FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.fetch import fetch
 from valkyrie.cli.run.snapshot import build_run_snapshot, format_run_snapshot_json
 
+from tests.unit.cli.factories import make_fetch_metadata, make_fetch_response
+
 fetch_module = import_module("valkyrie.cli.run.fetch")
-
-
-def make_response(
-    run_id: UUID,
-    *,
-    status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS,
-    finished_tasks: int = 1,
-    final_score: float | None = None,
-) -> FetchBenchmarkResponse:
-    task_breakdown = {
-        TaskStatus.FINISHED: finished_tasks,
-        TaskStatus.IN_PROGRESS: 4 - finished_tasks,
-    }
-    return FetchBenchmarkResponse(
-        benchmark_name="swebench",
-        benchmark_id=run_id,
-        details=BenchmarkDetails(
-            status=status,
-            started_at=datetime(2026, 7, 9, 12, 30, tzinfo=timezone.utc),
-            total_tasks=4,
-            finished_tasks=finished_tasks,
-            task_breakdown=task_breakdown,
-            docent_reading_status=DocentReadingStatus.IDLE,
-        ),
-        s3_bucket_url="s3://example/run",
-        label="release-candidate",
-        final_score=final_score,
-    )
-
-
-def make_metadata(run_id: UUID) -> FetchBenchmarkMetadataResponse:
-    return FetchBenchmarkMetadataResponse(
-        benchmark_id=run_id,
-        benchmark_name="swebench",
-        benchmark_arguments=BenchmarkArguments(
-            contract=AgentContractRequest(
-                name="mini_sweagent",
-                model="openai/gpt-5",
-                secrets={"MODEL_API_KEY": "classified-secret-name"},
-                kwargs={"temperature": "0"},
-            ),
-            concurrency=20,
-            dataset="verified",
-        ),
-        started_by_email="runner@vals.ai",
-    )
 
 
 class StubFetchTracker:
@@ -88,7 +38,7 @@ class StubFetchTracker:
         self.interrupt = interrupt
         self.metadata_calls = 0
 
-    def __enter__(self):
+    def __enter__(self) -> "StubFetchTracker":
         return self
 
     def __exit__(self, *_exc_info: object) -> None:
@@ -113,15 +63,15 @@ def invoke_with_tracker(
     monkeypatch: pytest.MonkeyPatch,
     tracker: StubFetchTracker,
     args: list[str],
-):
+) -> Result:
     monkeypatch.setattr(fetch_module, "TrackerService", lambda: tracker)
     return CliRunner().invoke(fetch, args)
 
 
 def test_run_snapshot_is_versioned_allowlisted_and_stable() -> None:
     run_id = uuid4()
-    response = make_response(run_id)
-    metadata = make_metadata(run_id)
+    response = make_fetch_response(run_id)
+    metadata = make_fetch_metadata(run_id)
     observed_at = datetime(2026, 7, 9, 13, 0, tzinfo=timezone.utc)
 
     snapshot = build_run_snapshot(response, metadata, event="snapshot", observed_at=observed_at)
@@ -152,7 +102,7 @@ def test_run_snapshot_is_versioned_allowlisted_and_stable() -> None:
 
 def test_fetch_json_outputs_one_clean_object(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
-    tracker = StubFetchTracker(make_response(run_id), make_metadata(run_id))
+    tracker = StubFetchTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
 
     result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
 
@@ -173,7 +123,7 @@ def test_fetch_json_normalizes_non_finite_scores(
     final_score: float,
 ) -> None:
     run_id = uuid4()
-    tracker = StubFetchTracker(make_response(run_id, final_score=final_score), make_metadata(run_id))
+    tracker = StubFetchTracker(make_fetch_response(run_id, final_score=final_score), make_fetch_metadata(run_id))
 
     result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
 
@@ -184,7 +134,7 @@ def test_fetch_json_normalizes_non_finite_scores(
 
 def test_fetch_json_uses_null_identity_when_metadata_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
-    tracker = StubFetchTracker(make_response(run_id), TrackerServiceError("metadata unavailable"))
+    tracker = StubFetchTracker(make_fetch_response(run_id), TrackerServiceError("metadata unavailable"))
 
     result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
 
@@ -198,10 +148,10 @@ def test_fetch_json_uses_null_identity_when_metadata_is_unavailable(monkeypatch:
 
 def test_fetch_jsonl_outputs_only_snapshot_update_and_terminal_records(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
-    finished = make_response(run_id, status=BenchmarkStatus.FINISHED, finished_tasks=4, final_score=75.0)
+    finished = make_fetch_response(run_id, status=BenchmarkStatus.FINISHED, finished_tasks=4, final_score=75.0)
     tracker = StubFetchTracker(
-        make_response(run_id),
-        make_metadata(run_id),
+        make_fetch_response(run_id),
+        make_fetch_metadata(run_id),
         events=[f"data: {finished.model_dump_json()}", "event: complete"],
     )
 
@@ -234,10 +184,10 @@ def test_fetch_jsonl_maps_completed_stream_to_terminal_run_status(
     expected_event: str,
 ) -> None:
     run_id = uuid4()
-    terminal = make_response(run_id, status=status, finished_tasks=4)
+    terminal = make_fetch_response(run_id, status=status, finished_tasks=4)
     tracker = StubFetchTracker(
-        make_response(run_id),
-        make_metadata(run_id),
+        make_fetch_response(run_id),
+        make_fetch_metadata(run_id),
         events=[f"data: {terminal.model_dump_json()}", "event: complete"],
     )
 
@@ -256,8 +206,8 @@ def test_fetch_jsonl_preserves_other_terminal_events(
 ) -> None:
     run_id = uuid4()
     tracker = StubFetchTracker(
-        make_response(run_id),
-        make_metadata(run_id),
+        make_fetch_response(run_id),
+        make_fetch_metadata(run_id),
         events=[f"event: {terminal_event}"],
     )
 
@@ -270,7 +220,7 @@ def test_fetch_jsonl_preserves_other_terminal_events(
 
 def test_fetch_jsonl_reports_keyboard_interrupt_as_json(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
-    tracker = StubFetchTracker(make_response(run_id), make_metadata(run_id), interrupt=True)
+    tracker = StubFetchTracker(make_fetch_response(run_id), make_fetch_metadata(run_id), interrupt=True)
 
     result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
 
@@ -281,7 +231,7 @@ def test_fetch_jsonl_reports_keyboard_interrupt_as_json(monkeypatch: pytest.Monk
 
 def test_fetch_jsonl_reports_clean_stream_exhaustion_as_disconnect(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
-    tracker = StubFetchTracker(make_response(run_id), make_metadata(run_id))
+    tracker = StubFetchTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
 
     result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
 

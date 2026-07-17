@@ -3,8 +3,61 @@
 from datetime import datetime, timezone
 from uuid import UUID
 
-from tracker.database.models import AgentContractRequest, BenchmarkArguments, BenchmarkStatus
-from tracker.types import FinalViewResponse
+from tracker.database.models import (
+    AgentContractRequest,
+    BenchmarkArguments,
+    BenchmarkStatus,
+    DocentReadingStatus,
+    TaskStatus,
+)
+from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse, FinalViewResponse
+
+
+def make_fetch_response(
+    run_id: UUID,
+    *,
+    status: BenchmarkStatus = BenchmarkStatus.IN_PROGRESS,
+    finished_tasks: int = 1,
+    final_score: float | None = None,
+) -> FetchBenchmarkResponse:
+    """Build a run response with configurable progress and terminal state."""
+    return FetchBenchmarkResponse(
+        benchmark_name="swebench",
+        benchmark_id=run_id,
+        details=BenchmarkDetails(
+            status=status,
+            started_at=datetime(2026, 7, 9, 12, 30, tzinfo=timezone.utc),
+            total_tasks=4,
+            finished_tasks=finished_tasks,
+            task_breakdown={
+                TaskStatus.FINISHED: finished_tasks,
+                TaskStatus.IN_PROGRESS: 4 - finished_tasks,
+            },
+            docent_reading_status=DocentReadingStatus.IDLE,
+        ),
+        s3_bucket_url="s3://example/run",
+        label="release-candidate",
+        final_score=final_score,
+    )
+
+
+def make_fetch_metadata(run_id: UUID) -> FetchBenchmarkMetadataResponse:
+    """Build run metadata with private contract values used by redaction tests."""
+    return FetchBenchmarkMetadataResponse(
+        benchmark_id=run_id,
+        benchmark_name="swebench",
+        benchmark_arguments=BenchmarkArguments(
+            contract=AgentContractRequest(
+                name="mini_sweagent",
+                model="openai/gpt-5",
+                secrets={"MODEL_API_KEY": "classified-secret-name"},
+                kwargs={"temperature": "0"},
+            ),
+            concurrency=20,
+            dataset="verified",
+        ),
+        started_by_email="runner@vals.ai",
+    )
 
 
 def make_final_view(
