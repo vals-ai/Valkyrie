@@ -15,6 +15,10 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("uv run cdk deploy --all -c stage=prod --require-approval never", workflow)
         self.assertIn("github.ref == 'refs/heads/dev'", dev_job)
         self.assertIn("environment: dev", dev_job)
+        self.assertIn("DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}", dev_job)
+        self.assertIn("SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}", dev_job)
+        self.assertIn('"$OPERATION" != "credentials-only" && -z "$DESCOPE_PROJECT_ID"', dev_job)
+        self.assertIn("DESCOPE_PROJECT_ID before planning or deploying", dev_job)
         self.assertIn("allowed-account-ids: ${{ env.DEV_ACCOUNT_ID }}", dev_job)
         self.assertIn("AWS_REGION must be us-east-1", dev_job)
         self.assertLess(dev_job.index("Validate dev AWS identity"), dev_job.index("Checkout code"))
@@ -29,6 +33,8 @@ class DeployWorkflowTest(unittest.TestCase):
             'run: make deploy STAGE=dev SCOPE=${{ inputs.scope }} DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"',
             dev_job,
         )
+        self.assertNotIn("submodules: recursive", workflow)
+        self.assertNotIn("secrets.GH_PAT", workflow)
 
 
 if __name__ == "__main__":

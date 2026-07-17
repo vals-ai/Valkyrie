@@ -29,7 +29,6 @@ from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
-    DEV_DESCOPE_PROJECT_ID_PARAMETER,
     DEV_TRACKER_ALB_DNS_PARAMETER,
     DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
@@ -141,20 +140,22 @@ class TrackerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
-        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")
-
-        sentry_secrets = {
-            "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
-        }
+        sentry_secret_name = "valkyrie/sentry-dsn" if stage.is_prod else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        sentry_secrets: dict[str, aws_ecs.Secret] = {}
+        if sentry_secret_name:
+            sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "SentryDsnSecret",
+                sentry_secret_name,
+            )
+            sentry_secrets["SENTRY_DSN"] = aws_ecs.Secret.from_secrets_manager(sentry_secret)
 
         auth_required = os.environ.get("AUTH_REQUIRED", "false")
         descope_project_id = os.environ.get("DESCOPE_PROJECT_ID", "")
         if not stage.is_prod:
             auth_required = "true"
-            descope_project_id = aws_ssm.StringParameter.value_for_string_parameter(
-                self,
-                DEV_DESCOPE_PROJECT_ID_PARAMETER,
-            )
+            if not descope_project_id:
+                raise ValueError("Development deployments require DESCOPE_PROJECT_ID.")
 
         descope_secrets: dict[str, aws_ecs.Secret] = {}
         if auth_required.lower() == "true":

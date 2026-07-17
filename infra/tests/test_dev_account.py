@@ -11,7 +11,6 @@ import aws_cdk as cdk
 from aws_cdk import assertions
 
 from constants import (
-    DEV_DESCOPE_PROJECT_ID_PARAMETER,
     DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
     DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
     DEV_SHARED_CLUSTER_NAME_PARAMETER,
@@ -158,17 +157,17 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         )
 
     def test_dev_tracker_imports_account_local_dns_and_auth(self) -> None:
-        conflicting_shell_auth = {"AUTH_REQUIRED": "false", "DESCOPE_PROJECT_ID": "prod-project"}
-        with mock.patch.dict(os.environ, conflicting_shell_auth, clear=True):
+        dev_auth = {"AUTH_REQUIRED": "false", "DESCOPE_PROJECT_ID": "dev-project"}
+        with mock.patch.dict(os.environ, dev_auth, clear=True):
             tracker_template = dev_tracker_template()
 
         template = cast(Mapping[str, object], tracker_template.to_json())
         hosted_zone_parameter = ssm_parameter_id(template, DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER)
         certificate_parameter = ssm_parameter_id(template, DEV_TRACKER_CERTIFICATE_ARN_PARAMETER)
-        project_parameter = ssm_parameter_id(template, DEV_DESCOPE_PROJECT_ID_PARAMETER)
         rendered = json.dumps(template)
         self.assertIn("devEvalInfraDescopeManagementKey", rendered)
-        self.assertNotIn("prod-project", rendered)
+        self.assertNotIn("/vals/dev/descope/project-id", rendered)
+        self.assertNotIn("valkyrie/sentry-dsn", rendered)
         self.assertFalse(tracker_template.find_resources("AWS::CertificateManager::Certificate"))
         tracker_template.has_resource_properties(
             "AWS::ElasticLoadBalancingV2::Listener",
@@ -192,7 +191,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                                 "Environment": assertions.Match.array_with(
                                     [
                                         {"Name": "AUTH_REQUIRED", "Value": "true"},
-                                        {"Name": "DESCOPE_PROJECT_ID", "Value": {"Ref": project_parameter}},
+                                        {"Name": "DESCOPE_PROJECT_ID", "Value": "dev-project"},
                                     ]
                                 ),
                                 "Secrets": assertions.Match.array_with(
@@ -205,12 +204,18 @@ class DevAccountInfrastructureTest(unittest.TestCase):
             },
         )
 
+    def test_dev_tracker_requires_descope_project(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "Development deployments require DESCOPE_PROJECT_ID"):
+                dev_tracker_template()
+
     def test_dev_stacks_publish_the_shared_resource_contract(self) -> None:
         _, shared = dev_shared_stack()
         shared_template = assertions.Template.from_stack(shared)
         self.assertEqual(published_parameter_names(shared_template), DEV_SHARED_CONTRACT_PARAMETERS)
 
-        tracker_template = dev_tracker_template()
+        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
+            tracker_template = dev_tracker_template()
         self.assertEqual(published_parameter_names(tracker_template), DEV_TRACKER_CONTRACT_PARAMETERS)
 
     def test_prod_shared_stack_publishes_no_contract_parameters(self) -> None:

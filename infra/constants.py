@@ -58,7 +58,6 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 S3_BUCKET_NAME = "agentic-harness"
 
 # Dev account prerequisites
-DEV_DESCOPE_PROJECT_ID_PARAMETER = "/vals/dev/descope/project-id"
 DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "/valkyrie/dev/dns/tracker/certificate-arn"
 DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER = "/valkyrie/dev/dns/tracker/hosted-zone-id"
 

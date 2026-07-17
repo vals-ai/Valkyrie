@@ -22,14 +22,15 @@ account-local `benchmark-tracker-dev.vals.ai` child zone and certificate.
 The dev account must be bootstrapped before deploying this application. Account
 setup owns the GitHub OIDC role, child hosted zone, and certificate. Configure the
 protected `dev` GitHub Environment with `DEV_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`,
-and `AWS_REGION=us-east-1`.
+`AWS_REGION=us-east-1`, and `DESCOPE_PROJECT_ID`. To enable Sentry in dev, also
+set `SENTRY_DSN_SECRET_NAME` to the name of an account-local Secrets Manager
+secret containing the DSN.
 
 The application imports these account-local values:
 
 - `/valkyrie/dev/dns/tracker/hosted-zone-id`
 - `/valkyrie/dev/dns/tracker/certificate-arn`
-- `/vals/dev/descope/project-id`
-- Secrets Manager secrets `devEvalInfraDescopeManagementKey` and `valkyrie/sentry-dsn`
+- Secrets Manager secret `devEvalInfraDescopeManagementKey`
 
 ## Setup
 
@@ -52,6 +53,7 @@ explicitly. The preflight rejects the wrong account, Region, or STS identity.
 
 ```bash
 export DEV_ACCOUNT_ID=123456789012
+export DESCOPE_PROJECT_ID="dev-project-id"
 
 make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin

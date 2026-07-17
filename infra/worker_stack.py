@@ -98,11 +98,15 @@ class WorkerStack(Stack):
             "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
-        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")
-
-        sentry_secrets = {
-            "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
-        }
+        sentry_secret_name = "valkyrie/sentry-dsn" if stage.is_prod else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        sentry_secrets: dict[str, aws_ecs.Secret] = {}
+        if sentry_secret_name:
+            sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "SentryDsnSecret",
+                sentry_secret_name,
+            )
+            sentry_secrets["SENTRY_DSN"] = aws_ecs.Secret.from_secrets_manager(sentry_secret)
 
         # ── Worker service ────────────────────────────────────────────────
 

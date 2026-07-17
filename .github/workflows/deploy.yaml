@@ -43,9 +43,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.GH_PAT }}
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -100,7 +97,10 @@ jobs:
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       CDK_DEFAULT_ACCOUNT: ${{ vars.DEV_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
       DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
+      OPERATION: ${{ inputs.operation }}
+      SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}
 
     steps:
       - name: Validate dev configuration
@@ -108,6 +108,10 @@ jobs:
           set -euo pipefail
           if [[ -z "$DEV_ACCOUNT_ID" || -z "$AWS_DEPLOY_ROLE_ARN" || -z "$AWS_REGION" ]]; then
             echo "::error::The dev Environment must define DEV_ACCOUNT_ID, AWS_DEPLOY_ROLE_ARN, and AWS_REGION."
+            exit 1
+          fi
+          if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_PROJECT_ID" ]]; then
+            echo "::error::The dev Environment must define DESCOPE_PROJECT_ID before planning or deploying."
             exit 1
           fi
           if [[ ! "$DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
@@ -144,9 +148,6 @@ jobs:
       - name: Checkout code
         if: inputs.operation != 'credentials-only'
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.GH_PAT }}
 
       - name: Setup Node.js
         if: inputs.operation != 'credentials-only'
