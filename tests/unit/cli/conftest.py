@@ -1,18 +1,23 @@
 from datetime import datetime
 from importlib import import_module
-from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
-import yaml
+from click.testing import CliRunner
 from tracker.database.models import AgentContractRequest
 from tracker.types import BenchmarkServiceEntry, BenchmarkServiceHealth, BenchmarkServicesResponse
 
 run_resume = import_module("valkyrie.cli.run.resume")
 run_start = import_module("valkyrie.cli.run.start")
+
+
+@pytest.fixture
+def cli_runner() -> CliRunner:
+    """Provide an isolated Click command runner."""
+    return CliRunner()
 
 
 class MockClient:
@@ -51,31 +56,10 @@ class MockClient:
         pass
 
 
-def empty_config() -> dict[str, object]:
-    return {}
-
-
-def empty_config_keys(_tracker: object) -> dict[str, str]:
-    return {}
-
-
-def write_valkyrie_config(config_path: Path, **overrides: object) -> Path:
-    config: dict[str, object] = {
-        "AWS_ACCESS_KEY_ID": "aws-key",
-        "AWS_SECRET_ACCESS_KEY": "aws-secret",
-        "AWS_DEFAULT_REGION": "us-east-1",
-        "S3_BUCKET": "bucket",
-        "LOG_GROUP": "benchmarks",
-        "LOG_RETENTION_POLICY": 365,
-    }
-    for key, value in overrides.items():
-        if value is None:
-            config.pop(key, None)
-        else:
-            config[key] = value
-
-    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-    return config_path
+@pytest.fixture
+def mock_client() -> MockClient:
+    """Provide a fresh recording HTTP client."""
+    return MockClient()
 
 
 class MockTrackerService:
@@ -100,7 +84,6 @@ class MockTrackerService:
         latency_ms: int | None = None,
         error: str | None = None,
     ) -> BenchmarkServiceHealth:
-
         return BenchmarkServiceHealth(name=name, url=url, healthy=healthy, latency_ms=latency_ms, error=error)
 
     @staticmethod
@@ -161,14 +144,23 @@ class MockTrackerService:
 
 
 @pytest.fixture
-def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[str]]:
-    started_run_id = uuid4()
-    streamed_run_ids: list[str] = []
+def mock_tracker_service() -> type[MockTrackerService]:
+    """Reset and provide the shared tracker service mock."""
     MockTrackerService.start_calls = []
     MockTrackerService.init_calls = 0
     MockTrackerService.provider_validations = []
     MockTrackerService.require_config_values = []
-    MockTrackerService.start_response = {
+    return MockTrackerService
+
+
+@pytest.fixture
+def connect_stream_testbed(
+    monkeypatch: pytest.MonkeyPatch,
+    mock_tracker_service: type[MockTrackerService],
+) -> tuple[UUID, list[str], type[MockTrackerService]]:
+    started_run_id = uuid4()
+    streamed_run_ids: list[str] = []
+    mock_tracker_service.start_response = {
         "benchmark_name": "swebench",
         "agent_name": "agent",
         "benchmark_id": str(started_run_id),
@@ -185,10 +177,10 @@ def connect_stream_testbed(monkeypatch: pytest.MonkeyPatch) -> tuple[UUID, list[
     def stream_benchmark_status(_tracker: MockTrackerService, run_id: object) -> None:
         streamed_run_ids.append(str(run_id))
 
-    monkeypatch.setattr(run_start, "TrackerService", MockTrackerService)
+    monkeypatch.setattr(run_start, "TrackerService", mock_tracker_service)
     monkeypatch.setattr(run_start, "get_contract_from_s3", get_contract_from_s3)
     monkeypatch.setattr(run_start, "stream_benchmark_status", stream_benchmark_status)
-    monkeypatch.setattr(run_resume, "TrackerService", MockTrackerService)
+    monkeypatch.setattr(run_resume, "TrackerService", mock_tracker_service)
     monkeypatch.setattr(run_resume, "stream_benchmark_status", stream_benchmark_status)
 
-    return started_run_id, streamed_run_ids
+    return started_run_id, streamed_run_ids, mock_tracker_service

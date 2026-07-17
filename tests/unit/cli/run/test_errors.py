@@ -1,49 +1,26 @@
+"""Tests for run error output contracts.
+
+Run: uv run pytest tests/unit/cli/run/test_errors.py
+"""
+
+from datetime import datetime
 import json
-from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
 from click.testing import CliRunner, Result
-from tracker.database.models import AgentContractRequest, BenchmarkArguments, BenchmarkStatus
-from tracker.types import FinalViewResponse, RetrieveResultsResponse, S3UploadResultsResponse
+from tracker.database.models import BenchmarkStatus
+from tracker.types import RetrieveResultsResponse, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run import run
 from valkyrie.cli.run.errors import build_run_errors_payload, errors, group_task_errors
 
+from tests.unit.cli.factories import make_final_view
+
 errors_module = import_module("valkyrie.cli.run.errors")
-
-
-def make_response(
-    run_id: UUID,
-    *,
-    status: BenchmarkStatus = BenchmarkStatus.ERROR,
-    error_message: str | None = "No tasks were completed successfully",
-    task_errors: dict[str, str] | None = None,
-) -> FinalViewResponse:
-    return FinalViewResponse(
-        benchmark_id=run_id,
-        benchmark_name="demo-bench",
-        started_at=datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc),
-        finished_at=datetime(2026, 7, 10, 12, 5, tzinfo=timezone.utc),
-        status=status,
-        error_message=error_message,
-        benchmark_arguments=BenchmarkArguments(
-            contract=AgentContractRequest(
-                name="demo-agent",
-                secrets={"SYNTHETIC_KEY": "excluded-secret-name"},
-                kwargs={"private-option": "excluded-kwarg-value"},
-            ),
-            concurrency=10,
-        ),
-        tasks_stopped=None,
-        final_evaluation=None,
-        average_task_breakdown=None,
-        evaluation_results={"successful-task": {"private": "excluded-evaluation-value"}},
-        task_errors=task_errors,
-    )
 
 
 class StubErrorsTracker:
@@ -84,7 +61,7 @@ def test_errors_text_groups_identical_messages_without_writing_files(monkeypatch
     shared_message = "Required output artifact was not produced."
     task_errors = {f"task-{index:03}": shared_message for index in range(100)}
     task_errors["other-task"] = "Evaluator returned an invalid response."
-    tracker = StubErrorsTracker(make_response(run_id, task_errors=task_errors))
+    tracker = StubErrorsTracker(make_final_view(run_id, task_errors=task_errors))
     runner = CliRunner()
     monkeypatch.setattr(errors_module, "TrackerService", lambda: tracker)
 
@@ -124,7 +101,7 @@ def test_errors_text_handles_run_task_and_empty_states(
 ) -> None:
     run_id = uuid4()
     tracker = StubErrorsTracker(
-        make_response(run_id, status=status, error_message=error_message, task_errors=task_errors)
+        make_final_view(run_id, status=status, error_message=error_message, task_errors=task_errors)
     )
 
     result = invoke_with_tracker(monkeypatch, tracker, run_id)
@@ -137,7 +114,7 @@ def test_errors_text_handles_run_task_and_empty_states(
 
 def test_errors_text_preserves_empty_messages(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
-    tracker = StubErrorsTracker(make_response(run_id, error_message="", task_errors={"task-a": ""}))
+    tracker = StubErrorsTracker(make_final_view(run_id, error_message="", task_errors={"task-a": ""}))
 
     result = invoke_with_tracker(monkeypatch, tracker, run_id)
 
@@ -149,7 +126,7 @@ def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch
     run_id = uuid4()
     unsafe_message = "\x1b]8;;https://example.invalid\x07click\x1b]8;;\x07\rrewritten\nnext\tline\u202e"
     tracker = StubErrorsTracker(
-        make_response(
+        make_final_view(
             run_id,
             error_message=unsafe_message,
             task_errors={"task\x1b[31m": "boom\b"},
@@ -171,7 +148,7 @@ def test_errors_text_sanitizes_terminal_controls(monkeypatch: pytest.MonkeyPatch
 def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     raw_error = "task failed\n\x1b[31mred"
-    response = make_response(
+    response = make_final_view(
         run_id,
         error_message=None,
         task_errors={"task-b": raw_error, "task-a": "another failure"},
@@ -220,7 +197,7 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
 def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     tracker = StubErrorsTracker(
-        make_response(
+        make_final_view(
             run_id,
             status=BenchmarkStatus.FINISHED,
             error_message=None,

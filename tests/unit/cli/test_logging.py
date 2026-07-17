@@ -1,3 +1,8 @@
+"""Tests for CLI logging behavior.
+
+Run: uv run pytest tests/unit/cli/test_logging.py
+"""
+
 import io
 import json
 import logging
@@ -6,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from collections.abc import Generator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -17,7 +23,7 @@ from valkyrie.cli.logging import configure_cli_logging
 
 
 @pytest.fixture(autouse=True)
-def reset_logging_disable() -> None:
+def reset_logging_disable() -> Generator[None, None, None]:
     previous_disable_level = logging.root.manager.disable
     logging.disable(logging.NOTSET)
     yield
@@ -110,7 +116,8 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
             self.end_headers()
             self.wfile.write(body)
 
-        def log_message(self, _format: str, *_args: object) -> None:
+        def log_message(self, format: str, *_args: object) -> None:
+            del format
             return None
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), TrackerHandler)
@@ -118,7 +125,7 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
     thread.start()
 
     try:
-        project_root = Path(__file__).parents[2]
+        project_root = Path(__file__).parents[3]
         tool_root = tmp_path / "tool-root"
         site_packages = tool_root / "lib" / "python3.12" / "site-packages"
         shutil.copytree(project_root / "src" / "valkyrie", site_packages / "valkyrie")

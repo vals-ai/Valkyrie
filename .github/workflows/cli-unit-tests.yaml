@@ -1,4 +1,4 @@
-name: Cli unit tests
+name: CLI tests
 on:
   push:
     branches: [dev]
@@ -6,7 +6,7 @@ on:
     branches: [dev]
 
 jobs:
-  cli-unit-tests:
+  cli-tests:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,8 +25,8 @@ jobs:
       - name: Install dependencies
         run: uv sync --group dev
 
-      - name: Run CLI unit tests with coverage
-        run: uv run pytest tests/unit --cov=src/valkyrie --cov-report=xml
+      - name: Run CLI tests with coverage
+        run: make test
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

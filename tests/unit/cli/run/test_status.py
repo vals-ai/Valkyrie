@@ -1,3 +1,8 @@
+"""Tests for batched run status output.
+
+Run: uv run pytest tests/unit/cli/run/test_status.py
+"""
+
 import json
 from datetime import datetime, timezone
 from importlib import import_module
@@ -159,9 +164,19 @@ def test_status_rejects_invalid_ids_before_tracker_construction(
 def test_tracker_client_fetches_batch_status_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = UUID(int=1)
     client = MockStatusClient(run_id)
-    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(lambda: {}))
-    monkeypatch.setattr(TrackerService, "parse_config_keys", lambda _self: {})
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", lambda **_kwargs: client)
+
+    def empty_config() -> dict[str, object]:
+        return {}
+
+    def empty_config_keys(_tracker: TrackerService) -> dict[str, str]:
+        return {}
+
+    def build_client(**_kwargs: object) -> MockStatusClient:
+        return client
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
 
     tracker = TrackerService(base_url="http://tracker")
     response = tracker.fetch_benchmark_statuses([run_id])

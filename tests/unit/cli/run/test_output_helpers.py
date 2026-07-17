@@ -1,3 +1,8 @@
+"""Tests for shared run output and display behavior.
+
+Run: uv run pytest tests/unit/cli/run/test_output_helpers.py
+"""
+
 import io
 import tarfile
 from datetime import datetime, timezone
@@ -27,7 +32,7 @@ from valkyrie.cli.display import paginate_cli_pages
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.fetch import fetch
 from valkyrie.cli.run.outputs import download_run_outputs
-from valkyrie.cli.run.progress import _stream_next_steps, format_benchmark_status, stream_benchmark_status
+from valkyrie.cli.run.progress import format_benchmark_status, stream_benchmark_status
 from valkyrie.cli.run.start import format_start_benchmark_response
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -205,17 +210,6 @@ def test_format_start_benchmark_response_prints_run_outputs_command(capsys: pyte
     assert "Run outputs:" in output
     assert f"valkyrie run outputs {run_id} --output-dir ." in output
     assert "Agent outputs:" not in output
-
-
-def test_stream_next_steps_prints_run_outputs_command(capsys: pytest.CaptureFixture[str]) -> None:
-    run_id = uuid4()
-
-    _stream_next_steps(run_id, s3_url="s3://bucket/run")
-
-    output = capsys.readouterr().out
-    assert "Run outputs:" in output
-    assert f"valkyrie run outputs {run_id} --output-dir ." in output
-    assert "s3://bucket/run" in output
 
 
 def test_download_run_outputs_extracts_archive_and_nested_tars(tmp_path: Path) -> None:

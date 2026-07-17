@@ -1,3 +1,8 @@
+"""Tests for CLI environment and configuration selection.
+
+Run: uv run pytest tests/unit/cli/test_runtime_config.py
+"""
+
 from pathlib import Path
 
 import pytest

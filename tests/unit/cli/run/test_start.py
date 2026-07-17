@@ -95,13 +95,6 @@ class StartTestbed:
 
 
 @pytest.fixture
-def cli_runner() -> CliRunner:
-    """Provide an isolated Click runner."""
-
-    return CliRunner()
-
-
-@pytest.fixture
 def start_testbed(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> StartTestbed:
     """Replace external start-command boundaries with deterministic mocks."""
     testbed = StartTestbed(cli_runner)

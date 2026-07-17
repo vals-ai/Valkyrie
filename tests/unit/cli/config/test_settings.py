@@ -1,20 +1,17 @@
+"""Tests for interactive CLI configuration settings.
+
+Run: uv run pytest tests/unit/cli/config/test_settings.py
+"""
+
 from importlib import import_module
 from pathlib import Path
 
-import pytest
 import yaml
 from click.testing import CliRunner
 
-from valkyrie.cli.runtime_config import VALKYRIE_CONFIG_PATH_ENV_VAR
+import pytest
 
 settings = import_module("valkyrie.cli.config.settings")
-
-
-@pytest.fixture
-def config_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    path = tmp_path / "valkyrie.yaml"
-    monkeypatch.setenv(VALKYRIE_CONFIG_PATH_ENV_VAR, str(path))
-    return path
 
 
 def test_init_self_hosted_strips_whitespace(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

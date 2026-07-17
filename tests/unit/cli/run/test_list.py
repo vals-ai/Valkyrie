@@ -1,6 +1,12 @@
+"""Tests for run list output and pagination contracts.
+
+Run: uv run pytest tests/unit/cli/run/test_list.py
+"""
+
 import json
 from datetime import datetime, timezone
 from importlib import import_module
+from typing import Never
 from uuid import UUID
 
 import pytest
@@ -67,11 +73,11 @@ def test_list_json_all_exhausts_cursor_pages_and_preserves_filters(monkeypatch: 
             "page-2": FetchBenchmarksResponse(benchmarks=[final_row], next_cursor=None),
         }
     )
-    monkeypatch.setattr(
-        list_runs_module,
-        "paginate_benchmarks",
-        lambda *_args, **_kwargs: pytest.fail("machine output must not invoke the interactive pager"),
-    )
+
+    def fail_interactive_pager(*_args: object, **_kwargs: object) -> Never:
+        pytest.fail("machine output must not invoke the interactive pager")
+
+    monkeypatch.setattr(list_runs_module, "paginate_benchmarks", fail_interactive_pager)
 
     result = invoke_with_tracker(
         monkeypatch,

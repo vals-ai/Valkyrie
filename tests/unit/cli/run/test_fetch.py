@@ -1,4 +1,10 @@
+"""Tests for run fetch output contracts.
+
+Run: uv run pytest tests/unit/cli/run/test_fetch.py
+"""
+
 import json
+from collections.abc import Generator
 from datetime import datetime, timezone
 from importlib import import_module
 from uuid import UUID, uuid4
@@ -97,7 +103,7 @@ class StubFetchTracker:
             raise self.metadata
         return self.metadata
 
-    def stream_benchmark(self, _run_id: UUID):
+    def stream_benchmark(self, _run_id: UUID) -> Generator[str, None, None]:
         if self.interrupt:
             raise KeyboardInterrupt
         yield from self.events

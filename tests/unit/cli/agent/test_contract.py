@@ -1,3 +1,8 @@
+"""Tests for agent contracts and the CLI push command.
+
+Run: uv run pytest tests/unit/cli/agent/test_contract.py
+"""
+
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, cast
@@ -598,10 +603,10 @@ class TestPushCommand:
         self._write_contract(tmp_path)
         pushed: dict[str, str] = {}
 
-        async def fake_push(agent_name: str, agent_path: Path) -> None:
+        async def mock_push(agent_name: str, agent_path: Path) -> None:
             pushed["name"] = agent_name
 
-        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", fake_push)
+        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", mock_push)
 
         result = CliRunner().invoke(agent, ["push", str(tmp_path)])
 
@@ -612,10 +617,10 @@ class TestPushCommand:
         self._write_contract(tmp_path)
         pushed: dict[str, str] = {}
 
-        async def fake_push(agent_name: str, agent_path: Path) -> None:
+        async def mock_push(agent_name: str, agent_path: Path) -> None:
             pushed["name"] = agent_name
 
-        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", fake_push)
+        monkeypatch.setattr("valkyrie.cli.agent.lifecycle.push_agent", mock_push)
 
         result = CliRunner().invoke(agent, ["push", str(tmp_path), "--name", "override"])
 
