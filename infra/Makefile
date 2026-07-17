@@ -10,7 +10,7 @@ PROFILE ?=
 SCOPE ?= all
 
 EXPECTED_ACCOUNT_ID = $(if $(filter dev,$(STAGE)),$(DEV_ACCOUNT_ID),$(if $(filter prod,$(STAGE)),$(PRODUCTION_ACCOUNT_ID),))
-STACK_PREFIX = $(if $(filter dev,$(STAGE)),Valk-Dev-,)
+STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,)
 STACKS_shared = $(STACK_PREFIX)SharedStack
 STACKS_tracker = $(STACK_PREFIX)TrackerStack
 STACKS_worker = $(STACK_PREFIX)WorkerStack
