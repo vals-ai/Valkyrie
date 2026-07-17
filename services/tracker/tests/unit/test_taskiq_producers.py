@@ -1,5 +1,6 @@
 import json
 from typing import Any
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -98,11 +99,9 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     async def agent_exists(*_args: Any, **_kwargs: Any) -> bool:
         return True
 
-    async def reset_to_in_progress(*_args: Any, **_kwargs: Any) -> list[str]:
-        return ["task-2"]
-
     monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", verify_task_ids)
     monkeypatch.setattr("main.s3_object_exists", agent_exists)
+    reset_to_in_progress = AsyncMock(return_value=["task-2"])
     monkeypatch.setattr("main.reset_to_in_progress_status", reset_to_in_progress)
 
     response = client.post("/start-benchmark", json=_start_request(contract, None).model_dump(mode="json"))
@@ -125,6 +124,7 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     response = client.post(
         f"/retry-or-resume-benchmark/{benchmark.id}",
         headers=_CALLER_AWS_HEADERS,
+        json={"secrets": {"MODEL_API_KEY": "resume-model-secret"}},
     )
 
     assert response.status_code == 200
@@ -135,7 +135,22 @@ def test_managed_start_and_resume_emit_credential_free_v2(
     assert resume_context["benchmark_id"] == str(benchmark.id)
     assert resume_context["verified_task_ids"] == ["task-2"]
     assert resume_context["start_benchmark_request"]["harness_config"] is None
+    assert resume_context["start_benchmark_request"]["contract"]["secrets"] == {"MODEL_API_KEY": "resume-model-secret"}
     _assert_no_aws_authority(resume_context)
+
+    _stop_benchmark(benchmark, database_session)
+    payloads.clear()
+    response = client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}",
+        json={"secrets": {"aws_secret_access_key": "credential"}},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Managed execution cannot include AWS credentials"
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.STOPPED
+    assert reset_to_in_progress.await_count == 1
+    assert payloads == []
 
 
 def test_managed_start_rejects_aws_authority_before_persistence(
