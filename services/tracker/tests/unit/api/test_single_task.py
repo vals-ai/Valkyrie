@@ -139,15 +139,10 @@ def test_task_artifacts_only_presign_existing_output(
         "agent_output_url": "https://example.test/presigned",
         "agent_output_expires_in": 300,
     }
-    object_exists.assert_awaited_with(
-        expected_key,
-        aws=ANY,
-        s3_bucket="test-bucket",
-    )
+    object_exists.assert_awaited_with(expected_key, ANY)
     create_presigned_url.assert_awaited_once_with(
         s3_key=expected_key,
-        aws=ANY,
-        s3_bucket="test-bucket",
+        runtime=ANY,
         expiration=300,
     )
     assert missing_response.status_code == 200
