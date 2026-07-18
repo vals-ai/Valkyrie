@@ -32,6 +32,120 @@ from tracker.utils import process_benchmark
 class TestRunFinalization:
     """Run finalization and concurrent retry behavior."""
 
+    async def test_active_retry_defers_until_original_task_finishes(
+        self,
+        postgres_engine: Engine,
+        postgres_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        org = Org(id=uuid4(), name=f"active-retry-{uuid4()}")
+        contract = AgentContractRequest(name="retry-agent", install_cmd="true", run_cmd="true")
+        benchmark = make_benchmark(
+            name="active-retry",
+            org_id=org.id,
+            contract=contract,
+            status=BenchmarkStatus.IN_PROGRESS,
+        )
+        original_task = make_task(benchmark, "original", status=TaskStatus.PENDING)
+        retry_task = make_task(benchmark, "retry", status=TaskStatus.ERROR)
+        postgres_session.add(org)
+        postgres_session.flush()
+        postgres_session.add(benchmark)
+        postgres_session.flush()
+        postgres_session.add_all([original_task, retry_task])
+        postgres_session.commit()
+
+        retry_task.status = TaskStatus.PENDING
+        retry_task.finished_at = None
+        postgres_session.add(retry_task)
+        postgres_session.commit()
+
+        async def skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
+        def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
+            return DaytonaProviderConfig(
+                DAYTONA_API_KEY="test-key",
+                DAYTONA_API_URL="https://example.com",
+                DAYTONA_TARGET="test-target",
+            )
+
+        async def final_score(*_args: Any, **_kwargs: Any) -> FinalScoreResponse:
+            return FinalScoreResponse(
+                tasks_evaluated=[original_task.task_id, retry_task.task_id],
+                final_score=1.0,
+                metadata={},
+            )
+
+        monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+        monkeypatch.setattr(run_orchestration_module, "copy_agent_to_benchmark", skip_cloud_operation)
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
+        monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", skip_cloud_operation)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", final_score)
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name=benchmark.name,
+            concurrency=2,
+            harness_config=harness_config,
+        )
+
+        retry_task.status = TaskStatus.FINISHED
+        postgres_session.add(retry_task)
+        postgres_session.flush()
+        postgres_session.add(
+            EvaluationResult(
+                org_id=org.id,
+                task=retry_task.id,
+                instance_id=f"retry-{retry_task.id}",
+                result={"score": 1.0},
+            )
+        )
+        postgres_session.commit()
+
+        await process_benchmark(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark.id),
+            verified_task_ids=[],
+        )
+
+        with Session(postgres_engine) as assertion_session:
+            persisted_benchmark = assertion_session.get_one(Benchmark, benchmark.id)
+            assert persisted_benchmark.status == BenchmarkStatus.IN_PROGRESS
+            assert persisted_benchmark.final_evaluation is None
+
+        original_task.status = TaskStatus.FINISHED
+        postgres_session.add(original_task)
+        postgres_session.flush()
+        postgres_session.add(
+            EvaluationResult(
+                org_id=org.id,
+                task=original_task.id,
+                instance_id=f"original-{original_task.id}",
+                result={"score": 1.0},
+            )
+        )
+        postgres_session.commit()
+
+        await process_benchmark(
+            start_benchmark_request_json=request.model_dump(),
+            benchmark_id_str=str(benchmark.id),
+            verified_task_ids=[],
+        )
+
+        with Session(postgres_engine) as assertion_session:
+            persisted_benchmark = assertion_session.get_one(Benchmark, benchmark.id)
+            final_evaluations = assertion_session.exec(
+                select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark.id)
+            ).all()
+            assert persisted_benchmark.status == BenchmarkStatus.FINISHED
+            assert len(final_evaluations) == 1
+
     async def test_concurrent_retry_prevents_stale_final_evaluation(
         self,
         postgres_engine: Engine,

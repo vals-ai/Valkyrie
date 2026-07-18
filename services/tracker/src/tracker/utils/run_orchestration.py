@@ -55,7 +55,7 @@ _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.I
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
     """
-    Delegates status depending on if any tasks have been stopped.
+    Set and flush the terminal status; the caller owns the final commit.
     """
 
     # Check if any tasks are still in the pending or in progress state
@@ -88,7 +88,7 @@ def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: 
     benchmark_row.status = benchmark_status
     benchmark_row.error_message = None
     session.add(benchmark_row)
-    session.commit()
+    session.flush()
 
 
 def create_task_rows(
@@ -309,6 +309,7 @@ async def process_benchmark(
                 benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
                 if has_stopped_tasks(session, benchmark_row, org):
                     set_benchmark_final_status(benchmark_row, session, org)
+                    session.commit()
                     return
             raise TrackerServiceError("No tasks were completed successfully")
 
@@ -324,27 +325,22 @@ async def process_benchmark(
                 finalization_deferred = True
                 return
 
-        # Create the final evaluation row and add it to the database
-        final_evaluation_row = FinalEvaluation(
-            org_id=org.id,
-            benchmark=benchmark_id,
-            final_score=final_score_response.final_score,
-            properties=final_score_response.metadata,
-        )
-
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
             if has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
 
-            # Delete existing final evaluation if re-running
-            if benchmark_row.final_evaluation:
-                session.delete(benchmark_row.final_evaluation)
-                session.flush()
+            final_evaluation = benchmark_row.final_evaluation or FinalEvaluation(
+                org_id=org.id,
+                benchmark=benchmark_id,
+                final_score=final_score_response.final_score,
+            )
+            final_evaluation.final_score = final_score_response.final_score
+            final_evaluation.properties = final_score_response.metadata
+            benchmark_row.final_evaluation = final_evaluation
+            session.add(final_evaluation)
 
-            session.add(final_evaluation_row)
-            # Commit the final score and terminal status together while retry/resume is blocked.
             set_benchmark_final_status(benchmark_row, session, org)
 
             # Push the final benchmark view to the bucket
@@ -361,6 +357,8 @@ async def process_benchmark(
                 lambda_payload["benchmark_name"] = benchmark_row.name
 
                 invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
+
+            session.commit()
 
     except BenchmarkServiceUnauthenticatedError as e:
         logfire.warn("process_benchmark failed due to benchmark service auth error")
@@ -406,6 +404,8 @@ async def process_benchmark(
 
 
 def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_message: str) -> None:
+    if benchmark_row.final_evaluation:
+        session.delete(benchmark_row.final_evaluation)
     benchmark_row.status = BenchmarkStatus.ERROR
     benchmark_row.error_message = error_message
     session.add(benchmark_row)

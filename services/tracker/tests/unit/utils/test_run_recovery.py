@@ -698,6 +698,7 @@ class TestRunRecovery:
         benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
+        benchmark_row.error_message = "stale finalization error"
         database_session.add(benchmark_row)
         database_session.flush()
         database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=2.0))
@@ -745,6 +746,10 @@ class TestRunRecovery:
             org=self._test_org,
         )
         assert verified_task_ids == [new_task_id]
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+        assert benchmark_row.finished_at is None
+        assert benchmark_row.error_message is None
 
         stale_final_evaluation = database_session.exec(
             select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
@@ -1257,6 +1262,126 @@ class TestRunRecovery:
         assert final_score_inputs
         assert set(final_score_inputs[-1]) == {"task_retry", "task_original"}
         assert benchmark_row.final_evaluation is not None
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_finalization_failure_does_not_persist_final_evaluation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": "vals-format-lambda"})
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all([benchmark_row, task_row])
+        database_session.flush()
+        database_session.add_all(
+            [
+                EvaluationResult(
+                    org_id=TEST_ORG_ID,
+                    task=task_row.id,
+                    instance_id="task_0",
+                    result={"status": "success", "score": 1.0},
+                ),
+                FinalEvaluation(
+                    org_id=TEST_ORG_ID,
+                    benchmark=benchmark_row.id,
+                    final_score=0.0,
+                ),
+            ]
+        )
+        database_session.commit()
+
+        def fail_finalization(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("lambda failed")
+
+        monkeypatch.setattr("tracker.utils.run_orchestration.lambda_client", Mock(return_value=object()))
+        monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", fail_finalization)
+
+        await process_benchmark(
+            start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=[],
+        )
+
+        database_session.expire_all()
+        benchmark_row = database_session.get_one(Benchmark, benchmark_row.id)
+        final_evaluations = database_session.exec(
+            select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
+        ).all()
+        assert benchmark_row.status == BenchmarkStatus.ERROR
+        assert final_evaluations == []
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_finalization_only_retry_updates_one_final_evaluation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.ERROR
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"lambda_function": "vals-format-lambda"})
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add_all([benchmark_row, task_row])
+        database_session.flush()
+        database_session.add_all(
+            [
+                EvaluationResult(
+                    org_id=TEST_ORG_ID,
+                    task=task_row.id,
+                    instance_id="task_0",
+                    result={"status": "success", "score": 1.0},
+                ),
+                FinalEvaluation(
+                    org_id=TEST_ORG_ID,
+                    benchmark=benchmark_row.id,
+                    final_score=0.0,
+                ),
+            ]
+        )
+        database_session.commit()
+        original_final_evaluation = database_session.exec(
+            select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
+        ).one()
+        lambda_calls = 0
+
+        def count_finalization(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal lambda_calls
+            lambda_calls += 1
+
+        monkeypatch.setattr("tracker.utils.run_orchestration.lambda_client", Mock(return_value=object()))
+        monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", count_finalization)
+
+        for expected_lambda_calls in (1, 2):
+            response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+            assert response.status_code == 200
+            dispatch = mock_kicker.queued_calls[-1]
+            assert dispatch["verified_task_ids"] == []
+
+            await process_benchmark(**dispatch)
+
+            database_session.expire_all()
+            benchmark_row = database_session.get_one(Benchmark, benchmark_row.id)
+            final_evaluations = database_session.exec(
+                select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
+            ).all()
+            assert benchmark_row.status == BenchmarkStatus.FINISHED
+            assert [row.id for row in final_evaluations] == [original_final_evaluation.id]
+            assert lambda_calls == expected_lambda_calls
 
     async def test_task_monitor_cancels_waiting_stopped_task(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: MonkeyPatch

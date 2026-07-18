@@ -231,6 +231,8 @@ async def reset_to_in_progress_status(
         # Can already be in progress when retrying errored tasks while the run is ongoing.
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
             benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+            benchmark_row.finished_at = None
+            benchmark_row.error_message = None
             session.add(benchmark_row)
 
         for task in existing_rows:

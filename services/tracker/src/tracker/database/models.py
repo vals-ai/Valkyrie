@@ -167,6 +167,10 @@ class BenchmarkArguments(BaseModel):
 
 
 class FinalEvaluation(SQLModel, table=True):
+    __table_args__: tuple[UniqueConstraint] = (
+        UniqueConstraint("benchmark", name="unique_final_evaluation_per_benchmark"),
+    )
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
     benchmark: UUID = Field(foreign_key="benchmark.id")
