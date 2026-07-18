@@ -1150,7 +1150,7 @@ class TestStreamCommandOutputAgentFailure:
         assert "subprocess.CalledProcessError" in message
         assert "Traceback (most recent call last):" in message
 
-    async def test_error_output_tail_is_byte_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_error_output_tail_is_character_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A very chatty command must not blow up the retained error tail unboundedly."""
 
         async def stream_command(_command: str) -> AsyncIterator[str]:

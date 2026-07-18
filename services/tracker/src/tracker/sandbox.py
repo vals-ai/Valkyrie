@@ -407,8 +407,9 @@ _STATUS_DIR = "/tmp/.valkyrie"
 # AgentRunFailedError (which is persisted to the task's ErrorResult and shown in the UI).
 # A hard N-line cut previously truncated the real failure (e.g. a Python traceback / a
 # subprocess CalledProcessError whose message printed after the cutoff), making incidents
-# undiagnosable. Retain a generous, byte-bounded tail instead: bounded so a chatty command
-# can't blow up memory or the error column, but large enough to preserve a full traceback.
+# undiagnosable. Retain a generous, character-bounded tail instead: bounded so a chatty
+# command can't blow up memory or the error column, but large enough to preserve a full
+# traceback.
 _ERROR_OUTPUT_TAIL_MAX_CHARS: int = 16_000
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
@@ -480,8 +481,8 @@ async def stream_command_output(
     command: str,
     on_output: Callable[[str], None],
 ) -> tuple[AgentCausedExitReason | None, float]:
-    # Retain a byte-bounded tail of the streamed output so a non-zero exit can report the
-    # real error. We trim by total characters (not chunk count) so the full end of the
+    # Retain a character-bounded tail of the streamed output so a non-zero exit can report
+    # the real error. We trim by total characters (not chunk count) so the full end of the
     # output — where tracebacks and error messages land — is preserved for diagnosis.
     output: deque[str] = deque()
     output_chars = 0

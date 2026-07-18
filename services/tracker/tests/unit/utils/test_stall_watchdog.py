@@ -85,3 +85,47 @@ async def test_stall_watchdog_fails_hung_task(
     assert task_row.status == TaskStatus.ERROR
     error_message = _latest_task_error(database_session, task_row)
     assert "stall-watchdog max duration" in error_message
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
+async def test_inner_timeout_is_not_misattributed_to_watchdog(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+) -> None:
+    """A TimeoutError from *inside* the task must not be blamed on the stall watchdog.
+
+    On Python 3.11+ ``asyncio.TimeoutError`` IS the builtin ``TimeoutError``, so an inner
+    ``asyncio.timeout``/``wait_for`` expiry (or a library raising ``TimeoutError``) surfaces
+    as the same exception type the watchdog raises when it cancels a task. Regression: the old
+    bare ``except TimeoutError`` in ``TrackedTask.run`` caught ANY such error and persisted it
+    as "exceeded the stall-watchdog max duration". This drives ``run`` directly (that is where
+    the misattribution lived) with a coroutine that raises ``TimeoutError`` well before the
+    watchdog ceiling, and asserts it takes the normal unhandled-error path instead.
+    """
+    _start_benchmark_request, task_row, _benchmark_id = create_task_environment(
+        contract, database_session, harness_config
+    )
+
+    # Watchdog ceiling stays at its (large) default, so it cannot be the cause of the failure.
+    assert task_execution_module.TASK_MAX_DURATION_SECONDS > 60
+
+    async def _raise_inner_timeout() -> dict[str, dict[str, Any] | None]:
+        # Simulate an inner timeout (e.g. a sandbox/websocket asyncio.wait_for) firing well
+        # before the watchdog's wall-clock ceiling.
+        raise TimeoutError("benchmark-service websocket read timed out")
+
+    tracked_task = TrackedTask(_raise_inner_timeout(), TEST_ORG)
+
+    result = await asyncio.wait_for(tracked_task.run(Semaphore(1), task_row), timeout=15)
+
+    assert result == {task_row.task_id: None}
+
+    database_session.refresh(task_row)
+    assert task_row.status == TaskStatus.ERROR
+    error_message = _latest_task_error(database_session, task_row)
+    # The inner TimeoutError must NOT be misattributed to the watchdog...
+    assert "stall-watchdog max duration" not in error_message
+    # ...it should surface on the normal unhandled-error path instead.
+    assert "Task error was not handled" in error_message
+    assert "TimeoutError" in error_message

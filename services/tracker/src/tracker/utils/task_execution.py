@@ -87,6 +87,18 @@ class TrackedTaskStatus(str, Enum):
     DONE = "done"
 
 
+class StallWatchdogExpired(Exception):
+    """Internal sentinel: the stall watchdog's wall-clock deadline was exceeded.
+
+    ``asyncio.timeout`` raises a bare ``TimeoutError`` on expiry, which on Python 3.11+
+    is indistinguishable from an inner ``asyncio.timeout``/``wait_for`` expiry in
+    sandbox/websocket code or a library that raises the builtin ``TimeoutError``. We
+    convert ONLY a genuine watchdog expiry (``asyncio.timeout(...).expired()`` is True)
+    into this sentinel, so ``TrackedTask.run`` attributes it to the watchdog
+    unambiguously and lets every other ``TimeoutError`` take the normal error path.
+    """
+
+
 class TrackedTask:
     _coro: Coroutine[Any, Any, Any]
     _status: str
@@ -116,9 +128,22 @@ class TrackedTask:
                 # stream_command_output / benchmark-service websockets have no lower-level
                 # asyncio timeout, so a hung call would otherwise leave the task IN_PROGRESS
                 # forever. On expiry asyncio.timeout cancels the coroutine (its finally blocks
-                # run: log flush + sandbox teardown) and raises TimeoutError, handled below.
-                async with asyncio.timeout(TASK_MAX_DURATION_SECONDS):
-                    return await self._coro
+                # run: log flush + sandbox teardown) and raises TimeoutError.
+                # Bind the Timeout object before the block so it is always in scope in the
+                # except and we can ask whether THIS context is the one that expired.
+                watchdog: asyncio.Timeout = asyncio.timeout(TASK_MAX_DURATION_SECONDS)
+                try:
+                    async with watchdog:
+                        return await self._coro
+                except TimeoutError:
+                    # A TimeoutError here is ambiguous: it may be OUR watchdog expiring, an
+                    # inner asyncio.timeout/wait_for in sandbox/websocket code, or a library
+                    # raising a bare TimeoutError (on 3.11+ asyncio.TimeoutError IS TimeoutError).
+                    # Attribute to the watchdog ONLY when this context actually expired; otherwise
+                    # re-raise so it takes the normal unhandled-error path below.
+                    if watchdog.expired():
+                        raise StallWatchdogExpired from None
+                    raise
 
         try:
             self._task = asyncio.create_task(_wrap_coro())
@@ -130,7 +155,7 @@ class TrackedTask:
 
             # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
             return {task_row.task_id: None}
-        except TimeoutError:
+        except StallWatchdogExpired:
             # Watchdog fired: the attempt exceeded TASK_MAX_DURATION_SECONDS. Fail the task
             # (rather than leave it IN_PROGRESS) so the run can finalize and be retried.
             error_message = (

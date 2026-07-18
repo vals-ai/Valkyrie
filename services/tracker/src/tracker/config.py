@@ -48,6 +48,7 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 # a task can sit IN_PROGRESS forever (observed on ~11h shards). When exceeded, the attempt is
 # cancelled and the task is failed so the run can finalize / be retried. Default 20h sits
 # comfortably above the longest legitimate task and below the 24h broker redelivery window.
+# Read once at import time, so changing the env var requires a worker/process restart.
 TASK_MAX_DURATION_SECONDS = int(os.environ.get("TASK_MAX_DURATION_SECONDS", str(20 * 60 * 60)))
 
 
