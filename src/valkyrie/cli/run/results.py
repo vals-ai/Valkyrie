@@ -109,7 +109,7 @@ def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
             final_view.model_dump_json(
                 indent=4,
                 exclude_none=True,
-                exclude={"benchmark_arguments": {"contract": {"env"}}},
+                exclude={"benchmark_arguments": {"contract": {"secrets", "kwargs"}}},
             )
         )
 

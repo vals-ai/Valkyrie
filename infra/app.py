@@ -3,6 +3,7 @@
 import os
 
 import aws_cdk as cdk
+from deployment_target import enforce_deployment_target
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from stage import resolve
@@ -11,6 +12,8 @@ from worker_stack import WorkerStack
 
 app = cdk.App()
 stage = resolve(app)
+if not stage.is_prod:
+    enforce_deployment_target(stage.name, os.environ)
 
 env = cdk.Environment(
     account=os.getenv("CDK_DEFAULT_ACCOUNT"),

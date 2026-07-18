@@ -2,7 +2,7 @@
 
 prod  -> every helper is the identity function, so `cdk synth -c stage=prod` is
         byte-identical to the pre-refactor `cdk synth`.
-dev   -> stacks get a "Valk-Dev-" construct-id prefix; physical names get a "-dev"
+dev   -> stacks get a "ValkDev" construct-id prefix; physical names get a "-dev"
         suffix; FQDNs get "-dev" on their first label.
 
 """
@@ -13,7 +13,7 @@ import aws_cdk as cdk
 
 PROD = "prod"
 DEV = "dev"
-DEV_STACK_PREFIX = "Valk-Dev-"
+DEV_STACK_PREFIX = "ValkDev"
 
 
 class Stage:
