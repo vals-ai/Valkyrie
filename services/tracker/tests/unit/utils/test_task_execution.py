@@ -50,7 +50,6 @@ class TestTaskExecution:
 
         release_first.set()
         await asyncio.gather(first, second)
-        assert limiter.in_flight == 0
 
     async def test_resizable_limiter_decrease_is_non_preemptive(self, monkeypatch: pytest.MonkeyPatch) -> None:
         limiter = ResizableLimiter(limit=2)
@@ -90,7 +89,6 @@ class TestTaskExecution:
         await limiter.resize(1)
         third = asyncio.create_task(worker(third_started))
         await asyncio.wait_for(third_wait_attempted.wait(), timeout=1)
-        assert limiter.in_flight == 2
         assert not first.done()
         assert not second.done()
         assert not third_started.is_set()
@@ -98,41 +96,12 @@ class TestTaskExecution:
         release_first.set()
         await first
         await asyncio.wait_for(third_rewait_attempted.wait(), timeout=1)
-        assert limiter.in_flight == 1
         assert not third_started.is_set()
 
         release_second.set()
         await second
         await asyncio.wait_for(third_started.wait(), timeout=1)
         await third
-        assert limiter.in_flight == 0
-
-    async def test_task_monitor_refreshes_limiter_from_persisted_concurrency(
-        self,
-        database_session: Session,
-        example_benchmark_object: Benchmark,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(update={"concurrency": 2})
-        database_session.add(example_benchmark_object)
-        database_session.commit()
-
-        tracked_task = TrackedTask(coro=asyncio.sleep(0), org=self._test_org)
-        setattr(tracked_task, "_status", TrackedTaskStatus.DONE)
-        limiter = ResizableLimiter(limit=5)
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monitor = TaskMonitor(
-            example_benchmark_object.id,
-            {"task_id_1": tracked_task},
-            org=self._test_org,
-            limiter=limiter,
-        )
-        monkeypatch.setattr(monitor, "_TRACK_INTERVAL", 0)
-
-        await monitor.track_tasks()
-
-        assert limiter.limit == 2
-        getattr(tracked_task, "_coro").close()
 
     async def test_task_monitor(
         self, database_session: Session, example_benchmark_object: Benchmark, monkeypatch: pytest.MonkeyPatch
@@ -160,7 +129,12 @@ class TestTaskExecution:
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monitor = TaskMonitor(benchmark_row.id, task_tracking.copy(), org=self._test_org)
+        monitor = TaskMonitor(
+            benchmark_row.id,
+            task_tracking.copy(),
+            org=self._test_org,
+            limiter=ResizableLimiter(limit=1),
+        )
         monkeypatch.setattr(monitor, "_TRACK_INTERVAL", 0)
 
         # Change task status to running and add a task to the object

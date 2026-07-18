@@ -94,42 +94,7 @@ class TestRunRecovery:
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
     @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_process_benchmark_initializes_limiter_from_persisted_concurrency(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        harness_config: HarnessConfig,
-        monkeypatch: MonkeyPatch,
-    ) -> None:
-        request = StartBenchmarkRequest(
-            benchmark_name="swebench",
-            contract=contract,
-            concurrency=7,
-            task_ids=["task_0"],
-            harness_config=harness_config,
-        )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
-        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 2})
-        database_session.add(benchmark_row)
-        database_session.commit()
-        observed_limits: list[int] = []
-
-        def recording_limiter(limit: int) -> ResizableLimiter:
-            observed_limits.append(limit)
-            return ResizableLimiter(limit)
-
-        monkeypatch.setattr("tracker.utils.run_orchestration.ResizableLimiter", recording_limiter)
-
-        await process_benchmark(
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=["task_0"],
-        )
-
-        assert observed_limits == [2]
-
-    @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_process_benchmark_refreshes_shared_limiter_to_admit_waiting_task(
+    async def test_process_benchmark_uses_persisted_and_refreshed_concurrency(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -140,11 +105,12 @@ class TestRunRecovery:
         request = StartBenchmarkRequest(
             benchmark_name="swebench",
             contract=contract,
-            concurrency=1,
+            concurrency=7,
             task_ids=task_ids,
             harness_config=harness_config,
         )
         benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 1})
         database_session.add(benchmark_row)
         database_session.commit()
         admitted_task_ids: list[str] = []
@@ -1454,7 +1420,12 @@ class TestRunRecovery:
         cancel_mock.side_effect = _cancel
         setattr(tracked_task, "_task", Mock(cancel=cancel_mock, done=lambda: False))
 
-        monitor = TaskMonitor(benchmark_row.id, {task_row.task_id: tracked_task}, org=self._test_org)
+        monitor = TaskMonitor(
+            benchmark_row.id,
+            {task_row.task_id: tracked_task},
+            org=self._test_org,
+            limiter=ResizableLimiter(limit=1),
+        )
         setattr(monitor, "_TRACK_INTERVAL", 0)
 
         await monitor.track_tasks()

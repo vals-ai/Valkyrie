@@ -290,7 +290,7 @@ async def process_benchmark(
 
         # Start the monitor to track the state the tasks are in and cancel them when no longer valid
         limiter = ResizableLimiter(persisted_concurrency)
-        monitor = TaskMonitor(benchmark_id, tracked_tasks, org, notifier=notifier, limiter=limiter)
+        monitor = TaskMonitor(benchmark_id, tracked_tasks, org, limiter=limiter, notifier=notifier)
         monitor_task = asyncio.create_task(monitor.track_tasks())
 
         await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in task_rows])

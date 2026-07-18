@@ -87,14 +87,6 @@ class ResizableLimiter:
         self._in_flight = 0
         self._condition = asyncio.Condition()
 
-    @property
-    def limit(self) -> int:
-        return self._limit
-
-    @property
-    def in_flight(self) -> int:
-        return self._in_flight
-
     async def resize(self, limit: int) -> None:
         if limit < 1:
             raise ValueError("Limit must be greater than 0")
@@ -176,7 +168,7 @@ class TaskMonitor:
     _task_tracking: dict[str, TrackedTask]
     _notifier: SlackNotifier | None
     _org: Org
-    _limiter: ResizableLimiter | None
+    _limiter: ResizableLimiter
     _TRACK_INTERVAL: int = 2
 
     def __init__(
@@ -184,8 +176,8 @@ class TaskMonitor:
         benchmark_id: UUID,
         task_tracking: dict[str, TrackedTask],
         org: Org,
+        limiter: ResizableLimiter,
         notifier: SlackNotifier | None = None,
-        limiter: ResizableLimiter | None = None,
     ):
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
@@ -194,8 +186,6 @@ class TaskMonitor:
         self._limiter = limiter
 
     async def _refresh_concurrency(self) -> None:
-        if self._limiter is None:
-            return
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
             concurrency = benchmark_row.arguments.concurrency

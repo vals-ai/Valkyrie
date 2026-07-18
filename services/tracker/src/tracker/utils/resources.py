@@ -154,7 +154,6 @@ def update_benchmark_concurrency(
         status=benchmark_row.status,
         concurrency=benchmark_row.arguments.concurrency,
     )
-    session.add(benchmark_row)
     session.commit()
     return result
 
@@ -179,7 +178,6 @@ def update_benchmark_resume_arguments(
         arguments = arguments.model_copy(update={"concurrency": concurrency})
 
     benchmark_row.arguments = arguments
-    session.add(benchmark_row)
     session.commit()
     return benchmark_row
 
