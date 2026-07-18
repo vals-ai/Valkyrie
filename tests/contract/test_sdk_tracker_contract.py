@@ -42,6 +42,7 @@ from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
     RetryOrResumeBenchmarkResponse,
+    RunResultSummaryResponse,
     S3UploadResultsResponse,
     SingleBenchmarkResponse,
     SingleTaskResponse,
@@ -137,9 +138,12 @@ RESPONSE_MODELS = {
     ("/retry-or-resume-benchmark/{benchmark_id}", "post"): "RetryOrResumeBenchmarkResponse",
     ("/benchmarks/status", "get"): "BenchmarkStatusResponse",
     ("/benchmarks/{benchmark_id}", "get"): "SingleBenchmarkResponse",
+    ("/benchmarks/{benchmark_id}/result-summary", "get"): "RunResultSummaryResponse",
     ("/benchmarks/{benchmark_id}/tasks", "get"): "TasksResponse",
     ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
     ("/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts", "get"): "TaskArtifactsResponse",
+    ("/benchmarks/{benchmark_id}/task-records/{task_record_id}", "get"): "SingleTaskResponse",
+    ("/benchmarks/{benchmark_id}/task-records/{task_record_id}/artifacts", "get"): "TaskArtifactsResponse",
     ("/agents", "get"): "AgentsResponse",
     ("/agents/{name}/download-url", "get"): "AgentDownloadURLResponse",
     ("/benchmark-services", "get"): "BenchmarkServiceCatalogResponse",
@@ -192,6 +196,9 @@ MODEL_PAIRS = (
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {
+    ("/benchmarks/{benchmark_id}/result-summary", "get"),
+    ("/benchmarks/{benchmark_id}/task-records/{task_record_id}", "get"),
+    ("/benchmarks/{benchmark_id}/task-records/{task_record_id}/artifacts", "get"),
     ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),
@@ -317,11 +324,18 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     retry_schema_ref = retry["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     retry_schema = schema["components"]["schemas"][retry_schema_ref.rsplit("/", 1)[-1]]
     retry_fixture = load_fixture("retry_resume.json")
-    assert set(retry_schema["properties"]) == set(retry_fixture["body"])
-    assert {name: (value["type"], value["default"]) for name, value in retry_schema["properties"].items()} == {
+    assert set(retry_schema["properties"]) == set(retry_fixture["body"]) | {"expected_benchmark_service"}
+    assert {
+        name: (retry_schema["properties"][name]["type"], retry_schema["properties"][name]["default"])
+        for name in retry_fixture["body"]
+    } == {
         "task_ids": ("array", []),
         "service_headers": ("object", {}),
         "secrets": ("object", {}),
+    }
+    assert retry_schema["properties"]["expected_benchmark_service"] == {
+        "anyOf": [{"type": "string"}, {"type": "null"}],
+        "title": "Expected Benchmark Service",
     }
 
     retry_parameters = {parameter["name"]: parameter for parameter in retry["parameters"]}
@@ -380,6 +394,11 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         ("/check-results-exist", "get", "benchmark_id"),
         ("/fetch-benchmark-metadata/{benchmark_id}", "get", "benchmark_id"),
         ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id"),
+        ("/benchmarks/{benchmark_id}/result-summary", "get", "benchmark_id"),
+        ("/benchmarks/{benchmark_id}/task-records/{task_record_id}", "get", "benchmark_id"),
+        ("/benchmarks/{benchmark_id}/task-records/{task_record_id}", "get", "task_record_id"),
+        ("/benchmarks/{benchmark_id}/task-records/{task_record_id}/artifacts", "get", "benchmark_id"),
+        ("/benchmarks/{benchmark_id}/task-records/{task_record_id}/artifacts", "get", "task_record_id"),
     ):
         operation = schema["paths"][path][method]
         parameter = next(item for item in operation["parameters"] if item["name"] == parameter_name)
@@ -405,6 +424,13 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     assert {item["$ref"].rsplit("/", 1)[-1] for item in result_schema["anyOf"]} == {
         "FinalViewResponse",
         "S3UploadResultsResponse",
+    }
+    summary_schema = schema["components"]["schemas"][RunResultSummaryResponse.__name__]
+    assert summary_schema["properties"]["average_task_breakdown"] == {
+        "anyOf": [
+            {"$ref": "#/components/schemas/AverageTaskBreakdown"},
+            {"type": "null"},
+        ],
     }
 
 

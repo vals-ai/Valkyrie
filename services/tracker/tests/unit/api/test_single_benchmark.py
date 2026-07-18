@@ -19,6 +19,7 @@ from tracker.database.models import (
     Benchmark,
     FinalEvaluation,
     Org,
+    TaskBreakdown,
     TaskStatus,
 )
 
@@ -88,6 +89,53 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
     assert response_body["final_score"] == 0.75
     assert str(benchmark.id) in response_body["cloudwatch_url"]
     assert str(benchmark.id) in response_body["s3_bucket_url"]
+    assert other_org_response.status_code == 404
+
+
+def test_benchmark_result_summary_reports_average_timings_and_enforces_org_scope(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    benchmark = example_benchmark_object
+    first_timing = TaskBreakdown(
+        sandbox_build_duration=2,
+        agent_run_duration=4,
+        evaluation_run_duration=6,
+        sandbox_run_duration=8,
+    )
+    second_timing = TaskBreakdown(
+        sandbox_build_duration=4,
+        agent_run_duration=8,
+        evaluation_run_duration=12,
+        sandbox_run_duration=16,
+    )
+    database_session.add_all([benchmark, first_timing, second_timing])
+    database_session.flush()
+    first_task = make_task(benchmark, "first")
+    first_task.task_breakdown = first_timing.id
+    second_task = make_task(benchmark, "second")
+    second_task.task_breakdown = second_timing.id
+    empty_benchmark = Benchmark(org_id=TEST_ORG_ID, name=benchmark.name, arguments=benchmark.arguments)
+    other_org = Org(id=uuid4(), name="other-org-summary")
+    other_benchmark = Benchmark(org_id=other_org.id, name=benchmark.name, arguments=benchmark.arguments)
+    database_session.add_all([first_task, second_task, empty_benchmark, other_org, other_benchmark])
+    database_session.commit()
+
+    response = _client.get(f"/benchmarks/{benchmark.id}/result-summary")
+    empty_response = _client.get(f"/benchmarks/{empty_benchmark.id}/result-summary")
+    other_org_response = _client.get(f"/benchmarks/{other_benchmark.id}/result-summary")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "average_task_breakdown": {
+            "sandbox_build_duration": 3.0,
+            "agent_run_duration": 6.0,
+            "evaluation_run_duration": 9.0,
+            "sandbox_run_duration": 12.0,
+        }
+    }
+    assert empty_response.status_code == 200
+    assert empty_response.json() == {"average_task_breakdown": None}
     assert other_org_response.status_code == 404
 
 

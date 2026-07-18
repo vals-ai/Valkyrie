@@ -18,11 +18,12 @@ from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
 from tracker.types import (
     HarnessConfig,
+    RunResultSummaryResponse,
     SingleBenchmarkResponse,
     TasksResponse,
     TaskSummary,
 )
-from tracker.utils import try_fetch_harness_config
+from tracker.utils import fetch_average_task_breakdown, try_fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -101,6 +102,19 @@ def get_single_benchmark(
         docent_reading_url=benchmark.docent_reading_url,
         cloudwatch_url=cloudwatch_url,
         s3_bucket_url=s3_bucket_url,
+    )
+
+
+@router.get("/{benchmark_id}/result-summary", response_model=RunResultSummaryResponse)
+def get_benchmark_result_summary(
+    benchmark_id: UUID,
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> RunResultSummaryResponse:
+    """Fetch aggregate task timings for one benchmark."""
+    benchmark = get_scoped(Benchmark, benchmark_id, session, org)
+    return RunResultSummaryResponse(
+        average_task_breakdown=fetch_average_task_breakdown(benchmark.id, session, org.id)
     )
 
 

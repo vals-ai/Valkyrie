@@ -147,6 +147,10 @@ class AverageTaskBreakdown(BaseModel):
     sandbox_run_duration: float | None
 
 
+class RunResultSummaryResponse(BaseModel):
+    average_task_breakdown: AverageTaskBreakdown | None
+
+
 class FinalViewResponse(BaseModel):
     benchmark_id: UUID
     benchmark_name: str
