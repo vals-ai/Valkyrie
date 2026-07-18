@@ -380,7 +380,13 @@ async def process_benchmark(
                 # with the run itself. Do NOT let it propagate — an unguarded raise would be
                 # caught by the outer handler and flip an otherwise-complete run to ERROR.
                 try:
-                    invoke_lambda(
+                    # invoke_lambda is a synchronous, blocking client.invoke (RequestResponse).
+                    # With the raised finalize read_timeout it can block for up to ~16 minutes, so
+                    # run it off the event loop to avoid starving other concurrent runs on this
+                    # worker (their TaskMonitor loops, notification checks, websocket heartbeats,
+                    # and the stall watchdog). Mirrors docent_analysis.py's asyncio.to_thread usage.
+                    await asyncio.to_thread(
+                        invoke_lambda,
                         lambda_client(harness_config.aws, _FINALIZE_LAMBDA_CONFIG),
                         arguments.lambda_function,
                         lambda_payload,
