@@ -85,7 +85,9 @@ def get_single_benchmark(
         id=benchmark.id,
         name=benchmark.name,
         agent_name=benchmark.arguments.contract.name,
+        label=benchmark.label,
         model=benchmark.arguments.contract.model,
+        dataset=benchmark.arguments.dataset or "default",
         started_at=benchmark.started_at,
         finished_at=benchmark.finished_at,
         status=benchmark.status,
@@ -95,6 +97,8 @@ def get_single_benchmark(
         started_by_email=benchmark.started_by_email,
         final_score=benchmark.fetch_final_score(session),
         error_message=benchmark.error_message,
+        docent_reading_status=benchmark.docent_reading_status,
+        docent_reading_url=benchmark.docent_reading_url,
         cloudwatch_url=cloudwatch_url,
         s3_bucket_url=s3_bucket_url,
     )

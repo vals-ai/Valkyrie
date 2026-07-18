@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_serializer
@@ -43,6 +43,13 @@ class DocentReadingStatus(str, Enum):
     RUNNING = "RUNNING"
     ERROR = "ERROR"
     DONE = "DONE"
+
+
+class AgentCausedExitReason(str, Enum):
+    """Terminal conditions caused by the agent that still allow evaluation."""
+
+    TIMEOUT = "TIMEOUT"
+    OS_KILLED = "OS_KILLED"
 
 
 class RetryMode(str, Enum):
@@ -104,6 +111,13 @@ class AnalyzeBenchmarkRequest(BaseModel):
 
     no_cache: bool = False
     lambda_function: str | None = None
+
+
+class AnalyzeBenchmarkResponse(ResponseModel):
+    """Cached Docent analysis returned without opening an event stream."""
+
+    status: Literal["done"]
+    reading_plan_url: str
 
 
 class AnalyzeEvent(ResponseModel):

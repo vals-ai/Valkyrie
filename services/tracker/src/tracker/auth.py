@@ -7,7 +7,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from descope import AuthException, DescopeClient
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Security
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import ReadTimeout
 from sqlmodel import Session, select
@@ -26,6 +27,9 @@ DESCOPE_ACCESS_KEY_ID_FIELD = "keyId"
 DESCOPE_CUSTOM_CLAIMS_FIELD = "customClaims"
 DESCOPE_SESSION_TOKEN_FIELD = "sessionToken"
 DESCOPE_USER_ID_CLAIM = "user_id"
+
+api_key_auth = APIKeyHeader(name="X-Api-Key", scheme_name="ApiKeyAuth", auto_error=False)
+bearer_auth = HTTPBearer(scheme_name="BearerAuth", auto_error=False)
 
 
 @dataclass(frozen=True)
@@ -67,6 +71,17 @@ _descope_client: DescopeClient | None = (
     if AUTH_REQUIRED and DESCOPE_PROJECT_ID
     else None
 )
+
+
+def require_api_key_security(_api_key: str | None = Security(api_key_auth)) -> None:
+    """Declare API-key authentication in OpenAPI while preserving custom auth errors."""
+
+
+def require_org_security(
+    _api_key: str | None = Security(api_key_auth),
+    _bearer: HTTPAuthorizationCredentials | None = Security(bearer_auth),
+) -> None:
+    """Declare bearer-or-API-key authentication in OpenAPI."""
 
 
 def _get_descope_claim(jwt_response: Mapping[str, object], claim_name: str) -> object:
@@ -281,7 +296,11 @@ def resolve_bearer_session(jwt: str, session: Session) -> Org:
     return org
 
 
-def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
+def get_current_org(
+    request: Request,
+    session: Session = Depends(get_session),
+    _security: None = Depends(require_org_security),
+) -> Org:
     """Resolve the current org from either an Authorization: Bearer or x-api-key header."""
     if not AUTH_REQUIRED:
         return get_default_org(session)
@@ -305,7 +324,11 @@ def get_current_org(request: Request, session: Session = Depends(get_session)) -
     return org
 
 
-def get_current_starter(request: Request, session: Session = Depends(get_session)) -> RequestIdentity:
+def get_current_starter(
+    request: Request,
+    session: Session = Depends(get_session),
+    _security: None = Depends(require_api_key_security),
+) -> RequestIdentity:
     """FastAPI dependency that returns the full identity behind the current request.
 
     Self-hosted (AUTH_REQUIRED=False): returns RequestIdentity with default org and Nones.

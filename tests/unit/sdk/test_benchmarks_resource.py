@@ -22,7 +22,9 @@ async def test_fetch_returns_typed_benchmark_detail(make_client) -> None:
                 "id": str(run_id),
                 "name": "swebench",
                 "agent_name": "sweagent",
+                "label": "nightly",
                 "model": "anthropic/claude-sonnet-4-6",
+                "dataset": "default",
                 "started_at": "2026-07-08T12:00:00Z",
                 "finished_at": None,
                 "status": "IN_PROGRESS",
@@ -32,6 +34,8 @@ async def test_fetch_returns_typed_benchmark_detail(make_client) -> None:
                 "started_by_email": "developer@vals.ai",
                 "final_score": None,
                 "error_message": None,
+                "docent_reading_status": "IDLE",
+                "docent_reading_url": None,
                 "cloudwatch_url": "https://logs.test",
                 "s3_bucket_url": "s3://runs-bucket/benchmarks/run",
             },
@@ -148,7 +152,26 @@ async def test_task_and_artifacts_escape_task_id_path_segment(make_client) -> No
                 "finished_at": "2026-07-08T12:05:00Z",
                 "error_message": None,
                 "evaluation_result": {"score": 1.0},
-                "agent_caused_exit_reason": None,
+                "agent_caused_exit_reason": "TIMEOUT",
+                "attempt_history": [
+                    {
+                        "type": "evaluation",
+                        "created_at": "2026-07-08T12:05:00Z",
+                        "evaluation_result": {"score": 1.0},
+                        "agent_caused_exit_reason": "TIMEOUT",
+                    },
+                    {
+                        "type": "error",
+                        "created_at": "2026-07-08T12:03:00Z",
+                        "error_message": "first attempt failed",
+                    },
+                ],
+                "timing": {
+                    "sandbox_build_duration": 1.0,
+                    "agent_run_duration": 2.0,
+                    "evaluation_run_duration": 3.0,
+                    "sandbox_run_duration": 5.0,
+                },
             },
         )
 
@@ -161,6 +184,9 @@ async def test_task_and_artifacts_escape_task_id_path_segment(make_client) -> No
         f"/benchmarks/{run_id}/tasks/task%20one/artifacts".encode(),
     ]
     assert task.evaluation_result == {"score": 1.0}
+    assert task.attempt_history[0].type == "evaluation"
+    assert task.timing is not None
+    assert task.timing.agent_run_duration == 2.0
     assert artifacts.agent_output_expires_in == 300
 
 

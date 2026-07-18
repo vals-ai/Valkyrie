@@ -1,10 +1,12 @@
 """Public interface for the async Valkyrie SDK."""
 
 from valkyrie.sdk.models import (
+    AgentCausedExitReason,
     AgentContractRequest,
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
+    AnalyzeBenchmarkResponse,
     AnalyzeEvent,
     BenchmarkServiceCatalogResponse,
     BenchmarkServiceEntry,
@@ -29,8 +31,12 @@ from valkyrie.sdk.models import (
     StartBenchmarkResponse,
     StopBenchmarkResponse,
     TaskArtifactsResponse,
+    TaskAttempt,
+    TaskErrorAttempt,
+    TaskEvaluationAttempt,
     TasksResponse,
     TaskSummary,
+    TaskTiming,
     TaskStatus,
 )
 
@@ -46,10 +52,12 @@ from valkyrie.sdk.errors import (
 )
 
 __all__ = [
+    "AgentCausedExitReason",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",
     "AgentsResponse",
+    "AnalyzeBenchmarkResponse",
     "AnalyzeEvent",
     "BenchmarkServiceCatalogResponse",
     "BenchmarkServiceEntry",
@@ -74,8 +82,12 @@ __all__ = [
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
     "TaskArtifactsResponse",
+    "TaskAttempt",
+    "TaskErrorAttempt",
+    "TaskEvaluationAttempt",
     "TasksResponse",
     "TaskSummary",
+    "TaskTiming",
     "TaskStatus",
     "ValkyrieAPIError",
     "ValkyrieClient",

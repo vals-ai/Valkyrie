@@ -15,6 +15,7 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 
@@ -58,6 +59,17 @@ class TestSingleTask:
         database_session.add(error_task)
         database_session.flush()
 
+        timing = TaskBreakdown(
+            sandbox_build_duration=1.0,
+            agent_run_duration=2.0,
+            evaluation_run_duration=3.0,
+            sandbox_run_duration=5.0,
+        )
+        database_session.add(timing)
+        database_session.flush()
+        finished_task.task_breakdown = timing.id
+        database_session.add(finished_task)
+
         old_created_at = _created_at(12)
         new_created_at = _created_at(13)
         for result_row in (
@@ -81,6 +93,17 @@ class TestSingleTask:
         assert finished_data["status"] == "FINISHED"
         assert finished_data["error_message"] is None
         assert finished_data["evaluation_result"] == {"attempt": "new"}
+        assert [attempt["type"] for attempt in finished_data["attempt_history"]] == [
+            "evaluation",
+            "evaluation",
+            "error",
+        ]
+        assert finished_data["timing"] == {
+            "sandbox_build_duration": 1.0,
+            "agent_run_duration": 2.0,
+            "evaluation_run_duration": 3.0,
+            "sandbox_run_duration": 5.0,
+        }
 
         error_response = client.get(
             f"/benchmarks/{benchmark.id}/tasks/{error_task.task_id}",
@@ -92,6 +115,12 @@ class TestSingleTask:
         assert error_data["status"] == "ERROR"
         assert error_data["error_message"] == "new error"
         assert error_data["evaluation_result"] is None
+        assert [attempt["type"] for attempt in error_data["attempt_history"]] == [
+            "error",
+            "evaluation",
+            "error",
+        ]
+        assert error_data["timing"] is None
 
     def test_get_single_task_404_unknown(self, client: TestClient, database_session: Session) -> None:
         """Unknown tasks must return not found inside an existing benchmark.

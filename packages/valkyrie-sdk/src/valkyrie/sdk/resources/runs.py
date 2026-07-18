@@ -11,6 +11,7 @@ from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieS
 from valkyrie.sdk.models import (
     AgentContractRequest,
     AnalyzeBenchmarkRequest,
+    AnalyzeBenchmarkResponse,
     AnalyzeEvent,
     FetchBenchmarkResponse,
     FetchBenchmarkMetadataResponse,
@@ -226,10 +227,8 @@ class RunsResource:
 
             if "text/event-stream" not in response.headers.get("content-type", ""):
                 await response.aread()
-                cached_payload: Any = response.json()
-                if not isinstance(cached_payload, dict):
-                    raise ValkyrieStreamError("Invalid Valkyrie analysis response")
-                yield AnalyzeEvent(event="done", data=cast(dict[str, Any], cached_payload))
+                cached = AnalyzeBenchmarkResponse.model_validate(response.json())
+                yield AnalyzeEvent(event="done", data=cached.model_dump(mode="json"))
                 return
 
             event_name = ""

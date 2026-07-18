@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, field_serializer, field_validator
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
+    AgentCausedExitReason,
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
@@ -255,6 +256,11 @@ class AnalyzeBenchmarkRequest(BaseModel):
     lambda_function: str | None = None
 
 
+class AnalyzeBenchmarkResponse(BaseModel):
+    status: Literal["done"]
+    reading_plan_url: str
+
+
 class BenchmarkServiceEntry(BaseModel):
     name: str
     url: str
@@ -311,7 +317,9 @@ class SingleBenchmarkResponse(BaseModel):
     id: UUID
     name: str
     agent_name: str
+    label: str | None
     model: str | None
+    dataset: str
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus
@@ -321,6 +329,8 @@ class SingleBenchmarkResponse(BaseModel):
     started_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None
+    docent_reading_status: DocentReadingStatus
+    docent_reading_url: str | None
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
 
@@ -359,6 +369,41 @@ class TasksResponse(BaseModel):
     total_count: int
 
 
+class TaskEvaluationAttempt(BaseModel):
+    type: Literal["evaluation"]
+    created_at: datetime
+    evaluation_result: dict[str, Any]
+    agent_caused_exit_reason: AgentCausedExitReason | None
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+
+class TaskErrorAttempt(BaseModel):
+    type: Literal["error"]
+    created_at: datetime
+    error_message: str
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+
+TaskAttempt = Annotated[TaskEvaluationAttempt | TaskErrorAttempt, Field(discriminator="type")]
+
+
+class TaskTiming(BaseModel):
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+
+
 class SingleTaskResponse(BaseModel):
     id: UUID
     task_id: str
@@ -367,7 +412,9 @@ class SingleTaskResponse(BaseModel):
     finished_at: datetime | None
     error_message: str | None
     evaluation_result: dict[str, Any] | None
-    agent_caused_exit_reason: str | None
+    agent_caused_exit_reason: AgentCausedExitReason | None
+    attempt_history: list[TaskAttempt]
+    timing: TaskTiming | None
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:

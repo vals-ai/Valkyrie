@@ -33,6 +33,7 @@ from tracker.auth import (
     forward_tracker_api_key,
     get_current_org,
     get_current_starter,
+    require_api_key_security,
     resolve_descope_identity,
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
@@ -77,6 +78,7 @@ from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
     AnalyzeBenchmarkRequest,
+    AnalyzeBenchmarkResponse,
     FetchBenchmarkMetadataResponse,
     FetchBenchmarkResponse,
     FetchBenchmarksRequest,
@@ -209,6 +211,7 @@ def health_check() -> dict[str, str]:
 def init_org(
     request: Request,
     session: Session = Depends(get_session),
+    _security: None = Depends(require_api_key_security),
 ) -> dict[str, str | bool]:
     """Initialize org for hosted mode. Validates Descope key and creates org if needed."""
     if not AUTH_REQUIRED:
@@ -405,7 +408,22 @@ async def fetch_benchmark_tasks(
         raise HTTPException(status_code=502, detail="Failed to fetch task ids from benchmark service") from exc
 
 
-@app.get("/fetch-benchmark", response_model=None)
+@app.get(
+    "/fetch-benchmark",
+    response_model=None,
+    responses={
+        200: {
+            "model": FetchBenchmarkResponse,
+            "description": "Run snapshot as JSON, or an SSE snapshot stream when connect=true.",
+            "content": {
+                "text/event-stream": {
+                    "schema": {"type": "string"},
+                    "example": 'data: {"benchmark_id":"..."}\n\nevent: complete\n\n',
+                }
+            },
+        }
+    },
+)
 async def fetch_benchmark(
     benchmark_id: TrackedBenchmarkId,
     connect: bool = Query(default=False),
@@ -455,14 +473,33 @@ async def fetch_benchmark(
     )
 
 
-@app.post("/analyze-benchmark/{benchmark_id}", response_model=None)
+@app.post(
+    "/analyze-benchmark/{benchmark_id}",
+    response_model=None,
+    responses={
+        200: {
+            "model": AnalyzeBenchmarkResponse,
+            "description": "Cached analysis as JSON, or Docent progress as an SSE stream.",
+            "content": {
+                "text/event-stream": {
+                    "schema": {"type": "string"},
+                    "example": (
+                        'event: started\ndata: {"lambda_function":"docent-analyzer"}\n\n'
+                        "event: heartbeat\ndata: {}\n\n"
+                        'event: done\ndata: {"reading_plan_url":"https://example.test/plan"}\n\n'
+                    ),
+                }
+            },
+        }
+    },
+)
 async def analyze_benchmark(
     benchmark_id: TrackedBenchmarkId,
     body: AnalyzeBenchmarkRequest,
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
-) -> dict[str, str] | StreamingResponse:
+) -> AnalyzeBenchmarkResponse | StreamingResponse:
     """
     Invoke the Docent analyzer Lambda for a benchmark and emit SSE-formatted progress events
     (started/heartbeat/done/error) that clients consume as buffered text (the response is read
@@ -484,18 +521,18 @@ async def analyze_benchmark(
         and benchmark_row.docent_reading_status == DocentReadingStatus.DONE
         and benchmark_row.docent_reading_url
     ):
-        return {
-            "status": "done",
-            "reading_plan_url": benchmark_row.docent_reading_url,
-        }
+        return AnalyzeBenchmarkResponse(
+            status="done",
+            reading_plan_url=benchmark_row.docent_reading_url,
+        )
 
-    if not body.lambda_function:
+    lambda_function = benchmark_row.arguments.lambda_function or body.lambda_function
+    if not lambda_function:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"No ingest_lambda provided for agent '{benchmark_row.arguments.contract.name}'. "
-                "The CLI normally resolves this from the agent's pushed contract — if you're "
-                "calling this endpoint directly, supply `lambda_function` in the request body."
+                f"No ingest_lambda stored for agent '{benchmark_row.arguments.contract.name}'. "
+                "Supply `lambda_function` in the request body for a legacy run."
             ),
         )
 
@@ -509,7 +546,7 @@ async def analyze_benchmark(
     return StreamingResponse(
         analyze_event_stream(
             benchmark_id=benchmark_row.id,
-            lambda_function=body.lambda_function,
+            lambda_function=lambda_function,
             payload=payload,
             aws=harness_config.aws,
         ),
@@ -902,7 +939,21 @@ def _safe_output_tar_member(s3_key: str, benchmark_prefix: str) -> str | None:
     return relative_path
 
 
-@app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
+@app.get(
+    "/fetch-run-outputs/{benchmark_id}",
+    response_model=None,
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Tar archive containing the selected task outputs.",
+            "content": {
+                "application/x-tar": {
+                    "schema": {"type": "string", "format": "binary"},
+                }
+            },
+        }
+    },
+)
 async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
     session: Session = Depends(get_session),

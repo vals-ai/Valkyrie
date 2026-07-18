@@ -352,6 +352,7 @@ class Benchmark(SQLModel, table=True):
             task_state_counts={k.value: v for k, v in task_state_counts.items()},
             final_score=(self.final_evaluation.final_score if self.final_evaluation else None),
             label=self.label,
+            error_message=self.error_message,
         )
 
     def fetch_task_state_counts(self, session: Session) -> dict[TaskStatus, int]:

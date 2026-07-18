@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
-from valkyrie.sdk.models.runs import BenchmarkStatus, Order, TaskStatus
+from valkyrie.sdk.models.runs import (
+    AgentCausedExitReason,
+    BenchmarkStatus,
+    DocentReadingStatus,
+    Order,
+    TaskStatus,
+)
 
 
 class FetchTasksRequest(BaseModel):
@@ -51,7 +57,9 @@ class SingleBenchmarkResponse(ResponseModel):
     id: UUID
     name: str
     agent_name: str
+    label: str | None
     model: str | None
+    dataset: str
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus
@@ -61,6 +69,8 @@ class SingleBenchmarkResponse(ResponseModel):
     started_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None
+    docent_reading_status: DocentReadingStatus
+    docent_reading_url: str | None
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
 
@@ -107,6 +117,47 @@ class TasksResponse(ResponseModel):
     total_count: int
 
 
+class TaskEvaluationAttempt(ResponseModel):
+    """One completed evaluation attempt."""
+
+    type: Literal["evaluation"]
+    created_at: datetime
+    evaluation_result: dict[str, Any]
+    agent_caused_exit_reason: AgentCausedExitReason | None
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime) -> str:
+        serialized = serialize_utc(value)
+        assert serialized is not None
+        return serialized
+
+
+class TaskErrorAttempt(ResponseModel):
+    """One completed failed attempt."""
+
+    type: Literal["error"]
+    created_at: datetime
+    error_message: str
+
+    @field_serializer("created_at")
+    def serialize_created_at(self, value: datetime) -> str:
+        serialized = serialize_utc(value)
+        assert serialized is not None
+        return serialized
+
+
+TaskAttempt = Annotated[TaskEvaluationAttempt | TaskErrorAttempt, Field(discriminator="type")]
+
+
+class TaskTiming(ResponseModel):
+    """Latest timing values recorded for a task."""
+
+    sandbox_build_duration: float | None
+    agent_run_duration: float | None
+    evaluation_run_duration: float | None
+    sandbox_run_duration: float | None
+
+
 class SingleTaskResponse(ResponseModel):
     """Detailed state and evaluation output for one task."""
 
@@ -117,7 +168,9 @@ class SingleTaskResponse(ResponseModel):
     finished_at: datetime | None
     error_message: str | None
     evaluation_result: dict[str, Any] | None
-    agent_caused_exit_reason: str | None
+    agent_caused_exit_reason: AgentCausedExitReason | None
+    attempt_history: list[TaskAttempt]
+    timing: TaskTiming | None
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:

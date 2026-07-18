@@ -15,10 +15,12 @@ from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig
 from valkyrie.sdk.resources import AgentsResource, BenchmarksResource, BenchmarkServicesResource, RunsResource
 
 EXPECTED_ALL = [
+    "AgentCausedExitReason",
     "AgentContractRequest",
     "AgentDownloadURLResponse",
     "AgentEntry",
     "AgentsResponse",
+    "AnalyzeBenchmarkResponse",
     "AnalyzeEvent",
     "BenchmarkServiceCatalogResponse",
     "BenchmarkServiceEntry",
@@ -43,8 +45,12 @@ EXPECTED_ALL = [
     "StartBenchmarkResponse",
     "StopBenchmarkResponse",
     "TaskArtifactsResponse",
+    "TaskAttempt",
+    "TaskErrorAttempt",
+    "TaskEvaluationAttempt",
     "TasksResponse",
     "TaskSummary",
+    "TaskTiming",
     "TaskStatus",
     "ValkyrieAPIError",
     "ValkyrieClient",

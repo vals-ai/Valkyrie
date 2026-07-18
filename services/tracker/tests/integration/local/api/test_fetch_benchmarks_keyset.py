@@ -160,9 +160,13 @@ class TestFetchBenchmarks:
         Test cases:
         - A persisted starter email is returned in its benchmark table row.
         """
-        _seed_benchmarks(database_session, 1, started_by_email="emailtest@x.com")
+        benchmark = _seed_benchmarks(database_session, 1, started_by_email="emailtest@x.com")[0]
+        benchmark.error_message = "run failed"
+        database_session.add(benchmark)
+        database_session.commit()
 
         response = access_key_client.get("/fetch-benchmarks", headers={"x-api-key": "fake-key"})
 
         response_body = response.json()
         assert response_body["benchmarks"][0]["started_by_email"] == "emailtest@x.com"
+        assert response_body["benchmarks"][0]["error_message"] == "run failed"

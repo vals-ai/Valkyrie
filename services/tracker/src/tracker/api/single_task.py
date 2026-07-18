@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import cast
+from datetime import timezone
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,10 +17,19 @@ from tracker.database.models import (
     EvaluationResult,
     Org,
     Task,
+    TaskBreakdown,
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
+from tracker.types import (
+    HarnessConfig,
+    SingleTaskResponse,
+    TaskArtifactsResponse,
+    TaskAttempt,
+    TaskErrorAttempt,
+    TaskEvaluationAttempt,
+    TaskTiming,
+)
 from tracker.utils import fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
@@ -50,29 +59,38 @@ def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
 
 
-def _fetch_result_objects(session: Session, task: Task, org: Org) -> tuple[EvaluationResult | None, str | None]:
-    """Fetches a task's evaluation result or error message depending on its status."""
-    if task.status not in (TaskStatus.FINISHED, TaskStatus.ERROR):
-        return None, None
+def _fetch_attempt_history(session: Session, task: Task, org: Org) -> list[TaskAttempt]:
+    evaluations = session.exec(
+        select(EvaluationResult)
+        .where(EvaluationResult.task == task.id)
+        .where(EvaluationResult.org_id == org.id)
+        .order_by(desc(EvaluationResult.created_at))
+    ).all()
+    errors = session.exec(
+        select(ErrorResult)
+        .where(ErrorResult.task == task.id)
+        .where(ErrorResult.org_id == org.id)
+        .order_by(desc(ErrorResult.created_at))
+    ).all()
 
-    result_model = EvaluationResult if task.status == TaskStatus.FINISHED else ErrorResult
-    result_filters = (
-        result_model.task == task.id,
-        result_model.org_id == org.id,
+    attempts: list[TaskAttempt] = [
+        TaskEvaluationAttempt(
+            type="evaluation",
+            created_at=result.created_at,
+            evaluation_result=result.result,
+            agent_caused_exit_reason=result.agent_caused_exit_reason,
+        )
+        for result in evaluations
+    ]
+    attempts.extend(
+        TaskErrorAttempt(type="error", created_at=result.created_at, error_message=result.error_message)
+        for result in errors
     )
-    result_order = desc(result_model.created_at)
-
-    if task.status == TaskStatus.FINISHED:
-        result_select = select(EvaluationResult)
-    else:
-        result_select = select(ErrorResult.error_message)
-
-    result = session.exec(result_select.where(*result_filters).order_by(result_order)).first()
-
-    if task.status == TaskStatus.FINISHED:
-        return cast(EvaluationResult | None, result), None
-
-    return None, cast(str | None, result)
+    return sorted(
+        attempts,
+        key=lambda attempt: attempt.created_at.replace(tzinfo=attempt.created_at.tzinfo or timezone.utc).timestamp(),
+        reverse=True,
+    )
 
 
 @router.get(
@@ -88,7 +106,25 @@ def get_single_task(
     """Fetch a single task's status + evaluation result for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
 
-    eval_row, error_message = _fetch_result_objects(session, task, org)
+    attempt_history = _fetch_attempt_history(session, task, org)
+    latest_evaluation = next(
+        (attempt for attempt in attempt_history if isinstance(attempt, TaskEvaluationAttempt)),
+        None,
+    )
+    latest_error = next(
+        (attempt for attempt in attempt_history if isinstance(attempt, TaskErrorAttempt)),
+        None,
+    )
+    timing_row = session.get(TaskBreakdown, task.task_breakdown) if task.task_breakdown else None
+    timing = TaskTiming(**timing_row.model_dump()) if timing_row else None
+
+    evaluation_result = (
+        latest_evaluation.evaluation_result if task.status == TaskStatus.FINISHED and latest_evaluation else None
+    )
+    exit_reason = (
+        latest_evaluation.agent_caused_exit_reason if task.status == TaskStatus.FINISHED and latest_evaluation else None
+    )
+    error_message = latest_error.error_message if task.status == TaskStatus.ERROR and latest_error else None
 
     return SingleTaskResponse(
         id=task.id,
@@ -97,10 +133,10 @@ def get_single_task(
         started_at=task.started_at,
         finished_at=task.finished_at,
         error_message=error_message,
-        evaluation_result=eval_row.result if eval_row else None,
-        agent_caused_exit_reason=(
-            eval_row.agent_caused_exit_reason.value if eval_row and eval_row.agent_caused_exit_reason else None
-        ),
+        evaluation_result=evaluation_result,
+        agent_caused_exit_reason=exit_reason,
+        attempt_history=attempt_history,
+        timing=timing,
     )
 
 

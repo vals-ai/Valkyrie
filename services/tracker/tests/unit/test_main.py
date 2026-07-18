@@ -109,6 +109,7 @@ class TestTrackerAPI:
         self,
         database_session: Session,
         example_benchmark_object: Benchmark,
+        monkeypatch: MonkeyPatch,
     ) -> None:
         """Docent analysis must reject invalid runs and return a completed cached result.
 
@@ -132,7 +133,32 @@ class TestTrackerAPI:
         database_session.commit()
         missing_lambda_response = client.post(f"/analyze-benchmark/{example_benchmark_object.id}", json={})
         assert missing_lambda_response.status_code == 400
-        assert "No ingest_lambda provided" in missing_lambda_response.json()["detail"]
+        assert "No ingest_lambda stored" in missing_lambda_response.json()["detail"]
+
+        invoked_lambdas: list[str] = []
+
+        async def fake_analysis_stream(*, lambda_function: str, **_kwargs):
+            invoked_lambdas.append(lambda_function)
+            yield 'event: done\ndata: {"reading_plan_url":"https://results.example/new"}\n\n'
+
+        monkeypatch.setattr("main.analyze_event_stream", fake_analysis_stream)
+        fallback_response = client.post(
+            f"/analyze-benchmark/{example_benchmark_object.id}",
+            json={"lambda_function": "legacy-fallback"},
+        )
+        assert fallback_response.status_code == 200
+
+        example_benchmark_object.arguments = example_benchmark_object.arguments.model_copy(
+            update={"lambda_function": "stored-analyzer"}
+        )
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        stored_response = client.post(
+            f"/analyze-benchmark/{example_benchmark_object.id}",
+            json={"lambda_function": "ignored-fallback"},
+        )
+        assert stored_response.status_code == 200
+        assert invoked_lambdas == ["legacy-fallback", "stored-analyzer"]
 
         example_benchmark_object.docent_reading_status = DocentReadingStatus.DONE
         example_benchmark_object.docent_reading_url = "https://results.example/reading-plan"

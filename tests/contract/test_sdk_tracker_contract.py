@@ -23,6 +23,7 @@ from tracker.types import (
     AgentEntry,
     AgentsResponse,
     AnalyzeBenchmarkRequest,
+    AnalyzeBenchmarkResponse,
     AverageTaskBreakdown,
     BenchmarkDetails,
     BenchmarkServiceCatalogResponse,
@@ -48,6 +49,9 @@ from tracker.types import (
     StartBenchmarkResponse,
     StopBenchmarkResponse,
     TaskArtifactsResponse,
+    TaskErrorAttempt,
+    TaskEvaluationAttempt,
+    TaskTiming,
     TasksResponse,
     TaskSummary,
 )
@@ -58,6 +62,7 @@ from valkyrie.sdk.models import (
     AgentEntry as SDKAgentEntry,
     AgentsResponse as SDKAgentsResponse,
     AnalyzeBenchmarkRequest as SDKAnalyzeBenchmarkRequest,
+    AnalyzeBenchmarkResponse as SDKAnalyzeBenchmarkResponse,
     AverageTaskBreakdown as SDKAverageTaskBreakdown,
     BenchmarkArguments as SDKBenchmarkArguments,
     BenchmarkDetails as SDKBenchmarkDetails,
@@ -86,9 +91,12 @@ from valkyrie.sdk.models import (
     StartBenchmarkResponse as SDKStartBenchmarkResponse,
     StopBenchmarkResponse as SDKStopBenchmarkResponse,
     TaskArtifactsResponse as SDKTaskArtifactsResponse,
+    TaskErrorAttempt as SDKTaskErrorAttempt,
+    TaskEvaluationAttempt as SDKTaskEvaluationAttempt,
     TaskIDsResponse as SDKTaskIDsResponse,
     TasksResponse as SDKTasksResponse,
     TaskSummary as SDKTaskSummary,
+    TaskTiming as SDKTaskTiming,
 )
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
@@ -138,6 +146,7 @@ RESPONSE_MODELS = {
     ("/benchmark-services", "post"): "BenchmarkServicesResponse",
     ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
     ("/fetch-benchmark-metadata/{benchmark_id}", "get"): "FetchBenchmarkMetadataResponse",
+    ("/analyze-benchmark/{benchmark_id}", "post"): "AnalyzeBenchmarkResponse",
 }
 MODEL_PAIRS = (
     (OutputArtifact, SDKOutputArtifact),
@@ -164,6 +173,9 @@ MODEL_PAIRS = (
     (TaskSummary, SDKTaskSummary),
     (TasksResponse, SDKTasksResponse),
     (SingleTaskResponse, SDKSingleTaskResponse),
+    (TaskEvaluationAttempt, SDKTaskEvaluationAttempt),
+    (TaskErrorAttempt, SDKTaskErrorAttempt),
+    (TaskTiming, SDKTaskTiming),
     (TaskArtifactsResponse, SDKTaskArtifactsResponse),
     (AgentEntry, SDKAgentEntry),
     (AgentsResponse, SDKAgentsResponse),
@@ -176,6 +188,7 @@ MODEL_PAIRS = (
     (FetchBenchmarkTasksRequest, SDKFetchBenchmarkTasksRequest),
     (VerifyTaskIdsResponse, SDKTaskIDsResponse),
     (AnalyzeBenchmarkRequest, SDKAnalyzeBenchmarkRequest),
+    (AnalyzeBenchmarkResponse, SDKAnalyzeBenchmarkResponse),
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {
@@ -376,7 +389,16 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     for (path, method), model in RESPONSE_MODELS.items():
         response = schema["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
         assert response == {"$ref": f"#/components/schemas/{model}"}
-    assert schema["paths"]["/fetch-benchmark"]["get"]["responses"]["200"]["content"]["application/json"]["schema"] == {}
+    fetch_content = schema["paths"]["/fetch-benchmark"]["get"]["responses"]["200"]["content"]
+    assert fetch_content["application/json"]["schema"] == {"$ref": "#/components/schemas/FetchBenchmarkResponse"}
+    assert fetch_content["text/event-stream"]["schema"] == {"type": "string"}
+
+    analyze_content = schema["paths"]["/analyze-benchmark/{benchmark_id}"]["post"]["responses"]["200"]["content"]
+    assert analyze_content["application/json"]["schema"] == {"$ref": "#/components/schemas/AnalyzeBenchmarkResponse"}
+    assert analyze_content["text/event-stream"]["schema"] == {"type": "string"}
+
+    output_content = schema["paths"]["/fetch-run-outputs/{benchmark_id}"]["get"]["responses"]["200"]["content"]
+    assert output_content == {"application/x-tar": {"schema": {"type": "string", "format": "binary"}}}
     result_schema = schema["paths"]["/retrieve-results"]["get"]["responses"]["200"]["content"]["application/json"][
         "schema"
     ]
@@ -384,6 +406,29 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         "FinalViewResponse",
         "S3UploadResultsResponse",
     }
+
+
+def test_tracker_openapi_documents_route_authentication() -> None:
+    schema = app.openapi()
+    assert schema["components"]["securitySchemes"] == {
+        "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-Api-Key"},
+        "BearerAuth": {"type": "http", "scheme": "bearer"},
+    }
+
+    api_key_only = {("/init", "post"), ("/start-benchmark", "post")}
+    unauthenticated = {("/health", "get")}
+    for path, operations in schema["paths"].items():
+        for method, operation in operations.items():
+            route = (path, method)
+            if route in unauthenticated:
+                assert "security" not in operation
+            elif route in api_key_only:
+                assert operation["security"] == [{"ApiKeyAuth": []}]
+            else:
+                assert {tuple(requirement) for requirement in operation["security"]} == {
+                    ("ApiKeyAuth",),
+                    ("BearerAuth",),
+                }
 
 
 def test_every_tracker_route_is_classified_as_sdk_supported_or_internal() -> None:
