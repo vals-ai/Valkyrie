@@ -95,6 +95,7 @@ from tracker.types import (
     UpdateBenchmarkConcurrencyResponse,
 )
 from tracker.utils import (
+    BenchmarkConcurrencyUpdate,
     BenchmarkContext,
     YieldingWriter,
     build_benchmark_table_rows,
@@ -113,6 +114,7 @@ from tracker.utils import (
     stream_benchmark_results,
     upload_final_view,
     update_benchmark_concurrency,
+    update_benchmark_resume_arguments,
 )
 
 configure_logging()
@@ -707,19 +709,12 @@ async def stop_benchmark(
     )
 
 
-def _apply_resume_secrets(benchmark_row: Benchmark, secrets: dict[str, str]) -> None:
-    """Merge resume secrets into the stored agent contract."""
-    contract = benchmark_row.arguments.contract
-    updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
-    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
-
-
 def _update_benchmark_concurrency(
     benchmark_id: UUID,
     concurrency: int,
     session: Session,
     org: Org,
-) -> Benchmark:
+) -> BenchmarkConcurrencyUpdate:
     try:
         benchmark_row = update_benchmark_concurrency(benchmark_id, concurrency, session, org)
     except ValueError as exc:
@@ -742,9 +737,9 @@ def patch_benchmark_concurrency(
 ) -> UpdateBenchmarkConcurrencyResponse:
     benchmark_row = _update_benchmark_concurrency(benchmark_id, request.concurrency, session, org)
     return UpdateBenchmarkConcurrencyResponse(
-        benchmark_id=benchmark_row.id,
+        benchmark_id=benchmark_row.benchmark_id,
         status=benchmark_row.status,
-        concurrency=benchmark_row.arguments.concurrency,
+        concurrency=benchmark_row.concurrency,
     )
 
 
@@ -820,17 +815,14 @@ async def retry_or_resume_benchmark(
             status="success",
         )
 
-    if secrets:
-        _apply_resume_secrets(benchmark_row, secrets)
-        session.add(benchmark_row)
-        session.commit()
-
-    if concurrency is not None:
-        # Reassign (not in-place mutate): arguments is a JSON-backed TypeDecorator,
-        # so SQLAlchemy only detects the change when the attribute itself is replaced.
-        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
-        session.add(benchmark_row)
-        session.commit()
+    if secrets or concurrency is not None:
+        benchmark_row = update_benchmark_resume_arguments(
+            benchmark_id,
+            session,
+            org,
+            secrets=secrets,
+            concurrency=concurrency,
+        )
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(

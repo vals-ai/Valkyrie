@@ -53,6 +53,7 @@ from tracker.utils import (
     process_task,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
+    update_benchmark_concurrency,
 )
 
 UTC = ZoneInfo("UTC")
@@ -1102,6 +1103,51 @@ class TestRunRecovery:
         }
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.contract.secrets == queued_request["contract"]["secrets"]
+
+    async def test_retry_or_resume_secret_merge_preserves_concurrent_concurrency_update(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.arguments.contract.secrets = {"ANTHROPIC_API_KEY": "old-secret"}
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        async def _concurrent_reset(*_args: Any, **_kwargs: Any) -> list[str]:
+            with Session(bind=database_session.get_bind()) as control_session:
+                persisted = control_session.get(Benchmark, benchmark_row.id)
+                assert persisted is not None
+                persisted.status = BenchmarkStatus.IN_PROGRESS
+                control_session.add(persisted)
+                control_session.commit()
+                update_benchmark_concurrency(benchmark_row.id, 9, control_session, self._test_org)
+            return ["task_0"]
+
+        monkeypatch.setattr("main.reset_to_in_progress_status", _concurrent_reset)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
+            },
+        )
+
+        assert response.status_code == 200
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["concurrency"] == 9
+        assert queued_request["contract"]["secrets"] == {"ANTHROPIC_API_KEY": "new-secret"}
+
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        assert persisted.arguments.concurrency == 9
+        assert persisted.arguments.contract.secrets == {"ANTHROPIC_API_KEY": "new-secret"}
 
     async def test_running_retry_noops_without_error_tasks(
         self,

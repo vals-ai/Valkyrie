@@ -52,7 +52,7 @@ from tracker.types import (
     HarnessConfig,
     StartBenchmarkRequest,
 )
-from tracker.utils import fetch_harness_config
+from tracker.utils import fetch_harness_config, update_benchmark_concurrency
 
 client = TestClient(app)
 
@@ -180,6 +180,70 @@ class TestTrackerAPI:
         assert response.status_code == 409
         database_session.refresh(example_benchmark_object)
         assert example_benchmark_object.arguments.concurrency == 5
+
+    def test_update_benchmark_concurrency_refreshes_preloaded_state_before_mutating(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        with Session(bind=database_session.get_bind()) as concurrent_session:
+            concurrent_benchmark = concurrent_session.get(Benchmark, example_benchmark_object.id)
+            assert concurrent_benchmark is not None
+            concurrent_benchmark.status = BenchmarkStatus.STOPPED
+            concurrent_session.add(concurrent_benchmark)
+            concurrent_session.commit()
+
+        result = update_benchmark_concurrency(
+            example_benchmark_object.id,
+            9,
+            database_session,
+            Org(id=TEST_ORG_ID, name="default"),
+        )
+
+        assert result.status == BenchmarkStatus.STOPPED
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, example_benchmark_object.id)
+        assert persisted is not None
+        assert persisted.status == BenchmarkStatus.STOPPED
+        assert persisted.arguments.concurrency == 5
+
+    def test_update_benchmark_concurrency_returns_snapshot_from_locked_transaction(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        commit_update = database_session.commit
+
+        def commit_then_stop() -> None:
+            commit_update()
+            with Session(bind=database_session.get_bind()) as concurrent_session:
+                concurrent_benchmark = concurrent_session.get(Benchmark, example_benchmark_object.id)
+                assert concurrent_benchmark is not None
+                concurrent_benchmark.status = BenchmarkStatus.STOPPED
+                concurrent_session.add(concurrent_benchmark)
+                concurrent_session.commit()
+
+        monkeypatch.setattr(database_session, "commit", commit_then_stop)
+
+        result = update_benchmark_concurrency(
+            example_benchmark_object.id,
+            9,
+            database_session,
+            Org(id=TEST_ORG_ID, name="default"),
+        )
+
+        assert result.status == BenchmarkStatus.IN_PROGRESS
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, example_benchmark_object.id)
+        assert persisted is not None
+        assert persisted.status == BenchmarkStatus.STOPPED
+        assert persisted.arguments.concurrency == 9
 
     def test_trailing_slash_does_not_redirect(self, monkeypatch: MonkeyPatch) -> None:
         """

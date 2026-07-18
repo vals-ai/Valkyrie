@@ -179,6 +179,7 @@ MODEL_PAIRS = (
     (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
 INTERNAL_ROUTES = {
+    ("/benchmarks/{benchmark_id}/concurrency", "patch"),
     ("/benchmarks/filter-options", "get"),
     ("/health", "get"),
     ("/init", "post"),

@@ -29,6 +29,7 @@ from tracker.utils.reporting import (
     upload_final_view,
 )
 from tracker.utils.resources import (
+    BenchmarkConcurrencyUpdate,
     create_benchmark_service_client,
     create_benchmark_service_client_from_request,
     fetch_benchmark_row,
@@ -36,6 +37,7 @@ from tracker.utils.resources import (
     fetch_task_row,
     start_benchmark_request_to_benchmark,
     update_benchmark_concurrency,
+    update_benchmark_resume_arguments,
 )
 from tracker.utils.run_control import (
     force_stop_sandboxes,
@@ -59,6 +61,7 @@ from tracker.utils.task_execution import (
 
 __all__ = [
     "BenchmarkContext",
+    "BenchmarkConcurrencyUpdate",
     "ResizableLimiter",
     "TaskCounts",
     "TaskMonitor",
@@ -102,4 +105,5 @@ __all__ = [
     "try_fetch_harness_config",
     "upload_final_view",
     "update_benchmark_concurrency",
+    "update_benchmark_resume_arguments",
 ]
