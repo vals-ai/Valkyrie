@@ -194,6 +194,9 @@ valkyrie run update <id> --concurrency 20
 This updates the persisted concurrency limit for an active run without restarting it. Increases allow more tasks after
 the tracker next refreshes the run; decreases do not cancel in-flight work and pause new admissions until usage falls
 below the new limit. The value must be a positive integer, and completed, stopped, or failed runs cannot be updated.
+The limit is enforced independently by each `process_benchmark` executor. If an active retry creates overlapping
+executors, aggregate admissions may temporarily exceed the persisted value; a strict cross-executor or distributed cap
+is not provided.
 
 ### Monitor a run
 

@@ -128,6 +128,70 @@ class TestRunRecovery:
 
         assert observed_limits == [2]
 
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_benchmark_refreshes_shared_limiter_to_admit_waiting_task(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        task_ids = ["task_0", "task_1"]
+        request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=1,
+            task_ids=task_ids,
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        database_session.add(benchmark_row)
+        database_session.commit()
+        admitted_task_ids: list[str] = []
+        first_admitted = asyncio.Event()
+        release_first = asyncio.Event()
+        second_admitted = asyncio.Event()
+        sandbox_count = 0
+
+        @asynccontextmanager
+        async def unique_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_count
+            sandbox_count += 1
+            sandbox = AsyncMock()
+            sandbox.id = f"mock-sandbox-id-{sandbox_count}"
+            yield sandbox
+
+        async def controlled_retrieve_task(*_args: Any, task_id: str, **_kwargs: Any) -> RetrieveTaskResponse:
+            admitted_task_ids.append(task_id)
+            if len(admitted_task_ids) == 1:
+                first_admitted.set()
+                await release_first.wait()
+            else:
+                second_admitted.set()
+            return make_retrieve_task_response()
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", controlled_retrieve_task)
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", unique_sandbox)
+
+        process_future = asyncio.create_task(
+            process_benchmark(
+                start_benchmark_request_json=request.model_dump(),
+                benchmark_id_str=str(benchmark_row.id),
+                verified_task_ids=task_ids,
+            )
+        )
+        try:
+            await asyncio.wait_for(first_admitted.wait(), timeout=2)
+            benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 2})
+            database_session.add(benchmark_row)
+            database_session.commit()
+            await asyncio.wait_for(second_admitted.wait(), timeout=2)
+        finally:
+            release_first.set()
+            await asyncio.wait_for(process_future, timeout=5)
+
+        assert admitted_task_ids == task_ids
+
     async def test_stop_selected_tasks_scopes_graceful_and_force(
         self,
         example_benchmark_object: Benchmark,

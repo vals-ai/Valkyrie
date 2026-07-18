@@ -24,9 +24,16 @@ class TestTaskExecution:
         limiter = ResizableLimiter(limit=1)
         first_started = asyncio.Event()
         release_first = asyncio.Event()
+        second_attempted = asyncio.Event()
         second_started = asyncio.Event()
 
-        async def worker(started: asyncio.Event, release: asyncio.Event | None = None) -> None:
+        async def worker(
+            started: asyncio.Event,
+            release: asyncio.Event | None = None,
+            attempting: asyncio.Event | None = None,
+        ) -> None:
+            if attempting is not None:
+                attempting.set()
             async with limiter:
                 started.set()
                 if release is not None:
@@ -34,8 +41,8 @@ class TestTaskExecution:
 
         first = asyncio.create_task(worker(first_started, release_first))
         await asyncio.wait_for(first_started.wait(), timeout=1)
-        second = asyncio.create_task(worker(second_started))
-        await asyncio.sleep(0)
+        second = asyncio.create_task(worker(second_started, attempting=second_attempted))
+        await asyncio.wait_for(second_attempted.wait(), timeout=1)
         assert not second_started.is_set()
 
         await limiter.resize(2)
@@ -45,13 +52,29 @@ class TestTaskExecution:
         await asyncio.gather(first, second)
         assert limiter.in_flight == 0
 
-    async def test_resizable_limiter_decrease_is_non_preemptive(self) -> None:
+    async def test_resizable_limiter_decrease_is_non_preemptive(self, monkeypatch: pytest.MonkeyPatch) -> None:
         limiter = ResizableLimiter(limit=2)
         first_started = asyncio.Event()
         second_started = asyncio.Event()
         third_started = asyncio.Event()
         release_first = asyncio.Event()
         release_second = asyncio.Event()
+        third_wait_attempted = asyncio.Event()
+        third_rewait_attempted = asyncio.Event()
+        condition = getattr(limiter, "_condition")
+        condition_wait = getattr(condition, "wait")
+        wait_attempts = 0
+
+        async def observed_condition_wait() -> bool:
+            nonlocal wait_attempts
+            wait_attempts += 1
+            if wait_attempts == 1:
+                third_wait_attempted.set()
+            elif wait_attempts == 2:
+                third_rewait_attempted.set()
+            return await condition_wait()
+
+        monkeypatch.setattr(condition, "wait", observed_condition_wait)
 
         async def worker(started: asyncio.Event, release: asyncio.Event | None = None) -> None:
             async with limiter:
@@ -66,7 +89,7 @@ class TestTaskExecution:
 
         await limiter.resize(1)
         third = asyncio.create_task(worker(third_started))
-        await asyncio.sleep(0)
+        await asyncio.wait_for(third_wait_attempted.wait(), timeout=1)
         assert limiter.in_flight == 2
         assert not first.done()
         assert not second.done()
@@ -74,7 +97,7 @@ class TestTaskExecution:
 
         release_first.set()
         await first
-        await asyncio.sleep(0)
+        await asyncio.wait_for(third_rewait_attempted.wait(), timeout=1)
         assert limiter.in_flight == 1
         assert not third_started.is_set()
 
@@ -197,6 +220,7 @@ class TestTaskExecution:
         limiter = ResizableLimiter(limit=1)
         running_started = asyncio.Event()
         release_running = asyncio.Event()
+        waiting_attempted = asyncio.Event()
         waiting_started = asyncio.Event()
         release_waiting = asyncio.Event()
         running_row = MagicMock(spec=Task, task_id="task_id_1")
@@ -209,8 +233,13 @@ class TestTaskExecution:
 
         running_call = asyncio.create_task(running.run(limiter, running_row))
         await running_started.wait()
-        waiting_call = asyncio.create_task(waiting.run(limiter, waiting_row))
-        await asyncio.sleep(0)
+
+        async def run_waiting() -> dict[str, dict[str, Any] | None]:
+            waiting_attempted.set()
+            return await waiting.run(limiter, waiting_row)
+
+        waiting_call = asyncio.create_task(run_waiting())
+        await waiting_attempted.wait()
 
         assert running.status == TrackedTaskStatus.RUNNING
         assert waiting.status == TrackedTaskStatus.WAITING
