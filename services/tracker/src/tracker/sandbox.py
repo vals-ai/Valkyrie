@@ -8,6 +8,7 @@ from asyncio import Semaphore
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
+from enum import Enum
 from pathlib import PurePosixPath
 from typing import Any, AsyncGenerator
 
@@ -36,6 +37,9 @@ from tenacity import (
     retry_if_exception_type,
     retry_if_not_exception_type,
     stop_after_attempt,
+    wait_chain,
+    wait_fixed,
+    wait_none,
 )
 
 from tracker.aws.s3 import (
@@ -52,6 +56,7 @@ from tracker.database.models import (
 )
 from tracker.exceptions import (
     AgentRunFailedError,
+    DependencySetupExhaustedError,
     OutputArtifactError,
     SandboxError,
     SandboxSetupError,
@@ -322,18 +327,19 @@ async def upload_agent_artifacts(
         raise SandboxError(error_message)
 
 
-@retry(
-    retry=retry_if_exception_type(SandboxError),
-    reraise=True,
-    stop=stop_after_attempt(3),
-    before_sleep=retry_callback("valkyrie.sandbox.deps"),
-)
-async def install_agent_dependencies(
+class DependencySetupMode(str, Enum):
+    """Select whether dependency setup can retry inside the current sandbox."""
+
+    IN_PLACE_RETRIES = "in_place_retries"
+    FINAL_FRESH_SANDBOX = "final_fresh_sandbox"
+
+
+async def _install_agent_dependencies_once(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     log_output: Callable[[str], None],
 ) -> None:
-    """Install agent dependencies in the sandbox."""
+    """Run one bounded dependency installation attempt."""
     if not contract.install_cmd:
         return
 
@@ -354,6 +360,40 @@ async def install_agent_dependencies(
         )
 
     log_output(f"Finished installing dependencies for contract: {contract.name}")
+
+
+@retry(
+    retry=retry_if_exception_type(SandboxError),
+    reraise=True,
+    stop=stop_after_attempt(4),
+    wait=wait_chain(wait_none(), wait_fixed(10), wait_fixed(60)),
+    before_sleep=retry_callback("valkyrie.sandbox.deps"),
+)
+async def _install_agent_dependencies_with_retries(
+    sandbox: Sandbox,
+    contract: AgentContractRequest,
+    log_output: Callable[[str], None],
+) -> None:
+    await _install_agent_dependencies_once(sandbox, contract, log_output)
+
+
+async def install_agent_dependencies(
+    sandbox: Sandbox,
+    contract: AgentContractRequest,
+    log_output: Callable[[str], None],
+    mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
+) -> None:
+    """Install dependencies using the policy selected for this sandbox."""
+    if mode is DependencySetupMode.FINAL_FRESH_SANDBOX:
+        await _install_agent_dependencies_once(sandbox, contract, log_output)
+        return
+
+    try:
+        await _install_agent_dependencies_with_retries(sandbox, contract, log_output)
+    except SandboxError as error:
+        raise DependencySetupExhaustedError(
+            f"Dependency installation for contract {contract.name} failed after 4 attempts"
+        ) from error
 
 
 # NOTE: If this gets too big move it into a mapping
@@ -644,6 +684,7 @@ async def run_agent(
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,
     runtime_source: SandboxSource | None = None,
+    dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -669,7 +710,7 @@ async def run_agent(
     if runtime_source is not None:
         sandbox = runtime_sandbox(sandbox, runtime_source)
 
-    await install_agent_dependencies(sandbox, contract, log_output)
+    await install_agent_dependencies(sandbox, contract, log_output, dependency_setup_mode)
 
     run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
 
