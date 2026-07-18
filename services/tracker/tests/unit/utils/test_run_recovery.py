@@ -515,6 +515,45 @@ class TestRunRecovery:
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
 
+    async def test_from_scratch_retry_without_task_ids_resets_every_task(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.FINISHED
+        tasks = [
+            Task(
+                org_id=TEST_ORG_ID,
+                task_id=f"task_{status.value.lower()}",
+                benchmark=benchmark_row.id,
+                status=status,
+            )
+            for status in (TaskStatus.FINISHED, TaskStatus.STOPPED, TaskStatus.ERROR)
+        ]
+        database_session.add(benchmark_row)
+        database_session.add_all(tasks)
+        database_session.commit()
+
+        async def _verify(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify)
+
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=database_session,
+            benchmark_service=benchmark_row.benchmark_service(),
+            retry=True,
+            retry_mode=RetryMode.FROM_SCRATCH,
+            rerun_task_ids=[],
+            org=self._test_org,
+        )
+
+        assert set(verified_task_ids) == {task.task_id for task in tasks}
+        assert {task.status for task in tasks} == {TaskStatus.PENDING}
+
     async def test_retry_preserves_previous_task_history_for_export(
         self,
         example_benchmark_object: Benchmark,

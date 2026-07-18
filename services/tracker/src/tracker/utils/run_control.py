@@ -198,7 +198,7 @@ async def reset_to_in_progress_status(
         benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
         existing_rows = session.exec(
             select(Task)
-            .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
+            .where(*_retry_task_filters(benchmark_row, retry, retry_mode, rerun_task_ids, org))
             .order_by(asc(Task.started_at))
         ).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
@@ -257,7 +257,13 @@ async def reset_to_in_progress_status(
         raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
 
 
-def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
+def _retry_task_filters(
+    benchmark_row: Benchmark,
+    retry: bool,
+    retry_mode: RetryMode,
+    rerun_task_ids: list[str],
+    org: Org,
+) -> list[Any]:
     """Select retryable rows.
 
     Active retries on in-progress runs are limited to ERROR tasks. Finished tasks must wait until the run is terminal.
@@ -270,6 +276,9 @@ def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: l
         filters.append(col(Task.status) == TaskStatus.ERROR)
         if rerun_task_ids:
             filters.append(col(Task.task_id).in_(rerun_task_ids))
+        return filters
+
+    if retry and retry_mode == RetryMode.FROM_SCRATCH and not rerun_task_ids:
         return filters
 
     if retry and rerun_task_ids:
