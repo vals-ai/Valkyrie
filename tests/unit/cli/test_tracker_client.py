@@ -388,6 +388,47 @@ def test_tracker_client_falls_back_to_legacy_routes_on_canonical_404(monkeypatch
     assert dict(requests[5].url.params) == {"benchmark_id": str(run_id), "connect": "true"}
 
 
+def test_stream_fallback_reuses_shared_params_when_no_legacy_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/runs/events":
+            return httpx.Response(404, json={"detail": "Not Found"})
+        return httpx.Response(200, text="event: complete\n\n")
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.Client
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    with tracker._stream_with_legacy_fallback(
+        "GET",
+        "http://tracker/runs/events",
+        "http://tracker/fetch-benchmark",
+        params={"cursor": "next"},
+    ) as response:
+        assert response.status_code == 200
+    tracker.close()
+
+    assert [dict(request.url.params) for request in requests] == [
+        {"cursor": "next"},
+        {"cursor": "next"},
+    ]
+
+
 def test_tracker_client_does_not_fallback_for_a_domain_404(monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[httpx.Request] = []
 

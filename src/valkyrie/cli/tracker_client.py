@@ -222,7 +222,8 @@ class TrackerService:
             if not _is_missing_route(response):
                 yield response
                 return
-        with self._client.stream(method, legacy_url, params=legacy_params, json=json, timeout=None) as response:
+        fallback_params = legacy_params if legacy_params is not None else params
+        with self._client.stream(method, legacy_url, params=fallback_params, json=json, timeout=None) as response:
             yield response
 
     @staticmethod
