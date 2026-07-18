@@ -717,6 +717,24 @@ class TestTrackerAPI:
         assert observed_results["task_11"] is None
         assert response.json()["final_evaluation"]["final_score"] == 2.0
 
+        # Test case 11. A persisted subset read does not depend on the benchmark service.
+        async def _unexpected_final_score(*_args: Any, **_kwargs: Any) -> FinalScoreResponse:
+            raise AssertionError("final_score should not be called")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", _unexpected_final_score)
+        response = client.get(
+            "/retrieve-results",
+            params={
+                "benchmark_id": str(benchmark_row.id),
+                "task_ids": "task_1",
+                "recompute_score": "false",
+            },
+        )
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body["evaluation_results"]) == {"task_1"}
+        assert body["final_evaluation"]["final_score"] == 100
+
     async def test_benchmark_error_handling(
         self,
         contract: AgentContractRequest,

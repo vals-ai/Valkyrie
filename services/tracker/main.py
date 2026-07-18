@@ -565,14 +565,16 @@ async def retrieve_results(
     http_request: Request,
     s3: bool = Query(default=False),
     task_ids: list[str] | None = Query(default=None),
+    recompute_score: bool = Query(default=True),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> RetrieveResultsResponse:
     """
     Retrieve the results of a benchmark by its id. When task_ids is non-empty, the final view is
-    filtered to that subset and the final score is recomputed over the subset; the persisted
-    FinalEvaluation / per-task rows are left untouched.
+    filtered to that subset. By default the final score is recomputed over the subset; callers can
+    disable recomputation to read persisted results without contacting the benchmark service. The
+    persisted FinalEvaluation / per-task rows are left untouched.
 
     Note: with `s3=True` the S3 final view at the canonical key is overwritten with whatever was
     just computed (full or subset). The DB remains source of truth, so re-running without
@@ -596,29 +598,30 @@ async def retrieve_results(
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
         final_view.task_errors = _filter_task_map(final_view.task_errors)
 
-        # Include every requested task with its result or None, so tasks without a result
-        # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
-        scored_results = {
-            task_id: result
-            for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
-            if task_id in task_ids_set
-        }
+        if recompute_score:
+            # Include every requested task with its result or None, so tasks without a result
+            # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
+            scored_results = {
+                task_id: result
+                for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
+                if task_id in task_ids_set
+            }
 
-        effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
-        benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
-        try:
-            resp = await benchmark_service.final_score(
-                evaluation_results=scored_results,
-                dataset=benchmark_row.arguments.dataset,
+            effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
+            benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
+            try:
+                resp = await benchmark_service.final_score(
+                    evaluation_results=scored_results,
+                    dataset=benchmark_row.arguments.dataset,
+                )
+            finally:
+                await benchmark_service.close()
+            final_view.final_evaluation = FinalEvaluation(
+                org_id=org.id,
+                benchmark=benchmark_row.id,
+                final_score=resp.final_score,
+                properties=resp.metadata,
             )
-        finally:
-            await benchmark_service.close()
-        final_view.final_evaluation = FinalEvaluation(
-            org_id=org.id,
-            benchmark=benchmark_row.id,
-            final_score=resp.final_score,
-            properties=resp.metadata,
-        )
 
     if s3:
         s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
