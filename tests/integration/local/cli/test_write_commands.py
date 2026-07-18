@@ -47,6 +47,60 @@ def test_cli_stops_only_selected_pending_tasks(
     assert stored_run.status == BenchmarkStatus.IN_PROGRESS
 
 
+def test_cli_updates_active_run_concurrency_through_tracker(
+    cli_runner: CliRunner,
+    seeded_runs: tuple[Benchmark, Benchmark],
+    database_session: Session,
+) -> None:
+    """The public CLI must persist live concurrency through the production HTTP path.
+
+    Test cases:
+    - A live update travels through Click, the tracker client, and the FastAPI route.
+    - Repeating the same update is idempotent.
+    - A subsequent CLI read and direct database read return the new limit.
+    - Updating concurrency preserves the rest of the stored benchmark arguments.
+    """
+    running, _finished = seeded_runs
+    original_arguments = running.arguments
+
+    for _ in range(2):
+        result = cli_runner.invoke(cli, ["run", "update", str(running.id), "--concurrency", "4"])
+
+        assert result.exit_code == 0, result.output
+        assert result.output == "✓ Run concurrency updated to 4.\n"
+
+    fetch_result = cli_runner.invoke(cli, ["run", "fetch", str(running.id), "--format", "json"])
+
+    assert fetch_result.exit_code == 0, fetch_result.output
+    assert json.loads(fetch_result.output)["max_concurrency"] == 4
+
+    database_session.expire_all()
+    stored_run = database_session.get(Benchmark, running.id)
+    assert stored_run is not None
+    assert stored_run.arguments == original_arguments.model_copy(update={"concurrency": 4})
+
+
+def test_cli_rejects_concurrency_update_for_finished_run(
+    cli_runner: CliRunner,
+    seeded_runs: tuple[Benchmark, Benchmark],
+    database_session: Session,
+) -> None:
+    """A terminal run must reject updates without changing its stored arguments."""
+    _running, finished = seeded_runs
+    original_arguments = finished.arguments
+
+    result = cli_runner.invoke(cli, ["run", "update", str(finished.id), "--concurrency", "4"])
+
+    assert result.exit_code == 1
+    assert "Failed to update run concurrency" in result.output
+    assert "BenchmarkStatus.FINISHED" in result.output
+
+    database_session.expire_all()
+    stored_run = database_session.get(Benchmark, finished.id)
+    assert stored_run is not None
+    assert stored_run.arguments == original_arguments
+
+
 def test_cli_exports_tracker_results_without_private_contract_values(
     cli_runner: CliRunner,
     seeded_runs: tuple[Benchmark, Benchmark],
