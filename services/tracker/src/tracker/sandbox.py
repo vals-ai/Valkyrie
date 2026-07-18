@@ -46,6 +46,7 @@ from tracker.aws.s3 import (
     create_presigned_url,
     get_agent_result_s3_key,
     get_benchmark_contract_s3_key,
+    upload_stream_to_s3,
     upload_to_s3,
 )
 from tracker.database.models import (
@@ -402,6 +403,7 @@ _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
 _STATUS_DIR = "/tmp/.valkyrie"
+_OUTPUT_TAIL_MAX_CHARS = 64 * 1024
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
     reraise=True,
@@ -472,7 +474,10 @@ async def stream_command_output(
     command: str,
     on_output: Callable[[str], None],
 ) -> tuple[AgentCausedExitReason | None, float]:
-    output: deque[str] = deque(maxlen=50)
+    # Bounded tail of recent output, kept only for error messages; capped by characters
+    # rather than chunk count since a single chunk can be arbitrarily large.
+    output: deque[str] = deque()
+    output_chars = 0
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
@@ -491,6 +496,9 @@ async def stream_command_output(
             async for data in sandbox.command(timed_command):
                 on_output(data)
                 output.append(data)
+                output_chars += len(data)
+                while output_chars > _OUTPUT_TAIL_MAX_CHARS and len(output) > 1:
+                    output_chars -= len(output.popleft())
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
         except SandboxNotFoundError:
@@ -543,8 +551,9 @@ async def archive_and_upload_output(
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
-        file_content = await sandbox.download_file(archive_path)
-        await upload_to_s3(file_content, agent_output_s3_key, aws, s3_bucket)
+        archive_bytes = await upload_stream_to_s3(
+            sandbox.stream_download(archive_path), agent_output_s3_key, aws, s3_bucket
+        )
 
         logger.info(
             "agent_output.archive_and_upload.complete",
@@ -555,7 +564,7 @@ async def archive_and_upload_output(
                 "s3_key": agent_output_s3_key,
                 "benchmark_id": benchmark_id,
                 "task_id": task_id,
-                "archive_bytes": len(file_content),
+                "archive_bytes": archive_bytes,
                 "duration_ms": elapsed_ms(start),
             },
         )

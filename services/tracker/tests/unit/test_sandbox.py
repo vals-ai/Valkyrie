@@ -223,6 +223,61 @@ class TestOutputArtifacts:
         upload_mock.assert_not_awaited()
 
 
+class TestArchiveAndUploadOutput:
+    """Streaming of the agent output archive from the sandbox to S3."""
+
+    async def test_archive_and_upload_output_streams_archive_to_s3(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        """
+        Test cases:
+        - The tar.gz archive is streamed chunk-by-chunk to S3 without a full in-memory download.
+        - The temporary archive is removed from the sandbox afterwards.
+        """
+        exec_commands: list[str] = []
+        uploaded: list[tuple[bytes, str]] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            exec_commands.append(command)
+            return ExecResult(exit_code=0, output="")
+
+        async def fake_upload_stream_to_s3(chunks: Any, s3_key: str, _aws: Any, _s3_bucket: str) -> int:
+            data = b"".join([chunk async for chunk in chunks])
+            uploaded.append((data, s3_key))
+            return len(data)
+
+        def fake_stream_download(remote_path: str) -> AsyncIterator[bytes]:
+            assert remote_path.endswith(".tar.gz")
+
+            async def chunks() -> AsyncIterator[bytes]:
+                yield b"chunk-1"
+                yield b"chunk-2"
+
+            return chunks()
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "upload_stream_to_s3", fake_upload_stream_to_s3)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.stream_download = fake_stream_download
+
+        await sandbox_module.archive_and_upload_output(
+            mock_sandbox,
+            "/logs",
+            "benchmarks/benchmark-123/task_0/output.tar.gz",
+            harness_config.aws,
+            harness_config.s3_bucket,
+        )
+
+        assert uploaded == [(b"chunk-1chunk-2", "benchmarks/benchmark-123/task_0/output.tar.gz")]
+        assert exec_commands[0].startswith("tar -czf ")
+        assert exec_commands[-1].startswith("rm -f ")
+
+
 class TestRunAgent:
     """Agent execution, output collection, and runtime command construction."""
 
@@ -1073,3 +1128,40 @@ class TestStreamCommandOutputAgentFailure:
         assert f"exit code: {exit_code}" in str(exc_info.value)
         assert "last line" in str(exc_info.value)
         assert tagged == {"agent_exit_code": str(exit_code)}
+
+    async def test_output_tail_is_byte_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """
+        Test cases:
+        - Output retained for the failure message is capped by characters, not chunk count.
+        - The newest output survives while old output beyond the cap is dropped.
+        """
+        tail_cap = getattr(sandbox_module, "_OUTPUT_TAIL_MAX_CHARS")
+
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield "old-marker\n"
+            yield "x" * (tail_cap + 1) + "\n"
+            yield "new-marker\n"
+            raise ProviderSandboxCommandError(1)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = AsyncMock(
+            side_effect=[
+                ExecResult(exit_code=0, output="1000000000"),
+                ExecResult(exit_code=0, output="3000000000"),
+                ExecResult(exit_code=0, output=""),
+            ]
+        )
+
+        def fake_set_tag(_key: str, _value: object) -> None:
+            pass
+
+        monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", fake_set_tag)
+
+        with pytest.raises(AgentRunFailedError) as exc_info:
+            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+
+        assert "new-marker" in str(exc_info.value)
+        assert "old-marker" not in str(exc_info.value)
