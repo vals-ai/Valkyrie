@@ -241,7 +241,12 @@ async def create_sandbox(
         logger.error(f"Error during sandbox execution {sandbox.name}: {e}")
         raise
     finally:
-        await delete_sandbox(sandbox, provider)
+        try:
+            await delete_sandbox(sandbox, provider)
+        except ProviderSandboxError as e:
+            incr("valkyrie.sandbox.delete.errors", tags={"error_class": type(e).__name__})
+            logger.error(f"Failed to delete sandbox {sandbox.name}: {e}", exc_info=True)
+            sentry_sdk.capture_exception(e)
 
 
 @retry(

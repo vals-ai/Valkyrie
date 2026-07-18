@@ -813,6 +813,38 @@ class TestSandboxLifecycle:
         ]
         assert context_calls == [("sandbox-123", "ghcr.io/vals/swebench:latest")]
 
+    async def test_create_sandbox_preserves_body_error_when_delete_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_sandbox = AsyncMock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+        provider = AsyncMock()
+        cleanup_error = ProviderSandboxError("cleanup failed")
+        delete_sandbox = AsyncMock(side_effect=cleanup_error)
+        capture_exception = Mock()
+        increment = Mock()
+
+        async def fake_create_sandbox(*_args: Any, **_kwargs: Any) -> Any:
+            return mock_sandbox
+
+        monkeypatch.setattr(sandbox_module, "_create_sandbox", fake_create_sandbox)
+        monkeypatch.setattr(sandbox_module, "delete_sandbox", delete_sandbox)
+        monkeypatch.setattr(sandbox_module, "incr", increment)
+        monkeypatch.setattr(sandbox_module.sentry_sdk, "capture_exception", capture_exception)
+
+        with pytest.raises(RuntimeError, match="task failed"):
+            async with create_sandbox(
+                provider=provider,
+                sandbox_name="task-alias",
+                source=ImageSource(image="ghcr.io/vals/swebench:latest"),
+                resources=Resources(vcpu=2, memory=4, disk=5),
+                creation_semaphore=asyncio.Semaphore(1),
+            ):
+                raise RuntimeError("task failed")
+
+        delete_sandbox.assert_awaited_once_with(mock_sandbox, provider)
+        increment.assert_called_once_with("valkyrie.sandbox.delete.errors", tags={"error_class": "SandboxError"})
+        capture_exception.assert_called_once_with(cleanup_error)
+
     async def test_create_sandbox_emits_error_metric(self, monkeypatch: pytest.MonkeyPatch) -> None:
         create_error = RuntimeError("create failed")
         increments: list[tuple[str, dict[str, str]]] = []

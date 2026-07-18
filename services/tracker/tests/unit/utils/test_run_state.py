@@ -518,6 +518,27 @@ class TestRunState:
         assert transition_record["has_error_message"] is True
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
 
+    @pytest.mark.parametrize("terminal_status", [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED])
+    def test_commit_task_error_does_not_overwrite_terminal_task(
+        self,
+        terminal_status: TaskStatus,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ) -> None:
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=example_benchmark_object.id,
+            status=terminal_status,
+        )
+        database_session.add(task_row)
+        database_session.commit()
+
+        assert not commit_task_error(task_row, database_session, "late cleanup failure")
+        database_session.refresh(task_row)
+        assert task_row.status == terminal_status
+        assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
+
     async def test_set_benchmark_final_status(
         self, example_benchmark_object: Benchmark, database_session: Session
     ) -> None:

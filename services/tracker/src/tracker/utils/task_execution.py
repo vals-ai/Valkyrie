@@ -347,9 +347,12 @@ def _commit_task_status(
         if to_status in [TaskStatus.FINISHED, TaskStatus.ERROR]:
             values["finished_at"] = datetime.now(ZoneInfo("UTC"))
 
-        task_update = update(Task).where(col(Task.id) == task.id).where(col(Task.org_id) == task.org_id)
-        if to_status != TaskStatus.STOPPED:
-            task_update = task_update.where(col(Task.status) != TaskStatus.STOPPED)
+        task_update = (
+            update(Task)
+            .where(col(Task.id) == task.id)
+            .where(col(Task.org_id) == task.org_id)
+            .where(col(Task.status).notin_([TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]))
+        )
         if expected_started_at is not None:
             task_update = task_update.where(col(Task.started_at) == expected_started_at)
 

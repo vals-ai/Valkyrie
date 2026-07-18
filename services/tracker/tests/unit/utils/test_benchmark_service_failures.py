@@ -5,10 +5,12 @@ Run: uv run pytest tests/unit/utils/test_benchmark_service_failures.py
 
 import time
 from typing import Any, Never
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
+from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session, desc, select
 from websockets.datastructures import Headers
@@ -18,7 +20,15 @@ from websockets.http11 import Response
 
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
+from tracker import sandbox as sandbox_module
+from tracker.database.models import (
+    AgentContractRequest,
+    BenchmarkStatus,
+    ErrorResult,
+    EvaluationResult,
+    Task,
+    TaskStatus,
+)
 from tracker.exceptions import OutputArtifactError
 from tracker.types import HarnessConfig
 from tracker.utils import (
@@ -191,6 +201,42 @@ class TestBenchmarkServiceFailures:
         error_message = self._latest_task_error(database_session, task_row)
         assert "Output artifact error" in error_message
         assert "Required output artifact missing" in error_message
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_completed_evaluation_survives_sandbox_cleanup_error(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+            contract, database_session, harness_config
+        )
+        sandbox = AsyncMock()
+        sandbox.id = "sandbox-123"
+        sandbox.name = "task_0"
+        provider = AsyncMock()
+        provider.create_sandbox.return_value = sandbox
+        provider.delete_sandbox.side_effect = ProviderSandboxError("File descriptor 49 is used by transport")
+
+        def _mock_get_sandbox_provider(*_args: Any, **_kwargs: Any) -> AsyncMock:
+            return provider
+
+        monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", _mock_get_sandbox_provider)
+        monkeypatch.setattr(utils_module, "create_sandbox", sandbox_module.create_sandbox)
+
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        provider.delete_sandbox.assert_awaited_once_with("sandbox-123")
+        database_session.refresh(task_row)
+        assert task_row.status == TaskStatus.FINISHED
+        evaluation_result = database_session.exec(
+            select(EvaluationResult).where(EvaluationResult.task == task_row.id)
+        ).one()
+        assert evaluation_result.result == {"status": "success", "score": 1.0}
+        assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_benchmark_service_error_produces_human_readable_message(
