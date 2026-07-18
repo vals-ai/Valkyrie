@@ -7,6 +7,7 @@ import traceback
 from asyncio import Semaphore
 from collections.abc import Coroutine
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from typing import Any
@@ -42,11 +43,16 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import engine
-from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerServiceError
+from tracker.exceptions import (
+    DependencySetupExhaustedError,
+    OutputArtifactError,
+    SandboxSetupError,
+    TrackerServiceError,
+)
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
-from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -58,6 +64,11 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
+
+
+@dataclass
+class _DependencySetupRecoveryState:
+    mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES
 
 
 def _normalized_attempt_time(value: datetime) -> datetime:
@@ -321,13 +332,6 @@ def commit_task_status_transition(
 
 
 @logfire.instrument("process_task")
-@tenacity_retry(
-    retry=retry_if_exception_type(SandboxSetupError),
-    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
-    wait=wait_fixed(2),
-    before_sleep=retry_callback("valkyrie.task"),
-    reraise=True,
-)
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -338,6 +342,40 @@ async def process_task(
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
+) -> dict[str, dict[str, Any] | None]:
+    """Process one task while retaining dependency recovery state across sandbox attempts."""
+    return await _process_task_attempt(
+        task_row,
+        start_benchmark_request,
+        benchmark_service,
+        benchmark_id,
+        task_id,
+        harness_config,
+        org,
+        sandbox_provider_config,
+        creation_semaphore,
+        dependency_setup_recovery=_DependencySetupRecoveryState(),
+    )
+
+
+@tenacity_retry(
+    retry=retry_if_exception_type(SandboxSetupError),
+    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
+    wait=wait_fixed(2),
+    before_sleep=retry_callback("valkyrie.task"),
+    reraise=True,
+)
+async def _process_task_attempt(
+    task_row: Task,
+    start_benchmark_request: StartBenchmarkRequest,
+    benchmark_service: BenchmarkServiceClient,
+    benchmark_id: UUID,
+    task_id: str,
+    harness_config: HarnessConfig,
+    org: Org,
+    sandbox_provider_config: SandboxProviderConfig,
+    creation_semaphore: Semaphore,
+    dependency_setup_recovery: _DependencySetupRecoveryState,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -548,20 +586,25 @@ async def process_task(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                exit_reason, agent_run_time = await run_agent(
-                    sandbox,
-                    start_benchmark_request.contract,
-                    task_data.problem_path,
-                    task_id,
-                    log_output,
-                    task_data.cwd,
-                    aws=harness_config.aws,
-                    s3_bucket=harness_config.s3_bucket,
-                    agent_output_s3_key=agent_output_s3_key,
-                    agent_timeout=task_data.agent_timeout,
-                    benchmark_id=str(benchmark_id),
-                    runtime_source=task_data.source,
-                )
+                try:
+                    exit_reason, agent_run_time = await run_agent(
+                        sandbox,
+                        start_benchmark_request.contract,
+                        task_data.problem_path,
+                        task_id,
+                        log_output,
+                        task_data.cwd,
+                        aws=harness_config.aws,
+                        s3_bucket=harness_config.s3_bucket,
+                        agent_output_s3_key=agent_output_s3_key,
+                        agent_timeout=task_data.agent_timeout,
+                        benchmark_id=str(benchmark_id),
+                        runtime_source=task_data.source,
+                        dependency_setup_mode=dependency_setup_recovery.mode,
+                    )
+                except DependencySetupExhaustedError:
+                    dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
+                    raise
                 logger.info(
                     "agent.run.complete",
                     extra={

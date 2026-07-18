@@ -24,6 +24,7 @@ from tracker.database.models import (
 )
 from tracker.exceptions import (
     AgentRunFailedError,
+    DependencySetupExhaustedError,
     OutputArtifactError,
     SSLConnectionError,
     SandboxError,
@@ -37,11 +38,17 @@ from tracker.sandbox import (
 )
 from tracker.types import AWSCredentials
 
+
+def _ignore_output(_message: str) -> None:
+    pass
+
+
 _create_sandbox = getattr(sandbox_module, "_create_sandbox")
 _delete_sandbox = getattr(sandbox_module, "delete_sandbox")
 _exec = getattr(sandbox_module, "_exec")
 _apply_egress_allowlist = getattr(sandbox_module, "_apply_egress_allowlist")
 _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencies")
+_install_agent_dependencies_with_retries = getattr(sandbox_module, "_install_agent_dependencies_with_retries")
 _stream_command_output_with_egress_allowlist = getattr(sandbox_module, "_stream_command_output_with_egress_allowlist")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
 
@@ -433,6 +440,15 @@ class TestRunAgent:
 class TestSandboxRetry:
     """Sandbox retry callbacks and dependency-install retries."""
 
+    def test_sandbox_retry_decorators_use_observability_retry_callbacks(self) -> None:
+        upload_before_sleep = _upload_agent_artifacts.retry.before_sleep
+        deps_before_sleep = _install_agent_dependencies_with_retries.retry.before_sleep
+
+        assert upload_before_sleep is not None
+        assert callable(upload_before_sleep)
+        assert deps_before_sleep is not None
+        assert callable(deps_before_sleep)
+
     async def test_install_agent_dependencies_retries_after_setup_timeout(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -471,6 +487,68 @@ class TestSandboxRetry:
 
         expected_command = "cd /bundle/test-agent && timeout 600 sh -c 'apt-get update -qq && echo done'"
         assert observed_commands == [expected_command, expected_command]
+
+    async def test_install_agent_dependencies_uses_fixed_retry_schedule(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="bash setup.sh",
+            run_cmd="echo done",
+        )
+        stream_command = AsyncMock(
+            side_effect=[
+                AgentRunFailedError("setup failed 1"),
+                AgentRunFailedError("setup failed 2"),
+                AgentRunFailedError("setup failed 3"),
+                (None, 2.0),
+            ]
+        )
+        sleep = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "stream_command_output", stream_command)
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        await _install_agent_dependencies(Mock(), contract, _ignore_output)
+
+        assert stream_command.await_count == 4
+        assert [call.args[0] for call in sleep.await_args_list] == [0.0, 10.0, 60.0]
+
+    async def test_install_agent_dependencies_exhaustion_raises_and_final_mode_runs_once(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        contract = AgentContractRequest(
+            name="test-agent",
+            install_cmd="bash setup.sh",
+            run_cmd="echo done",
+        )
+        stream_command = AsyncMock(side_effect=AgentRunFailedError("setup failed"))
+        sleep = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "stream_command_output", stream_command)
+        monkeypatch.setattr(asyncio, "sleep", sleep)
+
+        with pytest.raises(DependencySetupExhaustedError) as exc_info:
+            await _install_agent_dependencies(Mock(), contract, _ignore_output)
+
+        assert isinstance(exc_info.value.__cause__, AgentRunFailedError)
+        assert stream_command.await_count == 4
+        assert [call.args[0] for call in sleep.await_args_list] == [0.0, 10.0, 60.0]
+
+        stream_command.reset_mock()
+        sleep.reset_mock()
+        mode = getattr(sandbox_module, "DependencySetupMode")
+
+        with pytest.raises(AgentRunFailedError):
+            await _install_agent_dependencies(
+                Mock(),
+                contract,
+                _ignore_output,
+                mode=mode.FINAL_FRESH_SANDBOX,
+            )
+
+        assert stream_command.await_count == 1
+        sleep.assert_not_awaited()
 
 
 class TestSandboxLifecycle:
