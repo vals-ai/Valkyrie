@@ -1177,9 +1177,7 @@ class TestRunRecovery:
         assert mock_kicker.queued_calls
         database_session.expire_all()
         assert (
-            database_session.exec(
-                select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
-            ).first()
+            database_session.exec(select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)).first()
             is None
         )
 

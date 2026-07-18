@@ -261,9 +261,7 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
     )
 
 
-async def stream_benchmark_results(
-    benchmark_id: UUID, harness_config: HarnessConfig, org: Org
-) -> AsyncGenerator[str]:
+async def stream_benchmark_results(benchmark_id: UUID, harness_config: HarnessConfig, org: Org) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
 

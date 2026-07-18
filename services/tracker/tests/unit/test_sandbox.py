@@ -1112,9 +1112,7 @@ class TestStreamCommandOutputAgentFailure:
         assert ".start_ns" in exec_commands[-1]
         assert ".end_ns" in exec_commands[-1]
 
-    async def test_error_output_preserves_full_tail_not_ten_lines(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    async def test_error_output_preserves_full_tail_not_ten_lines(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A non-zero exit must report the full output tail, not a hard 10-line cut.
 
         Regression: the old ``tail[-10:]`` cap dropped everything before the last ten
