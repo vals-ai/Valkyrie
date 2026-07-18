@@ -283,6 +283,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
             return httpx.Response(200, json={"status": "success"})
         if request.url.path == "/retrieve-results":
             if request.url.params["s3"] == "false":
+                assert request.url.params["recompute_score"] == "true"
                 return httpx.Response(
                     200,
                     json={
@@ -303,6 +304,7 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
                         "task_errors": None,
                     },
                 )
+            assert request.url.params["recompute_score"] == "false"
             return httpx.Response(
                 200,
                 json={
@@ -319,7 +321,12 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
         listed = await client.runs.list(FetchBenchmarksRequest(limit=25))
         stopped = await client.runs.stop(run_id, force=True)
         inline_results = await client.runs.results(run_id)
-        results = await client.runs.results(run_id, task_ids=["task-1"], upload_to_s3=True)
+        results = await client.runs.results(
+            run_id,
+            task_ids=["task-1"],
+            upload_to_s3=True,
+            recompute_score=False,
+        )
 
     assert fetched.benchmark_id == run_id
     assert listed.total_count == 0

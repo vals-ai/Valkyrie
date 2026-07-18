@@ -155,6 +155,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: Literal[False] = False,
+        recompute_score: bool = True,
     ) -> FinalViewResponse: ...
 
     @overload
@@ -164,6 +165,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: Literal[True],
+        recompute_score: bool = True,
     ) -> S3UploadResultsResponse: ...
 
     @overload
@@ -173,6 +175,7 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: bool,
+        recompute_score: bool = True,
     ) -> RetrieveResultsResponse: ...
 
     async def results(
@@ -181,9 +184,14 @@ class RunsResource:
         *,
         task_ids: Sequence[str] | None = None,
         upload_to_s3: bool = False,
+        recompute_score: bool = True,
     ) -> RetrieveResultsResponse:
         """Fetch final results or upload them and return S3 links."""
-        params: dict[str, Any] = {"benchmark_id": str(run_id), "s3": upload_to_s3}
+        params: dict[str, Any] = {
+            "benchmark_id": str(run_id),
+            "s3": upload_to_s3,
+            "recompute_score": recompute_score,
+        }
         if task_ids:
             params["task_ids"] = list(task_ids)
         response_model = S3UploadResultsResponse if upload_to_s3 else FinalViewResponse

@@ -109,7 +109,7 @@ ROUTES = (
         "get",
         "agent_name benchmark_name model dataset label status started_by started_after started_before order_by cursor limit offset",
     ),
-    ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
+    ("/retrieve-results", "get", "benchmark_id s3 task_ids recompute_score"),
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
     ("/benchmarks/status", "get", "ids"),
