@@ -154,3 +154,34 @@ def test_task_artifacts_only_presign_existing_output(
     assert missing_response.json()["agent_output_url"] is None
     assert missing_response.json()["agent_output_expires_in"] is None
     assert create_presigned_url.await_count == 1
+
+
+def test_task_record_routes_support_task_ids_with_slashes(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    benchmark = example_benchmark_object
+    task = make_task(benchmark, "suite/task-with-output")
+    database_session.add_all([benchmark, task])
+    database_session.commit()
+
+    object_exists = AsyncMock(return_value=True)
+    monkeypatch.setattr(single_task_module, "s3_object_exists", object_exists)
+    monkeypatch.setattr(
+        single_task_module,
+        "create_presigned_url",
+        AsyncMock(return_value="https://example.test/presigned"),
+    )
+
+    detail = _client.get(f"/benchmarks/{benchmark.id}/task-records/{task.id}")
+    artifacts = _client.get(f"/benchmarks/{benchmark.id}/task-records/{task.id}/artifacts")
+
+    assert detail.status_code == 200
+    assert detail.json()["task_id"] == "suite/task-with-output"
+    assert artifacts.status_code == 200
+    object_exists.assert_awaited_once_with(
+        f"benchmarks/{benchmark.id}/suite/task-with-output/agent_output.tar.gz",
+        aws=ANY,
+        s3_bucket="test-bucket",
+    )

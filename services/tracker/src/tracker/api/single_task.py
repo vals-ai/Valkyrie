@@ -54,6 +54,26 @@ def _load_task_or_404(benchmark_id: UUID, task_id: str, org: Org, session: Sessi
     return benchmark, task
 
 
+def _load_task_record_or_404(
+    benchmark_id: UUID,
+    task_record_id: UUID,
+    org: Org,
+    session: Session,
+) -> tuple[Benchmark, Task]:
+    benchmark = session.exec(
+        select(Benchmark).where(Benchmark.id == benchmark_id).where(Benchmark.org_id == org.id)
+    ).first()
+    if benchmark is None:
+        raise HTTPException(status_code=404, detail="Benchmark not found")
+
+    task = session.exec(
+        select(Task).where(Task.id == task_record_id).where(Task.benchmark == benchmark.id).where(Task.org_id == org.id)
+    ).first()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return benchmark, task
+
+
 def _task_prefix(benchmark_id: UUID, task_id: str) -> str:
     """S3 prefix for a task's artifacts (presigned URLs + run outputs)."""
     return f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{task_id}/"
@@ -105,6 +125,25 @@ def get_single_task(
 ) -> SingleTaskResponse:
     """Fetch a single task's status + evaluation result for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    return _single_task_response(task, org, session)
+
+
+@router.get(
+    "/{benchmark_id}/task-records/{task_record_id}",
+    response_model=SingleTaskResponse,
+)
+def get_single_task_record(
+    benchmark_id: UUID,
+    task_record_id: UUID,
+    org: Org = Depends(get_current_org),
+    session: Session = Depends(get_session),
+) -> SingleTaskResponse:
+    """Fetch task detail by its stable database UUID."""
+    _, task = _load_task_record_or_404(benchmark_id, task_record_id, org, session)
+    return _single_task_response(task, org, session)
+
+
+def _single_task_response(task: Task, org: Org, session: Session) -> SingleTaskResponse:
 
     attempt_history = _fetch_attempt_history(session, task, org)
     latest_evaluation = next(
@@ -153,6 +192,30 @@ async def get_task_artifacts(
 ) -> TaskArtifactsResponse:
     """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
+    return await _task_artifacts_response(benchmark_id, task, harness_config)
+
+
+@router.get(
+    "/{benchmark_id}/task-records/{task_record_id}/artifacts",
+    response_model=TaskArtifactsResponse,
+)
+async def get_task_record_artifacts(
+    benchmark_id: UUID,
+    task_record_id: UUID,
+    org: Org = Depends(get_current_org),
+    harness_config: HarnessConfig = Depends(fetch_harness_config),
+    session: Session = Depends(get_session),
+) -> TaskArtifactsResponse:
+    """Fetch task artifacts by the task's stable database UUID."""
+    _, task = _load_task_record_or_404(benchmark_id, task_record_id, org, session)
+    return await _task_artifacts_response(benchmark_id, task, harness_config)
+
+
+async def _task_artifacts_response(
+    benchmark_id: UUID,
+    task: Task,
+    harness_config: HarnessConfig,
+) -> TaskArtifactsResponse:
 
     cloudwatch_url: str | None = None
     if harness_config.log_group and harness_config.aws.aws_default_region:
@@ -166,7 +229,7 @@ async def get_task_artifacts(
 
     agent_output_url: str | None = None
     ttl_seconds: int | None = None
-    key = f"{_task_prefix(benchmark_id, task_id)}agent_output.tar.gz"
+    key = f"{_task_prefix(benchmark_id, task.task_id)}agent_output.tar.gz"
     if await s3_object_exists(key, aws=harness_config.aws, s3_bucket=harness_config.s3_bucket):
         ttl_seconds = 300
         agent_output_url = await create_presigned_url(
