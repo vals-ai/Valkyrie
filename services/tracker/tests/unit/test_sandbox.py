@@ -226,6 +226,78 @@ class TestOutputArtifacts:
 class TestRunAgent:
     """Agent execution, output collection, and runtime command construction."""
 
+    async def test_run_agent_omits_cd_prefix_for_empty_working_directory(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        """VALKYRIE-B7: an empty cwd must omit the `cd` prefix, not run `cd '' && ...`.
+
+        Some benchmarks (e.g. web-search) hard-code an empty task_data.cwd and rely on the
+        default working directory. The agent must still run — just without a `cd`/`mkdir`.
+
+        Test cases:
+        - Empty/blank cwd: no `cd` prefix in the streamed command, and no `mkdir` runs.
+        - Non-empty cwd: the command is prefixed with `cd '<cwd>' &&` and `mkdir -p` runs.
+        """
+        contract = AgentContractRequest(name="test-agent", install_cmd="", run_cmd="/abs/agent run")
+
+        streamed_commands: list[str] = []
+        exec_commands: list[str] = []
+
+        async def capture_stream(_sandbox: Any, command: str, *_args: Any, **_kwargs: Any) -> tuple[None, float]:
+            streamed_commands.append(command)
+            return None, 0.0
+
+        async def capture_exec(_sandbox: Any, command: str) -> ExecResult:
+            exec_commands.append(command)
+            return ExecResult(exit_code=0, output="")
+
+        monkeypatch.setattr(sandbox_module, "stream_command_output", capture_stream)
+        monkeypatch.setattr(sandbox_module, "_exec", capture_exec)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "task-alias"
+
+        # Empty / whitespace cwd -> no cd prefix, no mkdir, agent still runs.
+        for empty_cwd in ("", "   "):
+            streamed_commands.clear()
+            exec_commands.clear()
+            await run_agent(
+                mock_sandbox,
+                contract,
+                "/tmp/problem.txt",
+                "task_0",
+                lambda _msg: None,
+                empty_cwd,
+                aws=harness_config.aws,
+                s3_bucket=harness_config.s3_bucket,
+                benchmark_id="benchmark-123",
+            )
+            assert len(streamed_commands) == 1
+            assert "cd " not in streamed_commands[0]
+            assert streamed_commands[0].startswith("PYTHONSAFEPATH=1 ")
+            assert not any(cmd.startswith("mkdir -p") for cmd in exec_commands)
+
+        # Real cwd -> cd prefix present and mkdir runs.
+        streamed_commands.clear()
+        exec_commands.clear()
+        await run_agent(
+            mock_sandbox,
+            contract,
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/testbed",
+            aws=harness_config.aws,
+            s3_bucket=harness_config.s3_bucket,
+            benchmark_id="benchmark-123",
+        )
+        assert len(streamed_commands) == 1
+        assert streamed_commands[0].startswith("cd /testbed && PYTHONSAFEPATH=1 ")
+        assert any(cmd == "mkdir -p /testbed" for cmd in exec_commands)
+
     async def test_run_agent_uploads_declared_output_artifacts(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1039,6 +1111,76 @@ class TestStreamCommandOutputAgentFailure:
         assert exec_commands[-1].startswith("rm -f ")
         assert ".start_ns" in exec_commands[-1]
         assert ".end_ns" in exec_commands[-1]
+
+    async def test_error_output_preserves_full_tail_not_ten_lines(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-zero exit must report the full output tail, not a hard 10-line cut.
+
+        Regression: the old ``tail[-10:]`` cap dropped everything before the last ten
+        lines, hiding the real failure (e.g. a CalledProcessError printed earlier in a
+        traceback). This asserts an early diagnostic line and the final line both survive.
+        """
+        line_count = 40
+
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            for i in range(line_count):
+                yield f"log line {i}\n"
+            yield "Traceback (most recent call last):\n"
+            yield "subprocess.CalledProcessError: command 'solve' returned non-zero exit status 2\n"
+            raise ProviderSandboxCommandError(1)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = AsyncMock(
+            side_effect=[
+                ExecResult(exit_code=0, output="1000000000"),
+                ExecResult(exit_code=0, output="3000000000"),
+                ExecResult(exit_code=0),
+            ]
+        )
+        monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", lambda *_a, **_k: None)
+
+        with pytest.raises(AgentRunFailedError) as exc_info:
+            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+
+        message = str(exc_info.value)
+        # The real cause printed well before the last 10 lines must be retained.
+        assert "log line 0" in message
+        assert "subprocess.CalledProcessError" in message
+        assert "Traceback (most recent call last):" in message
+
+    async def test_error_output_tail_is_byte_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A very chatty command must not blow up the retained error tail unboundedly."""
+
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            # ~5x the retained budget of single-character-ish lines.
+            for i in range(sandbox_module._ERROR_OUTPUT_TAIL_MAX_CHARS):
+                yield f"{i}\n"
+            raise ProviderSandboxCommandError(1)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = AsyncMock(
+            side_effect=[
+                ExecResult(exit_code=0, output="1000000000"),
+                ExecResult(exit_code=0, output="3000000000"),
+                ExecResult(exit_code=0),
+            ]
+        )
+        monkeypatch.setattr("tracker.sandbox.sentry_sdk.set_tag", lambda *_a, **_k: None)
+
+        with pytest.raises(AgentRunFailedError) as exc_info:
+            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
+
+        # Retained tail is bounded (allow headroom for the prefix + a trailing chunk), but the
+        # most recent output is preserved.
+        message = str(exc_info.value)
+        assert len(message) < sandbox_module._ERROR_OUTPUT_TAIL_MAX_CHARS + 2_000
 
     @pytest.mark.parametrize("exit_code", [1, 2, 127])
     async def test_non_zero_exit_raises_agent_run_failed_and_tags_exit_code(

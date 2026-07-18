@@ -431,8 +431,15 @@ async def fetch_benchmark(
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
     if connect:
+        # A StreamingResponse keeps this request — and therefore the `Depends(get_session)`
+        # session, plus the pooled DB connection it checked out for the validation above —
+        # alive for the ENTIRE stream. Leaving it open would pin one pooled connection per
+        # follower for the whole stream, exhausting the (~60) connection pool under many
+        # concurrent launch-day followers. Release it now; stream_benchmark_results opens
+        # its own short-lived session per poll and releases it between polls.
+        session.close()
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, session, harness_config, org),
+            stream_benchmark_results(benchmark_id, harness_config, org),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",

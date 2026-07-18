@@ -3,19 +3,27 @@
 Exercise single-benchmark routes through the real app and local database.
 """
 
+import asyncio
 import json
+from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, SQLModel, create_engine
 
 from tests.factories import make_benchmark, make_task
+from tests.utils import TEST_ORG_ID
 from tracker.database.models import (
+    DEFAULT_ORG_NAME,
     BenchmarkStatus,
     ErrorResult,
     FinalEvaluation,
+    Org,
     TaskStatus,
 )
+from tracker.types import HarnessConfig
+from tracker.utils.reporting import stream_benchmark_results
 
 
 class TestSingleBenchmark:
@@ -107,6 +115,67 @@ class TestBenchmarkStatusStream:
         assert streamed_status["benchmark_name"] == "streamed-benchmark"
         assert streamed_status["details"]["status"] == "FINISHED"
         assert streamed_status["final_score"] == 0.75
+
+    def test_stream_releases_pool_connection_between_polls(
+        self,
+        harness_config: HarnessConfig,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A non-terminal SSE stream must not pin a pooled DB connection between polls.
+
+        Regression (launch-load): the request-scoped session backing the
+        StreamingResponse was held for the entire stream, pinning one pooled
+        connection per follower for the whole stream — so concurrent launch-day
+        followers could exhaust the (~60) connection pool. The stream now opens a
+        short-lived session per poll and releases it before sleeping.
+
+        Test cases:
+        - A connection is checked out while a poll is in flight.
+        - No connection remains checked out between polls (during the sleep before
+          the next poll).
+        """
+        # A real QueuePool (unlike the tests' StaticPool) so pool.checkedout() is meaningful.
+        engine = create_engine(f"sqlite:///{tmp_path / 'stream.db'}")
+        SQLModel.metadata.create_all(engine)
+        with Session(engine, expire_on_commit=False) as seed_session:
+            seed_session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
+            seed_session.commit()
+            # IN_PROGRESS is non-terminal, so the stream keeps polling instead of completing.
+            benchmark = make_benchmark(
+                name="running-benchmark", status=BenchmarkStatus.IN_PROGRESS, session=seed_session
+            )
+            benchmark_id = benchmark.id
+            org = seed_session.get(Org, TEST_ORG_ID)
+            assert org is not None
+
+        monkeypatch.setattr("tracker.utils.reporting.engine", engine)
+
+        checkedout_between_polls: list[int] = []
+
+        async def _capture_and_stop(_interval: float) -> None:
+            # The stream sleeps OUTSIDE the per-poll `with Session(...)` block, i.e.
+            # between polls; capture the pool state there, then end the stream.
+            checkedout_between_polls.append(engine.pool.checkedout())
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr("tracker.utils.reporting.asyncio.sleep", _capture_and_stop)
+
+        async def _drive() -> None:
+            stream = stream_benchmark_results(benchmark_id, harness_config, org)
+            first_event = await stream.__anext__()
+            assert first_event.startswith("data:")
+            # Paused at the yield, still inside the poll's `with Session(...)`.
+            assert engine.pool.checkedout() == 1
+            # Advancing exits the with-block (releasing the connection), then hits the
+            # patched sleep which records pool state and cancels the stream.
+            disconnect_event = await stream.__anext__()
+            assert disconnect_event == "event: disconnect\n\n"
+
+        asyncio.run(_drive())
+
+        assert checkedout_between_polls == [0]
+        engine.dispose()
 
 
 class TestBenchmarkTaskListing:

@@ -30,7 +30,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.scoping import scoped_select
-from tracker.exceptions import TrackerServiceError
+from tracker.database.session import engine
 from tracker.logging import get_logger
 from tracker.types import (
     AverageTaskBreakdown,
@@ -113,10 +113,13 @@ class BenchmarkContext:
 
         result = self._session.exec(statement).all()
 
+        # VALKYRIE-28: a run can legitimately have no task rows yet (created but tasks not
+        # materialized, or a start that failed before create_task_rows). Returning an empty
+        # breakdown lets GET /fetch-benchmark degrade gracefully instead of the global
+        # TrackerServiceError handler turning it into a 500.
         if not result:
-            raise TrackerServiceError(
-                f"No tasks have been discovered for run {self._benchmark_row.id}, cannot provide task breakdown"
-            )
+            logger.warning(f"No tasks have been discovered for run {self._benchmark_row.id}; returning empty breakdown")
+            return {}
 
         return {TaskStatus(status): count for status, count in result}
 
@@ -259,7 +262,7 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, harness_config: HarnessConfig, org: Org
+    benchmark_id: UUID, harness_config: HarnessConfig, org: Org
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -269,6 +272,14 @@ async def stream_benchmark_results(
 
     Returns:
         AsyncGenerator[str]
+
+    Connection handling: each poll opens a short-lived Session directly on the module
+    engine and releases it (back to the pool) before sleeping. The stream deliberately
+    does NOT take the request-scoped session, because a StreamingResponse keeps that
+    dependency — and any pooled connection it holds — alive for the entire stream. A
+    long-lived per-follower connection would exhaust the (~60) connection pool under many
+    concurrent launch-day followers; holding a connection only during each brief poll
+    keeps pool usage proportional to concurrent in-flight polls instead.
     """
     PULL_INTERVAL = 5
 
@@ -279,7 +290,7 @@ async def stream_benchmark_results(
 
     try:
         while True:
-            with Session(bind=session.bind) as fresh_session:
+            with Session(engine) as fresh_session:
                 fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
                 if not fresh_benchmark or fresh_benchmark.org_id != org.id:
                     yield f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"

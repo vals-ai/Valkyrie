@@ -43,6 +43,13 @@ BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
 
+# Stall watchdog: hard wall-clock ceiling on a single task attempt. A hung sandbox stream
+# or a stuck benchmark-service websocket has no lower-level asyncio timeout, so without this
+# a task can sit IN_PROGRESS forever (observed on ~11h shards). When exceeded, the attempt is
+# cancelled and the task is failed so the run can finalize / be retried. Default 20h sits
+# comfortably above the longest legitimate task and below the 24h broker redelivery window.
+TASK_MAX_DURATION_SECONDS = int(os.environ.get("TASK_MAX_DURATION_SECONDS", str(20 * 60 * 60)))
+
 
 def _build_database_url() -> str:
     """Build DATABASE_URL from individual components or use direct URL."""

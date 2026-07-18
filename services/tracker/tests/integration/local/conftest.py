@@ -70,6 +70,9 @@ def local_app(
     main_module.app.dependency_overrides[get_session] = get_test_session
     main_module.app.dependency_overrides[fetch_harness_config] = lambda: harness_config
     monkeypatch.setattr("tracker.database.session.engine", database_session.bind)
+    # reporting.py imports `engine` by value (for the SSE stream's per-poll sessions),
+    # so patch its module-level reference too — same pattern as task_execution/run_orchestration.
+    monkeypatch.setattr("tracker.utils.reporting.engine", database_session.bind)
 
     try:
         yield main_module.app

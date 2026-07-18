@@ -40,6 +40,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from botocore.exceptions import ReadTimeoutError
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     TaskMonitor,
@@ -458,6 +459,73 @@ class TestRunRecovery:
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
         assert len(captured_lambda_payloads) == 1
         assert captured_lambda_payloads[0]["benchmark_name"] == "swebench"
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_finalize_lambda_failure_keeps_run_finished(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        """A finalize-only sidecar lambda failure must not flip a completed run to ERROR.
+
+        Test cases:
+        - All tasks finish and results + final evaluation are persisted.
+        - The configured finalize lambda raises (e.g. vals-format deploy mismatch).
+        - The run stays FINISHED with no error message; the failure is swallowed.
+        """
+        task_ids = ["astropy__astropy-12907", "django__django-11066"]
+
+        # VALKYRIE-9X: the real prod trigger is a 60s botocore ReadTimeout on the sync
+        # vals-format lambda invoke, which is NOT wrapped in LambdaError (invoke_lambda only
+        # catches ClientError). The guard must catch it too, so exercise it directly.
+        def _failing_invoke_lambda(_client: Any, _function_name: str, _payload: dict[str, Any]) -> None:
+            raise ReadTimeoutError(endpoint_url="https://lambda.us-east-1.amazonaws.com")
+
+        captured_client_configs: list[Any] = []
+
+        def _capturing_lambda_client(_aws: Any, config: Any = None) -> object:
+            captured_client_configs.append(config)
+            return object()
+
+        monkeypatch.setattr("tracker.utils.run_orchestration.lambda_client", _capturing_lambda_client)
+        monkeypatch.setattr("tracker.utils.run_orchestration.invoke_lambda", _failing_invoke_lambda)
+
+        start_benchmark_request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=2,
+            task_ids=task_ids,
+            lambda_function="vals-format-lambda",
+            harness_config=harness_config,
+        )
+
+        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        for task_id in task_ids:
+            database_session.add(
+                Task(org_id=TEST_ORG_ID, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING)
+            )
+        database_session.commit()
+
+        await process_benchmark(
+            start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
+            benchmark_id_str=str(benchmark_row.id),
+            verified_task_ids=task_ids,
+        )
+
+        database_session.refresh(benchmark_row)
+        # The finalize lambda blew up, but the run's work is durably complete: stay FINISHED.
+        assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
+        assert benchmark_row.error_message is None
+        assert benchmark_row.final_evaluation is not None
+        # Root-cause layer: the finalize invoke must use a read timeout that exceeds Lambda's
+        # 15-minute ceiling (not the default 60s that caused VALKYRIE-9X).
+        assert captured_client_configs and captured_client_configs[0] is not None
+        assert captured_client_configs[0].read_timeout >= 900
 
     @pytest.mark.parametrize(
         ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),
@@ -1066,6 +1134,54 @@ class TestRunRecovery:
         }
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.contract.secrets == queued_request["contract"]["secrets"]
+
+    async def test_retry_with_secrets_survives_deleted_final_evaluation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        """VALKYRIE-BS: retry+secrets on a scored run must not choke on the deleted FinalEvaluation.
+
+        reset_to_in_progress_status deletes the run's FinalEvaluation; the API session uses
+        expire_on_commit=False, so the later session.add(benchmark_row) that applies resume
+        secrets previously cascaded save-update over the deleted instance and raised
+        InvalidRequestError("Instance '<FinalEvaluation>' has been deleted").
+
+        Test cases:
+        - Retry with resume secrets on a finished/stopped run returns 200 (no 500).
+        - The stale FinalEvaluation is cleared so the score is recomputed on the rerun.
+        """
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.flush()
+        database_session.add(FinalEvaluation(org_id=TEST_ORG_ID, benchmark=benchmark_row.id, final_score=1.0))
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+        )
+        database_session.commit()
+
+        async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=task_ids)
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_verify_task_ids)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+            json={"task_ids": [], "service_headers": {}, "secrets": {"ANTHROPIC_API_KEY": "new-secret"}},
+        )
+
+        assert response.status_code == 200, response.text
+        assert mock_kicker.queued_calls
+        database_session.expire_all()
+        assert (
+            database_session.exec(
+                select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark_row.id)
+            ).first()
+            is None
+        )
 
     async def test_running_retry_noops_without_error_tasks(
         self,

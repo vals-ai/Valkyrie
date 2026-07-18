@@ -500,6 +500,27 @@ class TestTrackerAPI:
         assert response.status_code == 200
         assert response.json().get("final_score") == 83.25
 
+    async def test_fetch_benchmark_without_tasks_degrades_gracefully(
+        self, database_session: Session, example_benchmark_object: Benchmark
+    ) -> None:
+        """VALKYRIE-28: a run with no task rows must not 500 on GET /fetch-benchmark.
+
+        Test cases:
+        - A benchmark with zero tasks returns 200 with an empty task breakdown.
+        - total/finished task counts are zero rather than raising TrackerServiceError.
+        """
+        benchmark_row = example_benchmark_object
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmark", params={"benchmark_id": str(benchmark_row.id)})
+
+        assert response.status_code == 200, response.text
+        details = response.json()["details"]
+        assert details["total_tasks"] == 0
+        assert details["finished_tasks"] == 0
+        assert details["task_breakdown"] == {}
+
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
     ) -> None:

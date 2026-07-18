@@ -32,7 +32,7 @@ from tracker.aws.s3 import (
     get_agent_result_s3_key,
 )
 from tracker.aws.secrets import resolve_secrets
-from tracker.config import ENVIRONMENT
+from tracker.config import ENVIRONMENT, TASK_MAX_DURATION_SECONDS
 from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
@@ -112,7 +112,13 @@ class TrackedTask:
             """Need to have a task created even if we are not running the coroutine so that we can cancel it before its running"""
             async with semaphore:
                 self._status = TrackedTaskStatus.RUNNING
-                return await self._coro
+                # Stall watchdog: bound the attempt by a configurable wall-clock max duration.
+                # stream_command_output / benchmark-service websockets have no lower-level
+                # asyncio timeout, so a hung call would otherwise leave the task IN_PROGRESS
+                # forever. On expiry asyncio.timeout cancels the coroutine (its finally blocks
+                # run: log flush + sandbox teardown) and raises TimeoutError, handled below.
+                async with asyncio.timeout(TASK_MAX_DURATION_SECONDS):
+                    return await self._coro
 
         try:
             self._task = asyncio.create_task(_wrap_coro())
@@ -123,6 +129,20 @@ class TrackedTask:
             self._coro.close()
 
             # When we cancel we return the task id still so that we can track the task when we create the final evaluation row
+            return {task_row.task_id: None}
+        except TimeoutError:
+            # Watchdog fired: the attempt exceeded TASK_MAX_DURATION_SECONDS. Fail the task
+            # (rather than leave it IN_PROGRESS) so the run can finalize and be retried.
+            error_message = (
+                f"Task {task_row.task_id} exceeded the stall-watchdog max duration of "
+                f"{TASK_MAX_DURATION_SECONDS}s and was terminated"
+            )
+            logger.error(error_message)
+            logfire.exception("tracked_task_run stall watchdog fired")
+            with Session(bind=engine) as session:
+                task = fetch_task_row(task_row.id, session, self._org)
+                commit_task_error(task, session, error_message, expected_started_at=task_row.started_at)
+
             return {task_row.task_id: None}
         except Exception as e:
             error_message = f"Task error was not handled: {_exception_message(e)}\n{traceback.format_exc()}"

@@ -227,6 +227,13 @@ async def reset_to_in_progress_status(
 
         if benchmark_row.final_evaluation:
             session.delete(benchmark_row.final_evaluation)
+            # Drop the in-memory relationship reference to the now-deleted FinalEvaluation.
+            # The API session uses expire_on_commit=False, so without this the deleted
+            # instance lingers in benchmark_row.__dict__; a later session.add(benchmark_row)
+            # in the retry/resume endpoint (applying resume secrets or a new concurrency)
+            # would cascade save-update over it and raise
+            # InvalidRequestError("Instance '<FinalEvaluation>' has been deleted") (VALKYRIE-BS).
+            session.expire(benchmark_row, ["final_evaluation"])
 
         # Can already be in progress when retrying errored tasks while the run is ongoing.
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:

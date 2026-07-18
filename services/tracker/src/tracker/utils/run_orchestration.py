@@ -8,6 +8,7 @@ from uuid import UUID
 
 import logfire
 import sentry_sdk
+from botocore.config import Config
 from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from opentelemetry import trace
 from sqlmodel import Session, col, desc, func, select
@@ -51,6 +52,18 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+
+# The finalize sidecar lambda (e.g. vals-format) runs for minutes on large runs (hundreds of
+# tasks). The default boto client uses a 60s read timeout, so a synchronous RequestResponse
+# invoke times out mid-run (VALKYRIE-9X, escalating after vals-format change #2000). Give the
+# invoke a read timeout that comfortably exceeds Lambda's 15-minute hard ceiling, and disable
+# retries so a slow-but-successful invoke is never silently re-run (duplicate sidecar work).
+_FINALIZE_LAMBDA_TIMEOUT_SECONDS: int = 900
+_FINALIZE_LAMBDA_CONFIG = Config(
+    read_timeout=_FINALIZE_LAMBDA_TIMEOUT_SECONDS + 60,
+    # No retries: a slow-but-successful invoke must never be silently re-run (duplicate sidecar work).
+    retries={"max_attempts": 1},
+)
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
@@ -360,7 +373,25 @@ async def process_benchmark(
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
 
-                invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
+                # The run is already FINISHED and committed above (results + final_evaluation
+                # are durably persisted and the final view is in S3). This finalize-only
+                # sidecar lambda (e.g. vals-format) is a best-effort side effect: a failure
+                # here usually signals a deploy/version mismatch on the lambda, not a problem
+                # with the run itself. Do NOT let it propagate — an unguarded raise would be
+                # caught by the outer handler and flip an otherwise-complete run to ERROR.
+                try:
+                    invoke_lambda(
+                        lambda_client(harness_config.aws, _FINALIZE_LAMBDA_CONFIG),
+                        arguments.lambda_function,
+                        lambda_payload,
+                    )
+                except Exception as lambda_error:
+                    logfire.exception("finalize_lambda_invocation_failed")
+                    sentry_sdk.capture_exception(lambda_error)
+                    logger.warning(
+                        f"Finalize lambda '{arguments.lambda_function}' failed for run {benchmark_id}; "
+                        f"leaving run status unchanged: {lambda_error}"
+                    )
 
     except BenchmarkServiceUnauthenticatedError as e:
         logfire.warn("process_benchmark failed due to benchmark service auth error")

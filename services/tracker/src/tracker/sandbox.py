@@ -402,6 +402,14 @@ _TIMEOUT_EXIT_CODE: int = 124
 _OS_KILL_EXIT_CODE: int = 137
 _SUCCESS_EXIT_CODE: int = 0
 _STATUS_DIR = "/tmp/.valkyrie"
+
+# When an agent command exits non-zero we surface a tail of its output in the raised
+# AgentRunFailedError (which is persisted to the task's ErrorResult and shown in the UI).
+# A hard N-line cut previously truncated the real failure (e.g. a Python traceback / a
+# subprocess CalledProcessError whose message printed after the cutoff), making incidents
+# undiagnosable. Retain a generous, byte-bounded tail instead: bounded so a chatty command
+# can't blow up memory or the error column, but large enough to preserve a full traceback.
+_ERROR_OUTPUT_TAIL_MAX_CHARS: int = 16_000
 _EGRESS_RETRY = retry(
     retry=retry_if_exception_type(ProviderSandboxError) & retry_if_not_exception_type(SandboxNotFoundError),
     reraise=True,
@@ -472,7 +480,11 @@ async def stream_command_output(
     command: str,
     on_output: Callable[[str], None],
 ) -> tuple[AgentCausedExitReason | None, float]:
-    output: deque[str] = deque(maxlen=50)
+    # Retain a byte-bounded tail of the streamed output so a non-zero exit can report the
+    # real error. We trim by total characters (not chunk count) so the full end of the
+    # output — where tracebacks and error messages land — is preserved for diagnosis.
+    output: deque[str] = deque()
+    output_chars = 0
     run_id = uuid.uuid4().hex
     start_ns_path = f"{_STATUS_DIR}/{run_id}.start_ns"
     end_ns_path = f"{_STATUS_DIR}/{run_id}.end_ns"
@@ -491,6 +503,11 @@ async def stream_command_output(
             async for data in sandbox.command(timed_command):
                 on_output(data)
                 output.append(data)
+                output_chars += len(data)
+                # Drop the oldest chunks once the retained tail exceeds the budget, keeping
+                # at least the most recent chunk so a single huge chunk is still reported.
+                while output_chars > _ERROR_OUTPUT_TAIL_MAX_CHARS and len(output) > 1:
+                    output_chars -= len(output.popleft())
         except ProviderSandboxCommandError as e:
             exit_code = e.exit_code
         except SandboxNotFoundError:
@@ -509,8 +526,9 @@ async def stream_command_output(
         if exit_code == _OS_KILL_EXIT_CODE:
             return AgentCausedExitReason.OS_KILLED, duration
 
-        tail = "".join(output).strip().splitlines()
-        recent = "\n".join(tail[-10:]) if tail else "(no output)"
+        # Preserve the full retained tail (a traceback's final lines carry the actual cause);
+        # the tail is already char-bounded above so it is safe to include in full.
+        recent = "".join(output).strip() or "(no output)"
         sentry_sdk.set_tag("agent_exit_code", str(exit_code))
         raise AgentRunFailedError(f"Failed to run command {command}, exit code: {exit_code}\nLast output:\n{recent}")
     finally:
@@ -721,13 +739,21 @@ async def run_agent(
     if agent_timeout is not None:
         run_cmd = f"timeout {agent_timeout:g} sh -c {shlex.quote(run_cmd)}"
 
-    # Create cwd if it does not already exist
-    await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
+    # VALKYRIE-B7 (cosmetic hygiene): some benchmarks (e.g. web-search) hard-code an empty
+    # task_data.cwd and rely on running in the default working directory (their agent binary is
+    # an absolute path). An empty cwd would otherwise produce a malformed `cd '' && ...` prefix
+    # and a `mkdir -p ''`. Only cd/mkdir when a real cwd is provided; otherwise run in place.
+    has_cwd = bool(cwd and cwd.strip())
+    if has_cwd:
+        # Create cwd if it does not already exist
+        await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
+
+    cd_prefix = f"cd {shlex.quote(cwd)} && " if has_cwd else ""
 
     # Run the agent without including task directory dependencies
     exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
         sandbox,
-        f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+        f"{cd_prefix}PYTHONSAFEPATH=1 {run_cmd}",
         log_output,
         contract.egress_allowlist,
     )
