@@ -970,6 +970,33 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.concurrency == 20
 
+    async def test_retry_or_resume_rejects_a_changed_benchmark_service_binding(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.custom_benchmark_service = "https://stored.example.com"
+        database_session.add(benchmark_row)
+        database_session.commit()
+        reset = AsyncMock(return_value=["task_0"])
+        monkeypatch.setattr("main.reset_to_in_progress_status", reset)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "expected_benchmark_service": "https://registered.example.com",
+                "task_ids": [],
+            },
+        )
+
+        assert response.status_code == 409
+        reset.assert_not_awaited()
+        assert mock_kicker.queued_calls == []
+
     async def test_force_stop_uses_stored_provider_secret(
         self,
         example_benchmark_object: Benchmark,

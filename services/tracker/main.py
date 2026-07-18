@@ -758,6 +758,7 @@ async def retry_or_resume_benchmark(
     task_ids: list[str] = Body(default=[]),
     service_headers: dict[str, str] = Body(default={}),
     secrets: dict[str, str] = Body(default={}),
+    expected_benchmark_service: str | None = Body(default=None),
     session: Session = Depends(get_session),
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
@@ -780,6 +781,13 @@ async def retry_or_resume_benchmark(
         RetryOrResumeBenchmarkResponse
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+
+    benchmark_service_url = benchmark_row.custom_benchmark_service or create_benchmark_service_url(benchmark_row.name)
+    if expected_benchmark_service is not None and expected_benchmark_service != benchmark_service_url:
+        raise HTTPException(
+            status_code=409,
+            detail="The run's benchmark service no longer matches the registered service.",
+        )
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
