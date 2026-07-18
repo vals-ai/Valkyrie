@@ -3,7 +3,7 @@ from uuid import UUID
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.progress import format_benchmark_status, stream_benchmark_status
+from valkyrie.cli.run.progress import format_run_status, stream_run_status
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -43,15 +43,15 @@ def fetch(run_id: UUID, connect: bool, output_format: str):
         with TrackerService() as tracker:
             if connect:
                 if output_format == "jsonl":
-                    stream_benchmark_status(tracker, run_id, output_format="jsonl")
+                    stream_run_status(tracker, run_id, output_format="jsonl")
                 else:
-                    stream_benchmark_status(tracker, run_id, show_identity=True)
+                    stream_run_status(tracker, run_id, show_identity=True)
             else:
-                response = tracker.fetch_benchmark(run_id)
+                response = tracker.fetch_run(run_id)
                 if output_format == "json":
                     metadata = fetch_run_metadata(tracker, run_id)
                     click.echo(format_run_snapshot_json(response, metadata, event="snapshot"))
                 else:
-                    format_benchmark_status(response)
+                    format_run_status(response)
     except TrackerServiceError as e:
         raise click.ClickException(str(e))

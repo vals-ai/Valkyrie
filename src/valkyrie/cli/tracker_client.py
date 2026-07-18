@@ -15,24 +15,23 @@ from httpx._models import Response
 from pydantic import BaseModel, ValidationError
 from tracker.database.models import AgentContractRequest, RetryMode
 from tracker.types import (
-    BenchmarkServiceEntry,
     BenchmarkServiceCatalogResponse,
+    BenchmarkServiceEntry,
     BenchmarkServicesRequest,
     BenchmarkServicesResponse,
-    BenchmarkStatusResponse,
-    FetchBenchmarkMetadataResponse,
-    FetchBenchmarkResponse,
     FetchBenchmarkTasksRequest,
-    FetchBenchmarksRequest,
-    FetchBenchmarksResponse,
-    FinalViewResponse,
+    GetRunResponse,
     HarnessConfig,
-    RetrieveResultsResponse,
-    RetryOrResumeBenchmarkResponse,
+    ListRunsRequest,
+    ListRunsResponse,
+    RetrieveRunResultsResponse,
+    RetryOrResumeRunResponse,
+    RunMetadataResponse,
     RunResultsResponse,
+    RunStatusResponse,
     S3UploadResultsResponse,
-    StartBenchmarkRequest,
-    StopBenchmarkResponse,
+    StartRunRequest,
+    StopRunResponse,
 )
 
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
@@ -75,6 +74,16 @@ def response_error_detail(response: Response) -> Any:
     if isinstance(body, dict):
         return body.get("detail", response.text)
     return response.text
+
+
+def _is_missing_route(response: Response) -> bool:
+    """Return whether FastAPI could not match the requested route."""
+    if response.status_code != 404:
+        return False
+    try:
+        return response.json() == {"detail": "Not Found"}
+    except (ValueError, httpx.ResponseNotRead):
+        return False
 
 
 def _parse_response(response: Response, action: str) -> Any:
@@ -172,7 +181,7 @@ class TrackerService:
         legacy_params: dict[str, Any] | None = None,
     ) -> Response:
         response = self._client.get(canonical_url, params=params)
-        if response.status_code == 404:
+        if _is_missing_route(response):
             return self._client.get(legacy_url, params=legacy_params if legacy_params is not None else params)
         return response
 
@@ -186,7 +195,7 @@ class TrackerService:
         json: dict[str, Any],
     ) -> Response:
         response = self._client.post(canonical_url, params=params, json=json)
-        if response.status_code == 404:
+        if _is_missing_route(response):
             return self._client.post(
                 legacy_url,
                 params=legacy_params if legacy_params is not None else params,
@@ -210,6 +219,9 @@ class TrackerService:
                 yield response
                 return
             response.read()
+            if not _is_missing_route(response):
+                yield response
+                return
         with self._client.stream(method, legacy_url, params=legacy_params, json=json, timeout=None) as response:
             yield response
 
@@ -437,7 +449,7 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to initialize org: {e}") from e
 
-    def start_benchmark(
+    def start_run(
         self,
         contract: AgentContractRequest,
         benchmark_name: str,
@@ -473,7 +485,7 @@ class TrackerService:
         """
         try:
             provider_name, sandbox_provider_secret_name = self.resolve_sandbox_provider(provider)
-            payload = StartBenchmarkRequest(
+            payload = StartRunRequest(
                 contract=contract,
                 benchmark_name=benchmark_name,
                 concurrency=concurrency,
@@ -506,44 +518,44 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to start run: {e}") from e
 
-    def fetch_benchmark(self, benchmark_id: UUID) -> FetchBenchmarkResponse:
+    def fetch_run(self, run_id: UUID) -> GetRunResponse:
         """
-        Fetch a benchmark by its benchmark id.
+        Fetch a run by its run id.
 
         Args:
-            benchmark_id: Benchmark id
+            run_id: Run id
 
         Returns:
-            FetchBenchmarkResponse with benchmark information
+            GetRunResponse with benchmark information
         """
         try:
             response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/{benchmark_id}",
+                f"{self._base_url}/runs/{run_id}",
                 f"{self._base_url}/fetch-benchmark",
-                legacy_params={"benchmark_id": str(benchmark_id)},
+                legacy_params={"benchmark_id": str(run_id)},
             )
 
-            return _parse_model_response(response, "Failed to fetch run", FetchBenchmarkResponse)
+            return _parse_model_response(response, "Failed to fetch run", GetRunResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run: {e}") from e
 
-    def analyze_benchmark(
+    def analyze_run(
         self,
-        benchmark_id: UUID,
+        run_id: UUID,
         *,
         no_cache: bool,
         lambda_function: str | None,
     ) -> Iterator[tuple[str, dict[str, Any]]]:
         """Trigger Docent analysis. Yields ``(event_name, data)`` SSE events
         (``started``, ``heartbeat``, ``done``, ``error``) until terminal."""
-        url = f"{self._base_url}/runs/{benchmark_id}/analysis"
+        url = f"{self._base_url}/runs/{run_id}/analysis"
         body = {"no_cache": no_cache, "lambda_function": lambda_function}
 
         try:
             with self._stream_with_legacy_fallback(
                 "POST",
                 url,
-                f"{self._base_url}/analyze-benchmark/{benchmark_id}",
+                f"{self._base_url}/analyze-benchmark/{run_id}",
                 json=body,
             ) as response:
                 if response.status_code != 200:
@@ -575,18 +587,18 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"analyze-benchmark failed: {e}") from e
 
-    def stream_benchmark(self, benchmark_id: UUID) -> Generator[str, None, None]:
+    def stream_run(self, run_id: UUID) -> Generator[str, None, None]:
         """
-        Stream benchmark updates using a generator.
+        Stream run updates using a generator.
 
         possible values for the generator:
-        - data: {FetchBenchmarkResponse}
+        - data: {GetRunResponse}
         - event: complete: benchmark completed
         - event: error: benchmark error
         - event: disconnect: client disconnected from stream
 
         Args:
-            benchmark_id: Benchmark id
+            run_id: Run id
 
         Yields:
             Generator[str, None, None]
@@ -594,9 +606,9 @@ class TrackerService:
         try:
             with self._stream_with_legacy_fallback(
                 "GET",
-                f"{self._base_url}/runs/{benchmark_id}/events",
+                f"{self._base_url}/runs/{run_id}/events",
                 f"{self._base_url}/fetch-benchmark",
-                legacy_params={"benchmark_id": str(benchmark_id), "connect": "true"},
+                legacy_params={"benchmark_id": str(run_id), "connect": "true"},
             ) as response:
                 if response.status_code != 200:
                     response.read()
@@ -611,12 +623,12 @@ class TrackerService:
 
     def retrieve_results(
         self,
-        benchmark_id: UUID,
+        run_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
-    ) -> RetrieveResultsResponse:
+    ) -> RetrieveRunResultsResponse:
         """
-        Retrieve the results of a benchmark by its benchmark id.
+        Retrieve the results of a run by its run id.
 
         If task_ids is provided, results are filtered to that subset and the final score is
         recomputed over those tasks (does not mutate the stored FinalEvaluation).
@@ -627,15 +639,14 @@ class TrackerService:
                 params["task_ids"] = task_ids
 
             response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/{benchmark_id}/results",
+                f"{self._base_url}/runs/{run_id}/results",
                 f"{self._base_url}/retrieve-results",
                 params=params,
-                legacy_params={"benchmark_id": str(benchmark_id), **params},
+                legacy_params={"benchmark_id": str(run_id), **params},
             )
 
             if not s3:
-                canonical_response = _parse_model_response(response, "Failed to retrieve results", RunResultsResponse)
-                return FinalViewResponse.model_validate(canonical_response.model_dump(mode="json"))
+                return _parse_model_response(response, "Failed to retrieve results", RunResultsResponse)
 
             return _parse_model_response(response, "Failed to retrieve results", S3UploadResultsResponse)
 
@@ -667,12 +678,12 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch task ids: {e}") from e
 
-    def check_results_exist_in_s3(self, benchmark_id: UUID) -> bool:
+    def check_results_exist_in_s3(self, run_id: UUID) -> bool:
         """
-        Check if results already exist in S3 for the given benchmark.
+        Check if results already exist in S3 for the given run.
 
         Args:
-            benchmark_id: Benchmark id
+            run_id: Run id
 
         Returns:
             True if results exist in S3, False otherwise
@@ -682,59 +693,59 @@ class TrackerService:
         """
         try:
             response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/{benchmark_id}/results/exists",
+                f"{self._base_url}/runs/{run_id}/results/exists",
                 f"{self._base_url}/check-results-exist",
-                legacy_params={"benchmark_id": str(benchmark_id)},
+                legacy_params={"benchmark_id": str(run_id)},
             )
 
             return _parse_response(response, "Failed to check S3 results")["exists"]
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to check S3 results: {e}") from e
 
-    def stop_benchmark(
+    def stop_run(
         self,
-        benchmark_id: UUID,
+        run_id: UUID,
         force: bool,
         task_ids: list[str] | None = None,
-    ) -> StopBenchmarkResponse:
+    ) -> StopRunResponse:
         """
-        Stop a benchmark by its benchmark id.
+        Stop a run by its run id.
 
         Args:
-            benchmark_id: Benchmark id
+            run_id: Run id
             force: Whether to stop active sandboxes immediately
             task_ids: Optional task IDs to stop without affecting other tasks
 
         Returns:
-            StopBenchmarkResponse with status and message
+            StopRunResponse with status and message
         """
         try:
             response = self._post_with_legacy_fallback(
-                f"{self._base_url}/runs/{benchmark_id}/stop",
-                f"{self._base_url}/stop-benchmark/{benchmark_id}",
+                f"{self._base_url}/runs/{run_id}/stop",
+                f"{self._base_url}/stop-benchmark/{run_id}",
                 params={"force": force},
                 json={"task_ids": task_ids},
             )
 
-            return _parse_model_response(response, "Failed to stop run", StopBenchmarkResponse)
+            return _parse_model_response(response, "Failed to stop run", StopRunResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to stop run: {e}") from e
 
-    def retry_or_resume_benchmark(
+    def retry_or_resume_run(
         self,
-        benchmark_id: UUID,
+        run_id: UUID,
         retry: bool,
         retry_mode: RetryMode,
         concurrency: int | None,
         task_ids: list[str],
         service_headers: dict[str, str] | None = None,
         secrets: dict[str, str] | None = None,
-    ) -> RetryOrResumeBenchmarkResponse:
+    ) -> RetryOrResumeRunResponse:
         """
-        Run a benchmark that has already been created by its benchmark id.
+        Continue a run that has already been created.
 
         Args:
-            benchmark_id: Benchmark id
+            run_id: Run id
             retry: Whether to retry tasks with the status error
             concurrency: Optional new concurrency level to override original value
             task_ids: List of task ids to force retry. Task ids without an existing row
@@ -743,7 +754,7 @@ class TrackerService:
             secrets: Optional agent secret mappings to merge into the stored contract
 
         Returns:
-            RetryOrResumeBenchmarkResponse with status and message
+            RetryOrResumeRunResponse with status and message
         """
         try:
             params: dict[str, Any] = {"retry_mode": retry_mode.value}
@@ -756,26 +767,26 @@ class TrackerService:
                 body["secrets"] = secrets
 
             response = self._post_with_legacy_fallback(
-                f"{self._base_url}/runs/{benchmark_id}/{'retry' if retry else 'resume'}",
-                f"{self._base_url}/retry-or-resume-benchmark/{benchmark_id}",
+                f"{self._base_url}/runs/{run_id}/{'retry' if retry else 'resume'}",
+                f"{self._base_url}/retry-or-resume-benchmark/{run_id}",
                 params=params,
                 legacy_params={"retry": retry, **params},
                 json=body,
             )
 
-            return _parse_model_response(response, "Failed to start run", RetryOrResumeBenchmarkResponse)
+            return _parse_model_response(response, "Failed to start run", RetryOrResumeRunResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to start run: {e}") from e
 
-    def fetch_benchmarks(self, request: FetchBenchmarksRequest) -> FetchBenchmarksResponse:
+    def list_runs(self, request: ListRunsRequest) -> ListRunsResponse:
         """
-        Fetch benchmarks based on the request parameters.
+        Fetch runs based on the request parameters.
 
         Args:
-            request: FetchBenchmarksRequest
+            request: ListRunsRequest
 
         Returns:
-            FetchBenchmarksResponse
+            ListRunsResponse
         """
         try:
             params = request.model_dump(exclude_none=True, mode="json")
@@ -785,29 +796,29 @@ class TrackerService:
                 params=params,
             )
 
-            return _parse_model_response(response, "Failed to fetch runs", FetchBenchmarksResponse)
+            return _parse_model_response(response, "Failed to fetch runs", ListRunsResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch runs: {e}") from e
 
-    def fetch_benchmark_statuses(self, benchmark_ids: list[UUID]) -> BenchmarkStatusResponse:
+    def fetch_run_statuses(self, run_ids: list[UUID]) -> RunStatusResponse:
         """Fetch lightweight status and task counts for multiple runs."""
         try:
-            params = {"ids": ",".join(str(benchmark_id) for benchmark_id in benchmark_ids)}
+            params = {"ids": ",".join(str(run_id) for run_id in run_ids)}
             response = self._get_with_legacy_fallback(
                 f"{self._base_url}/runs/status",
                 f"{self._base_url}/benchmarks/status",
                 params=params,
             )
-            return _parse_model_response(response, "Failed to fetch run statuses", BenchmarkStatusResponse)
+            return _parse_model_response(response, "Failed to fetch run statuses", RunStatusResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run statuses: {e}") from e
 
-    def fetch_run_outputs(self, benchmark_id: UUID, task_ids: list[str] | None = None) -> Response:
+    def fetch_run_outputs(self, run_id: UUID, task_ids: list[str] | None = None) -> Response:
         """
-        Fetch run outputs for a benchmark by its benchmark id.
+        Fetch outputs for a run.
 
         Args:
-            benchmark_id: Benchmark id
+            run_id: Run id
             task_ids: Optional list of task ids to filter outputs
 
         Returns:
@@ -818,8 +829,8 @@ class TrackerService:
             if task_ids:
                 params["task_ids"] = task_ids
             response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/{benchmark_id}/outputs",
-                f"{self._base_url}/fetch-run-outputs/{benchmark_id}",
+                f"{self._base_url}/runs/{run_id}/outputs",
+                f"{self._base_url}/fetch-run-outputs/{run_id}",
                 params=params,
             )
             if response.status_code != 200:
@@ -830,26 +841,26 @@ class TrackerService:
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run outputs: {e}") from e
 
-    def fetch_benchmark_metadata(self, benchmark_id: UUID) -> FetchBenchmarkMetadataResponse:
+    def fetch_run_metadata(self, run_id: UUID) -> RunMetadataResponse:
         """
-        Fetch benchmark metadata for a benchmark by its benchmark id.
+        Fetch metadata for a run.
 
         Args:
-            benchmark_id: Benchmark id
+            run_id: Run id
 
         Returns:
-            FetchBenchmarkMetadataResponse with benchmark metadata
+            RunMetadataResponse with benchmark metadata
         """
         try:
             response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/{benchmark_id}/metadata",
-                f"{self._base_url}/fetch-benchmark-metadata/{benchmark_id}",
+                f"{self._base_url}/runs/{run_id}/metadata",
+                f"{self._base_url}/fetch-benchmark-metadata/{run_id}",
             )
 
             return _parse_model_response(
                 response,
                 "Failed to fetch run metadata",
-                FetchBenchmarkMetadataResponse,
+                RunMetadataResponse,
             )
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run metadata: {e}") from e

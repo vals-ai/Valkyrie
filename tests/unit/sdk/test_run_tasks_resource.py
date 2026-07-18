@@ -1,4 +1,4 @@
-"""Tests for hosted benchmark and task inspection workflows."""
+"""Tests for run status and task inspection workflows."""
 
 from __future__ import annotations
 
@@ -8,41 +8,6 @@ import httpx
 import pytest
 
 from valkyrie.sdk.models import FetchTasksRequest, Order, TaskStatus
-
-
-async def test_fetch_returns_typed_benchmark_detail(make_client) -> None:
-    run_id = uuid4()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "GET"
-        assert request.url.path == f"/benchmarks/{run_id}"
-        return httpx.Response(
-            200,
-            json={
-                "id": str(run_id),
-                "name": "swebench",
-                "agent_name": "sweagent",
-                "model": "anthropic/claude-sonnet-4-6",
-                "started_at": "2026-07-08T12:00:00Z",
-                "finished_at": None,
-                "status": "IN_PROGRESS",
-                "total_tasks": 2,
-                "finished_tasks": 1,
-                "task_state_counts": {"FINISHED": 1, "IN_PROGRESS": 1},
-                "started_by_email": "developer@vals.ai",
-                "final_score": None,
-                "error_message": None,
-                "cloudwatch_url": "https://logs.test",
-                "s3_bucket_url": "s3://runs-bucket/benchmarks/run",
-            },
-        )
-
-    async with make_client(handler) as client:
-        result = await client.benchmarks.fetch(run_id)
-
-    assert result.id == run_id
-    assert result.agent_name == "sweagent"
-    assert result.task_state_counts == {"FINISHED": 1, "IN_PROGRESS": 1}
 
 
 async def test_statuses_serializes_ids_as_csv_and_accepts_an_empty_list(make_client) -> None:
@@ -68,12 +33,12 @@ async def test_statuses_serializes_ids_as_csv_and_accepts_an_empty_list(make_cli
         return httpx.Response(200, json={"runs": entries})
 
     async with make_client(handler) as client:
-        populated = await client.benchmarks.statuses([first_id, second_id])
-        empty = await client.benchmarks.statuses([])
+        populated = await client.runs.statuses([first_id, second_id])
+        empty = await client.runs.statuses([])
 
     assert requested_ids == [f"{first_id},{second_id}", ""]
-    assert populated.entries[0].id == first_id
-    assert empty.entries == []
+    assert populated.runs[0].run_id == first_id
+    assert empty.runs == []
 
 
 async def test_statuses_falls_back_to_the_legacy_route_and_shape(make_client) -> None:
@@ -101,7 +66,7 @@ async def test_statuses_falls_back_to_the_legacy_route_and_shape(make_client) ->
         )
 
     async with make_client(handler) as client:
-        result = await client.benchmarks.statuses([run_id])
+        result = await client.runs.statuses([run_id])
 
     assert paths == ["/runs/status", "/benchmarks/status"]
     assert result.runs[0].run_id == run_id
@@ -147,7 +112,7 @@ async def test_tasks_serializes_typed_filters_and_pagination(make_client) -> Non
         offset=50,
     )
     async with make_client(handler) as client:
-        result = await client.benchmarks.tasks(run_id, request)
+        result = await client.runs.tasks(run_id, request)
 
     assert result.total_count == 1
     assert result.tasks[0].status is TaskStatus.ERROR
@@ -184,8 +149,8 @@ async def test_task_and_artifacts_escape_task_id_path_segment(make_client) -> No
         )
 
     async with make_client(handler) as client:
-        task = await client.benchmarks.task(run_id, "task one")
-        artifacts = await client.benchmarks.artifacts(run_id, "task one")
+        task = await client.runs.task(run_id, "task one")
+        artifacts = await client.runs.artifacts(run_id, "task one")
 
     assert raw_paths == [
         f"/runs/{run_id}/tasks/task%20one".encode(),
@@ -198,7 +163,7 @@ async def test_task_and_artifacts_escape_task_id_path_segment(make_client) -> No
 @pytest.mark.parametrize("method_name", ["task", "artifacts"])
 async def test_task_methods_reject_blank_task_ids(make_client, method_name: str) -> None:
     async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
-        method = getattr(client.benchmarks, method_name)
+        method = getattr(client.runs, method_name)
         with pytest.raises(ValueError, match="task_id must not be blank"):
             await method(uuid4(), "  ")
 
@@ -206,7 +171,7 @@ async def test_task_methods_reject_blank_task_ids(make_client, method_name: str)
 @pytest.mark.parametrize("method_name", ["task", "artifacts"])
 async def test_task_methods_reject_path_separators(make_client, method_name: str) -> None:
     async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
-        method = getattr(client.benchmarks, method_name)
+        method = getattr(client.runs, method_name)
         with pytest.raises(ValueError, match="task_id must not contain '/'"):
             await method(uuid4(), "suite/task")
 
@@ -215,6 +180,6 @@ async def test_task_methods_reject_path_separators(make_client, method_name: str
 @pytest.mark.parametrize("task_id", [".", ".."])
 async def test_task_methods_reject_normalized_dot_segments(make_client, method_name: str, task_id: str) -> None:
     async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
-        method = getattr(client.benchmarks, method_name)
+        method = getattr(client.runs, method_name)
         with pytest.raises(ValueError, match=r"task_id must not be '\.' or '\.\.'"):
             await method(uuid4(), task_id)

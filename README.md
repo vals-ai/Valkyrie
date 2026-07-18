@@ -123,7 +123,7 @@ Downloads an agent from S3 to your local machine and unzips it.
 
 To run a specific agent on a given benchmark, use the command
 ```
-valkyrie run start --agent <agent id> --benchmark <benchmark id>
+valkyrie run start --agent <agent id> --benchmark <benchmark name>
 ```
 
 You can pass `--concurrency` to control the number of tasks that run in parallel, and `--task-ids` or `--slice` to run only a subset of tasks. Specific agents may take additional parameters as well, most commonly, a parameter to set the model. 
@@ -219,7 +219,7 @@ termination emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`
 `disconnect` and exits nonzero. Transport or malformed-protocol failures can exit nonzero without a final record, so
 stderr and the process exit code remain authoritative for command failures.
 
-Exit code 0 means the CLI handled the response or stream event; it does not mean the benchmark itself succeeded.
+Exit code 0 means the CLI handled the response or stream event; it does not mean the run itself succeeded.
 Agents must inspect each run's `status` and each JSONL record's `event`. Optional values such as model, starter, label,
 finish time, and score can be null. In fetch output, `metadata_available: false` specifically means identity metadata
 could not be loaded. All timestamps are UTC ISO 8601 strings, and non-finite scores are normalized to null.
@@ -367,9 +367,9 @@ valkyrie run output <id> [subpath] [-o ./output-dir]
 
 | Argument / Option | Description |
 | --- | --- |
-| `BENCHMARK_ID` | UUID of the benchmark run |
+| `RUN_ID` | UUID of the run |
 | `SUBPATH` | Optional file or folder within the benchmark directory |
-| `-o` / `--output-dir` | Local destination directory (defaults to `./<benchmark_id>`) |
+| `-o` / `--output-dir` | Local destination directory (defaults to `./<run_id>`) |
 
 
 ## Adding Benchmarks
@@ -466,14 +466,14 @@ valkyrie run start --agent sweagent --benchmark swebench -i 25 -i 75
 
 If a webhook secret is configured but no `-i` flags are provided, Valkyrie defaults to `-i 100` (notify on completion only). If `-i` flags are provided but no webhook secret is configured, the intervals are ignored with a warning.
 
-Webhook configuration is persisted per-benchmark in the database. On resume or retry, the webhook secret and intervals are read from the original benchmark — no local config needed.
+Webhook configuration is persisted per run. On resume or retry, the webhook secret and intervals are read from the original run — no local config needed.
 
 ### Notification triggers
 
 | Trigger | Description |
 | --- | --- |
 | **In Progress** | Run has crossed a defined interval threshold |
-| **Finished** | All tasks within the benchmark have completed (includes final score) |
+| **Finished** | All tasks within the run have completed (includes final score) |
 | **Error** | Run has errored out |
 | **Stopped** | User has stopped the run |
 

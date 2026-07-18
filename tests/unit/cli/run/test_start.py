@@ -72,7 +72,7 @@ class StartTestbed:
             self.stream_status,
         ):
             boundary.reset_mock()
-        self.tracker.start_benchmark.side_effect = responses
+        self.tracker.start_run.side_effect = responses
 
     def invoke(self, arguments: list[str]) -> Result:
         return self.cli_runner.invoke(
@@ -102,7 +102,7 @@ def start_testbed(monkeypatch: pytest.MonkeyPatch, cli_runner: CliRunner) -> Sta
     monkeypatch.setattr(start_module, "get_contract_from_s3", testbed.resolve_remote)
     monkeypatch.setattr(start_module, "resolve_task_ids", testbed.resolve_tasks)
     monkeypatch.setattr(start_module, "benchmark_service_headers", testbed.resolve_headers)
-    monkeypatch.setattr(start_module, "stream_benchmark_status", testbed.stream_status)
+    monkeypatch.setattr(start_module, "stream_run_status", testbed.stream_status)
     testbed.set_responses([_start_response(_FIRST_RUN_ID)])
 
     return testbed
@@ -123,7 +123,7 @@ class TestCountedStarts:
         result = start_testbed.invoke([])
 
         assert result.exit_code == 0, result.output
-        assert start_testbed.tracker.start_benchmark.call_count == 1
+        assert start_testbed.tracker.start_run.call_count == 1
         assert "requested runs successfully started" not in result.output
 
         # Exercise the short alias with the compatible connect mode.
@@ -152,7 +152,7 @@ class TestCountedStarts:
         result = start_testbed.invoke(["-k", "temperature", "1", "--label", "stable", "--count", "2"])
 
         assert result.exit_code == 0, result.output
-        assert start_testbed.tracker.start_benchmark.call_count == 2
+        assert start_testbed.tracker.start_run.call_count == 2
         assert start_testbed.resolve_remote.await_count == 1
         assert start_testbed.tracker.__enter__.call_count == 1
 
@@ -163,7 +163,7 @@ class TestCountedStarts:
         assert isinstance(agent_config, AgentConfig)
         assert agent_config.kwargs == {"temperature": "1"}
 
-        start_requests = start_testbed.tracker.start_benchmark.call_args_list
+        start_requests = start_testbed.tracker.start_run.call_args_list
         assert start_requests[0].args[0] is start_requests[1].args[0]
         assert [request.args[6] for request in start_requests] == ["stable", "stable"]
 
@@ -210,7 +210,7 @@ class TestCountedStarts:
         assert result.exit_code == 0, result.output
         get_contract.assert_called_once()
         push_agent.assert_awaited_once_with("local-agent", local_agent)
-        assert start_testbed.tracker.start_benchmark.call_count == 2
+        assert start_testbed.tracker.start_run.call_count == 2
 
     def test_invalid_options_precede_side_effects(self, start_testbed: StartTestbed) -> None:
         """
@@ -305,7 +305,7 @@ class TestCountedStarts:
         result = start_testbed.invoke(arguments)
 
         assert result.exit_code != 0
-        assert start_testbed.tracker.start_benchmark.call_count == len(prior_ids) + 1
+        assert start_testbed.tracker.start_run.call_count == len(prior_ids) + 1
         assert expected_detail in result.output
         assert "Authentication error:" not in result.output
         assert "Benchmark service error:" not in result.output

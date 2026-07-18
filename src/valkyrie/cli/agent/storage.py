@@ -192,12 +192,12 @@ async def push_agent(agent_name: str, agent_path: Path):
                 raise
 
 
-async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
+async def update_run_agent_version(agent_name: str, run_id: str) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
     aws = aws_credentials()
     bucket_name = fetch_bucket_name()
     source_key = get_contract_s3_key(agent_name)
-    dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
+    dest_key = get_benchmark_contract_s3_key(run_id, agent_name)
 
     if not await s3_object_exists(source_key, aws, bucket_name):
         raise S3Error(f"Agent '{agent_name}.zip' not found in S3.")

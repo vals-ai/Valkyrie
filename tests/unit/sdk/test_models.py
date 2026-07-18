@@ -11,12 +11,12 @@ from pydantic import ValidationError
 from valkyrie.sdk.models import (
     AWSCredentials,
     AgentContractRequest,
-    FetchBenchmarkResponse,
-    FetchBenchmarksResponse,
-    FinalViewResponse,
+    GetRunResponse,
     HarnessConfig,
+    ListRunsResponse,
     OutputArtifact,
-    StartBenchmarkRequest,
+    RunResultsResponse,
+    StartRunRequest,
     StartRunResponse,
 )
 
@@ -85,7 +85,7 @@ def test_harness_config_serializes_expected_shape() -> None:
 
 def test_start_request_matches_canonical_wire_shape() -> None:
     payload = load_fixture("start.json")["request"]
-    assert StartBenchmarkRequest.model_validate(payload).model_dump(mode="json") == payload
+    assert StartRunRequest.model_validate(payload).model_dump(mode="json") == payload
 
 
 def test_nested_response_models_ignore_additive_fields() -> None:
@@ -96,21 +96,21 @@ def test_nested_response_models_ignore_additive_fields() -> None:
     assert isinstance(details, dict)
     details["future_nested"] = {"value": 1}
 
-    response = FetchBenchmarkResponse.model_validate(payload)
+    response = GetRunResponse.model_validate(payload)
 
     assert response.benchmark_name == "swebench"
 
 
 def test_non_empty_list_and_final_results_parse() -> None:
-    list_response = FetchBenchmarksResponse.model_validate(load_fixture("list.json")["response"])
-    result = FinalViewResponse.model_validate(load_fixture("results.json")["inline"])
+    list_response = ListRunsResponse.model_validate(load_fixture("list.json")["response"])
+    result = RunResultsResponse.model_validate(load_fixture("results.json")["inline"])
 
-    assert len(list_response.benchmarks) == 1
+    assert len(list_response.runs) == 1
     assert result.final_evaluation is not None
-    assert result.benchmark_arguments.contract.output_artifacts
+    assert result.run_arguments.contract.output_artifacts
 
 
-def test_canonical_run_models_accept_both_id_names_and_keep_legacy_aliases() -> None:
+def test_canonical_run_models_accept_legacy_wire_names_without_exposing_them() -> None:
     run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     payload = {
         "benchmark_name": "swebench",
@@ -125,6 +125,10 @@ def test_canonical_run_models_accept_both_id_names_and_keep_legacy_aliases() -> 
 
     response = StartRunResponse.model_validate(payload)
 
-    assert response.run_id == response.benchmark_id
-    assert response.model_dump(mode="json")["benchmark_id"] == run_id
-    assert response.model_dump(mode="json", by_alias=True)["run_id"] == run_id
+    assert str(response.run_id) == run_id
+    assert response.model_dump(mode="json")["run_id"] == run_id
+    assert "benchmark_id" not in StartRunResponse.model_fields
+
+    legacy_payload = {**payload, "benchmark_id": payload["run_id"]}
+    del legacy_payload["run_id"]
+    assert StartRunResponse.model_validate(legacy_payload) == response

@@ -48,7 +48,7 @@ def stop(run_id: UUID, task_ids: str | None, task_ids_file: str | None, force: b
 
     try:
         with TrackerService() as tracker:
-            _ = tracker.stop_benchmark(
+            _ = tracker.stop_run(
                 run_id,
                 force,
                 task_ids=selected_task_ids,

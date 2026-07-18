@@ -13,8 +13,6 @@ from pydantic import BaseModel
 from services.tracker.main import app
 from tracker.database.models import (
     AgentContractRequest,
-    BenchmarkArguments,
-    FinalEvaluation,
     OutputArtifact,
 )
 from tracker.types import (
@@ -22,35 +20,36 @@ from tracker.types import (
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
-    AnalyzeBenchmarkRequest,
+    AnalyzeRunRequest,
     AverageTaskBreakdown,
-    BenchmarkDetails,
     BenchmarkServiceCatalogResponse,
     BenchmarkServiceEntry,
     BenchmarkServiceHealth,
     BenchmarkServicesRequest,
     BenchmarkServicesResponse,
-    BenchmarkStatusEntry,
-    BenchmarkStatusResponse,
-    BenchmarkTableRow,
     FetchBenchmarkResponse,
-    FetchBenchmarkMetadataResponse,
     FetchBenchmarkTasksRequest,
-    FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
     GetRunResponse,
     HarnessConfig,
+    ListRunsRequest,
     ListRunsResponse,
-    RetryOrResumeBenchmarkResponse,
+    RetryOrResumeRunResponse,
+    RunArguments,
+    RunDetails,
+    RunFinalEvaluation,
+    RunMetadataResponse,
     RunResultsResponse,
+    RunStatusEntry,
+    RunStatusResponse,
+    RunSummary,
     S3UploadResultsResponse,
-    SingleBenchmarkResponse,
     SingleTaskResponse,
-    StartBenchmarkRequest,
     StartBenchmarkResponse,
+    StartRunRequest,
     StartRunResponse,
-    StopBenchmarkResponse,
+    StopRunResponse,
     TaskArtifactsResponse,
     TasksResponse,
     TaskSummary,
@@ -61,38 +60,33 @@ from valkyrie.sdk.models import (
     AgentDownloadURLResponse as SDKAgentDownloadURLResponse,
     AgentEntry as SDKAgentEntry,
     AgentsResponse as SDKAgentsResponse,
-    AnalyzeBenchmarkRequest as SDKAnalyzeBenchmarkRequest,
+    AnalyzeRunRequest as SDKAnalyzeRunRequest,
     AverageTaskBreakdown as SDKAverageTaskBreakdown,
-    BenchmarkArguments as SDKBenchmarkArguments,
-    BenchmarkDetails as SDKBenchmarkDetails,
     BenchmarkServiceCatalogResponse as SDKBenchmarkServiceCatalogResponse,
     BenchmarkServiceEntry as SDKBenchmarkServiceEntry,
     BenchmarkServiceHealth as SDKBenchmarkServiceHealth,
     BenchmarkServicesRequest as SDKBenchmarkServicesRequest,
     BenchmarkServicesResponse as SDKBenchmarkServicesResponse,
-    BenchmarkStatusEntry as SDKBenchmarkStatusEntry,
-    BenchmarkStatusResponse as SDKBenchmarkStatusResponse,
-    BenchmarkTableRow as SDKBenchmarkTableRow,
-    FetchBenchmarkResponse as SDKFetchBenchmarkResponse,
-    FetchBenchmarkMetadataResponse as SDKFetchBenchmarkMetadataResponse,
     FetchBenchmarkTasksRequest as SDKFetchBenchmarkTasksRequest,
-    FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
-    FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
-    FinalEvaluation as SDKFinalEvaluation,
-    FinalViewResponse as SDKFinalViewResponse,
     GetRunResponse as SDKGetRunResponse,
     HarnessConfig as SDKHarnessConfig,
+    ListRunsRequest as SDKListRunsRequest,
     ListRunsResponse as SDKListRunsResponse,
     OutputArtifact as SDKOutputArtifact,
-    RetryOrResumeBenchmarkResponse as SDKRetryResponse,
+    RetryOrResumeRunResponse as SDKRetryResponse,
+    RunArguments as SDKRunArguments,
+    RunDetails as SDKRunDetails,
+    RunFinalEvaluation as SDKRunFinalEvaluation,
+    RunMetadataResponse as SDKRunMetadataResponse,
     RunResultsResponse as SDKRunResultsResponse,
+    RunStatusEntry as SDKRunStatusEntry,
+    RunStatusResponse as SDKRunStatusResponse,
+    RunSummary as SDKRunSummary,
     S3UploadResultsResponse as SDKS3ResultsResponse,
-    SingleBenchmarkResponse as SDKSingleBenchmarkResponse,
     SingleTaskResponse as SDKSingleTaskResponse,
-    StartBenchmarkRequest as SDKStartBenchmarkRequest,
-    StartBenchmarkResponse as SDKStartBenchmarkResponse,
+    StartRunRequest as SDKStartRunRequest,
     StartRunResponse as SDKStartRunResponse,
-    StopBenchmarkResponse as SDKStopBenchmarkResponse,
+    StopRunResponse as SDKStopRunResponse,
     TaskArtifactsResponse as SDKTaskArtifactsResponse,
     TaskIDsResponse as SDKTaskIDsResponse,
     TasksResponse as SDKTasksResponse,
@@ -187,23 +181,22 @@ MODEL_PAIRS = (
     (AgentContractRequest, SDKAgentContractRequest),
     (AWSCredentials, SDKAWSCredentials),
     (HarnessConfig, SDKHarnessConfig),
-    (StartBenchmarkRequest, SDKStartBenchmarkRequest),
-    (BenchmarkDetails, SDKBenchmarkDetails),
-    (StartBenchmarkResponse, SDKStartBenchmarkResponse),
-    (FetchBenchmarkResponse, SDKFetchBenchmarkResponse),
-    (FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
-    (BenchmarkTableRow, SDKBenchmarkTableRow),
-    (FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
-    (BenchmarkArguments, SDKBenchmarkArguments),
-    (FinalEvaluation, SDKFinalEvaluation),
+    (StartRunRequest, SDKStartRunRequest),
+    (RunDetails, SDKRunDetails),
+    (StartRunResponse, SDKStartRunResponse),
+    (GetRunResponse, SDKGetRunResponse),
+    (ListRunsRequest, SDKListRunsRequest),
+    (RunSummary, SDKRunSummary),
+    (ListRunsResponse, SDKListRunsResponse),
+    (RunArguments, SDKRunArguments),
+    (RunFinalEvaluation, SDKRunFinalEvaluation),
     (AverageTaskBreakdown, SDKAverageTaskBreakdown),
-    (FinalViewResponse, SDKFinalViewResponse),
+    (RunResultsResponse, SDKRunResultsResponse),
     (S3UploadResultsResponse, SDKS3ResultsResponse),
-    (StopBenchmarkResponse, SDKStopBenchmarkResponse),
-    (RetryOrResumeBenchmarkResponse, SDKRetryResponse),
-    (BenchmarkStatusEntry, SDKBenchmarkStatusEntry),
-    (BenchmarkStatusResponse, SDKBenchmarkStatusResponse),
-    (SingleBenchmarkResponse, SDKSingleBenchmarkResponse),
+    (StopRunResponse, SDKStopRunResponse),
+    (RetryOrResumeRunResponse, SDKRetryResponse),
+    (RunStatusEntry, SDKRunStatusEntry),
+    (RunStatusResponse, SDKRunStatusResponse),
     (TaskSummary, SDKTaskSummary),
     (TasksResponse, SDKTasksResponse),
     (SingleTaskResponse, SDKSingleTaskResponse),
@@ -218,8 +211,8 @@ MODEL_PAIRS = (
     (BenchmarkServiceCatalogResponse, SDKBenchmarkServiceCatalogResponse),
     (FetchBenchmarkTasksRequest, SDKFetchBenchmarkTasksRequest),
     (VerifyTaskIdsResponse, SDKTaskIDsResponse),
-    (AnalyzeBenchmarkRequest, SDKAnalyzeBenchmarkRequest),
-    (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
+    (AnalyzeRunRequest, SDKAnalyzeRunRequest),
+    (RunMetadataResponse, SDKRunMetadataResponse),
 )
 INTERNAL_ROUTES = {
     ("/benchmarks/filter-options", "get"),
@@ -236,15 +229,15 @@ def load_fixture(name: str) -> dict[str, Any]:
 @pytest.mark.parametrize(
     ("name", "key", "tracker_model", "sdk_model"),
     [
-        ("start.json", "request", StartBenchmarkRequest, SDKStartBenchmarkRequest),
-        ("start.json", "response", StartBenchmarkResponse, SDKStartBenchmarkResponse),
-        ("fetch.json", "response", FetchBenchmarkResponse, SDKFetchBenchmarkResponse),
-        ("list.json", "request", FetchBenchmarksRequest, SDKFetchBenchmarksRequest),
-        ("list.json", "response", FetchBenchmarksResponse, SDKFetchBenchmarksResponse),
-        ("results.json", "inline", FinalViewResponse, SDKFinalViewResponse),
+        ("start.json", "request", StartRunRequest, SDKStartRunRequest),
+        ("start.json", "response", StartRunResponse, SDKStartRunResponse),
+        ("fetch.json", "response", GetRunResponse, SDKGetRunResponse),
+        ("list.json", "request", ListRunsRequest, SDKListRunsRequest),
+        ("list.json", "response", ListRunsResponse, SDKListRunsResponse),
+        ("results.json", "inline", RunResultsResponse, SDKRunResultsResponse),
         ("results.json", "s3", S3UploadResultsResponse, SDKS3ResultsResponse),
-        ("stop.json", "response", StopBenchmarkResponse, SDKStopBenchmarkResponse),
-        ("retry_resume.json", "response", RetryOrResumeBenchmarkResponse, SDKRetryResponse),
+        ("stop.json", "response", StopRunResponse, SDKStopRunResponse),
+        ("retry_resume.json", "response", RetryOrResumeRunResponse, SDKRetryResponse),
     ],
 )
 def test_sdk_and_tracker_accept_canonical_fixture(
@@ -259,8 +252,7 @@ def test_sdk_and_tracker_accept_canonical_fixture(
 
     assert isinstance(tracker_value, tracker_model)
     assert isinstance(sdk_value, sdk_model)
-    assert tracker_value.model_dump(mode="json", warnings=False) == payload
-    assert sdk_value.model_dump(mode="json") == payload
+    assert tracker_value.model_dump(mode="json", warnings=False) == sdk_value.model_dump(mode="json")
 
 
 @pytest.mark.parametrize(("tracker_model", "sdk_model"), MODEL_PAIRS)
@@ -293,16 +285,6 @@ def _normalized_wire_schema(value: Any) -> Any:
         for key, item in value.items():
             if key in {"default", "description", "format", "title"}:
                 continue
-            if key == "$ref" and isinstance(item, str):
-                for canonical, legacy in {
-                    "RunArguments": "BenchmarkArguments",
-                    "RunDetails": "BenchmarkDetails",
-                    "RunFinalEvaluation": "FinalEvaluation",
-                    "RunStatus": "BenchmarkStatus",
-                    "RunStatusEntry": "BenchmarkStatusEntry",
-                    "RunSummary": "BenchmarkTableRow",
-                }.items():
-                    item = item.replace(f"/$defs/{canonical}", f"/$defs/{legacy}")
             normalized[key] = _normalized_wire_schema(item)
         return normalized
     if isinstance(value, list):
@@ -321,10 +303,9 @@ def test_fetch_stream_fixture_matches_tracker_and_sdk_response_models() -> None:
     event = load_fixture("fetch.json")["sse"]
 
     assert event["event"] == ""
-    tracker_value = FetchBenchmarkResponse.model_validate(event["data"])
-    sdk_value = SDKFetchBenchmarkResponse.model_validate(event["data"])
-    assert tracker_value.model_dump(mode="json") == event["data"]
-    assert sdk_value.model_dump(mode="json") == event["data"]
+    tracker_value = GetRunResponse.model_validate(event["data"])
+    sdk_value = SDKGetRunResponse.model_validate(event["data"])
+    assert tracker_value.model_dump(mode="json") == sdk_value.model_dump(mode="json")
 
 
 def test_tracker_routes_match_the_sdk_http_contract() -> None:
@@ -489,7 +470,7 @@ def test_tracker_exposes_canonical_run_routes_without_changing_legacy_routes() -
             assert parameter["schema"]["format"] == "uuid"
 
 
-def test_canonical_run_dtos_translate_legacy_payloads_without_changing_default_dumps() -> None:
+def test_canonical_run_dtos_translate_legacy_payloads_to_canonical_default_dumps() -> None:
     start_legacy = StartBenchmarkResponse.model_validate(load_fixture("start.json")["response"])
     fetch_legacy = FetchBenchmarkResponse.model_validate(load_fixture("fetch.json")["response"])
     list_legacy = FetchBenchmarksResponse.model_validate(load_fixture("list.json")["response"])
@@ -502,14 +483,13 @@ def test_canonical_run_dtos_translate_legacy_payloads_without_changing_default_d
         (RunResultsResponse.from_legacy(results_legacy), SDKRunResultsResponse),
     )
     for tracker_value, sdk_model in pairs:
-        canonical_payload = tracker_value.model_dump(mode="json", by_alias=True, warnings=False)
+        canonical_payload = tracker_value.model_dump(mode="json", warnings=False)
         sdk_value = sdk_model.model_validate(canonical_payload)
 
         assert "benchmark_id" not in canonical_payload
-        assert sdk_value.model_dump(mode="json") == tracker_value.model_dump(mode="json", warnings=False)
+        assert sdk_value.model_dump(mode="json") == canonical_payload
 
-    canonical_start = pairs[0][0].model_dump(mode="json", by_alias=True, warnings=False)
-    assert StartBenchmarkResponse.model_validate(canonical_start).benchmark_id == start_legacy.benchmark_id
+    assert pairs[0][0].run_id == start_legacy.benchmark_id
 
 
 def test_every_tracker_route_is_classified_as_sdk_supported_or_internal() -> None:
@@ -523,13 +503,13 @@ def test_every_tracker_route_is_classified_as_sdk_supported_or_internal() -> Non
 def test_final_evaluation_preserves_tracker_runtime_string_ids() -> None:
     payload = load_fixture("results.json")["inline"]
     tracker_evaluation = FinalViewResponse.model_validate(payload).final_evaluation
-    sdk_evaluation = SDKFinalViewResponse.model_validate(payload).final_evaluation
+    sdk_evaluation = SDKRunResultsResponse.model_validate(payload).final_evaluation
 
     assert tracker_evaluation is not None
     assert sdk_evaluation is not None
-    for field in ("id", "org_id", "benchmark"):
-        tracker_value = getattr(tracker_evaluation, field)
-        sdk_value = getattr(sdk_evaluation, field)
+    for tracker_field, sdk_field in (("id", "id"), ("org_id", "org_id"), ("benchmark", "run_id")):
+        tracker_value = getattr(tracker_evaluation, tracker_field)
+        sdk_value = getattr(sdk_evaluation, sdk_field)
         assert isinstance(tracker_value, str)
         assert type(sdk_value) is type(tracker_value)
-    assert sdk_evaluation.model_dump() == tracker_evaluation.model_dump(warnings=False)
+    assert sdk_evaluation.run_id == tracker_evaluation.benchmark

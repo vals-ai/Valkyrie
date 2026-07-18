@@ -1,4 +1,4 @@
-"""Models for hosted benchmark and task inspection."""
+"""Models for run status and task inspection."""
 
 from __future__ import annotations
 
@@ -6,14 +6,14 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import AliasChoices, BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.runs import Order, RunStatus, TaskStatus
 
 
 class FetchTasksRequest(BaseModel):
-    """Filters, sorting, and pagination for a benchmark's tasks."""
+    """Filters, sorting, and pagination for a run's tasks."""
 
     status: list[TaskStatus] | None = None
     task_id_search: str | None = None
@@ -26,7 +26,7 @@ class FetchTasksRequest(BaseModel):
 class RunStatusEntry(ResponseModel):
     """Lightweight status and task counts for one run."""
 
-    id: UUID = Field(alias="run_id")
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "id"))
     status: RunStatus
     finished_at: datetime | None
     total_tasks: int
@@ -37,54 +37,12 @@ class RunStatusEntry(ResponseModel):
     def serialize_finished_at(self, value: datetime | None) -> str | None:
         """Serialize an optional finish time with an explicit offset."""
         return serialize_utc(value)
-
-    @property
-    def run_id(self) -> UUID:
-        """Canonical identifier for the run."""
-        return self.id
 
 
 class RunStatusResponse(ResponseModel):
     """Status entries returned for a group of runs."""
 
-    entries: list[RunStatusEntry] = Field(alias="runs")
-
-    @property
-    def runs(self) -> list[RunStatusEntry]:
-        """Canonical status entries."""
-        return self.entries
-
-
-class SingleBenchmarkResponse(ResponseModel):
-    """Hosted run detail used by benchmark inspection views."""
-
-    id: UUID
-    name: str
-    agent_name: str
-    model: str | None
-    started_at: datetime
-    finished_at: datetime | None
-    status: RunStatus
-    total_tasks: int
-    finished_tasks: int
-    task_state_counts: dict[str, int] = Field(default_factory=dict)
-    started_by_email: str | None = None
-    final_score: float | None = None
-    error_message: str | None = None
-    cloudwatch_url: str | None = None
-    s3_bucket_url: str | None = None
-
-    @field_serializer("started_at")
-    def serialize_started_at(self, value: datetime) -> str:
-        """Serialize the required start time with an explicit offset."""
-        serialized = serialize_utc(value)
-        assert serialized is not None
-        return serialized
-
-    @field_serializer("finished_at")
-    def serialize_finished_at(self, value: datetime | None) -> str | None:
-        """Serialize an optional finish time with an explicit offset."""
-        return serialize_utc(value)
+    runs: list[RunStatusEntry] = Field(validation_alias=AliasChoices("runs", "entries"))
 
 
 class TaskSummary(ResponseModel):
@@ -148,8 +106,3 @@ class TaskArtifactsResponse(ResponseModel):
     cloudwatch_url: str | None
     agent_output_url: str | None
     agent_output_expires_in: int | None
-
-
-# Compatibility aliases retained for the deprecation window.
-BenchmarkStatusEntry = RunStatusEntry
-BenchmarkStatusResponse = RunStatusResponse

@@ -53,8 +53,8 @@ async def test_metadata_returns_typed_run_metadata(make_client) -> None:
     async with make_client(handler) as client:
         result = await client.runs.metadata(run_id)
 
-    assert result.benchmark_id == run_id
-    assert result.benchmark_arguments.contract.name == "sweagent"
+    assert result.run_id == run_id
+    assert result.run_arguments.contract.name == "sweagent"
 
 
 async def test_results_exist_returns_typed_s3_state(make_client) -> None:

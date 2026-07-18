@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import AliasChoices, BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
@@ -130,40 +130,30 @@ class StartRunResponse(ResponseModel):
 
     benchmark_name: str
     agent_name: str
-    benchmark_id: UUID = Field(alias="run_id")
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
     concurrency: int
     started_at: datetime
     task_count: int
     cloudwatch_url: str
     s3_bucket_url: str
 
-    @property
-    def run_id(self) -> UUID:
-        """Canonical identifier for the run."""
-        return self.benchmark_id
-
 
 class GetRunResponse(ResponseModel):
     """Current state of one run."""
 
     benchmark_name: str
-    benchmark_id: UUID = Field(alias="run_id")
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
     details: RunDetails
     s3_bucket_url: str
     label: str | None = None
     final_score: float | None = None
 
-    @property
-    def run_id(self) -> UUID:
-        """Canonical identifier for the run."""
-        return self.benchmark_id
-
 
 class RunSummary(ResponseModel):
     """Summary row returned by the run-list endpoint."""
 
-    id: UUID = Field(alias="run_id")
-    name: str = Field(alias="benchmark_name")
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "id"))
+    benchmark_name: str = Field(validation_alias=AliasChoices("benchmark_name", "name"))
     agent_name: str
     label: str | None = None
     model: str | None
@@ -177,16 +167,6 @@ class RunSummary(ResponseModel):
     task_state_counts: dict[str, int] = Field(default_factory=dict)
     final_score: float | None = None
     error_message: str | None = None
-
-    @property
-    def run_id(self) -> UUID:
-        """Canonical identifier for the run."""
-        return self.id
-
-    @property
-    def benchmark_name(self) -> str:
-        """Benchmark definition used by this run."""
-        return self.name
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:
@@ -204,14 +184,9 @@ class RunSummary(ResponseModel):
 class ListRunsResponse(ResponseModel):
     """Page of runs."""
 
-    benchmarks: list[RunSummary] = Field(alias="runs")
+    runs: list[RunSummary] = Field(validation_alias=AliasChoices("runs", "benchmarks"))
     total_count: int | None = None
     next_cursor: str | None = None
-
-    @property
-    def runs(self) -> list[RunSummary]:
-        """Canonical list of runs."""
-        return self.benchmarks
 
 
 class RunArguments(ResponseModel):
@@ -230,20 +205,10 @@ class RunArguments(ResponseModel):
 class RunMetadataResponse(ResponseModel):
     """Stored launch metadata for one run."""
 
-    benchmark_id: UUID = Field(alias="run_id")
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
     benchmark_name: str
-    benchmark_arguments: RunArguments = Field(alias="run_arguments")
+    run_arguments: RunArguments = Field(validation_alias=AliasChoices("run_arguments", "benchmark_arguments"))
     started_by_email: str | None = None
-
-    @property
-    def run_id(self) -> UUID:
-        """Canonical identifier for the run."""
-        return self.benchmark_id
-
-    @property
-    def run_arguments(self) -> RunArguments:
-        """Canonical arguments retained with the run."""
-        return self.benchmark_arguments
 
 
 class RunFinalEvaluation(ResponseModel):
@@ -251,14 +216,9 @@ class RunFinalEvaluation(ResponseModel):
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     org_id: str
-    benchmark: str = Field(alias="run_id")
+    run_id: str = Field(validation_alias=AliasChoices("run_id", "benchmark"))
     final_score: float
     properties: dict[str, Any] = Field(default_factory=dict)
-
-    @property
-    def run_id(self) -> str:
-        """Canonical identifier for the evaluated run."""
-        return self.benchmark
 
 
 class AverageTaskBreakdown(ResponseModel):
@@ -273,28 +233,18 @@ class AverageTaskBreakdown(ResponseModel):
 class RunResultsResponse(ResponseModel):
     """Inline final results for a run."""
 
-    benchmark_id: UUID = Field(alias="run_id")
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
     benchmark_name: str
     started_at: datetime
     finished_at: datetime | None
     status: RunStatus
     error_message: str | None
-    benchmark_arguments: RunArguments = Field(alias="run_arguments")
+    run_arguments: RunArguments = Field(validation_alias=AliasChoices("run_arguments", "benchmark_arguments"))
     tasks_stopped: int | None
     final_evaluation: RunFinalEvaluation | None
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
-
-    @property
-    def run_id(self) -> UUID:
-        """Canonical identifier for the run."""
-        return self.benchmark_id
-
-    @property
-    def run_arguments(self) -> RunArguments:
-        """Canonical arguments retained with the run."""
-        return self.benchmark_arguments
 
 
 class S3UploadResultsResponse(ResponseModel):
@@ -326,23 +276,3 @@ class StopRunResponse(StatusResponse):
 
 class RetryOrResumeRunResponse(StatusResponse):
     """Response returned after retrying or resuming a run."""
-
-
-# Compatibility aliases retained for the deprecation window. Default serialization
-# continues to use legacy field names; `by_alias=True` emits canonical run names.
-BenchmarkStatus = RunStatus
-AnalyzeBenchmarkRequest = AnalyzeRunRequest
-StartBenchmarkRequest = StartRunRequest
-FetchBenchmarksRequest = ListRunsRequest
-BenchmarkDetails = RunDetails
-StartBenchmarkResponse = StartRunResponse
-FetchBenchmarkResponse = GetRunResponse
-BenchmarkTableRow = RunSummary
-FetchBenchmarksResponse = ListRunsResponse
-BenchmarkArguments = RunArguments
-FetchBenchmarkMetadataResponse = RunMetadataResponse
-FinalEvaluation = RunFinalEvaluation
-FinalViewResponse = RunResultsResponse
-RetrieveResultsResponse = RetrieveRunResultsResponse
-StopBenchmarkResponse = StopRunResponse
-RetryOrResumeBenchmarkResponse = RetryOrResumeRunResponse

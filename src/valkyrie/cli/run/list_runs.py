@@ -1,10 +1,9 @@
 import click
-from tracker.database.models import BenchmarkStatus
-from tracker.types import BenchmarkTableRow, FetchBenchmarksRequest, FetchBenchmarksResponse, Order
+from tracker.types import ListRunsRequest, ListRunsResponse, Order, RunStatus, RunSummary
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.display import format_table, paginate_cli_pages, short_local_time
-from valkyrie.cli.run.progress import BenchmarkFormatter
+from valkyrie.cli.run.progress import RunFormatter
 from valkyrie.cli.run.snapshot import format_run_list_json
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -48,17 +47,17 @@ _MACHINE_PAGE_LIMIT = 500
 )
 @click.option(
     "--status",
-    type=click.Choice([option.value for option in BenchmarkStatus], case_sensitive=False),
+    type=click.Choice([option.value for option in RunStatus], case_sensitive=False),
     required=False,
     default=None,
-    help="Status of the benchmarks to fetch (e.g., in_progress, finished, error)",
+    help="Status of the runs to fetch (e.g., in_progress, finished, error)",
 )
 @click.option(
     "--order-by",
     type=click.Choice([option.value for option in Order], case_sensitive=False),
     required=False,
     default=Order.DESC.value,
-    help="Order by the benchmarks to fetch (e.g., desc, asc)",
+    help="Order of the runs to fetch (e.g., desc, asc)",
 )
 @click.option(
     "--started-by",
@@ -111,7 +110,7 @@ def list_runs(
     try:
         with TrackerService() as tracker:
             if output_format == "json":
-                request = _build_fetch_benchmarks_request(
+                request = _build_list_runs_request(
                     agent_name,
                     benchmark_name,
                     model,
@@ -123,9 +122,9 @@ def list_runs(
                     cursor="",
                     limit=_MACHINE_PAGE_LIMIT,
                 )
-                click.echo(format_run_list_json(fetch_all_benchmarks(tracker, request)))
+                click.echo(format_run_list_json(fetch_all_runs(tracker, request)))
             else:
-                paginate_benchmarks(
+                paginate_runs(
                     tracker,
                     agent_name,
                     benchmark_name,
@@ -140,7 +139,7 @@ def list_runs(
         raise click.ClickException(str(e))
 
 
-def _build_fetch_benchmarks_request(
+def _build_list_runs_request(
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,
@@ -153,15 +152,15 @@ def _build_fetch_benchmarks_request(
     cursor: str | None = None,
     limit: int = 5,
     offset: int = 0,
-) -> FetchBenchmarksRequest:
+) -> ListRunsRequest:
     """Build a list request shared by human and machine output modes."""
-    return FetchBenchmarksRequest(
+    return ListRunsRequest(
         agent_name=[agent_name] if agent_name else None,
         benchmark_name=[benchmark_name] if benchmark_name else None,
         model=model,
         dataset=dataset,
         label=label,
-        status=[BenchmarkStatus(status)] if status else None,
+        status=[RunStatus(status)] if status else None,
         started_by=started_by,
         order_by=Order(order_by),
         cursor=cursor,
@@ -170,9 +169,9 @@ def _build_fetch_benchmarks_request(
     )
 
 
-def fetch_all_benchmarks(tracker: TrackerService, request: FetchBenchmarksRequest) -> list[BenchmarkTableRow]:
+def fetch_all_runs(tracker: TrackerService, request: ListRunsRequest) -> list[RunSummary]:
     """Exhaust cursor pagination before writing any machine-readable output."""
-    benchmarks: list[BenchmarkTableRow] = []
+    runs: list[RunSummary] = []
     cursor = request.cursor
     seen_cursors: set[str] = set()
 
@@ -181,22 +180,22 @@ def fetch_all_benchmarks(tracker: TrackerService, request: FetchBenchmarksReques
             raise TrackerServiceError("Tracker returned a repeated run-list cursor.")
         seen_cursors.add(cursor)
 
-        response = tracker.fetch_benchmarks(request.model_copy(update={"cursor": cursor}))
-        benchmarks.extend(response.benchmarks)
+        response = tracker.list_runs(request.model_copy(update={"cursor": cursor}))
+        runs.extend(response.runs)
         cursor = response.next_cursor
 
-    return benchmarks
+    return runs
 
 
-def format_fetch_benchmarks_response(
-    fetch_benchmarks_response: FetchBenchmarksResponse,
+def format_list_runs_response(
+    list_runs_response: ListRunsResponse,
     current_page: int = 1,
     total_pages: int = 1,
 ) -> None:
     """Format and display runs in a table format."""
-    benchmarks = fetch_benchmarks_response.benchmarks
+    runs = list_runs_response.runs
 
-    if not benchmarks:
+    if not runs:
         click.echo(click.style("No runs found.", fg="yellow"))
         return
 
@@ -204,24 +203,24 @@ def format_fetch_benchmarks_response(
         return f"{score:.1f}%" if score is not None else "-"
 
     rows: list[dict[str, str]] = []
-    for benchmark in benchmarks:
-        _, progress_percentage = BenchmarkFormatter.create_progress_bar(benchmark.finished_tasks, benchmark.total_tasks)
+    for run in runs:
+        _, progress_percentage = RunFormatter.create_progress_bar(run.finished_tasks, run.total_tasks)
 
         rows.append(
             {
-                "ID": str(benchmark.id),
-                "Benchmark": benchmark.name,
-                "Agent": benchmark.agent_name,
-                "Label": benchmark.label or "-",
-                "Started By": benchmark.started_by_email or "—",
-                "Model": benchmark.model or "-",
-                "Dataset": benchmark.dataset or "default",
+                "ID": str(run.run_id),
+                "Benchmark": run.benchmark_name,
+                "Agent": run.agent_name,
+                "Label": run.label or "-",
+                "Started By": run.started_by_email or "—",
+                "Model": run.model or "-",
+                "Dataset": run.dataset or "default",
                 "Status": click.style(
-                    benchmark.status.value.replace("_", " ").title(),
-                    fg=BenchmarkFormatter.STATUS_COLORS[benchmark.status.value],
+                    run.status.value.replace("_", " ").title(),
+                    fg=RunFormatter.STATUS_COLORS[run.status.value],
                 ),
-                "Score": format_score(benchmark.final_score),
-                "Started / Finished": f"{short_local_time(benchmark.started_at)} / {short_local_time(benchmark.finished_at, include_date=False) if benchmark.finished_at else '-'}",
+                "Score": format_score(run.final_score),
+                "Started / Finished": f"{short_local_time(run.started_at)} / {short_local_time(run.finished_at, include_date=False) if run.finished_at else '-'}",
                 "Progress": f"{progress_percentage:.1f}%",
             }
         )
@@ -243,12 +242,12 @@ def format_fetch_benchmarks_response(
         ],
         current_page,
         total_pages,
-        fetch_benchmarks_response.total_count,
+        list_runs_response.total_count,
         "run",
     )
 
 
-def format_no_benchmarks_found(
+def format_no_runs_found(
     agent_name: str | None,
     benchmark_name: str | None,
     model: str | None,
@@ -279,7 +278,7 @@ def format_no_benchmarks_found(
             click.echo(f"  • Started By: {', '.join(started_by)}")
 
 
-def paginate_benchmarks(
+def paginate_runs(
     tracker: TrackerService,
     agent_name: str | None,
     benchmark_name: str | None,
@@ -293,8 +292,8 @@ def paginate_benchmarks(
 ) -> None:
     """Interactively page through runs."""
 
-    def load_page(offset: int, page_limit: int) -> tuple[int, FetchBenchmarksResponse]:
-        request = _build_fetch_benchmarks_request(
+    def load_page(offset: int, page_limit: int) -> tuple[int, ListRunsResponse]:
+        request = _build_list_runs_request(
             agent_name,
             benchmark_name,
             model,
@@ -306,22 +305,22 @@ def paginate_benchmarks(
             limit=page_limit,
             offset=offset,
         )
-        response = tracker.fetch_benchmarks(request)
+        response = tracker.list_runs(request)
         return response.total_count or 0, response
 
     def render_page(
-        response: FetchBenchmarksResponse,
+        response: ListRunsResponse,
         current_page: int,
         total_pages: int,
         _total_count: int,
     ) -> None:
-        format_fetch_benchmarks_response(response, current_page, total_pages)
+        format_list_runs_response(response, current_page, total_pages)
 
     paginate_cli_pages(
         load_page,
         render_page,
         limit=limit,
-        render_empty=lambda: format_no_benchmarks_found(
+        render_empty=lambda: format_no_runs_found(
             agent_name, benchmark_name, model, dataset, label, status, started_by
         ),
     )

@@ -524,6 +524,7 @@ async def analyze_benchmark(
         )
 
     payload: dict[str, Any] = {
+        "run_id": str(benchmark_id),
         "benchmark_id": str(benchmark_id),
         "benchmark_name": benchmark_row.name,
         "s3_bucket": harness_config.s3_bucket,
@@ -1161,13 +1162,15 @@ async def get_run_outputs(
     org: Org = Depends(get_current_org),
     task_ids: list[str] | None = Query(default=None),
 ) -> StreamingResponse:
-    return await fetch_run_outputs(
+    response = await fetch_run_outputs(
         benchmark_id=run_id,
         session=session,
         harness_config=harness_config,
         org=org,
         task_ids=task_ids,
     )
+    response.headers["Content-Disposition"] = f"attachment; filename=run_{run_id}_outputs.tar"
+    return response
 
 
 @app.post("/runs/{run_id}/analysis", response_model=None)

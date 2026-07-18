@@ -65,9 +65,12 @@ def test_cli_exports_tracker_results_without_private_contract_values(
 
     assert result.exit_code == 0, result.output
     saved_payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert saved_payload["benchmark_id"] == str(finished.id)
+    assert saved_payload["run_id"] == str(finished.id)
+    assert saved_payload["benchmark_id"] == saved_payload["run_id"]
+    assert saved_payload["final_evaluation"]["benchmark"] == saved_payload["final_evaluation"]["run_id"]
     assert saved_payload["final_evaluation"]["final_score"] == 0.75
     assert saved_payload["evaluation_results"]["complete"]["score"] == 1
-    assert "secrets" not in saved_payload["benchmark_arguments"]["contract"]
-    assert "kwargs" not in saved_payload["benchmark_arguments"]["contract"]
+    assert "secrets" not in saved_payload["run_arguments"]["contract"]
+    assert "kwargs" not in saved_payload["run_arguments"]["contract"]
+    assert saved_payload["benchmark_arguments"] == saved_payload["run_arguments"]
     assert "finished-secret-must-not-leak" not in output_path.read_text(encoding="utf-8")

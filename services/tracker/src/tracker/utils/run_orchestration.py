@@ -357,6 +357,7 @@ async def process_benchmark(
             if arguments.lambda_function:
                 # Expose the benchmark arguments, id, and name inside of the lambda
                 lambda_payload: dict[str, Any] = arguments.model_dump()
+                lambda_payload["run_id"] = str(benchmark_id)
                 lambda_payload["benchmark_id"] = str(benchmark_id)
                 lambda_payload["benchmark_name"] = benchmark_row.name
 

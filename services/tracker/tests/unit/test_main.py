@@ -1367,7 +1367,18 @@ class TestTrackerAPI:
         assert response.headers["content-disposition"] == (
             f"attachment; filename=benchmark_{example_benchmark_object.id}_outputs.tar"
         )
+
+        canonical_response = client.get(
+            f"/runs/{example_benchmark_object.id}/outputs",
+            params={"task_ids": ["task_1", "task_2"]},
+        )
+        assert canonical_response.status_code == 200
+        assert canonical_response.headers["content-disposition"] == (
+            f"attachment; filename=run_{example_benchmark_object.id}_outputs.tar"
+        )
         assert observed_prefixes == [
+            f"benchmarks/{example_benchmark_object.id}/task_1/",
+            f"benchmarks/{example_benchmark_object.id}/task_2/",
             f"benchmarks/{example_benchmark_object.id}/task_1/",
             f"benchmarks/{example_benchmark_object.id}/task_2/",
         ]

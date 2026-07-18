@@ -6,10 +6,10 @@ from uuid import UUID
 import click
 from tracker.agent.contract import get_contract
 from tracker.agent.schemas import AgentConfig
-from tracker.types import StartBenchmarkResponse
+from tracker.types import StartRunResponse
 
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
-from valkyrie.cli.run.progress import stream_benchmark_status
+from valkyrie.cli.run.progress import stream_run_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
 from valkyrie.cli.display import local_time
@@ -78,20 +78,20 @@ def format_agent_start_details(
     click.echo()
 
 
-def format_start_benchmark_response(start_benchmark_response: StartBenchmarkResponse, connect: bool = False) -> None:
+def format_start_run_response(start_run_response: StartRunResponse, connect: bool = False) -> None:
     """Format and display the start run response."""
-    run_id = start_benchmark_response.benchmark_id
+    run_id = start_run_response.run_id
 
     click.echo()
     click.echo("┌─ Run Details " + "─" * 65)
-    click.echo(f"│ {'Benchmark:':<17} {start_benchmark_response.benchmark_name}")
-    click.echo(f"│ {'Agent:':<17} {start_benchmark_response.agent_name}")
+    click.echo(f"│ {'Benchmark:':<17} {start_run_response.benchmark_name}")
+    click.echo(f"│ {'Agent:':<17} {start_run_response.agent_name}")
     click.echo(f"│ {'Run ID:':<17} {run_id}")
-    click.echo(f"│ {'Started at:':<17} {local_time(start_benchmark_response.started_at)}")
-    click.echo(f"│ {'Max concurrency:':<17} {start_benchmark_response.concurrency}")
-    click.echo(f"│ {'Total tasks:':<17} {start_benchmark_response.task_count}")
-    click.echo(f"│ {'CloudWatch:':<17} {start_benchmark_response.cloudwatch_url}")
-    click.echo(f"│ {'S3 Bucket:':<17} {start_benchmark_response.s3_bucket_url}")
+    click.echo(f"│ {'Started at:':<17} {local_time(start_run_response.started_at)}")
+    click.echo(f"│ {'Max concurrency:':<17} {start_run_response.concurrency}")
+    click.echo(f"│ {'Total tasks:':<17} {start_run_response.task_count}")
+    click.echo(f"│ {'CloudWatch:':<17} {start_run_response.cloudwatch_url}")
+    click.echo(f"│ {'S3 Bucket:':<17} {start_run_response.s3_bucket_url}")
     click.echo("├" + "─" * 79)
     if not connect:
         click.echo(f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan"))
@@ -374,7 +374,7 @@ def start(
                 click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False)
 
                 try:
-                    response = tracker.start_benchmark(
+                    response = tracker.start_run(
                         contract,
                         benchmark,
                         concurrency,
@@ -404,16 +404,16 @@ def start(
                     raise click.ClickException(str(response_error_detail(response)))
 
                 try:
-                    start_response = StartBenchmarkResponse.model_validate(response.json())
+                    start_response = StartRunResponse.model_validate(response.json())
                 except ValueError as error:
                     format_confirmed_start_summary(confirmed_run_ids, count)
                     click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
                     raise click.ClickException("Tracker returned a malformed 200 start response.") from error
 
-                confirmed_run_ids.append(start_response.benchmark_id)
-                format_start_benchmark_response(start_response, connect)
+                confirmed_run_ids.append(start_response.run_id)
+                format_start_run_response(start_response, connect)
                 if connect:
-                    stream_benchmark_status(tracker, start_response.benchmark_id)
+                    stream_run_status(tracker, start_response.run_id)
 
         format_confirmed_start_summary(confirmed_run_ids, count)
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:

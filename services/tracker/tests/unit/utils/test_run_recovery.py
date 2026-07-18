@@ -458,6 +458,8 @@ class TestRunRecovery:
         assert benchmark_row.status == BenchmarkStatus.FINISHED, benchmark_row.error_message
         assert len(captured_lambda_payloads) == 1
         assert captured_lambda_payloads[0]["benchmark_name"] == "swebench"
+        assert captured_lambda_payloads[0]["run_id"] == str(benchmark_row.id)
+        assert captured_lambda_payloads[0]["benchmark_id"] == str(benchmark_row.id)
 
     @pytest.mark.parametrize(
         ("retry_mode", "eval_resume_state", "expected_status", "expected_state"),

@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
 from uuid import UUID
 
 import click
-from tracker.types import FinalViewResponse, RetrieveResultsResponse
+from tracker.types import RunResultsResponse, RetrieveRunResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.task_ids import resolve_task_ids
@@ -71,9 +72,11 @@ def results(
                     if not click.confirm("Results already exist in S3. Overwrite?"):
                         raise click.Abort()
 
-            results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3, task_ids=subset_task_ids)
+            results_response: RetrieveRunResultsResponse = tracker.retrieve_results(
+                run_id, s3, task_ids=subset_task_ids
+            )
 
-            if isinstance(results_response, FinalViewResponse):
+            if isinstance(results_response, RunResultsResponse):
                 if subset_task_ids:
                     scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
                     click.echo(
@@ -96,7 +99,7 @@ def results(
         raise click.ClickException(str(e))
 
 
-def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
+def download_final_view(path: Path, final_view: RunResultsResponse) -> None:
     if not path.parent.exists():
         raise click.ClickException(f"'{path.parent}' directory does not exist! Please create it first.")
 
@@ -104,12 +107,23 @@ def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
         if not click.confirm(f"File '{path}' already exists. Overwrite?"):
             raise click.Abort()
 
+    payload = final_view.model_dump(
+        mode="json",
+        exclude_none=True,
+        exclude={"run_arguments": {"contract": {"secrets", "kwargs"}}},
+    )
+    # Local result files are a released integration boundary. Emit canonical
+    # names while retaining the legacy keys until downstream consumers migrate.
+    payload["benchmark_id"] = payload["run_id"]
+    payload["benchmark_arguments"] = payload["run_arguments"]
+    if final_evaluation := payload.get("final_evaluation"):
+        final_evaluation["benchmark"] = final_evaluation["run_id"]
+
     with open(path, "w") as output_file:
         output_file.write(
-            final_view.model_dump_json(
+            json.dumps(
+                payload,
                 indent=4,
-                exclude_none=True,
-                exclude={"benchmark_arguments": {"contract": {"secrets", "kwargs"}}},
             )
         )
 

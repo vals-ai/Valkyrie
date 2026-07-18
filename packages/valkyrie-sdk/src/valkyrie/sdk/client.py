@@ -14,7 +14,6 @@ from pydantic import BaseModel
 from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig
 from valkyrie.sdk.errors import ValkyrieAPIError, ValkyrieTransportError
 from valkyrie.sdk.resources.agents import AgentsResource
-from valkyrie.sdk.resources.benchmarks import BenchmarksResource
 from valkyrie.sdk.resources.runs import RunsResource
 from valkyrie.sdk.resources.services import BenchmarkServicesResource
 
@@ -43,7 +42,6 @@ class ValkyrieClient:
             transport=transport,
         )
         self.runs = RunsResource(self)
-        self.benchmarks = BenchmarksResource(self)
         self.agents = AgentsResource(self)
         self.services = BenchmarkServicesResource(self)
 
@@ -93,7 +91,7 @@ class ValkyrieClient:
         """Send a request, optionally retrying a legacy route on a canonical 404."""
         try:
             response = await self._client.request(method, path, params=params, json=json)
-            if response.status_code == 404 and fallback_path is not None:
+            if self.is_missing_route(response) and fallback_path is not None:
                 fallback_request_params = fallback_params if fallback_params is not None else params
                 response = await self._client.request(method, fallback_path, params=fallback_request_params, json=json)
         except httpx.HTTPError as exc:
@@ -101,6 +99,17 @@ class ValkyrieClient:
 
         self.raise_for_status(response)
         return model.model_validate(response.json())
+
+    @staticmethod
+    def is_missing_route(response: httpx.Response) -> bool:
+        """Return whether FastAPI could not match the requested route."""
+        if response.status_code != 404:
+            return False
+        try:
+            body: Any = response.json()
+        except (ValueError, httpx.ResponseNotRead):
+            return False
+        return body == {"detail": "Not Found"}
 
     @staticmethod
     def raise_for_status(response: httpx.Response) -> None:

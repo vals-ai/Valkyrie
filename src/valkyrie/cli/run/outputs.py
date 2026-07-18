@@ -42,12 +42,10 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
     """
     try:
         with TrackerService() as tracker:
-            metadata = tracker.fetch_benchmark_metadata(run_id)
+            metadata = tracker.fetch_run_metadata(run_id)
 
             if output_dir is None:
-                output_dir = Path(
-                    f"{metadata.benchmark_name}_{metadata.benchmark_arguments.contract.name}_{metadata.benchmark_id}"
-                )
+                output_dir = Path(f"{metadata.benchmark_name}_{metadata.run_arguments.contract.name}_{metadata.run_id}")
 
             click.echo(f"\r\033[KFetching run outputs for run {run_id}...", nl=False)
 
@@ -64,17 +62,17 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
         raise click.ClickException(str(e))
 
 
-@click.command(name="output", help="Download files from a benchmark run by its ID.")
-@click.argument("benchmark_id", type=UUID)
+@click.command(name="output", help="Download files from a run by its ID.")
+@click.argument("run_id", type=UUID)
 @click.argument("subpath", type=str, default="", required=False)
 @click.option(
     "-o",
     "--output-dir",
     type=click.Path(path_type=Path),
     default=None,
-    help="Directory to save downloaded files (defaults to ./<benchmark_id>)",
+    help="Directory to save downloaded files (defaults to ./<run_id>)",
 )
-def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
+def output_path(run_id: UUID, subpath: str, output_dir: Path | None):
     """
     Download all files under a benchmark's S3 directory.
 
@@ -84,12 +82,12 @@ def output_path(benchmark_id: UUID, subpath: str, output_dir: Path | None):
         valkyrie run output 6f176c17-7199-4ebc-b931-973e5600c1c9 swebench.json -o .
     """
     try:
-        path = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}"
+        path = f"{S3_BENCHMARKS_PREFIX}/{run_id}"
         if subpath:
             path = f"{path}/{subpath.strip('/')}"
 
         if output_dir is None:
-            output_dir = Path(str(benchmark_id))
+            output_dir = Path(str(run_id))
 
         click.echo(f"\r\033[KDownloading from s3://{path}...", nl=False)
         count = asyncio.run(download_s3_path(path, output_dir))

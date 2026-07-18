@@ -11,8 +11,7 @@ from uuid import UUID
 
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import BenchmarkStatus
-from tracker.types import BenchmarkTableRow, FetchBenchmarksRequest, FetchBenchmarksResponse, Order
+from tracker.types import ListRunsRequest, ListRunsResponse, Order, RunStatus, RunSummary
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.list_runs import list_runs
@@ -20,10 +19,10 @@ from valkyrie.cli.run.list_runs import list_runs
 list_runs_module = import_module("valkyrie.cli.run.list_runs")
 
 
-def make_row(index: int) -> BenchmarkTableRow:
-    return BenchmarkTableRow(
-        id=UUID(int=index + 1),
-        name="swebench",
+def make_row(index: int) -> RunSummary:
+    return RunSummary(
+        run_id=UUID(int=index + 1),
+        benchmark_name="swebench",
         agent_name="mini_sweagent",
         model="openai/gpt-5",
         dataset="verified",
@@ -31,7 +30,7 @@ def make_row(index: int) -> BenchmarkTableRow:
         started_by_email="runner@vals.ai",
         started_at=datetime(2026, 7, 9, 12, 30, tzinfo=timezone.utc),
         finished_at=None,
-        status=BenchmarkStatus.IN_PROGRESS,
+        status=RunStatus.IN_PROGRESS,
         total_tasks=4,
         finished_tasks=1,
         task_state_counts={"FINISHED": 1, "IN_PROGRESS": 3},
@@ -41,9 +40,9 @@ def make_row(index: int) -> BenchmarkTableRow:
 
 
 class StubListTracker:
-    def __init__(self, pages: dict[str, FetchBenchmarksResponse | TrackerServiceError]) -> None:
+    def __init__(self, pages: dict[str, ListRunsResponse | TrackerServiceError]) -> None:
         self.pages = pages
-        self.requests: list[FetchBenchmarksRequest] = []
+        self.requests: list[ListRunsRequest] = []
 
     def __enter__(self):
         return self
@@ -51,7 +50,7 @@ class StubListTracker:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def fetch_benchmarks(self, request: FetchBenchmarksRequest) -> FetchBenchmarksResponse:
+    def list_runs(self, request: ListRunsRequest) -> ListRunsResponse:
         self.requests.append(request)
         page = self.pages[request.cursor or ""]
         if isinstance(page, TrackerServiceError):
@@ -69,15 +68,15 @@ def test_list_json_all_exhausts_cursor_pages_and_preserves_filters(monkeypatch: 
     final_row = make_row(500)
     tracker = StubListTracker(
         {
-            "": FetchBenchmarksResponse(benchmarks=first_page, next_cursor="page-2"),
-            "page-2": FetchBenchmarksResponse(benchmarks=[final_row], next_cursor=None),
+            "": ListRunsResponse(runs=first_page, next_cursor="page-2"),
+            "page-2": ListRunsResponse(runs=[final_row], next_cursor=None),
         }
     )
 
     def fail_interactive_pager(*_args: object, **_kwargs: object) -> Never:
         pytest.fail("machine output must not invoke the interactive pager")
 
-    monkeypatch.setattr(list_runs_module, "paginate_benchmarks", fail_interactive_pager)
+    monkeypatch.setattr(list_runs_module, "paginate_runs", fail_interactive_pager)
 
     result = invoke_with_tracker(
         monkeypatch,
@@ -112,7 +111,7 @@ def test_list_json_all_exhausts_cursor_pages_and_preserves_filters(monkeypatch: 
     assert payload["schema_version"] == 1
     assert payload["kind"] == "run_list"
     assert payload["returned_count"] == 501
-    assert [run["run_id"] for run in payload["runs"]] == [str(row.id) for row in [*first_page, final_row]]
+    assert [run["run_id"] for run in payload["runs"]] == [str(row.run_id) for row in [*first_page, final_row]]
     assert "error_message" not in payload["runs"][0]
     assert "sensitive raw detail" not in result.stdout
 
@@ -123,13 +122,13 @@ def test_list_json_all_exhausts_cursor_pages_and_preserves_filters(monkeypatch: 
     assert all(request.model == "openai/gpt-5" for request in tracker.requests)
     assert all(request.dataset == "verified" for request in tracker.requests)
     assert all(request.label == "release-candidate" for request in tracker.requests)
-    assert all(request.status == [BenchmarkStatus.IN_PROGRESS] for request in tracker.requests)
+    assert all(request.status == [RunStatus.IN_PROGRESS] for request in tracker.requests)
     assert all(request.order_by == Order.ASC for request in tracker.requests)
     assert all(request.started_by == ["runner@vals.ai"] for request in tracker.requests)
 
 
 def test_list_json_all_emits_empty_document(monkeypatch: pytest.MonkeyPatch) -> None:
-    tracker = StubListTracker({"": FetchBenchmarksResponse(benchmarks=[], next_cursor=None)})
+    tracker = StubListTracker({"": ListRunsResponse(runs=[], next_cursor=None)})
 
     result = invoke_with_tracker(monkeypatch, tracker, ["--format", "json", "--all"])
 
@@ -145,7 +144,7 @@ def test_list_json_all_normalizes_non_finite_scores(
     final_score: float,
 ) -> None:
     row = make_row(0).model_copy(update={"final_score": final_score})
-    tracker = StubListTracker({"": FetchBenchmarksResponse(benchmarks=[row], next_cursor=None)})
+    tracker = StubListTracker({"": ListRunsResponse(runs=[row], next_cursor=None)})
 
     result = invoke_with_tracker(monkeypatch, tracker, ["--format", "json", "--all"])
 
@@ -159,7 +158,7 @@ def test_list_json_all_does_not_emit_partial_output_after_later_page_failure(
 ) -> None:
     tracker = StubListTracker(
         {
-            "": FetchBenchmarksResponse(benchmarks=[make_row(0)], next_cursor="page-2"),
+            "": ListRunsResponse(runs=[make_row(0)], next_cursor="page-2"),
             "page-2": TrackerServiceError("second page failed"),
         }
     )
@@ -174,7 +173,7 @@ def test_list_json_all_does_not_emit_partial_output_after_later_page_failure(
 def test_list_json_all_rejects_repeated_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
     tracker = StubListTracker(
         {
-            "": FetchBenchmarksResponse(benchmarks=[make_row(0)], next_cursor=""),
+            "": ListRunsResponse(runs=[make_row(0)], next_cursor=""),
         }
     )
 

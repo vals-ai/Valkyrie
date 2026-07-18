@@ -10,8 +10,7 @@ from uuid import UUID
 
 import httpx
 import pytest
-from tracker.database.models import BenchmarkStatus
-from tracker.types import FinalViewResponse, S3UploadResultsResponse
+from tracker.types import RunResultsResponse, RunStatus, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_client import TrackerService
@@ -95,7 +94,7 @@ class TestTrackerJsonEndpoints:
                 TrackerServiceError,
                 match="Failed to fetch run: tracker returned a malformed response",
             ):
-                tracker.fetch_benchmark(_RUN_ID)
+                tracker.fetch_run(_RUN_ID)
 
     def test_run_read_endpoints_parse_real_http_responses(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Run reads must preserve typed payloads, filters, and task selections over HTTP.
@@ -108,7 +107,7 @@ class TestTrackerJsonEndpoints:
         requests: list[httpx.Request] = []
         final_view = make_final_view(
             _RUN_ID,
-            status=BenchmarkStatus.FINISHED,
+            status=RunStatus.FINISHED,
             error_message=None,
         ).model_dump(mode="json")
 
@@ -134,11 +133,11 @@ class TestTrackerJsonEndpoints:
                 return httpx.Response(200, json={"task_ids": ["task-a", "task-b"]}, request=request)
             if request.url.path == "/check-results-exist":
                 return httpx.Response(200, json={"exists": True}, request=request)
-            return httpx.Response(404, request=request)
+            return httpx.Response(404, json={"detail": "Not Found"}, request=request)
 
         with _tracker_with_handler(monkeypatch, handle_request) as tracker:
-            fetched_run = tracker.fetch_benchmark(_RUN_ID)
-            metadata = tracker.fetch_benchmark_metadata(_RUN_ID)
+            fetched_run = tracker.fetch_run(_RUN_ID)
+            metadata = tracker.fetch_run_metadata(_RUN_ID)
             inline_results = tracker.retrieve_results(_RUN_ID, False, task_ids=["task-a"])
             s3_results = tracker.retrieve_results(_RUN_ID, True)
             task_ids = tracker.fetch_benchmark_tasks(
@@ -150,10 +149,10 @@ class TestTrackerJsonEndpoints:
             results_exist = tracker.check_results_exist_in_s3(_RUN_ID)
 
         assert fetched_run.final_score == 0.75
-        assert metadata.benchmark_arguments.dataset == "verified"
-        assert isinstance(inline_results, FinalViewResponse)
+        assert metadata.run_arguments.dataset == "verified"
+        assert isinstance(inline_results, RunResultsResponse)
         assert isinstance(s3_results, S3UploadResultsResponse)
-        assert inline_results.benchmark_id == _RUN_ID
+        assert inline_results.run_id == _RUN_ID
         assert s3_results.presigned_url == "https://download.example/results"
         assert task_ids == ["task-a", "task-b"]
         assert results_exist is True
@@ -215,12 +214,12 @@ class TestTrackerStreams:
                     text='data: {"status": "IN_PROGRESS"}\n\nevent: complete\n\n',
                     request=request,
                 )
-            return httpx.Response(404, request=request)
+            return httpx.Response(404, json={"detail": "Not Found"}, request=request)
 
         with _tracker_with_handler(monkeypatch, handle_request) as tracker:
-            cached_events = list(tracker.analyze_benchmark(_RUN_ID, no_cache=False, lambda_function="ingest"))
-            streamed_events = list(tracker.analyze_benchmark(_RUN_ID, no_cache=True, lambda_function="ingest"))
-            run_lines = list(tracker.stream_benchmark(_RUN_ID))
+            cached_events = list(tracker.analyze_run(_RUN_ID, no_cache=False, lambda_function="ingest"))
+            streamed_events = list(tracker.analyze_run(_RUN_ID, no_cache=True, lambda_function="ingest"))
+            run_lines = list(tracker.stream_run(_RUN_ID))
 
         assert cached_events == [("done", {"reading_plan_url": "https://docent.example/cached"})]
         assert streamed_events == [
@@ -261,4 +260,4 @@ class TestTrackerStreams:
 
         with _tracker_with_handler(monkeypatch, handle_request) as tracker:
             with pytest.raises(TrackerServiceError, match=expected_message):
-                list(tracker.analyze_benchmark(_RUN_ID, no_cache=False, lambda_function="ingest"))
+                list(tracker.analyze_run(_RUN_ID, no_cache=False, lambda_function="ingest"))

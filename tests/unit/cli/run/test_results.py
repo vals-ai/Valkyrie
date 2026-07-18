@@ -10,8 +10,13 @@ from uuid import UUID
 
 import pytest
 from click.testing import CliRunner
-from tracker.database.models import BenchmarkStatus
-from tracker.types import FinalViewResponse, RetrieveResultsResponse, S3UploadResultsResponse
+from tracker.types import (
+    RetrieveRunResultsResponse,
+    RunFinalEvaluation,
+    RunResultsResponse,
+    RunStatus,
+    S3UploadResultsResponse,
+)
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.results import results
@@ -28,7 +33,7 @@ class MockResultsTracker:
 
     def __init__(
         self,
-        response: RetrieveResultsResponse | TrackerServiceError,
+        response: RetrieveRunResultsResponse | TrackerServiceError,
         *,
         results_exist: bool = False,
     ) -> None:
@@ -50,7 +55,7 @@ class MockResultsTracker:
         run_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
-    ) -> RetrieveResultsResponse:
+    ) -> RetrieveRunResultsResponse:
         self.retrieve_calls.append((run_id, s3, task_ids))
         if isinstance(self.response, TrackerServiceError):
             raise self.response
@@ -77,10 +82,18 @@ class TestResultsCommand:
         """
         response = make_final_view(
             _RUN_ID,
-            status=BenchmarkStatus.FINISHED,
+            status=RunStatus.FINISHED,
             error_message=None,
             task_errors={"task-b": "evaluation failed"},
             evaluation_results={"task-a": {"score": 1}},
+        ).model_copy(
+            update={
+                "final_evaluation": RunFinalEvaluation(
+                    org_id="22222222-2222-4222-8222-222222222222",
+                    run_id=str(_RUN_ID),
+                    final_score=0.5,
+                )
+            }
         )
         tracker = MockResultsTracker(response)
         output_path = tmp_path / "results.json"
@@ -96,11 +109,14 @@ class TestResultsCommand:
         assert tracker.retrieve_calls == [(_RUN_ID, False, ["task-a", "task-b", "missing"])]
 
         saved_payload = json.loads(output_path.read_text(encoding="utf-8"))
-        assert saved_payload["benchmark_id"] == str(_RUN_ID)
+        assert saved_payload["run_id"] == str(_RUN_ID)
+        assert saved_payload["benchmark_id"] == saved_payload["run_id"]
+        assert saved_payload["final_evaluation"]["benchmark"] == saved_payload["final_evaluation"]["run_id"]
         assert saved_payload["evaluation_results"] == {"task-a": {"score": 1}}
         assert saved_payload["task_errors"] == {"task-b": "evaluation failed"}
-        assert "secrets" not in saved_payload["benchmark_arguments"]["contract"]
-        assert "kwargs" not in saved_payload["benchmark_arguments"]["contract"]
+        assert "secrets" not in saved_payload["run_arguments"]["contract"]
+        assert "kwargs" not in saved_payload["run_arguments"]["contract"]
+        assert saved_payload["benchmark_arguments"] == saved_payload["run_arguments"]
 
     def test_s3_results_render_links_and_protect_existing_uploads(
         self,
@@ -158,7 +174,7 @@ class TestResultsCommand:
         - A missing parent directory returns an actionable error.
         - Declining overwrite preserves the existing file contents.
         """
-        response: FinalViewResponse = make_final_view(_RUN_ID)
+        response: RunResultsResponse = make_final_view(_RUN_ID)
         tracker = MockResultsTracker(response)
         output_path = tmp_path / path
         if output_path.name == "existing.json":

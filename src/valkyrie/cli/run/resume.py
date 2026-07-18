@@ -6,9 +6,9 @@ from tracker.database.models import RetryMode
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.progress import stream_benchmark_status
+from valkyrie.cli.run.progress import stream_run_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
-from valkyrie.cli.agent.storage import update_benchmark_agent_version
+from valkyrie.cli.agent.storage import update_run_agent_version
 from valkyrie.cli.service_headers import benchmark_service_headers
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -100,17 +100,17 @@ def resume(
 
     try:
         with TrackerService() as tracker:
-            benchmark_info = tracker.fetch_benchmark(run_id)
+            benchmark_info = tracker.fetch_run(run_id)
             service_headers = benchmark_service_headers(benchmark_info.benchmark_name)
 
             if update_agent:
-                metadata = tracker.fetch_benchmark_metadata(run_id)
-                agent_name = metadata.benchmark_arguments.contract.name
+                metadata = tracker.fetch_run_metadata(run_id)
+                agent_name = metadata.run_arguments.contract.name
                 click.echo(f"\r\033[KUpdating agent '{agent_name}'...", nl=False)
-                asyncio.run(update_benchmark_agent_version(agent_name, str(run_id)))
+                asyncio.run(update_run_agent_version(agent_name, str(run_id)))
                 click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
 
-            _ = tracker.retry_or_resume_benchmark(
+            _ = tracker.retry_or_resume_run(
                 run_id,
                 retry,
                 RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO,
@@ -132,7 +132,7 @@ def resume(
             )
             click.echo("└" + "─" * 79)
             if connect:
-                stream_benchmark_status(tracker, run_id)
+                stream_run_status(tracker, run_id)
     except (TrackerServiceError, S3Error) as e:
         raise click.ClickException(str(e))
 

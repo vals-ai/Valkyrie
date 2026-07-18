@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from urllib.parse import quote
 from uuid import UUID
 
 from valkyrie.sdk.errors import ValkyrieConfigError, ValkyrieRunError, ValkyrieStreamError, handle_httpx_stream_errors
@@ -12,6 +13,7 @@ from valkyrie.sdk.models import (
     AgentContractRequest,
     AnalyzeEvent,
     AnalyzeRunRequest,
+    FetchTasksRequest,
     GetRunResponse,
     ListRunsRequest,
     ListRunsResponse,
@@ -21,10 +23,14 @@ from valkyrie.sdk.models import (
     RetryOrResumeRunResponse,
     RunMetadataResponse,
     RunResultsResponse,
+    RunStatusResponse,
     S3UploadResultsResponse,
+    SingleTaskResponse,
     StartRunRequest,
     StartRunResponse,
     StopRunResponse,
+    TaskArtifactsResponse,
+    TasksResponse,
 )
 
 if TYPE_CHECKING:
@@ -116,6 +122,50 @@ class RunsResource:
             fallback_path="/fetch-benchmarks",
         )
 
+    async def statuses(self, run_ids: Sequence[UUID]) -> RunStatusResponse:
+        """Fetch lightweight status and task counts for several runs."""
+        return await self._sdk.request_model(
+            "GET",
+            "/runs/status",
+            RunStatusResponse,
+            params={"ids": ",".join(str(run_id) for run_id in run_ids)},
+            fallback_path="/benchmarks/status",
+        )
+
+    async def tasks(self, run_id: UUID, request: FetchTasksRequest | None = None) -> TasksResponse:
+        """Fetch a filtered and paginated page of tasks for one run."""
+        resolved_request = request or FetchTasksRequest()
+        params: dict[str, Any] = resolved_request.model_dump(exclude_none=True, mode="json")
+        if resolved_request.status is not None:
+            params["status"] = ",".join(status.value for status in resolved_request.status)
+        return await self._sdk.request_model(
+            "GET",
+            f"/runs/{run_id}/tasks",
+            TasksResponse,
+            params=params,
+            fallback_path=f"/benchmarks/{run_id}/tasks",
+        )
+
+    async def task(self, run_id: UUID, task_id: str) -> SingleTaskResponse:
+        """Fetch detailed state and evaluation output for one task."""
+        task_segment = self._task_segment(task_id)
+        return await self._sdk.request_model(
+            "GET",
+            f"/runs/{run_id}/tasks/{task_segment}",
+            SingleTaskResponse,
+            fallback_path=f"/benchmarks/{run_id}/tasks/{task_segment}",
+        )
+
+    async def artifacts(self, run_id: UUID, task_id: str) -> TaskArtifactsResponse:
+        """Fetch temporary output and log links for one task."""
+        task_segment = self._task_segment(task_id)
+        return await self._sdk.request_model(
+            "GET",
+            f"/runs/{run_id}/tasks/{task_segment}/artifacts",
+            TaskArtifactsResponse,
+            fallback_path=f"/benchmarks/{run_id}/tasks/{task_segment}/artifacts",
+        )
+
     @handle_httpx_stream_errors("Valkyrie stream failed")
     async def stream(self, run_id: UUID) -> AsyncIterator[GetRunResponse]:
         """Yield typed updates until the run completes or disconnects."""
@@ -127,7 +177,8 @@ class RunsResource:
             async with self._sdk.stream_response("GET", path, params=params) as response:
                 if response.status_code == 404 and route_index == 0:
                     await response.aread()
-                    continue
+                    if self._sdk.is_missing_route(response):
+                        continue
                 if not response.is_success:
                     await response.aread()
                     self._sdk.raise_for_status(response)
@@ -242,7 +293,8 @@ class RunsResource:
             ) as response:
                 if response.status_code == 404 and route_index == 0:
                     await response.aread()
-                    continue
+                    if self._sdk.is_missing_route(response):
+                        continue
                 if not response.is_success:
                     await response.aread()
                     self._sdk.raise_for_status(response)
@@ -292,7 +344,8 @@ class RunsResource:
             async with self._sdk.stream_response("GET", path, params=params) as response:
                 if response.status_code == 404 and route_index == 0:
                     await response.aread()
-                    continue
+                    if self._sdk.is_missing_route(response):
+                        continue
                 if not response.is_success:
                     await response.aread()
                     self._sdk.raise_for_status(response)
@@ -403,6 +456,16 @@ class RunsResource:
             headers["Authorization"] = credential.get_secret_value()
         headers.update(explicit_headers or {})
         return headers
+
+    @staticmethod
+    def _task_segment(task_id: str) -> str:
+        if not task_id.strip():
+            raise ValueError("task_id must not be blank")
+        if task_id in {".", ".."}:
+            raise ValueError("task_id must not be '.' or '..'")
+        if "/" in task_id:
+            raise ValueError("task_id must not contain '/'")
+        return quote(task_id, safe="")
 
     def _resolve_webhook_intervals(self, intervals: Sequence[int] | None) -> list[int] | None:
         """Resolve and validate webhook intervals."""

@@ -11,7 +11,7 @@ from uuid import UUID
 
 import pytest
 from click.testing import CliRunner
-from tracker.types import StopBenchmarkResponse
+from tracker.types import StopRunResponse
 
 stop_module = import_module("valkyrie.cli.run.stop")
 stop_command = stop_module.stop
@@ -28,21 +28,21 @@ class MockTrackerService:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def stop_benchmark(
+    def stop_run(
         self,
-        benchmark_id: UUID,
+        run_id: UUID,
         force: bool,
         task_ids: list[str] | None = None,
-    ) -> StopBenchmarkResponse:
+    ) -> StopRunResponse:
         self.stop_calls.append(
             {
-                "benchmark_id": benchmark_id,
+                "run_id": run_id,
                 "force": force,
                 "task_ids": task_ids,
             }
         )
 
-        return StopBenchmarkResponse(status="success")
+        return StopRunResponse(status="success")
 
 
 @pytest.fixture(autouse=True)

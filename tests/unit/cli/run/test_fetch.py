@@ -11,8 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from click.testing import CliRunner, Result
-from tracker.database.models import BenchmarkStatus
-from tracker.types import FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
+from tracker.types import GetRunResponse, RunMetadataResponse, RunStatus
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.fetch import fetch
@@ -26,8 +25,8 @@ fetch_module = import_module("valkyrie.cli.run.fetch")
 class StubFetchTracker:
     def __init__(
         self,
-        response: FetchBenchmarkResponse,
-        metadata: FetchBenchmarkMetadataResponse | TrackerServiceError,
+        response: GetRunResponse,
+        metadata: RunMetadataResponse | TrackerServiceError,
         events: list[str] | None = None,
         *,
         interrupt: bool = False,
@@ -44,16 +43,16 @@ class StubFetchTracker:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def fetch_benchmark(self, _run_id: UUID) -> FetchBenchmarkResponse:
+    def fetch_run(self, _run_id: UUID) -> GetRunResponse:
         return self.response
 
-    def fetch_benchmark_metadata(self, _run_id: UUID) -> FetchBenchmarkMetadataResponse:
+    def fetch_run_metadata(self, _run_id: UUID) -> RunMetadataResponse:
         self.metadata_calls += 1
         if isinstance(self.metadata, TrackerServiceError):
             raise self.metadata
         return self.metadata
 
-    def stream_benchmark(self, _run_id: UUID) -> Generator[str, None, None]:
+    def stream_run(self, _run_id: UUID) -> Generator[str, None, None]:
         if self.interrupt:
             raise KeyboardInterrupt
         yield from self.events
@@ -148,7 +147,7 @@ def test_fetch_json_uses_null_identity_when_metadata_is_unavailable(monkeypatch:
 
 def test_fetch_jsonl_outputs_only_snapshot_update_and_terminal_records(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
-    finished = make_fetch_response(run_id, status=BenchmarkStatus.FINISHED, finished_tasks=4, final_score=75.0)
+    finished = make_fetch_response(run_id, status=RunStatus.FINISHED, finished_tasks=4, final_score=75.0)
     tracker = StubFetchTracker(
         make_fetch_response(run_id),
         make_fetch_metadata(run_id),
@@ -174,13 +173,13 @@ def test_fetch_jsonl_outputs_only_snapshot_update_and_terminal_records(monkeypat
 @pytest.mark.parametrize(
     ("status", "expected_event"),
     [
-        (BenchmarkStatus.ERROR, "error"),
-        (BenchmarkStatus.STOPPED, "stopped"),
+        (RunStatus.ERROR, "error"),
+        (RunStatus.STOPPED, "stopped"),
     ],
 )
 def test_fetch_jsonl_maps_completed_stream_to_terminal_run_status(
     monkeypatch: pytest.MonkeyPatch,
-    status: BenchmarkStatus,
+    status: RunStatus,
     expected_event: str,
 ) -> None:
     run_id = uuid4()

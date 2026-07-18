@@ -11,8 +11,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from click.testing import CliRunner, Result
-from tracker.database.models import BenchmarkStatus
-from tracker.types import RetrieveResultsResponse, S3UploadResultsResponse
+from tracker.types import RetrieveRunResultsResponse, RunStatus, S3UploadResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.run.errors import build_run_errors_payload, errors, group_task_errors
@@ -23,7 +22,7 @@ errors_module = import_module("valkyrie.cli.run.errors")
 
 
 class StubErrorsTracker:
-    def __init__(self, response: RetrieveResultsResponse | TrackerServiceError) -> None:
+    def __init__(self, response: RetrieveRunResultsResponse | TrackerServiceError) -> None:
         self.response = response
         self.calls: list[tuple[UUID, bool, list[str] | None]] = []
 
@@ -38,7 +37,7 @@ class StubErrorsTracker:
         run_id: UUID,
         s3: bool,
         task_ids: list[str] | None = None,
-    ) -> RetrieveResultsResponse:
+    ) -> RetrieveRunResultsResponse:
         self.calls.append((run_id, s3, task_ids))
         if isinstance(self.response, TrackerServiceError):
             raise self.response
@@ -84,17 +83,17 @@ def test_errors_text_groups_identical_messages_without_writing_files(monkeypatch
 @pytest.mark.parametrize(
     ("error_message", "task_errors", "status", "expected", "unexpected"),
     [
-        ("Run failed before task execution.", None, BenchmarkStatus.ERROR, "Stored run error", "Task errors ("),
-        ("Previous attempt failed.", None, BenchmarkStatus.IN_PROGRESS, "Stored run error", "Task errors ("),
-        (None, {"task-a": "Task failed."}, BenchmarkStatus.FINISHED, "Task errors (1 task", "Stored run error"),
-        (None, None, BenchmarkStatus.ERROR, "No current error messages recorded.", "Stored run error"),
+        ("Run failed before task execution.", None, RunStatus.ERROR, "Stored run error", "Task errors ("),
+        ("Previous attempt failed.", None, RunStatus.IN_PROGRESS, "Stored run error", "Task errors ("),
+        (None, {"task-a": "Task failed."}, RunStatus.FINISHED, "Task errors (1 task", "Stored run error"),
+        (None, None, RunStatus.ERROR, "No current error messages recorded.", "Stored run error"),
     ],
 )
 def test_errors_text_handles_run_task_and_empty_states(
     monkeypatch: pytest.MonkeyPatch,
     error_message: str | None,
     task_errors: dict[str, str] | None,
-    status: BenchmarkStatus,
+    status: RunStatus,
     expected: str,
     unexpected: str,
 ) -> None:
@@ -198,7 +197,7 @@ def test_errors_json_normalizes_empty_error_state(monkeypatch: pytest.MonkeyPatc
     tracker = StubErrorsTracker(
         make_final_view(
             run_id,
-            status=BenchmarkStatus.FINISHED,
+            status=RunStatus.FINISHED,
             error_message=None,
             task_errors=None,
         )

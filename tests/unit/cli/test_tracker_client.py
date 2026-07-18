@@ -21,17 +21,18 @@ import httpx
 import pytest
 import yaml
 from click.testing import CliRunner
-from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, RetryMode, TaskStatus
+from tracker.database.models import AgentContractRequest, DocentReadingStatus, RetryMode, TaskStatus
 from tracker.types import (
-    BenchmarkDetails,
+    RunDetails,
     BenchmarkServiceEntry,
     BenchmarkServiceHealth,
     BenchmarkServicesResponse,
-    BenchmarkTableRow,
-    FetchBenchmarkResponse,
-    FetchBenchmarksRequest,
-    FetchBenchmarksResponse,
-    FinalViewResponse,
+    RunSummary,
+    GetRunResponse,
+    ListRunsRequest,
+    ListRunsResponse,
+    RunResultsResponse,
+    RunStatus,
 )
 
 from valkyrie.cli import main as cli_main
@@ -40,8 +41,8 @@ import valkyrie.cli.config.benchmark_services as config_benchmark_services
 from valkyrie.cli.config.benchmark_services import paginate_services
 from valkyrie.cli.exceptions import TrackerNotFoundError
 from valkyrie.cli.run import list_runs, start
-from valkyrie.cli.run.list_runs import format_fetch_benchmarks_response
-from valkyrie.cli.run.progress import format_benchmark_status
+from valkyrie.cli.run.list_runs import format_list_runs_response
+from valkyrie.cli.run.progress import format_run_status
 from valkyrie.cli.runtime_config import (
     DEV_TRACKER_URL,
     TRACKER_SERVICE_URL_ENV_VAR,
@@ -141,14 +142,14 @@ class MockTrackerService:
     def __exit__(self, *_exc_info: object) -> None:
         return None
 
-    def start_benchmark(self, *_args: object, **_kwargs: object) -> httpx.Response:
+    def start_run(self, *_args: object, **_kwargs: object) -> httpx.Response:
         self.start_calls.append({"args": _args, "kwargs": _kwargs})
         return httpx.Response(200, json=self.start_response)
 
-    def fetch_benchmark(self, _run_id: object) -> SimpleNamespace:
+    def fetch_run(self, _run_id: object) -> SimpleNamespace:
         return SimpleNamespace(benchmark_name="swebench")
 
-    def retry_or_resume_benchmark(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+    def retry_or_resume_run(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(status="success")
 
     @classmethod
@@ -209,14 +210,14 @@ def connect_stream_testbed(
     async def get_contract_from_s3(_agent: str, _agent_config: object) -> AgentContractRequest:
         return AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run")
 
-    def stream_benchmark_status(_tracker: MockTrackerService, run_id: object) -> None:
+    def stream_run_status(_tracker: MockTrackerService, run_id: object) -> None:
         streamed_run_ids.append(str(run_id))
 
     monkeypatch.setattr(run_start, "TrackerService", mock_tracker_service)
     monkeypatch.setattr(run_start, "get_contract_from_s3", get_contract_from_s3)
-    monkeypatch.setattr(run_start, "stream_benchmark_status", stream_benchmark_status)
+    monkeypatch.setattr(run_start, "stream_run_status", stream_run_status)
     monkeypatch.setattr(run_resume, "TrackerService", mock_tracker_service)
-    monkeypatch.setattr(run_resume, "stream_benchmark_status", stream_benchmark_status)
+    monkeypatch.setattr(run_resume, "stream_run_status", stream_run_status)
 
     return started_run_id, streamed_run_ids, mock_tracker_service
 
@@ -310,10 +311,10 @@ def test_retrieve_results_adapts_canonical_wire_response_to_legacy_cli_model(
 
     response = TrackerService(base_url="http://tracker").retrieve_results(run_id, s3=False)
 
-    assert isinstance(response, FinalViewResponse)
+    assert isinstance(response, RunResultsResponse)
     assert fake_client.url == f"http://tracker/runs/{run_id}/results"
-    assert response.benchmark_id == run_id
-    assert response.model_dump(mode="json")["benchmark_arguments"]["contract"]["name"] == "agent"
+    assert response.run_id == run_id
+    assert response.model_dump(mode="json")["run_arguments"]["contract"]["name"] == "agent"
 
 
 def test_tracker_client_falls_back_to_legacy_routes_on_canonical_404(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -365,12 +366,12 @@ def test_tracker_client_falls_back_to_legacy_routes_on_canonical_404(monkeypatch
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
 
     tracker = TrackerService(base_url="http://tracker")
-    fetched = tracker.fetch_benchmark(run_id)
-    stopped = tracker.stop_benchmark(run_id, force=True, task_ids=["task-1"])
-    streamed = list(tracker.stream_benchmark(run_id))
+    fetched = tracker.fetch_run(run_id)
+    stopped = tracker.stop_run(run_id, force=True, task_ids=["task-1"])
+    streamed = list(tracker.stream_run(run_id))
     tracker.close()
 
-    assert fetched.benchmark_id == run_id
+    assert fetched.run_id == run_id
     assert stopped.status == "success"
     assert streamed == ["data: legacy-update"]
     assert [request.url.path for request in requests] == [
@@ -385,6 +386,34 @@ def test_tracker_client_falls_back_to_legacy_routes_on_canonical_404(monkeypatch
     assert requests[3].url.params["force"] == "true"
     assert json.loads(requests[3].content) == {"task_ids": ["task-1"]}
     assert dict(requests[5].url.params) == {"benchmark_id": str(run_id), "connect": "true"}
+
+
+def test_tracker_client_does_not_fallback_for_a_domain_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(404, json={"detail": "Not found"})
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.Client
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    run_id = uuid4()
+    with pytest.raises(TrackerServiceError, match="Not found"):
+        TrackerService(base_url="http://tracker").fetch_run(run_id)
+
+    assert [request.url.path for request in requests] == [f"/runs/{run_id}"]
 
 
 def _handle_catalog_service_request(requests: list[httpx.Request], request: httpx.Request) -> httpx.Response:
@@ -491,7 +520,7 @@ def test_fetch_run_outputs_omits_empty_task_ids(
     assert mock_client.params == {}
 
 
-def test_stop_benchmark_sends_task_selection(
+def test_stop_run_sends_task_selection(
     monkeypatch: pytest.MonkeyPatch,
     mock_client: MockClient,
 ) -> None:
@@ -509,7 +538,7 @@ def test_stop_benchmark_sends_task_selection(
     run_id = uuid4()
     tracker = TrackerService(base_url="http://tracker")
 
-    tracker.stop_benchmark(
+    tracker.stop_run(
         run_id,
         force=True,
         task_ids=["task-a", "task-b"],
@@ -519,7 +548,7 @@ def test_stop_benchmark_sends_task_selection(
     assert mock_client.params == {"force": True}
     assert mock_client.json == {"task_ids": ["task-a", "task-b"]}
 
-    tracker.stop_benchmark(run_id, force=False)
+    tracker.stop_run(run_id, force=False)
 
     assert mock_client.json == {"task_ids": None}
 
@@ -730,7 +759,7 @@ def test_retry_or_resume_sends_retry_mode(
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
 
     tracker = TrackerService(base_url="http://tracker")
-    result = tracker.retry_or_resume_benchmark(
+    result = tracker.retry_or_resume_run(
         uuid4(),
         retry=True,
         retry_mode=RetryMode.FROM_SCRATCH,
@@ -748,7 +777,7 @@ def test_retry_or_resume_sends_retry_mode(
         "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
     }
 
-    tracker.retry_or_resume_benchmark(
+    tracker.retry_or_resume_run(
         uuid4(),
         retry=False,
         retry_mode=RetryMode.AUTO,
@@ -819,7 +848,7 @@ def test_tracker_client_requires_provider_secret_config(tmp_path: Path, monkeypa
         ),
     ],
 )
-def test_start_benchmark_resolves_provider_configuration(
+def test_start_run_resolves_provider_configuration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mock_client: MockClient,
@@ -840,7 +869,7 @@ def test_start_benchmark_resolves_provider_configuration(
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
 
     tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
+    tracker.start_run(
         contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
         benchmark_name="swebench",
         concurrency=1,
@@ -1014,7 +1043,7 @@ def test_run_label_cli_options_and_client_requests(
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", _mock_client_builder(mock_client))
 
     tracker = TrackerService(base_url="http://tracker")
-    tracker.start_benchmark(
+    tracker.start_run(
         contract=AgentContractRequest(name="agent", install_cmd="echo install", run_cmd="echo run"),
         benchmark_name="swebench",
         concurrency=1,
@@ -1026,7 +1055,7 @@ def test_run_label_cli_options_and_client_requests(
     assert mock_client.json is not None
     assert mock_client.json["label"] == "nightly"
 
-    tracker.fetch_benchmarks(FetchBenchmarksRequest(label="nightly"))
+    tracker.list_runs(ListRunsRequest(label="nightly"))
     assert mock_client.params is not None
     assert mock_client.params["label"] == "nightly"
 
@@ -1040,8 +1069,8 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
     """
     run_id = uuid4()
     started_at = datetime.now(ZoneInfo("UTC"))
-    details = BenchmarkDetails(
-        status=BenchmarkStatus.IN_PROGRESS,
+    details = RunDetails(
+        status=RunStatus.IN_PROGRESS,
         started_at=started_at,
         total_tasks=1,
         finished_tasks=0,
@@ -1049,10 +1078,10 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
         docent_reading_status=DocentReadingStatus.IDLE,
     )
 
-    format_benchmark_status(
-        FetchBenchmarkResponse(
+    format_run_status(
+        GetRunResponse(
             benchmark_name="swebench",
-            benchmark_id=run_id,
+            run_id=run_id,
             details=details,
             s3_bucket_url="s3://bucket/benchmarks/run",
             label="nightly",
@@ -1062,19 +1091,19 @@ def test_run_label_fetch_and_list_output(capsys: pytest.CaptureFixture[str]) -> 
     assert "Label:" in fetch_output
     assert "nightly" in fetch_output
 
-    format_fetch_benchmarks_response(
-        FetchBenchmarksResponse(
-            benchmarks=[
-                BenchmarkTableRow(
-                    id=run_id,
-                    name="swebench",
+    format_list_runs_response(
+        ListRunsResponse(
+            runs=[
+                RunSummary(
+                    run_id=run_id,
+                    benchmark_name="swebench",
                     agent_name="agent",
                     model="openai/gpt-5.5",
                     dataset="default",
                     started_by_email=None,
                     started_at=started_at,
                     finished_at=None,
-                    status=BenchmarkStatus.IN_PROGRESS,
+                    status=RunStatus.IN_PROGRESS,
                     total_tasks=1,
                     finished_tasks=0,
                     label="nightly",

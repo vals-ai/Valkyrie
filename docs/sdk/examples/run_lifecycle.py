@@ -11,7 +11,7 @@ import argparse
 import asyncio
 import sys
 
-from valkyrie.sdk import BenchmarkStatus, ValkyrieClient, ValkyrieSDKError
+from valkyrie.sdk import RunStatus, ValkyrieClient, ValkyrieSDKError
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,21 +39,21 @@ async def run_lifecycle(args: argparse.Namespace) -> None:
             provider=args.provider,
             concurrency=args.concurrency,
         )
-        print(f"Started {run.benchmark_id}")
+        print(f"Started {run.run_id}")
 
-        async for update in client.runs.stream(run.benchmark_id):
+        async for update in client.runs.stream(run.run_id):
             details = update.details
             print(f"{details.status.value}: {details.finished_tasks}/{details.total_tasks} tasks")
 
-        current = await client.runs.fetch(run.benchmark_id)
+        current = await client.runs.fetch(run.run_id)
         print(f"Current status: {current.details.status.value}")
 
         page = await client.runs.list()
         print(f"Visible runs: {page.total_count}")
 
-        if current.details.status == BenchmarkStatus.FINISHED:
-            results = await client.runs.results(run.benchmark_id)
-            print(f"Retrieved results for {results.benchmark_id}")
+        if current.details.status == RunStatus.FINISHED:
+            results = await client.runs.results(run.run_id)
+            print(f"Retrieved results for {results.run_id}")
         else:
             print("Results are available after the run reaches FINISHED")
 

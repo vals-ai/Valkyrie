@@ -17,8 +17,8 @@ from pydantic import ValidationError
 
 from valkyrie.sdk import (
     AgentContractRequest,
-    FetchBenchmarksRequest,
-    FinalViewResponse,
+    ListRunsRequest,
+    RunResultsResponse,
     S3UploadResultsResponse,
     ValkyrieAPIError,
     ValkyrieClient,
@@ -182,7 +182,7 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
         )
 
     assert response.run_id == run_id
-    assert response.benchmark_id == run_id
+    assert response.run_id == run_id
     request = requests[0]
     body = json.loads(request.content)
     assert request.url.path == "/runs"
@@ -392,17 +392,17 @@ async def test_fetch_list_stop_and_s3_results_are_typed(make_client, fetch_respo
     client = make_client(handler)
     async with client:
         fetched = await client.runs.fetch(run_id)
-        listed = await client.runs.list(FetchBenchmarksRequest(limit=25))
+        listed = await client.runs.list(ListRunsRequest(limit=25))
         stopped = await client.runs.stop(run_id, force=True)
         inline_results = await client.runs.results(run_id)
         results = await client.runs.results(run_id, task_ids=["task-1"], upload_to_s3=True)
 
-    assert fetched.benchmark_id == run_id
+    assert fetched.run_id == run_id
     assert listed.total_count == 0
     assert stopped.status == "success"
-    assert_type(inline_results, FinalViewResponse)
+    assert_type(inline_results, RunResultsResponse)
     assert_type(results, S3UploadResultsResponse)
-    assert inline_results.benchmark_id == run_id
+    assert inline_results.run_id == run_id
     assert results.s3_url == "s3://runs-bucket/results.json"
     assert paths == [
         f"/runs/{run_id}",
@@ -542,7 +542,7 @@ async def test_stream_parses_eof_after_ignoring_empty_events(make_client, fetch_
         empty_snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
         disconnected_snapshots = [snapshot async for snapshot in client.runs.stream(run_id)]
 
-    assert [snapshot.benchmark_id for snapshot in snapshots] == [run_id]
+    assert [snapshot.run_id for snapshot in snapshots] == [run_id]
     assert empty_snapshots == []
     assert disconnected_snapshots == []
 
@@ -626,6 +626,21 @@ async def test_api_and_transport_failures_use_sdk_exceptions(make_client) -> Non
     async with client:
         with pytest.raises(ValkyrieTransportError, match="offline"):
             await client.runs.fetch(uuid4())
+
+
+async def test_domain_404_does_not_retry_the_legacy_route(make_client) -> None:
+    requested_paths: list[str] = []
+
+    def missing_run(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        return httpx.Response(404, json={"detail": "Not found"})
+
+    run_id = uuid4()
+    async with make_client(missing_run) as client:
+        with pytest.raises(ValkyrieAPIError, match="Not found"):
+            await client.runs.fetch(run_id)
+
+    assert requested_paths == [f"/runs/{run_id}"]
 
 
 async def test_start_validates_inputs_before_request(make_client, sdk_config) -> None:

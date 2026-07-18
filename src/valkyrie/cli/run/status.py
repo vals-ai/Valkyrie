@@ -1,11 +1,11 @@
 from uuid import UUID
 
 import click
-from tracker.types import BenchmarkStatusEntry
+from tracker.types import RunStatusEntry
 
 from valkyrie.cli.display import format_table
 from valkyrie.cli.exceptions import TrackerServiceError
-from valkyrie.cli.run.progress import BenchmarkFormatter
+from valkyrie.cli.run.progress import RunFormatter
 from valkyrie.cli.run.snapshot import format_run_status_json
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -45,7 +45,7 @@ def status_runs(run_ids_value: str, output_format: str) -> None:
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
-    entries_by_id = {entry.id: entry for entry in entries}
+    entries_by_id = {entry.run_id: entry for entry in entries}
     ordered_entries = [entries_by_id[run_id] for run_id in run_ids if run_id in entries_by_id]
     missing_run_ids = [run_id for run_id in run_ids if run_id not in entries_by_id]
 
@@ -83,26 +83,26 @@ def parse_run_ids(value: str) -> list[UUID]:
     return run_ids
 
 
-def fetch_status_entries(tracker: TrackerService, run_ids: list[UUID]) -> list[BenchmarkStatusEntry]:
+def fetch_status_entries(tracker: TrackerService, run_ids: list[UUID]) -> list[RunStatusEntry]:
     """Fetch status entries in URL-safe batches without writing partial output."""
-    entries: list[BenchmarkStatusEntry] = []
+    entries: list[RunStatusEntry] = []
     for start in range(0, len(run_ids), _STATUS_BATCH_SIZE):
-        response = tracker.fetch_benchmark_statuses(run_ids[start : start + _STATUS_BATCH_SIZE])
-        entries.extend(response.entries)
+        response = tracker.fetch_run_statuses(run_ids[start : start + _STATUS_BATCH_SIZE])
+        entries.extend(response.runs)
     return entries
 
 
-def format_status_table(entries: list[BenchmarkStatusEntry]) -> None:
+def format_status_table(entries: list[RunStatusEntry]) -> None:
     """Render lightweight multi-run status for humans."""
     rows: list[dict[str, str]] = []
     for entry in entries:
-        _, progress_percent = BenchmarkFormatter.create_progress_bar(entry.finished_tasks, entry.total_tasks)
+        _, progress_percent = RunFormatter.create_progress_bar(entry.finished_tasks, entry.total_tasks)
         rows.append(
             {
-                "ID": str(entry.id),
+                "ID": str(entry.run_id),
                 "Status": click.style(
                     entry.status.value.replace("_", " ").title(),
-                    fg=BenchmarkFormatter.STATUS_COLORS[entry.status.value],
+                    fg=RunFormatter.STATUS_COLORS[entry.status.value],
                 ),
                 "Progress": f"{entry.finished_tasks}/{entry.total_tasks} ({progress_percent:.1f}%)",
             }
