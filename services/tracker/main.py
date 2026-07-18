@@ -629,7 +629,7 @@ async def check_results_exist(
     org: Org = Depends(get_current_org),
 ) -> dict[str, bool]:
     """
-    Check if uploaded results already exist in S3 for the given benchmark.
+    Check if the benchmark's final view already exists in S3.
 
     Usage:
     curl -X GET http://<endpoint>/check-results-exist?benchmark_id=<uuid>

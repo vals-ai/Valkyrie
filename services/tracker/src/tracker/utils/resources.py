@@ -77,9 +77,33 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
     )
 
 
-def fetch_benchmark_row(benchmark_id: UUID, session: Session, org: Org) -> Benchmark:
-    """Fetch benchmark row with org validation. Raises domain errors (not HTTPException) for use in background tasks."""
-    benchmark_row = session.get(Benchmark, benchmark_id)
+def fetch_benchmark_row(
+    benchmark_id: UUID,
+    session: Session,
+    org: Org,
+    *,
+    for_update: bool = False,
+) -> Benchmark:
+    """Fetch an org-scoped benchmark, optionally locking it for a state transition.
+
+    Arguments
+    - benchmark_id: Run identifier to fetch.
+    - session: Database session used for the query.
+    - org: Organization expected to contain the run.
+    - for_update: Lock and refresh the row until the transaction completes.
+
+    Returns
+    - The matching benchmark row.
+
+    Raises
+    - ValueError: The run is missing or belongs to another organization.
+    """
+    benchmark_row = session.get(
+        Benchmark,
+        benchmark_id,
+        populate_existing=for_update,
+        with_for_update=for_update or None,
+    )
     if not benchmark_row:
         raise ValueError(f"Run with id {benchmark_id} not found")
     if benchmark_row.org_id != org.id:

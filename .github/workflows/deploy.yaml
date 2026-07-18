@@ -2,9 +2,30 @@ name: Deploy to AWS
 
 on:
   push:
-    branches: [dev, prod]
+    branches: [prod]
 
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Operation to run in the dev account
+        required: true
+        default: plan
+        type: choice
+        options:
+          - credentials-only
+          - plan
+          - deploy
+      scope:
+        description: Infrastructure component
+        required: true
+        default: all
+        type: choice
+        options:
+          - shared
+          - tracker
+          - worker
+          - monitoring
+          - all
 
 permissions:
   contents: read
@@ -15,34 +36,20 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  deploy-production:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/prod'
     runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.GH_PAT }}
-
-      - name: Resolve deploy stage
-        id: deploy-stage
-        run: |
-          case "${GITHUB_REF_NAME}" in
-            dev|prod)
-              echo "stage=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-              ;;
-            *)
-              echo "::error::Unsupported deploy ref '${GITHUB_REF_NAME}'. Run this workflow from dev or prod."
-              exit 1
-              ;;
-          esac
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::613431292675:role/github-actions-valkyrie-deploy
           aws-region: us-east-1
+          allowed-account-ids: "613431292675"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -69,7 +76,6 @@ jobs:
           uv sync
 
       - name: Deploy all stacks with Slack notifications
-        if: steps.deploy-stage.outputs.stage == 'prod'
         env:
           SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
           VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
@@ -79,14 +85,105 @@ jobs:
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
         run: |
           cd infra
-          uv run cdk deploy --all -c stage=${{ steps.deploy-stage.outputs.stage }} --require-approval never
+          uv run cdk deploy --all -c stage=prod --require-approval never
 
-      - name: Deploy all stacks without Slack notifications
-        if: steps.deploy-stage.outputs.stage != 'prod'
-        env:
-          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
-          BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
-          DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+  run-dev-operation:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-24.04-arm
+    environment: dev
+    env:
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      CDK_DEFAULT_ACCOUNT: ${{ vars.DEV_ACCOUNT_ID }}
+      CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
+      DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
+      OPERATION: ${{ inputs.operation }}
+      PRODUCTION_ACCOUNT_ID: "613431292675"
+      SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}
+
+    steps:
+      - name: Validate dev configuration
         run: |
-          cd infra
-          uv run cdk deploy --all -c stage=${{ steps.deploy-stage.outputs.stage }} --require-approval never
+          set -euo pipefail
+          if [[ -z "$DEV_ACCOUNT_ID" || -z "$AWS_DEPLOY_ROLE_ARN" || -z "$AWS_REGION" ]]; then
+            echo "::error::The dev Environment must define DEV_ACCOUNT_ID, AWS_DEPLOY_ROLE_ARN, and AWS_REGION."
+            exit 1
+          fi
+          if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_PROJECT_ID" ]]; then
+            echo "::error::The dev Environment must define DESCOPE_PROJECT_ID before planning or deploying."
+            exit 1
+          fi
+          if [[ ! "$DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
+            echo "::error::DEV_ACCOUNT_ID must be a 12-digit AWS account ID."
+            exit 1
+          fi
+          if [[ "$DEV_ACCOUNT_ID" == "$PRODUCTION_ACCOUNT_ID" ]]; then
+            echo "::error::DEV_ACCOUNT_ID must not be the production AWS account."
+            exit 1
+          fi
+          if [[ "$AWS_REGION" != "us-east-1" ]]; then
+            echo "::error::AWS_REGION must be us-east-1; got '$AWS_REGION'."
+            exit 1
+          fi
+
+      - name: Configure dev AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.DEV_ACCOUNT_ID }}
+          role-session-name: valkyrie-dev-${{ github.run_id }}
+          unset-current-credentials: true
+
+      - name: Validate dev AWS identity
+        run: |
+          set -euo pipefail
+          caller_account="$(aws sts get-caller-identity --query Account --output text)"
+          if [[ "$caller_account" != "$DEV_ACCOUNT_ID" ]]; then
+            echo "::error::Expected AWS account '$DEV_ACCOUNT_ID', got '$caller_account'."
+            exit 1
+          fi
+
+      - name: Checkout code
+        if: inputs.operation != 'credentials-only'
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        if: inputs.operation != 'credentials-only'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Setup Python
+        if: inputs.operation != 'credentials-only'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        if: inputs.operation != 'credentials-only'
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "infra/uv.lock"
+
+      - name: Install CDK
+        if: inputs.operation != 'credentials-only'
+        run: npm install -g aws-cdk@2.1132.0
+
+      - name: Install infra dependencies
+        if: inputs.operation != 'credentials-only'
+        working-directory: infra
+        run: make install
+
+      - name: Plan dev infrastructure
+        if: inputs.operation == 'plan'
+        working-directory: infra
+        run: make plan STAGE=dev SCOPE=${{ inputs.scope }} DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
+
+      - name: Deploy dev infrastructure
+        if: inputs.operation == 'deploy'
+        working-directory: infra
+        run: make deploy STAGE=dev SCOPE=${{ inputs.scope }} DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"

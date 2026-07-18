@@ -1,11 +1,10 @@
-name: Tracker unit tests
+name: Tracker tests
 on:
   push:
     branches: [dev]
     paths:
       - "services/tracker/**"
   pull_request:
-    branches: [dev]
     paths:
       - "services/tracker/**"
 
@@ -32,10 +31,10 @@ jobs:
           uv venv --python 3.12
           uv sync --group dev
 
-      - name: Run unit tests with coverage
+      - name: Run tracker tests with coverage
         run: |
           cd services/tracker
-          uv run pytest tests/unit --test-alembic --cov=src/tracker --cov-report=xml
+          make test
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4

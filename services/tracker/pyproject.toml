@@ -70,6 +70,7 @@ indent-style = "space"
 [tool.basedpyright]
 venvPath="."
 venv=".venv"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 
 reportExplicitAny = false
@@ -80,20 +81,17 @@ enableTypeIgnoreComments = true
 exclude=["src/tracker/database/migrations/versions"]
 
 [tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
 asyncio_mode = "auto"
 pythonpath = ["."]
 env = [
     "BROKER_ENVIRONMENT=testing",
 ]
-markers = [
-    "slow: marks tests as slow (require Daytona/external services)",
-]
-
 [tool.coverage.run]
-source = ["src/tracker"]
+source = ["src/tracker", "main"]
 branch = true
 omit = ["*/tests/*", "*/__pycache__/*", "*/migrations/*"]
 
 [tool.coverage.report]
-fail_under = 1
+fail_under = 80
 show_missing = true

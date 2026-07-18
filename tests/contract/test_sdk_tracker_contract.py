@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 import pytest
+from benchmark_service.schemas import VerifyTaskIdsResponse
 from pydantic import BaseModel
 from services.tracker.main import app
 from tracker.database.models import (
@@ -17,10 +19,23 @@ from tracker.database.models import (
 )
 from tracker.types import (
     AWSCredentials,
+    AgentDownloadURLResponse,
+    AgentEntry,
+    AgentsResponse,
+    AnalyzeBenchmarkRequest,
     AverageTaskBreakdown,
     BenchmarkDetails,
+    BenchmarkServiceCatalogResponse,
+    BenchmarkServiceEntry,
+    BenchmarkServiceHealth,
+    BenchmarkServicesRequest,
+    BenchmarkServicesResponse,
+    BenchmarkStatusEntry,
+    BenchmarkStatusResponse,
     BenchmarkTableRow,
     FetchBenchmarkResponse,
+    FetchBenchmarkMetadataResponse,
+    FetchBenchmarkTasksRequest,
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FinalViewResponse,
@@ -30,19 +45,37 @@ from tracker.types import (
     RetryOrResumeBenchmarkResponse,
     RunResultsResponse,
     S3UploadResultsResponse,
+    SingleBenchmarkResponse,
+    SingleTaskResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StartRunResponse,
     StopBenchmarkResponse,
+    TaskArtifactsResponse,
+    TasksResponse,
+    TaskSummary,
 )
 from valkyrie.sdk.models import (
     AWSCredentials as SDKAWSCredentials,
     AgentContractRequest as SDKAgentContractRequest,
+    AgentDownloadURLResponse as SDKAgentDownloadURLResponse,
+    AgentEntry as SDKAgentEntry,
+    AgentsResponse as SDKAgentsResponse,
+    AnalyzeBenchmarkRequest as SDKAnalyzeBenchmarkRequest,
     AverageTaskBreakdown as SDKAverageTaskBreakdown,
     BenchmarkArguments as SDKBenchmarkArguments,
     BenchmarkDetails as SDKBenchmarkDetails,
+    BenchmarkServiceCatalogResponse as SDKBenchmarkServiceCatalogResponse,
+    BenchmarkServiceEntry as SDKBenchmarkServiceEntry,
+    BenchmarkServiceHealth as SDKBenchmarkServiceHealth,
+    BenchmarkServicesRequest as SDKBenchmarkServicesRequest,
+    BenchmarkServicesResponse as SDKBenchmarkServicesResponse,
+    BenchmarkStatusEntry as SDKBenchmarkStatusEntry,
+    BenchmarkStatusResponse as SDKBenchmarkStatusResponse,
     BenchmarkTableRow as SDKBenchmarkTableRow,
     FetchBenchmarkResponse as SDKFetchBenchmarkResponse,
+    FetchBenchmarkMetadataResponse as SDKFetchBenchmarkMetadataResponse,
+    FetchBenchmarkTasksRequest as SDKFetchBenchmarkTasksRequest,
     FetchBenchmarksRequest as SDKFetchBenchmarksRequest,
     FetchBenchmarksResponse as SDKFetchBenchmarksResponse,
     FinalEvaluation as SDKFinalEvaluation,
@@ -54,10 +87,16 @@ from valkyrie.sdk.models import (
     RetryOrResumeBenchmarkResponse as SDKRetryResponse,
     RunResultsResponse as SDKRunResultsResponse,
     S3UploadResultsResponse as SDKS3ResultsResponse,
+    SingleBenchmarkResponse as SDKSingleBenchmarkResponse,
+    SingleTaskResponse as SDKSingleTaskResponse,
     StartBenchmarkRequest as SDKStartBenchmarkRequest,
     StartBenchmarkResponse as SDKStartBenchmarkResponse,
     StartRunResponse as SDKStartRunResponse,
     StopBenchmarkResponse as SDKStopBenchmarkResponse,
+    TaskArtifactsResponse as SDKTaskArtifactsResponse,
+    TaskIDsResponse as SDKTaskIDsResponse,
+    TasksResponse as SDKTasksResponse,
+    TaskSummary as SDKTaskSummary,
 )
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
@@ -72,12 +111,76 @@ ROUTES = (
     ("/retrieve-results", "get", "benchmark_id s3 task_ids"),
     ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id force"),
     ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id retry retry_mode concurrency"),
+    ("/benchmarks/status", "get", "ids"),
+    ("/benchmarks/{benchmark_id}", "get", "benchmark_id"),
+    (
+        "/benchmarks/{benchmark_id}/tasks",
+        "get",
+        "benchmark_id status task_id_search sort sort_dir limit offset",
+    ),
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get", "benchmark_id task_id"),
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts", "get", "benchmark_id task_id"),
+    ("/agents", "get", ""),
+    ("/agents/{name}/download-url", "get", "name"),
+    ("/benchmark-services", "get", ""),
+    ("/benchmark-services", "post", ""),
+    ("/fetch-benchmark-tasks", "post", ""),
+    ("/analyze-benchmark/{benchmark_id}", "post", "benchmark_id"),
+    ("/check-results-exist", "get", "benchmark_id"),
+    ("/fetch-benchmark-metadata/{benchmark_id}", "get", "benchmark_id"),
+    ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id task_ids"),
+    (
+        "/runs",
+        "get",
+        "agent_name benchmark_name status started_by model dataset label started_after started_before order_by cursor limit offset",
+    ),
+    ("/runs", "post", ""),
+    ("/runs/status", "get", "ids"),
+    ("/runs/{run_id}", "get", "run_id"),
+    ("/runs/{run_id}/events", "get", "run_id"),
+    ("/runs/{run_id}/results", "get", "run_id s3 task_ids"),
+    ("/runs/{run_id}/results/exists", "get", "run_id"),
+    ("/runs/{run_id}/metadata", "get", "run_id"),
+    ("/runs/{run_id}/outputs", "get", "run_id task_ids"),
+    ("/runs/{run_id}/analysis", "post", "run_id"),
+    ("/runs/{run_id}/stop", "post", "run_id force"),
+    ("/runs/{run_id}/resume", "post", "run_id retry_mode concurrency"),
+    ("/runs/{run_id}/retry", "post", "run_id retry_mode concurrency"),
+    (
+        "/runs/{run_id}/tasks",
+        "get",
+        "run_id status task_id_search sort sort_dir limit offset",
+    ),
+    ("/runs/{run_id}/tasks/{task_id}", "get", "run_id task_id"),
+    ("/runs/{run_id}/tasks/{task_id}/artifacts", "get", "run_id task_id"),
 )
 RESPONSE_MODELS = {
-    "/start-benchmark": "StartBenchmarkResponse",
-    "/fetch-benchmarks": "FetchBenchmarksResponse",
-    "/stop-benchmark/{benchmark_id}": "StopBenchmarkResponse",
-    "/retry-or-resume-benchmark/{benchmark_id}": "RetryOrResumeBenchmarkResponse",
+    ("/start-benchmark", "post"): "StartBenchmarkResponse",
+    ("/fetch-benchmarks", "get"): "FetchBenchmarksResponse",
+    ("/stop-benchmark/{benchmark_id}", "post"): "StopBenchmarkResponse",
+    ("/retry-or-resume-benchmark/{benchmark_id}", "post"): "RetryOrResumeBenchmarkResponse",
+    ("/benchmarks/status", "get"): "BenchmarkStatusResponse",
+    ("/benchmarks/{benchmark_id}", "get"): "SingleBenchmarkResponse",
+    ("/benchmarks/{benchmark_id}/tasks", "get"): "TasksResponse",
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
+    ("/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts", "get"): "TaskArtifactsResponse",
+    ("/agents", "get"): "AgentsResponse",
+    ("/agents/{name}/download-url", "get"): "AgentDownloadURLResponse",
+    ("/benchmark-services", "get"): "BenchmarkServiceCatalogResponse",
+    ("/benchmark-services", "post"): "BenchmarkServicesResponse",
+    ("/fetch-benchmark-tasks", "post"): "VerifyTaskIdsResponse",
+    ("/fetch-benchmark-metadata/{benchmark_id}", "get"): "FetchBenchmarkMetadataResponse",
+    ("/runs", "get"): "ListRunsResponse",
+    ("/runs", "post"): "StartRunResponse",
+    ("/runs/status", "get"): "RunStatusResponse",
+    ("/runs/{run_id}", "get"): "GetRunResponse",
+    ("/runs/{run_id}/metadata", "get"): "RunMetadataResponse",
+    ("/runs/{run_id}/stop", "post"): "StopRunResponse",
+    ("/runs/{run_id}/resume", "post"): "RetryOrResumeRunResponse",
+    ("/runs/{run_id}/retry", "post"): "RetryOrResumeRunResponse",
+    ("/runs/{run_id}/tasks", "get"): "TasksResponse",
+    ("/runs/{run_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
+    ("/runs/{run_id}/tasks/{task_id}/artifacts", "get"): "TaskArtifactsResponse",
 }
 MODEL_PAIRS = (
     (OutputArtifact, SDKOutputArtifact),
@@ -98,7 +201,32 @@ MODEL_PAIRS = (
     (S3UploadResultsResponse, SDKS3ResultsResponse),
     (StopBenchmarkResponse, SDKStopBenchmarkResponse),
     (RetryOrResumeBenchmarkResponse, SDKRetryResponse),
+    (BenchmarkStatusEntry, SDKBenchmarkStatusEntry),
+    (BenchmarkStatusResponse, SDKBenchmarkStatusResponse),
+    (SingleBenchmarkResponse, SDKSingleBenchmarkResponse),
+    (TaskSummary, SDKTaskSummary),
+    (TasksResponse, SDKTasksResponse),
+    (SingleTaskResponse, SDKSingleTaskResponse),
+    (TaskArtifactsResponse, SDKTaskArtifactsResponse),
+    (AgentEntry, SDKAgentEntry),
+    (AgentsResponse, SDKAgentsResponse),
+    (AgentDownloadURLResponse, SDKAgentDownloadURLResponse),
+    (BenchmarkServiceEntry, SDKBenchmarkServiceEntry),
+    (BenchmarkServiceHealth, SDKBenchmarkServiceHealth),
+    (BenchmarkServicesRequest, SDKBenchmarkServicesRequest),
+    (BenchmarkServicesResponse, SDKBenchmarkServicesResponse),
+    (BenchmarkServiceCatalogResponse, SDKBenchmarkServiceCatalogResponse),
+    (FetchBenchmarkTasksRequest, SDKFetchBenchmarkTasksRequest),
+    (VerifyTaskIdsResponse, SDKTaskIDsResponse),
+    (AnalyzeBenchmarkRequest, SDKAnalyzeBenchmarkRequest),
+    (FetchBenchmarkMetadataResponse, SDKFetchBenchmarkMetadataResponse),
 )
+INTERNAL_ROUTES = {
+    ("/benchmarks/filter-options", "get"),
+    ("/health", "get"),
+    ("/init", "post"),
+    ("/runs/filter-options", "get"),
+}
 
 
 def load_fixture(name: str) -> dict[str, Any]:
@@ -140,6 +268,53 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
     tracker_model: type[BaseModel], sdk_model: type[BaseModel]
 ) -> None:
     assert tracker_model.model_fields.keys() == sdk_model.model_fields.keys()
+    tracker_schema = tracker_model.model_json_schema(by_alias=False)
+    sdk_schema = sdk_model.model_json_schema(by_alias=False)
+    assert set(tracker_schema.get("required", [])) == set(sdk_schema.get("required", []))
+
+    for name in tracker_model.model_fields:
+        tracker_property = _normalized_wire_schema(tracker_schema["properties"][name])
+        sdk_property = _normalized_wire_schema(sdk_schema["properties"][name])
+        assert tracker_property == sdk_property
+
+        tracker_field = tracker_model.model_fields[name]
+        sdk_field = sdk_model.model_fields[name]
+        if tracker_field.is_required() or (tracker_field.default_factory and sdk_field.default_factory):
+            continue
+        tracker_default = tracker_field.get_default(call_default_factory=True)
+        sdk_default = sdk_field.get_default(call_default_factory=True)
+        assert _normalized_default(tracker_default) == _normalized_default(sdk_default)
+
+
+def _normalized_wire_schema(value: Any) -> Any:
+    """Compare wire shapes while ignoring documentation and intentional ID format hints."""
+    if isinstance(value, dict):
+        normalized = {}
+        for key, item in value.items():
+            if key in {"default", "description", "format", "title"}:
+                continue
+            if key == "$ref" and isinstance(item, str):
+                for canonical, legacy in {
+                    "RunArguments": "BenchmarkArguments",
+                    "RunDetails": "BenchmarkDetails",
+                    "RunFinalEvaluation": "FinalEvaluation",
+                    "RunStatus": "BenchmarkStatus",
+                    "RunStatusEntry": "BenchmarkStatusEntry",
+                    "RunSummary": "BenchmarkTableRow",
+                }.items():
+                    item = item.replace(f"/$defs/{canonical}", f"/$defs/{legacy}")
+            normalized[key] = _normalized_wire_schema(item)
+        return normalized
+    if isinstance(value, list):
+        return [_normalized_wire_schema(item) for item in value]
+    return value
+
+
+def _normalized_default(value: Any) -> Any:
+    """Compare enum defaults by their wire value."""
+    if isinstance(value, Enum):
+        return value.value
+    return value
 
 
 def test_fetch_stream_fixture_matches_tracker_and_sdk_response_models() -> None:
@@ -154,8 +329,13 @@ def test_fetch_stream_fixture_matches_tracker_and_sdk_response_models() -> None:
 
 def test_tracker_routes_match_the_sdk_http_contract() -> None:
     schema = app.openapi()
+    expected_methods: dict[str, set[str]] = {}
+    for path, method, _names in ROUTES:
+        expected_methods.setdefault(path, set()).add(method)
+    for path, methods in expected_methods.items():
+        assert set(schema["paths"][path]) == methods
+
     for path, method, names in ROUTES:
-        assert set(schema["paths"][path]) == {method}
         operation = schema["paths"][path][method]
         actual_parameters = {(parameter["name"], parameter["in"]) for parameter in operation.get("parameters", [])}
         expected_parameters = {(name, "path" if f"{{{name}}}" in path else "query") for name in names.split()}
@@ -165,6 +345,16 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     assert start["requestBody"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/StartBenchmarkRequest"
     }
+    for path, model in (
+        ("/analyze-benchmark/{benchmark_id}", "AnalyzeBenchmarkRequest"),
+        ("/benchmark-services", "BenchmarkServicesRequest"),
+        ("/fetch-benchmark-tasks", "FetchBenchmarkTasksRequest"),
+    ):
+        operation = schema["paths"][path]["post"]
+        assert operation["requestBody"]["content"]["application/json"]["schema"] == {
+            "$ref": f"#/components/schemas/{model}"
+        }
+
     retry = schema["paths"]["/retry-or-resume-benchmark/{benchmark_id}"]["post"]
     retry_schema_ref = retry["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     retry_schema = schema["components"]["schemas"][retry_schema_ref.rsplit("/", 1)[-1]]
@@ -195,19 +385,50 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
     }
     assert "default" not in retry_parameters["concurrency"]["schema"]
 
+    status_parameters = {
+        parameter["name"]: parameter for parameter in schema["paths"]["/benchmarks/status"]["get"]["parameters"]
+    }
+    assert status_parameters["ids"]["schema"]["default"] == ""
+
+    task_parameters = {
+        parameter["name"]: parameter
+        for parameter in schema["paths"]["/benchmarks/{benchmark_id}/tasks"]["get"]["parameters"]
+    }
+    assert task_parameters["status"]["schema"]["default"] == ""
+    assert task_parameters["sort"]["schema"]["enum"] == ["task_id", "started_at", "duration", "status"]
+    assert task_parameters["sort"]["schema"]["default"] == "started_at"
+    assert task_parameters["sort_dir"]["schema"]["enum"] == ["asc", "desc"]
+    assert task_parameters["sort_dir"]["schema"]["default"] == "desc"
+    assert task_parameters["limit"]["schema"] == {
+        "type": "integer",
+        "maximum": 500,
+        "minimum": 1,
+        "default": 50,
+        "title": "Limit",
+    }
+    assert task_parameters["offset"]["schema"] == {
+        "type": "integer",
+        "minimum": 0,
+        "default": 0,
+        "title": "Offset",
+    }
+
     for path, method, parameter_name in (
         ("/fetch-benchmark", "get", "benchmark_id"),
         ("/retrieve-results", "get", "benchmark_id"),
         ("/stop-benchmark/{benchmark_id}", "post", "benchmark_id"),
         ("/retry-or-resume-benchmark/{benchmark_id}", "post", "benchmark_id"),
+        ("/analyze-benchmark/{benchmark_id}", "post", "benchmark_id"),
+        ("/check-results-exist", "get", "benchmark_id"),
+        ("/fetch-benchmark-metadata/{benchmark_id}", "get", "benchmark_id"),
+        ("/fetch-run-outputs/{benchmark_id}", "get", "benchmark_id"),
     ):
         operation = schema["paths"][path][method]
         parameter = next(item for item in operation["parameters"] if item["name"] == parameter_name)
         assert parameter["required"] is True
         assert parameter["schema"]["format"] == "uuid"
 
-    for path, model in RESPONSE_MODELS.items():
-        method = next(method for route, method, _names in ROUTES if route == path)
+    for (path, method), model in RESPONSE_MODELS.items():
         response = schema["paths"][path][method]["responses"]["200"]["content"]["application/json"]["schema"]
         assert response == {"$ref": f"#/components/schemas/{model}"}
     assert schema["paths"]["/fetch-benchmark"]["get"]["responses"]["200"]["content"]["application/json"]["schema"] == {}
@@ -289,6 +510,14 @@ def test_canonical_run_dtos_translate_legacy_payloads_without_changing_default_d
 
     canonical_start = pairs[0][0].model_dump(mode="json", by_alias=True, warnings=False)
     assert StartBenchmarkResponse.model_validate(canonical_start).benchmark_id == start_legacy.benchmark_id
+
+
+def test_every_tracker_route_is_classified_as_sdk_supported_or_internal() -> None:
+    schema = app.openapi()
+    tracker_routes = {(path, method) for path, operations in schema["paths"].items() for method in operations}
+    sdk_routes = {(path, method) for path, method, _names in ROUTES}
+
+    assert tracker_routes == sdk_routes | INTERNAL_ROUTES
 
 
 def test_final_evaluation_preserves_tracker_runtime_string_ids() -> None:

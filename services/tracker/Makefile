@@ -1,6 +1,6 @@
-.PHONY: help setup build run stop clean logs tracker-service \
-        test test-integration test-unit test-alembic \
-        migrate-gen venv-check env-check
+.PHONY: help build run stop clean logs tracker-service \
+        test test-integration-local test-integration-live test-unit test-alembic \
+        migrate-gen venv-check
 
 PYTHON_VERSION := 3.12
 PYTEST := uv run pytest
@@ -18,14 +18,9 @@ help:
 	@echo "  make migrate-gen     - Generate a new migration from model changes"
 
 # --- Setup ---
-venv_check:
+venv-check:
 	@if [ ! -f .venv/bin/activate ]; then \
 		echo "❌ Virtualenv not found! Run \`make install\` first."; \
-		exit 1; \
-	fi
-env-check:
-	@if [ ! -f .env ]; then \
-		echo "❌ Env not found! Create a .env file first."; \
 		exit 1; \
 	fi
 install:
@@ -54,12 +49,17 @@ logs:
 tracker-service: build run logs
 
 # --- Tests ---
+test: venv-check
+	$(PYTEST) tests/unit tests/integration/local --test-alembic --cov=src/tracker --cov=main --cov-report=term-missing --cov-report=xml --cov-fail-under=85
 test-unit: venv-check
 	$(PYTEST) tests/unit --test-alembic
 test-alembic: venv-check
 	$(PYTEST) --test-alembic -m alembic
-test-integration: venv-check env-check
-	$(PYTEST) tests/integration -n auto
+test-integration-local: venv-check
+	$(PYTEST) tests/integration/local/api -n auto
+	$(PYTEST) tests/integration/local/database
+test-integration-live: venv-check
+	$(PYTEST) tests/integration/live -n 2
 
 # --- Migrations ---
 migrate-gen: venv-check

@@ -99,6 +99,20 @@ class ListRunsRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
 
 
+class AnalyzeRunRequest(BaseModel):
+    """Wire payload used to trigger Docent analysis for a run."""
+
+    no_cache: bool = False
+    lambda_function: str | None = None
+
+
+class AnalyzeEvent(ResponseModel):
+    """One progress or completion event from run analysis."""
+
+    event: str
+    data: dict[str, Any]
+
+
 class RunDetails(ResponseModel):
     """Detailed progress for a fetched run."""
 
@@ -213,6 +227,25 @@ class RunArguments(ResponseModel):
     sandbox_provider_secret_name: str | None = None
 
 
+class RunMetadataResponse(ResponseModel):
+    """Stored launch metadata for one run."""
+
+    benchmark_id: UUID = Field(alias="run_id")
+    benchmark_name: str
+    benchmark_arguments: RunArguments = Field(alias="run_arguments")
+    started_by_email: str | None = None
+
+    @property
+    def run_id(self) -> UUID:
+        """Canonical identifier for the run."""
+        return self.benchmark_id
+
+    @property
+    def run_arguments(self) -> RunArguments:
+        """Canonical arguments retained with the run."""
+        return self.benchmark_arguments
+
+
 class RunFinalEvaluation(ResponseModel):
     """Final aggregate evaluation stored for a run."""
 
@@ -272,6 +305,12 @@ class S3UploadResultsResponse(ResponseModel):
     console_url: str
 
 
+class ResultsExistResponse(ResponseModel):
+    """Whether the canonical result file already exists in S3."""
+
+    exists: bool
+
+
 RetrieveRunResultsResponse = RunResultsResponse | S3UploadResultsResponse
 
 
@@ -292,6 +331,7 @@ class RetryOrResumeRunResponse(StatusResponse):
 # Compatibility aliases retained for the deprecation window. Default serialization
 # continues to use legacy field names; `by_alias=True` emits canonical run names.
 BenchmarkStatus = RunStatus
+AnalyzeBenchmarkRequest = AnalyzeRunRequest
 StartBenchmarkRequest = StartRunRequest
 FetchBenchmarksRequest = ListRunsRequest
 BenchmarkDetails = RunDetails
@@ -300,6 +340,7 @@ FetchBenchmarkResponse = GetRunResponse
 BenchmarkTableRow = RunSummary
 FetchBenchmarksResponse = ListRunsResponse
 BenchmarkArguments = RunArguments
+FetchBenchmarkMetadataResponse = RunMetadataResponse
 FinalEvaluation = RunFinalEvaluation
 FinalViewResponse = RunResultsResponse
 RetrieveResultsResponse = RetrieveRunResultsResponse

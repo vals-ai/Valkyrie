@@ -1,4 +1,7 @@
-"""Compatibility tests for the published SDK surface."""
+"""Published SDK compatibility tests.
+
+Run: pytest tests/unit/sdk/test_public_api.py
+"""
 
 from __future__ import annotations
 
@@ -9,29 +12,52 @@ from pathlib import Path
 import valkyrie.sdk as sdk
 from valkyrie.sdk.client import DEFAULT_BASE_URL, ValkyrieClient
 from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig
-from valkyrie.sdk.resources import RunsResource
+from valkyrie.sdk.resources import AgentsResource, BenchmarksResource, BenchmarkServicesResource, RunsResource
 
 EXPECTED_ALL = [
     "AgentContractRequest",
+    "AgentDownloadURLResponse",
+    "AgentEntry",
+    "AgentsResponse",
+    "AnalyzeEvent",
+    "BenchmarkServiceCatalogResponse",
+    "BenchmarkServiceEntry",
+    "BenchmarkServiceHealth",
+    "BenchmarkServicesResponse",
     "BenchmarkStatus",
+    "BenchmarkStatusEntry",
+    "BenchmarkStatusResponse",
     "FetchBenchmarkResponse",
+    "FetchBenchmarkMetadataResponse",
     "FetchBenchmarksRequest",
     "FetchBenchmarksResponse",
+    "FetchTasksRequest",
     "FinalViewResponse",
     "GetRunResponse",
     "ListRunsRequest",
     "ListRunsResponse",
+    "Order",
     "RetrieveRunResultsResponse",
     "RetryMode",
     "RetryOrResumeBenchmarkResponse",
     "RetryOrResumeRunResponse",
+    "ResultsExistResponse",
+    "RunMetadataResponse",
     "RunResultsResponse",
     "RunStatus",
+    "RunStatusEntry",
+    "RunStatusResponse",
     "S3UploadResultsResponse",
+    "SingleBenchmarkResponse",
+    "SingleTaskResponse",
     "StartBenchmarkResponse",
     "StartRunResponse",
     "StopBenchmarkResponse",
     "StopRunResponse",
+    "TaskArtifactsResponse",
+    "TasksResponse",
+    "TaskSummary",
+    "TaskStatus",
     "ValkyrieAPIError",
     "ValkyrieClient",
     "ValkyrieConfig",
@@ -56,12 +82,28 @@ EXPECTED_SIGNATURES = {
     RunsResource.list: "self, request=None",
     RunsResource.stream: "self, run_id",
     RunsResource.results: "self, run_id, *, task_ids=None, upload_to_s3=False",
-    RunsResource.stop: "self, run_id, *, force=False",
+    RunsResource.metadata: "self, run_id",
+    RunsResource.results_exist: "self, run_id",
+    RunsResource.analyze: "self, run_id, *, no_cache=False, lambda_function=None",
+    RunsResource.stream_outputs: "self, run_id, *, task_ids=None",
+    RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
     RunsResource.resume: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False"
     ),
     RunsResource.retry: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False"
+    ),
+    BenchmarksResource.fetch: "self, run_id",
+    BenchmarksResource.statuses: "self, run_ids",
+    BenchmarksResource.tasks: "self, run_id, request=None",
+    BenchmarksResource.task: "self, run_id, task_id",
+    BenchmarksResource.artifacts: "self, run_id, task_id",
+    AgentsResource.list: "self",
+    AgentsResource.download_url: "self, name",
+    BenchmarkServicesResource.catalog: "self",
+    BenchmarkServicesResource.list: "self",
+    BenchmarkServicesResource.task_ids: (
+        "self, benchmark, *, dataset=None, service_headers=None, ignore_custom_services=False"
     ),
 }
 
@@ -102,7 +144,10 @@ def test_public_exports_and_constants_are_stable() -> None:
 
 def test_legacy_sdk_names_are_direct_aliases_of_canonical_run_types() -> None:
     assert sdk.BenchmarkStatus is sdk.RunStatus
+    assert sdk.BenchmarkStatusEntry is sdk.RunStatusEntry
+    assert sdk.BenchmarkStatusResponse is sdk.RunStatusResponse
     assert sdk.FetchBenchmarkResponse is sdk.GetRunResponse
+    assert sdk.FetchBenchmarkMetadataResponse is sdk.RunMetadataResponse
     assert sdk.FetchBenchmarksRequest is sdk.ListRunsRequest
     assert sdk.FetchBenchmarksResponse is sdk.ListRunsResponse
     assert sdk.FinalViewResponse is sdk.RunResultsResponse
@@ -121,3 +166,12 @@ def test_signature_text_preserves_parameter_kinds() -> None:
         pass
 
     assert signature_text(sample) == "value, /, other, *, flag=False"
+
+
+async def test_client_exposes_v2_resource_namespaces(make_client) -> None:
+    async with make_client(lambda _request: None) as client:
+        assert isinstance(client.runs, RunsResource)
+        assert isinstance(client.benchmarks, BenchmarksResource)
+        assert isinstance(client.agents, AgentsResource)
+        assert isinstance(client.services, BenchmarkServicesResource)
+        assert not hasattr(client.services, "check")

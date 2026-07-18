@@ -150,12 +150,28 @@ Add `--connect` to stream updates after the run starts:
 valkyrie run start --agent sweagent --benchmark swebench --connect
 ```
 
+To start three independent runs of the same benchmark:
+
+```console
+$ valkyrie run start --agent sweagent --benchmark swebench --count 3
+Run ID: <id-1>
+Run ID: <id-2>
+Run ID: <id-3>
+3 / 3 requested runs successfully started.
+Track progress: valkyrie run status --ids <id-1>,<id-2>,<id-3>
+```
+
+Start requests are sent sequentially, but accepted runs execute independently and may overlap. Approximate simultaneous task pressure and cost can scale with `count × concurrency`. `--connect` is only supported when count is `1`; it is rejected when count is greater than `1`.
+
+Starts are fail-fast: if a request fails, no later requests are attempted. The command exits nonzero and reports confirmed progress with a combined status command. After a transport/server response failure, the latest request's outcome can be unknown; verify with `valkyrie run list`.
+
 | Flag | Description |
 | --- | --- |
 | `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
 | `--benchmark` | Benchmark name (e.g. `swebench`) |
 | `--model` | Model key (e.g. `openai/gpt-4o`) |
 | `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
+| `-n` / `--count` | Number of independent runs to start (default: 1; hard maximum: 10) |
 | `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged with contract defaults (CLI wins on conflict) |
 | `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
 | `--lambda` | AWS Lambda function to invoke after the run completes |

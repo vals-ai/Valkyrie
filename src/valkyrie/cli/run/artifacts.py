@@ -26,15 +26,18 @@ async def download_s3_path(s3_path: str, output_dir: Path) -> int:
         if not keys:
             raise S3Error(f"No files found at '{s3_path}' in bucket '{bucket_name}'")
 
+        output_dir = output_dir.resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
 
         async def download_object(key: str) -> None:
             relative = key.removeprefix(prefix).lstrip("/")
-            dest = output_dir / relative if relative else output_dir / Path(key).name
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            destination = (output_dir / relative if relative else output_dir / Path(key).name).resolve()
+            if not destination.is_relative_to(output_dir):
+                raise S3Error(f"Requested path is not relative the output directory '{key}'")
+            destination.parent.mkdir(parents=True, exist_ok=True)
 
             response = await client.get_object(Bucket=bucket_name, Key=key)
-            dest.write_bytes(cast(bytes, await response["Body"].read()))
+            destination.write_bytes(cast(bytes, await response["Body"].read()))
 
         for start in range(0, len(keys), _S3_DOWNLOAD_CONCURRENCY):
             batch = keys[start : start + _S3_DOWNLOAD_CONCURRENCY]

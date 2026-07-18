@@ -1,6 +1,6 @@
 # Valkyrie SDK
 
-Async Python client for managing Valkyrie benchmark runs.
+Async Python client for running benchmarks and inspecting hosted Valkyrie resources.
 
 ```bash
 pip install valkyrie-sdk

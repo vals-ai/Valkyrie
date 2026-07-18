@@ -15,8 +15,8 @@ from scripts.sdk.validate_sdk_artifacts import ArtifactError, validate_sdist, va
 
 ROOT = Path(__file__).parents[3]
 PACKAGE_ROOT = ROOT / "packages" / "valkyrie-sdk"
-with (PACKAGE_ROOT / "pyproject.toml").open("rb") as sdk_pyproject:
-    SDK_VERSION = tomllib.load(sdk_pyproject)["project"]["version"]
+with (PACKAGE_ROOT / "pyproject.toml").open("rb") as package_file:
+    SDK_VERSION = str(tomllib.load(package_file)["project"]["version"])
 
 METADATA = f"""Metadata-Version: 2.4
 Name: valkyrie-sdk
@@ -54,14 +54,15 @@ def write_wheel(
 
 
 def write_sdist(path: Path, *, extra_members: dict[str, str] | None = None) -> None:
+    root = f"valkyrie_sdk-{SDK_VERSION}"
     members = {
-        f"valkyrie_sdk-{SDK_VERSION}/.gitignore": ".ruff_cache/\n__pycache__/\ndist/\n",
-        f"valkyrie_sdk-{SDK_VERSION}/LICENSE": "AGPL",
-        f"valkyrie_sdk-{SDK_VERSION}/README.md": "# Valkyrie SDK",
-        f"valkyrie_sdk-{SDK_VERSION}/pyproject.toml": "[project]\nname='valkyrie-sdk'\n",
-        f"valkyrie_sdk-{SDK_VERSION}/PKG-INFO": METADATA,
-        f"valkyrie_sdk-{SDK_VERSION}/src/valkyrie/sdk/__init__.py": "",
-        f"valkyrie_sdk-{SDK_VERSION}/src/valkyrie/sdk/py.typed": "",
+        f"{root}/.gitignore": ".ruff_cache/\n__pycache__/\ndist/\n",
+        f"{root}/LICENSE": "AGPL",
+        f"{root}/README.md": "# Valkyrie SDK",
+        f"{root}/pyproject.toml": "[project]\nname='valkyrie-sdk'\n",
+        f"{root}/PKG-INFO": METADATA,
+        f"{root}/src/valkyrie/sdk/__init__.py": "",
+        f"{root}/src/valkyrie/sdk/py.typed": "",
     }
     members.update(extra_members or {})
     with tarfile.open(path, "w:gz") as archive:
@@ -180,7 +181,7 @@ def test_wheel_rejects_unsupported_optional_dependencies(tmp_path: Path, monkeyp
 
 def test_wheel_rejects_mismatched_dist_info_version(tmp_path: Path) -> None:
     wheel = tmp_path / "bad.whl"
-    write_wheel(wheel, dist_info_version="0.1.1")
+    write_wheel(wheel, dist_info_version="999.0.0")
 
     with pytest.raises(ArtifactError, match="unexpected wheel metadata directory"):
         validate_wheel(wheel)
