@@ -779,6 +779,8 @@ async def retry_or_resume_benchmark(
         concurrency: Optional new concurrency level (overrides original value)
         task_ids: Optional list of specific task IDs to run. If a task id is not yet
             registered but is valid in the current dataset, a fresh PENDING row is created.
+            On a terminal run, retry=true with retry_mode=from_scratch and no task IDs
+            retries every task in the run.
 
     Returns:
         RetryOrResumeBenchmarkResponse
