@@ -31,6 +31,8 @@ from tracker.types import (
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
 )
 
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
@@ -645,6 +647,26 @@ class TrackerService:
             return _parse_model_response(response, "Failed to stop run", StopBenchmarkResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to stop run: {e}") from e
+
+    def update_benchmark_concurrency(
+        self,
+        benchmark_id: UUID,
+        concurrency: int,
+    ) -> UpdateBenchmarkConcurrencyResponse:
+        """Update the concurrency limit for an active benchmark run."""
+        payload = UpdateBenchmarkConcurrencyRequest(concurrency=concurrency)
+        try:
+            response = self._client.patch(
+                f"{self._base_url}/benchmarks/{benchmark_id}/concurrency",
+                json=payload.model_dump(),
+            )
+            return _parse_model_response(
+                response,
+                "Failed to update run concurrency",
+                UpdateBenchmarkConcurrencyResponse,
+            )
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to update run concurrency: {e}") from e
 
     def retry_or_resume_benchmark(
         self,
