@@ -58,6 +58,19 @@ class BenchmarkFormatter:
         return f"{' │ '.join(parts)}" if parts else ""
 
 
+def _display_run_error(benchmark_response: FetchBenchmarkResponse) -> None:
+    """Display the stored run error as terminal-safe red text.
+
+    Arguments
+    - benchmark_response: Run response that may contain an error message.
+    """
+    if not benchmark_response.error_message:
+        return
+
+    safe_error = terminal_safe(benchmark_response.error_message, preserve_newlines=True)
+    click.secho(f"Error: {safe_error}", fg="red")
+
+
 def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     """Format and display run status in a box with a progress bar."""
     details = benchmark_response.details
@@ -76,11 +89,6 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
     if benchmark_response.final_score is not None:
         click.echo(f"│ {'Final score:':<12} {benchmark_response.final_score:.1f}%")
-    if details.status == BenchmarkStatus.ERROR and benchmark_response.error_message:
-        safe_error_lines = terminal_safe(benchmark_response.error_message, preserve_newlines=True).splitlines()
-        click.echo(f"│ {'Error:':<12} {safe_error_lines[0]}")
-        for error_line in safe_error_lines[1:]:
-            click.echo(f"│ {'':<12} {error_line}")
     click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
     analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
     if analysis_line is not None:
@@ -90,6 +98,8 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     if breakdown_text:
         click.echo(f"│ {breakdown_text}")
     click.echo("└" + "─" * 79)
+    if details.status == BenchmarkStatus.ERROR and benchmark_response.error_message:
+        _display_run_error(benchmark_response)
 
 
 def format_run_identity(
@@ -158,6 +168,14 @@ def stream_benchmark_status(
 ) -> None:
     """Stream and display live run status updates."""
     initial = tracker.fetch_benchmark(benchmark_id)
+    if output_format == "text" and initial.details.status in {
+        BenchmarkStatus.FINISHED,
+        BenchmarkStatus.ERROR,
+        BenchmarkStatus.STOPPED,
+    }:
+        format_benchmark_status(initial)
+        return
+
     s3_url = initial.s3_bucket_url
     metadata = fetch_run_metadata(tracker, benchmark_id) if show_identity or output_format == "jsonl" else None
     if output_format == "jsonl":
@@ -211,7 +229,14 @@ def stream_benchmark_status(
                     click.echo(format_run_snapshot_json(latest, metadata, event=_completion_event(latest)))
                 else:
                     click.echo("\n")
-                    click.echo(click.style("✓ Run completed!", fg="green", bold=True))
+                    completion_event = _completion_event(latest)
+                    if completion_event == "error":
+                        click.echo(click.style("✗ Run errored.", fg="red", bold=True))
+                        _display_run_error(latest)
+                    elif completion_event == "stopped":
+                        click.echo(click.style("Run stopped.", fg="cyan", bold=True))
+                    else:
+                        click.echo(click.style("✓ Run completed!", fg="green", bold=True))
                     click.echo("┌─ Next Steps " + "─" * 66)
                     _stream_next_steps(benchmark_id, s3_url)
                 break
@@ -222,6 +247,7 @@ def stream_benchmark_status(
                 else:
                     click.echo("\n")
                     click.echo(click.style("✗ Run errored.", fg="red", bold=True))
+                    _display_run_error(latest)
                     click.echo("┌─ Next Steps " + "─" * 66)
                     _stream_next_steps(benchmark_id, s3_url)
                 break

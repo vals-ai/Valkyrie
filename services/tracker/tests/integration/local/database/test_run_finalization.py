@@ -169,7 +169,7 @@ class TestRunFinalization:
             (
                 "grouped-errors",
                 grouped_errors,
-                "No tasks were completed successfully. 3 distinct task errors:\n"
+                "No tasks were completed successfully. 3 distinct errors:\n"
                 "- 3/8 tasks: Requested model key model-a is not registered\n"
                 "- 3/8 tasks: Network connection to model gateway timed out after 30 seconds on attempt 1\n"
                 "- 2/8 tasks: Benchmark API authentication failed for key key-a",
@@ -177,7 +177,7 @@ class TestRunFinalization:
             (
                 "identical-errors",
                 ["Network connection to model gateway timed out"] * 8,
-                "No tasks were completed successfully. 1 distinct task error:\n"
+                "No tasks were completed successfully. 1 distinct error:\n"
                 "- 8/8 tasks: Network connection to model gateway timed out",
             ),
         ]

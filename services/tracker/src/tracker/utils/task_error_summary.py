@@ -86,14 +86,14 @@ def summarize_task_errors(task_errors: dict[str, str]) -> str:
     - task_errors: Latest error message keyed by task ID.
 
     Returns
-    - Run-level error text containing one representative task error per group.
+    - Run-level error text containing one representative failure per group.
     """
     base_message = "No tasks were completed successfully."
     if not task_errors:
         return base_message
 
     groups = _task_error_groups(task_errors)
-    group_label = "task error" if len(groups) == 1 else "task errors"
+    group_label = "error" if len(groups) == 1 else "errors"
     summary_lines = [f"{base_message} {len(groups)} distinct {group_label}:"]
     summary_lines.extend(f"- {count}/{len(task_errors)} tasks: {error_message}" for count, error_message in groups)
 

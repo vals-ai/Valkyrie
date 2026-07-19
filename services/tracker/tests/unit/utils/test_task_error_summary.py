@@ -27,7 +27,7 @@ def test_task_error_summary_returns_distinct_groups() -> None:
     )
 
     assert dominant_summary == (
-        "No tasks were completed successfully. 3 distinct task errors:\n"
+        "No tasks were completed successfully. 3 distinct errors:\n"
         "- 3/5 tasks: Modal sandbox sb-101 failed during setup: provider is not implemented\n"
         "- 1/5 tasks: Required output artifact was missing\n"
         "- 1/5 tasks: Agent timed out after 600 seconds"
@@ -43,12 +43,12 @@ def test_task_error_summary_returns_distinct_groups() -> None:
     )
 
     assert chained_summary == (
-        "No tasks were completed successfully. 1 distinct task error:\n- 3/3 tasks: API key rejected during model setup"
+        "No tasks were completed successfully. 1 distinct error:\n- 3/3 tasks: API key rejected during model setup"
     )
 
     # Identical errors collapse into one group.
     identical_summary = summarize_task_errors({f"task-{index}": "Network connection timed out" for index in range(5)})
 
     assert identical_summary == (
-        "No tasks were completed successfully. 1 distinct task error:\n- 5/5 tasks: Network connection timed out"
+        "No tasks were completed successfully. 1 distinct error:\n- 5/5 tasks: Network connection timed out"
     )
