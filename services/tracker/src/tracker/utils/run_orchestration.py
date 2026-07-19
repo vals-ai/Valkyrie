@@ -4,7 +4,7 @@ import asyncio
 import re
 import traceback
 from asyncio import Semaphore, gather
-from difflib import SequenceMatcher
+from difflib import get_close_matches
 from typing import Any, Sequence, cast
 from uuid import UUID
 
@@ -70,54 +70,29 @@ def _normalize_task_error(task_id: str, error_message: str) -> str:
     return _ERROR_WHITESPACE_PATTERN.sub(" ", normalized_message).strip()
 
 
-def _task_error_similarity(first_message: str, second_message: str) -> float:
-    forward_ratio = SequenceMatcher(None, first_message, second_message, autojunk=False).ratio()
-    reverse_ratio = SequenceMatcher(None, second_message, first_message, autojunk=False).ratio()
-
-    return (forward_ratio + reverse_ratio) / 2
-
-
-def _cluster_task_errors(task_errors: dict[str, str]) -> list[list[tuple[str, str, str]]]:
+def _task_error_groups(
+    task_errors: dict[str, str],
+) -> tuple[list[tuple[str, str, str]], list[tuple[str, ...]]]:
     entries = [
         (task_id, error_message, _normalize_task_error(task_id, error_message))
         for task_id, error_message in sorted(task_errors.items())
     ]
-    neighbors = [{entry_index} for entry_index in range(len(entries))]
-    for first_index, (_, _, first_message) in enumerate(entries):
-        for second_index in range(first_index + 1, len(entries)):
-            second_message = entries[second_index][2]
-            if _task_error_similarity(first_message, second_message) >= _ERROR_SIMILARITY_THRESHOLD:
-                neighbors[first_index].add(second_index)
-                neighbors[second_index].add(first_index)
+    normalized_messages = [entry[2] for entry in entries]
+    groups = {
+        tuple(
+            sorted(
+                get_close_matches(
+                    normalized_message,
+                    normalized_messages,
+                    n=len(normalized_messages),
+                    cutoff=_ERROR_SIMILARITY_THRESHOLD,
+                )
+            )
+        )
+        for normalized_message in normalized_messages
+    }
 
-    clusters: list[list[tuple[str, str, str]]] = []
-    remaining_indexes = set(range(len(entries)))
-    while remaining_indexes:
-        pending_indexes = [min(remaining_indexes)]
-        cluster_indexes: set[int] = set()
-        while pending_indexes:
-            entry_index = pending_indexes.pop()
-            if entry_index in cluster_indexes:
-                continue
-            cluster_indexes.add(entry_index)
-            pending_indexes.extend(neighbors[entry_index] - cluster_indexes)
-
-        remaining_indexes -= cluster_indexes
-        clusters.append([entries[entry_index] for entry_index in sorted(cluster_indexes)])
-
-    return sorted(clusters, key=lambda cluster: (-len(cluster), cluster[0][0]))
-
-
-def _representative_task_error(cluster: list[tuple[str, str, str]]) -> str:
-    def similarity_score(entry: tuple[str, str, str]) -> float:
-        return sum(_task_error_similarity(entry[2], other_entry[2]) for other_entry in cluster)
-
-    representative = min(
-        cluster,
-        key=lambda entry: (-similarity_score(entry), len(entry[1]), entry[0]),
-    )
-
-    return representative[1]
+    return entries, sorted(groups, key=lambda group: (-len(group), group))
 
 
 def summarize_task_errors(task_errors: dict[str, str]) -> str:
@@ -133,20 +108,23 @@ def summarize_task_errors(task_errors: dict[str, str]) -> str:
     if not task_errors:
         return base_message
 
-    clusters = _cluster_task_errors(task_errors)
-    dominant_cluster = clusters[0]
-    tied_for_largest = len(clusters) > 1 and len(clusters[1]) == len(dominant_cluster)
-    has_majority = len(dominant_cluster) * 2 >= len(task_errors)
+    entries, groups = _task_error_groups(task_errors)
+    dominant_group = groups[0]
+    tied_for_largest = len(groups) > 1 and len(groups[1]) == len(dominant_group)
+    has_majority = len(dominant_group) * 2 >= len(task_errors)
     if tied_for_largest or not has_majority:
         return (
             f"{base_message} {len(task_errors)} tasks failed across "
-            f"{len(clusters)} error {'group' if len(clusters) == 1 else 'groups'}."
+            f"{len(groups)} error {'group' if len(groups) == 1 else 'groups'}."
         )
 
-    representative_error = _representative_task_error(dominant_cluster)
+    representative_error = min(
+        (entry for entry in entries if entry[2] in dominant_group),
+        key=lambda entry: (len(entry[1]), entry[0]),
+    )[1]
 
     return (
-        f"{base_message} Dominant task error affecting {len(dominant_cluster)}/{len(task_errors)} tasks:\n"
+        f"{base_message} Dominant task error affecting {len(dominant_group)}/{len(task_errors)} tasks:\n"
         f"{representative_error}"
     )
 

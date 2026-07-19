@@ -483,9 +483,10 @@ class TestRunState:
             }
         )
 
-        assert "3/5 tasks" in dominant_summary
-        assert "Modal sandbox" in dominant_summary
-        assert "provider is not implemented" in dominant_summary
+        assert dominant_summary == (
+            "No tasks were completed successfully. Dominant task error affecting 3/5 tasks:\n"
+            "Modal sandbox sb-101 failed during setup: provider is not implemented"
+        )
 
         no_majority_summary = summarize_task_errors(
             {
