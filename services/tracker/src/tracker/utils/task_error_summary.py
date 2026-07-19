@@ -22,6 +22,8 @@ def _normalize_task_error(task_id: str, error_message: str) -> str:
     Returns
     - Comparable error text with dynamic values replaced.
     """
+
+    # Replace run-specific values so equivalent failures compare consistently.
     normalized_message = error_message.casefold().replace(task_id.casefold(), "<task>")
     normalized_message = _ERROR_UUID_PATTERN.sub("<id>", normalized_message)
     normalized_message = _ERROR_SANDBOX_ID_PATTERN.sub("<sandbox>", normalized_message)
@@ -45,6 +47,8 @@ def _task_error_groups(
         for task_id, error_message in sorted(task_errors.items())
     ]
     normalized_messages = [entry[2] for entry in entries]
+
+    # Treat each unique similarity neighborhood as an error group.
     grouped_messages = {
         tuple(
             sorted(
@@ -60,6 +64,8 @@ def _task_error_groups(
     }
 
     groups: list[tuple[int, str, str]] = []
+
+    # Prefer the shortest error for a concise and deterministic summary.
     for messages in grouped_messages:
         representative = min(
             (entry for entry in entries if entry[2] in messages),
