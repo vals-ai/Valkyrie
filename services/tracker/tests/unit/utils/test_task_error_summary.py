@@ -3,16 +3,19 @@
 Run: pytest tests/unit/utils/test_task_error_summary.py
 """
 
+import pytest
+
+from tracker.utils import task_error_summary
 from tracker.utils.task_error_summary import summarize_task_errors
 
 
-def test_task_error_summary_returns_distinct_groups() -> None:
+def test_task_error_summary_returns_distinct_groups(monkeypatch: pytest.MonkeyPatch) -> None:
     """All-task-error finalization should surface each distinct current failure.
 
     Test cases:
     - Similar messages produce one frequency-ordered representative per group.
     - Chained similarities form one group without counting any task twice.
-    - Identical messages produce one representative.
+    - Identical messages produce one representative and one fuzzy comparison.
     """
 
     # Separate error families remain distinct and frequency ordered.
@@ -47,8 +50,25 @@ def test_task_error_summary_returns_distinct_groups() -> None:
     )
 
     # Identical errors collapse into one group.
+    comparison_calls = 0
+
+    def record_comparison(
+        normalized_message: str,
+        normalized_messages: list[str],
+        *,
+        n: int,
+        cutoff: float,
+    ) -> list[str]:
+        nonlocal comparison_calls
+        comparison_calls += 1
+        assert normalized_messages == ["network connection timed out"]
+
+        return [normalized_message]
+
+    monkeypatch.setattr(task_error_summary, "get_close_matches", record_comparison)
     identical_summary = summarize_task_errors({f"task-{index}": "Network connection timed out" for index in range(5)})
 
     assert identical_summary == (
         "No tasks were completed successfully. 1 distinct error:\n- 5/5 tasks: Network connection timed out"
     )
+    assert comparison_calls == 1

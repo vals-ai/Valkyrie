@@ -46,7 +46,7 @@ def _task_error_groups(
         (task_id, error_message, _normalize_task_error(task_id, error_message))
         for task_id, error_message in sorted(task_errors.items())
     ]
-    normalized_messages = [entry[2] for entry in entries]
+    normalized_messages = sorted({entry[2] for entry in entries})
 
     # Merge overlapping neighborhoods into disjoint connected components.
     components: list[set[str]] = []
