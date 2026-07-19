@@ -1,8 +1,10 @@
 """Run-level coordination: creating task rows, running all tasks, and finalizing the run."""
 
 import asyncio
+import re
 import traceback
 from asyncio import Semaphore, gather
+from difflib import SequenceMatcher
 from typing import Any, Sequence, cast
 from uuid import UUID
 
@@ -51,6 +53,102 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+_ERROR_SIMILARITY_THRESHOLD = 0.75
+_ERROR_UUID_PATTERN = re.compile(
+    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
+    re.IGNORECASE,
+)
+_ERROR_SANDBOX_ID_PATTERN = re.compile(r"\bsb-[a-z0-9-]+\b", re.IGNORECASE)
+_ERROR_WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+def _normalize_task_error(task_id: str, error_message: str) -> str:
+    normalized_message = error_message.casefold().replace(task_id.casefold(), "<task>")
+    normalized_message = _ERROR_UUID_PATTERN.sub("<id>", normalized_message)
+    normalized_message = _ERROR_SANDBOX_ID_PATTERN.sub("<sandbox>", normalized_message)
+
+    return _ERROR_WHITESPACE_PATTERN.sub(" ", normalized_message).strip()
+
+
+def _task_error_similarity(first_message: str, second_message: str) -> float:
+    forward_ratio = SequenceMatcher(None, first_message, second_message, autojunk=False).ratio()
+    reverse_ratio = SequenceMatcher(None, second_message, first_message, autojunk=False).ratio()
+
+    return (forward_ratio + reverse_ratio) / 2
+
+
+def _cluster_task_errors(task_errors: dict[str, str]) -> list[list[tuple[str, str, str]]]:
+    entries = [
+        (task_id, error_message, _normalize_task_error(task_id, error_message))
+        for task_id, error_message in sorted(task_errors.items())
+    ]
+    neighbors = [{entry_index} for entry_index in range(len(entries))]
+    for first_index, (_, _, first_message) in enumerate(entries):
+        for second_index in range(first_index + 1, len(entries)):
+            second_message = entries[second_index][2]
+            if _task_error_similarity(first_message, second_message) >= _ERROR_SIMILARITY_THRESHOLD:
+                neighbors[first_index].add(second_index)
+                neighbors[second_index].add(first_index)
+
+    clusters: list[list[tuple[str, str, str]]] = []
+    remaining_indexes = set(range(len(entries)))
+    while remaining_indexes:
+        pending_indexes = [min(remaining_indexes)]
+        cluster_indexes: set[int] = set()
+        while pending_indexes:
+            entry_index = pending_indexes.pop()
+            if entry_index in cluster_indexes:
+                continue
+            cluster_indexes.add(entry_index)
+            pending_indexes.extend(neighbors[entry_index] - cluster_indexes)
+
+        remaining_indexes -= cluster_indexes
+        clusters.append([entries[entry_index] for entry_index in sorted(cluster_indexes)])
+
+    return sorted(clusters, key=lambda cluster: (-len(cluster), cluster[0][0]))
+
+
+def _representative_task_error(cluster: list[tuple[str, str, str]]) -> str:
+    def similarity_score(entry: tuple[str, str, str]) -> float:
+        return sum(_task_error_similarity(entry[2], other_entry[2]) for other_entry in cluster)
+
+    representative = min(
+        cluster,
+        key=lambda entry: (-similarity_score(entry), len(entry[1]), entry[0]),
+    )
+
+    return representative[1]
+
+
+def summarize_task_errors(task_errors: dict[str, str]) -> str:
+    """Build a terminal run error from the dominant cluster of current task errors.
+
+    Arguments
+    - task_errors: Latest error message keyed by task ID.
+
+    Returns
+    - Run-level error text containing a representative task error when one cluster dominates.
+    """
+    base_message = "No tasks were completed successfully."
+    if not task_errors:
+        return base_message
+
+    clusters = _cluster_task_errors(task_errors)
+    dominant_cluster = clusters[0]
+    tied_for_largest = len(clusters) > 1 and len(clusters[1]) == len(dominant_cluster)
+    has_majority = len(dominant_cluster) * 2 >= len(task_errors)
+    if tied_for_largest or not has_majority:
+        return (
+            f"{base_message} {len(task_errors)} tasks failed across "
+            f"{len(clusters)} error {'group' if len(clusters) == 1 else 'groups'}."
+        )
+
+    representative_error = _representative_task_error(dominant_cluster)
+
+    return (
+        f"{base_message} Dominant task error affecting {len(dominant_cluster)}/{len(task_errors)} tasks:\n"
+        f"{representative_error}"
+    )
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
@@ -309,7 +407,9 @@ async def process_benchmark(
                 if has_stopped_tasks(session, benchmark_row, org):
                     set_benchmark_final_status(benchmark_row, session, org)
                     return
-            raise TrackerServiceError("No tasks were completed successfully")
+                error_message = summarize_task_errors(benchmark_row.fetch_tasks_with_errors(session) or {})
+                commit_benchmark_error(benchmark_row, session, error_message)
+                return
 
         # Calculate the final score based off the tasks that were ran
         final_score_response = await benchmark_service.final_score(

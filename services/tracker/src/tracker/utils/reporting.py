@@ -299,6 +299,9 @@ async def stream_benchmark_results(
                     final_score=fresh_benchmark.final_evaluation.final_score
                     if fresh_benchmark.final_evaluation
                     else None,
+                    error_message=fresh_benchmark.error_message
+                    if fresh_benchmark.status == BenchmarkStatus.ERROR
+                    else None,
                 )
 
                 yield f"{DATA_PREFIX} {response_data.model_dump_json()}\n\n"

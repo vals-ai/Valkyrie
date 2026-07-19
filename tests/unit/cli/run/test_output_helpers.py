@@ -59,11 +59,12 @@ class StubProgressTracker:
         yield "event: disconnect"
 
 
-def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixture[str]) -> None:
-    """Run fetch output should show the stored final score when it exists.
+def test_format_benchmark_status_prints_terminal_details(capsys: pytest.CaptureFixture[str]) -> None:
+    """Run fetch output should show the stored terminal result when it exists.
 
     Test cases:
     - A response with a final score renders that score as a percentage.
+    - An errored response renders its stored run-level error.
     - The existing progress line still renders.
     """
     response = FetchBenchmarkResponse(
@@ -87,6 +88,27 @@ def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixtur
     assert "Final score:" in output
     assert "83.2%" in output
     assert "3/4 (75.0%)" in output
+
+    error_response = FetchBenchmarkResponse(
+        benchmark_name="terminal-bench",
+        benchmark_id=uuid4(),
+        details=BenchmarkDetails(
+            status=BenchmarkStatus.ERROR,
+            started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            total_tasks=4,
+            finished_tasks=4,
+            task_breakdown={TaskStatus.ERROR: 4},
+            docent_reading_status=DocentReadingStatus.IDLE,
+        ),
+        s3_bucket_url="https://example.com/run",
+        error_message="Dominant task error affecting 4/4 tasks",
+    )
+
+    format_benchmark_status(error_response)
+
+    error_output = capsys.readouterr().out
+    assert "Error:" in error_output
+    assert "Dominant task error affecting 4/4 tasks" in error_output
 
 
 def test_connected_fetch_prints_rich_identity(capsys: pytest.CaptureFixture[str]) -> None:

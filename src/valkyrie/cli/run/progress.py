@@ -7,7 +7,7 @@ import click
 from tracker.database.models import BenchmarkStatus, DocentReadingStatus, TaskStatus
 from tracker.types import BenchmarkDetails, FetchBenchmarkMetadataResponse, FetchBenchmarkResponse
 
-from valkyrie.cli.display import local_time
+from valkyrie.cli.display import local_time, terminal_safe
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -76,6 +76,11 @@ def format_benchmark_status(benchmark_response: FetchBenchmarkResponse) -> None:
     click.echo(f"│ {'Started at:':<12} {local_time(details.started_at)}")
     if benchmark_response.final_score is not None:
         click.echo(f"│ {'Final score:':<12} {benchmark_response.final_score:.1f}%")
+    if details.status == BenchmarkStatus.ERROR and benchmark_response.error_message:
+        safe_error_lines = terminal_safe(benchmark_response.error_message, preserve_newlines=True).splitlines()
+        click.echo(f"│ {'Error:':<12} {safe_error_lines[0]}")
+        for error_line in safe_error_lines[1:]:
+            click.echo(f"│ {'':<12} {error_line}")
     click.echo(f"│ {'S3:':<12} {benchmark_response.s3_bucket_url}")
     analysis_line = _format_docent_analysis(details, benchmark_response.benchmark_id)
     if analysis_line is not None:

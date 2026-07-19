@@ -252,6 +252,8 @@ class TestProcessBenchmark:
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
         assert "No tasks were completed successfully" in (benchmark.error_message or "")
+        assert "Required output artifact missing" in (benchmark.error_message or "")
+        assert "Traceback" not in (benchmark.error_message or "")
         assert benchmark.final_evaluation is None
 
         tasks = _task_rows(benchmark, database_session)
