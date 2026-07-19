@@ -1,10 +1,8 @@
 """Run-level coordination: creating task rows, running all tasks, and finalizing the run."""
 
 import asyncio
-import re
 import traceback
 from asyncio import Semaphore, gather
-from difflib import get_close_matches
 from typing import Any, Sequence, cast
 from uuid import UUID
 
@@ -47,86 +45,13 @@ from tracker.utils.resources import (
     fetch_sandbox_provider_config,
 )
 from tracker.utils.reporting import create_final_view, upload_final_view
+from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import ResizableLimiter, TaskMonitor, TrackedTask, process_task
 
 logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
-_ERROR_SIMILARITY_THRESHOLD = 0.75
-_ERROR_UUID_PATTERN = re.compile(
-    r"\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b",
-    re.IGNORECASE,
-)
-_ERROR_SANDBOX_ID_PATTERN = re.compile(r"\bsb-[a-z0-9-]+\b", re.IGNORECASE)
-_ERROR_WHITESPACE_PATTERN = re.compile(r"\s+")
-
-
-def _normalize_task_error(task_id: str, error_message: str) -> str:
-    normalized_message = error_message.casefold().replace(task_id.casefold(), "<task>")
-    normalized_message = _ERROR_UUID_PATTERN.sub("<id>", normalized_message)
-    normalized_message = _ERROR_SANDBOX_ID_PATTERN.sub("<sandbox>", normalized_message)
-
-    return _ERROR_WHITESPACE_PATTERN.sub(" ", normalized_message).strip()
-
-
-def _task_error_groups(
-    task_errors: dict[str, str],
-) -> tuple[list[tuple[str, str, str]], list[tuple[str, ...]]]:
-    entries = [
-        (task_id, error_message, _normalize_task_error(task_id, error_message))
-        for task_id, error_message in sorted(task_errors.items())
-    ]
-    normalized_messages = [entry[2] for entry in entries]
-    groups = {
-        tuple(
-            sorted(
-                get_close_matches(
-                    normalized_message,
-                    normalized_messages,
-                    n=len(normalized_messages),
-                    cutoff=_ERROR_SIMILARITY_THRESHOLD,
-                )
-            )
-        )
-        for normalized_message in normalized_messages
-    }
-
-    return entries, sorted(groups, key=lambda group: (-len(group), group))
-
-
-def summarize_task_errors(task_errors: dict[str, str]) -> str:
-    """Build a terminal run error from the dominant cluster of current task errors.
-
-    Arguments
-    - task_errors: Latest error message keyed by task ID.
-
-    Returns
-    - Run-level error text containing a representative task error when one cluster dominates.
-    """
-    base_message = "No tasks were completed successfully."
-    if not task_errors:
-        return base_message
-
-    entries, groups = _task_error_groups(task_errors)
-    dominant_group = groups[0]
-    tied_for_largest = len(groups) > 1 and len(groups[1]) == len(dominant_group)
-    has_majority = len(dominant_group) * 2 >= len(task_errors)
-    if tied_for_largest or not has_majority:
-        return (
-            f"{base_message} {len(task_errors)} tasks failed across "
-            f"{len(groups)} error {'group' if len(groups) == 1 else 'groups'}."
-        )
-
-    representative_error = min(
-        (entry for entry in entries if entry[2] in dominant_group),
-        key=lambda entry: (len(entry[1]), entry[0]),
-    )[1]
-
-    return (
-        f"{base_message} Dominant task error affecting {len(dominant_group)}/{len(task_errors)} tasks:\n"
-        f"{representative_error}"
-    )
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:

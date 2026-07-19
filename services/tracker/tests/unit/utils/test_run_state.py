@@ -18,7 +18,6 @@ from sqlmodel import Session, col, func, select, update
 from starlette.requests import Request
 
 import tracker.utils.harness_config as harness_config_module
-import tracker.utils.run_orchestration as run_orchestration_module
 from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
@@ -462,43 +461,6 @@ class TestRunState:
             "task_stopped": None,
             "task_pending": None,
         }
-
-    def test_task_error_summary_uses_dominant_similar_cluster(self) -> None:
-        """All-task-error finalization should surface a representative current failure.
-
-        Test cases:
-        - Slightly different messages forming a majority produce one representative task error.
-        - Equally sized error groups retain a generic run-level summary.
-        """
-        summarize_task_errors = getattr(run_orchestration_module, "summarize_task_errors", None)
-        assert summarize_task_errors is not None
-
-        dominant_summary = summarize_task_errors(
-            {
-                "pytorch-model-cli": "Modal sandbox sb-101 failed during setup: provider is not implemented",
-                "write-compressor": "Modal sandbox sb-202 failed while setting up: provider is not implemented",
-                "kv-store-grpc": "Modal sandbox sb-303 could not complete setup: provider is not implemented",
-                "torch-tensor-parallelism": "Agent timed out after 600 seconds",
-                "largest-eigenval": "Required output artifact was missing",
-            }
-        )
-
-        assert dominant_summary == (
-            "No tasks were completed successfully. Dominant task error affecting 3/5 tasks:\n"
-            "Modal sandbox sb-101 failed during setup: provider is not implemented"
-        )
-
-        no_majority_summary = summarize_task_errors(
-            {
-                "task-a": "Modal sandbox sb-101 failed during setup",
-                "task-b": "Modal sandbox sb-202 failed while setting up",
-                "task-c": "Agent timed out after 600 seconds",
-                "task-d": "Required output artifact was missing",
-                "task-e": "Benchmark service rejected the task as unauthorized",
-            }
-        )
-
-        assert no_majority_summary == "No tasks were completed successfully. 5 tasks failed across 4 error groups."
 
     def test_commit_task_error_spans_status_transition(
         self, example_benchmark_object: Benchmark, database_session: Session, monkeypatch: pytest.MonkeyPatch
