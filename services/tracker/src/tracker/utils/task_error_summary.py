@@ -13,6 +13,15 @@ _ERROR_WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
 def _normalize_task_error(task_id: str, error_message: str) -> str:
+    """Normalize changing identifiers and whitespace before comparing task errors.
+
+    Arguments
+    - task_id: Task identifier that may appear in the error message.
+    - error_message: Raw task error text.
+
+    Returns
+    - Comparable error text with dynamic values replaced.
+    """
     normalized_message = error_message.casefold().replace(task_id.casefold(), "<task>")
     normalized_message = _ERROR_UUID_PATTERN.sub("<id>", normalized_message)
     normalized_message = _ERROR_SANDBOX_ID_PATTERN.sub("<sandbox>", normalized_message)
@@ -23,6 +32,14 @@ def _normalize_task_error(task_id: str, error_message: str) -> str:
 def _task_error_groups(
     task_errors: dict[str, str],
 ) -> list[tuple[int, str]]:
+    """Group similar task errors and select one representative from each group.
+
+    Arguments
+    - task_errors: Latest error message keyed by task ID.
+
+    Returns
+    - Frequency-ordered pairs containing the group size and representative error.
+    """
     entries = [
         (task_id, error_message, _normalize_task_error(task_id, error_message))
         for task_id, error_message in sorted(task_errors.items())
