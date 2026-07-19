@@ -311,6 +311,8 @@ async def process_benchmark(
                     set_benchmark_final_status(benchmark_row, session, org)
                     return
                 error_message = summarize_task_errors(benchmark_row.fetch_tasks_with_errors(session) or {})
+
+                # Mark the run as errored so future fetches return the discovered task errors.
                 commit_benchmark_error(benchmark_row, session, error_message)
                 return
 
