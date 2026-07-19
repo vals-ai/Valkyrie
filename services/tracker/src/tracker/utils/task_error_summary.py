@@ -48,10 +48,10 @@ def _task_error_groups(
     ]
     normalized_messages = [entry[2] for entry in entries]
 
-    # Build undirected edges between similar normalized errors.
-    adjacent_entry_indices = [set[int]() for _ in entries]
-    for entry_index, normalized_message in enumerate(normalized_messages):
-        close_matches = set(
+    # Merge overlapping neighborhoods into disjoint connected components.
+    components: list[set[str]] = []
+    for normalized_message in normalized_messages:
+        neighborhood = set(
             get_close_matches(
                 normalized_message,
                 normalized_messages,
@@ -59,37 +59,20 @@ def _task_error_groups(
                 cutoff=_ERROR_SIMILARITY_THRESHOLD,
             )
         )
-        for matched_index, candidate_message in enumerate(normalized_messages):
-            if candidate_message in close_matches:
-                adjacent_entry_indices[entry_index].add(matched_index)
-                adjacent_entry_indices[matched_index].add(entry_index)
-
-    # Traverse each connected component so every task belongs to one group.
-    components: list[set[int]] = []
-    unassigned_entry_indices = set(range(len(entries)))
-    while unassigned_entry_indices:
-        pending_entry_indices = [min(unassigned_entry_indices)]
-        component: set[int] = set()
-        while pending_entry_indices:
-            entry_index = pending_entry_indices.pop()
-            if entry_index not in unassigned_entry_indices:
-                continue
-            unassigned_entry_indices.remove(entry_index)
-            component.add(entry_index)
-            pending_entry_indices.extend(
-                sorted(adjacent_entry_indices[entry_index] & unassigned_entry_indices, reverse=True)
-            )
-        components.append(component)
+        connected_components = [component for component in components if not component.isdisjoint(neighborhood)]
+        components = [component for component in components if component.isdisjoint(neighborhood)]
+        components.append(neighborhood.union(*connected_components))
 
     groups: list[tuple[int, str, str]] = []
 
     # Prefer the shortest error for a concise and deterministic summary.
     for component in components:
+        component_entries = [entry for entry in entries if entry[2] in component]
         representative = min(
-            (entries[entry_index] for entry_index in component),
+            component_entries,
             key=lambda entry: (len(entry[1]), entry[0]),
         )
-        groups.append((len(component), representative[0], representative[1]))
+        groups.append((len(component_entries), representative[0], representative[1]))
 
     return [
         (count, error_message) for count, _, error_message in sorted(groups, key=lambda group: (-group[0], group[1]))
