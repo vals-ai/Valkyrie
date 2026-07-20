@@ -85,9 +85,7 @@ class TestUploadStreamToS3:
         ]
         assert not fake_client.aborted
 
-    async def test_empty_stream_uploads_empty_object(
-        self, fake_client: FakeS3Client, aws_runtime: AwsRuntime
-    ) -> None:
+    async def test_empty_stream_uploads_empty_object(self, fake_client: FakeS3Client, aws_runtime: AwsRuntime) -> None:
         async def chunks() -> AsyncIterator[bytes]:
             return
             yield b""
