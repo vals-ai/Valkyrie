@@ -143,7 +143,7 @@ def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixtur
 
     Test cases:
     - A run that is already errored uses the normal fetch output without opening a stream.
-    - A live run whose completion event carries an error response prints the final error status.
+    - A live run remains connected through zero-task progress and prints its final error status.
     """
     run_id = uuid4()
     error_message = "No tasks were completed successfully. 1 distinct error:\n- 4/4 tasks: Secret error"
@@ -162,16 +162,26 @@ def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixtur
     assert f"Error: {error_message}" in terminal_output
     assert terminal_tracker.stream_calls == 0
 
+    zero_task_response = make_fetch_response(run_id, total_tasks=0, finished_tasks=0, task_breakdown={})
+    zero_task_error_response = make_fetch_response(
+        run_id,
+        status=BenchmarkStatus.ERROR,
+        total_tasks=0,
+        finished_tasks=0,
+        task_breakdown={},
+    ).model_copy(update={"error_message": error_message})
+
     # Live streams should trust the final payload status over the event name.
     live_tracker = StubProgressTracker(
-        make_fetch_response(run_id),
+        zero_task_response,
         make_fetch_metadata(run_id),
-        events=(f"data: {error_response.model_dump_json()}", "event: complete"),
+        events=(f"data: {zero_task_error_response.model_dump_json()}", "event: complete"),
     )
 
     stream_benchmark_status(cast(TrackerService, live_tracker), run_id, show_identity=True)
 
     live_output = capsys.readouterr().out
+    assert "0/0 (0.0%)" in live_output
     assert "✗ Run errored." in live_output
     assert "✓ Run completed!" not in live_output
     assert f"Error: {error_message}" in live_output
