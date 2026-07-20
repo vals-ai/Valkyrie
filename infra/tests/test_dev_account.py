@@ -110,7 +110,7 @@ def ssm_parameter_id(template: Mapping[str, object], parameter_name: str) -> str
 
 
 class DevAccountInfrastructureTest(unittest.TestCase):
-    def test_dev_bucket_is_account_qualified_and_hardened(self) -> None:
+    def test_dev_bucket_is_named_and_hardened(self) -> None:
         _, shared = dev_shared_stack()
         shared_template = assertions.Template.from_stack(shared)
 
@@ -119,7 +119,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         bucket = next(iter(buckets.values()))
         self.assertEqual(bucket["DeletionPolicy"], "Retain")
         self.assertEqual(bucket["UpdateReplacePolicy"], "Retain")
-        self.assertEqual(bucket["Properties"]["BucketName"], f"agentic-harness-dev-{TEST_ACCOUNT}")
+        self.assertEqual(bucket["Properties"]["BucketName"], "agentic-harness-dev")
         self.assertEqual(
             bucket["Properties"]["PublicAccessBlockConfiguration"],
             {
