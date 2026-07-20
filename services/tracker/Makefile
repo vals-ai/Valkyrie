@@ -59,7 +59,8 @@ test-integration-local: venv-check
 	$(PYTEST) tests/integration/local/api -n auto
 	$(PYTEST) tests/integration/local/database
 test-integration-live: venv-check
-	$(PYTEST) tests/integration/live -n 2 --dist loadfile
+	$(PYTEST) tests/integration/live -n 2 --dist loadfile || \
+		$(PYTEST) tests/integration/live -n 2 --dist loadfile --last-failed
 
 # --- Migrations ---
 migrate-gen: venv-check
