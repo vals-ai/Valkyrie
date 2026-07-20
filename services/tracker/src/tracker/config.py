@@ -42,6 +42,8 @@ AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+LEGACY_QUEUE_NAME = "taskiq"
+STABLE_QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", "valkyrie-stable")
 
 
 def _build_database_url() -> str:
@@ -72,6 +74,8 @@ broker = (
     if BROKER_ENVIRONMENT == "testing"
     else RedisStreamBroker(
         url=REDIS_URL,
+        queue_name=STABLE_QUEUE_NAME,
+        consumer_group_name=STABLE_QUEUE_NAME,
         idle_timeout=86400000,  # 24 hours
     )
     .with_result_backend(result_backend)

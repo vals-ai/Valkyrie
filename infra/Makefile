@@ -9,14 +9,15 @@ DEV_ACCOUNT_ID ?=
 PROFILE ?=
 SCOPE ?= all
 
-EXPECTED_ACCOUNT_ID = $(if $(filter dev,$(STAGE)),$(DEV_ACCOUNT_ID),$(if $(filter prod,$(STAGE)),$(PRODUCTION_ACCOUNT_ID),))
-STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,)
+EXPECTED_ACCOUNT_ID = $(if $(filter dev release-test,$(STAGE)),$(DEV_ACCOUNT_ID),$(if $(filter prod,$(STAGE)),$(PRODUCTION_ACCOUNT_ID),))
+STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,$(if $(filter release-test,$(STAGE)),ValkReleaseTest,))
 STACKS_shared = $(STACK_PREFIX)SharedStack
 STACKS_tracker = $(STACK_PREFIX)TrackerStack
 STACKS_worker = $(STACK_PREFIX)WorkerStack
 STACKS_monitoring = $(STACK_PREFIX)MonitoringStack
 STACKS_all = --all
 SELECTED_STACKS = $(STACKS_$(SCOPE))
+DIFF_STACKS = $(if $(filter all,$(SCOPE)),,$(SELECTED_STACKS))
 
 CDK_DEFAULT_ACCOUNT ?= $(EXPECTED_ACCOUNT_ID)
 CDK_DEFAULT_REGION ?= $(AWS_REGION)
@@ -30,7 +31,7 @@ help:
 	@echo "Makefile for Valkyrie infrastructure"
 	@echo ""
 	@echo "  make install                                  - Install CDK dependencies"
-	@echo "  make plan STAGE=<stage> AWS_REGION=us-east-1 - Show a CDK diff"
+	@echo "  make plan STAGE=dev|release-test|prod AWS_REGION=us-east-1 - Show a CDK diff"
 	@echo "  make deploy STAGE=<stage> AWS_REGION=us-east-1 - Deploy a component"
 	@echo "  make test                                     - Run infrastructure tests"
 	@echo "  make lint                                     - Check infrastructure formatting and lint"
@@ -68,7 +69,7 @@ preflight: venv_check
 	uv run python deployment_target.py
 
 plan: validate-scope preflight
-	uv run cdk diff $(SELECTED_STACKS) $(CDK_CTX) $(CDK_PROFILE)
+	uv run cdk diff $(DIFF_STACKS) $(CDK_CTX) $(CDK_PROFILE)
 
 diff: plan
 

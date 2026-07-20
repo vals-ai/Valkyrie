@@ -28,11 +28,13 @@ from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
+    ExecutorRelease,
     Org,
     Task,
     TaskStatus,
 )
 from tracker.exceptions import TrackerServiceError
+from tracker.release_control import promote_release
 from tracker.types import AWSCredentials, FetchBenchmarksRequest, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     commit_task_error,
@@ -50,6 +52,29 @@ from tracker.utils import (
 _parse_log_retention_policy = getattr(harness_config_module, "_parse_log_retention_policy")
 
 client = TestClient(app)
+
+
+@pytest.fixture
+def example_benchmark_object(contract: AgentContractRequest, database_session: Session) -> Benchmark:
+    """Build state-transition benchmarks with a persisted executor release identity."""
+    release = ExecutorRelease(
+        id="test-release",
+        artifact_uri="s3://artifacts/test-release.pex",
+        artifact_digest="digest-test-release",
+        protocol_version="1",
+        readiness_verified=True,
+    )
+    database_session.add(release)
+    database_session.commit()
+    promote_release(database_session, release.id)
+    database_session.commit()
+
+    benchmark = make_benchmark(contract=contract, concurrency=5)
+    benchmark.executor_release_id = release.id
+    benchmark.executor_artifact_uri = release.artifact_uri
+    benchmark.executor_artifact_digest = release.artifact_digest
+    benchmark.executor_protocol_version = release.protocol_version
+    return benchmark
 
 
 class TestRunState:
@@ -515,7 +540,7 @@ class TestRunState:
         assert transition_record["task_id"] == "task_0"
         assert transition_record["benchmark_id"] == str(example_benchmark_object.id)
         assert transition_record["entered"] and transition_record["exited"]
-        assert transition_record["has_error_message"] is True
+        assert transition_record["has_error_message"]
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
 
     async def test_set_benchmark_final_status(
@@ -609,7 +634,7 @@ class TestFetchStartedByFilter:
             org,
         )
         assert total == 2
-        assert sorted(email for r in rows if (email := r.started_by_email) is not None) == [
+        assert sorted(email for r in rows if isinstance((email := r.started_by_email), str)) == [
             "alice@vals.ai",
             "bob@vals.ai",
         ]

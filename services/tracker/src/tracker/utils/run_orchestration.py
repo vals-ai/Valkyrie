@@ -199,6 +199,10 @@ async def process_benchmark(
     start_benchmark_request_json: dict[str, Any],
     benchmark_id_str: str,
     verified_task_ids: list[str],
+    executor_release_id: str | None = None,
+    executor_artifact_uri: str | None = None,
+    executor_artifact_digest: str | None = None,
+    executor_protocol_version: str | None = None,
 ) -> None:
     # Was serialized to make it compatible with the broker
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
@@ -263,7 +267,7 @@ async def process_benchmark(
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
         if missing_task_ids:
             raise TrackerServiceError(
-                f"Race condition occured when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
+                f"Race condition occurred when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
             )
 
         # Semaphore to isolate concurrent sandboxes that are being made for the benchmark

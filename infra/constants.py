@@ -40,6 +40,7 @@ ELASTICACHE_NODE_TYPE = "cache.t4g.micro"
 
 # Worker Service
 WORKER_LOG_GROUP_NAME = "/valkyrie/worker"
+EXECUTOR_HOST_LOG_GROUP_NAME = "/valkyrie/executor-host"
 WORKER_SCALING_CPU_PERCENT = 70
 WORKER_STOP_TIMEOUT_SECONDS = 120  # If protection is enabled the task will not be deleted
 
@@ -56,6 +57,15 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 
 # S3
 S3_BUCKET_NAME = "agentic-harness"
+
+
+# Stage-scoped account contract parameters. Release-test uses the same dev
+# account but must not overwrite dev's resource contract.
+def stage_parameter_name(dev_parameter: str, stage_name: str) -> str:
+    if stage_name == "dev":
+        return dev_parameter
+    return dev_parameter.replace("/dev/", f"/{stage_name}/", 1)
+
 
 # Dev account prerequisites
 DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "/valkyrie/dev/dns/tracker/certificate-arn"

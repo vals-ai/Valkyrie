@@ -19,9 +19,9 @@ account-local `benchmark-tracker-dev.vals.ai` child zone and certificate.
 - [uv](https://github.com/astral-sh/uv) package manager
 - AWS CDK CLI
 
-The dev account must be bootstrapped before deploying this application. Account
-setup owns the GitHub OIDC role, child hosted zone, and certificate. Configure the
-protected `dev` GitHub Environment with `DEV_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`,
+The deployment account must be bootstrapped before deploying this application.
+Account setup owns the GitHub OIDC role, child hosted zone, and certificate.
+Configure the protected `dev` GitHub Environment with `DEV_ACCOUNT_ID`, `AWS_DEPLOY_ROLE_ARN`,
 `AWS_REGION=us-east-1`, and `DESCOPE_PROJECT_ID`. To enable Sentry in dev, also
 set `SENTRY_DSN_SECRET_NAME` to the name of an account-local Secrets Manager
 secret containing the DSN.
@@ -59,6 +59,20 @@ make plan STAGE=dev SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
 
 make deploy STAGE=dev SCOPE=shared AWS_REGION=us-east-1 \
+  DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
+```
+
+`release-test` is an isolated, dev-sized deployment in the account selected by
+`DEV_ACCOUNT_ID`. It uses `-release-test` resource names and
+`/valkyrie/release-test/` output parameters. Its Tracker uses an internal ALB;
+the ALB DNS output is reachable from the VPC instead of creating a DNS record
+or certificate. Its benchmark-service base is
+`benchmarks.vals.ai`; no separate benchmark-service stack is created. Unlike
+`dev`, the target guard permits `release-test` to be explicitly deployed in the
+production account when coexistence validation requires it.
+
+```bash
+make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
 ```
 

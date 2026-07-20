@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from unittest import mock
@@ -22,7 +23,7 @@ from constants import (
 )
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
-from stage import DEV, DEV_STACK_PREFIX, PROD, Stage
+from stage import DEV, DEV_STACK_PREFIX, PROD, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
 from worker_stack import WorkerStack
 
@@ -185,6 +186,62 @@ class MonitoringStackTest(unittest.TestCase):
     def test_dev_stack_ids_are_valk_scoped(self) -> None:
         self.assertEqual(Stage(PROD).stack_id("TrackerStack"), "TrackerStack")
         self.assertEqual(Stage(DEV).stack_id("TrackerStack"), f"{DEV_STACK_PREFIX}TrackerStack")
+
+    def test_release_test_names_are_namespaced(self) -> None:
+        stage = Stage(RELEASE_TEST)
+        self.assertEqual(stage.stack_id("SharedStack"), "ValkReleaseTestSharedStack")
+        self.assertEqual(stage.phys("AgenticHarnessCluster"), "AgenticHarnessCluster-release-test")
+        self.assertEqual(stage.domain("benchmark-tracker.vals.ai"), "benchmark-tracker-release-test.vals.ai")
+
+    def test_release_test_templates_use_external_benchmark_service_and_namespaced_outputs(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"DESCOPE_PROJECT_ID": "release-test"},
+            clear=False,
+        ):
+            tracker_template, worker_template = _service_templates(RELEASE_TEST)
+
+        parameter_names = [
+            resource["Properties"]["Name"]
+            for resource in tracker_template.find_resources("AWS::SSM::Parameter").values()
+        ]
+        self.assertTrue(parameter_names)
+        self.assertTrue(all("/valkyrie/release-test/" in name for name in parameter_names))
+        self.assertFalse(tracker_template.find_resources("AWS::Route53::RecordSet"))
+        self.assertFalse(tracker_template.find_resources("AWS::Route53::RecordSetGroup"))
+        load_balancers = tracker_template.find_resources("AWS::ElasticLoadBalancingV2::LoadBalancer")
+        self.assertTrue(any(resource["Properties"]["Scheme"] == "internal" for resource in load_balancers.values()))
+        self.assertTrue(
+            any(
+                environment["Name"] == "BENCHMARK_SERVICE_BASE_URL" and environment["Value"] == "benchmarks.vals.ai"
+                for task_definition in tracker_template.find_resources("AWS::ECS::TaskDefinition").values()
+                for container in task_definition["Properties"]["ContainerDefinitions"]
+                for environment in container.get("Environment", [])
+            )
+        )
+        self.assertTrue(
+            any(
+                resource["Properties"]["ServiceName"].endswith("-release-test")
+                for resource in worker_template.find_resources("AWS::ECS::Service").values()
+            )
+        )
+
+    def test_worker_services_use_distinct_legacy_and_stable_queues(self) -> None:
+        _, worker_template = _service_templates(PROD)
+        queue_values: list[str] = []
+        for task_definition in worker_template.find_resources("AWS::ECS::TaskDefinition").values():
+            for container in task_definition["Properties"]["ContainerDefinitions"]:
+                for environment in container.get("Environment", []):
+                    if environment["Name"] == "STABLE_QUEUE_NAME":
+                        queue_values.append(environment["Value"])
+
+        self.assertCountEqual(queue_values, ["taskiq", "valkyrie-stable"])
+        protection_policies = [
+            policy
+            for policy in worker_template.find_resources("AWS::IAM::Policy").values()
+            if "ecs:UpdateTaskProtection" in json.dumps(policy)
+        ]
+        self.assertEqual(len(protection_policies), 2)
 
     def test_alerts_topic_is_wired_to_slack(self) -> None:
         with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):

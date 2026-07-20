@@ -22,6 +22,7 @@ from aws_cdk import (
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
+    EXECUTOR_HOST_LOG_GROUP_NAME,
     POSTGRES_DB,
     WORKER_LOG_GROUP_NAME,
     WORKER_SCALING_CPU_PERCENT,
@@ -29,7 +30,7 @@ from constants import (
 )
 from constructs import Construct
 from stage import Stage
-from stage_config import config_for
+from stage_config import benchmark_service_base_url, config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -38,10 +39,12 @@ _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
 
 
 class WorkerStack(Stack):
-    """Worker stack: Taskiq worker as a Fargate service.
+    """Legacy Taskiq worker and stable executor host services.
 
-    Connects to the shared ElastiCache Redis in SharedStack (used as the
-    Taskiq message broker) and to the RDS database in TrackerStack.
+    Both services connect to the shared ElastiCache Redis in SharedStack and
+    the RDS database in TrackerStack, but consume separate queues. The legacy
+    worker remains on ``taskiq`` during the one-time queue migration; the
+    stable host consumes ``valkyrie-stable`` and launches pinned artifacts.
 
     Deployment is configured with ``min_healthy_percent=100`` and
     ``max_healthy_percent=200`` so ECS starts new tasks before stopping old
@@ -77,13 +80,20 @@ class WorkerStack(Stack):
             file="Dockerfile",
             platform=Platform.LINUX_ARM64,
         )
+        executor_host_image = aws_ecs.ContainerImage.from_asset(
+            "../services/executor_host",
+            file="Dockerfile",
+            platform=Platform.LINUX_ARM64,
+        )
 
+        benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket.bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+            **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
         }
 
         db_env = {
@@ -108,7 +118,7 @@ class WorkerStack(Stack):
             )
             sentry_secrets["SENTRY_DSN"] = aws_ecs.Secret.from_secrets_manager(sentry_secret)
 
-        # ── Worker service ────────────────────────────────────────────────
+        # ── Legacy worker service ─────────────────────────────────────────
 
         worker_task_def = aws_ecs.FargateTaskDefinition(
             self,
@@ -135,6 +145,7 @@ class WorkerStack(Stack):
                 **shared_env,
                 **db_env,
                 "REDIS_URL": redis_url,
+                "STABLE_QUEUE_NAME": "taskiq",
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
             secrets={
@@ -174,6 +185,67 @@ class WorkerStack(Stack):
             min_healthy_percent=100,
             max_healthy_percent=200,
             assign_public_ip=True,
+        )
+
+        # ── Stable executor host ─────────────────────────────────────────
+
+        executor_task_def = aws_ecs.FargateTaskDefinition(
+            self,
+            "ExecutorHostTaskDef",
+            cpu=stage_config.worker.cpu,
+            memory_limit_mib=stage_config.worker.memory_mib,
+            runtime_platform=_ARM64_PLATFORM,
+        )
+        executor_task_def.add_container(
+            "ExecutorHostContainer",
+            image=executor_host_image,
+            logging=aws_ecs.LogDriver.aws_logs(
+                stream_prefix="ExecutorHost",
+                log_group=aws_logs.LogGroup(
+                    self,
+                    "ExecutorHostLogGroup",
+                    log_group_name=stage.phys(EXECUTOR_HOST_LOG_GROUP_NAME),
+                    retention=stage_config.service_log_retention,
+                    removal_policy=cdk.RemovalPolicy.RETAIN,
+                ),
+            ),
+            environment={
+                **shared_env,
+                **db_env,
+                "REDIS_URL": redis_url,
+                "STABLE_QUEUE_NAME": "valkyrie-stable",
+            },
+            secrets=db_secrets,
+            stop_timeout=Duration.seconds(WORKER_STOP_TIMEOUT_SECONDS),
+        )
+        cast(aws_iam.Role, executor_task_def.task_role).add_to_policy(
+            aws_iam.PolicyStatement(
+                actions=["ecs:UpdateTaskProtection"],
+                resources=["*"],
+            )
+        )
+        bucket.grant_read(executor_task_def.task_role)
+
+        self.executor_host_service = aws_ecs.FargateService(
+            self,
+            "ExecutorHostService",
+            cluster=cluster,
+            task_definition=executor_task_def,
+            desired_count=stage_config.worker.min_tasks,
+            service_name=stage.phys("ExecutorHost"),
+            security_groups=[tracker_sg],
+            circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
+            min_healthy_percent=100,
+            max_healthy_percent=200,
+            assign_public_ip=True,
+        )
+        executor_scaling = self.executor_host_service.auto_scale_task_count(
+            min_capacity=stage_config.worker.min_tasks,
+            max_capacity=stage_config.worker.max_tasks,
+        )
+        executor_scaling.scale_on_cpu_utilization(
+            "ExecutorHostCpuScaling",
+            target_utilization_percent=WORKER_SCALING_CPU_PERCENT,
         )
 
         # Worker auto-scaling

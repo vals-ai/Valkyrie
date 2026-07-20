@@ -41,10 +41,11 @@ from constants import (
     TRACKER_PORT,
     TRACKER_SCALING_CPU_PERCENT,
     VPC_CIDR,
+    stage_parameter_name,
 )
 from constructs import Construct
 from stage import Stage
-from stage_config import config_for
+from stage_config import benchmark_service_base_url, config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -85,12 +86,14 @@ class TrackerStack(Stack):
         )
 
         # Shared environment variables
+        benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
             "AWS_S3_BUCKET": bucket.bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+            **({"BENCHMARK_SERVICE_BASE_URL": benchmark_service_url} if benchmark_service_url else {}),
         }
 
         # ── RDS ──────────────────────────────────────────────────────────
@@ -215,14 +218,19 @@ class TrackerStack(Stack):
                 timeout=Duration.seconds(CONTAINER_HEALTH_TIMEOUT_SECONDS),
             ),
         )
+        # Release verification streams executor artifacts from S3 before promotion.
+        bucket.grant_read(tracker_task_def.task_role)
 
-        tracker_domain = stage.domain(TRACKER_DOMAIN)
+        tracker_domain: str | None = None
+        tracker_hosted_zone: aws_route53.IHostedZone | None = None
         certificate: aws_certificatemanager.ICertificate | None = None
         if stage.is_prod:
             if hosted_zone is None:
                 raise ValueError("Production requires the vals.ai hosted zone")
+            tracker_domain = TRACKER_DOMAIN
             tracker_hosted_zone = hosted_zone
-        else:
+        elif not stage.is_release_test:
+            tracker_domain = stage.domain(TRACKER_DOMAIN)
             tracker_hosted_zone = aws_route53.HostedZone.from_hosted_zone_attributes(
                 self,
                 "DevTrackerHostedZone",
@@ -252,11 +260,15 @@ class TrackerStack(Stack):
             domain_name=tracker_domain,
             domain_zone=tracker_hosted_zone,
             certificate=certificate,
-            protocol=aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS,
-            redirect_http=True,
+            protocol=(
+                aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS
+                if certificate is not None
+                else aws_elasticloadbalancingv2.ApplicationProtocol.HTTP
+            ),
+            redirect_http=certificate is not None,
             open_listener=False,
             assign_public_ip=True,
-            public_load_balancer=True,
+            public_load_balancer=not stage.is_release_test,
         )
 
         # Expose the inner FargateService for cross-stack security group rules
@@ -280,20 +292,27 @@ class TrackerStack(Stack):
         # Request timeout
         self.service.load_balancer.set_attribute("idle_timeout.timeout_seconds", str(ALB_IDLE_TIMEOUT_SECONDS))
 
-        # Allow HTTP -> HTTPS redirect
-        self.service.load_balancer.connections.allow_from(
-            aws_ec2.Peer.any_ipv4(),
-            aws_ec2.Port.tcp(80),
-            description="Allow HTTP from anywhere (redirects to HTTPS)",
-        )
-
-        # Allow HTTPS from whitelisted IPs only
-        for ip, desc in ALLOWED_IPS:
+        if stage.is_release_test:
             self.service.load_balancer.connections.allow_from(
-                aws_ec2.Peer.ipv4(ip),
-                aws_ec2.Port.tcp(443),
-                description=f"Allow HTTPS from {desc}",
+                aws_ec2.Peer.ipv4(VPC_CIDR),
+                aws_ec2.Port.tcp(80),
+                description="Allow release-test Tracker access from the VPC",
             )
+        else:
+            # Allow HTTP -> HTTPS redirect
+            self.service.load_balancer.connections.allow_from(
+                aws_ec2.Peer.any_ipv4(),
+                aws_ec2.Port.tcp(80),
+                description="Allow HTTP from anywhere (redirects to HTTPS)",
+            )
+
+            # Allow HTTPS from whitelisted IPs only
+            for ip, desc in ALLOWED_IPS:
+                self.service.load_balancer.connections.allow_from(
+                    aws_ec2.Peer.ipv4(ip),
+                    aws_ec2.Port.tcp(443),
+                    description=f"Allow HTTPS from {desc}",
+                )
 
         # Tracker auto-scaling
         tracker_scaling = self.service.service.auto_scale_task_count(
@@ -318,12 +337,12 @@ class TrackerStack(Stack):
             aws_ssm.StringParameter(
                 self,
                 "TrackerSecurityGroupParameter",
-                parameter_name=DEV_TRACKER_SECURITY_GROUP_PARAMETER,
+                parameter_name=stage_parameter_name(DEV_TRACKER_SECURITY_GROUP_PARAMETER, stage.name),
                 string_value=self.service.service.connections.security_groups[0].security_group_id,
             )
             aws_ssm.StringParameter(
                 self,
                 "TrackerAlbDnsParameter",
-                parameter_name=DEV_TRACKER_ALB_DNS_PARAMETER,
+                parameter_name=stage_parameter_name(DEV_TRACKER_ALB_DNS_PARAMETER, stage.name),
                 string_value=self.service.load_balancer.load_balancer_dns_name,
             )

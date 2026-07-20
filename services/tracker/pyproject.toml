@@ -3,43 +3,44 @@ name = "tracker"
 version = "0.1.0"
 description = "Tracking service for agentic harness"
 authors = [
-    { name = "Omar Almatov", email = "52346350+oalmatov@users.noreply.github.com" }
+  { name = "Omar Almatov", email = "52346350+oalmatov@users.noreply.github.com" },
 ]
 requires-python = "==3.12.*"
 dependencies = [
-    "boto3>=1.42.20",
-    "boto3-stubs[s3]",
-    "moto[s3]",
-    "fastapi[standard]>=0.135.3",
-    "starlette>=1.0.1",
-    "sqlmodel>=0.0.38",
-    "psycopg2-binary>=2.9.11",
-    "httpx>=0.28.1",
-    "logfire[fastapi,httpx]>=3.0.0",
-    "opentelemetry-api>=1.20.0",
-    "opentelemetry-sdk>=1.20.0",
-    "taskiq>=0.12.1",
-    "taskiq-redis>=1.2.2",
-    "alembic>=1.18.4",
-    "descope>=0.9.0",
-    "tenacity>=9.0.0",
-    "sentry-sdk[fastapi]==2.58.0",
-    "python-json-logger>=3.2.1",
-    "create-benchmark-service>=0.11.0",
-    "aioboto3>=7.0.0",
+  "boto3>=1.42.20",
+  "boto3-stubs[s3]",
+  "moto[s3]",
+  "fastapi[standard]>=0.135.3",
+  "starlette>=1.0.1",
+  "sqlmodel>=0.0.38",
+  "psycopg2-binary>=2.9.11",
+  "httpx>=0.28.1",
+  "logfire[fastapi,httpx]>=3.0.0",
+  "opentelemetry-api>=1.20.0",
+  "opentelemetry-sdk>=1.20.0",
+  "taskiq>=0.12.1",
+  "taskiq-redis>=1.2.2",
+  "alembic>=1.18.4",
+  "descope>=0.9.0",
+  "tenacity>=9.0.0",
+  "sentry-sdk[fastapi]==2.58.0",
+  "python-json-logger>=3.2.1",
+  "python-dotenv>=1.2.2",
+  "create-benchmark-service>=0.11.0",
+  "aioboto3>=7.0.0",
 ]
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0.1",
-    "pytest-asyncio>=1.3.0",
-    "ruff",
-    "basedpyright",
-    "pytest-env>=1.2.0",
-    "pytest-alembic>=0.12.1",
-    "testcontainers[postgres]>=4.10.0",
-    "pytest-cov>=7.1.0",
-    "pytest-xdist>=3.8.0",
+  "pytest>=9.0.1",
+  "pytest-asyncio>=1.3.0",
+  "ruff",
+  "basedpyright",
+  "pytest-env>=1.2.0",
+  "pytest-alembic>=0.12.1",
+  "testcontainers[postgres]>=4.10.0",
+  "pytest-cov>=7.1.0",
+  "pytest-xdist>=3.8.0",
 ]
 
 [build-system]
@@ -68,8 +69,8 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.basedpyright]
-venvPath="."
-venv=".venv"
+venvPath = "."
+venv = ".venv"
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
 
@@ -78,15 +79,13 @@ reportAny = false
 reportMissingTypeStubs = false
 enableTypeIgnoreComments = true
 
-exclude=["src/tracker/database/migrations/versions"]
+exclude = ["src/tracker/database/migrations/versions"]
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
 asyncio_mode = "auto"
 pythonpath = ["."]
-env = [
-    "BROKER_ENVIRONMENT=testing",
-]
+env = ["BROKER_ENVIRONMENT=testing"]
 [tool.coverage.run]
 source = ["src/tracker", "main"]
 branch = true

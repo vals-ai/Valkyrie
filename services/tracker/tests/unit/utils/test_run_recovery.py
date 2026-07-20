@@ -7,7 +7,7 @@ Covers task state transitions, sandbox cleanup, and run-control API behavior.
 
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Any
@@ -25,7 +25,7 @@ from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
 from main import app
-from tests.factories import make_error_result, make_evaluation_result
+from tests.factories import make_benchmark, make_error_result, make_evaluation_result
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity
@@ -34,12 +34,17 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     EvaluationResult,
+    ExecutorDispatch,
+    ExecutorDispatchKind,
+    ExecutorDispatchStatus,
+    ExecutorRelease,
     FinalEvaluation,
     Org,
     RetryMode,
     Task,
     TaskStatus,
 )
+from tracker.release_control import promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     ResizableLimiter,
@@ -62,8 +67,39 @@ _RESUMED_ATTEMPT_AT = datetime(2026, 7, 9)
 client = TestClient(app)
 
 
+@pytest.fixture
+def example_benchmark_object(contract: AgentContractRequest, database_session: Session) -> Benchmark:
+    """Build recovery benchmarks with a persisted executor release identity."""
+    release = ExecutorRelease(
+        id="test-release",
+        artifact_uri="s3://artifacts/test-release.pex",
+        artifact_digest="digest-test-release",
+        protocol_version="1",
+        readiness_verified=True,
+    )
+    database_session.add(release)
+    database_session.commit()
+    promote_release(database_session, release.id)
+    database_session.commit()
+
+    benchmark = make_benchmark(contract=contract, concurrency=5)
+    benchmark.executor_release_id = release.id
+    benchmark.executor_artifact_uri = release.artifact_uri
+    benchmark.executor_artifact_digest = release.artifact_digest
+    benchmark.executor_protocol_version = release.protocol_version
+    return benchmark
+
+
 def _created_at(day: int) -> datetime:
     return datetime(2026, 6, day, tzinfo=UTC)
+
+
+@asynccontextmanager
+async def _counted_sandbox(counter: list[int]) -> AsyncGenerator[AsyncMock, None]:
+    counter[0] += 1
+    mock_sandbox = AsyncMock()
+    mock_sandbox.id = f"mock-sandbox-id-{counter[0]}"
+    yield mock_sandbox
 
 
 class MockSubsetSandboxProvider:
@@ -117,15 +153,10 @@ class TestRunRecovery:
         first_admitted = asyncio.Event()
         release_first = asyncio.Event()
         second_admitted = asyncio.Event()
-        sandbox_count = 0
+        sandbox_count = [0]
 
-        @asynccontextmanager
-        async def unique_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
-            nonlocal sandbox_count
-            sandbox_count += 1
-            sandbox = AsyncMock()
-            sandbox.id = f"mock-sandbox-id-{sandbox_count}"
-            yield sandbox
+        def unique_sandbox(*_args: Any, **_kwargs: Any) -> AbstractAsyncContextManager[AsyncMock]:
+            return _counted_sandbox(sandbox_count)
 
         async def controlled_retrieve_task(*_args: Any, task_id: str, **_kwargs: Any) -> RetrieveTaskResponse:
             admitted_task_ids.append(task_id)
@@ -298,6 +329,10 @@ class TestRunRecovery:
             harness_config=harness_config,
         )
         benchmark_row = start_benchmark_request_to_benchmark(start_request, self._test_starter)
+        benchmark_row.executor_release_id = "test-release"
+        benchmark_row.executor_artifact_uri = "s3://artifacts/test-release.pex"
+        benchmark_row.executor_artifact_digest = "digest-test-release"
+        benchmark_row.executor_protocol_version = "1"
         selected_task = Task(
             org_id=TEST_ORG_ID,
             task_id="task_selected",
@@ -305,8 +340,19 @@ class TestRunRecovery:
             status=TaskStatus.PENDING,
             started_at=_ORIGINAL_ATTEMPT_AT,
         )
+        database_session.add(
+            ExecutorRelease(
+                id="test-release",
+                artifact_uri="s3://artifacts/test-release.pex",
+                artifact_digest="digest-test-release",
+                protocol_version="1",
+                readiness_verified=True,
+            )
+        )
         database_session.add(benchmark_row)
         database_session.add(selected_task)
+        database_session.commit()
+        promote_release(database_session, "test-release")
         database_session.commit()
         database_session.expire_all()
         selected_task = database_session.exec(
@@ -795,7 +841,7 @@ class TestRunRecovery:
             final_score_calls.append(set(tasks_evaluated))
             return FinalScoreResponse(
                 tasks_evaluated=tasks_evaluated,
-                final_score=float(len(tasks_evaluated)),
+                final_score=len(tasks_evaluated),
                 metadata={"resolved_tasks": tasks_evaluated, "unresolved_tasks": []},
             )
 
@@ -1282,8 +1328,31 @@ class TestRunRecovery:
             ]
         )
         database_session.commit()
+        database_session.add_all(
+            [
+                ExecutorRelease(
+                    id="new-release",
+                    artifact_uri="s3://artifacts/new-release.pex",
+                    artifact_digest="digest-new-release",
+                    protocol_version="1",
+                    readiness_verified=True,
+                ),
+                ExecutorRelease(
+                    id="latest-release",
+                    artifact_uri="s3://artifacts/latest-release.pex",
+                    artifact_digest="digest-latest-release",
+                    protocol_version="1",
+                    readiness_verified=True,
+                ),
+            ]
+        )
+        database_session.commit()
+        promote_release(database_session, "new-release")
+        database_session.commit()
 
         async def _mock_request_verify_task_ids(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            promote_release(database_session, "latest-release")
+            database_session.commit()
             return VerifyTaskIdsResponse(task_ids=["task_error"])
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
@@ -1291,7 +1360,21 @@ class TestRunRecovery:
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
         assert response.status_code == 200
-        assert mock_kicker.queued_calls[0]["verified_task_ids"] == ["task_error"]
+        queued_call = mock_kicker.queued_calls[0]
+        assert queued_call["verified_task_ids"] == ["task_error"]
+        assert queued_call["executor_release_id"] == "latest-release"
+        assert queued_call["executor_artifact_uri"] == "s3://artifacts/latest-release.pex"
+        assert queued_call["executor_artifact_digest"] == "digest-latest-release"
+        assert queued_call["executor_protocol_version"] == "1"
+        dispatch_id = UUID(queued_call["executor_dispatch_id"])
+        dispatch = database_session.get(ExecutorDispatch, dispatch_id)
+        assert dispatch is not None
+        assert dispatch.benchmark_id == benchmark_row.id
+        assert dispatch.kind == ExecutorDispatchKind.RETRY
+        assert dispatch.status == ExecutorDispatchStatus.QUEUED
+        assert dispatch.executor_release_id == "latest-release"
+        assert benchmark_row.executor_release_id == "test-release"
+        assert benchmark_row.executor_artifact_digest == "digest-test-release"
 
         task_statuses = {
             task.task_id: task.status
@@ -1302,6 +1385,51 @@ class TestRunRecovery:
             "task_pending": TaskStatus.PENDING,
             "task_finished": TaskStatus.FINISHED,
         }
+
+    async def test_retry_keeps_dispatch_queued_when_enqueue_ack_is_ambiguous(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        class AmbiguousKicker(MockKicker):
+            async def kiq(self, **kwargs: Any) -> None:
+                await super().kiq(**kwargs)
+                raise RuntimeError("broker acknowledgement lost")
+
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_error", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        )
+        database_session.add(
+            ExecutorRelease(
+                id="new-release",
+                artifact_uri="s3://artifacts/new-release.pex",
+                artifact_digest="digest-new-release",
+                protocol_version="1",
+                readiness_verified=True,
+            )
+        )
+        database_session.commit()
+        promote_release(database_session, "new-release")
+        database_session.commit()
+
+        async def _verify_error_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_error"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_error_task)
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: AmbiguousKicker())
+
+        with pytest.raises(RuntimeError, match="broker acknowledgement lost"):
+            client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        dispatches = database_session.exec(select(ExecutorDispatch)).all()
+        assert len(dispatches) == 1
+        assert dispatches[0].kind == ExecutorDispatchKind.RETRY
+        assert dispatches[0].status == ExecutorDispatchStatus.QUEUED
+        assert dispatches[0].executor_release_id == "new-release"
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_running_retry_repairs_error_and_later_finalizes_same_run(
@@ -1326,20 +1454,27 @@ class TestRunRecovery:
             ]
         )
         database_session.commit()
+        database_session.add(
+            ExecutorRelease(
+                id="new-release",
+                artifact_uri="s3://artifacts/new-release.pex",
+                artifact_digest="digest-new-release",
+                protocol_version="1",
+                readiness_verified=True,
+            )
+        )
+        database_session.commit()
+        promote_release(database_session, "new-release")
+        database_session.commit()
 
         async def _mock_verify_task_ids(*_args: Any, task_ids: list[str], **_kwargs: Any) -> VerifyTaskIdsResponse:
             return VerifyTaskIdsResponse(task_ids=task_ids)
 
         final_score_inputs: list[dict[str, Any]] = []
-        sandbox_count = 0
+        sandbox_count = [0]
 
-        @asynccontextmanager
-        async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
-            nonlocal sandbox_count
-            sandbox_count += 1
-            mock_sandbox = AsyncMock()
-            mock_sandbox.id = f"mock-sandbox-id-{sandbox_count}"
-            yield mock_sandbox
+        def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AbstractAsyncContextManager[AsyncMock]:
+            return _counted_sandbox(sandbox_count)
 
         async def _mock_final_score(
             *_args: Any, evaluation_results: dict[str, Any], **_kwargs: Any

@@ -16,6 +16,7 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
+    ExecutorReleaseStatus,
     FinalEvaluation,
     TaskStatus,
 )
@@ -128,6 +129,9 @@ class StartBenchmarkResponse(BaseModel):
     task_count: int
     cloudwatch_url: str
     s3_bucket_url: str
+    executor_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class FetchBenchmarkResponse(BaseModel):
@@ -137,6 +141,9 @@ class FetchBenchmarkResponse(BaseModel):
     s3_bucket_url: str
     label: str | None = None
     final_score: float | None = None
+    executor_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class AverageTaskBreakdown(BaseModel):
@@ -221,6 +228,9 @@ class BenchmarkTableRow(BaseModel):
     agent_name: str
     label: str | None = None
     model: str | None
+    executor_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     dataset: str = "default"
     started_by_email: str | None
     started_at: datetime
@@ -230,7 +240,7 @@ class BenchmarkTableRow(BaseModel):
     finished_tasks: int
     # Per-TaskStatus counts: {"PENDING": 1, "IN_PROGRESS": 2, "FINISHED": 4, ...}.
     # Absent keys mean zero; sum equals total_tasks.
-    task_state_counts: dict[str, int] = {}
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
     final_score: float | None = None
     error_message: str | None = None
 
@@ -256,6 +266,10 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_name: str
     benchmark_arguments: BenchmarkArguments
     started_by_email: str | None = None
+    executor_release_id: str | None = None
+    executor_artifact_uri: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
 
 
 class AnalyzeBenchmarkRequest(BaseModel):
@@ -302,9 +316,12 @@ class BenchmarkStatusEntry(BaseModel):
     status: BenchmarkStatus
     finished_at: datetime | None
     total_tasks: int
+    executor_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     finished_tasks: int
     # Per-TaskStatus counts; same shape as BenchmarkTableRow.task_state_counts.
-    task_state_counts: dict[str, int] = {}
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
 
     @field_serializer("finished_at")
     def _serialize_dt(self, value: datetime | None) -> str | None:
@@ -315,6 +332,27 @@ class BenchmarkStatusResponse(BaseModel):
     entries: list[BenchmarkStatusEntry]
 
 
+class ExecutorReleaseStatusEntry(BaseModel):
+    id: str
+    status: ExecutorReleaseStatus
+    artifact_digest: str
+    protocol_version: str
+    readiness_verified: bool
+    readiness_metadata: dict[str, Any]
+    created_at: datetime
+    activated_at: datetime | None = None
+    draining_at: datetime | None = None
+    retired_at: datetime | None = None
+    artifact_retention_until: datetime | None = None
+    owned_active_runs: int
+    retirement_blocker: str | None = None
+
+
+class ExecutorReleasesResponse(BaseModel):
+    active_release_id: str | None
+    entries: list[ExecutorReleaseStatusEntry]
+
+
 class SingleBenchmarkResponse(BaseModel):
     """Single-run view: BenchmarkTableRow fields plus optional final_score."""
 
@@ -322,12 +360,15 @@ class SingleBenchmarkResponse(BaseModel):
     name: str
     agent_name: str
     model: str | None
+    executor_release_id: str | None = None
+    executor_artifact_digest: str | None = None
+    executor_protocol_version: str | None = None
     started_at: datetime
     finished_at: datetime | None
     status: BenchmarkStatus
     total_tasks: int
     finished_tasks: int
-    task_state_counts: dict[str, int] = {}
+    task_state_counts: dict[str, int] = Field(default_factory=dict)
     started_by_email: str | None = None
     final_score: float | None = None
     error_message: str | None = None

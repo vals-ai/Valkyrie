@@ -33,6 +33,7 @@ from constants import (
     REDIS_PORT,
     S3_BUCKET_NAME,
     VPC_CIDR,
+    stage_parameter_name,
     VPC_MAX_AZS,
     VPC_NAT_GATEWAYS,
     get_slack_notification_config,
@@ -173,49 +174,49 @@ class SharedStack(Stack):
         aws_ssm.StringParameter(
             self,
             "SharedVpcIdParameter",
-            parameter_name=DEV_SHARED_VPC_ID_PARAMETER,
+            parameter_name=stage_parameter_name(DEV_SHARED_VPC_ID_PARAMETER, self.stage.name),
             string_value=self.vpc.vpc_id,
         )
         aws_ssm.StringListParameter(
             self,
             "SharedAvailabilityZonesParameter",
-            parameter_name=DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
+            parameter_name=stage_parameter_name(DEV_SHARED_AVAILABILITY_ZONES_PARAMETER, self.stage.name),
             string_list_value=self.vpc.availability_zones,
         )
         aws_ssm.StringListParameter(
             self,
             "SharedPublicSubnetIdsParameter",
-            parameter_name=DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
+            parameter_name=stage_parameter_name(DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER, self.stage.name),
             string_list_value=[subnet.subnet_id for subnet in self.vpc.public_subnets],
         )
         aws_ssm.StringParameter(
             self,
             "SharedClusterNameParameter",
-            parameter_name=DEV_SHARED_CLUSTER_NAME_PARAMETER,
+            parameter_name=stage_parameter_name(DEV_SHARED_CLUSTER_NAME_PARAMETER, self.stage.name),
             string_value=self.cluster.cluster_name,
         )
         aws_ssm.StringParameter(
             self,
             "SharedNamespaceNameParameter",
-            parameter_name=DEV_SHARED_NAMESPACE_NAME_PARAMETER,
+            parameter_name=stage_parameter_name(DEV_SHARED_NAMESPACE_NAME_PARAMETER, self.stage.name),
             string_value=self.namespace.namespace_name,
         )
         aws_ssm.StringParameter(
             self,
             "SharedNamespaceIdParameter",
-            parameter_name=DEV_SHARED_NAMESPACE_ID_PARAMETER,
+            parameter_name=stage_parameter_name(DEV_SHARED_NAMESPACE_ID_PARAMETER, self.stage.name),
             string_value=self.namespace.namespace_id,
         )
         aws_ssm.StringParameter(
             self,
             "SharedNamespaceArnParameter",
-            parameter_name=DEV_SHARED_NAMESPACE_ARN_PARAMETER,
+            parameter_name=stage_parameter_name(DEV_SHARED_NAMESPACE_ARN_PARAMETER, self.stage.name),
             string_value=self.namespace.namespace_arn,
         )
         aws_ssm.StringParameter(
             self,
             "SharedArtifactBucketParameter",
-            parameter_name=DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
+            parameter_name=stage_parameter_name(DEV_SHARED_ARTIFACT_BUCKET_PARAMETER, self.stage.name),
             string_value=self.bucket.bucket_name,
         )
 

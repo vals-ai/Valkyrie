@@ -3,7 +3,7 @@ import logging
 import tarfile
 import traceback
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -61,6 +61,10 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     DocentReadingStatus,
+    ExecutorAdmission,
+    ExecutorDispatchKind,
+    ExecutorRelease,
+    ExecutorReleaseStatus,
     FinalEvaluation,
     Org,
     RetryMode,
@@ -73,6 +77,14 @@ from tracker.docent_analysis import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
+from tracker.release_control import (
+    ReleaseControlError,
+    active_executor_release_counts,
+    artifact_deletion_allowed,
+    create_executor_dispatch,
+    pin_benchmark_to_release,
+    select_active_release,
+)
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
@@ -82,6 +94,8 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
+    ExecutorReleaseStatusEntry,
+    ExecutorReleasesResponse,
     HarnessConfig,
     Order,
     RetrieveResultsResponse,
@@ -210,6 +224,53 @@ def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/executor-releases", response_model=ExecutorReleasesResponse)
+def executor_releases_status(
+    session: Session = Depends(get_session),
+    _org: Org = Depends(get_current_org),
+) -> ExecutorReleasesResponse:
+    """Expose release health, ownership counts, and retirement blockers."""
+    admission = session.get(ExecutorAdmission, 1)
+    active_counts = active_executor_release_counts(session)
+
+    entries: list[ExecutorReleaseStatusEntry] = []
+    for release in session.exec(select(ExecutorRelease).order_by(col(ExecutorRelease.created_at).desc())).all():
+        owned_active_runs = active_counts.get(release.id, 0)
+        blocker: str | None = None
+        retention_until = release.artifact_retention_until
+        if retention_until is not None and retention_until.tzinfo is None:
+            retention_until = retention_until.replace(tzinfo=UTC)
+        if release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED) and owned_active_runs:
+            noun = "execution" if owned_active_runs == 1 else "executions"
+            blocker = f"{owned_active_runs} active {noun}"
+        elif release.status == ExecutorReleaseStatus.RETIRED and not artifact_deletion_allowed(session, release.id):
+            if retention_until is None:
+                blocker = "artifact retention is unset"
+            elif retention_until > datetime.now(UTC):
+                blocker = f"artifact retained until {retention_until.isoformat()}"
+        entries.append(
+            ExecutorReleaseStatusEntry(
+                id=release.id,
+                status=release.status,
+                artifact_digest=release.artifact_digest,
+                protocol_version=release.protocol_version,
+                readiness_verified=release.readiness_verified,
+                readiness_metadata=release.readiness_metadata,
+                created_at=release.created_at,
+                activated_at=release.activated_at,
+                draining_at=release.draining_at,
+                retired_at=release.retired_at,
+                artifact_retention_until=retention_until,
+                owned_active_runs=owned_active_runs,
+                retirement_blocker=blocker,
+            )
+        )
+    return ExecutorReleasesResponse(
+        active_release_id=admission.release_id if admission is not None else None,
+        entries=entries,
+    )
+
+
 @app.post("/init")
 def init_org(
     request: Request,
@@ -328,7 +389,13 @@ async def start_benchmark(
         raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
 
     # Create benchmark row only after pre-flight checks pass.
+    try:
+        active_release = select_active_release(session, for_update=True)
+    except ReleaseControlError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
+    pin_benchmark_to_release(benchmark_row, active_release)
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))
@@ -356,13 +423,22 @@ async def start_benchmark(
 
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
+    executor_dispatch = create_executor_dispatch(benchmark_row.id, active_release, ExecutorDispatchKind.START)
+    session.add(executor_dispatch)
+    session.commit()
+
     await (
         process_benchmark.kicker()
         .with_labels(**_taskiq_labels())
-        .kiq(
+        .kiq(  # pyright: ignore[reportCallIssue] -- stable host consumes executor_dispatch_id
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verify_response.task_ids,
+            executor_dispatch_id=str(executor_dispatch.id),
+            executor_release_id=benchmark_row.executor_release_id,
+            executor_artifact_uri=benchmark_row.executor_artifact_uri,
+            executor_artifact_digest=benchmark_row.executor_artifact_digest,
+            executor_protocol_version=benchmark_row.executor_protocol_version,
         )
     )
 
@@ -379,6 +455,9 @@ async def start_benchmark(
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
         ),
+        executor_release_id=benchmark_row.executor_release_id,
+        executor_artifact_digest=benchmark_row.executor_artifact_digest,
+        executor_protocol_version=benchmark_row.executor_protocol_version,
     )
 
 
@@ -457,6 +536,9 @@ async def fetch_benchmark(
         ),
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
+        executor_release_id=benchmark_row.executor_release_id,
+        executor_artifact_digest=benchmark_row.executor_artifact_digest,
+        executor_protocol_version=benchmark_row.executor_protocol_version,
     )
 
 
@@ -551,6 +633,8 @@ async def retrieve_results(
     curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
     """
     benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
+    if benchmark_row is None:
+        raise HTTPException(status_code=404, detail=f"Run {benchmark_id} not found")
     assert_org(benchmark_row, org)
 
     final_view = create_final_view(benchmark_row, session, org)
@@ -558,7 +642,7 @@ async def retrieve_results(
     if task_ids:
         task_ids_set = set(task_ids)
 
-        def _filter_task_map(task_map):
+        def _filter_task_map(task_map: dict[str, Any] | None) -> dict[str, Any] | None:
             return {task_id: value for task_id, value in (task_map or {}).items() if task_id in task_ids_set} or None
 
         final_view.evaluation_results = _filter_task_map(final_view.evaluation_results)
@@ -795,6 +879,12 @@ async def retry_or_resume_benchmark(
         _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
         return RetryOrResumeBenchmarkResponse(status="success")
 
+    try:
+        # Reject recovery work before mutating task state when admission is unavailable.
+        select_active_release(session, for_update=True)
+    except ReleaseControlError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     effective_service_headers = forward_tracker_api_key(
         service_headers,
         http_request.headers.get("x-api-key"),
@@ -829,15 +919,32 @@ async def retry_or_resume_benchmark(
         harness_config, service_headers=effective_service_headers
     ).model_dump()
 
+    try:
+        # Promotion may occur while task state is reset. Select and lock the release
+        # again at the actual dispatch boundary, then commit ownership before enqueue.
+        dispatch_release = select_active_release(session, for_update=True)
+    except ReleaseControlError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    dispatch_kind = ExecutorDispatchKind.RETRY if retry else ExecutorDispatchKind.RESUME
+    executor_dispatch = create_executor_dispatch(benchmark_row.id, dispatch_release, dispatch_kind)
+    session.add(executor_dispatch)
+    session.commit()
+
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
     await (
         process_benchmark.kicker()
         .with_labels(**_taskiq_labels())
-        .kiq(
+        .kiq(  # pyright: ignore[reportCallIssue] -- stable host consumes executor_dispatch_id
             start_benchmark_request_json=resume_request_json,
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verified_task_ids,
+            executor_dispatch_id=str(executor_dispatch.id),
+            executor_release_id=dispatch_release.id,
+            executor_artifact_uri=dispatch_release.artifact_uri,
+            executor_artifact_digest=dispatch_release.artifact_digest,
+            executor_protocol_version=dispatch_release.protocol_version,
         )
     )
 
@@ -936,6 +1043,52 @@ def _safe_output_tar_member(s3_key: str, benchmark_prefix: str) -> str | None:
     return relative_path
 
 
+async def _output_keys(
+    benchmark_prefix: str,
+    task_ids: list[str] | None,
+    harness_config: HarnessConfig,
+    benchmark_id: TrackedBenchmarkId,
+) -> AsyncIterator[str]:
+    prefixes = [f"{benchmark_prefix}{task_id}/" for task_id in task_ids] if task_ids else [benchmark_prefix]
+    for prefix in prefixes:
+        async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
+            if _safe_output_tar_member(key, benchmark_prefix) is None:
+                logger.warning("Skipping unsafe output archive member for benchmark %s", benchmark_id)
+                continue
+            yield key
+
+
+async def _output_keys_with_first(first_key: str, keys: AsyncIterator[str]) -> AsyncIterator[str]:
+    yield first_key
+    async for key in keys:
+        yield key
+
+
+async def _tar_output_stream(
+    keys: AsyncIterator[str],
+    benchmark_prefix: str,
+    harness_config: HarnessConfig,
+) -> AsyncIterator[bytes]:
+    writer: YieldingWriter = YieldingWriter()
+
+    # download_many_from_s3 reuses a single client/connection pool across all keys,
+    # and reads one object into memory at a time (bounded by the largest object).
+    with tarfile.open(fileobj=writer, mode="w|") as tar:
+        async for s3_key, data in download_many_from_s3(keys, harness_config.aws, harness_config.s3_bucket):
+            relative_path = s3_key.removeprefix(benchmark_prefix)
+            tarinfo = tarfile.TarInfo(name=relative_path)
+            tarinfo.size = len(data)
+            tar.addfile(tarinfo, fileobj=io.BytesIO(data))
+
+            chunk = writer.pop()
+            if chunk:
+                yield chunk
+
+    final_chunk = writer.pop()
+    if final_chunk:
+        yield final_chunk
+
+
 @app.get("/fetch-run-outputs/{benchmark_id}", response_model=None)
 async def fetch_run_outputs(
     benchmark_id: TrackedBenchmarkId,
@@ -957,48 +1110,14 @@ async def fetch_run_outputs(
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
 
-    async def output_keys() -> AsyncIterator[str]:
-        prefixes = [f"{benchmark_prefix}{task_id}/" for task_id in task_ids] if task_ids else [benchmark_prefix]
-        for prefix in prefixes:
-            async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
-                if _safe_output_tar_member(key, benchmark_prefix) is None:
-                    logger.warning("Skipping unsafe output archive member for benchmark %s", benchmark_id)
-                    continue
-                yield key
-
     # Peek a single key so an empty result still returns 404 before the stream starts.
-    keys = output_keys()
+    keys = _output_keys(benchmark_prefix, task_ids, harness_config, benchmark_id)
     first_key = await anext(keys, None)
     if first_key is None:
         raise HTTPException(status_code=404, detail=f"No outputs found for run '{benchmark_id}'")
 
-    async def all_keys() -> AsyncIterator[str]:
-        yield first_key
-        async for key in keys:
-            yield key
-
-    async def tar_generator():
-        writer: YieldingWriter = YieldingWriter()
-
-        # download_many_from_s3 reuses a single client/connection pool across all keys,
-        # and reads one object into memory at a time (bounded by the largest object).
-        with tarfile.open(fileobj=writer, mode="w|") as tar:
-            async for s3_key, data in download_many_from_s3(all_keys(), harness_config.aws, harness_config.s3_bucket):
-                relative_path = s3_key.removeprefix(benchmark_prefix)
-                tarinfo = tarfile.TarInfo(name=relative_path)
-                tarinfo.size = len(data)
-                tar.addfile(tarinfo, fileobj=io.BytesIO(data))
-
-                chunk = writer.pop()
-                if chunk:
-                    yield chunk
-
-        final_chunk = writer.pop()
-        if final_chunk:
-            yield final_chunk
-
     return StreamingResponse(
-        tar_generator(),
+        _tar_output_stream(_output_keys_with_first(first_key, keys), benchmark_prefix, harness_config),
         media_type="application/x-tar",
         headers={"Content-Disposition": f"attachment; filename=benchmark_{benchmark_id}_outputs.tar"},
     )

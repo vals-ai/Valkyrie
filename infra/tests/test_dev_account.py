@@ -165,6 +165,8 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         hosted_zone_parameter = ssm_parameter_id(template, DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER)
         certificate_parameter = ssm_parameter_id(template, DEV_TRACKER_CERTIFICATE_ARN_PARAMETER)
         rendered = json.dumps(template)
+        iam_policies = tracker_template.find_resources("AWS::IAM::Policy")
+        self.assertTrue(any("s3:GetObject*" in json.dumps(policy) for policy in iam_policies.values()))
         self.assertIn("devEvalInfraDescopeManagementKey", rendered)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
         self.assertNotIn("valkyrie/sentry-dsn", rendered)
