@@ -12,8 +12,9 @@ from benchmark_service import ImageSource, Resources, SandboxProvider
 from benchmark_service.sandbox.daytona import DaytonaProviderConfig
 from daytona import AsyncDaytona, AsyncSandbox, DaytonaConfig, DaytonaNotFoundError, ListSandboxesQuery
 
-from tracker.daytona_cleanup import cleanup_old_sandboxes
+from tracker.daytona_cleanup import DaytonaCleanupBackend
 from tracker.sandbox import create_sandbox
+from tracker.sandbox_cleanup import cleanup_old_sandboxes
 from tracker.types import AWSCredentials
 from tracker.utils import fetch_sandbox_provider_config
 
@@ -178,13 +179,12 @@ async def test_cleanup_deletes_eligible_sandbox_and_preserves_exemption(
             expected_labels={eligible.id: scope_labels, exempt.id: exempt_labels},
             created_at_before=cleanup_now - timedelta(hours=48),
         )
-        report = await cleanup_old_sandboxes(
+        backend = DaytonaCleanupBackend(
             ScopedDaytonaListClient(daytona, scope_labels),
             ScopedSandboxDeleteProvider(sandbox_provider, {eligible.id}),
-            now=cleanup_now,
-            target=provider_config.DAYTONA_TARGET,
-            dry_run=False,
+            provider_config.DAYTONA_TARGET,
         )
+        report = await cleanup_old_sandboxes(backend, now=cleanup_now, dry_run=False)
 
         assert report.succeeded
         assert report.scanned == 2

@@ -83,8 +83,10 @@ jobs:
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
-          DAYTONA_CLEANUP_ENABLED: ${{ vars.DAYTONA_CLEANUP_ENABLED }}
-          DAYTONA_CLEANUP_DRY_RUN: ${{ vars.DAYTONA_CLEANUP_DRY_RUN }}
+          SANDBOX_CLEANUP_ENABLED: ${{ vars.SANDBOX_CLEANUP_ENABLED }}
+          SANDBOX_CLEANUP_DRY_RUN: ${{ vars.SANDBOX_CLEANUP_DRY_RUN }}
+          SANDBOX_CLEANUP_PROVIDER: ${{ vars.SANDBOX_CLEANUP_PROVIDER }}
+          SANDBOX_CLEANUP_SECRET_NAME: ${{ vars.SANDBOX_CLEANUP_SECRET_NAME }}
         run: |
           cd infra
           uv run cdk deploy --all -c stage=prod --require-approval never

@@ -1,6 +1,6 @@
 ---
 name: writing-tests
-description: Conventions and rubrics for generating unit and integration tests in the Valkyrie repo — test layout, module/test docstrings, naming, fixtures, mocking, determinism, typing, and integration cleanup. Use whenever writing, adding, editing, or reviewing tests (test_*.py) or setting up conftest fixtures.
+description: Use when adding or changing Valkyrie tests, choosing proof for a code change, or validating a PR; routes changed surfaces to unit, local-integration, SDK/contract, package, and approval-gated live suites without duplicate coverage.
 ---
 
 # Generating Tests for Valkyrie
@@ -9,44 +9,36 @@ description: Conventions and rubrics for generating unit and integration tests i
 
 ## Overview
 
-This is a set of musts when generating tests for Valkyrie. There are two types of tests you can add:
+This is a set of musts when generating tests for Valkyrie. There are three owned test layers:
 
-1. **Integration tests** — These tests target specific parts of the codebase and rely on API calls and API keys. They are not mocked. Running them requires external dependencies and setup.
-2. **Unit tests** — These tests target and mock parts of the codebase. They do not rely on API calls or API keys, so they can be run from anywhere, including from a fresh checkout of the codebase. Integration tests, by contrast, may require additional setup before they can run.
+1. **Unit tests** — Isolated CLI or tracker behavior with external boundaries mocked.
+2. **Local integration tests** — Credential-free vertical slices across repository-owned boundaries such as Click CLI → tracker client → FastAPI → database. These run in the default PR suites.
+3. **Live integration tests** — External AWS, benchmark-service, sandbox, or other credentialed boundaries. These run separately and require explicit setup.
 
-Aim for roughly a **70% unit / 30% integration** split. Unit tests are fast and run everywhere, so they carry the bulk of coverage; integration tests are slower and need credentials, so keep them targeted at the real API paths that matter. Skew toward more unit tests, but never drop integration coverage for an API call (see the integration rubrics).
+Choose the smallest owning layer or combination of layers that proves the changed behavior. Keep fast unit coverage broad, use local integration for repository-owned contracts, and reserve live integration for external boundaries that local tests cannot prove.
 
 Keep tests **proportional to the change**. A one-line bug fix gets one narrow regression test, not a broad new suite; a new subsystem warrants fuller coverage. Test volume should track the size and risk of what changed.
 
-For every test, write a docstring in the following format:
+## Pre-PR suite routing
 
-```python
-"""
-Short 1-2 sentence description of what the test covers.
+Classify the changed surfaces before opening or updating a PR, then run every applicable default suite:
 
-Test cases:
-- Test case 1
-- Test case 2
-...
-"""
-```
+| Changed surface | Mandatory pre-PR proof |
+| --- | --- |
+| Root CLI/tracker client (`src/valkyrie/cli/**`) | Repo root `make test` |
+| Standalone Python SDK or Tracker SDK contract | `uv run pytest tests/unit/sdk tests/contract -q` |
+| SDK package, version, build, or release tooling | Local executable checks through artifact/install validation in `.github/workflows/sdk-package.yml`; final-head CI must pass the complete workflow, including compatibility jobs |
+| Tracker API/worker/database only | `(cd services/tracker && make test)` |
+| Infrastructure/CDK (`infra/**`) | `(cd infra && make lint && make test && make typecheck)` |
+| AWS/benchmark-service/sandbox/external boundary | Applicable local proof, then the smallest existing path under `services/tracker/tests/integration/live/`, its named smoke, or the full tracker live target when the scope requires it—agent-triggered/manual execution needs exact approval |
 
-Inside each test, use short, single-sentence inline comments to describe the important parts. Keep them brief enough that someone can read the comment and immediately understand the code.
+A cross-layer change owns the union of its rows. Reuse or extend existing behavioral coverage; add a test only where existing coverage cannot prove the changed boundary. Regardless of semantic classification, any changed path matched by `.github/workflows/sdk-package.yml` also owns the SDK package row; one SDK/contract run may satisfy both SDK rows. For local SDK package proof, use the PR base SHA as `BASE_SHA`; do not duplicate CI-only upload work locally. Live proof never substitutes for required local proof.
 
-### Docstring example
+Record the clean final PR HEAD SHA, changed surfaces, commands, results, and durations. A later PR commit, rebase, or dirty-tree change invalidates the evidence. If a live workflow intentionally starts red until manually authorized, treat that as a sentinel, not as a product failure or proof that a later head passed.
 
-```python
-def test_parse_command_argument_handles_optional_flags() -> None:
-    """
-    Verify that command-argument parsing resolves optional flags and applies defaults.
+Do not use broad pytest discovery as a substitute for routing. In particular, from `services/tracker`, `uv run pytest` or `uv run pytest tests/integration` can collect credentialed live tests; use the table's explicit target or path.
 
-    Test cases:
-    - A flag passed explicitly overrides its default.
-    - A flag omitted from the input falls back to its default.
-    - An unknown flag raises a ValidationError.
-    """
-    ...
-```
+Prefer a specific test name over prose. Add a one-sentence test docstring only when the name cannot explain the scenario; do not enumerate test cases that the assertions already show. Add inline comments only for non-obvious intent or constraints, not to narrate arrange/act/assert.
 
 ### Module docstrings
 
@@ -92,21 +84,7 @@ class TestValidateKwargs:
 
 ### Documenting API keys
 
-Any API key required to run tests must be documented in the designated keys file if one already exists, so others can configure their environment without reading through test code. Name these keys with a `TEST_*` prefix to distinguish them from production keys and prevent accidental use against live systems.
-
-The same keys must also be added to a `.local.env` template with empty values. This file is committed as the canonical list of keys a contributor needs to supply, so they can copy it and fill in their own values without exposing any secrets.
-
-```bash
-# .local.env — committed template, empty values only
-TEST_VALKYRIE_API_KEY=
-TEST_TRACKER_API_KEY=
-```
-
-```bash
-# Designated keys file (e.g. .env) — local, filled in, never committed
-TEST_VALKYRIE_API_KEY=...   # used by integration tests
-TEST_TRACKER_API_KEY=...    # used by tracker integration tests
-```
+Local integration tests must not require credentials. For a live test, reuse the existing non-secret variable name from the nearest fixture/workflow and document any new name in `services/tracker/README.md` plus the relevant CI secret mapping. Keep values only in the untracked local environment or approved secret store; do not invent a second `TEST_*` alias or a new committed env template.
 
 ### Spacing and inline comments
 
@@ -328,7 +306,7 @@ Not every change needs a test. An unnecessary test adds maintenance cost, slows 
 2. **The test would not catch a real bug.** A change-detector that restates the implementation line for line breaks on every refactor without ever finding a defect, and a test written purely to raise the coverage number protects nothing. Assert on observable behavior; coverage is a signal, not the goal.
 3. **The coverage already exists or the code is throwaway.** If an existing test exercises the path, extend it instead of adding a near-duplicate (see unit rules 9–10); if the code is a prototype or spike that will not ship, add tests once it becomes real.
 
-Choosing the wrong layer also counts as an unnecessary test. Do not write an integration test when no real API call or external dependency is involved — that behavior belongs in a unit test. Conversely, every real API call does need integration coverage (see the integration rubrics), so do not rely on a mocked unit test to prove a live call works.
+Choosing the wrong layer also counts as an unnecessary test. Isolated logic belongs in a unit test. A flow crossing repository-owned CLI/client/API/database boundaries belongs in local integration even when it needs no external credential. An external API call needs designated live integration or smoke ownership; do not rely on a mocked unit test to prove a live call works.
 
 ## Test behavior, not implementation lines
 
@@ -403,33 +381,40 @@ A common leftover is the stub-and-assert-call test: a collaborator was mocked to
 
 ## Test location
 
-Before creating tests, determine whether there are existing test modules that cover related functionality. Related tests should be coupled together.
+Before creating tests, determine whether an existing module already owns the behavior and extend it. Follow the nearby organization first—for example, root CLI local flows are consolidated in `test_read_commands.py` and `test_write_commands.py`—and mirror source layout only when no existing aggregate owner fits.
 
-Test module names must be short and descriptive — short enough that someone knows at a glance what the module contains. The submodule that holds the tests follows the same naming convention as the submodule of the code under test. Mirroring the layout makes related tests easy to find.
+Test module names must be short and descriptive. Do not create a second module merely to mirror a source path when an existing behavioral module owns the flow.
 
-These paths are mirrored between unit and integration tests, but the two are never combined.
+Paths may mirror between unit and integration tests when no existing aggregate owner fits; the layers remain separate.
 
 ### Example
 
-Source code:
+Illustrative source code:
 
 ```
-cli/command_1/command_argument.py
-cli/command_2/command_argument.py
+src/valkyrie/cli/run/fetch.py
+src/valkyrie/cli/run/update.py
 ```
 
-Integration tests:
+Local integration tests:
 
 ```
-tests/integration/cli/command_1/test_command_argument.py
-tests/integration/cli/command_2/test_command_argument.py
+tests/integration/local/cli/test_read_commands.py
+tests/integration/local/cli/test_write_commands.py
+services/tracker/tests/integration/local/api/test_benchmarks_status.py
+```
+
+Live integration tests:
+
+```
+services/tracker/tests/integration/live/<external-boundary>/test_<flow>.py
 ```
 
 Unit tests:
 
 ```
-tests/unit/cli/command_1/test_command_argument.py
-tests/unit/cli/command_2/test_command_argument.py
+tests/unit/cli/run/test_fetch.py
+tests/unit/cli/run/test_update.py
 ```
 
 ### Path templates
@@ -441,11 +426,17 @@ tests/unit/<feature-submodule>/test_<feature_1>.py
 tests/unit/<feature-submodule>/test_<feature_2>.py
 ```
 
-Integration test path:
+Local integration test paths:
 
 ```
-tests/integration/<feature-submodule>/test_<feature_1>.py
-tests/integration/<feature-submodule>/test_<feature_2>.py
+tests/integration/local/<feature-submodule>/test_<feature>.py
+services/tracker/tests/integration/local/<feature-submodule>/test_<feature>.py
+```
+
+Live integration test path:
+
+```
+services/tracker/tests/integration/live/<external-boundary>/test_<flow>.py
 ```
 
 ## Organizing conftest fixtures hierarchically
@@ -454,13 +445,20 @@ Just as tests mirror the source submodule layout (see "Test location"), the fixt
 
 ```
 tests/
-  conftest.py                 # cross-cutting only: api_key, settings, event loop
   unit/
-    conftest.py               # unit-wide mocks and Mock* constructors
     cli/
       conftest.py             # cli_runner and other CLI-only fixtures
   integration/
-    conftest.py               # live clients, cleanup, unique-name fixtures
+    local/
+      conftest.py             # credential-free local boundary fixtures
+services/tracker/tests/
+  conftest.py                 # tracker-wide fixtures
+  integration/
+    conftest.py               # shared integration credentials and helpers
+    local/
+      conftest.py             # tracker-local boundary fixtures
+    live/
+      conftest.py             # live-boundary clients and cleanup
 ```
 
 Guidelines:
@@ -484,27 +482,11 @@ Rule of thumb: split by **directory** → nested `conftest.py`; split by **topic
 
 ## Running the suites
 
-A test's suite is determined by where it lives — by directory, not by any marker. Unit tests live under `tests/unit/` and integration tests live under the `tests/integration/` submodule. Placing a test in that directory is what makes it an integration test; there is no `@pytest.mark.integration` decorator to add.
+A test's suite is determined by its root and directory, not by a marker. Use the pre-PR routing table above. Root `make test` does not collect `tests/unit/sdk` or `tests/contract`; SDK package/release changes must mirror every local check in `.github/workflows/sdk-package.yml`, not only pytest. Credentialed live tests are separately owned by `.github/workflows/tracker-integration-tests.yaml`; agent-triggered/manual execution requires exact approval, while automatic CI follows that workflow's protected-branch gate. Do not park required local proof behind `skip`/`xfail`.
 
-Run a suite by pointing pytest at its directory:
+Behavior changes need existing or focused proof, and coverage should not regress. Registry, documentation, generated-output-only, and refactor-only changes need no new test when existing checks already prove them.
 
-```bash
-uv run pytest tests/unit          # unit suite
-uv run pytest tests/integration   # integration suite (requires TEST_* keys)
-uv run pytest                     # everything
-```
-
-Every test runs on every PR and before merge, so write each one to be ready for that. Do not park a test behind `skip`/`xfail` to keep it from running — those get forgotten and rot over time.
-
-Coverage is available through `pytest-cov`. Point it at the package under test, `src/valkyrie`:
-
-```bash
-uv run pytest tests/unit --cov=src/valkyrie --cov-report=term-missing
-```
-
-New code must ship with tests, and coverage should not regress in a PR.
-
-Full instructions for running the suites and the environment variables each one requires live in `services/tracker/README.md`. Treat that file as the source of truth for setup, and update it whenever the run steps or required variables change.
+Tracker commands and live environment variables are documented in `services/tracker/README.md`; suite ownership and final-head routing are defined here and in the Make/workflow targets.
 
 ## Unit tests
 
@@ -717,22 +699,16 @@ When creating unit tests, follow these rubrics.
 
 When creating integration tests, follow these rubrics.
 
-1. **Do not mock what is being tested.** The point of an integration test is to exercise the real component and its real dependencies.
+1. **Choose local versus live ownership before mocking.** Use local integration for repository-owned boundaries and live integration only for external systems. Exercise every repository-owned component in the selected local slice; keep the external boundary real in a live test. A cross-layer change requires both owning suites and behavioral coverage at the changed boundary, but reuse existing coverage when it already proves the contract.
 
 2. **Use real flows that mirror what end users do.** Drive the test through the same paths a user would take when using the application.
 
    ```python
-   # Lives under tests/integration/ — that location makes it an integration test; no decorator.
+   # Lives under services/tracker/tests/integration/live/; no decorator is needed.
    def test_deploy_command_runs_against_live_api(
        api_client: ApiClient, unique_service_name: str
    ) -> None:
-       """
-       Exercise the full deploy command against the live API.
-
-       Test cases:
-       - A valid deploy request returns a completed status.
-       - The created resource is retrievable after deploy.
-       """
+       """A valid deploy is completed and retrievable through the live API."""
        # Run the command exactly as the CLI would invoke it.
        result = run_cli(["deploy", "--name", unique_service_name])
        assert result.status == "completed"
@@ -763,7 +739,7 @@ When creating integration tests, follow these rubrics.
            client.close()
    ```
 
-4. **Clean up remote resources the test creates.** Tests that create real entities (services, records, uploads) must delete them afterward, or each run pollutes the environment and later runs collide. Tear down in the fixture's `finally` so cleanup happens even on failure, and give each resource a unique name so parallel or repeated runs never clash.
+4. **Clean up remote resources a live test creates.** Tests that create real entities (services, records, uploads) must delete them afterward, or each run pollutes the environment and later runs collide. Tear down in the fixture's `finally` so cleanup happens even on failure, and give each resource a unique name so parallel or repeated runs never clash.
 
    ```python
    # conftest.py
@@ -789,7 +765,7 @@ When creating integration tests, follow these rubrics.
            api_client.delete_service(unique_service_name)
    ```
 
-5. **Source API keys and environment variables from a fixture, and validate them on initialization.** Never read or assert on environment variables inside a test module — that logic is hidden, gets duplicated, and cannot be reused. Centralize it in a fixture that fails fast with a clear message when a required value is missing. The fixture must fail instantly and must never `skip`: integration tests run on every PR and before merge, so a missing key is a misconfiguration to surface loudly, not a reason to silently pass.
+5. **Source live API keys and environment variables from a fixture, and validate them on initialization.** Never read or assert on environment variables inside a test module. Centralize live setup in a fixture that fails fast with a clear message when an explicitly selected live suite is missing a required value. Never make the default local suites depend on this fixture.
 
    ```python
    # conftest.py
@@ -798,12 +774,12 @@ When creating integration tests, follow these rubrics.
 
    @pytest.fixture(scope="session")
    def api_key() -> str:
-       """Source and validate the API key once per session for all integration tests."""
-       value = os.environ.get("TEST_VALKYRIE_API_KEY")
+       """Source and validate the API key once per selected live-test session."""
+       value = os.environ.get("BENCHMARK_SERVICE_AUTH_KEY")
 
        # Fail fast (never skip) when the key is missing.
        if not value:
-           pytest.fail("TEST_VALKYRIE_API_KEY must be set to run integration tests.")
+           pytest.fail("BENCHMARK_SERVICE_AUTH_KEY must be set to run this live suite.")
 
        return value
    ```
@@ -826,8 +802,8 @@ When creating integration tests, follow these rubrics.
        pytest.fail(f"Service {name} was not ready within {timeout_seconds}s.")
    ```
 
-7. **Cover every API call with at least one integration test.** Each piece of functionality that makes a real API call must have a designated integration test proving it works end to end against the live service. A unit test that mocks the call is not a substitute — it verifies wiring, not that the request actually succeeds. When you add or change a code path that hits an API, add or extend the integration test that exercises it.
+7. **Give every API call an explicit owner.** Internal CLI → tracker HTTP calls need credential-free local coverage through the changed boundary. Calls to AWS, benchmark services, sandboxes, or other external systems need a designated live test or named smoke. A mocked unit test is not a substitute for either contract.
 
-8. **Gate only the tests that actually need credentials.** Not every integration test needs a key — some real dependencies are reachable anonymously (public/unauthenticated endpoints). Those credential-free tests should run everywhere. Depend on the fail-fast credential fixture (rubric 5) only from the tests that genuinely need it, so a missing key fails just those tests loudly instead of reddening the whole suite. A fixture that only gates on a credential should be applied with `@pytest.mark.usefixtures(...)`, not taken as an unused parameter.
+8. **Gate only live tests that actually need credentials.** Credential-free local integration runs everywhere. Depend on a fail-fast credential fixture only from tests that genuinely use that external credential, so an intentionally selected live suite fails clearly without contaminating local ownership. A fixture that only gates on a credential should be applied with `@pytest.mark.usefixtures(...)`, not taken as an unused parameter.
 
-9. **Do not duplicate coverage a smoke or dispatch workflow already owns.** Some flows are exercised end to end by a separate CI/smoke workflow (a manually dispatched job that provisions credentials, runs a real build, and tears it down). Do not re-run those costly or destructive paths in the pytest integration suite — reference where they are covered instead. Reserve the pytest suite for read paths and cheap, self-cleaning round-trips.
+9. **Do not duplicate coverage a smoke or dispatch workflow already owns.** Some external flows are exercised by a separate CI/smoke workflow that provisions credentials, runs a real build, and tears it down. Reference that exact workflow and final-head run instead of duplicating a costly path, but still keep repository-owned local coverage. Reserve the live pytest suite for cheap, self-cleaning external round trips.

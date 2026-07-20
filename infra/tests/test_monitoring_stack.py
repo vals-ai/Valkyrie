@@ -14,12 +14,12 @@ from aws_cdk import (
 )
 
 from constants import (
-    DAYTONA_CLEANUP_DLQ_NAME,
-    DAYTONA_CLEANUP_FUNCTION_NAME,
-    DAYTONA_CLEANUP_LOG_GROUP_NAME,
-    DAYTONA_CLEANUP_SCHEDULE_NAME,
-    DAYTONA_CLEANUP_SECRET_NAME,
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV,
+    SANDBOX_CLEANUP_DLQ_NAME,
+    SANDBOX_CLEANUP_FUNCTION_NAME,
+    SANDBOX_CLEANUP_LOG_GROUP_NAME,
+    SANDBOX_CLEANUP_SCHEDULE_NAME,
+    SANDBOX_CLEANUP_SECRET_NAME,
     SLACK_WORKSPACE_ID_ENV,
     TRACKER_LOG_GROUP_NAME,
     VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV,
@@ -74,9 +74,9 @@ def _has_logical_id_prefix(template: assertions.Template, resource_type: str, pr
 def _cleanup_function(template: assertions.Template) -> dict[str, Any]:
     for resource in template.find_resources("AWS::Lambda::Function").values():
         properties = cast(dict[str, Any], resource.get("Properties", {}))
-        if properties.get("FunctionName") == DAYTONA_CLEANUP_FUNCTION_NAME:
+        if properties.get("FunctionName") == SANDBOX_CLEANUP_FUNCTION_NAME:
             return properties
-    raise AssertionError("Daytona cleanup Lambda function not found")
+    raise AssertionError("Sandbox cleanup Lambda function not found")
 
 
 def _resource_with_logical_id_prefix(
@@ -368,13 +368,13 @@ class MonitoringStackTest(unittest.TestCase):
                     },
                 )
 
-    def test_dev_does_not_create_daytona_cleanup_resources(self) -> None:
+    def test_dev_does_not_create_sandbox_cleanup_resources(self) -> None:
         with mock.patch.dict(
             os.environ,
             {
                 **TEST_DEV_ENV,
-                "DAYTONA_CLEANUP_ENABLED": "true",
-                "DAYTONA_CLEANUP_DRY_RUN": "false",
+                "SANDBOX_CLEANUP_ENABLED": "true",
+                "SANDBOX_CLEANUP_DRY_RUN": "false",
             },
             clear=True,
         ):
@@ -388,7 +388,7 @@ class MonitoringStackTest(unittest.TestCase):
                 worker_template,
                 "AWS::Logs::LogGroup",
                 "LogGroupName",
-                f"{DAYTONA_CLEANUP_LOG_GROUP_NAME}-dev",
+                f"{SANDBOX_CLEANUP_LOG_GROUP_NAME}-dev",
             )
         )
         self.assertFalse(
@@ -396,18 +396,18 @@ class MonitoringStackTest(unittest.TestCase):
                 worker_template,
                 "AWS::SQS::Queue",
                 "QueueName",
-                f"{DAYTONA_CLEANUP_DLQ_NAME}-dev",
+                f"{SANDBOX_CLEANUP_DLQ_NAME}-dev",
             )
         )
 
-    def test_prod_daytona_cleanup_schedule_is_safe_by_default(self) -> None:
+    def test_prod_sandbox_cleanup_schedule_is_safe_by_default(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             _, worker_template = _service_templates(PROD)
 
         worker_template.has_resource_properties(
             "AWS::Scheduler::Schedule",
             {
-                "Name": DAYTONA_CLEANUP_SCHEDULE_NAME,
+                "Name": SANDBOX_CLEANUP_SCHEDULE_NAME,
                 "ScheduleExpression": "rate(1 hour)",
                 "State": "DISABLED",
                 "FlexibleTimeWindow": {"Mode": "OFF"},
@@ -427,8 +427,8 @@ class MonitoringStackTest(unittest.TestCase):
             "AWS::Lambda::Function",
             {
                 "Architectures": ["arm64"],
-                "Description": "Delete Daytona sandboxes older than 48 hours unless they opt out",
-                "FunctionName": DAYTONA_CLEANUP_FUNCTION_NAME,
+                "Description": "Delete sandboxes older than 48 hours unless they opt out",
+                "FunctionName": SANDBOX_CLEANUP_FUNCTION_NAME,
                 "MemorySize": 512,
                 "PackageType": "Image",
                 "ReservedConcurrentExecutions": 1,
@@ -448,12 +448,12 @@ class MonitoringStackTest(unittest.TestCase):
         )
         worker_template.has_resource_properties(
             "AWS::Logs::LogGroup",
-            {"LogGroupName": DAYTONA_CLEANUP_LOG_GROUP_NAME, "RetentionInDays": 365},
+            {"LogGroupName": SANDBOX_CLEANUP_LOG_GROUP_NAME, "RetentionInDays": 365},
         )
         worker_template.has_resource_properties(
             "AWS::SQS::Queue",
             {
-                "QueueName": DAYTONA_CLEANUP_DLQ_NAME,
+                "QueueName": SANDBOX_CLEANUP_DLQ_NAME,
                 "MessageRetentionPeriod": 14 * 24 * 60 * 60,
                 "SqsManagedSseEnabled": True,
             },
@@ -461,7 +461,7 @@ class MonitoringStackTest(unittest.TestCase):
         cleanup_function_role_id, cleanup_function_role = _resource_with_logical_id_prefix(
             worker_template,
             "AWS::IAM::Role",
-            "DaytonaCleanupFunctionServiceRole",
+            "SandboxCleanupFunctionServiceRole",
         )
         cleanup_function_role_properties = cast(dict[str, Any], cleanup_function_role["Properties"])
         self.assertEqual(
@@ -473,7 +473,7 @@ class MonitoringStackTest(unittest.TestCase):
         _, cleanup_function_policy = _resource_with_logical_id_prefix(
             worker_template,
             "AWS::IAM::Policy",
-            "DaytonaCleanupFunctionServiceRoleDefaultPolicy",
+            "SandboxCleanupFunctionServiceRoleDefaultPolicy",
         )
         cleanup_function_policy_properties = cast(dict[str, Any], cleanup_function_policy["Properties"])
         self.assertIn({"Ref": cleanup_function_role_id}, cleanup_function_policy_properties["Roles"])
@@ -491,7 +491,7 @@ class MonitoringStackTest(unittest.TestCase):
             {"secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"},
         )
         self.assertNotEqual(secret_statement["Resource"], "*")
-        self.assertIn(DAYTONA_CLEANUP_SECRET_NAME, str(secret_statement["Resource"]))
+        self.assertIn(SANDBOX_CLEANUP_SECRET_NAME, str(secret_statement["Resource"]))
 
         cleanup_function_actions: set[str] = set()
         for statement in cleanup_function_statements:
@@ -549,20 +549,22 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertEqual(
             environment,
             {
-                "DAYTONA_CLEANUP_DRY_RUN": "true",
-                "DAYTONA_CLEANUP_SECRET_NAME": DAYTONA_CLEANUP_SECRET_NAME,
+                "SANDBOX_CLEANUP_DRY_RUN": "true",
+                "SANDBOX_CLEANUP_PROVIDER": "daytona",
+                "SANDBOX_CLEANUP_SECRET_NAME": SANDBOX_CLEANUP_SECRET_NAME,
                 "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
                 "ENVIRONMENT": "production",
             },
         )
 
-    def test_prod_daytona_cleanup_rollout_flags_are_configurable(self) -> None:
+    def test_prod_sandbox_cleanup_rollout_configuration_is_configurable(self) -> None:
         with mock.patch.dict(
             os.environ,
             {
-                "DAYTONA_CLEANUP_ENABLED": "true",
-                "DAYTONA_CLEANUP_DRY_RUN": "false",
-                "DAYTONA_CLEANUP_SECRET_NAME": "ignored",
+                "SANDBOX_CLEANUP_ENABLED": "true",
+                "SANDBOX_CLEANUP_DRY_RUN": "false",
+                "SANDBOX_CLEANUP_PROVIDER": "custom-provider",
+                "SANDBOX_CLEANUP_SECRET_NAME": "custom/cleanup-credentials",
             },
             clear=True,
         ):
@@ -574,13 +576,19 @@ class MonitoringStackTest(unittest.TestCase):
         )
         cleanup_function = _cleanup_function(worker_template)
         environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
-        self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "false")
-        self.assertEqual(environment["DAYTONA_CLEANUP_SECRET_NAME"], DAYTONA_CLEANUP_SECRET_NAME)
+        self.assertEqual(environment["SANDBOX_CLEANUP_DRY_RUN"], "false")
+        self.assertEqual(environment["SANDBOX_CLEANUP_PROVIDER"], "custom-provider")
+        self.assertEqual(environment["SANDBOX_CLEANUP_SECRET_NAME"], "custom/cleanup-credentials")
 
-    def test_unrecognized_daytona_cleanup_rollout_flags_fail_closed(self) -> None:
+    def test_unrecognized_sandbox_cleanup_rollout_flags_fail_closed(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"DAYTONA_CLEANUP_ENABLED": "sometimes", "DAYTONA_CLEANUP_DRY_RUN": "sometimes"},
+            {
+                "SANDBOX_CLEANUP_ENABLED": "sometimes",
+                "SANDBOX_CLEANUP_DRY_RUN": "sometimes",
+                "SANDBOX_CLEANUP_PROVIDER": "",
+                "SANDBOX_CLEANUP_SECRET_NAME": "",
+            },
             clear=True,
         ):
             _, worker_template = _service_templates(PROD)
@@ -588,7 +596,9 @@ class MonitoringStackTest(unittest.TestCase):
         worker_template.has_resource_properties("AWS::Scheduler::Schedule", {"State": "DISABLED"})
         cleanup_function = _cleanup_function(worker_template)
         environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
-        self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "true")
+        self.assertEqual(environment["SANDBOX_CLEANUP_DRY_RUN"], "true")
+        self.assertEqual(environment["SANDBOX_CLEANUP_PROVIDER"], "daytona")
+        self.assertEqual(environment["SANDBOX_CLEANUP_SECRET_NAME"], SANDBOX_CLEANUP_SECRET_NAME)
 
     def test_dev_sentry_secret_is_optional(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):

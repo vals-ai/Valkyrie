@@ -72,7 +72,7 @@ jobs:
           --platform linux/arm64
           --file Dockerfile.lambda
           --load
-          --tag valkyrie-daytona-cleanup:test
+          --tag valkyrie-sandbox-cleanup:test
           .
 
       - name: Import the handler from the cleanup Lambda image
@@ -81,5 +81,5 @@ jobs:
           docker run --rm
           --platform linux/arm64
           --entrypoint /var/lang/bin/python3.12
-          valkyrie-daytona-cleanup:test
-          -c "from tracker.daytona_cleanup import lambda_handler; assert callable(lambda_handler)"
+          valkyrie-sandbox-cleanup:test
+          -c "from tracker.sandbox_cleanup import lambda_handler; assert callable(lambda_handler)"

@@ -15,4 +15,4 @@ RUN uv export --frozen --no-dev --no-emit-project --output-file requirements.txt
 
 COPY src/tracker ./tracker
 
-CMD ["tracker.daytona_cleanup.lambda_handler"]
+CMD ["tracker.sandbox_cleanup.lambda_handler"]

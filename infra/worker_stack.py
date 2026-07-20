@@ -27,12 +27,12 @@ from aws_cdk import (
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
-    DAYTONA_CLEANUP_DLQ_NAME,
-    DAYTONA_CLEANUP_FUNCTION_NAME,
-    DAYTONA_CLEANUP_LOG_GROUP_NAME,
-    DAYTONA_CLEANUP_SCHEDULE_NAME,
-    DAYTONA_CLEANUP_SECRET_NAME,
     POSTGRES_DB,
+    SANDBOX_CLEANUP_DLQ_NAME,
+    SANDBOX_CLEANUP_FUNCTION_NAME,
+    SANDBOX_CLEANUP_LOG_GROUP_NAME,
+    SANDBOX_CLEANUP_SCHEDULE_NAME,
+    SANDBOX_CLEANUP_SECRET_NAME,
     WORKER_LOG_GROUP_NAME,
     WORKER_SCALING_CPU_PERCENT,
     WORKER_STOP_TIMEOUT_SECONDS,
@@ -197,36 +197,38 @@ class WorkerStack(Stack):
         )
 
         if stage.is_prod:
-            self._add_daytona_cleanup_schedule(
+            self._add_sandbox_cleanup_schedule(
                 stage=stage,
                 log_retention=stage_config.service_log_retention,
             )
 
-    def _add_daytona_cleanup_schedule(
+    def _add_sandbox_cleanup_schedule(
         self,
         *,
         stage: Stage,
         log_retention: aws_logs.RetentionDays,
     ) -> None:
-        cleanup_enabled = os.environ.get("DAYTONA_CLEANUP_ENABLED") == "true"
-        cleanup_dry_run = os.environ.get("DAYTONA_CLEANUP_DRY_RUN") != "false"
+        cleanup_enabled = os.environ.get("SANDBOX_CLEANUP_ENABLED") == "true"
+        cleanup_dry_run = os.environ.get("SANDBOX_CLEANUP_DRY_RUN") != "false"
+        cleanup_provider = os.environ.get("SANDBOX_CLEANUP_PROVIDER") or "daytona"
+        cleanup_secret_name = os.environ.get("SANDBOX_CLEANUP_SECRET_NAME") or SANDBOX_CLEANUP_SECRET_NAME
 
         cleanup_log_group = aws_logs.LogGroup(
             self,
-            "DaytonaCleanupLogGroup",
-            log_group_name=stage.phys(DAYTONA_CLEANUP_LOG_GROUP_NAME),
+            "SandboxCleanupLogGroup",
+            log_group_name=stage.phys(SANDBOX_CLEANUP_LOG_GROUP_NAME),
             retention=log_retention,
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
         cleanup_credentials = aws_secretsmanager.Secret.from_secret_name_v2(
             self,
-            "DaytonaCleanupCredentials",
-            DAYTONA_CLEANUP_SECRET_NAME,
+            "SandboxCleanupCredentials",
+            cleanup_secret_name,
         )
         cleanup_dlq = aws_sqs.Queue(
             self,
-            "DaytonaCleanupDlq",
-            queue_name=stage.phys(DAYTONA_CLEANUP_DLQ_NAME),
+            "SandboxCleanupDlq",
+            queue_name=stage.phys(SANDBOX_CLEANUP_DLQ_NAME),
             encryption=aws_sqs.QueueEncryption.SQS_MANAGED,
             enforce_ssl=True,
             retention_period=Duration.days(14),
@@ -234,21 +236,22 @@ class WorkerStack(Stack):
         )
         cleanup_function = aws_lambda.DockerImageFunction(
             self,
-            "DaytonaCleanupFunction",
+            "SandboxCleanupFunction",
             code=aws_lambda.DockerImageCode.from_image_asset(
                 "../services/tracker",
                 file="Dockerfile.lambda",
                 platform=Platform.LINUX_ARM64,
             ),
             architecture=aws_lambda.Architecture.ARM_64,
-            function_name=stage.phys(DAYTONA_CLEANUP_FUNCTION_NAME),
-            description="Delete Daytona sandboxes older than 48 hours unless they opt out",
+            function_name=stage.phys(SANDBOX_CLEANUP_FUNCTION_NAME),
+            description="Delete sandboxes older than 48 hours unless they opt out",
             memory_size=512,
             timeout=Duration.minutes(14),
             reserved_concurrent_executions=1,
             environment={
-                "DAYTONA_CLEANUP_DRY_RUN": str(cleanup_dry_run).lower(),
-                "DAYTONA_CLEANUP_SECRET_NAME": DAYTONA_CLEANUP_SECRET_NAME,
+                "SANDBOX_CLEANUP_DRY_RUN": str(cleanup_dry_run).lower(),
+                "SANDBOX_CLEANUP_PROVIDER": cleanup_provider,
+                "SANDBOX_CLEANUP_SECRET_NAME": cleanup_secret_name,
                 "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
                 "ENVIRONMENT": "production",
             },
@@ -268,12 +271,12 @@ class WorkerStack(Stack):
             retry_attempts=1,
             max_event_age=Duration.minutes(30),
         )
-        self.daytona_cleanup_schedule = aws_scheduler.Schedule(
+        self.sandbox_cleanup_schedule = aws_scheduler.Schedule(
             self,
-            "DaytonaCleanupSchedule",
+            "SandboxCleanupSchedule",
             schedule=aws_scheduler.ScheduleExpression.rate(Duration.hours(1)),
             target=cast(aws_scheduler.IScheduleTarget, cleanup_target),
             enabled=cleanup_enabled,
-            schedule_name=stage.phys(DAYTONA_CLEANUP_SCHEDULE_NAME),
-            description="Delete Daytona sandboxes older than 48 hours unless they opt out",
+            schedule_name=stage.phys(SANDBOX_CLEANUP_SCHEDULE_NAME),
+            description="Delete sandboxes older than 48 hours unless they opt out",
         )
