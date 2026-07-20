@@ -159,7 +159,7 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
         cluster=shared.cluster,
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
-        bucket=shared.bucket,
+        bucket_name=shared.bucket_name,
         redis_url=shared.redis_url,
         env=env,
     )
@@ -171,7 +171,7 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
         cluster=shared.cluster,
         namespace=shared.namespace,
         redis_url=shared.redis_url,
-        bucket=shared.bucket,
+        bucket_name=shared.bucket_name,
         database=tracker.database,
         db_credentials=tracker.db_credentials,
         tracker_service=tracker.tracker_fargate_service,

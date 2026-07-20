@@ -104,6 +104,7 @@ class SharedStack(Stack):
             )
 
         bucket_name = self.stage.phys(S3_BUCKET_NAME)
+        self.bucket_name = bucket_name
 
         self.bucket = aws_s3.Bucket(
             self,

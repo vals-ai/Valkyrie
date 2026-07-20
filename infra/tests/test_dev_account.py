@@ -88,7 +88,7 @@ def dev_tracker_template() -> assertions.Template:
         cluster=shared.cluster,
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
-        bucket=shared.bucket,
+        bucket_name=shared.bucket_name,
         redis_url=shared.redis_url,
         env=TEST_ENV,
     )

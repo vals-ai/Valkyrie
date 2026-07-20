@@ -15,7 +15,6 @@ from aws_cdk import (
     aws_logs,
     aws_rds,
     aws_route53,
-    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
     aws_ssm,
@@ -70,7 +69,7 @@ class TrackerStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         hosted_zone: aws_route53.IHostedZone | None,
-        bucket: aws_s3.IBucket,
+        bucket_name: str,
         redis_url: str,
         **kwargs: Any,
     ):
@@ -87,7 +86,7 @@ class TrackerStack(Stack):
         # Shared environment variables
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
-            "AWS_S3_BUCKET": bucket.bucket_name,
+            "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
