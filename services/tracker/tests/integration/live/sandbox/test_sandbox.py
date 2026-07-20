@@ -58,23 +58,25 @@ async def test_sandbox(
 
 @pytest.fixture
 def egress_allowlist_probe_command() -> str:
-    """Command that checks an allowlisted host and a blocked host during run_agent."""
+    """Command that requests an allowlisted host and a blocked host during run_agent."""
     script = """
-import socket
+import urllib.error
+import urllib.request
 
 
-def can_connect(host):
+def can_request(url):
+    request = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "valkyrie-egress-test"})
     try:
-        address = socket.getaddrinfo(host, 80, type=socket.SOCK_STREAM)[0][4][0]
-        with socket.create_connection((address, 80), timeout=3):
+        with urllib.request.urlopen(request, timeout=5) as response:
+            print(f"{url} reachable: HTTP {response.status}", flush=True)
             return True
-    except OSError as exc:
-        print(f"{host} blocked: {type(exc).__name__}", flush=True)
+    except (OSError, urllib.error.URLError) as exc:
+        print(f"{url} blocked: {type(exc).__name__}", flush=True)
         return False
 
 
-allowed = can_connect("example.com")
-blocked = can_connect("www.python.org")
+allowed = can_request("https://example.com")
+blocked = can_request("https://www.wikipedia.org")
 print(f"allowed={allowed} blocked={blocked}", flush=True)
 raise SystemExit(0 if allowed and not blocked else 1)
 """
@@ -86,12 +88,16 @@ raise SystemExit(0 if allowed and not blocked else 1)
 def restored_egress_probe_command() -> str:
     """Command that verifies unrestricted egress returns after run_agent cleanup."""
     script = """
-import socket
+import urllib.request
 
 
-address = socket.getaddrinfo("www.python.org", 80, type=socket.SOCK_STREAM)[0][4][0]
-with socket.create_connection((address, 80), timeout=3):
-    print("restored=True", flush=True)
+request = urllib.request.Request(
+    "https://www.wikipedia.org",
+    method="HEAD",
+    headers={"User-Agent": "valkyrie-egress-test"},
+)
+with urllib.request.urlopen(request, timeout=5) as response:
+    print(f"restored=True status={response.status}", flush=True)
 """
 
     return f"python -c {shlex.quote(script)}"
@@ -289,7 +295,7 @@ class TestSandboxOperations:
         """Verify real provider egress rules are scoped to the agent command.
 
         Test cases:
-        - The agent can connect to the allowlisted URL host but not an off-list host.
+        - The agent can request the allowlisted URL host but not an off-list host.
         - The off-list host is reachable again after run_agent clears egress rules.
         """
         logged_messages: list[str] = []
@@ -301,7 +307,7 @@ class TestSandboxOperations:
             name="test_agent",
             install_cmd="true",
             run_cmd=egress_allowlist_probe_command,
-            egress_allowlist=["http://example.com"],
+            egress_allowlist=["https://example.com"],
         )
 
         await test_sandbox.exec("mkdir -p /bundle/test_agent")
