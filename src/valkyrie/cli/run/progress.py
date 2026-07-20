@@ -189,7 +189,6 @@ def stream_benchmark_status(
                     continue
 
                 details = response.details
-
                 bar, progress_pct = BenchmarkFormatter.create_progress_bar(details.finished_tasks, details.total_tasks)
                 status_color = BenchmarkFormatter.STATUS_COLORS[details.status.value]
                 status_text = click.style(details.status.value.replace("_", " ").title(), fg=status_color, bold=True)
@@ -202,11 +201,15 @@ def stream_benchmark_status(
                 click.echo(f"\033[F\033[K{progress_line}\n\033[K{breakdown_text}", nl=False)
 
             elif event.startswith("event: complete"):
+                completion_event = _completion_event(latest)
                 if output_format == "jsonl":
-                    click.echo(format_run_snapshot_json(latest, metadata, event=_completion_event(latest)))
+                    click.echo(format_run_snapshot_json(latest, metadata, event=completion_event))
                 else:
                     click.echo("\n")
-                    click.echo(click.style("✓ Run completed!", fg="green", bold=True))
+                    if completion_event == "error":
+                        click.echo(click.style("✗ Run errored.", fg="red", bold=True))
+                    else:
+                        click.echo(click.style("✓ Run completed!", fg="green", bold=True))
                     click.echo("┌─ Next Steps " + "─" * 66)
                     _stream_next_steps(benchmark_id, s3_url)
                 break

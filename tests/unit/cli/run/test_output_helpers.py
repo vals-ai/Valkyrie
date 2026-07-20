@@ -6,6 +6,7 @@ Run: uv run pytest tests/unit/cli/run/test_output_helpers.py
 import io
 import tarfile
 import tempfile
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
@@ -41,9 +42,11 @@ class StubProgressTracker:
         self,
         response: FetchBenchmarkResponse,
         metadata: FetchBenchmarkMetadataResponse | TrackerServiceError,
+        stream_events: tuple[str, ...] = ("event: disconnect",),
     ) -> None:
         self.response = response
         self.metadata = metadata
+        self.stream_events = stream_events
         self.metadata_calls = 0
 
     def fetch_benchmark(self, _run_id: UUID) -> FetchBenchmarkResponse:
@@ -55,8 +58,8 @@ class StubProgressTracker:
             raise self.metadata
         return self.metadata
 
-    def stream_benchmark(self, _run_id: UUID):
-        yield "event: disconnect"
+    def stream_benchmark(self, _run_id: UUID) -> Iterator[str]:
+        yield from self.stream_events
 
 
 def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixture[str]) -> None:
@@ -133,6 +136,54 @@ def test_shared_connected_stream_omits_identity_by_default(capsys: pytest.Captur
     output = capsys.readouterr().out
     assert "Run Details" not in output
     assert tracker.metadata_calls == 0
+
+
+def test_connected_stream_surfaces_zero_task_terminal_error(capsys: pytest.CaptureFixture[str]) -> None:
+    """A persistent discovery interval must still expose the run's terminal error state.
+
+    Test cases:
+    - Repeated zero-task snapshots remain valid progress data.
+    - The terminal event is rendered as an errored run rather than successful completion.
+    """
+    run_id = uuid4()
+    initial_response = FetchBenchmarkResponse(
+        benchmark_name="swebench",
+        benchmark_id=run_id,
+        details=BenchmarkDetails(
+            status=BenchmarkStatus.IN_PROGRESS,
+            started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            total_tasks=0,
+            finished_tasks=0,
+            task_breakdown={},
+            docent_reading_status=DocentReadingStatus.IDLE,
+        ),
+        s3_bucket_url="https://example.com/run",
+    )
+    error_response = FetchBenchmarkResponse(
+        benchmark_name="swebench",
+        benchmark_id=run_id,
+        details=BenchmarkDetails(
+            status=BenchmarkStatus.ERROR,
+            started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            total_tasks=0,
+            finished_tasks=0,
+            task_breakdown={},
+            docent_reading_status=DocentReadingStatus.IDLE,
+        ),
+        s3_bucket_url="https://example.com/run",
+    )
+    tracker = StubProgressTracker(
+        initial_response,
+        make_fetch_metadata(run_id),
+        (f"data: {error_response.model_dump_json()}", "event: complete"),
+    )
+
+    stream_benchmark_status(cast(TrackerService, tracker), run_id)
+
+    output = capsys.readouterr().out
+    assert "0/0 (0.0%)" in output
+    assert "Run errored" in output
+    assert "Run completed" not in output
 
 
 def test_fetch_connect_enables_identity_header(monkeypatch: pytest.MonkeyPatch) -> None:

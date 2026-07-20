@@ -15,9 +15,11 @@ import httpx
 import pytest
 from click.testing import CliRunner, Result
 from tracker.agent.schemas import AgentConfig
-from tracker.database.models import AgentContractRequest
+from tracker.database.models import AgentContractRequest, BenchmarkStatus, DocentReadingStatus, TaskStatus
+from tracker.types import BenchmarkDetails, FetchBenchmarkResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.run.progress import stream_benchmark_status
 
 start_module = import_module("valkyrie.cli.run.start")
 start_command = start_module.start
@@ -42,6 +44,29 @@ def _start_response(run_id: UUID) -> httpx.Response:
             "cloudwatch_url": f"https://cloudwatch.example/{run_id}",
             "s3_bucket_url": f"s3://runs/{run_id}",
         },
+    )
+
+
+def _benchmark_response(
+    run_id: UUID,
+    *,
+    status: BenchmarkStatus,
+    total_tasks: int,
+    finished_tasks: int,
+    task_breakdown: dict[TaskStatus, int],
+) -> FetchBenchmarkResponse:
+    return FetchBenchmarkResponse(
+        benchmark_name="swebench",
+        benchmark_id=run_id,
+        details=BenchmarkDetails(
+            status=status,
+            started_at=_STARTED_AT,
+            total_tasks=total_tasks,
+            finished_tasks=finished_tasks,
+            task_breakdown=task_breakdown,
+            docent_reading_status=DocentReadingStatus.IDLE,
+        ),
+        s3_bucket_url=f"s3://runs/{run_id}",
     )
 
 
@@ -132,6 +157,57 @@ class TestCountedStarts:
 
         assert connected_result.exit_code == 0, connected_result.output
         start_testbed.stream_status.assert_called_once_with(start_testbed.tracker, _FIRST_RUN_ID)
+
+    def test_connected_start_survives_task_discovery(
+        self,
+        start_testbed: StartTestbed,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A confirmed start must stay connected while task rows are being discovered.
+
+        Test cases:
+        - The initial empty status is rendered as task discovery without losing the run ID.
+        - Later task progress and terminal completion are consumed from the same stream.
+        """
+        initial_response = _benchmark_response(
+            _FIRST_RUN_ID,
+            status=BenchmarkStatus.IN_PROGRESS,
+            total_tasks=0,
+            finished_tasks=0,
+            task_breakdown={},
+        )
+        discovered_response = _benchmark_response(
+            _FIRST_RUN_ID,
+            status=BenchmarkStatus.IN_PROGRESS,
+            total_tasks=2,
+            finished_tasks=0,
+            task_breakdown={TaskStatus.PENDING: 1, TaskStatus.BUILDING: 1},
+        )
+        completed_response = _benchmark_response(
+            _FIRST_RUN_ID,
+            status=BenchmarkStatus.FINISHED,
+            total_tasks=2,
+            finished_tasks=2,
+            task_breakdown={TaskStatus.FINISHED: 2},
+        )
+        start_testbed.tracker.fetch_benchmark.return_value = initial_response
+        start_testbed.tracker.stream_benchmark.return_value = iter(
+            [
+                f"data: {discovered_response.model_dump_json()}",
+                f"data: {completed_response.model_dump_json()}",
+                "event: complete",
+            ]
+        )
+        monkeypatch.setattr(start_module, "stream_benchmark_status", stream_benchmark_status)
+
+        result = start_testbed.invoke(["--connect"])
+
+        assert result.exit_code == 0, result.output
+        assert str(_FIRST_RUN_ID) in result.output
+        assert "0/0 (0.0%)" in result.output
+        assert "Pending: 1" in result.output
+        assert "Building: 1" in result.output
+        assert "2/2 (100.0%)" in result.output
 
     def test_counted_start_reuses_contract_and_reports_ids(
         self,
