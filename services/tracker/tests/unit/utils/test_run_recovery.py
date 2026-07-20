@@ -111,7 +111,7 @@ class TestRunRecovery:
             task_ids=task_ids,
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter, aws_managed=False)
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 1})
         database_session.add(benchmark_row)
         database_session.commit()
