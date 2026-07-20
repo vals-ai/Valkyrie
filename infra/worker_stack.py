@@ -16,6 +16,7 @@ from aws_cdk import (
     aws_iam,
     aws_logs,
     aws_rds,
+    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
 )
@@ -67,6 +68,7 @@ class WorkerStack(Stack):
     ):
         super().__init__(scope, id, **kwargs)
         stage_config = config_for(stage)
+        bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
 
         # Reuse the tracker's security group so both services share the same
         # SG — benchmark services only need to whitelist one group.

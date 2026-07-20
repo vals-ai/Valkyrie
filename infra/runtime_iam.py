@@ -9,7 +9,7 @@ from aws_cdk import aws_iam, aws_s3
 from constructs import Construct
 
 from stage import Stage
-from stage_config import ManagedAwsRuntimeConfig
+from stage_config import ManagedAWSRuntimeConfig
 
 _S3_PREFIXES = ("agents/*", "benchmarks/*")
 
@@ -18,7 +18,7 @@ def managed_runtime_environment(
     scope: Construct,
     stage: Stage,
     bucket: aws_s3.IBucket,
-    config: ManagedAwsRuntimeConfig,
+    config: ManagedAWSRuntimeConfig,
 ) -> dict[str, str]:
     """Build the deployment-owned runtime configuration for an ECS container."""
     return {
@@ -35,7 +35,7 @@ def create_tracker_task_role(
     scope: Construct,
     stage: Stage,
     bucket: aws_s3.IBucket,
-    config: ManagedAwsRuntimeConfig,
+    config: ManagedAWSRuntimeConfig,
 ) -> aws_iam.Role:
     """Create the tracker application task role."""
     role = _task_role(scope, "TrackerTaskRole", stage.phys("ValkyrieTrackerTaskRole"))
@@ -50,7 +50,7 @@ def create_worker_task_role(
     scope: Construct,
     stage: Stage,
     bucket: aws_s3.IBucket,
-    config: ManagedAwsRuntimeConfig,
+    config: ManagedAWSRuntimeConfig,
 ) -> aws_iam.Role:
     """Create the worker application task role."""
     role = _task_role(scope, "WorkerTaskRole", stage.phys("ValkyrieWorkerTaskRole"))

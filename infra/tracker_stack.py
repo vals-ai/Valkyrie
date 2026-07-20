@@ -16,6 +16,7 @@ from aws_cdk import (
     aws_logs,
     aws_rds,
     aws_route53,
+    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
     aws_ssm,
@@ -77,6 +78,7 @@ class TrackerStack(Stack):
     ):
         super().__init__(scope, id, **kwargs)
         stage_config = config_for(stage)
+        bucket = aws_s3.Bucket.from_bucket_name(self, "ManagedRuntimeBucket", bucket_name)
 
         # Docker image for the tracker API
         tracker_image = aws_ecs.ContainerImage.from_asset(

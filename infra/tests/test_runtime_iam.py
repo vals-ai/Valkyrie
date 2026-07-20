@@ -9,7 +9,7 @@ from aws_cdk import assertions, aws_s3
 
 from runtime_iam import create_tracker_task_role, create_worker_task_role
 from stage import DEV, Stage
-from stage_config import ManagedAwsRuntimeConfig
+from stage_config import ManagedAWSRuntimeConfig
 from test_monitoring_stack import (
     TEST_AWS_ACCOUNT,
     TEST_AWS_REGION,
@@ -162,7 +162,7 @@ class RuntimeIamTest(unittest.TestCase):
         )
         bucket = aws_s3.Bucket.from_bucket_name(stack, "ManagedRuntimeBucket", "managed-runtime-bucket")
         kms_key_arn = f"arn:aws:kms:{TEST_AWS_REGION}:{TEST_AWS_ACCOUNT}:key/test-key"
-        config = ManagedAwsRuntimeConfig(
+        config = ManagedAWSRuntimeConfig(
             benchmark_log_group_prefix="/valkyrie/benchmarks",
             benchmark_log_retention_days=7,
             tracker_secret_name_prefixes=("valkyrie/tracker/",),

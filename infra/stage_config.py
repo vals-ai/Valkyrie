@@ -25,7 +25,7 @@ class DatabaseConfig:
 
 
 @dataclass(frozen=True)
-class ManagedAwsRuntimeConfig:
+class ManagedAWSRuntimeConfig:
     benchmark_log_group_prefix: str
     benchmark_log_retention_days: int
     deployment_role_org_ids: tuple[str, ...] = ()
@@ -44,7 +44,7 @@ class StageConfig:
     worker: ServiceConfig
     database: DatabaseConfig
     service_log_retention: aws_logs.RetentionDays
-    managed_aws: ManagedAwsRuntimeConfig
+    managed_aws: ManagedAWSRuntimeConfig
 
 
 PROD_CONFIG = StageConfig(
@@ -58,7 +58,7 @@ PROD_CONFIG = StageConfig(
         connection_alarm_threshold=135,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_YEAR,
-    managed_aws=ManagedAwsRuntimeConfig(
+    managed_aws=ManagedAWSRuntimeConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=365,
     ),
@@ -75,7 +75,7 @@ DEV_CONFIG = StageConfig(
         connection_alarm_threshold=65,
     ),
     service_log_retention=aws_logs.RetentionDays.ONE_WEEK,
-    managed_aws=ManagedAwsRuntimeConfig(
+    managed_aws=ManagedAWSRuntimeConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=7,
     ),
