@@ -7,8 +7,10 @@ import traceback
 from asyncio import Semaphore
 from collections.abc import Coroutine
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from types import TracebackType
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -42,11 +44,16 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import engine
-from tracker.exceptions import OutputArtifactError, SandboxSetupError, TrackerServiceError
+from tracker.exceptions import (
+    DependencySetupExhaustedError,
+    OutputArtifactError,
+    SandboxSetupError,
+    TrackerServiceError,
+)
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
-from tracker.sandbox import create_sandbox, run_agent, upload_agent_artifacts
+from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -58,6 +65,11 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
+
+
+@dataclass
+class _DependencySetupRecoveryState:
+    mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES
 
 
 def _normalized_attempt_time(value: datetime) -> datetime:
@@ -74,6 +86,41 @@ class TrackedTaskStatus(str, Enum):
     WAITING = "waiting"
     RUNNING = "running"
     DONE = "done"
+
+
+class ResizableLimiter:
+    """A per-executor admission limit that can change without preempting admitted work."""
+
+    def __init__(self, limit: int):
+        if limit < 1:
+            raise ValueError("Limit must be greater than 0")
+        self._limit = limit
+        self._in_flight = 0
+        self._condition = asyncio.Condition()
+
+    async def resize(self, limit: int) -> None:
+        if limit < 1:
+            raise ValueError("Limit must be greater than 0")
+        async with self._condition:
+            previous_limit = self._limit
+            self._limit = limit
+            if limit > previous_limit:
+                self._condition.notify_all()
+
+    async def __aenter__(self) -> None:
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._in_flight < self._limit)
+            self._in_flight += 1
+
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        async with self._condition:
+            self._in_flight -= 1
+            self._condition.notify_all()
 
 
 class TrackedTask:
@@ -96,10 +143,10 @@ class TrackedTask:
     def task(self) -> asyncio.Task[Any] | None:
         return self._task
 
-    async def run(self, semaphore: asyncio.Semaphore, task_row: Task) -> dict[str, dict[str, Any] | None]:
+    async def run(self, limiter: ResizableLimiter, task_row: Task) -> dict[str, dict[str, Any] | None]:
         async def _wrap_coro():
             """Need to have a task created even if we are not running the coroutine so that we can cancel it before its running"""
-            async with semaphore:
+            async with limiter:
                 self._status = TrackedTaskStatus.RUNNING
                 return await self._coro
 
@@ -132,15 +179,28 @@ class TaskMonitor:
     _task_tracking: dict[str, TrackedTask]
     _notifier: SlackNotifier | None
     _org: Org
+    _limiter: ResizableLimiter
     _TRACK_INTERVAL: int = 2
 
     def __init__(
-        self, benchmark_id: UUID, task_tracking: dict[str, TrackedTask], org: Org, notifier: SlackNotifier | None = None
+        self,
+        benchmark_id: UUID,
+        task_tracking: dict[str, TrackedTask],
+        org: Org,
+        limiter: ResizableLimiter,
+        notifier: SlackNotifier | None = None,
     ):
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
         self._org = org
         self._notifier = notifier
+        self._limiter = limiter
+
+    async def _refresh_concurrency(self) -> None:
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+            concurrency = benchmark_row.arguments.concurrency
+        await self._limiter.resize(concurrency)
 
     def _fetch_task_row(self, task_id: str) -> Task:
         with Session(bind=engine) as session:
@@ -193,6 +253,7 @@ class TaskMonitor:
         exit_condition_met: bool = False
 
         while not exit_condition_met and self._task_tracking:
+            await self._refresh_concurrency()
             tasks_to_check: list[str] = list(self._task_tracking.keys())
             for task_id in tasks_to_check:
                 task = self._task_tracking[task_id]
@@ -321,13 +382,6 @@ def commit_task_status_transition(
 
 
 @logfire.instrument("process_task")
-@tenacity_retry(
-    retry=retry_if_exception_type(SandboxSetupError),
-    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
-    wait=wait_fixed(2),
-    before_sleep=retry_callback("valkyrie.task"),
-    reraise=True,
-)
 async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -338,6 +392,40 @@ async def process_task(
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
+) -> dict[str, dict[str, Any] | None]:
+    """Process one task while retaining dependency recovery state across sandbox attempts."""
+    return await _process_task_attempt(
+        task_row,
+        start_benchmark_request,
+        benchmark_service,
+        benchmark_id,
+        task_id,
+        harness_config,
+        org,
+        sandbox_provider_config,
+        creation_semaphore,
+        dependency_setup_recovery=_DependencySetupRecoveryState(),
+    )
+
+
+@tenacity_retry(
+    retry=retry_if_exception_type(SandboxSetupError),
+    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
+    wait=wait_fixed(2),
+    before_sleep=retry_callback("valkyrie.task"),
+    reraise=True,
+)
+async def _process_task_attempt(
+    task_row: Task,
+    start_benchmark_request: StartBenchmarkRequest,
+    benchmark_service: BenchmarkServiceClient,
+    benchmark_id: UUID,
+    task_id: str,
+    harness_config: HarnessConfig,
+    org: Org,
+    sandbox_provider_config: SandboxProviderConfig,
+    creation_semaphore: Semaphore,
+    dependency_setup_recovery: _DependencySetupRecoveryState,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -548,20 +636,25 @@ async def process_task(
                 if start_benchmark_request.contract.final_output:
                     agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
 
-                exit_reason, agent_run_time = await run_agent(
-                    sandbox,
-                    start_benchmark_request.contract,
-                    task_data.problem_path,
-                    task_id,
-                    log_output,
-                    task_data.cwd,
-                    aws=harness_config.aws,
-                    s3_bucket=harness_config.s3_bucket,
-                    agent_output_s3_key=agent_output_s3_key,
-                    agent_timeout=task_data.agent_timeout,
-                    benchmark_id=str(benchmark_id),
-                    runtime_source=task_data.source,
-                )
+                try:
+                    exit_reason, agent_run_time = await run_agent(
+                        sandbox,
+                        start_benchmark_request.contract,
+                        task_data.problem_path,
+                        task_id,
+                        log_output,
+                        task_data.cwd,
+                        aws=harness_config.aws,
+                        s3_bucket=harness_config.s3_bucket,
+                        agent_output_s3_key=agent_output_s3_key,
+                        agent_timeout=task_data.agent_timeout,
+                        benchmark_id=str(benchmark_id),
+                        runtime_source=task_data.source,
+                        dependency_setup_mode=dependency_setup_recovery.mode,
+                    )
+                except DependencySetupExhaustedError:
+                    dependency_setup_recovery.mode = DependencySetupMode.FINAL_FRESH_SANDBOX
+                    raise
                 logger.info(
                     "agent.run.complete",
                     extra={

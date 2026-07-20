@@ -99,6 +99,20 @@ class FetchBenchmarksRequest(BaseModel):
     offset: int = Field(default=0, ge=0)
 
 
+class AnalyzeBenchmarkRequest(BaseModel):
+    """Wire payload used to trigger Docent analysis for a run."""
+
+    no_cache: bool = False
+    lambda_function: str | None = None
+
+
+class AnalyzeEvent(ResponseModel):
+    """One progress or completion event from run analysis."""
+
+    event: str
+    data: dict[str, Any]
+
+
 class BenchmarkDetails(ResponseModel):
     """Detailed progress for a fetched run."""
 
@@ -188,6 +202,15 @@ class BenchmarkArguments(ResponseModel):
     sandbox_provider_secret_name: str | None = None
 
 
+class FetchBenchmarkMetadataResponse(ResponseModel):
+    """Stored launch metadata for one run."""
+
+    benchmark_id: UUID
+    benchmark_name: str
+    benchmark_arguments: BenchmarkArguments
+    started_by_email: str | None = None
+
+
 class FinalEvaluation(ResponseModel):
     """Final aggregate evaluation stored for a run."""
 
@@ -230,6 +253,12 @@ class S3UploadResultsResponse(ResponseModel):
     s3_url: str
     presigned_url: str
     console_url: str
+
+
+class ResultsExistResponse(ResponseModel):
+    """Whether the canonical result file already exists in S3."""
+
+    exists: bool
 
 
 RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse

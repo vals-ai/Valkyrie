@@ -40,6 +40,7 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
+TEST_DEV_ENV = {"DESCOPE_PROJECT_ID": "dev-project"}
 TEST_AWS_ACCOUNT = os.environ.get("CDK_DEFAULT_ACCOUNT", "123456789012")
 TEST_AWS_REGION = os.environ.get("CDK_DEFAULT_REGION", "us-east-1")
 SHARED_STACK_CONTEXT = {
@@ -300,7 +301,7 @@ class MonitoringStackTest(unittest.TestCase):
                 get_slack_notification_config(VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV)
 
     def test_dev_stage_wires_stage_config_to_resources(self) -> None:
-        with mock.patch.dict(os.environ, {}, clear=True):
+        with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
             tracker_template, worker_template = _service_templates(DEV)
         with mock.patch.dict(os.environ, TEST_ALERTS_SLACK_ENV, clear=True):
             monitoring_template = _monitoring_template(DEV)
@@ -339,7 +340,8 @@ class MonitoringStackTest(unittest.TestCase):
             (PROD, "production", "local"),
             (DEV, "dev", "local-dev"),
         ):
-            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, {}, clear=True):
+            environment = TEST_DEV_ENV if stage_name == DEV else {}
+            with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template, worker_template = _service_templates(stage_name)
 
                 expected_env = assertions.Match.array_with(
@@ -369,7 +371,11 @@ class MonitoringStackTest(unittest.TestCase):
     def test_dev_does_not_create_daytona_cleanup_resources(self) -> None:
         with mock.patch.dict(
             os.environ,
-            {"DAYTONA_CLEANUP_ENABLED": "true", "DAYTONA_CLEANUP_DRY_RUN": "false"},
+            {
+                **TEST_DEV_ENV,
+                "DAYTONA_CLEANUP_ENABLED": "true",
+                "DAYTONA_CLEANUP_DRY_RUN": "false",
+            },
             clear=True,
         ):
             _, worker_template = _service_templates(DEV)
@@ -583,6 +589,48 @@ class MonitoringStackTest(unittest.TestCase):
         cleanup_function = _cleanup_function(worker_template)
         environment = cast(dict[str, str], cast(dict[str, Any], cleanup_function["Environment"])["Variables"])
         self.assertEqual(environment["DAYTONA_CLEANUP_DRY_RUN"], "true")
+
+    def test_dev_sentry_secret_is_optional(self) -> None:
+        with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
+            tracker_template, worker_template = _service_templates(DEV)
+
+        self.assertNotIn("SENTRY_DSN", str(tracker_template.to_json()))
+        self.assertNotIn("SENTRY_DSN", str(worker_template.to_json()))
+
+        custom_sentry_secret_name = "custom/dev-sentry-dsn"
+        sentry_environment = {
+            **TEST_DEV_ENV,
+            "SENTRY_DSN_SECRET_NAME": custom_sentry_secret_name,
+        }
+        with mock.patch.dict(os.environ, sentry_environment, clear=True):
+            tracker_template, worker_template = _service_templates(DEV)
+
+        for template in (tracker_template, worker_template):
+            template.has_resource_properties(
+                "AWS::ECS::TaskDefinition",
+                {
+                    "ContainerDefinitions": assertions.Match.array_with(
+                        [
+                            assertions.Match.object_like(
+                                {
+                                    "Secrets": assertions.Match.array_with(
+                                        [assertions.Match.object_like({"Name": "SENTRY_DSN"})]
+                                    )
+                                }
+                            )
+                        ]
+                    )
+                },
+            )
+            sentry_value_from = [
+                secret["ValueFrom"]
+                for task_definition in template.find_resources("AWS::ECS::TaskDefinition").values()
+                for container in task_definition["Properties"]["ContainerDefinitions"]
+                for secret in container.get("Secrets", [])
+                if secret["Name"] == "SENTRY_DSN"
+            ]
+            self.assertEqual(len(sentry_value_from), 1)
+            self.assertIn(custom_sentry_secret_name, str(sentry_value_from[0]))
 
 
 if __name__ == "__main__":

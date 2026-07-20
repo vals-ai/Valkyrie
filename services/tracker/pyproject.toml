@@ -25,7 +25,7 @@ dependencies = [
     "tenacity>=9.0.0",
     "sentry-sdk[fastapi]==2.58.0",
     "python-json-logger>=3.2.1",
-    "create-benchmark-service>=0.11.0",
+    "create-benchmark-service>=0.16.3",
     "daytona>=0.189.0",
     "aioboto3>=7.0.0",
 ]
@@ -51,7 +51,7 @@ build-backend = "hatchling.build"
 prerelease = "allow"
 
 [tool.uv.sources]
-create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "74eef1aa75b3d9dca1a9633b78138df381f0b617" }
+create-benchmark-service = { git = "https://github.com/vals-ai/create-benchmark-service.git", rev = "v0.16.3" }
 
 [tool.hatch.metadata]
 allow-direct-references = true
@@ -71,6 +71,7 @@ indent-style = "space"
 [tool.basedpyright]
 venvPath="."
 venv=".venv"
+pythonVersion = "3.12"
 typeCheckingMode = "strict"
 
 reportExplicitAny = false
@@ -81,20 +82,17 @@ enableTypeIgnoreComments = true
 exclude=["src/tracker/database/migrations/versions"]
 
 [tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
 asyncio_mode = "auto"
 pythonpath = ["."]
 env = [
     "BROKER_ENVIRONMENT=testing",
 ]
-markers = [
-    "slow: marks tests as slow (require Daytona/external services)",
-]
-
 [tool.coverage.run]
-source = ["src/tracker"]
+source = ["src/tracker", "main"]
 branch = true
 omit = ["*/tests/*", "*/__pycache__/*", "*/migrations/*"]
 
 [tool.coverage.report]
-fail_under = 1
+fail_under = 80
 show_missing = true

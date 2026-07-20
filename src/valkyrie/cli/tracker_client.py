@@ -3,7 +3,7 @@
 import json
 import re
 from collections.abc import Generator, Iterator
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 from uuid import UUID
 
 import httpx
@@ -11,9 +11,11 @@ import yaml
 from benchmark_service.schemas import VerifyTaskIdsResponse
 from dotenv import load_dotenv
 from httpx._models import Response
+from pydantic import BaseModel, ValidationError
 from tracker.database.models import AgentContractRequest, RetryMode
 from tracker.types import (
     BenchmarkServiceEntry,
+    BenchmarkServiceCatalogResponse,
     BenchmarkServicesRequest,
     BenchmarkServicesResponse,
     BenchmarkStatusResponse,
@@ -29,6 +31,8 @@ from tracker.types import (
     S3UploadResultsResponse,
     StartBenchmarkRequest,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
 )
 
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
@@ -41,6 +45,7 @@ _REQUIRED_CONFIG_KEYS = {
     "S3_BUCKET",
 }
 _PROVIDER_SETUP_COMMAND = "valkyrie config provider set <provider> <secret-name>"
+ModelT = TypeVar("ModelT", bound=BaseModel)
 
 
 def _resolve_tracker_url(base_url: str | None) -> str:
@@ -60,7 +65,8 @@ def _sandbox_providers(config: dict[str, Any]) -> dict[str, str]:
     return {str(name): str(secret_name) for name, secret_name in providers.items()}
 
 
-def _response_error_detail(response: Response) -> Any:
+def response_error_detail(response: Response) -> Any:
+    """Return useful tracker error detail for JSON and plain-text responses."""
     try:
         body = response.json()
     except ValueError:
@@ -74,9 +80,20 @@ def _response_error_detail(response: Response) -> Any:
 def _parse_response(response: Response, action: str) -> Any:
     """Parse a tracker JSON response, raising when the request failed."""
     if response.status_code != 200:
-        details = _response_error_detail(response)
+        details = response_error_detail(response)
         raise TrackerServiceError(f"{action}: {details}")
-    return response.json()
+    try:
+        return response.json()
+    except ValueError as error:
+        raise TrackerServiceError(f"{action}: tracker returned a malformed response") from error
+
+
+def _parse_model_response(response: Response, action: str, model: type[ModelT]) -> ModelT:
+    """Parse and validate a typed tracker response."""
+    try:
+        return model.model_validate(_parse_response(response, action))
+    except ValidationError as error:
+        raise TrackerServiceError(f"{action}: tracker returned a malformed response") from error
 
 
 def _resolve_sandbox_provider_config(
@@ -319,7 +336,7 @@ class TrackerService:
         if response.status_code == 200:
             return
 
-        detail = _response_error_detail(response)
+        detail = response_error_detail(response)
         if not isinstance(detail, str):
             detail = json.dumps(detail, indent=4, default=str)
         raise TrackerNotFoundError(f"Tracker service failed to respond!\n{detail}")
@@ -329,8 +346,11 @@ class TrackerService:
         try:
             response = self._client.get(f"{self._base_url}/benchmark-services")
 
-            response_data = _parse_response(response, "Failed to list benchmark services")
-            return [BenchmarkServiceEntry.model_validate(service) for service in response_data.get("services", [])]
+            return _parse_model_response(
+                response,
+                "Failed to list benchmark services",
+                BenchmarkServiceCatalogResponse,
+            ).services
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to list benchmark services: {e}") from e
 
@@ -347,8 +367,10 @@ class TrackerService:
             payload = BenchmarkServicesRequest(services=services)
             response = self._client.post(f"{self._base_url}/benchmark-services", json=payload.model_dump())
 
-            return BenchmarkServicesResponse.model_validate(
-                _parse_response(response, "Failed to check benchmark services")
+            return _parse_model_response(
+                response,
+                "Failed to check benchmark services",
+                BenchmarkServicesResponse,
             )
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to check benchmark services: {e}") from e
@@ -443,7 +465,7 @@ class TrackerService:
         try:
             response = self._client.get(f"{self._base_url}/fetch-benchmark", params={"benchmark_id": str(benchmark_id)})
 
-            return FetchBenchmarkResponse.model_validate(_parse_response(response, "Failed to fetch run"))
+            return _parse_model_response(response, "Failed to fetch run", FetchBenchmarkResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run: {e}") from e
 
@@ -463,7 +485,7 @@ class TrackerService:
             with self._client.stream("POST", url, json=body, timeout=None) as response:
                 if response.status_code != 200:
                     response.read()
-                    details = _response_error_detail(response)
+                    details = response_error_detail(response)
                     raise TrackerServiceError(f"analyze-benchmark failed: {details}")
 
                 # Cached short-circuit returns a single JSON body; fresh
@@ -515,7 +537,7 @@ class TrackerService:
             ) as response:
                 if response.status_code != 200:
                     response.read()
-                    details = _response_error_detail(response)
+                    details = response_error_detail(response)
                     raise TrackerServiceError(f"Failed to stream run: {details}")
 
                 for line in response.iter_lines():
@@ -543,11 +565,10 @@ class TrackerService:
 
             response = self._client.get(f"{self._base_url}/retrieve-results", params=params)
 
-            response_data = _parse_response(response, "Failed to retrieve results")
             if not s3:
-                return FinalViewResponse.model_validate(response_data)
+                return _parse_model_response(response, "Failed to retrieve results", FinalViewResponse)
 
-            return S3UploadResultsResponse.model_validate(response_data)
+            return _parse_model_response(response, "Failed to retrieve results", S3UploadResultsResponse)
 
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to retrieve results: {e}") from e
@@ -573,7 +594,7 @@ class TrackerService:
             )
             response = self._client.post(f"{self._base_url}/fetch-benchmark-tasks", json=payload.model_dump())
 
-            return VerifyTaskIdsResponse.model_validate(_parse_response(response, "Failed to fetch task ids")).task_ids
+            return _parse_model_response(response, "Failed to fetch task ids", VerifyTaskIdsResponse).task_ids
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch task ids: {e}") from e
 
@@ -623,9 +644,29 @@ class TrackerService:
                 json={"task_ids": task_ids},
             )
 
-            return StopBenchmarkResponse.model_validate(_parse_response(response, "Failed to stop run"))
+            return _parse_model_response(response, "Failed to stop run", StopBenchmarkResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to stop run: {e}") from e
+
+    def update_benchmark_concurrency(
+        self,
+        benchmark_id: UUID,
+        concurrency: int,
+    ) -> UpdateBenchmarkConcurrencyResponse:
+        """Update the concurrency limit for an active benchmark run."""
+        payload = UpdateBenchmarkConcurrencyRequest(concurrency=concurrency)
+        try:
+            response = self._client.patch(
+                f"{self._base_url}/benchmarks/{benchmark_id}/concurrency",
+                json=payload.model_dump(),
+            )
+            return _parse_model_response(
+                response,
+                "Failed to update run concurrency",
+                UpdateBenchmarkConcurrencyResponse,
+            )
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to update run concurrency: {e}") from e
 
     def retry_or_resume_benchmark(
         self,
@@ -655,8 +696,7 @@ class TrackerService:
         try:
             params: dict[str, Any] = {"retry": retry, "retry_mode": retry_mode.value}
 
-            # NOTE: 0 is not acceptable
-            if concurrency:
+            if concurrency is not None:
                 params["concurrency"] = concurrency
 
             body: dict[str, Any] = {"task_ids": task_ids, "service_headers": service_headers or {}}
@@ -669,7 +709,7 @@ class TrackerService:
                 json=body,
             )
 
-            return RetryOrResumeBenchmarkResponse.model_validate(_parse_response(response, "Failed to start run"))
+            return _parse_model_response(response, "Failed to start run", RetryOrResumeBenchmarkResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to start run: {e}") from e
 
@@ -688,7 +728,7 @@ class TrackerService:
                 f"{self._base_url}/fetch-benchmarks", params=request.model_dump(exclude_none=True, mode="json")
             )
 
-            return FetchBenchmarksResponse.model_validate(_parse_response(response, "Failed to fetch runs"))
+            return _parse_model_response(response, "Failed to fetch runs", FetchBenchmarksResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch runs: {e}") from e
 
@@ -699,7 +739,7 @@ class TrackerService:
                 f"{self._base_url}/benchmarks/status",
                 params={"ids": ",".join(str(benchmark_id) for benchmark_id in benchmark_ids)},
             )
-            return BenchmarkStatusResponse.model_validate(_parse_response(response, "Failed to fetch run statuses"))
+            return _parse_model_response(response, "Failed to fetch run statuses", BenchmarkStatusResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run statuses: {e}") from e
 
@@ -720,7 +760,7 @@ class TrackerService:
                 params["task_ids"] = task_ids
             response = self._client.get(f"{self._base_url}/fetch-run-outputs/{benchmark_id}", params=params)
             if response.status_code != 200:
-                details = _response_error_detail(response)
+                details = response_error_detail(response)
                 raise TrackerServiceError(f"Failed to fetch run outputs: {details}")
 
             return response
@@ -740,8 +780,10 @@ class TrackerService:
         try:
             response = self._client.get(f"{self._base_url}/fetch-benchmark-metadata/{benchmark_id}")
 
-            return FetchBenchmarkMetadataResponse.model_validate(
-                _parse_response(response, "Failed to fetch run metadata")
+            return _parse_model_response(
+                response,
+                "Failed to fetch run metadata",
+                FetchBenchmarkMetadataResponse,
             )
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run metadata: {e}") from e

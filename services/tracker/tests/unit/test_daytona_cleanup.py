@@ -21,6 +21,7 @@ from daytona import (
     DaytonaTimeoutError,
     DaytonaValidationError,
     ListSandboxesQuery,
+    SandboxState,
 )
 from tenacity import RetryCallState, wait_none
 
@@ -36,6 +37,7 @@ def _sandbox(
     *,
     created_at: datetime | str | None,
     labels: dict[str, str] | None = None,
+    state: SandboxState = SandboxState.STARTED,
     target: str = TARGET,
 ) -> AsyncSandbox:
     timestamp = created_at.isoformat().replace("+00:00", "Z") if isinstance(created_at, datetime) else created_at
@@ -46,6 +48,7 @@ def _sandbox(
             name=f"sandbox-{sandbox_id}",
             labels=labels or {},
             created_at=timestamp,
+            state=state,
             target=target,
         ),
     )
@@ -268,6 +271,31 @@ async def test_cleanup_does_not_retry_non_transient_refresh_failure() -> None:
     assert [(failure.sandbox_id, failure.error_type) for failure in report.failures] == [
         (sandbox.id, "DaytonaValidationError")
     ]
+
+
+async def test_cleanup_retries_idempotent_paused_delete_and_continues_with_provider() -> None:
+    paused_delete_errors: list[DaytonaError] = [
+        DaytonaRateLimitError("rate limited", headers={"retry-after-sandbox-lifecycle": "0"}),
+        DaytonaNotFoundError("already deleted"),
+    ]
+    paused_delete_attempts = 0
+
+    async def delete_paused() -> None:
+        nonlocal paused_delete_attempts
+        paused_delete_attempts += 1
+        raise paused_delete_errors.pop(0)
+
+    paused = _sandbox("paused", created_at=NOW - timedelta(hours=49), state=SandboxState.PAUSED)
+    setattr(paused, "delete", delete_paused)
+    started = _sandbox("started", created_at=NOW - timedelta(hours=49))
+    client = FakeDaytona([paused, started])
+
+    report = await cleanup_old_sandboxes(client, client, now=NOW, target=TARGET, dry_run=False)
+
+    assert paused_delete_attempts == 2
+    assert client.delete_calls == ["started"]
+    assert report.deletion_completed == 2
+    assert report.succeeded
 
 
 async def test_cleanup_uses_provider_delete_and_continues_after_failures() -> None:

@@ -22,6 +22,7 @@ from daytona import (
     DaytonaRateLimitError,
     DaytonaTimeoutError,
     ListSandboxesQuery,
+    SandboxState,
 )
 from tenacity import RetryCallState, retry, retry_if_exception, stop_after_attempt, wait_exponential, wait_fixed
 
@@ -135,6 +136,13 @@ _DAYTONA_READ_RETRY = retry(
     before_sleep=retry_callback("valkyrie.daytona.cleanup.read"),
     reraise=True,
 )
+_DAYTONA_DELETE_RETRY = retry(
+    retry=retry_if_exception(_is_transient_daytona_read_error),
+    stop=stop_after_attempt(_DAYTONA_READ_ATTEMPTS),
+    wait=_daytona_read_retry_wait,
+    before_sleep=retry_callback("valkyrie.daytona.cleanup.delete"),
+    reraise=True,
+)
 
 
 @_DAYTONA_READ_RETRY
@@ -145,6 +153,14 @@ async def _list_sandboxes(client: DaytonaListClient, query: ListSandboxesQuery) 
 @_DAYTONA_READ_RETRY
 async def _get_sandbox(client: DaytonaListClient, sandbox_id: str) -> AsyncSandbox:
     return await client.get(sandbox_id)
+
+
+@_DAYTONA_DELETE_RETRY
+async def _delete_paused_sandbox(sandbox: AsyncSandbox) -> None:
+    try:
+        await sandbox.delete()
+    except DaytonaNotFoundError:
+        return
 
 
 def _parse_created_at(value: str | None) -> datetime | None:
@@ -268,8 +284,13 @@ async def cleanup_old_sandboxes(
             continue
 
         try:
+            delete_operation = (
+                _delete_paused_sandbox(current_sandbox)
+                if current_sandbox.state == SandboxState.PAUSED
+                else delete_provider.delete_sandbox(sandbox.id)
+            )
             await asyncio.wait_for(
-                delete_provider.delete_sandbox(sandbox.id),
+                delete_operation,
                 timeout=_DELETE_TIMEOUT_SECONDS,
             )
         except Exception as exc:

@@ -42,12 +42,14 @@ Tracker-service reads this when running `valkyrie config service list` to show t
 ## Tests
 
 ```bash
-make test-unit          # Unit tests + Alembic migration tests
-make test-alembic       # Alembic migration tests only
-make test-integration   # Integration tests
+make test                    # Unit + local integration tests with 85% total coverage
+make test-unit               # Unit tests + Alembic migrations
+make test-alembic            # Alembic migration tests only
+make test-integration-local  # Local API + Postgres tests
+make test-integration-live   # AWS + benchmark service + sandbox tests
 ```
 
-Integration tests run against live AWS infrastructure and the public benchmark service. They require a `.env` file at `services/tracker/.env`:
+`tests/integration/live` requires a `.env` file at `services/tracker/.env`:
 
 ```env
 # AWS — used to fetch sandbox provider credentials from Secrets Manager and write to S3/CloudWatch

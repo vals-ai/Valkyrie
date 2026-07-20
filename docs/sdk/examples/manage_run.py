@@ -3,6 +3,7 @@
 After installing valkyrie-sdk, run:
 
     python docs/sdk/examples/manage_run.py stop RUN_ID
+    python docs/sdk/examples/manage_run.py stop RUN_ID --task-id TASK_ID
     python docs/sdk/examples/manage_run.py resume RUN_ID --concurrency 10
     python docs/sdk/examples/manage_run.py retry RUN_ID --task-id TASK_ID
 """
@@ -33,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     stop_parser = actions.add_parser("stop", help="Stop a running run")
     stop_parser.add_argument("run_id", type=UUID, help="Run UUID")
     stop_parser.add_argument("--force", action="store_true", help="Terminate active sandboxes")
+    stop_parser.add_argument("--task-id", action="append", dest="task_ids", help="Task ID; repeat for multiple tasks")
 
     add_retry_options(actions.add_parser("resume", help="Resume unfinished work"))
     add_retry_options(actions.add_parser("retry", help="Retry failed or selected work"))
@@ -46,7 +48,7 @@ async def manage_run(args: argparse.Namespace) -> None:
         print(f"{current.benchmark_id} is {current.details.status.value}")
 
         if args.action == "stop":
-            response = await client.runs.stop(args.run_id, force=args.force)
+            response = await client.runs.stop(args.run_id, force=args.force, task_ids=args.task_ids)
         elif args.action == "resume":
             response = await client.runs.resume(
                 args.run_id,

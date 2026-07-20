@@ -26,7 +26,7 @@ from valkyrie.cli.tracker_client import TrackerService
 )
 @click.option(
     "--concurrency",
-    type=int,
+    type=click.IntRange(min=1),
     required=False,
     default=None,
     help="Override concurrency level (e.g., 20)",
