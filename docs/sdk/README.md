@@ -70,6 +70,7 @@ Use the other run methods:
 ```python
 page = await client.runs.list()
 results = await client.runs.results(run.run_id)
+await client.runs.update(run.run_id, concurrency=20)
 await client.runs.stop(run.run_id)
 await client.runs.resume(run.run_id, concurrency=20)
 await client.runs.retry(run.run_id, task_ids=["task-1"])

@@ -594,6 +594,113 @@ def test_stop_run_sends_task_selection(
     assert mock_client.json == {"task_ids": None}
 
 
+def test_update_run_concurrency_uses_canonical_patch_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Send concurrency updates to the canonical run endpoint."""
+    requests: list[httpx.Request] = []
+    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "run_id": str(run_id),
+                "status": "IN_PROGRESS",
+                "concurrency": 9,
+            },
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.Client
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    response = TrackerService(base_url="http://tracker").update_run_concurrency(run_id, 9)
+
+    assert len(requests) == 1
+    assert requests[0].method == "PATCH"
+    assert str(requests[0].url) == f"http://tracker/runs/{run_id}/concurrency"
+    assert json.loads(requests[0].content) == {"concurrency": 9}
+    assert response.run_id == run_id
+    assert response.concurrency == 9
+
+
+def test_update_run_concurrency_falls_back_to_legacy_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retry the legacy path only when an old tracker lacks the canonical route."""
+    requests: list[httpx.Request] = []
+    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
+
+    def handle_request(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == f"/runs/{run_id}/concurrency":
+            return httpx.Response(404, json={"detail": "Not Found"})
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_id": str(run_id),
+                "status": "IN_PROGRESS",
+                "concurrency": 9,
+            },
+        )
+
+    transport = httpx.MockTransport(handle_request)
+    original_client = httpx.Client
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    response = TrackerService(base_url="http://tracker").update_run_concurrency(run_id, 9)
+
+    assert [request.url.path for request in requests] == [
+        f"/runs/{run_id}/concurrency",
+        f"/benchmarks/{run_id}/concurrency",
+    ]
+    assert response.run_id == run_id
+
+
+def test_update_run_concurrency_surfaces_tracker_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Preserve the tracker's useful rejection detail for CLI callers."""
+    original_client = httpx.Client
+    transport = httpx.MockTransport(
+        lambda _request: httpx.Response(409, json={"detail": "Run is currently in the FINISHED state."})
+    )
+
+    def build_client(
+        *,
+        timeout: float | httpx.Timeout | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Client:
+        return original_client(transport=transport, timeout=timeout, headers=headers)
+
+    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
+    monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
+    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
+
+    tracker = TrackerService(base_url="http://tracker")
+    with pytest.raises(
+        TrackerServiceError,
+        match="Failed to update run concurrency: Run is currently in the FINISHED state",
+    ):
+        tracker.update_run_concurrency(uuid4(), 9)
+
+
 def test_tracker_client_checks_health_on_context_entry(monkeypatch: pytest.MonkeyPatch) -> None:
     """Commands should fail before making tracker requests when the tracker is unhealthy.
 

@@ -182,6 +182,16 @@ class RetryOrResumeBenchmarkResponse(StatusResponse):
     pass
 
 
+class UpdateBenchmarkConcurrencyRequest(BaseModel):
+    concurrency: int = Field(ge=1, strict=True)
+
+
+class UpdateBenchmarkConcurrencyResponse(BaseModel):
+    benchmark_id: UUID
+    status: BenchmarkStatus
+    concurrency: int
+
+
 class Order(str, Enum):
     ASC = "asc"
     DESC = "desc"
@@ -459,6 +469,18 @@ class StopRunResponse(StatusResponse):
 
 class RetryOrResumeRunResponse(StatusResponse):
     pass
+
+
+class UpdateRunConcurrencyRequest(UpdateBenchmarkConcurrencyRequest):
+    """Canonical request for changing an active run's concurrency."""
+
+
+class UpdateRunConcurrencyResponse(CanonicalRunModel):
+    """Canonical response after changing an active run's concurrency."""
+
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
+    status: RunStatus
+    concurrency: int
 
 
 class RunStatusEntry(CanonicalRunModel):

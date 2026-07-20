@@ -1,6 +1,7 @@
 """S3 upload utilities for the tracker service."""
 
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Coroutine, Iterable
+from contextlib import suppress
 from datetime import datetime
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
@@ -25,6 +26,9 @@ S3_AGENTS_PREFIX = "agents"
 S3_BENCHMARKS_PREFIX = "benchmarks"
 
 _CLIENT_CONFIG = Config(max_pool_connections=200, retries={"mode": "standard"})
+
+# S3 multipart uploads require every part except the last to be at least 5 MiB.
+_MULTIPART_PART_BYTES = 8 * 1024 * 1024
 
 
 @lru_cache(maxsize=32)
@@ -91,6 +95,59 @@ async def upload_to_s3(file_content: bytes, s3_key: str, aws: "AWSCredentials", 
     """
     async with s3_client(aws) as client:
         await client.put_object(Bucket=s3_bucket, Key=s3_key, Body=file_content)
+
+
+@logfire.instrument("upload_stream_to_s3", extract_args=("s3_key", "s3_bucket"))
+@handle_s3_error(message="Failed to upload stream to S3")
+async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, aws: "AWSCredentials", s3_bucket: str) -> int:
+    """
+    Upload a byte stream to S3 via multipart upload, buffering at most one part in memory.
+
+    Args:
+        chunks: Async iterable of byte chunks to upload
+        s3_key: S3 object key (path in bucket)
+        aws: AWS credentials for authentication
+        s3_bucket: S3 bucket name
+
+    Returns:
+        Total number of bytes uploaded
+
+    Raises:
+        S3Error: If upload fails due to AWS errors or network issues
+    """
+    total_bytes = 0
+    async with s3_client(aws) as client:
+        multipart = await client.create_multipart_upload(Bucket=s3_bucket, Key=s3_key)
+        upload_id = multipart["UploadId"]
+        try:
+            parts: list[dict[str, Any]] = []
+            buffer = bytearray()
+
+            async def _upload_part() -> None:
+                part_number = len(parts) + 1
+                response = await client.upload_part(
+                    Bucket=s3_bucket, Key=s3_key, PartNumber=part_number, UploadId=upload_id, Body=bytes(buffer)
+                )
+                parts.append({"ETag": response["ETag"], "PartNumber": part_number})
+                buffer.clear()
+
+            async for chunk in chunks:
+                buffer.extend(chunk)
+                total_bytes += len(chunk)
+                if len(buffer) >= _MULTIPART_PART_BYTES:
+                    await _upload_part()
+
+            if buffer or not parts:
+                await _upload_part()
+
+            await client.complete_multipart_upload(
+                Bucket=s3_bucket, Key=s3_key, UploadId=upload_id, MultipartUpload={"Parts": parts}
+            )
+        except BaseException:
+            with suppress(Exception):
+                await client.abort_multipart_upload(Bucket=s3_bucket, Key=s3_key, UploadId=upload_id)
+            raise
+    return total_bytes
 
 
 @handle_s3_error(message="Failed to download from S3")

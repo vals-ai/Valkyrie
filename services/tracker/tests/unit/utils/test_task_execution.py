@@ -4,7 +4,6 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 """
 
 import asyncio
-from asyncio import Semaphore
 from typing import Any
 from unittest.mock import MagicMock, Mock
 
@@ -13,13 +12,96 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
-from tracker.utils import TaskMonitor, TrackedTask, TrackedTaskStatus
+from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
 
 class TestTaskExecution:
     """Task monitoring and tracked task state transitions."""
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
+
+    async def test_resizable_limiter_increase_wakes_waiting_admission(self) -> None:
+        limiter = ResizableLimiter(limit=1)
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_attempted = asyncio.Event()
+        second_started = asyncio.Event()
+
+        async def worker(
+            started: asyncio.Event,
+            release: asyncio.Event | None = None,
+            attempting: asyncio.Event | None = None,
+        ) -> None:
+            if attempting is not None:
+                attempting.set()
+            async with limiter:
+                started.set()
+                if release is not None:
+                    await release.wait()
+
+        first = asyncio.create_task(worker(first_started, release_first))
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        second = asyncio.create_task(worker(second_started, attempting=second_attempted))
+        await asyncio.wait_for(second_attempted.wait(), timeout=1)
+        assert not second_started.is_set()
+
+        await limiter.resize(2)
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+
+        release_first.set()
+        await asyncio.gather(first, second)
+
+    async def test_resizable_limiter_decrease_is_non_preemptive(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        limiter = ResizableLimiter(limit=2)
+        first_started = asyncio.Event()
+        second_started = asyncio.Event()
+        third_started = asyncio.Event()
+        release_first = asyncio.Event()
+        release_second = asyncio.Event()
+        third_wait_attempted = asyncio.Event()
+        third_rewait_attempted = asyncio.Event()
+        condition = getattr(limiter, "_condition")
+        condition_wait = getattr(condition, "wait")
+        wait_attempts = 0
+
+        async def observed_condition_wait() -> bool:
+            nonlocal wait_attempts
+            wait_attempts += 1
+            if wait_attempts == 1:
+                third_wait_attempted.set()
+            elif wait_attempts == 2:
+                third_rewait_attempted.set()
+            return await condition_wait()
+
+        monkeypatch.setattr(condition, "wait", observed_condition_wait)
+
+        async def worker(started: asyncio.Event, release: asyncio.Event | None = None) -> None:
+            async with limiter:
+                started.set()
+                if release is not None:
+                    await release.wait()
+
+        first = asyncio.create_task(worker(first_started, release_first))
+        second = asyncio.create_task(worker(second_started, release_second))
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        await asyncio.wait_for(second_started.wait(), timeout=1)
+
+        await limiter.resize(1)
+        third = asyncio.create_task(worker(third_started))
+        await asyncio.wait_for(third_wait_attempted.wait(), timeout=1)
+        assert not first.done()
+        assert not second.done()
+        assert not third_started.is_set()
+
+        release_first.set()
+        await first
+        await asyncio.wait_for(third_rewait_attempted.wait(), timeout=1)
+        assert not third_started.is_set()
+
+        release_second.set()
+        await second
+        await asyncio.wait_for(third_started.wait(), timeout=1)
+        await third
 
     async def test_task_monitor(
         self, database_session: Session, example_benchmark_object: Benchmark, monkeypatch: pytest.MonkeyPatch
@@ -47,7 +129,12 @@ class TestTaskExecution:
 
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
-        monitor = TaskMonitor(benchmark_row.id, task_tracking.copy(), org=self._test_org)
+        monitor = TaskMonitor(
+            benchmark_row.id,
+            task_tracking.copy(),
+            org=self._test_org,
+            limiter=ResizableLimiter(limit=1),
+        )
         monkeypatch.setattr(monitor, "_TRACK_INTERVAL", 0)
 
         # Change task status to running and add a task to the object
@@ -104,9 +191,10 @@ class TestTaskExecution:
             await release.wait()
             return {task_id: {"result": task_id}}
 
-        semaphore = Semaphore(value=1)
+        limiter = ResizableLimiter(limit=1)
         running_started = asyncio.Event()
         release_running = asyncio.Event()
+        waiting_attempted = asyncio.Event()
         waiting_started = asyncio.Event()
         release_waiting = asyncio.Event()
         running_row = MagicMock(spec=Task, task_id="task_id_1")
@@ -117,10 +205,15 @@ class TestTaskExecution:
         assert running.status == TrackedTaskStatus.WAITING
         assert running.task is None
 
-        running_call = asyncio.create_task(running.run(semaphore, running_row))
+        running_call = asyncio.create_task(running.run(limiter, running_row))
         await running_started.wait()
-        waiting_call = asyncio.create_task(waiting.run(semaphore, waiting_row))
-        await asyncio.sleep(0)
+
+        async def run_waiting() -> dict[str, dict[str, Any] | None]:
+            waiting_attempted.set()
+            return await waiting.run(limiter, waiting_row)
+
+        waiting_call = asyncio.create_task(run_waiting())
+        await waiting_attempted.wait()
 
         assert running.status == TrackedTaskStatus.RUNNING
         assert waiting.status == TrackedTaskStatus.WAITING

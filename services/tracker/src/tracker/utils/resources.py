@@ -1,5 +1,6 @@
 """Factory helpers that construct clients, provider configs, and validated DB rows."""
 
+from dataclasses import dataclass
 from uuid import UUID
 
 from benchmark_service import (
@@ -7,7 +8,7 @@ from benchmark_service import (
     sandbox_provider_config_from_mapping,
 )
 from benchmark_service.client import BenchmarkServiceClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
 from tracker.aws.secrets import fetch_aws_secret
@@ -15,6 +16,7 @@ from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
     Benchmark,
     BenchmarkArguments,
+    BenchmarkStatus,
     Org,
     Task,
 )
@@ -24,6 +26,13 @@ from tracker.types import (
     AWSCredentials,
     StartBenchmarkRequest,
 )
+
+
+@dataclass(frozen=True)
+class RunConcurrencyUpdate:
+    run_id: UUID
+    status: BenchmarkStatus
+    concurrency: int
 
 
 def fetch_sandbox_provider_config(secret_name: str, aws: AWSCredentials, provider_type: str) -> SandboxProviderConfig:
@@ -108,6 +117,68 @@ def fetch_benchmark_row(
         raise ValueError(f"Run with id {benchmark_id} not found")
     if benchmark_row.org_id != org.id:
         raise ValueError(f"Run {benchmark_id} does not belong to org {org.id}")
+    return benchmark_row
+
+
+def _fetch_locked_benchmark(benchmark_id: UUID, session: Session, org: Org) -> Benchmark:
+    benchmark_row = session.exec(
+        select(Benchmark)
+        .where(Benchmark.id == benchmark_id)
+        .where(Benchmark.org_id == org.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).one_or_none()
+    if benchmark_row is None:
+        raise ValueError(f"Run with id {benchmark_id} not found")
+    return benchmark_row
+
+
+def update_run_concurrency(
+    run_id: UUID,
+    concurrency: int,
+    session: Session,
+    org: Org,
+) -> RunConcurrencyUpdate:
+    """Lock an org-scoped run and persist a new active-run concurrency limit."""
+    benchmark_row = _fetch_locked_benchmark(run_id, session, org)
+    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+        return RunConcurrencyUpdate(
+            run_id=benchmark_row.id,
+            status=benchmark_row.status,
+            concurrency=benchmark_row.arguments.concurrency,
+        )
+
+    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
+    result = RunConcurrencyUpdate(
+        run_id=benchmark_row.id,
+        status=benchmark_row.status,
+        concurrency=benchmark_row.arguments.concurrency,
+    )
+    session.commit()
+    return result
+
+
+def update_benchmark_resume_arguments(
+    benchmark_id: UUID,
+    session: Session,
+    org: Org,
+    *,
+    secrets: dict[str, str],
+    concurrency: int | None,
+) -> Benchmark:
+    """Lock and freshly merge JSON-backed arguments used by resume and retry."""
+    benchmark_row = _fetch_locked_benchmark(benchmark_id, session, org)
+    arguments = benchmark_row.arguments
+
+    if secrets:
+        contract = arguments.contract
+        updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
+        arguments = arguments.model_copy(update={"contract": updated_contract})
+    if concurrency is not None:
+        arguments = arguments.model_copy(update={"concurrency": concurrency})
+
+    benchmark_row.arguments = arguments
+    session.commit()
     return benchmark_row
 
 

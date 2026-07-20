@@ -185,6 +185,19 @@ Starts are fail-fast: if a request fails, no later requests are attempted. The c
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
 | `--connect` | Stream run updates after the run starts |
 
+### Update an active run's concurrency
+
+```bash
+valkyrie run update <id> --concurrency 20
+```
+
+This updates the persisted concurrency limit for an active run without restarting it. Increases allow more tasks after
+the tracker next refreshes the run; decreases do not cancel in-flight work and pause new admissions until usage falls
+below the new limit. The value must be a positive integer, and completed, stopped, or failed runs cannot be updated.
+The limit is enforced independently by each run executor. If an active retry creates overlapping
+executors, aggregate admissions may temporarily exceed the persisted value; a strict cross-executor or distributed cap
+is not provided.
+
 ### Monitor a run
 
 After starting, use the following commands to check the status of a run: 

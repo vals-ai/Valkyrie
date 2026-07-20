@@ -30,7 +30,7 @@ from sqlmodel import Session, select
 from main import app, tracker_service_error_handler
 from tests.unit.utils.task_execution_support import MockKicker
 from tests.utils import TEST_ORG_ID, async_iterator
-from tracker.auth import RequestIdentity, get_current_starter
+from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -54,7 +54,7 @@ from tracker.types import (
     StartBenchmarkResponse,
     StatusResponse,
 )
-from tracker.utils import fetch_harness_config
+from tracker.utils import fetch_harness_config, update_run_concurrency
 
 client = TestClient(app)
 
@@ -85,6 +85,188 @@ class TestTrackerAPI:
         assert response.status_code == 200
 
         assert response.json() == {"status": "ok"}
+
+    @pytest.mark.parametrize("concurrency", [0, -1, 1.5, "2", True])
+    def test_update_benchmark_concurrency_rejects_non_positive_or_non_integer_values(
+        self,
+        concurrency: object,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        response = client.patch(
+            f"/benchmarks/{example_benchmark_object.id}/concurrency",
+            json={"concurrency": concurrency},
+        )
+
+        assert response.status_code == 422
+        database_session.refresh(example_benchmark_object)
+        assert example_benchmark_object.arguments.concurrency == 5
+
+    def test_update_benchmark_concurrency_persists_full_arguments_and_is_idempotent(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        original_arguments = example_benchmark_object.arguments
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        first_response = client.patch(
+            f"/benchmarks/{example_benchmark_object.id}/concurrency",
+            json={"concurrency": 9},
+        )
+        retry_response = client.patch(
+            f"/benchmarks/{example_benchmark_object.id}/concurrency",
+            json={"concurrency": 9},
+        )
+
+        expected_response = {
+            "benchmark_id": str(example_benchmark_object.id),
+            "status": BenchmarkStatus.IN_PROGRESS.value,
+            "concurrency": 9,
+        }
+        assert first_response.status_code == 200
+        assert first_response.json() == expected_response
+        assert retry_response.status_code == 200
+        assert retry_response.json() == expected_response
+
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, example_benchmark_object.id)
+        assert persisted is not None
+        assert persisted.arguments == original_arguments.model_copy(update={"concurrency": 9})
+
+    def test_update_run_concurrency_uses_canonical_route_and_response(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        response = client.patch(
+            f"/runs/{example_benchmark_object.id}/concurrency",
+            json={"concurrency": 9},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "run_id": str(example_benchmark_object.id),
+            "status": BenchmarkStatus.IN_PROGRESS.value,
+            "concurrency": 9,
+        }
+
+    def test_update_benchmark_concurrency_hides_missing_and_other_org_runs(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        missing_response = client.patch(
+            f"/benchmarks/{uuid4()}/concurrency",
+            json={"concurrency": 9},
+        )
+        other_org = Org(id=uuid4(), name="other")
+        monkeypatch.setitem(app.dependency_overrides, get_current_org, lambda: other_org)
+
+        response = client.patch(
+            f"/benchmarks/{example_benchmark_object.id}/concurrency",
+            json={"concurrency": 9},
+        )
+
+        assert missing_response.status_code == 404
+        assert missing_response.json() == {"detail": "Not found"}
+        assert response.status_code == 404
+        assert response.json() == {"detail": "Not found"}
+        database_session.refresh(example_benchmark_object)
+        assert example_benchmark_object.arguments.concurrency == 5
+
+    def test_update_benchmark_concurrency_rejects_non_active_run(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        example_benchmark_object.status = BenchmarkStatus.STOPPED
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        response = client.patch(
+            f"/benchmarks/{example_benchmark_object.id}/concurrency",
+            json={"concurrency": 9},
+        )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": f"Run {example_benchmark_object.id} is currently in the STOPPED state."}
+        database_session.refresh(example_benchmark_object)
+        assert example_benchmark_object.arguments.concurrency == 5
+
+    def test_update_run_concurrency_refreshes_preloaded_state_before_mutating(
+        self,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        with Session(bind=database_session.get_bind()) as concurrent_session:
+            concurrent_benchmark = concurrent_session.get(Benchmark, example_benchmark_object.id)
+            assert concurrent_benchmark is not None
+            concurrent_benchmark.status = BenchmarkStatus.STOPPED
+            concurrent_session.add(concurrent_benchmark)
+            concurrent_session.commit()
+
+        result = update_run_concurrency(
+            example_benchmark_object.id,
+            9,
+            database_session,
+            Org(id=TEST_ORG_ID, name="default"),
+        )
+
+        assert result.status == BenchmarkStatus.STOPPED
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, example_benchmark_object.id)
+        assert persisted is not None
+        assert persisted.status == BenchmarkStatus.STOPPED
+        assert persisted.arguments.concurrency == 5
+
+    def test_update_run_concurrency_returns_snapshot_from_locked_transaction(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        commit_update = database_session.commit
+
+        def commit_then_stop() -> None:
+            commit_update()
+            with Session(bind=database_session.get_bind()) as concurrent_session:
+                concurrent_benchmark = concurrent_session.get(Benchmark, example_benchmark_object.id)
+                assert concurrent_benchmark is not None
+                concurrent_benchmark.status = BenchmarkStatus.STOPPED
+                concurrent_session.add(concurrent_benchmark)
+                concurrent_session.commit()
+
+        monkeypatch.setattr(database_session, "commit", commit_then_stop)
+
+        result = update_run_concurrency(
+            example_benchmark_object.id,
+            9,
+            database_session,
+            Org(id=TEST_ORG_ID, name="default"),
+        )
+
+        assert result.status == BenchmarkStatus.IN_PROGRESS
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, example_benchmark_object.id)
+        assert persisted is not None
+        assert persisted.status == BenchmarkStatus.STOPPED
+        assert persisted.arguments.concurrency == 9
 
     def test_trailing_slash_does_not_redirect(self, monkeypatch: MonkeyPatch) -> None:
         """

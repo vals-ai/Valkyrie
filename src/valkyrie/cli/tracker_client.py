@@ -32,6 +32,8 @@ from tracker.types import (
     S3UploadResultsResponse,
     StartRunRequest,
     StopRunResponse,
+    UpdateRunConcurrencyRequest,
+    UpdateRunConcurrencyResponse,
 )
 
 from valkyrie.cli.exceptions import TrackerNotFoundError, TrackerServiceError
@@ -201,6 +203,18 @@ class TrackerService:
                 params=legacy_params if legacy_params is not None else params,
                 json=json,
             )
+        return response
+
+    def _patch_with_legacy_fallback(
+        self,
+        canonical_url: str,
+        legacy_url: str,
+        *,
+        json: dict[str, Any],
+    ) -> Response:
+        response = self._client.patch(canonical_url, json=json)
+        if _is_missing_route(response):
+            return self._client.patch(legacy_url, json=json)
         return response
 
     @contextmanager
@@ -731,6 +745,27 @@ class TrackerService:
             return _parse_model_response(response, "Failed to stop run", StopRunResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to stop run: {e}") from e
+
+    def update_run_concurrency(
+        self,
+        run_id: UUID,
+        concurrency: int,
+    ) -> UpdateRunConcurrencyResponse:
+        """Update the concurrency limit for an active run."""
+        payload = UpdateRunConcurrencyRequest(concurrency=concurrency)
+        try:
+            response = self._patch_with_legacy_fallback(
+                f"{self._base_url}/runs/{run_id}/concurrency",
+                f"{self._base_url}/benchmarks/{run_id}/concurrency",
+                json=payload.model_dump(),
+            )
+            return _parse_model_response(
+                response,
+                "Failed to update run concurrency",
+                UpdateRunConcurrencyResponse,
+            )
+        except httpx.HTTPError as e:
+            raise TrackerServiceError(f"Failed to update run concurrency: {e}") from e
 
     def retry_or_resume_run(
         self,

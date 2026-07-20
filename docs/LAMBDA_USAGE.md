@@ -56,7 +56,7 @@ Example method:
 
 ```python
 def lambda_handler(event, context):
-    run_id = event.get("run_id", event["benchmark_id"])
+    run_id = event.get("run_id") or event["benchmark_id"]
     agent_name = event["contract"]["name"]
 
     # Your post-run logic here

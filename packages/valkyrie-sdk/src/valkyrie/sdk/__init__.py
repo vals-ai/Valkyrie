@@ -32,6 +32,7 @@ from valkyrie.sdk.models import (
     TasksResponse,
     TaskSummary,
     TaskStatus,
+    UpdateRunConcurrencyResponse,
 )
 
 from valkyrie.sdk.client import ValkyrieClient
@@ -77,6 +78,7 @@ __all__ = [
     "TasksResponse",
     "TaskSummary",
     "TaskStatus",
+    "UpdateRunConcurrencyResponse",
     "ValkyrieAPIError",
     "ValkyrieClient",
     "ValkyrieConfig",

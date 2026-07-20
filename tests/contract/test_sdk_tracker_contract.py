@@ -53,6 +53,8 @@ from tracker.types import (
     TaskArtifactsResponse,
     TasksResponse,
     TaskSummary,
+    UpdateRunConcurrencyRequest,
+    UpdateRunConcurrencyResponse,
 )
 from valkyrie.sdk.models import (
     AWSCredentials as SDKAWSCredentials,
@@ -91,6 +93,8 @@ from valkyrie.sdk.models import (
     TaskIDsResponse as SDKTaskIDsResponse,
     TasksResponse as SDKTasksResponse,
     TaskSummary as SDKTaskSummary,
+    UpdateRunConcurrencyRequest as SDKUpdateRunConcurrencyRequest,
+    UpdateRunConcurrencyResponse as SDKUpdateRunConcurrencyResponse,
 )
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
@@ -138,6 +142,7 @@ ROUTES = (
     ("/runs/{run_id}/outputs", "get", "run_id task_ids"),
     ("/runs/{run_id}/analysis", "post", "run_id"),
     ("/runs/{run_id}/stop", "post", "run_id force"),
+    ("/runs/{run_id}/concurrency", "patch", "run_id"),
     ("/runs/{run_id}/resume", "post", "run_id retry_mode concurrency"),
     ("/runs/{run_id}/retry", "post", "run_id retry_mode concurrency"),
     (
@@ -147,6 +152,7 @@ ROUTES = (
     ),
     ("/runs/{run_id}/tasks/{task_id}", "get", "run_id task_id"),
     ("/runs/{run_id}/tasks/{task_id}/artifacts", "get", "run_id task_id"),
+    ("/benchmarks/{benchmark_id}/concurrency", "patch", "benchmark_id"),
 )
 RESPONSE_MODELS = {
     ("/start-benchmark", "post"): "StartBenchmarkResponse",
@@ -170,11 +176,13 @@ RESPONSE_MODELS = {
     ("/runs/{run_id}", "get"): "GetRunResponse",
     ("/runs/{run_id}/metadata", "get"): "RunMetadataResponse",
     ("/runs/{run_id}/stop", "post"): "StopRunResponse",
+    ("/runs/{run_id}/concurrency", "patch"): "UpdateRunConcurrencyResponse",
     ("/runs/{run_id}/resume", "post"): "RetryOrResumeRunResponse",
     ("/runs/{run_id}/retry", "post"): "RetryOrResumeRunResponse",
     ("/runs/{run_id}/tasks", "get"): "TasksResponse",
     ("/runs/{run_id}/tasks/{task_id}", "get"): "SingleTaskResponse",
     ("/runs/{run_id}/tasks/{task_id}/artifacts", "get"): "TaskArtifactsResponse",
+    ("/benchmarks/{benchmark_id}/concurrency", "patch"): "UpdateBenchmarkConcurrencyResponse",
 }
 MODEL_PAIRS = (
     (OutputArtifact, SDKOutputArtifact),
@@ -213,6 +221,8 @@ MODEL_PAIRS = (
     (VerifyTaskIdsResponse, SDKTaskIDsResponse),
     (AnalyzeRunRequest, SDKAnalyzeRunRequest),
     (RunMetadataResponse, SDKRunMetadataResponse),
+    (UpdateRunConcurrencyRequest, SDKUpdateRunConcurrencyRequest),
+    (UpdateRunConcurrencyResponse, SDKUpdateRunConcurrencyResponse),
 )
 INTERNAL_ROUTES = {
     ("/benchmarks/filter-options", "get"),
@@ -335,6 +345,14 @@ def test_tracker_routes_match_the_sdk_http_contract() -> None:
         assert operation["requestBody"]["content"]["application/json"]["schema"] == {
             "$ref": f"#/components/schemas/{model}"
         }
+    for path, model in (
+        ("/runs/{run_id}/concurrency", "UpdateRunConcurrencyRequest"),
+        ("/benchmarks/{benchmark_id}/concurrency", "UpdateBenchmarkConcurrencyRequest"),
+    ):
+        operation = schema["paths"][path]["patch"]
+        assert operation["requestBody"]["content"]["application/json"]["schema"] == {
+            "$ref": f"#/components/schemas/{model}"
+        }
 
     retry = schema["paths"]["/retry-or-resume-benchmark/{benchmark_id}"]["post"]
     retry_schema_ref = retry["requestBody"]["content"]["application/json"]["schema"]["$ref"]
@@ -437,6 +455,7 @@ def test_tracker_exposes_canonical_run_routes_without_changing_legacy_routes() -
         "/runs/{run_id}/outputs": {"get"},
         "/runs/{run_id}/analysis": {"post"},
         "/runs/{run_id}/stop": {"post"},
+        "/runs/{run_id}/concurrency": {"patch"},
         "/runs/{run_id}/resume": {"post"},
         "/runs/{run_id}/retry": {"post"},
         "/runs/{run_id}/tasks": {"get"},

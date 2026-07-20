@@ -45,7 +45,7 @@ from tracker.utils.resources import (
     fetch_sandbox_provider_config,
 )
 from tracker.utils.reporting import create_final_view, upload_final_view
-from tracker.utils.task_execution import TaskMonitor, TrackedTask, process_task
+from tracker.utils.task_execution import ResizableLimiter, TaskMonitor, TrackedTask, process_task
 
 logger = get_logger(__name__)
 
@@ -257,6 +257,7 @@ async def process_benchmark(
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session, org)
+            limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
 
         task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
@@ -288,12 +289,10 @@ async def process_benchmark(
         }
 
         # Start the monitor to track the state the tasks are in and cancel them when no longer valid
-        monitor = TaskMonitor(benchmark_id, tracked_tasks, org, notifier=notifier)
+        monitor = TaskMonitor(benchmark_id, tracked_tasks, org, limiter=limiter, notifier=notifier)
         monitor_task = asyncio.create_task(monitor.track_tasks())
 
-        semaphore = Semaphore(start_benchmark_request.concurrency)
-
-        await gather(*[tracked_tasks[task_id].run(semaphore, task_row) for task_id, task_row in task_rows])
+        await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in task_rows])
 
         await monitor_task
 

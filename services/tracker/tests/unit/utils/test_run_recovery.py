@@ -42,6 +42,7 @@ from tracker.database.models import (
 )
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
+    ResizableLimiter,
     TaskMonitor,
     TrackedTask,
     TrackedTaskStatus,
@@ -52,6 +53,7 @@ from tracker.utils import (
     process_task,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
+    update_run_concurrency,
 )
 
 UTC = ZoneInfo("UTC")
@@ -90,6 +92,71 @@ class TestRunRecovery:
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+
+    @pytest.mark.usefixtures("process_benchmark_env")
+    async def test_process_benchmark_uses_persisted_and_refreshed_concurrency(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        task_ids = ["task_0", "task_1"]
+        request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            concurrency=7,
+            task_ids=task_ids,
+            harness_config=harness_config,
+        )
+        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 1})
+        database_session.add(benchmark_row)
+        database_session.commit()
+        admitted_task_ids: list[str] = []
+        first_admitted = asyncio.Event()
+        release_first = asyncio.Event()
+        second_admitted = asyncio.Event()
+        sandbox_count = 0
+
+        @asynccontextmanager
+        async def unique_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_count
+            sandbox_count += 1
+            sandbox = AsyncMock()
+            sandbox.id = f"mock-sandbox-id-{sandbox_count}"
+            yield sandbox
+
+        async def controlled_retrieve_task(*_args: Any, task_id: str, **_kwargs: Any) -> RetrieveTaskResponse:
+            admitted_task_ids.append(task_id)
+            if len(admitted_task_ids) == 1:
+                first_admitted.set()
+                await release_first.wait()
+            else:
+                second_admitted.set()
+            return make_retrieve_task_response()
+
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", controlled_retrieve_task)
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", unique_sandbox)
+
+        process_future = asyncio.create_task(
+            process_benchmark(
+                start_benchmark_request_json=request.model_dump(),
+                benchmark_id_str=str(benchmark_row.id),
+                verified_task_ids=task_ids,
+            )
+        )
+        try:
+            await asyncio.wait_for(first_admitted.wait(), timeout=2)
+            benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 2})
+            database_session.add(benchmark_row)
+            database_session.commit()
+            await asyncio.wait_for(second_admitted.wait(), timeout=2)
+        finally:
+            release_first.set()
+            await asyncio.wait_for(process_future, timeout=5)
+
+        assert admitted_task_ids == task_ids
 
     async def test_stop_selected_tasks_scopes_graceful_and_force(
         self,
@@ -1069,6 +1136,51 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.arguments.contract.secrets == queued_request["contract"]["secrets"]
 
+    async def test_retry_or_resume_secret_merge_preserves_concurrent_concurrency_update(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        benchmark_row.arguments.contract.secrets = {"ANTHROPIC_API_KEY": "old-secret"}
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        async def _concurrent_reset(*_args: Any, **_kwargs: Any) -> list[str]:
+            with Session(bind=database_session.get_bind()) as control_session:
+                persisted = control_session.get(Benchmark, benchmark_row.id)
+                assert persisted is not None
+                persisted.status = BenchmarkStatus.IN_PROGRESS
+                control_session.add(persisted)
+                control_session.commit()
+                update_run_concurrency(benchmark_row.id, 9, control_session, self._test_org)
+            return ["task_0"]
+
+        monkeypatch.setattr("main.reset_to_in_progress_status", _concurrent_reset)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={
+                "task_ids": [],
+                "service_headers": {},
+                "secrets": {"ANTHROPIC_API_KEY": "new-secret"},
+            },
+        )
+
+        assert response.status_code == 200
+        queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
+        assert queued_request["concurrency"] == 9
+        assert queued_request["contract"]["secrets"] == {"ANTHROPIC_API_KEY": "new-secret"}
+
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        assert persisted.arguments.concurrency == 9
+        assert persisted.arguments.contract.secrets == {"ANTHROPIC_API_KEY": "new-secret"}
+
     async def test_running_retry_noops_without_error_tasks(
         self,
         example_benchmark_object: Benchmark,
@@ -1123,6 +1235,31 @@ class TestRunRecovery:
 
         task_row = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
         assert task_row.status == TaskStatus.ERROR
+
+    async def test_running_resume_updates_concurrency_without_enqueuing_work(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        def _unexpected_kicker() -> None:
+            raise AssertionError("updating active-run concurrency should not enqueue duplicate work")
+
+        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?concurrency=8")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        assert persisted.arguments.concurrency == 8
 
     async def test_running_retry_only_resets_error_tasks(
         self,
@@ -1285,7 +1422,12 @@ class TestRunRecovery:
         cancel_mock.side_effect = _cancel
         setattr(tracked_task, "_task", Mock(cancel=cancel_mock, done=lambda: False))
 
-        monitor = TaskMonitor(benchmark_row.id, {task_row.task_id: tracked_task}, org=self._test_org)
+        monitor = TaskMonitor(
+            benchmark_row.id,
+            {task_row.task_id: tracked_task},
+            org=self._test_org,
+            limiter=ResizableLimiter(limit=1),
+        )
         setattr(monitor, "_TRACK_INTERVAL", 0)
 
         await monitor.track_tasks()

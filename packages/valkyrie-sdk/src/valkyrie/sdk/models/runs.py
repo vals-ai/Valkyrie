@@ -276,3 +276,17 @@ class StopRunResponse(StatusResponse):
 
 class RetryOrResumeRunResponse(StatusResponse):
     """Response returned after retrying or resuming a run."""
+
+
+class UpdateRunConcurrencyRequest(BaseModel):
+    """Wire payload used to change an active run's concurrency."""
+
+    concurrency: int = Field(ge=1, strict=True)
+
+
+class UpdateRunConcurrencyResponse(ResponseModel):
+    """Response returned after changing an active run's concurrency."""
+
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
+    status: RunStatus
+    concurrency: int

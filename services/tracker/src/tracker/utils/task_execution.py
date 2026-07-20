@@ -10,6 +10,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
+from types import TracebackType
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -87,6 +88,41 @@ class TrackedTaskStatus(str, Enum):
     DONE = "done"
 
 
+class ResizableLimiter:
+    """A per-executor admission limit that can change without preempting admitted work."""
+
+    def __init__(self, limit: int):
+        if limit < 1:
+            raise ValueError("Limit must be greater than 0")
+        self._limit = limit
+        self._in_flight = 0
+        self._condition = asyncio.Condition()
+
+    async def resize(self, limit: int) -> None:
+        if limit < 1:
+            raise ValueError("Limit must be greater than 0")
+        async with self._condition:
+            previous_limit = self._limit
+            self._limit = limit
+            if limit > previous_limit:
+                self._condition.notify_all()
+
+    async def __aenter__(self) -> None:
+        async with self._condition:
+            await self._condition.wait_for(lambda: self._in_flight < self._limit)
+            self._in_flight += 1
+
+    async def __aexit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        async with self._condition:
+            self._in_flight -= 1
+            self._condition.notify_all()
+
+
 class TrackedTask:
     _coro: Coroutine[Any, Any, Any]
     _status: str
@@ -107,10 +143,10 @@ class TrackedTask:
     def task(self) -> asyncio.Task[Any] | None:
         return self._task
 
-    async def run(self, semaphore: asyncio.Semaphore, task_row: Task) -> dict[str, dict[str, Any] | None]:
+    async def run(self, limiter: ResizableLimiter, task_row: Task) -> dict[str, dict[str, Any] | None]:
         async def _wrap_coro():
             """Need to have a task created even if we are not running the coroutine so that we can cancel it before its running"""
-            async with semaphore:
+            async with limiter:
                 self._status = TrackedTaskStatus.RUNNING
                 return await self._coro
 
@@ -143,15 +179,28 @@ class TaskMonitor:
     _task_tracking: dict[str, TrackedTask]
     _notifier: SlackNotifier | None
     _org: Org
+    _limiter: ResizableLimiter
     _TRACK_INTERVAL: int = 2
 
     def __init__(
-        self, benchmark_id: UUID, task_tracking: dict[str, TrackedTask], org: Org, notifier: SlackNotifier | None = None
+        self,
+        benchmark_id: UUID,
+        task_tracking: dict[str, TrackedTask],
+        org: Org,
+        limiter: ResizableLimiter,
+        notifier: SlackNotifier | None = None,
     ):
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
         self._org = org
         self._notifier = notifier
+        self._limiter = limiter
+
+    async def _refresh_concurrency(self) -> None:
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+            concurrency = benchmark_row.arguments.concurrency
+        await self._limiter.resize(concurrency)
 
     def _fetch_task_row(self, task_id: str) -> Task:
         with Session(bind=engine) as session:
@@ -204,6 +253,7 @@ class TaskMonitor:
         exit_condition_met: bool = False
 
         while not exit_condition_met and self._task_tracking:
+            await self._refresh_concurrency()
             tasks_to_check: list[str] = list(self._task_tracking.keys())
             for task_id in tasks_to_check:
                 task = self._task_tracking[task_id]

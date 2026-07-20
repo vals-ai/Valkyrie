@@ -106,9 +106,14 @@ from tracker.types import (
     StopRunResponse,
     TaskArtifactsResponse,
     TasksResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
+    UpdateRunConcurrencyRequest,
+    UpdateRunConcurrencyResponse,
 )
 from tracker.utils import (
     BenchmarkContext,
+    RunConcurrencyUpdate,
     YieldingWriter,
     build_benchmark_table_rows,
     commit_benchmark_error,
@@ -125,6 +130,8 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
     stream_benchmark_results,
     upload_final_view,
+    update_run_concurrency,
+    update_benchmark_resume_arguments,
 )
 
 configure_logging()
@@ -729,11 +736,38 @@ async def stop_benchmark(
     )
 
 
-def _apply_resume_secrets(benchmark_row: Benchmark, secrets: dict[str, str]) -> None:
-    """Merge resume secrets into the stored agent contract."""
-    contract = benchmark_row.arguments.contract
-    updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
-    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
+def _update_run_concurrency(
+    run_id: UUID,
+    concurrency: int,
+    session: Session,
+    org: Org,
+) -> RunConcurrencyUpdate:
+    try:
+        run = update_run_concurrency(run_id, concurrency, session, org)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Not found") from exc
+
+    if run.status != BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {run_id} is currently in the {run.status.value} state.",
+        )
+    return run
+
+
+@app.patch("/benchmarks/{benchmark_id}/concurrency")
+def patch_benchmark_concurrency(
+    benchmark_id: TrackedBenchmarkId,
+    request: UpdateBenchmarkConcurrencyRequest,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> UpdateBenchmarkConcurrencyResponse:
+    run = _update_run_concurrency(benchmark_id, request.concurrency, session, org)
+    return UpdateBenchmarkConcurrencyResponse(
+        benchmark_id=run.run_id,
+        status=run.status,
+        concurrency=run.concurrency,
+    )
 
 
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
@@ -775,13 +809,18 @@ async def retry_or_resume_benchmark(
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
 
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+        assert concurrency is not None
+        _update_run_concurrency(benchmark_id, concurrency, session, org)
+        return RetryOrResumeBenchmarkResponse(status="success")
 
     effective_service_headers = forward_tracker_api_key(
         service_headers,
@@ -803,17 +842,14 @@ async def retry_or_resume_benchmark(
             status="success",
         )
 
-    if secrets:
-        _apply_resume_secrets(benchmark_row, secrets)
-        session.add(benchmark_row)
-        session.commit()
-
-    if concurrency is not None:
-        # Reassign (not in-place mutate): arguments is a JSON-backed TypeDecorator,
-        # so SQLAlchemy only detects the change when the attribute itself is replaced.
-        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
-        session.add(benchmark_row)
-        session.commit()
+    if secrets or concurrency is not None:
+        benchmark_row = update_benchmark_resume_arguments(
+            benchmark_id,
+            session,
+            org,
+            secrets=secrets,
+            concurrency=concurrency,
+        )
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(
@@ -1208,6 +1244,21 @@ async def stop_run(
         org=org,
     )
     return StopRunResponse(status=response.status)
+
+
+@app.patch("/runs/{run_id}/concurrency", response_model=UpdateRunConcurrencyResponse)
+def patch_run_concurrency(
+    run_id: TrackedRunId,
+    request: UpdateRunConcurrencyRequest,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> UpdateRunConcurrencyResponse:
+    run = _update_run_concurrency(run_id, request.concurrency, session, org)
+    return UpdateRunConcurrencyResponse(
+        run_id=run.run_id,
+        status=RunStatus(run.status.value),
+        concurrency=run.concurrency,
+    )
 
 
 async def _continue_run(
