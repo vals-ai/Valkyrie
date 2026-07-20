@@ -24,6 +24,7 @@ S3_BENCHMARKS_PREFIX = "benchmarks"
 # S3 multipart uploads require every part except the last to be at least 5 MiB.
 _MULTIPART_PART_BYTES = 8 * 1024 * 1024
 
+
 def get_contract_s3_key(contract_name: str) -> str:
     """Get the S3 key for an agent zip file."""
     return f"{S3_AGENTS_PREFIX}/{contract_name}.zip"
