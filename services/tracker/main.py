@@ -627,10 +627,10 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
     aws_runtime = AwsRuntime.from_harness_config(harness_config)
 
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
     exists = await s3_object_exists(s3_key, aws_runtime)
     return {"exists": exists}
 
