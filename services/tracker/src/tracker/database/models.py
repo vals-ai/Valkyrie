@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, field_serializer, field_validator
+from pydantic import BaseModel, SerializerFunctionWrapHandler, field_serializer, field_validator, model_serializer
 from sqlalchemy import Connection, Dialect, Index, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
@@ -99,6 +99,14 @@ def _source_glob_root(source: str) -> str:
 class OutputArtifact(BaseModel):
     path: str
     source: str | None = None
+    required: bool = True
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.required:
+            data.pop("required", None)
+        return data
 
     @field_validator("source")
     @classmethod

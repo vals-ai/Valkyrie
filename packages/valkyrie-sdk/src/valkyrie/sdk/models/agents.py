@@ -1,8 +1,9 @@
 """Agent contract models used by SDK run requests."""
 
 from pathlib import PurePosixPath
+from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, field_validator, model_serializer
 
 MAX_OUTPUT_ARTIFACT_COUNT = 10
 
@@ -22,6 +23,14 @@ class OutputArtifact(BaseModel):
 
     path: str
     source: str | None = None
+    required: bool = True
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        data = handler(self)
+        if self.required:
+            data.pop("required", None)
+        return data
 
     @field_validator("source")
     @classmethod

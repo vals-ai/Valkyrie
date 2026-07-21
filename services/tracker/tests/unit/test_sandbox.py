@@ -8,7 +8,7 @@ import shlex
 from collections import deque
 from collections.abc import Mapping
 from typing import Any
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 from benchmark_service import ComposeSandbox, ComposeSource, ExecResult, ImageSource, Resources, SnapshotSource
@@ -190,6 +190,64 @@ class TestOutputArtifacts:
         with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
+    async def test_upload_output_artifacts_skips_missing_optional_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        artifact = OutputArtifact(
+            path="atif/trajectory.json",
+            source="/logs/trajectory_atif.json",
+            required=False,
+        )
+
+        sandbox = Mock()
+        exec_mock = AsyncMock(return_value=ExecResult(exit_code=1, output=""))
+        upload_mock = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+
+        await upload_output_artifacts(
+            sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
+
+        exec_mock.assert_awaited_once_with(sandbox, "test -f /logs/trajectory_atif.json")
+        upload_mock.assert_not_awaited()
+
+    async def test_missing_optional_model_patch_never_affects_task_result(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        artifact = OutputArtifact(
+            path="artifacts/model.patch",
+            source="/logs/model.patch",
+            required=False,
+        )
+
+        sandbox = Mock()
+        exec_mock = AsyncMock(return_value=ExecResult(exit_code=1, output=""))
+        upload_mock = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+
+        await upload_output_artifacts(
+            sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
+
+        exec_mock.assert_awaited_once_with(sandbox, "test -f /logs/model.patch")
+        upload_mock.assert_not_awaited()
+
     async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -211,6 +269,43 @@ class TestOutputArtifacts:
         with pytest.raises(OutputArtifactError, match="too large"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
+        upload_mock.assert_not_awaited()
+
+    async def test_upload_output_artifacts_skips_invalid_optional_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        artifact = OutputArtifact(
+            path="atif/trajectory.json",
+            source="/logs/trajectory_atif.json",
+            required=False,
+        )
+
+        sandbox = Mock()
+        exec_mock = AsyncMock(
+            side_effect=[
+                ExecResult(exit_code=0, output=""),
+                ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES + 1)),
+            ]
+        )
+        upload_mock = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
+
+        await upload_output_artifacts(
+            sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
+
+        assert exec_mock.await_args_list == [
+            call(sandbox, "test -f /logs/trajectory_atif.json"),
+            call(sandbox, "stat -c%s /logs/trajectory_atif.json"),
+        ]
         upload_mock.assert_not_awaited()
 
 

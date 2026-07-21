@@ -57,6 +57,7 @@ final_output: /tmp/final.txt
 output_artifacts:
   - path: logs
     source: /tmp/logs
+    required: false
 secrets:
   API_KEY: API key
 """,
@@ -71,6 +72,7 @@ secrets:
     assert contract.final_output == "/tmp/final.txt"
     assert contract.output_artifacts[0].path == "logs"
     assert contract.output_artifacts[0].source == "/tmp/logs"
+    assert contract.output_artifacts[0].required is False
     assert contract.secrets == {"API_KEY": "API key"}
 
 

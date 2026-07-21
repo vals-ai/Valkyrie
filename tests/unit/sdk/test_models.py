@@ -42,6 +42,17 @@ def test_agent_contract_normalizes_output_artifacts() -> None:
     )
 
 
+def test_output_artifact_can_be_optional() -> None:
+    artifact = OutputArtifact(
+        path="atif/trajectory.json",
+        source="/logs/trajectory_atif.json",
+        required=False,
+    )
+
+    assert artifact.required is False
+    assert artifact.model_dump(mode="json")["required"] is False
+
+
 @pytest.mark.parametrize("path", ["/absolute", "../escape", "a/../b"])
 def test_agent_contract_rejects_unsafe_artifact_paths(path: str) -> None:
     with pytest.raises(ValidationError):
