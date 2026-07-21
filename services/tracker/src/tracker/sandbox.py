@@ -258,7 +258,7 @@ async def create_sandbox(
     )
     set_sandbox_context(sandbox, image=source_name)
     logger.info(
-        "sandbox.created",
+        f"sandbox.created {sandbox.name} ttl_minutes={ttl_minutes} auto_destroy_at={sandbox.auto_destroy_at}",
         extra={
             "sandbox_id": sandbox.id,
             "sandbox_name": sandbox.name,
