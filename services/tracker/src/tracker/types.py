@@ -137,6 +137,7 @@ class FetchBenchmarkResponse(BaseModel):
     s3_bucket_url: str
     label: str | None = None
     final_score: float | None = None
+    error_message: str | None = None
 
 
 class AverageTaskBreakdown(BaseModel):

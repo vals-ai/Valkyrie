@@ -6,6 +6,7 @@ Run: uv run pytest tests/unit/cli/run/test_output_helpers.py
 import io
 import tarfile
 import tempfile
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
@@ -41,10 +42,13 @@ class StubProgressTracker:
         self,
         response: FetchBenchmarkResponse,
         metadata: FetchBenchmarkMetadataResponse | TrackerServiceError,
+        events: tuple[str, ...] = ("event: disconnect",),
     ) -> None:
         self.response = response
         self.metadata = metadata
+        self.events = events
         self.metadata_calls = 0
+        self.stream_calls = 0
 
     def fetch_benchmark(self, _run_id: UUID) -> FetchBenchmarkResponse:
         return self.response
@@ -55,15 +59,17 @@ class StubProgressTracker:
             raise self.metadata
         return self.metadata
 
-    def stream_benchmark(self, _run_id: UUID):
-        yield "event: disconnect"
+    def stream_benchmark(self, _run_id: UUID) -> Iterator[str]:
+        self.stream_calls += 1
+        yield from self.events
 
 
-def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixture[str]) -> None:
-    """Run fetch output should show the stored final score when it exists.
+def test_format_benchmark_status_prints_terminal_details(capsys: pytest.CaptureFixture[str]) -> None:
+    """Run fetch output should show the stored terminal result when it exists.
 
     Test cases:
     - A response with a final score renders that score as a percentage.
+    - An errored response renders its stored run-level error.
     - The existing progress line still renders.
     """
     response = FetchBenchmarkResponse(
@@ -88,6 +94,27 @@ def test_format_benchmark_status_prints_final_score(capsys: pytest.CaptureFixtur
     assert "83.2%" in output
     assert "3/4 (75.0%)" in output
 
+    error_response = FetchBenchmarkResponse(
+        benchmark_name="terminal-bench",
+        benchmark_id=uuid4(),
+        details=BenchmarkDetails(
+            status=BenchmarkStatus.ERROR,
+            started_at=datetime(2026, 6, 24, tzinfo=timezone.utc),
+            total_tasks=4,
+            finished_tasks=4,
+            task_breakdown={TaskStatus.ERROR: 4},
+            docent_reading_status=DocentReadingStatus.IDLE,
+        ),
+        s3_bucket_url="https://example.com/run",
+        error_message="Dominant task error affecting 4/4 tasks",
+    )
+
+    format_benchmark_status(error_response)
+
+    error_output = capsys.readouterr().out
+    assert "Error:" in error_output
+    assert "Dominant task error affecting 4/4 tasks" in error_output
+
 
 def test_connected_fetch_prints_rich_identity(capsys: pytest.CaptureFixture[str]) -> None:
     run_id = uuid4()
@@ -109,6 +136,46 @@ def test_connected_fetch_prints_rich_identity(capsys: pytest.CaptureFixture[str]
     assert "API_KEY" not in output
     assert "secret" not in output
     assert tracker.metadata_calls == 1
+
+
+def test_connected_fetch_uses_terminal_error_status(capsys: pytest.CaptureFixture[str]) -> None:
+    """Connected output should render terminal errors without a misleading success message.
+
+    Test cases:
+    - A run that is already errored uses the normal fetch output without opening a stream.
+    - A live run whose completion event carries an error response prints the final error status.
+    """
+    run_id = uuid4()
+    error_message = "No tasks were completed successfully. 1 distinct error:\n- 4/4 tasks: Secret error"
+    response = make_fetch_response(run_id, status=BenchmarkStatus.ERROR, finished_tasks=4)
+    error_details = response.details.model_copy(update={"task_breakdown": {TaskStatus.ERROR: 4}})
+    error_response = response.model_copy(update={"details": error_details, "error_message": error_message})
+
+    # Terminal runs should use the same renderer as a regular fetch.
+    terminal_tracker = StubProgressTracker(error_response, make_fetch_metadata(run_id))
+
+    stream_benchmark_status(cast(TrackerService, terminal_tracker), run_id, show_identity=True)
+
+    terminal_output = capsys.readouterr().out
+    assert "Run Status" in terminal_output
+    assert "Streaming run updates" not in terminal_output
+    assert f"Error: {error_message}" in terminal_output
+    assert terminal_tracker.stream_calls == 0
+
+    # Live streams should trust the final payload status over the event name.
+    live_tracker = StubProgressTracker(
+        make_fetch_response(run_id),
+        make_fetch_metadata(run_id),
+        events=(f"data: {error_response.model_dump_json()}", "event: complete"),
+    )
+
+    stream_benchmark_status(cast(TrackerService, live_tracker), run_id, show_identity=True)
+
+    live_output = capsys.readouterr().out
+    assert "✗ Run errored." in live_output
+    assert "✓ Run completed!" not in live_output
+    assert f"Error: {error_message}" in live_output
+    assert live_tracker.stream_calls == 1
 
 
 def test_connected_fetch_continues_when_metadata_is_unavailable(capsys: pytest.CaptureFixture[str]) -> None:

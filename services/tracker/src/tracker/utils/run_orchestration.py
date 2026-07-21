@@ -45,6 +45,7 @@ from tracker.utils.resources import (
     fetch_sandbox_provider_config,
 )
 from tracker.utils.reporting import create_final_view, upload_final_view
+from tracker.utils.task_error_summary import summarize_task_errors
 from tracker.utils.task_execution import ResizableLimiter, TaskMonitor, TrackedTask, process_task
 
 logger = get_logger(__name__)
@@ -191,6 +192,38 @@ def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Or
     }
 
 
+async def finalize_all_error_run(benchmark_id: UUID, org: Org) -> bool:
+    """Finalize a run whose tasks produced no evaluation results.
+
+    Arguments
+    - benchmark_id: Run identifier to finalize.
+    - org: Organization that owns the run.
+
+    Returns
+    - True when a concurrent retry defers finalization, otherwise False.
+    """
+    with Session(bind=engine) as session:
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+        if has_stopped_tasks(session, benchmark_row, org):
+            set_benchmark_final_status(benchmark_row, session, org)
+            return False
+        task_errors = benchmark_row.fetch_tasks_with_errors(session) or {}
+
+    error_message = await asyncio.to_thread(summarize_task_errors, task_errors)
+
+    with Session(bind=engine) as session:
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        if has_runnable_tasks(session, benchmark_row, org):
+            return True
+        if has_stopped_tasks(session, benchmark_row, org):
+            set_benchmark_final_status(benchmark_row, session, org)
+            return False
+
+        # Mark the run as errored so future fetches return the discovered task errors.
+        commit_benchmark_error(benchmark_row, session, error_message)
+        return False
+
+
 # Pin the Taskiq task name to its pre-refactor value so in-flight messages
 # enqueued as `tracker.utils:process_benchmark` still match after the module move.
 @broker.task("tracker.utils:process_benchmark")
@@ -304,12 +337,8 @@ async def process_benchmark(
             evaluation_results = fetch_final_score_inputs(session, benchmark_row, org)
 
         if not any(result is not None for result in evaluation_results.values()):
-            with Session(bind=engine) as session:
-                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-                if has_stopped_tasks(session, benchmark_row, org):
-                    set_benchmark_final_status(benchmark_row, session, org)
-                    return
-            raise TrackerServiceError("No tasks were completed successfully")
+            finalization_deferred = await finalize_all_error_run(benchmark_id, org)
+            return
 
         # Calculate the final score based off the tasks that were ran
         final_score_response = await benchmark_service.final_score(

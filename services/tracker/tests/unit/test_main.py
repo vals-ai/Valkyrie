@@ -570,6 +570,7 @@ class TestTrackerAPI:
             - Raising exception if benchmark row is not found
             - Benchmark details are returned in the response
             - Benchmark details are updated as benchmark progresses
+            - Run-level errors are returned only after the benchmark reaches ERROR
         """
 
         # Test case 1. Return 404 Not Found if benchmark does not exist
@@ -602,6 +603,7 @@ class TestTrackerAPI:
         assert details.get("status") == BenchmarkStatus.IN_PROGRESS
         assert details.get("total_tasks") == 10
         assert details.get("finished_tasks") == 0
+        assert response.json().get("error_message") is None
 
         # Test case 4. Benchmark details are updated as benchmark progresses
         # Change a few to in progress, finished and error
@@ -660,6 +662,17 @@ class TestTrackerAPI:
         # Test case 6. Final score is returned when the benchmark has a final evaluation
         assert response.status_code == 200
         assert response.json().get("final_score") == 83.25
+
+        benchmark_row.status = BenchmarkStatus.ERROR
+        benchmark_row.error_message = "Dominant task error affecting 10/10 tasks"
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmark", params=query_params)
+
+        # Test case 7. Terminal errors return the stored run-level message
+        assert response.status_code == 200
+        assert response.json().get("error_message") == "Dominant task error affecting 10/10 tasks"
 
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark

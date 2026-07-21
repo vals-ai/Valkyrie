@@ -9,6 +9,7 @@ from uuid import UUID
 import click
 from tracker.types import FinalViewResponse
 
+from valkyrie.cli.display import terminal_safe
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -21,25 +22,10 @@ def _utc_isoformat(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _terminal_safe(value: str, *, preserve_newlines: bool) -> str:
-    """Escape controls in untrusted text before writing it to a terminal."""
-    escaped: list[str] = []
-    for character in value:
-        if character == "\n" and preserve_newlines:
-            escaped.append(character)
-        elif character == "\t":
-            escaped.append("    ")
-        elif character.isprintable():
-            escaped.append(character)
-        else:
-            escaped.append(character.encode("unicode_escape").decode("ascii"))
-    return "".join(escaped)
-
-
 def _display_error_message(message: str) -> str:
     if message == "":
         return "(empty error message)"
-    return _terminal_safe(message, preserve_newlines=True)
+    return terminal_safe(message, preserve_newlines=True)
 
 
 def _indent_message(message: str) -> str:
@@ -52,7 +38,7 @@ def _count_label(count: int, singular: str) -> str:
 
 def _format_task_id_preview(task_ids: tuple[str, ...]) -> str:
     visible_ids = task_ids[:_TASK_ID_PREVIEW_LIMIT]
-    preview = ", ".join(_terminal_safe(task_id, preserve_newlines=False) for task_id in visible_ids)
+    preview = ", ".join(terminal_safe(task_id, preserve_newlines=False) for task_id in visible_ids)
     omitted_count = len(task_ids) - len(visible_ids)
     return f"{preview} (+{omitted_count} more)" if omitted_count else preview
 
@@ -104,7 +90,7 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
 
     click.echo(click.style("Run Errors", bold=True))
     click.echo(f"{'Run ID:':<12}{response.benchmark_id}")
-    click.echo(f"{'Benchmark:':<12}{_terminal_safe(response.benchmark_name, preserve_newlines=False)}")
+    click.echo(f"{'Benchmark:':<12}{terminal_safe(response.benchmark_name, preserve_newlines=False)}")
     click.echo(f"{'Status:':<12}{response.status.value.replace('_', ' ').title()}")
 
     if response.error_message is not None:
@@ -155,7 +141,7 @@ def errors(run_id: UUID, output_format: str) -> None:
         if not isinstance(response, FinalViewResponse):
             raise TrackerServiceError("Tracker returned an unexpected response while fetching run errors")
     except TrackerServiceError as error:
-        safe_error = _terminal_safe(str(error), preserve_newlines=False)
+        safe_error = terminal_safe(str(error), preserve_newlines=False)
         raise click.ClickException(safe_error) from error
 
     if output_format == "json":
