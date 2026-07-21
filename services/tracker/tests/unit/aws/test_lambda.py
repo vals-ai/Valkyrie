@@ -8,10 +8,13 @@ import json
 from typing import cast
 from unittest.mock import MagicMock
 
+import pytest
 from botocore.config import Config
+from botocore.exceptions import ClientError
 
-from tracker._lambda import invoke_lambda
+from tracker._lambda import dry_run_lambda, invoke_lambda
 from tracker.aws.clients import AWSClientProvider
+from tracker.exceptions import LambdaError
 
 
 def test_invoke_lambda_uses_provider_config_and_returns_parsed_payload() -> None:
@@ -40,3 +43,27 @@ def test_invoke_lambda_uses_provider_config_and_returns_parsed_payload() -> None
         "statusCode": 200,
         "reading_plan_url": "https://example.test/plan",
     }
+
+
+def test_dry_run_lambda_uses_provider_client() -> None:
+    client = MagicMock()
+    provider = MagicMock(spec=AWSClientProvider)
+    provider.lambda_client.return_value = client
+
+    dry_run_lambda(cast(AWSClientProvider, provider), "benchmark-function")
+
+    provider.lambda_client.assert_called_once_with()
+    client.invoke.assert_called_once_with(FunctionName="benchmark-function", InvocationType="DryRun")
+
+
+def test_dry_run_lambda_maps_client_errors() -> None:
+    client = MagicMock()
+    client.invoke.side_effect = ClientError(
+        {"Error": {"Code": "AccessDeniedException", "Message": "access denied"}},
+        "Invoke",
+    )
+    provider = MagicMock(spec=AWSClientProvider)
+    provider.lambda_client.return_value = client
+
+    with pytest.raises(LambdaError, match="Lambda invoke preflight failed for 'benchmark-function'"):
+        dry_run_lambda(cast(AWSClientProvider, provider), "benchmark-function")
