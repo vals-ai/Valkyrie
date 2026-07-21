@@ -2,7 +2,7 @@ name: Deploy to AWS
 
 on:
   push:
-    branches: [prod]
+    branches: [dev, prod]
 
   workflow_dispatch:
     inputs:
@@ -88,7 +88,7 @@ jobs:
           uv run cdk deploy --all -c stage=prod --require-approval never
 
   run-dev-operation:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/dev'
+    if: github.ref == 'refs/heads/dev' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04-arm
     environment: dev
     env:
@@ -99,8 +99,9 @@ jobs:
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
       DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
       DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
-      OPERATION: ${{ inputs.operation }}
+      OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
       PRODUCTION_ACCOUNT_ID: "613431292675"
+      SCOPE: ${{ github.event_name == 'push' && 'all' || inputs.scope }}
       SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}
 
     steps:
@@ -147,43 +148,43 @@ jobs:
           fi
 
       - name: Checkout code
-        if: inputs.operation != 'credentials-only'
+        if: env.OPERATION != 'credentials-only'
         uses: actions/checkout@v4
 
       - name: Setup Node.js
-        if: inputs.operation != 'credentials-only'
+        if: env.OPERATION != 'credentials-only'
         uses: actions/setup-node@v4
         with:
           node-version: "20"
 
       - name: Setup Python
-        if: inputs.operation != 'credentials-only'
+        if: env.OPERATION != 'credentials-only'
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install uv
-        if: inputs.operation != 'credentials-only'
+        if: env.OPERATION != 'credentials-only'
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
           cache-dependency-glob: "infra/uv.lock"
 
       - name: Install CDK
-        if: inputs.operation != 'credentials-only'
+        if: env.OPERATION != 'credentials-only'
         run: npm install -g aws-cdk@2.1132.0
 
       - name: Install infra dependencies
-        if: inputs.operation != 'credentials-only'
+        if: env.OPERATION != 'credentials-only'
         working-directory: infra
         run: make install
 
       - name: Plan dev infrastructure
-        if: inputs.operation == 'plan'
+        if: env.OPERATION == 'plan'
         working-directory: infra
-        run: make plan STAGE=dev SCOPE=${{ inputs.scope }} DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
+        run: make plan STAGE=dev SCOPE="$SCOPE" DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
 
       - name: Deploy dev infrastructure
-        if: inputs.operation == 'deploy'
+        if: env.OPERATION == 'deploy'
         working-directory: infra
-        run: make deploy STAGE=dev SCOPE=${{ inputs.scope }} DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
+        run: make deploy STAGE=dev SCOPE="$SCOPE" DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" AWS_REGION="$AWS_REGION"
