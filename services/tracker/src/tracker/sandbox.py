@@ -1,6 +1,7 @@
 """Sandbox management utilities for the tracker service."""
 
 import asyncio
+import math
 import shlex
 import time
 import uuid
@@ -80,7 +81,23 @@ bundle_path = PurePosixPath("/bundle")
 SANDBOX_AUTO_STOP_INTERVAL = 10 * 60
 SANDBOX_CREATE_TIMEOUT = 360
 AGENT_INSTALL_TIMEOUT_SECONDS = 10 * 60
+# Wall-clock headroom on top of the agent timeout for task setup, evaluation, and artifact upload.
+SANDBOX_TTL_BUFFER_SECONDS = 2 * 60 * 60
+# Hard wall-clock backstop destroying any sandbox regardless of state (e.g. leaked by a crashed worker).
+DEFAULT_SANDBOX_TTL_MINUTES = 24 * 60
 CONTRACT_DOWNLOAD_URL_EXPIRES_SECONDS = 24 * 60 * 60
+
+
+def sandbox_ttl_minutes(agent_timeout: float | None) -> int:
+    """Wall-clock TTL for a task sandbox.
+
+    Never below the default backstop so tasks with long setup/evaluation phases are not cut
+    short; raised above it when the agent timeout alone would exceed the default budget.
+    """
+    if agent_timeout is None:
+        return DEFAULT_SANDBOX_TTL_MINUTES
+    budget_seconds = SANDBOX_CREATE_TIMEOUT + AGENT_INSTALL_TIMEOUT_SECONDS + agent_timeout + SANDBOX_TTL_BUFFER_SECONDS
+    return max(DEFAULT_SANDBOX_TTL_MINUTES, math.ceil(budget_seconds / 60))
 
 
 def get_contract_path(contract_name: str) -> PurePosixPath:
@@ -164,10 +181,13 @@ async def _create_sandbox(
     resources: TrackerResources,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    ttl_minutes: int | None = None,
 ) -> Sandbox:
     """Create a sandbox through its provider."""
     provider_source = _provider_source(source)
     _set_sandbox_create_span_attributes(sandbox_name, provider_source, resources)
+    if ttl_minutes is not None:
+        trace.get_current_span().set_attribute("valkyrie.sandbox_ttl_minutes", ttl_minutes)
     return await provider.create_sandbox(
         SandboxCreateRequest(
             source=provider_source,
@@ -177,6 +197,7 @@ async def _create_sandbox(
             env_vars=env_vars or {},
             auto_stop_interval=SANDBOX_AUTO_STOP_INTERVAL,
             create_timeout=SANDBOX_CREATE_TIMEOUT,
+            ttl_minutes=ttl_minutes,
         )
     )
 
@@ -190,6 +211,7 @@ async def create_sandbox(
     creation_semaphore: Semaphore,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    ttl_minutes: int | None = None,
 ) -> AsyncGenerator[Sandbox, Any]:
     """
     Yeild a sandbox to be used within a context manager.
@@ -202,6 +224,7 @@ async def create_sandbox(
         labels: The labels to use for the sandbox
         env_vars: The environment variables to use for the sandbox
         creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
+        ttl_minutes: Wall-clock TTL after which the provider destroys the sandbox regardless of state.
 
     Returns:
         A context manager that yields the sandbox
@@ -216,7 +239,7 @@ async def create_sandbox(
         async with creation_semaphore:
             start = time.monotonic()
             creation_task = asyncio.create_task(
-                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars)
+                _create_sandbox(provider, sandbox_name, source, resources, labels, env_vars, ttl_minutes)
             )
             try:
                 sandbox = await asyncio.shield(creation_task)
@@ -234,6 +257,15 @@ async def create_sandbox(
         tags={"image": _metric_source_name(source)},
     )
     set_sandbox_context(sandbox, image=source_name)
+    logger.info(
+        "sandbox.created",
+        extra={
+            "sandbox_id": sandbox.id,
+            "sandbox_name": sandbox.name,
+            "ttl_minutes": ttl_minutes,
+            "auto_destroy_at": sandbox.auto_destroy_at,
+        },
+    )
 
     try:
         yield sandbox

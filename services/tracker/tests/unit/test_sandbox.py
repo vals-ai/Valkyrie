@@ -4,6 +4,7 @@ Run: pytest services/tracker/tests/unit/test_sandbox.py
 """
 
 import asyncio
+import math
 import shlex
 from collections import deque
 from collections.abc import AsyncIterator, Mapping
@@ -33,6 +34,7 @@ from tracker.exceptions import (
 from tracker.sandbox import (
     create_sandbox,
     run_agent,
+    sandbox_ttl_minutes,
     upload_agent_artifacts,
     upload_output_artifacts,
 )
@@ -708,6 +710,51 @@ class TestSandboxLifecycle:
         assert request.resources == resources
         assert request.auto_stop_interval == sandbox_module.SANDBOX_AUTO_STOP_INTERVAL
         assert request.create_timeout == sandbox_module.SANDBOX_CREATE_TIMEOUT
+        assert request.ttl_minutes is None
+
+    async def test_create_sandbox_passes_ttl_minutes_to_provider(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        def fake_create_span_attrs(sandbox_name: str, source: Any, resources: Any) -> None:
+            pass
+
+        monkeypatch.setattr(sandbox_module, "_set_sandbox_create_span_attributes", fake_create_span_attrs)
+
+        provider = AsyncMock()
+        provider.create_sandbox = AsyncMock(return_value=AsyncMock())
+
+        await _create_sandbox(
+            provider,
+            "task-alias",
+            ImageSource(image="ghcr.io/vals/swebench:latest"),
+            Resources(vcpu=2, memory=4, disk=5),
+            ttl_minutes=90,
+        )
+
+        request = provider.create_sandbox.await_args.args[0]
+        assert request.ttl_minutes == 90
+
+    def test_sandbox_ttl_minutes_defaults_and_scales_with_agent_timeout(self) -> None:
+        """TTL should be the default backstop unless the agent timeout budget exceeds it.
+
+        Test cases:
+        - No agent timeout uses the default backstop.
+        - Short agent timeouts stay at the default backstop.
+        - Long agent timeouts raise the TTL above the default budget.
+        """
+        default = sandbox_module.DEFAULT_SANDBOX_TTL_MINUTES
+        assert sandbox_ttl_minutes(None) == default
+        assert sandbox_ttl_minutes(60 * 60) == default
+        two_days = 48 * 60 * 60
+        expected = math.ceil(
+            (
+                sandbox_module.SANDBOX_CREATE_TIMEOUT
+                + sandbox_module.AGENT_INSTALL_TIMEOUT_SECONDS
+                + two_days
+                + sandbox_module.SANDBOX_TTL_BUFFER_SECONDS
+            )
+            / 60
+        )
+        assert expected > default
+        assert sandbox_ttl_minutes(two_days) == expected
 
     async def test_create_sandbox_unwraps_compose_source_before_provider_create(
         self, monkeypatch: pytest.MonkeyPatch
