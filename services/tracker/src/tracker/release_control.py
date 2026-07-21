@@ -3,13 +3,14 @@
 import hashlib
 import logging
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, cast
 from urllib.parse import urlparse
 from uuid import UUID
 
 import boto3
-from sqlmodel import Session, col, func, select
+from sqlmodel import Session, col, select
 
 from tracker.database.models import (
     Benchmark,
@@ -21,12 +22,35 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
 )
+from tracker.types import (
+    ExecutorDispatchBlocker,
+    ExecutorExecutionBlocker,
+    ExecutorReleaseStatusEntry,
+    ExecutorReleasesResponse,
+    UnattributedExecutionBlocker,
+)
 
-_ACTIVE_BENCHMARK_STATUSES = (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING, BenchmarkStatus.STOPPED)
+_ACTIVE_BENCHMARK_STATUSES = (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)
 _ACTIVE_DISPATCH_STATUSES = (ExecutorDispatchStatus.QUEUED, ExecutorDispatchStatus.RUNNING)
 _SUPPORTED_PROTOCOL_VERSION = "1"
 _ARTIFACT_RETENTION_DAYS = 30
 _logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ActiveExecutorReleaseWork:
+    dispatches_by_release: dict[str, list[ExecutorDispatch]]
+    executions_by_release: dict[str, list[Benchmark]]
+    unattributed_executions: list[Benchmark]
+
+    @property
+    def counts_by_release(self) -> dict[str, int]:
+        release_ids = self.dispatches_by_release.keys() | self.executions_by_release.keys()
+        return {
+            release_id: len(self.dispatches_by_release.get(release_id, []))
+            + len(self.executions_by_release.get(release_id, []))
+            for release_id in release_ids
+        }
 
 
 class S3Body(Protocol):
@@ -127,6 +151,7 @@ def pin_benchmark_to_release(benchmark: Benchmark, release: ExecutorRelease) -> 
         raise ReleaseControlError(f"Benchmark {benchmark.id} already has executor release ownership")
 
     benchmark.executor_release_id = release.id
+    benchmark.current_execution_release_id = release.id
     benchmark.executor_artifact_uri = release.artifact_uri
     benchmark.executor_artifact_digest = release.artifact_digest
     benchmark.executor_protocol_version = release.protocol_version
@@ -148,29 +173,43 @@ def create_executor_dispatch(
     )
 
 
-def active_executor_release_counts(session: Session) -> dict[str, int]:
-    """Count nonterminal dispatches plus pre-dispatch-ledger active benchmarks."""
-    dispatch_rows = session.exec(
-        select(ExecutorDispatch.executor_release_id, func.count())
+def active_executor_release_work(session: Session) -> ActiveExecutorReleaseWork:
+    """Return active dispatch, current-owner, and unattributed retirement blockers."""
+    active_dispatches = session.exec(
+        select(ExecutorDispatch)
         .where(col(ExecutorDispatch.status).in_(_ACTIVE_DISPATCH_STATUSES))
-        .group_by(col(ExecutorDispatch.executor_release_id))
+        .order_by(col(ExecutorDispatch.created_at), col(ExecutorDispatch.id))
     ).all()
-    counts = {release_id: count for release_id, count in dispatch_rows}
+    dispatches_by_release: dict[str, list[ExecutorDispatch]] = {}
+    active_dispatch_owners: set[tuple[UUID, str]] = set()
+    for dispatch in active_dispatches:
+        dispatches_by_release.setdefault(dispatch.executor_release_id, []).append(dispatch)
+        active_dispatch_owners.add((dispatch.benchmark_id, dispatch.executor_release_id))
 
-    benchmarks_with_start_dispatch = select(ExecutorDispatch.benchmark_id).where(
-        col(ExecutorDispatch.kind) == ExecutorDispatchKind.START
-    )
-    legacy_rows = session.exec(
-        select(Benchmark.executor_release_id, func.count())
+    executions_by_release: dict[str, list[Benchmark]] = {}
+    unattributed_executions: list[Benchmark] = []
+    active_benchmarks = session.exec(
+        select(Benchmark)
         .where(col(Benchmark.status).in_(_ACTIVE_BENCHMARK_STATUSES))
-        .where(col(Benchmark.executor_release_id).is_not(None))
-        .where(col(Benchmark.id).not_in(benchmarks_with_start_dispatch))
-        .group_by(col(Benchmark.executor_release_id))
+        .order_by(col(Benchmark.started_at), col(Benchmark.id))
     ).all()
-    for release_id, count in legacy_rows:
-        assert release_id is not None
-        counts[release_id] = counts.get(release_id, 0) + count
-    return counts
+    for benchmark in active_benchmarks:
+        release_id = benchmark.current_execution_release_id
+        if release_id is None:
+            unattributed_executions.append(benchmark)
+        elif (benchmark.id, release_id) not in active_dispatch_owners:
+            executions_by_release.setdefault(release_id, []).append(benchmark)
+
+    return ActiveExecutorReleaseWork(
+        dispatches_by_release=dispatches_by_release,
+        executions_by_release=executions_by_release,
+        unattributed_executions=unattributed_executions,
+    )
+
+
+def active_executor_release_counts(session: Session) -> dict[str, int]:
+    """Count active dispatches and current-owner executions once per release."""
+    return active_executor_release_work(session).counts_by_release
 
 
 def select_active_release(session: Session, *, for_update: bool = False) -> ExecutorRelease:
@@ -182,6 +221,32 @@ def select_active_release(session: Session, *, for_update: bool = False) -> Exec
     release = session.get(ExecutorRelease, admission.release_id)
     if release is None or release.status != ExecutorReleaseStatus.ACTIVE or not release.readiness_verified:
         raise ReleaseControlError("No active executor release is configured")
+    return release
+
+
+def resolve_current_execution_release(
+    session: Session,
+    benchmark: Benchmark,
+    *,
+    for_update: bool = False,
+) -> ExecutorRelease:
+    """Resolve the verified ACTIVE or DRAINING release owned by an active benchmark."""
+    release_id = benchmark.current_execution_release_id
+    if release_id is None:
+        raise ReleaseControlError(f"Benchmark {benchmark.id} has no current executor release")
+
+    release = session.get(
+        ExecutorRelease,
+        release_id,
+        populate_existing=for_update,
+        with_for_update=for_update or None,
+    )
+    if (
+        release is None
+        or release.status not in (ExecutorReleaseStatus.ACTIVE, ExecutorReleaseStatus.DRAINING)
+        or not release.readiness_verified
+    ):
+        raise ReleaseControlError(f"Current executor release {release_id!r} is unavailable")
     return release
 
 
@@ -268,7 +333,10 @@ def retire_if_empty(session: Session, release_id: str) -> bool:
     if admission is not None and admission.release_id == release_id:
         raise ReleaseControlError(f"Executor release {release_id!r} is the active admission target")
 
-    if active_executor_release_counts(session).get(release_id, 0):
+    active_work = active_executor_release_work(session)
+    if active_work.unattributed_executions:
+        raise ReleaseControlError("Cannot retire executor releases while unattributed active executor work exists")
+    if active_work.counts_by_release.get(release_id, 0):
         raise ReleaseControlError(f"Executor release {release_id!r} still has active executor work")
 
     retired_at = datetime.now(UTC)
@@ -299,7 +367,85 @@ def artifact_deletion_allowed(session: Session, release_id: str, *, now: datetim
         retention_until = retention_until.replace(tzinfo=UTC)
     if (now or datetime.now(UTC)) < retention_until:
         return False
-    return active_executor_release_counts(session).get(release_id, 0) == 0
+    active_work = active_executor_release_work(session)
+    return not active_work.unattributed_executions and active_work.counts_by_release.get(release_id, 0) == 0
+
+
+def executor_releases_status(session: Session) -> ExecutorReleasesResponse:
+    """Build the global release-health report for trusted operators."""
+    admission = session.get(ExecutorAdmission, 1)
+    active_work = active_executor_release_work(session)
+    active_counts = active_work.counts_by_release
+    unattributed_count = len(active_work.unattributed_executions)
+
+    entries: list[ExecutorReleaseStatusEntry] = []
+    for release in session.exec(select(ExecutorRelease).order_by(col(ExecutorRelease.created_at).desc())).all():
+        owned_active_runs = active_counts.get(release.id, 0)
+        blocker: str | None = None
+        retention_until = release.artifact_retention_until
+        if retention_until is not None and retention_until.tzinfo is None:
+            retention_until = retention_until.replace(tzinfo=UTC)
+        if release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED) and owned_active_runs:
+            noun = "execution" if owned_active_runs == 1 else "executions"
+            blocker = f"{owned_active_runs} active {noun}"
+        elif release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED) and unattributed_count:
+            noun = "execution" if unattributed_count == 1 else "executions"
+            blocker = f"{unattributed_count} unattributed active {noun}"
+        elif release.status == ExecutorReleaseStatus.RETIRED and not artifact_deletion_allowed(session, release.id):
+            if retention_until is None:
+                blocker = "artifact retention is unset"
+            elif retention_until > datetime.now(UTC):
+                blocker = f"artifact retained until {retention_until.isoformat()}"
+        entries.append(
+            ExecutorReleaseStatusEntry(
+                id=release.id,
+                status=release.status,
+                artifact_digest=release.artifact_digest,
+                protocol_version=release.protocol_version,
+                readiness_verified=release.readiness_verified,
+                readiness_metadata=release.readiness_metadata,
+                created_at=release.created_at,
+                activated_at=release.activated_at,
+                draining_at=release.draining_at,
+                retired_at=release.retired_at,
+                artifact_retention_until=retention_until,
+                owned_active_runs=owned_active_runs,
+                retirement_blocker=blocker,
+                blocking_dispatches=[
+                    ExecutorDispatchBlocker(
+                        dispatch_id=dispatch.id,
+                        benchmark_id=dispatch.benchmark_id,
+                        kind=dispatch.kind,
+                        status=dispatch.status,
+                        executor_release_id=dispatch.executor_release_id,
+                        created_at=dispatch.created_at,
+                    )
+                    for dispatch in active_work.dispatches_by_release.get(release.id, [])
+                ],
+                blocking_executions=[
+                    ExecutorExecutionBlocker(
+                        benchmark_id=benchmark.id,
+                        status=benchmark.status,
+                        current_execution_release_id=release.id,
+                        started_at=benchmark.started_at,
+                    )
+                    for benchmark in active_work.executions_by_release.get(release.id, [])
+                ],
+            )
+        )
+    return ExecutorReleasesResponse(
+        active_release_id=admission.release_id if admission is not None else None,
+        unattributed_active_execution_count=unattributed_count,
+        unattributed_active_executions=[
+            UnattributedExecutionBlocker(
+                benchmark_id=benchmark.id,
+                status=benchmark.status,
+                started_at=benchmark.started_at,
+            )
+            for benchmark in active_work.unattributed_executions
+        ],
+        entries=entries,
+    )
 
 
 def _get_admission(session: Session, *, for_update: bool = False) -> ExecutorAdmission | None:

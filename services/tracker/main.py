@@ -3,7 +3,7 @@ import logging
 import tarfile
 import traceback
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -61,10 +61,8 @@ from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
     DocentReadingStatus,
-    ExecutorAdmission,
+    ExecutorDispatch,
     ExecutorDispatchKind,
-    ExecutorRelease,
-    ExecutorReleaseStatus,
     FinalEvaluation,
     Org,
     RetryMode,
@@ -79,10 +77,9 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.release_control import (
     ReleaseControlError,
-    active_executor_release_counts,
-    artifact_deletion_allowed,
     create_executor_dispatch,
     pin_benchmark_to_release,
+    resolve_current_execution_release,
     select_active_release,
 )
 from tracker.middleware import RequestContextMiddleware
@@ -94,8 +91,6 @@ from tracker.types import (
     FetchBenchmarksRequest,
     FetchBenchmarksResponse,
     FetchBenchmarkTasksRequest,
-    ExecutorReleaseStatusEntry,
-    ExecutorReleasesResponse,
     HarnessConfig,
     Order,
     RetrieveResultsResponse,
@@ -116,6 +111,7 @@ from tracker.utils import (
     commit_benchmark_error,
     create_benchmark_service_client,
     create_final_view,
+    fetch_benchmark_row,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
     fetch_harness_config,
@@ -182,6 +178,42 @@ def _taskiq_labels() -> dict[str, str]:
     return {"request_id": request_id_var.get(), **trace_context}
 
 
+async def _enqueue_executor_dispatch(
+    dispatch: ExecutorDispatch,
+    *,
+    start_benchmark_request_json: dict[str, Any],
+    benchmark_id: UUID,
+    verified_task_ids: list[str],
+) -> None:
+    try:
+        await (
+            process_benchmark.kicker()
+            .with_labels(**_taskiq_labels())
+            .kiq(  # pyright: ignore[reportCallIssue] -- stable host consumes executor_dispatch_id
+                start_benchmark_request_json=start_benchmark_request_json,
+                benchmark_id_str=str(benchmark_id),
+                verified_task_ids=verified_task_ids,
+                executor_dispatch_id=str(dispatch.id),
+                executor_release_id=dispatch.executor_release_id,
+                executor_artifact_uri=dispatch.executor_artifact_uri,
+                executor_artifact_digest=dispatch.executor_artifact_digest,
+                executor_protocol_version=dispatch.executor_protocol_version,
+            )
+        )
+    except Exception as exc:
+        logger.exception(
+            "Executor dispatch enqueue acknowledgement failed",
+            extra={"executor_dispatch_id": str(dispatch.id)},
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Executor dispatch enqueue acknowledgement failed",
+                "executor_dispatch_id": str(dispatch.id),
+            },
+        ) from exc
+
+
 @app.exception_handler(TrackerServiceError)
 async def tracker_service_error_handler(_request: Request, exc: TrackerServiceError):
     logger.error(exc, exc_info=True)
@@ -222,53 +254,6 @@ def health_check() -> dict[str, str]:
     if not check_database_connection():
         raise HTTPException(status_code=503, detail="Database is not accessible")
     return {"status": "ok"}
-
-
-@app.get("/executor-releases", response_model=ExecutorReleasesResponse)
-def executor_releases_status(
-    session: Session = Depends(get_session),
-    _org: Org = Depends(get_current_org),
-) -> ExecutorReleasesResponse:
-    """Expose release health, ownership counts, and retirement blockers."""
-    admission = session.get(ExecutorAdmission, 1)
-    active_counts = active_executor_release_counts(session)
-
-    entries: list[ExecutorReleaseStatusEntry] = []
-    for release in session.exec(select(ExecutorRelease).order_by(col(ExecutorRelease.created_at).desc())).all():
-        owned_active_runs = active_counts.get(release.id, 0)
-        blocker: str | None = None
-        retention_until = release.artifact_retention_until
-        if retention_until is not None and retention_until.tzinfo is None:
-            retention_until = retention_until.replace(tzinfo=UTC)
-        if release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED) and owned_active_runs:
-            noun = "execution" if owned_active_runs == 1 else "executions"
-            blocker = f"{owned_active_runs} active {noun}"
-        elif release.status == ExecutorReleaseStatus.RETIRED and not artifact_deletion_allowed(session, release.id):
-            if retention_until is None:
-                blocker = "artifact retention is unset"
-            elif retention_until > datetime.now(UTC):
-                blocker = f"artifact retained until {retention_until.isoformat()}"
-        entries.append(
-            ExecutorReleaseStatusEntry(
-                id=release.id,
-                status=release.status,
-                artifact_digest=release.artifact_digest,
-                protocol_version=release.protocol_version,
-                readiness_verified=release.readiness_verified,
-                readiness_metadata=release.readiness_metadata,
-                created_at=release.created_at,
-                activated_at=release.activated_at,
-                draining_at=release.draining_at,
-                retired_at=release.retired_at,
-                artifact_retention_until=retention_until,
-                owned_active_runs=owned_active_runs,
-                retirement_blocker=blocker,
-            )
-        )
-    return ExecutorReleasesResponse(
-        active_release_id=admission.release_id if admission is not None else None,
-        entries=entries,
-    )
 
 
 @app.post("/init")
@@ -427,19 +412,11 @@ async def start_benchmark(
     session.add(executor_dispatch)
     session.commit()
 
-    await (
-        process_benchmark.kicker()
-        .with_labels(**_taskiq_labels())
-        .kiq(  # pyright: ignore[reportCallIssue] -- stable host consumes executor_dispatch_id
-            start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verify_response.task_ids,
-            executor_dispatch_id=str(executor_dispatch.id),
-            executor_release_id=benchmark_row.executor_release_id,
-            executor_artifact_uri=benchmark_row.executor_artifact_uri,
-            executor_artifact_digest=benchmark_row.executor_artifact_digest,
-            executor_protocol_version=benchmark_row.executor_protocol_version,
-        )
+    await _enqueue_executor_dispatch(
+        executor_dispatch,
+        start_benchmark_request_json=request.model_dump(),
+        benchmark_id=benchmark_row.id,
+        verified_task_ids=verify_response.task_ids,
     )
 
     return StartBenchmarkResponse(
@@ -456,6 +433,7 @@ async def start_benchmark(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
         ),
         executor_release_id=benchmark_row.executor_release_id,
+        current_execution_release_id=benchmark_row.current_execution_release_id,
         executor_artifact_digest=benchmark_row.executor_artifact_digest,
         executor_protocol_version=benchmark_row.executor_protocol_version,
     )
@@ -537,6 +515,7 @@ async def fetch_benchmark(
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
         executor_release_id=benchmark_row.executor_release_id,
+        current_execution_release_id=benchmark_row.current_execution_release_id,
         executor_artifact_digest=benchmark_row.executor_artifact_digest,
         executor_protocol_version=benchmark_row.executor_protocol_version,
     )
@@ -771,6 +750,13 @@ async def stop_benchmark(
         await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
     )
 
+    benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+    if benchmark_row.status not in valid_stop_states:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error run.",
+        )
+
     await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
     if force:
@@ -879,78 +865,77 @@ async def retry_or_resume_benchmark(
         _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
         return RetryOrResumeBenchmarkResponse(status="success")
 
-    try:
-        # Reject recovery work before mutating task state when admission is unavailable.
-        select_active_release(session, for_update=True)
-    except ReleaseControlError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
     effective_service_headers = forward_tracker_api_key(
         service_headers,
         http_request.headers.get("x-api-key"),
     )
 
-    verified_task_ids = await reset_to_in_progress_status(
-        benchmark_row=benchmark_row,
-        session=session,
-        benchmark_service=benchmark_row.benchmark_service(service_headers=effective_service_headers),
-        retry=retry,
-        retry_mode=retry_mode,
-        rerun_task_ids=task_ids,
-        org=org,
-    )
-
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
-        return RetryOrResumeBenchmarkResponse(
-            status="success",
-        )
-
-    if secrets or concurrency is not None:
-        benchmark_row = update_benchmark_resume_arguments(
-            benchmark_id,
-            session,
-            org,
-            secrets=secrets,
-            concurrency=concurrency,
-        )
-
-    # Ensure that credentials are included with the model dump
-    resume_request_json = benchmark_row.start_benchmark_request(
-        harness_config, service_headers=effective_service_headers
-    ).model_dump()
-
     try:
-        # Promotion may occur while task state is reset. Select and lock the release
-        # again at the actual dispatch boundary, then commit ownership before enqueue.
-        dispatch_release = select_active_release(session, for_update=True)
-    except ReleaseControlError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        if benchmark_row.status == BenchmarkStatus.STOPPING:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
+            )
+        pre_action_status = benchmark_row.status
 
-    dispatch_kind = ExecutorDispatchKind.RETRY if retry else ExecutorDispatchKind.RESUME
-    executor_dispatch = create_executor_dispatch(benchmark_row.id, dispatch_release, dispatch_kind)
-    session.add(executor_dispatch)
-    session.commit()
-
-    # start the benchmark with the same args used to create it
-    # we will delegate inside what tasks we are running
-    await (
-        process_benchmark.kicker()
-        .with_labels(**_taskiq_labels())
-        .kiq(  # pyright: ignore[reportCallIssue] -- stable host consumes executor_dispatch_id
-            start_benchmark_request_json=resume_request_json,
-            benchmark_id_str=str(benchmark_row.id),
-            verified_task_ids=verified_task_ids,
-            executor_dispatch_id=str(executor_dispatch.id),
-            executor_release_id=dispatch_release.id,
-            executor_artifact_uri=dispatch_release.artifact_uri,
-            executor_artifact_digest=dispatch_release.artifact_digest,
-            executor_protocol_version=dispatch_release.protocol_version,
+        verified_task_ids = await reset_to_in_progress_status(
+            benchmark_row=benchmark_row,
+            session=session,
+            benchmark_service=benchmark_row.benchmark_service(service_headers=effective_service_headers),
+            retry=retry,
+            retry_mode=retry_mode,
+            rerun_task_ids=task_ids,
+            org=org,
         )
+
+        if pre_action_status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+            session.rollback()
+            return RetryOrResumeBenchmarkResponse(status="success")
+
+        if pre_action_status == BenchmarkStatus.IN_PROGRESS:
+            try:
+                dispatch_release = resolve_current_execution_release(session, benchmark_row, for_update=True)
+            except ReleaseControlError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+        else:
+            try:
+                dispatch_release = select_active_release(session, for_update=True)
+            except ReleaseControlError as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
+            benchmark_row.current_execution_release_id = dispatch_release.id
+            session.add(benchmark_row)
+
+        if secrets or concurrency is not None:
+            benchmark_row = update_benchmark_resume_arguments(
+                benchmark_id,
+                session,
+                org,
+                secrets=secrets,
+                concurrency=concurrency,
+            )
+
+        # Ensure that credentials are included with the model dump.
+        resume_request_json = benchmark_row.start_benchmark_request(
+            harness_config, service_headers=effective_service_headers
+        ).model_dump()
+
+        dispatch_kind = ExecutorDispatchKind.RETRY if retry else ExecutorDispatchKind.RESUME
+        executor_dispatch = create_executor_dispatch(benchmark_row.id, dispatch_release, dispatch_kind)
+        session.add(executor_dispatch)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+
+    await _enqueue_executor_dispatch(
+        executor_dispatch,
+        start_benchmark_request_json=resume_request_json,
+        benchmark_id=benchmark_row.id,
+        verified_task_ids=verified_task_ids,
     )
 
-    return RetryOrResumeBenchmarkResponse(
-        status="success",
-    )
+    return RetryOrResumeBenchmarkResponse(status="success")
 
 
 @app.get("/fetch-benchmarks")

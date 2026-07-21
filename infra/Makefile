@@ -1,5 +1,5 @@
 .PHONY: help install lint typecheck test venv_check validate-scope preflight \
-	plan diff deploy deploy-shared deploy-tracker hotswap destroy
+	plan diff deploy deploy-shared deploy-tracker deploy-driver hotswap destroy
 
 PRODUCTION_ACCOUNT_ID ?= 613431292675
 
@@ -13,11 +13,13 @@ EXPECTED_ACCOUNT_ID = $(if $(filter dev release-test,$(STAGE)),$(DEV_ACCOUNT_ID)
 STACK_PREFIX = $(if $(filter dev,$(STAGE)),ValkDev,$(if $(filter release-test,$(STAGE)),ValkReleaseTest,))
 STACKS_shared = $(STACK_PREFIX)SharedStack
 STACKS_tracker = $(STACK_PREFIX)TrackerStack
+STACKS_driver = $(STACK_PREFIX)DriverStack
 STACKS_worker = $(STACK_PREFIX)WorkerStack
 STACKS_monitoring = $(STACK_PREFIX)MonitoringStack
 STACKS_all = --all
 SELECTED_STACKS = $(STACKS_$(SCOPE))
 DIFF_STACKS = $(if $(filter all,$(SCOPE)),,$(SELECTED_STACKS))
+CDK_DIFF_METHOD = $(if $(filter release-test,$(STAGE)),--method=template,)
 
 CDK_DEFAULT_ACCOUNT ?= $(EXPECTED_ACCOUNT_ID)
 CDK_DEFAULT_REGION ?= $(AWS_REGION)
@@ -37,7 +39,7 @@ help:
 	@echo "  make lint                                     - Check infrastructure formatting and lint"
 	@echo "  make typecheck                                - Type-check infrastructure code"
 	@echo ""
-	@echo "Set SCOPE to shared, tracker, worker, monitoring, or all. Dev also requires DEV_ACCOUNT_ID."
+	@echo "Set SCOPE to shared, tracker, driver, worker, monitoring, or all. Driver is release-test only."
 
 install:
 	uv sync --python 3.12
@@ -61,15 +63,19 @@ venv_check:
 
 validate-scope:
 	@case "$(SCOPE)" in \
-		shared|tracker|worker|monitoring|all) ;; \
-		*) echo "SCOPE must be shared, tracker, worker, monitoring, or all; got $(SCOPE)."; exit 1 ;; \
+		shared|tracker|driver|worker|monitoring|all) ;; \
+		*) echo "SCOPE must be shared, tracker, driver, worker, monitoring, or all; got $(SCOPE)."; exit 1 ;; \
 	esac
+	@if [ "$(SCOPE)" = "driver" ] && [ "$(STAGE)" != "release-test" ]; then \
+		echo "SCOPE=driver requires STAGE=release-test; got $(STAGE)."; \
+		exit 1; \
+	fi
 
 preflight: venv_check
 	uv run python deployment_target.py
 
 plan: validate-scope preflight
-	uv run cdk diff $(DIFF_STACKS) $(CDK_CTX) $(CDK_PROFILE)
+	uv run cdk diff $(CDK_DIFF_METHOD) $(DIFF_STACKS) $(CDK_CTX) $(CDK_PROFILE)
 
 diff: plan
 
@@ -81,6 +87,9 @@ deploy-shared: deploy
 
 deploy-tracker: SCOPE := tracker
 deploy-tracker: deploy
+
+deploy-driver: SCOPE := driver
+deploy-driver: deploy
 
 hotswap: preflight
 	uv run cdk deploy --all $(CDK_CTX) $(CDK_PROFILE) --hotswap

@@ -1,0 +1,764 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "mcp-excalidraw-server",
+  "elements": [
+    {
+      "id": "d-title",
+      "type": "text",
+      "x": 40,
+      "y": 20,
+      "width": 1400,
+      "height": 46,
+      "strokeColor": "#1e1e1e",
+      "text": "How one Executor run keeps its release",
+      "fontSize": 36,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.753Z",
+      "updatedAt": "2026-07-21T00:32:38.753Z",
+      "version": 1
+    },
+    {
+      "id": "d-subtitle",
+      "type": "text",
+      "x": 40,
+      "y": 70,
+      "width": 1410,
+      "height": 32,
+      "strokeColor": "#495057",
+      "text": "Tracker saves the release in PostgreSQL before Redis delivers it. ExecutorHost claims the matching run, then starts the S3 package.",
+      "fontSize": 22,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.753Z",
+      "updatedAt": "2026-07-21T00:32:38.753Z",
+      "version": 1
+    },
+    {
+      "id": "d-runtime-heading",
+      "type": "text",
+      "x": 50,
+      "y": 116,
+      "width": 500,
+      "height": 24,
+      "strokeColor": "#6c757d",
+      "text": "SERVICES",
+      "fontSize": 18,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.753Z",
+      "updatedAt": "2026-07-21T00:32:38.753Z",
+      "version": 1
+    },
+    {
+      "id": "d-ledger-heading",
+      "type": "text",
+      "x": 930,
+      "y": 116,
+      "width": 520,
+      "height": 24,
+      "strokeColor": "#6c757d",
+      "text": "POSTGRESQL \u2014 SAVED RUN STATE",
+      "fontSize": 18,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.753Z",
+      "updatedAt": "2026-07-21T00:32:38.753Z",
+      "version": 1
+    },
+    {
+      "id": "d-frame",
+      "type": "rectangle",
+      "x": 10,
+      "y": 150,
+      "width": 1480,
+      "height": 830,
+      "backgroundColor": "transparent",
+      "strokeColor": "#adb5bd",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.753Z",
+      "updatedAt": "2026-07-21T00:32:38.753Z",
+      "version": 1
+    },
+    {
+      "id": "d-divider",
+      "type": "line",
+      "x": 900,
+      "y": 150,
+      "strokeColor": "#ced4da",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          830
+        ]
+      ],
+      "createdAt": "2026-07-21T00:32:38.753Z",
+      "updatedAt": "2026-07-21T00:32:38.753Z",
+      "version": 1
+    },
+    {
+      "id": "d-row-1",
+      "type": "line",
+      "x": 10,
+      "y": 420,
+      "strokeColor": "#ced4da",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1480,
+          0
+        ]
+      ],
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-row-2",
+      "type": "line",
+      "x": 10,
+      "y": 690,
+      "strokeColor": "#ced4da",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1480,
+          0
+        ]
+      ],
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-band-1",
+      "type": "text",
+      "x": 55,
+      "y": 172,
+      "width": 500,
+      "height": 28,
+      "strokeColor": "#343a40",
+      "text": "1. Choose and save release",
+      "fontSize": 23,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-band-2",
+      "type": "text",
+      "x": 55,
+      "y": 442,
+      "width": 500,
+      "height": 28,
+      "strokeColor": "#343a40",
+      "text": "2. Send through Redis and claim once",
+      "fontSize": 23,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-band-3",
+      "type": "text",
+      "x": 55,
+      "y": 712,
+      "width": 500,
+      "height": 28,
+      "strokeColor": "#343a40",
+      "text": "3. ExecutorHost downloads the package and starts it",
+      "fontSize": 23,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-request",
+      "type": "rectangle",
+      "x": 60,
+      "y": 275,
+      "width": 220,
+      "height": 90,
+      "backgroundColor": "#ffffff",
+      "strokeColor": "#343a40",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "New Executor\nrun"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-tracker",
+      "type": "rectangle",
+      "x": 360,
+      "y": 260,
+      "width": 330,
+      "height": 120,
+      "backgroundColor": "#e3fafc",
+      "strokeColor": "#0b7285",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "Tracker\nread current release"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-pointer",
+      "type": "text",
+      "x": 405,
+      "y": 205,
+      "width": 250,
+      "height": 40,
+      "strokeColor": "#237a36",
+      "text": "Current release: B ACTIVE",
+      "fontSize": 17,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-queued",
+      "type": "rectangle",
+      "x": 960,
+      "y": 235,
+      "width": 420,
+      "height": 145,
+      "backgroundColor": "#f1f3f5",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "QUEUED\nsaved release: B\nS3 location"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-broker",
+      "type": "rectangle",
+      "x": 60,
+      "y": 525,
+      "width": 280,
+      "height": 105,
+      "backgroundColor": "#f8f9fa",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "Redis broker\ntransports the run message"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-host",
+      "type": "rectangle",
+      "x": 410,
+      "y": 515,
+      "width": 350,
+      "height": 125,
+      "backgroundColor": "#f3f0ff",
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "ExecutorHost\nclaim matching PostgreSQL run\nstart package once\notherwise skip"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-running",
+      "type": "rectangle",
+      "x": 960,
+      "y": 510,
+      "width": 420,
+      "height": 130,
+      "backgroundColor": "#f1f3f5",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "RUNNING\nmatching saved run claimed once"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-verify",
+      "type": "rectangle",
+      "x": 60,
+      "y": 790,
+      "width": 300,
+      "height": 110,
+      "backgroundColor": "#e7f5ff",
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "S3 Executor package"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-process",
+      "type": "rectangle",
+      "x": 440,
+      "y": 790,
+      "width": 320,
+      "height": 110,
+      "backgroundColor": "#f3f0ff",
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "Executor process\nruns saved release B"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-terminal",
+      "type": "rectangle",
+      "x": 960,
+      "y": 775,
+      "width": 420,
+      "height": 140,
+      "backgroundColor": "#f1f3f5",
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "label": {
+        "text": "Final run state\nFINISHED\nFAILED"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-request-tracker",
+      "type": "arrow",
+      "x": 288,
+      "y": 320,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          64,
+          0
+        ]
+      ],
+      "start": {
+        "id": "d-request"
+      },
+      "end": {
+        "id": "d-tracker"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-tracker-queued",
+      "type": "arrow",
+      "x": 697.9984981094821,
+      "y": 316.6473159281108,
+      "strokeColor": "#0b7285",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "save before send"
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          254.0030037810359,
+          -4.922538832965756
+        ]
+      ],
+      "start": {
+        "id": "d-tracker"
+      },
+      "end": {
+        "id": "d-queued"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-21T00:32:38.754Z",
+      "updatedAt": "2026-07-21T00:32:38.754Z",
+      "version": 1
+    },
+    {
+      "id": "d-broker-host",
+      "type": "arrow",
+      "x": 348,
+      "y": 577.5,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          54,
+          0
+        ]
+      ],
+      "start": {
+        "id": "d-broker"
+      },
+      "end": {
+        "id": "d-host"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-21T00:32:38.755Z",
+      "updatedAt": "2026-07-21T00:32:38.755Z",
+      "version": 1
+    },
+    {
+      "id": "d-host-running",
+      "type": "arrow",
+      "x": 767.9999269496454,
+      "y": 576.7179490301297,
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "claim once"
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          184.00014610070912,
+          -0.7863254106867998
+        ]
+      ],
+      "start": {
+        "id": "d-host"
+      },
+      "end": {
+        "id": "d-running"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-21T00:32:38.755Z",
+      "updatedAt": "2026-07-21T00:32:38.755Z",
+      "version": 1
+    },
+    {
+      "id": "d-queued-running",
+      "type": "arrow",
+      "x": 1170,
+      "y": 388,
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          114
+        ]
+      ],
+      "start": {
+        "id": "d-queued"
+      },
+      "end": {
+        "id": "d-running"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-21T00:32:38.755Z",
+      "updatedAt": "2026-07-21T00:32:38.755Z",
+      "version": 1
+    },
+    {
+      "id": "d-verify-process",
+      "type": "arrow",
+      "x": 368,
+      "y": 845,
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          64,
+          0
+        ]
+      ],
+      "start": {
+        "id": "d-verify"
+      },
+      "end": {
+        "id": "d-process"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-21T00:32:38.755Z",
+      "updatedAt": "2026-07-21T00:32:38.755Z",
+      "version": 1
+    },
+    {
+      "id": "d-process-terminal",
+      "type": "arrow",
+      "x": 768,
+      "y": 845,
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          184,
+          0
+        ]
+      ],
+      "start": {
+        "id": "d-process"
+      },
+      "end": {
+        "id": "d-terminal"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-21T00:32:38.755Z",
+      "updatedAt": "2026-07-21T00:32:38.755Z",
+      "version": 1
+    },
+    {
+      "id": "d-running-terminal",
+      "type": "arrow",
+      "x": 1170,
+      "y": 648,
+      "strokeColor": "#495057",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          119
+        ]
+      ],
+      "start": {
+        "id": "d-running"
+      },
+      "end": {
+        "id": "d-terminal"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-21T00:32:38.755Z",
+      "updatedAt": "2026-07-21T00:32:38.755Z",
+      "version": 1
+    },
+    {
+      "id": "d-provenance",
+      "type": "text",
+      "x": 60,
+      "y": 382,
+      "width": 790,
+      "height": 38,
+      "strokeColor": "#495057",
+      "text": "Each Executor run keeps the release saved in PostgreSQL.",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.755Z",
+      "updatedAt": "2026-07-21T00:32:38.755Z",
+      "version": 1
+    },
+    {
+      "id": "d-truth-note",
+      "type": "text",
+      "x": 60,
+      "y": 652,
+      "width": 740,
+      "height": 28,
+      "strokeColor": "#495057",
+      "text": "PostgreSQL keeps run state  \u2022  Redis only carries messages",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.755Z",
+      "updatedAt": "2026-07-21T00:32:38.755Z",
+      "version": 1
+    },
+    {
+      "id": "d-result-label",
+      "type": "text",
+      "x": 785,
+      "y": 760,
+      "width": 160,
+      "height": 24,
+      "strokeColor": "#7048e8",
+      "text": "process result",
+      "fontSize": 16,
+      "fontFamily": 2,
+      "createdAt": "2026-07-21T00:32:38.760Z",
+      "updatedAt": "2026-07-21T00:32:38.760Z",
+      "version": 1
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff",
+    "gridSize": null
+  }
+}

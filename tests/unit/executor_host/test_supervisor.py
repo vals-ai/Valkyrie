@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from json import JSONDecodeError
+import logging
 import sys
 from pathlib import Path
 
@@ -136,6 +137,41 @@ async def test_run_forwards_dispatch_payload_to_executor(tmp_path: Path, monkeyp
     assert payload["verified_task_ids"] == ["task-1"]
     assert payload["executor_release_id"] == "release-v2"
     assert "executor_dispatch_id" not in payload
+
+
+@pytest.mark.asyncio
+async def test_dispatch_launch_correlates_child_and_verified_artifact_without_changing_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    script = b"""import json, os, sys\nfrom pathlib import Path\npayload = json.loads(Path(sys.argv[1]).read_text())\nmarker = {\"dispatch_id\": os.environ.get(\"VALKYRIE_EXECUTOR_DISPATCH_ID\"), \"payload\": payload}\nPath(os.environ[\"EXECUTOR_TEST_MARKER\"]).write_text(json.dumps(marker))\n"""
+    digest = hashlib.sha256(script).hexdigest()
+    marker = tmp_path / "marker.json"
+    monkeypatch.setenv("EXECUTOR_TEST_MARKER", str(marker))
+    supervisor = ExecutorSupervisor(
+        cache_dir=tmp_path,
+        s3_client=FakeS3Client(script),
+        python_executable=sys.executable,
+    )
+
+    with caplog.at_level(logging.INFO, logger=supervisor_module.logger.name):
+        await run_executor_dispatch(
+            supervisor,
+            FakeDispatchStore(),
+            executor_dispatch_id="dispatch-1",
+            dispatch=_dispatch(digest=digest),
+            start_benchmark_request_json={},
+            benchmark_id_str="benchmark-1",
+            verified_task_ids=[],
+        )
+
+    result = json.loads(marker.read_text())
+    assert result["dispatch_id"] == "dispatch-1"
+    assert "executor_dispatch_id" not in result["payload"]
+    assert (
+        f"Launching benchmark benchmark-1 dispatch_id=dispatch-1 release=release-v2 digest={digest} protocol=1"
+    ) in caplog.messages
 
 
 @pytest.mark.asyncio

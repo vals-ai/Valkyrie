@@ -19,6 +19,7 @@ from tracker.database.models import (
 )
 from tracker.release_control import (
     ReleaseControlError,
+    active_executor_release_counts,
     artifact_deletion_allowed,
     bootstrap_legacy_release,
     create_executor_dispatch,
@@ -326,6 +327,54 @@ def test_retire_if_empty_rejects_owned_active_benchmark(
     assert artifact_deletion_allowed(database_session, "v1", now=retention_until)
     with pytest.raises(ReleaseControlError, match="Retired executor release"):
         promote_release(database_session, "v1")
+
+
+def test_active_work_deduplicates_current_owner_and_dispatch_on_the_same_release(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release = register_release(database_session, _release("v1"))
+    promote_release(database_session, release.id)
+    benchmark = example_benchmark_object
+    benchmark.executor_release_id = release.id
+    benchmark.current_execution_release_id = release.id
+    benchmark.executor_artifact_uri = release.artifact_uri
+    benchmark.executor_artifact_digest = release.artifact_digest
+    benchmark.executor_protocol_version = release.protocol_version
+    database_session.add(benchmark)
+    database_session.flush()
+    dispatch = create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.RETRY)
+    dispatch.status = ExecutorDispatchStatus.RUNNING
+    database_session.add(dispatch)
+    database_session.commit()
+
+    assert active_executor_release_counts(database_session) == {release.id: 1}
+
+
+def test_null_current_owner_with_start_dispatch_history_blocks_every_retirement(
+    database_session: Session,
+    example_benchmark_object: Benchmark,
+) -> None:
+    release_a = register_release(database_session, _release("v1"))
+    release_b = register_release(database_session, _release("v2"))
+    promote_release(database_session, release_a.id)
+    promote_release(database_session, release_b.id)
+    benchmark = example_benchmark_object
+    benchmark.executor_release_id = release_a.id
+    benchmark.current_execution_release_id = None
+    benchmark.executor_artifact_uri = release_a.artifact_uri
+    benchmark.executor_artifact_digest = release_a.artifact_digest
+    benchmark.executor_protocol_version = release_a.protocol_version
+    database_session.add(benchmark)
+    database_session.flush()
+    dispatch = create_executor_dispatch(benchmark.id, release_a, ExecutorDispatchKind.START)
+    dispatch.status = ExecutorDispatchStatus.FINISHED
+    dispatch.finished_at = datetime.now(UTC)
+    database_session.add(dispatch)
+    database_session.commit()
+
+    with pytest.raises(ReleaseControlError, match="unattributed active executor work"):
+        retire_if_empty(database_session, release_a.id)
 
 
 def test_artifact_deletion_allowed_treats_naive_retention_timestamp_as_utc(database_session: Session) -> None:

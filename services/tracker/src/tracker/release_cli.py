@@ -1,4 +1,4 @@
-"""Operator commands for registering and promoting executor releases."""
+"""Operator commands for managing executor releases."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from tracker.database.models import ExecutorRelease
 from tracker.database.session import engine
 from tracker.release_control import (
     ReleaseControlError,
+    executor_releases_status,
     promote_release,
     register_release,
     retire_if_empty,
@@ -32,6 +33,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     for command in ("verify", "promote", "retire"):
         command_parser = subparsers.add_parser(command)
         command_parser.add_argument("release_id")
+    subparsers.add_parser("status", help="Report global release health and retirement blockers")
 
     args = parser.parse_args(argv)
     try:
@@ -56,10 +58,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 release = promote_release(session, args.release_id)
                 session.commit()
                 result = {"id": release.id, "status": release.status.value}
-            else:
+            elif args.command == "retire":
                 retired = retire_if_empty(session, args.release_id)
                 session.commit()
                 result = {"id": args.release_id, "retired": retired}
+            else:
+                result = executor_releases_status(session).model_dump(mode="json")
     except ReleaseControlError as exc:
         parser.error(str(exc))
     print(json.dumps(result))

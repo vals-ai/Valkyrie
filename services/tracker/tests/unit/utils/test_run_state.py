@@ -5,7 +5,7 @@ Run: uv run pytest tests/unit/utils/test_run_state.py
 
 from datetime import datetime
 from typing import Any, Sequence
-from uuid import uuid4
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -112,7 +112,12 @@ class TestRunState:
             "DAYTONA_TARGET": "target",
         }
 
-    def test_stop_benchmark(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+    def test_stop_benchmark(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Tests the flow of updating the benchmark related objects to the proper states when stopping a benchmark
 
         Test Cases:
@@ -144,10 +149,25 @@ class TestRunState:
         database_session.add_all(initial_task_rows)
         database_session.commit()
 
+        locked_fetches: list[bool] = []
+
+        def capture_locked_fetch(
+            benchmark_id: UUID,
+            session: Session,
+            org: Org,
+            *,
+            for_update: bool = False,
+        ) -> Benchmark:
+            locked_fetches.append(for_update)
+            return fetch_benchmark_row(benchmark_id, session, org, for_update=for_update)
+
+        monkeypatch.setattr("main.fetch_benchmark_row", capture_locked_fetch)
+
         # Test request to stop the benchmark
         response: Response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=false")
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
+        assert locked_fetches == [True]
 
         # Check that the benchmark status is now "stopping"
         benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)

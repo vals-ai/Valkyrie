@@ -13,6 +13,7 @@ from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
     BenchmarkStatus,
     ErrorResult,
+    ExecutorRelease,
     FinalEvaluation,
     TaskStatus,
 )
@@ -27,7 +28,28 @@ class TestSingleBenchmark:
         Test cases:
         - An authenticated request returns the expected run payload and counts.
         """
+        initial_release = ExecutorRelease(
+            id="initial-release",
+            artifact_uri="s3://artifacts/initial.pex",
+            artifact_digest="a" * 64,
+            protocol_version="1",
+        )
+        current_release = ExecutorRelease(
+            id="current-release",
+            artifact_uri="s3://artifacts/current.pex",
+            artifact_digest="b" * 64,
+            protocol_version="1",
+        )
+        database_session.add_all([initial_release, current_release])
+        database_session.commit()
         benchmark = make_benchmark(name="bench-1", status=BenchmarkStatus.FINISHED, session=database_session)
+        benchmark.executor_release_id = initial_release.id
+        benchmark.current_execution_release_id = current_release.id
+        benchmark.executor_artifact_uri = initial_release.artifact_uri
+        benchmark.executor_artifact_digest = initial_release.artifact_digest
+        benchmark.executor_protocol_version = initial_release.protocol_version
+        database_session.add(benchmark)
+        database_session.commit()
 
         response = client.get(f"/benchmarks/{benchmark.id}", headers={"Authorization": "Bearer fake"})
 
@@ -36,6 +58,8 @@ class TestSingleBenchmark:
         assert response_body["id"] == str(benchmark.id)
         assert response_body["name"] == "bench-1"
         assert response_body["status"] == "FINISHED"
+        assert response_body["executor_release_id"] == initial_release.id
+        assert response_body["current_execution_release_id"] == current_release.id
         assert response_body["final_score"] is None
         assert response_body["total_tasks"] == 0
 

@@ -9,6 +9,7 @@ from aws_cdk import (
     Stack,
     aws_certificatemanager,
     aws_ec2,
+    aws_ecr,
     aws_ecs,
     aws_ecs_patterns,
     aws_elasticloadbalancingv2,
@@ -73,17 +74,25 @@ class TrackerStack(Stack):
         hosted_zone: aws_route53.IHostedZone | None,
         bucket: aws_s3.IBucket,
         redis_url: str,
+        tracker_repository: aws_ecr.IRepository | None = None,
+        image_tag: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
         stage_config = config_for(stage)
 
-        # Docker image for the tracker API
-        tracker_image = aws_ecs.ContainerImage.from_asset(
-            "../services/tracker",
-            file="Dockerfile",
-            platform=Platform.LINUX_ARM64,
-        )
+        # Release-test writes images only to its stage-qualified repository;
+        # other stages retain the established CDK asset path.
+        if stage.is_release_test:
+            if tracker_repository is None or image_tag is None:
+                raise ValueError("Release-test Tracker requires a repository and immutable image tag")
+            tracker_image = aws_ecs.ContainerImage.from_ecr_repository(tracker_repository, image_tag)
+        else:
+            tracker_image = aws_ecs.ContainerImage.from_asset(
+                "../services/tracker",
+                file="Dockerfile",
+                platform=Platform.LINUX_ARM64,
+            )
 
         # Shared environment variables
         benchmark_service_url = benchmark_service_base_url(stage)

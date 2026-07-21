@@ -62,12 +62,11 @@ async def initiate_stop_benchmark(
             task_update = task_update.where(col(Task.task_id).in_(task_ids))
 
         result = session.exec(task_update.values(status=TaskStatus.STOPPED))
-        session.commit()
 
         if task_ids is None and (result.rowcount > 0 or force):
             benchmark_row.status = BenchmarkStatus.STOPPING
             session.add(benchmark_row)
-            session.commit()
+        session.commit()
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
 
@@ -215,7 +214,6 @@ async def reset_to_in_progress_status(
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
-            session.commit()
             return []
 
         # Verify the task ids are still valid before priming to resume
@@ -247,8 +245,6 @@ async def reset_to_in_progress_status(
 
         for task_id in new_task_ids:
             session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
-
-        session.commit()
 
         return verify_response.task_ids
     except (TrackerServiceError, BenchmarkServiceError):

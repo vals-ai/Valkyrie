@@ -301,6 +301,7 @@ class Benchmark(SQLModel, table=True):
     status: BenchmarkStatus = Field(default=BenchmarkStatus.IN_PROGRESS)
     label: str | None = Field(default=None, index=True)
     executor_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
+    current_execution_release_id: str | None = Field(default=None, foreign_key="executorrelease.id", index=True)
     executor_artifact_uri: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
@@ -388,6 +389,7 @@ class Benchmark(SQLModel, table=True):
             benchmark_arguments=self.arguments,
             started_by_email=self.started_by_email,
             executor_release_id=self.executor_release_id,
+            current_execution_release_id=self.current_execution_release_id,
             executor_artifact_uri=self.executor_artifact_uri,
             executor_artifact_digest=self.executor_artifact_digest,
             executor_protocol_version=self.executor_protocol_version,
@@ -421,6 +423,7 @@ class Benchmark(SQLModel, table=True):
             model=self.arguments.contract.model,
             dataset=self.arguments.dataset or "default",
             executor_release_id=self.executor_release_id,
+            current_execution_release_id=self.current_execution_release_id,
             executor_artifact_digest=self.executor_artifact_digest,
             executor_protocol_version=self.executor_protocol_version,
             started_by_email=self.started_by_email,

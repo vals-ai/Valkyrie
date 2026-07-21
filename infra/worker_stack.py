@@ -12,6 +12,7 @@ from aws_cdk import (
     Duration,
     Stack,
     aws_ec2,
+    aws_ecr,
     aws_ecs,
     aws_iam,
     aws_logs,
@@ -66,6 +67,9 @@ class WorkerStack(Stack):
         database: aws_rds.DatabaseInstance,
         db_credentials: aws_rds.DatabaseSecret,
         tracker_service: aws_ecs.FargateService,
+        tracker_repository: aws_ecr.IRepository | None = None,
+        executor_host_repository: aws_ecr.IRepository | None = None,
+        image_tag: str | None = None,
         **kwargs: Any,
     ):
         super().__init__(scope, id, **kwargs)
@@ -75,16 +79,22 @@ class WorkerStack(Stack):
         # SG — benchmark services only need to whitelist one group.
         tracker_sg = tracker_service.connections.security_groups[0]
 
-        worker_image = aws_ecs.ContainerImage.from_asset(
-            "../services/tracker",
-            file="Dockerfile",
-            platform=Platform.LINUX_ARM64,
-        )
-        executor_host_image = aws_ecs.ContainerImage.from_asset(
-            "../services/executor_host",
-            file="Dockerfile",
-            platform=Platform.LINUX_ARM64,
-        )
+        if stage.is_release_test:
+            if tracker_repository is None or executor_host_repository is None or image_tag is None:
+                raise ValueError("Release-test Worker requires both repositories and an immutable image tag")
+            worker_image = aws_ecs.ContainerImage.from_ecr_repository(tracker_repository, image_tag)
+            executor_host_image = aws_ecs.ContainerImage.from_ecr_repository(executor_host_repository, image_tag)
+        else:
+            worker_image = aws_ecs.ContainerImage.from_asset(
+                "../services/tracker",
+                file="Dockerfile",
+                platform=Platform.LINUX_ARM64,
+            )
+            executor_host_image = aws_ecs.ContainerImage.from_asset(
+                "../services/executor_host",
+                file="Dockerfile",
+                platform=Platform.LINUX_ARM64,
+            )
 
         benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {

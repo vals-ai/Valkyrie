@@ -7,6 +7,7 @@ from aws_cdk import (
     Stack,
     aws_chatbot,
     aws_ec2,
+    aws_ecr,
     aws_ecs,
     aws_elasticache,
     aws_events,
@@ -23,14 +24,18 @@ from constants import (
     DEV_SHARED_ARTIFACT_BUCKET_PARAMETER,
     DEV_SHARED_AVAILABILITY_ZONES_PARAMETER,
     DEV_SHARED_CLUSTER_NAME_PARAMETER,
+    DEV_SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER,
     DEV_SHARED_NAMESPACE_ARN_PARAMETER,
     DEV_SHARED_NAMESPACE_ID_PARAMETER,
     DEV_SHARED_NAMESPACE_NAME_PARAMETER,
     DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER,
+    DEV_SHARED_TRACKER_REPOSITORY_URI_PARAMETER,
     DEV_SHARED_VPC_ID_PARAMETER,
     ELASTICACHE_NODE_TYPE,
     NAMESPACE,
     REDIS_PORT,
+    RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
+    RELEASE_TEST_TRACKER_REPOSITORY_NAME,
     S3_BUCKET_NAME,
     VPC_CIDR,
     stage_parameter_name,
@@ -41,7 +46,7 @@ from constants import (
 from constructs import Construct
 from stage import Stage
 
-DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "WorkerStack", "MonitoringStack")
+DEPLOYMENT_STACK_NAMES = ("SharedStack", "TrackerStack", "DriverStack", "WorkerStack", "MonitoringStack")
 DEPLOYMENT_SUCCESS_STATUSES = ("CREATE_COMPLETE", "UPDATE_COMPLETE")
 DEPLOYMENT_FAILURE_STATUSES = (
     "CREATE_FAILED",
@@ -119,6 +124,30 @@ class SharedStack(Stack):
             object_ownership=None if self.stage.is_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             versioned=None if self.stage.is_prod else True,
         )
+
+        self.tracker_repository: aws_ecr.Repository | None = None
+        self.executor_host_repository: aws_ecr.Repository | None = None
+        if self.stage.is_release_test:
+            self.tracker_repository = aws_ecr.Repository(
+                self,
+                "ReleaseTestTrackerRepository",
+                repository_name=RELEASE_TEST_TRACKER_REPOSITORY_NAME,
+                image_scan_on_push=True,
+                image_tag_mutability=aws_ecr.TagMutability.IMMUTABLE,
+                encryption=aws_ecr.RepositoryEncryption.AES_256,
+                removal_policy=cdk.RemovalPolicy.RETAIN,
+                empty_on_delete=False,
+            )
+            self.executor_host_repository = aws_ecr.Repository(
+                self,
+                "ReleaseTestExecutorHostRepository",
+                repository_name=RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
+                image_scan_on_push=True,
+                image_tag_mutability=aws_ecr.TagMutability.IMMUTABLE,
+                encryption=aws_ecr.RepositoryEncryption.AES_256,
+                removal_policy=cdk.RemovalPolicy.RETAIN,
+                empty_on_delete=False,
+            )
 
         # ── ElastiCache Redis ─────────────────────────────────────────────
         # Single-node Redis used as the Taskiq message broker, shared by
@@ -219,6 +248,22 @@ class SharedStack(Stack):
             parameter_name=stage_parameter_name(DEV_SHARED_ARTIFACT_BUCKET_PARAMETER, self.stage.name),
             string_value=self.bucket.bucket_name,
         )
+        if self.tracker_repository is not None and self.executor_host_repository is not None:
+            aws_ssm.StringParameter(
+                self,
+                "SharedTrackerRepositoryUriParameter",
+                parameter_name=stage_parameter_name(DEV_SHARED_TRACKER_REPOSITORY_URI_PARAMETER, self.stage.name),
+                string_value=self.tracker_repository.repository_uri,
+            )
+            aws_ssm.StringParameter(
+                self,
+                "SharedExecutorHostRepositoryUriParameter",
+                parameter_name=stage_parameter_name(
+                    DEV_SHARED_EXECUTOR_HOST_REPOSITORY_URI_PARAMETER,
+                    self.stage.name,
+                ),
+                string_value=self.executor_host_repository.repository_uri,
+            )
 
     def _create_deployment_notifications(self, slack_workspace_id: str, slack_channel_id: str) -> None:
         notification_topic = aws_sns.Topic(

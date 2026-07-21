@@ -38,13 +38,14 @@ from tracker.database.models import (
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
     ExecutorRelease,
+    ExecutorReleaseStatus,
     FinalEvaluation,
     Org,
     RetryMode,
     Task,
     TaskStatus,
 )
-from tracker.release_control import promote_release
+from tracker.release_control import ReleaseControlError, promote_release
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import (
     ResizableLimiter,
@@ -84,6 +85,7 @@ def example_benchmark_object(contract: AgentContractRequest, database_session: S
 
     benchmark = make_benchmark(contract=contract, concurrency=5)
     benchmark.executor_release_id = release.id
+    benchmark.current_execution_release_id = release.id
     benchmark.executor_artifact_uri = release.artifact_uri
     benchmark.executor_artifact_digest = release.artifact_digest
     benchmark.executor_protocol_version = release.protocol_version
@@ -556,6 +558,7 @@ class TestRunRecovery:
             rerun_task_ids=[],
             org=self._test_org,
         )
+        database_session.commit()
         # Only 3 tasks should be verified for resume (the 3 tasks that are stopped)
         assert len(verified_task_ids) == 3
         assert set(verified_task_ids) == set(pending_task_ids)
@@ -622,6 +625,7 @@ class TestRunRecovery:
             rerun_task_ids=[],
             org=self._test_org,
         )
+        database_session.commit()
 
         database_session.refresh(task_row)
         assert verified_task_ids == [task_row.task_id]
@@ -857,6 +861,7 @@ class TestRunRecovery:
             rerun_task_ids=[new_task_id],
             org=self._test_org,
         )
+        database_session.commit()
         assert verified_task_ids == [new_task_id]
 
         stale_final_evaluation = database_session.exec(
@@ -1242,7 +1247,11 @@ class TestRunRecovery:
         def _unexpected_kicker() -> None:
             raise AssertionError("running retry without error tasks should not enqueue work")
 
+        def _unexpected_release_resolution(*_args: Any, **_kwargs: Any) -> ExecutorRelease:
+            raise AssertionError("running retry without work should not resolve a release")
+
         monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+        monkeypatch.setattr("main.resolve_current_execution_release", _unexpected_release_resolution)
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
@@ -1362,9 +1371,9 @@ class TestRunRecovery:
         assert response.status_code == 200
         queued_call = mock_kicker.queued_calls[0]
         assert queued_call["verified_task_ids"] == ["task_error"]
-        assert queued_call["executor_release_id"] == "latest-release"
-        assert queued_call["executor_artifact_uri"] == "s3://artifacts/latest-release.pex"
-        assert queued_call["executor_artifact_digest"] == "digest-latest-release"
+        assert queued_call["executor_release_id"] == "test-release"
+        assert queued_call["executor_artifact_uri"] == "s3://artifacts/test-release.pex"
+        assert queued_call["executor_artifact_digest"] == "digest-test-release"
         assert queued_call["executor_protocol_version"] == "1"
         dispatch_id = UUID(queued_call["executor_dispatch_id"])
         dispatch = database_session.get(ExecutorDispatch, dispatch_id)
@@ -1372,8 +1381,9 @@ class TestRunRecovery:
         assert dispatch.benchmark_id == benchmark_row.id
         assert dispatch.kind == ExecutorDispatchKind.RETRY
         assert dispatch.status == ExecutorDispatchStatus.QUEUED
-        assert dispatch.executor_release_id == "latest-release"
+        assert dispatch.executor_release_id == "test-release"
         assert benchmark_row.executor_release_id == "test-release"
+        assert benchmark_row.current_execution_release_id == "test-release"
         assert benchmark_row.executor_artifact_digest == "digest-test-release"
 
         task_statuses = {
@@ -1385,6 +1395,201 @@ class TestRunRecovery:
             "task_pending": TaskStatus.PENDING,
             "task_finished": TaskStatus.FINISHED,
         }
+
+    async def test_running_retry_rejects_missing_current_owner_without_mutation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.current_execution_release_id = None
+        task = Task(org_id=TEST_ORG_ID, task_id="task_error", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        database_session.add(benchmark_row)
+        database_session.add(task)
+        database_session.commit()
+
+        async def _verify_error_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task.task_id])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_error_task)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        assert response.status_code == 409
+        assert "no current executor release" in response.json()["detail"]
+        with Session(bind=database_session.get_bind()) as fresh_session:
+            persisted_task = fresh_session.get(Task, task.id)
+            assert persisted_task is not None
+            assert persisted_task.status == TaskStatus.ERROR
+            assert fresh_session.exec(select(ExecutorDispatch)).all() == []
+
+    async def test_release_resolution_failure_rolls_back_retry_mutation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        task = Task(org_id=TEST_ORG_ID, task_id="task_error", benchmark=benchmark_row.id, status=TaskStatus.ERROR)
+        database_session.add(benchmark_row)
+        database_session.add(task)
+        database_session.commit()
+
+        async def _verify_error_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task.task_id])
+
+        def _fail_release_resolution(*_args: Any, **_kwargs: Any) -> ExecutorRelease:
+            raise ReleaseControlError("current release unavailable")
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_error_task)
+        monkeypatch.setattr("main.resolve_current_execution_release", _fail_release_resolution)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        assert response.status_code == 409
+        with Session(bind=database_session.get_bind()) as fresh_session:
+            persisted_benchmark = fresh_session.get(Benchmark, benchmark_row.id)
+            persisted_task = fresh_session.get(Task, task.id)
+            assert persisted_benchmark is not None
+            assert persisted_benchmark.status == BenchmarkStatus.IN_PROGRESS
+            assert persisted_benchmark.current_execution_release_id == "test-release"
+            assert persisted_task is not None
+            assert persisted_task.status == TaskStatus.ERROR
+            assert fresh_session.exec(select(ExecutorDispatch)).all() == []
+
+    async def test_terminal_resume_without_active_release_returns_503_without_mutation(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_stopped",
+            benchmark=benchmark_row.id,
+            status=TaskStatus.STOPPED,
+            started_at=_ORIGINAL_ATTEMPT_AT,
+            finished_at=_RESUMED_ATTEMPT_AT,
+        )
+        database_session.add(benchmark_row)
+        database_session.add(task)
+        database_session.commit()
+        release = database_session.get(ExecutorRelease, "test-release")
+        assert release is not None
+        release.status = ExecutorReleaseStatus.DRAINING
+        database_session.add(release)
+        database_session.commit()
+
+        async def _verify_stopped_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=[task.task_id])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_stopped_task)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}")
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == "No active executor release is configured"
+        with Session(bind=database_session.get_bind()) as fresh_session:
+            persisted_benchmark = fresh_session.get(Benchmark, benchmark_row.id)
+            persisted_task = fresh_session.get(Task, task.id)
+            assert persisted_benchmark is not None
+            assert persisted_benchmark.status == BenchmarkStatus.STOPPED
+            assert persisted_benchmark.current_execution_release_id == "test-release"
+            assert persisted_task is not None
+            assert persisted_task.status == TaskStatus.STOPPED
+            assert persisted_task.started_at == _ORIGINAL_ATTEMPT_AT
+            assert persisted_task.finished_at == _RESUMED_ATTEMPT_AT
+            assert fresh_session.exec(select(ExecutorDispatch)).all() == []
+
+    async def test_terminal_resume_hands_current_execution_release_to_active(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.add(
+            Task(org_id=TEST_ORG_ID, task_id="task_stopped", benchmark=benchmark_row.id, status=TaskStatus.STOPPED)
+        )
+        release = ExecutorRelease(
+            id="recovery-release",
+            artifact_uri="s3://artifacts/recovery-release.pex",
+            artifact_digest="digest-recovery-release",
+            protocol_version="1",
+            readiness_verified=True,
+        )
+        database_session.add(release)
+        database_session.commit()
+        promote_release(database_session, release.id)
+        database_session.commit()
+
+        async def _verify_stopped_task(*_args: Any, **_kwargs: Any) -> VerifyTaskIdsResponse:
+            return VerifyTaskIdsResponse(task_ids=["task_stopped"])
+
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_stopped_task)
+
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}")
+
+        assert response.status_code == 200
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.executor_release_id == "test-release"
+        assert benchmark_row.current_execution_release_id == release.id
+        queued_call = mock_kicker.queued_calls[0]
+        assert queued_call["executor_release_id"] == release.id
+        dispatch = database_session.get(ExecutorDispatch, UUID(queued_call["executor_dispatch_id"]))
+        assert dispatch is not None
+        assert dispatch.kind == ExecutorDispatchKind.RESUME
+        assert dispatch.executor_release_id == release.id
+
+        latest_release = ExecutorRelease(
+            id="latest-release",
+            artifact_uri="s3://artifacts/latest-release.pex",
+            artifact_digest="digest-latest-release",
+            protocol_version="1",
+            readiness_verified=True,
+        )
+        database_session.add(latest_release)
+        database_session.commit()
+        promote_release(database_session, latest_release.id)
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        task = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
+        task.status = TaskStatus.ERROR
+        database_session.add(benchmark_row)
+        database_session.add(task)
+        database_session.commit()
+
+        retry_response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+
+        assert retry_response.status_code == 200
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.current_execution_release_id == release.id
+        assert mock_kicker.queued_calls[1]["executor_release_id"] == release.id
+
+        benchmark_row.status = BenchmarkStatus.STOPPED
+        task.status = TaskStatus.STOPPED
+        database_session.add(benchmark_row)
+        database_session.add(task)
+        database_session.commit()
+
+        second_resume = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}")
+
+        assert second_resume.status_code == 200
+        database_session.refresh(benchmark_row)
+        assert benchmark_row.executor_release_id == "test-release"
+        assert benchmark_row.current_execution_release_id == latest_release.id
+        assert [call["executor_release_id"] for call in mock_kicker.queued_calls] == [
+            release.id,
+            release.id,
+            latest_release.id,
+        ]
 
     async def test_retry_keeps_dispatch_queued_when_enqueue_ack_is_ambiguous(
         self,
@@ -1422,14 +1627,18 @@ class TestRunRecovery:
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_error_task)
         monkeypatch.setattr("main.process_benchmark.kicker", lambda: AmbiguousKicker())
 
-        with pytest.raises(RuntimeError, match="broker acknowledgement lost"):
-            client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
+        assert response.status_code == 503
         dispatches = database_session.exec(select(ExecutorDispatch)).all()
         assert len(dispatches) == 1
         assert dispatches[0].kind == ExecutorDispatchKind.RETRY
         assert dispatches[0].status == ExecutorDispatchStatus.QUEUED
-        assert dispatches[0].executor_release_id == "new-release"
+        assert dispatches[0].executor_release_id == "test-release"
+        assert response.json()["detail"] == {
+            "message": "Executor dispatch enqueue acknowledgement failed",
+            "executor_dispatch_id": str(dispatches[0].id),
+        }
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_running_retry_repairs_error_and_later_finalizes_same_run(

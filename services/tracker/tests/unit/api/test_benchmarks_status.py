@@ -117,6 +117,7 @@ class TestBenchmarkStatusQueries:
                 "status": "IN_PROGRESS",
                 "finished_at": None,
                 "executor_release_id": None,
+                "current_execution_release_id": None,
                 "executor_artifact_digest": None,
                 "executor_protocol_version": None,
                 "total_tasks": 4,

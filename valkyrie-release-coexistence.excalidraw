@@ -7,314 +7,757 @@
       "id": "title",
       "type": "text",
       "x": 40,
-      "y": 25,
+      "y": 20,
       "width": 1500,
       "height": 46,
       "strokeColor": "#1e1e1e",
-      "text": "Valkyrie release coexistence",
+      "text": "Switching Executor releases",
       "fontSize": 36,
       "fontFamily": 2,
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
       "version": 1
     },
     {
       "id": "subtitle",
       "type": "text",
       "x": 40,
-      "y": 78,
+      "y": 70,
       "width": 1600,
       "height": 32,
       "strokeColor": "#495057",
-      "text": "Promotion changes future dispatches only; queued and running work keeps its committed release manifest.",
+      "text": "New Executor processes use B. Processes already running on A stay on A.",
       "fontSize": 22,
       "fontFamily": 2,
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
       "version": 1
     },
     {
-      "id": "flow-panel",
+      "id": "flow-column-heading",
+      "type": "text",
+      "x": 50,
+      "y": 116,
+      "width": 500,
+      "height": 24,
+      "strokeColor": "#868e96",
+      "text": "HOW EXECUTOR RUNS START",
+      "fontSize": 18,
+      "fontFamily": 2,
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "registry-column-heading",
+      "type": "text",
+      "x": 1310,
+      "y": 116,
+      "width": 320,
+      "height": 24,
+      "strokeColor": "#868e96",
+      "text": "CURRENT RELEASES",
+      "fontSize": 18,
+      "fontFamily": 2,
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "grid-frame",
       "type": "rectangle",
       "x": 30,
-      "y": 125,
-      "width": 1640,
-      "height": 430,
+      "y": 150,
+      "width": 1620,
+      "height": 810,
       "backgroundColor": "transparent",
       "strokeColor": "#adb5bd",
       "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 1,
+      "roughness": 0,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
       "roundness": {
         "type": 3
       },
       "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
       "version": 1
     },
     {
-      "id": "flow-label",
+      "id": "grid-vertical",
+      "type": "line",
+      "x": 1270,
+      "y": 150,
+      "strokeColor": "#ced4da",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          810
+        ]
+      ],
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "grid-row-1",
+      "type": "line",
+      "x": 30,
+      "y": 415,
+      "strokeColor": "#ced4da",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1620,
+          0
+        ]
+      ],
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "grid-row-2",
+      "type": "line",
+      "x": 30,
+      "y": 685,
+      "strokeColor": "#ced4da",
+      "strokeWidth": 2,
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          1620,
+          0
+        ]
+      ],
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "row-1-label",
       "type": "text",
       "x": 55,
-      "y": 143,
-      "width": 500,
+      "y": 172,
+      "width": 620,
       "height": 28,
-      "strokeColor": "#495057",
-      "text": "DEPLOYMENT + COEXISTENCE",
-      "fontSize": 18,
+      "strokeColor": "#343a40",
+      "text": "1. Normal operation on release A",
+      "fontSize": 23,
       "fontFamily": 2,
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
       "version": 1
     },
     {
-      "id": "release-set",
+      "id": "r1-new",
       "type": "rectangle",
-      "x": 410,
-      "y": 175,
-      "width": 560,
-      "height": 80,
-      "backgroundColor": "#f1f3f5",
-      "strokeColor": "#495057",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": "Release registry\nA  DRAINING   •   B  DRAINING   •   C  ACTIVE"
-      },
-      "fontSize": 22,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "promotion-note",
-      "type": "text",
-      "x": 1050,
-      "y": 180,
-      "width": 500,
-      "height": 70,
-      "strokeColor": "#364fc7",
-      "text": "PROMOTION / ROLLBACK\nchanges ACTIVE only\nexisting dispatches never move",
-      "fontSize": 18,
-      "fontFamily": 2,
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "new-work",
-      "type": "rectangle",
-      "x": 55,
-      "y": 320,
+      "x": 60,
+      "y": 250,
       "width": 180,
+      "height": 90,
+      "backgroundColor": "#ffffff",
+      "strokeColor": "#343a40",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "New Executor\nrun"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "r1-tracker",
+      "type": "rectangle",
+      "x": 320,
+      "y": 240,
+      "width": 270,
       "height": 110,
-      "backgroundColor": "#ffffff",
-      "strokeColor": "#1e1e1e",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": "New work\nSTART • RETRY • RESUME"
-      },
-      "fontSize": 22,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "tracker",
-      "type": "rectangle",
-      "x": 275,
-      "y": 320,
-      "width": 200,
-      "height": 110,
-      "backgroundColor": "#ffffff",
-      "strokeColor": "#1e1e1e",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": "Tracker\nselect current ACTIVE"
-      },
-      "fontSize": 22,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "existing-work",
-      "type": "rectangle",
-      "x": 275,
-      "y": 462,
-      "width": 260,
-      "height": 64,
-      "backgroundColor": "#ffffff",
-      "strokeColor": "#495057",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": "Already queued / running\nkeep recorded release"
-      },
-      "fontSize": 21,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "dispatch-ledger",
-      "type": "rectangle",
-      "x": 535,
-      "y": 292,
-      "width": 290,
-      "height": 154,
       "backgroundColor": "#e3fafc",
       "strokeColor": "#0b7285",
       "strokeWidth": 2,
       "roughness": 1,
       "label": {
-        "text": "1  Dispatch row\nrelease manifest + lifecycle\ncommit before publish"
+        "text": "Tracker\nchoose A + save in PostgreSQL"
       },
-      "fontSize": 22,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "stable-queue",
-      "type": "rectangle",
-      "x": 875,
-      "y": 320,
-      "width": 205,
-      "height": 110,
-      "backgroundColor": "#fff4e6",
-      "strokeColor": "#d9480f",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": "2  Stable queue\nrelease-tagged jobs"
-      },
-      "fontSize": 22,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "worker",
-      "type": "rectangle",
-      "x": 1130,
-      "y": 292,
-      "width": 230,
-      "height": 154,
-      "backgroundColor": "#f3f0ff",
-      "strokeColor": "#6741d9",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": "3  ExecutorHost\nclaim once • verify • launch\nwrite terminal status"
-      },
-      "fontSize": 22,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "pinned-process",
-      "type": "rectangle",
-      "x": 1410,
-      "y": 286,
-      "width": 220,
-      "height": 166,
-      "backgroundColor": "#ffffff",
-      "strokeColor": "#343a40",
-      "strokeWidth": 3,
-      "roughness": 1,
-      "label": {
-        "text": "4  Release-pinned execution\nA → artifact A\nB → artifact B\nC → artifact C"
-      },
-      "fontSize": 21,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "ops-panel",
-      "type": "rectangle",
-      "x": 30,
-      "y": 585,
-      "width": 1640,
-      "height": 270,
-      "backgroundColor": "transparent",
-      "strokeColor": "#adb5bd",
-      "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 1,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "ops-label",
-      "type": "text",
-      "x": 55,
-      "y": 603,
-      "width": 500,
-      "height": 28,
-      "strokeColor": "#495057",
-      "text": "OPERATIONAL RULES",
       "fontSize": 18,
       "fontFamily": 2,
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
       "version": 1
     },
     {
-      "id": "a-new-tracker",
+      "id": "r1-host",
+      "type": "rectangle",
+      "x": 760,
+      "y": 240,
+      "width": 260,
+      "height": 110,
+      "backgroundColor": "#f3f0ff",
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "ExecutorHost\nclaim matching saved run\n+ start package"
+      },
+      "fontSize": 18,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "r1-artifact",
+      "type": "rectangle",
+      "x": 1070,
+      "y": 230,
+      "width": 170,
+      "height": 130,
+      "backgroundColor": "#ebfbee",
+      "strokeColor": "#2b8a3e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "Executor package A\nthis run stays on A"
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "r1-new-tracker",
       "type": "arrow",
-      "x": 243,
-      "y": 375,
+      "x": 248,
+      "y": 295,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 17,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          64,
+          0
+        ]
+      ],
+      "start": {
+        "id": "r1-new"
+      },
+      "end": {
+        "id": "r1-tracker"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "r1-tracker-host",
+      "type": "arrow",
+      "x": 598,
+      "y": 295,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 17,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          154,
+          0
+        ]
+      ],
+      "start": {
+        "id": "r1-tracker"
+      },
+      "end": {
+        "id": "r1-host"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-20T23:55:21.128Z",
+      "updatedAt": "2026-07-20T23:55:21.128Z",
+      "version": 1
+    },
+    {
+      "id": "r1-queue-label",
+      "type": "text",
+      "x": 625,
+      "y": 258,
+      "width": 120,
+      "height": 24,
+      "strokeColor": "#495057",
+      "text": "Redis broker",
+      "fontSize": 17,
+      "fontFamily": 2,
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r1-host-artifact",
+      "type": "arrow",
+      "x": 1028,
+      "y": 295,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 17,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          44,
+          0
+        ]
+      ],
+      "start": {
+        "id": "r1-host"
+      },
+      "end": {
+        "id": "r1-artifact"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r1-state",
+      "type": "rectangle",
+      "x": 1290,
+      "y": 235,
+      "width": 320,
+      "height": 120,
+      "backgroundColor": "#ebfbee",
+      "strokeColor": "#2b8a3e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "A  ACTIVE\nnew runs use package A"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "row-2-label",
+      "type": "text",
+      "x": 55,
+      "y": 437,
+      "width": 700,
+      "height": 28,
+      "strokeColor": "#343a40",
+      "text": "2. Prepare and make B current",
+      "fontSize": 23,
+      "fontFamily": 2,
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r2-deploy",
+      "type": "rectangle",
+      "x": 60,
+      "y": 520,
+      "width": 230,
+      "height": 100,
+      "backgroundColor": "#e7f5ff",
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "Upload package B to S3"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r2-verify",
+      "type": "rectangle",
+      "x": 380,
+      "y": 520,
+      "width": 230,
+      "height": 100,
+      "backgroundColor": "#e7f5ff",
+      "strokeColor": "#1971c2",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "Register + check package B"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r2-promote",
+      "type": "rectangle",
+      "x": 700,
+      "y": 520,
+      "width": 220,
+      "height": 100,
+      "backgroundColor": "#e3fafc",
+      "strokeColor": "#0b7285",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "Make B current"
+      },
+      "fontSize": 20,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r2-deploy-verify",
+      "type": "arrow",
+      "x": 298,
+      "y": 570,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 17,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          74,
+          0
+        ]
+      ],
+      "start": {
+        "id": "r2-deploy"
+      },
+      "end": {
+        "id": "r2-verify"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r2-verify-promote",
+      "type": "arrow",
+      "x": 618,
+      "y": 570,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 17,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          74,
+          0
+        ]
+      ],
+      "start": {
+        "id": "r2-verify"
+      },
+      "end": {
+        "id": "r2-promote"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r2-promote-state",
+      "type": "arrow",
+      "x": 927.9939034604243,
+      "y": 574.6091368539228,
+      "strokeColor": "#0b7285",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "B becomes ACTIVE"
+      },
+      "fontSize": 17,
+      "fontFamily": 2,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          354.0121930791512,
+          13.828601292154417
+        ]
+      ],
+      "start": {
+        "id": "r2-promote"
+      },
+      "end": {
+        "id": "r2-state-b"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r2-state-a",
+      "type": "rectangle",
+      "x": 1290,
+      "y": 450,
+      "width": 320,
+      "height": 100,
+      "backgroundColor": "#fff9db",
+      "strokeColor": "#e67700",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "A  DRAINING\nexisting processes stay on A\nretire manually after its work finishes"
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r2-state-b",
+      "type": "rectangle",
+      "x": 1290,
+      "y": 560,
+      "width": 320,
+      "height": 90,
+      "backgroundColor": "#ebfbee",
+      "strokeColor": "#2b8a3e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "B  ACTIVE\nnew runs use B\nrollback: make A current again"
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "row-3-label",
+      "type": "text",
+      "x": 55,
+      "y": 707,
+      "width": 780,
+      "height": 28,
+      "strokeColor": "#343a40",
+      "text": "3. New Executor runs use release B",
+      "fontSize": 23,
+      "fontFamily": 2,
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r3-action",
+      "type": "rectangle",
+      "x": 50,
+      "y": 805,
+      "width": 240,
+      "height": 110,
+      "backgroundColor": "#ffffff",
+      "strokeColor": "#343a40",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "START \u2022 RETRY \u2022 RESUME\nwhen they start a new Executor run"
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r3-tracker",
+      "type": "rectangle",
+      "x": 330,
+      "y": 795,
+      "width": 280,
+      "height": 130,
+      "backgroundColor": "#e3fafc",
+      "strokeColor": "#0b7285",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "Tracker\nchoose B + save in PostgreSQL"
+      },
+      "fontSize": 18,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r3-host",
+      "type": "rectangle",
+      "x": 770,
+      "y": 795,
+      "width": 260,
+      "height": 130,
+      "backgroundColor": "#f3f0ff",
+      "strokeColor": "#7048e8",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "ExecutorHost\nclaim matching saved run\n+ start package"
+      },
+      "fontSize": 18,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r3-artifact",
+      "type": "rectangle",
+      "x": 1070,
+      "y": 795,
+      "width": 170,
+      "height": 130,
+      "backgroundColor": "#ebfbee",
+      "strokeColor": "#2b8a3e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "Executor package B\nthis run stays on B"
+      },
+      "fontSize": 16,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
+      "version": 1
+    },
+    {
+      "id": "r3-action-tracker",
+      "type": "arrow",
+      "x": 298,
+      "y": 860,
       "strokeColor": "#1e1e1e",
       "strokeWidth": 2,
       "roughness": 1,
@@ -334,55 +777,21 @@
         ]
       ],
       "start": {
-        "id": "new-work"
+        "id": "r3-action"
       },
       "end": {
-        "id": "tracker"
+        "id": "r3-tracker"
       },
       "endArrowhead": "arrow",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
       "version": 1
     },
     {
-      "id": "a-release-tracker",
+      "id": "r3-tracker-host",
       "type": "arrow",
-      "x": 604.1173690552594,
-      "y": 258.62292365447144,
-      "strokeColor": "#1e1e1e",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": "ACTIVE"
-      },
-      "fontSize": 17,
-      "fontFamily": 2,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          -121.98473811051872,
-          61.960501897406346
-        ]
-      ],
-      "start": {
-        "id": "release-set"
-      },
-      "end": {
-        "id": "tracker"
-      },
-      "endArrowhead": "arrow",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "a-tracker-ledger",
-      "type": "arrow",
-      "x": 482.9984524781698,
-      "y": 372.875440279118,
+      "x": 618,
+      "y": 860,
       "strokeColor": "#1e1e1e",
       "strokeWidth": 2,
       "roughness": 1,
@@ -397,185 +806,116 @@
           0
         ],
         [
-          44.003095043660494,
-          -0.8656346565965691
-        ]
-      ],
-      "start": {
-        "id": "tracker"
-      },
-      "end": {
-        "id": "dispatch-ledger"
-      },
-      "endArrowhead": "arrow",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "a-existing-ledger",
-      "type": "arrow",
-      "x": 482.6829318197008,
-      "y": 458.68957644559055,
-      "strokeColor": "#1e1e1e",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 17,
-      "fontFamily": 2,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          45.03413636059838,
-          -20.470061982090158
-        ]
-      ],
-      "start": {
-        "id": "existing-work"
-      },
-      "end": {
-        "id": "dispatch-ledger"
-      },
-      "endArrowhead": "arrow",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "a-ledger-queue",
-      "type": "arrow",
-      "x": 832.9983734924281,
-      "y": 372.08568148220024,
-      "strokeColor": "#1e1e1e",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 17,
-      "fontFamily": 2,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          34.003253015143855,
-          0.6857798927424028
-        ]
-      ],
-      "start": {
-        "id": "dispatch-ledger"
-      },
-      "end": {
-        "id": "stable-queue"
-      },
-      "endArrowhead": "arrow",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "a-queue-worker",
-      "type": "arrow",
-      "x": 1087.9979883561828,
-      "y": 372.5215404480856,
-      "strokeColor": "#1e1e1e",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 17,
-      "fontFamily": 2,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          34.00402328763448,
-          -0.7627070643954994
-        ]
-      ],
-      "start": {
-        "id": "stable-queue"
-      },
-      "end": {
-        "id": "worker"
-      },
-      "endArrowhead": "arrow",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
-      "version": 1
-    },
-    {
-      "id": "a-worker-process",
-      "type": "arrow",
-      "x": 1368,
-      "y": 369,
-      "strokeColor": "#1e1e1e",
-      "strokeWidth": 2,
-      "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 17,
-      "fontFamily": 2,
-      "points": [
-        [
-          0,
-          0
-        ],
-        [
-          34,
+          144,
           0
         ]
       ],
       "start": {
-        "id": "worker"
+        "id": "r3-tracker"
       },
       "end": {
-        "id": "pinned-process"
+        "id": "r3-host"
       },
       "endArrowhead": "arrow",
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
       "version": 1
     },
     {
-      "id": "ops-lifecycle",
+      "id": "r3-queue-label",
       "type": "text",
-      "x": 80,
-      "y": 650,
-      "width": 720,
-      "height": 155,
-      "strokeColor": "#9c6500",
-      "text": "DRAIN + RETIRE\nCount active dispatches by release.\nRetire only DRAINING at zero.\nRetain artifact 30 days.\nDelete only with no queued / running references.",
-      "fontSize": 24,
+      "x": 645,
+      "y": 823,
+      "width": 120,
+      "height": 24,
+      "strokeColor": "#495057",
+      "text": "Redis broker",
+      "fontSize": 17,
       "fontFamily": 2,
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "createdAt": "2026-07-20T23:55:21.129Z",
+      "updatedAt": "2026-07-20T23:55:21.129Z",
       "version": 1
     },
     {
-      "id": "ops-failure",
-      "type": "text",
-      "x": 870,
-      "y": 650,
-      "width": 720,
-      "height": 155,
-      "strokeColor": "#a61e4d",
-      "text": "TERMINAL RULES\nDuplicate claim → skip.\nNormal exit → FINISHED.\nLaunch / execution error → FAILED.\nUncertain terminal write / orphan → block retirement.",
-      "fontSize": 24,
+      "id": "r3-host-artifact",
+      "type": "arrow",
+      "x": 1038,
+      "y": 860,
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": ""
+      },
+      "fontSize": 17,
       "fontFamily": 2,
-      "createdAt": "2026-07-20T21:50:06.027Z",
-      "updatedAt": "2026-07-20T21:50:06.027Z",
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          44,
+          0
+        ]
+      ],
+      "start": {
+        "id": "r3-host"
+      },
+      "end": {
+        "id": "r3-artifact"
+      },
+      "endArrowhead": "arrow",
+      "createdAt": "2026-07-20T23:55:21.130Z",
+      "updatedAt": "2026-07-20T23:55:21.130Z",
+      "version": 1
+    },
+    {
+      "id": "r3-state-a",
+      "type": "rectangle",
+      "x": 1290,
+      "y": 745,
+      "width": 320,
+      "height": 90,
+      "backgroundColor": "#fff9db",
+      "strokeColor": "#e67700",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "A  DRAINING\nexisting runs stay on A"
+      },
+      "fontSize": 17,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.130Z",
+      "updatedAt": "2026-07-20T23:55:21.130Z",
+      "version": 1
+    },
+    {
+      "id": "r3-state-b",
+      "type": "rectangle",
+      "x": 1290,
+      "y": 850,
+      "width": 320,
+      "height": 90,
+      "backgroundColor": "#ebfbee",
+      "strokeColor": "#2b8a3e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "label": {
+        "text": "B  ACTIVE\nthis run uses package B"
+      },
+      "fontSize": 17,
+      "fontFamily": 2,
+      "roundness": {
+        "type": 3
+      },
+      "fillStyle": "solid",
+      "createdAt": "2026-07-20T23:55:21.131Z",
+      "updatedAt": "2026-07-20T23:55:21.131Z",
       "version": 1
     }
   ],

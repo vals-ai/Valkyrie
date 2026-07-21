@@ -16,7 +16,11 @@
     },
     "s3_bucket_url": "s3://runs-bucket/run",
     "label": "nightly",
-    "final_score": null
+    "final_score": null,
+    "executor_release_id": null,
+    "current_execution_release_id": null,
+    "executor_artifact_digest": null,
+    "executor_protocol_version": null
   },
   "sse": {
     "event": "",
@@ -37,7 +41,11 @@
       },
       "s3_bucket_url": "s3://runs-bucket/run",
       "label": "nightly",
-      "final_score": null
+      "final_score": null,
+      "executor_release_id": null,
+      "current_execution_release_id": null,
+      "executor_artifact_digest": null,
+      "executor_protocol_version": null
     }
   }
 }

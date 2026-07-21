@@ -1,12 +1,14 @@
 import json
 import os
 import unittest
+from typing import cast
 from unittest import mock
 
 import aws_cdk as cdk
 from aws_cdk import (
     assertions,
     aws_ec2,
+    aws_ecr,
     aws_ecs,
     aws_elasticache,
     aws_elasticloadbalancingv2 as aws_elb,
@@ -152,6 +154,11 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
     stage = Stage(stage_name)
     env = cdk.Environment(account=TEST_AWS_ACCOUNT, region=TEST_AWS_REGION)
     shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=env)
+    tracker_repository = cast(aws_ecr.IRepository, shared.tracker_repository) if stage.is_release_test else None
+    executor_host_repository = (
+        cast(aws_ecr.IRepository, shared.executor_host_repository) if stage.is_release_test else None
+    )
+    image_tag = "package-r-test" if stage.is_release_test else None
     tracker = TrackerStack(
         app,
         stage.stack_id("TrackerStack"),
@@ -162,6 +169,8 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
         hosted_zone=shared.hosted_zone,
         bucket=shared.bucket,
         redis_url=shared.redis_url,
+        tracker_repository=tracker_repository,
+        image_tag=image_tag,
         env=env,
     )
     worker = WorkerStack(
@@ -176,6 +185,9 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
         database=tracker.database,
         db_credentials=tracker.db_credentials,
         tracker_service=tracker.tracker_fargate_service,
+        tracker_repository=tracker_repository,
+        executor_host_repository=executor_host_repository,
+        image_tag=image_tag,
         env=env,
     )
 
@@ -192,6 +204,18 @@ class MonitoringStackTest(unittest.TestCase):
         self.assertEqual(stage.stack_id("SharedStack"), "ValkReleaseTestSharedStack")
         self.assertEqual(stage.phys("AgenticHarnessCluster"), "AgenticHarnessCluster-release-test")
         self.assertEqual(stage.domain("benchmark-tracker.vals.ai"), "benchmark-tracker-release-test.vals.ai")
+
+    def test_release_test_owns_immutable_service_image_repositories(self) -> None:
+        release_template = _shared_template(RELEASE_TEST)
+        repositories = release_template.find_resources("AWS::ECR::Repository")
+        self.assertEqual(
+            {resource["Properties"]["RepositoryName"] for resource in repositories.values()},
+            {"valkyrie/release-test/tracker", "valkyrie/release-test/executor-host"},
+        )
+        self.assertTrue(
+            all(resource["Properties"]["ImageTagMutability"] == "IMMUTABLE" for resource in repositories.values())
+        )
+        self.assertFalse(_shared_template(DEV).find_resources("AWS::ECR::Repository"))
 
     def test_release_test_templates_use_external_benchmark_service_and_namespaced_outputs(self) -> None:
         with mock.patch.dict(

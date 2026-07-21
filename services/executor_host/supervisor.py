@@ -28,6 +28,7 @@ DEFAULT_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_CACHE_DIR = "/var/cache/valkyrie-executors"
 ECS_AGENT_URI = os.environ.get("ECS_AGENT_URI")
 _PROTECTION_EXPIRY_MINUTES = 1440
+_EXECUTOR_DISPATCH_ID_ENV = "VALKYRIE_EXECUTOR_DISPATCH_ID"
 _active_execution_count = 0
 _execution_lock = asyncio.Lock()
 
@@ -261,6 +262,7 @@ class ExecutorSupervisor:
         start_benchmark_request_json: Mapping[str, object],
         benchmark_id_str: str,
         verified_task_ids: list[str],
+        executor_dispatch_id: str | None = None,
     ) -> None:
         await _acquire_task_protection()
         try:
@@ -269,6 +271,7 @@ class ExecutorSupervisor:
                 start_benchmark_request_json=start_benchmark_request_json,
                 benchmark_id_str=benchmark_id_str,
                 verified_task_ids=verified_task_ids,
+                executor_dispatch_id=executor_dispatch_id,
             )
         finally:
             await _release_task_protection()
@@ -280,6 +283,7 @@ class ExecutorSupervisor:
         start_benchmark_request_json: Mapping[str, object],
         benchmark_id_str: str,
         verified_task_ids: list[str],
+        executor_dispatch_id: str | None,
     ) -> None:
         artifact_path = await self.prepare_artifact(dispatch)
         payload = {
@@ -294,9 +298,15 @@ class ExecutorSupervisor:
         with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
+            executor_environment = os.environ.copy()
+            if executor_dispatch_id is None:
+                executor_environment.pop(_EXECUTOR_DISPATCH_ID_ENV, None)
+            else:
+                executor_environment[_EXECUTOR_DISPATCH_ID_ENV] = executor_dispatch_id
             logger.info(
-                "Launching benchmark %s with release=%s digest=%s protocol=%s",
+                "Launching benchmark %s dispatch_id=%s release=%s digest=%s protocol=%s",
                 benchmark_id_str,
+                executor_dispatch_id,
                 dispatch.release_id,
                 dispatch.artifact_digest,
                 dispatch.protocol_version,
@@ -306,6 +316,7 @@ class ExecutorSupervisor:
                 str(artifact_path),
                 str(payload_path),
                 start_new_session=True,
+                env=executor_environment,
             )
             try:
                 return_code = await process.wait()
@@ -371,6 +382,7 @@ async def run_executor_dispatch(
             start_benchmark_request_json=start_benchmark_request_json,
             benchmark_id_str=benchmark_id_str,
             verified_task_ids=verified_task_ids,
+            executor_dispatch_id=executor_dispatch_id,
         )
     except BaseException:
         if executor_dispatch_id is not None:

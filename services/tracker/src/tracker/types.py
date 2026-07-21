@@ -16,6 +16,8 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
+    ExecutorDispatchKind,
+    ExecutorDispatchStatus,
     ExecutorReleaseStatus,
     FinalEvaluation,
     TaskStatus,
@@ -130,6 +132,7 @@ class StartBenchmarkResponse(BaseModel):
     cloudwatch_url: str
     s3_bucket_url: str
     executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
 
@@ -142,6 +145,7 @@ class FetchBenchmarkResponse(BaseModel):
     label: str | None = None
     final_score: float | None = None
     executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
 
@@ -229,6 +233,7 @@ class BenchmarkTableRow(BaseModel):
     label: str | None = None
     model: str | None
     executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
     dataset: str = "default"
@@ -267,6 +272,7 @@ class FetchBenchmarkMetadataResponse(BaseModel):
     benchmark_arguments: BenchmarkArguments
     started_by_email: str | None = None
     executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
     executor_artifact_uri: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
@@ -317,6 +323,7 @@ class BenchmarkStatusEntry(BaseModel):
     finished_at: datetime | None
     total_tasks: int
     executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
     finished_tasks: int
@@ -330,6 +337,40 @@ class BenchmarkStatusEntry(BaseModel):
 
 class BenchmarkStatusResponse(BaseModel):
     entries: list[BenchmarkStatusEntry]
+
+
+class ExecutorDispatchBlocker(BaseModel):
+    dispatch_id: UUID
+    benchmark_id: UUID
+    kind: ExecutorDispatchKind
+    status: ExecutorDispatchStatus
+    executor_release_id: str
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str | None:
+        return _serialize_utc(value)
+
+
+class ExecutorExecutionBlocker(BaseModel):
+    benchmark_id: UUID
+    status: BenchmarkStatus
+    current_execution_release_id: str
+    started_at: datetime
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str | None:
+        return _serialize_utc(value)
+
+
+class UnattributedExecutionBlocker(BaseModel):
+    benchmark_id: UUID
+    status: BenchmarkStatus
+    started_at: datetime
+
+    @field_serializer("started_at")
+    def _serialize_started_at(self, value: datetime) -> str | None:
+        return _serialize_utc(value)
 
 
 class ExecutorReleaseStatusEntry(BaseModel):
@@ -346,10 +387,18 @@ class ExecutorReleaseStatusEntry(BaseModel):
     artifact_retention_until: datetime | None = None
     owned_active_runs: int
     retirement_blocker: str | None = None
+    blocking_dispatches: list[ExecutorDispatchBlocker] = Field(default_factory=list)
+    blocking_executions: list[ExecutorExecutionBlocker] = Field(default_factory=list)
+
+    @field_serializer("created_at", "activated_at", "draining_at", "retired_at", "artifact_retention_until")
+    def _serialize_datetimes(self, value: datetime | None) -> str | None:
+        return _serialize_utc(value)
 
 
 class ExecutorReleasesResponse(BaseModel):
     active_release_id: str | None
+    unattributed_active_execution_count: int
+    unattributed_active_executions: list[UnattributedExecutionBlocker]
     entries: list[ExecutorReleaseStatusEntry]
 
 
@@ -361,6 +410,7 @@ class SingleBenchmarkResponse(BaseModel):
     agent_name: str
     model: str | None
     executor_release_id: str | None = None
+    current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None
     executor_protocol_version: str | None = None
     started_at: datetime

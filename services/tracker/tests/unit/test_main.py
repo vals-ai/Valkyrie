@@ -7,7 +7,7 @@ import io
 import logging
 import tarfile
 from collections.abc import AsyncIterator
-from datetime import datetime, timezone
+from datetime import timezone
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -106,111 +106,10 @@ class TestTrackerAPI:
 
         assert response.json() == {"status": "ok"}
 
-    def test_executor_release_status_exposes_active_candidates_and_retirement_blockers(
-        self,
-        database_session: Session,
-        example_benchmark_object: Benchmark,
-    ) -> None:
-        database_session.add(
-            ExecutorRelease(
-                id="candidate-release",
-                artifact_uri="s3://artifacts/candidate.pex",
-                artifact_digest="a" * 64,
-                protocol_version="1",
-                status=ExecutorReleaseStatus.CANDIDATE,
-                readiness_verified=False,
-            )
-        )
-        database_session.add(
-            ExecutorRelease(
-                id="draining-release",
-                artifact_uri="s3://artifacts/draining.pex",
-                artifact_digest="b" * 64,
-                protocol_version="1",
-                status=ExecutorReleaseStatus.DRAINING,
-                readiness_verified=True,
-            )
-        )
-        example_benchmark_object.executor_release_id = "draining-release"
-        example_benchmark_object.executor_artifact_uri = "s3://artifacts/draining.pex"
-        example_benchmark_object.executor_artifact_digest = "b" * 64
-        example_benchmark_object.executor_protocol_version = "1"
-        example_benchmark_object.status = BenchmarkStatus.IN_PROGRESS
-        database_session.add(example_benchmark_object)
-        database_session.commit()
-
+    def test_executor_release_status_is_not_exposed_over_http(self) -> None:
         response = client.get("/executor-releases")
 
-        assert response.status_code == 200
-        body = response.json()
-        assert body["active_release_id"] == "test-release"
-        entries = {entry["id"]: entry for entry in body["entries"]}
-        assert entries["candidate-release"]["readiness_verified"] is False
-        assert entries["draining-release"]["owned_active_runs"] == 1
-        assert entries["draining-release"]["retirement_blocker"] == "1 active execution"
-
-    def test_executor_release_status_counts_retry_dispatch_on_its_selected_release(
-        self,
-        database_session: Session,
-        example_benchmark_object: Benchmark,
-    ) -> None:
-        release = ExecutorRelease(
-            id="retry-release",
-            artifact_uri="s3://artifacts/retry.pex",
-            artifact_digest="b" * 64,
-            protocol_version="1",
-            status=ExecutorReleaseStatus.DRAINING,
-            readiness_verified=True,
-        )
-        database_session.add(release)
-        database_session.add(example_benchmark_object)
-        database_session.commit()
-        database_session.add(
-            ExecutorDispatch(
-                benchmark_id=example_benchmark_object.id,
-                kind=ExecutorDispatchKind.RETRY,
-                status=ExecutorDispatchStatus.RUNNING,
-                executor_release_id=release.id,
-                executor_artifact_uri=release.artifact_uri,
-                executor_artifact_digest=release.artifact_digest,
-                executor_protocol_version=release.protocol_version,
-            )
-        )
-        database_session.commit()
-
-        response = client.get("/executor-releases")
-
-        assert response.status_code == 200
-        entries = {entry["id"]: entry for entry in response.json()["entries"]}
-        assert entries["retry-release"]["owned_active_runs"] == 1
-        assert entries["retry-release"]["retirement_blocker"] == "1 active execution"
-
-    def test_executor_release_status_handles_naive_retention_timestamp(
-        self,
-        database_session: Session,
-    ) -> None:
-        retention_until = datetime(2100, 1, 1)
-        database_session.add(
-            ExecutorRelease(
-                id="retired-release",
-                artifact_uri="s3://artifacts/retired.pex",
-                artifact_digest="c" * 64,
-                protocol_version="1",
-                status=ExecutorReleaseStatus.RETIRED,
-                readiness_verified=True,
-                artifact_retention_until=retention_until,
-            )
-        )
-        database_session.commit()
-
-        response = client.get("/executor-releases")
-
-        assert response.status_code == 200
-        entries = {entry["id"]: entry for entry in response.json()["entries"]}
-        retired = entries["retired-release"]
-        retention_until_utc = retention_until.replace(tzinfo=timezone.utc)
-        assert isoparse(retired["artifact_retention_until"]) == retention_until_utc
-        assert retired["retirement_blocker"] == f"artifact retained until {retention_until_utc.isoformat()}"
+        assert response.status_code == 404
 
     @pytest.mark.parametrize("concurrency", [0, -1, 1.5, "2", True])
     def test_update_benchmark_concurrency_rejects_non_positive_or_non_integer_values(
@@ -569,6 +468,7 @@ class TestTrackerAPI:
         assert json_response["task_count"] == 500
 
         assert benchmark_row.executor_release_id == "test-release"
+        assert benchmark_row.current_execution_release_id == "test-release"
         assert benchmark_row.executor_artifact_uri == "s3://artifacts/test-release.pex"
         assert benchmark_row.executor_artifact_digest == "digest-test-release"
         assert benchmark_row.executor_protocol_version == "1"
@@ -591,6 +491,7 @@ class TestTrackerAPI:
         # Remaining fields match what we passed into the request
         assert json_response["benchmark_name"] == request.benchmark_name
         assert json_response["agent_name"] == request.contract.name
+        assert json_response["current_execution_release_id"] == "test-release"
         assert json_response["concurrency"] == request.concurrency
 
     async def test_start_benchmark_keeps_dispatch_queued_when_enqueue_ack_is_ambiguous(
@@ -615,12 +516,16 @@ class TestTrackerAPI:
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
         monkeypatch.setattr("main.process_benchmark.kicker", lambda: AmbiguousKicker())
 
-        with pytest.raises(RuntimeError, match="broker acknowledgement lost"):
-            client.post("/start-benchmark", json=request.model_dump())
+        response = client.post("/start-benchmark", json=request.model_dump())
 
+        assert response.status_code == 503
         dispatches = database_session.exec(select(ExecutorDispatch)).all()
         assert len(dispatches) == 1
         assert dispatches[0].status == ExecutorDispatchStatus.QUEUED
+        assert response.json()["detail"] == {
+            "message": "Executor dispatch enqueue acknowledgement failed",
+            "executor_dispatch_id": str(dispatches[0].id),
+        }
 
     async def test_start_benchmark_rejects_without_active_executor_release(
         self,

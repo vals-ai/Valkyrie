@@ -49,6 +49,7 @@ def get_benchmarks_status(
                 status=benchmark.status,
                 finished_at=benchmark.finished_at,
                 executor_release_id=benchmark.executor_release_id,
+                current_execution_release_id=benchmark.current_execution_release_id,
                 executor_artifact_digest=benchmark.executor_artifact_digest,
                 executor_protocol_version=benchmark.executor_protocol_version,
                 total_tasks=sum(counts.values()),
