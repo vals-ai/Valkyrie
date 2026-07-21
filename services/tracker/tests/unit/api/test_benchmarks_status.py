@@ -71,7 +71,7 @@ class TestBenchmarkStatusQueries:
         assert response.status_code == 200
         assert response.json() == {"exists": True}
         assert exists_mock.await_args is not None
-        assert exists_mock.await_args.args[0] == f"benchmarks/{_RESULTS_RUN_ID}/results.json"
+        assert exists_mock.await_args.args[0] == f"benchmarks/{_RESULTS_RUN_ID}/{example_benchmark_object.name}.json"
 
     def test_benchmarks_status_counts_all_terminal_tasks(
         self,
