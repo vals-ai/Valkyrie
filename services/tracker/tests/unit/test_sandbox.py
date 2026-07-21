@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from benchmark_service import ComposeSandbox, ComposeSource, ExecResult, ImageSource, Resources, SnapshotSource
+from benchmark_service import SandboxNotFoundError
 from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxCommandError
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
@@ -1165,3 +1166,88 @@ class TestStreamCommandOutputAgentFailure:
 
         assert "new-marker" in str(exc_info.value)
         assert "old-marker" not in str(exc_info.value)
+
+
+class TestStreamCommandOutputRemovedContainer:
+    """VALKYRIE-6X: destroyed-container provider errors must not flip a completed run to ERROR.
+
+    Daytona's toolbox exec endpoint answers with a generic 400 whose body carries
+    "failed to resolve container IP" / "no IP address found" when the container backing the
+    sandbox has already been reclaimed. create-benchmark-service <= v0.16.2 does not classify
+    that shape as SandboxNotFoundError, so the tracker must recognize it defensively until the
+    provider fix ships and the pin advances.
+    """
+
+    _REMOVED_CONTAINER_MESSAGE = (
+        "Sandbox operation failed for name=test-sandbox, id=sandbox-123: Failed to execute "
+        "command: bad request: failed to resolve container IP after 3 attempts: no IP address "
+        "found"
+    )
+
+    async def test_removed_container_during_stream_reclassifies_as_not_found(self) -> None:
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield "partial\n"
+            raise ProviderSandboxError(self._REMOVED_CONTAINER_MESSAGE)
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.state = "started"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = AsyncMock()
+
+        with pytest.raises(SandboxNotFoundError):
+            await sandbox_module.stream_command_output(
+                mock_sandbox, "run-agent.sh", on_output=lambda _: None
+            )
+        # The stream raised BEFORE the timing-file reads, so the only exec call is the
+        # best-effort finally cleanup (which is already wrapped in try/except).
+        exec_calls = [call.args[0] for call in mock_sandbox.exec.call_args_list]
+        assert all(cmd.startswith("rm -f ") for cmd in exec_calls)
+
+    async def test_removed_container_during_timing_read_treated_as_completed(self) -> None:
+        """A teardown between stream-end and timing-file reads should NOT flip completion to ERROR.
+
+        The stream finished with exit_code 0, so the run succeeded; the timing capture is
+        auxiliary. Duration falls back to 0.0 rather than raising.
+        """
+
+        async def stream_command(_command: str) -> AsyncIterator[str]:
+            yield "done\n"
+
+        exec_calls: list[str] = []
+
+        async def exec_command(command: str) -> ExecResult:
+            exec_calls.append(command)
+            # First timing-file read fails with the destroyed-container signature -- as would happen
+            # if the sandbox was torn down between the stream ending and the auxiliary cat.
+            if command.startswith("cat ") and ".start_ns" in command:
+                raise ProviderSandboxError(self._REMOVED_CONTAINER_MESSAGE)
+            # The finally-clause rm is best-effort and already swallows exceptions.
+            return ExecResult(exit_code=0, output="")
+
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.state = "started"
+        mock_sandbox.command = stream_command
+        mock_sandbox.exec = exec_command
+
+        exit_reason, duration = await sandbox_module.stream_command_output(
+            mock_sandbox, "run-agent.sh", on_output=lambda _: None
+        )
+
+        assert exit_reason is None
+        assert duration == 0.0
+        # Timing read attempted at least once; the finally cleanup still runs.
+        assert any(c.startswith("cat ") and ".start_ns" in c for c in exec_calls)
+
+    async def test_removed_container_during_exec_reclassifies_as_not_found(self) -> None:
+        mock_sandbox = Mock()
+        mock_sandbox.id = "sandbox-123"
+        mock_sandbox.name = "test-sandbox"
+        mock_sandbox.state = "started"
+        mock_sandbox.exec = AsyncMock(side_effect=ProviderSandboxError(self._REMOVED_CONTAINER_MESSAGE))
+
+        with pytest.raises(SandboxNotFoundError):
+            await sandbox_module._exec(mock_sandbox, "ls")
