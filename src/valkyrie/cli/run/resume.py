@@ -6,6 +6,7 @@ from tracker.database.models import RetryMode
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import emit_json, json_option
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import update_benchmark_agent_version
@@ -73,6 +74,7 @@ from valkyrie.cli.tracker_client import TrackerService
     required=False,
     help="Connect to the tracker service to stream run updates after resuming",
 )
+@json_option
 @click.pass_context
 def resume(
     ctx: click.Context,
@@ -85,7 +87,8 @@ def resume(
     update_agent: bool,
     from_scratch: bool,
     connect: bool,
-):
+    json_output: bool,
+) -> None:
     """
     Resume a run by its run id.
 
@@ -106,9 +109,9 @@ def resume(
             if update_agent:
                 metadata = tracker.fetch_benchmark_metadata(run_id)
                 agent_name = metadata.benchmark_arguments.contract.name
-                click.echo(f"\r\033[KUpdating agent '{agent_name}'...", nl=False)
+                click.echo(f"\r\033[KUpdating agent '{agent_name}'...", nl=False, err=True)
                 asyncio.run(update_benchmark_agent_version(agent_name, str(run_id)))
-                click.echo(click.style("\r\033[K✓ Agent updated", fg="green"))
+                click.echo(click.style("\r\033[K✓ Agent updated", fg="green"), err=True)
 
             _ = tracker.retry_or_resume_benchmark(
                 run_id,
@@ -120,19 +123,35 @@ def resume(
                 secrets={key: value for key, value in secrets},
             )
             action_label = "retried" if retry else "resumed"
-            click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))
-            click.echo("┌─ Next Steps " + "─" * 66)
-            if not connect:
-                click.echo(
-                    f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan")
+            if json_output:
+                emit_json(
+                    "run_action",
+                    action="retry" if retry else "resume",
+                    status="accepted",
+                    **({"event": "accepted"} if connect else {}),
+                    run_id=str(run_id),
+                    connected=connect,
+                    updated_agent=update_agent,
+                    retry_mode=(RetryMode.FROM_SCRATCH if from_scratch else RetryMode.AUTO).value,
+                    selected_task_count=len(retry_task_ids) if retry_task_ids else None,
                 )
-            click.echo(
-                f"│ {'Get results:':<17} "
-                + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
-            )
-            click.echo("└" + "─" * 79)
+            else:
+                click.echo(click.style(f"✓ Run {action_label} successfully!", fg="green", bold=True))
+                click.echo("┌─ Next Steps " + "─" * 66)
+                if not connect:
+                    click.echo(
+                        f"│ {'Track progress:':<17} " + click.style(f"valkyrie run fetch {run_id} --connect", fg="cyan")
+                    )
+                click.echo(
+                    f"│ {'Get results:':<17} "
+                    + click.style(f"valkyrie run results {run_id} --path ./results-{run_id}.json", fg="cyan")
+                )
+                click.echo("└" + "─" * 79)
             if connect:
-                stream_benchmark_status(tracker, run_id)
+                if json_output:
+                    stream_benchmark_status(tracker, run_id, output_format="jsonl")
+                else:
+                    stream_benchmark_status(tracker, run_id)
     except (TrackerServiceError, S3Error) as e:
         raise click.ClickException(str(e))
 

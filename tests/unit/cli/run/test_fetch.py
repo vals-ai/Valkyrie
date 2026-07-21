@@ -78,6 +78,7 @@ def test_run_snapshot_is_versioned_allowlisted_and_stable() -> None:
     serialized = format_run_snapshot_json(response, metadata, event="snapshot")
 
     assert snapshot["schema_version"] == 1
+    assert snapshot["kind"] == "run_snapshot"
     assert snapshot["event"] == "snapshot"
     assert snapshot["observed_at"] == "2026-07-09T13:00:00Z"
     assert snapshot["run_id"] == str(run_id)
@@ -104,7 +105,7 @@ def test_fetch_json_outputs_one_clean_object(monkeypatch: pytest.MonkeyPatch) ->
     run_id = uuid4()
     tracker = StubFetchTracker(make_fetch_response(run_id), make_fetch_metadata(run_id))
 
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--format", "json"])
+    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--json"])
 
     assert result.exit_code == 0, result.output
     assert len(result.output.splitlines()) == 1
@@ -155,7 +156,7 @@ def test_fetch_jsonl_outputs_only_snapshot_update_and_terminal_records(monkeypat
         events=[f"data: {finished.model_dump_json()}", "event: complete"],
     )
 
-    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--format", "jsonl"])
+    result = invoke_with_tracker(monkeypatch, tracker, [str(run_id), "--connect", "--json"])
 
     assert result.exit_code == 0, result.output
     assert "\x1b" not in result.output

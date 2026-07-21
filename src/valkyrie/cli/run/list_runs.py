@@ -3,6 +3,7 @@ from tracker.database.models import BenchmarkStatus
 from tracker.types import BenchmarkTableRow, FetchBenchmarksRequest, FetchBenchmarksResponse, Order
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import json_option, resolve_json_format
 from valkyrie.cli.display import format_table, paginate_cli_pages, short_local_time
 from valkyrie.cli.run.progress import BenchmarkFormatter
 from valkyrie.cli.run.snapshot import format_run_list_json
@@ -79,8 +80,9 @@ _MACHINE_PAGE_LIMIT = 500
     "--all",
     "all_runs",
     is_flag=True,
-    help="Fetch every matching run without interactive paging. Requires --format json.",
+    help="Fetch every matching run without interactive paging. Requires JSON output.",
 )
+@json_option
 def list_runs(
     agent_name: str | None,
     benchmark_name: str | None,
@@ -92,7 +94,8 @@ def list_runs(
     started_by: str | None = None,
     output_format: str = "text",
     all_runs: bool = False,
-):
+    json_output: bool = False,
+) -> None:
     """
     List runs based on the request parameters.
 
@@ -101,12 +104,14 @@ def list_runs(
     Example:
         valkyrie run list --agent-name claude_code --benchmark-name swebench --status IN_PROGRESS --order-by DESC
     """
+    output_format = resolve_json_format(output_format, json_output)
+
     started_by_list: list[str] = [s.strip() for s in started_by.split(",") if s.strip()] if started_by else []
 
     if output_format == "json" and not all_runs:
-        raise click.UsageError("--format json requires --all.")
+        raise click.UsageError("JSON output requires --all.")
     if all_runs and output_format != "json":
-        raise click.UsageError("--all requires --format json.")
+        raise click.UsageError("--all requires JSON output.")
 
     try:
         with TrackerService() as tracker:

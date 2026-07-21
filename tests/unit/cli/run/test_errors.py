@@ -154,7 +154,7 @@ def test_errors_json_is_versioned_allowlisted_and_deterministic(monkeypatch: pyt
     )
     tracker = StubErrorsTracker(response)
 
-    result = invoke_with_tracker(monkeypatch, tracker, run_id, "--format", "json")
+    result = invoke_with_tracker(monkeypatch, tracker, run_id, "--json")
 
     assert result.exit_code == 0, result.output
     assert len(result.stdout.splitlines()) == 1

@@ -5,6 +5,7 @@ from uuid import UUID
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import emit_json, json_option
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -21,11 +22,21 @@ from valkyrie.cli.tracker_client import TrackerService
     required=True,
     help="New maximum number of concurrent tasks",
 )
-def update(run_id: UUID, concurrency: int) -> None:
+@json_option
+def update(run_id: UUID, concurrency: int, json_output: bool) -> None:
     """Update the concurrency limit for an active run."""
     try:
         with TrackerService() as tracker:
             response = tracker.update_benchmark_concurrency(run_id, concurrency)
-        click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
+        if json_output:
+            emit_json(
+                "run_update",
+                action="update_concurrency",
+                status="completed",
+                run_id=str(run_id),
+                concurrency=response.concurrency,
+            )
+        else:
+            click.echo(click.style(f"✓ Run concurrency updated to {response.concurrency}.", fg="green", bold=True))
     except TrackerServiceError as e:
         raise click.ClickException(str(e)) from e

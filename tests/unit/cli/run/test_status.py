@@ -59,7 +59,7 @@ def test_status_json_deduplicates_and_restores_requested_order(monkeypatch: pyte
     result = invoke_with_tracker(
         monkeypatch,
         tracker,
-        ["--ids", f" {first.id}, {second.id}, {first.id} ", "--format", "json"],
+        ["--ids", f" {first.id}, {second.id}, {first.id} ", "--json"],
     )
 
     assert result.exit_code == 0, result.output

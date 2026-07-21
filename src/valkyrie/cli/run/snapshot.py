@@ -59,6 +59,7 @@ def build_run_snapshot(
 
     return {
         "schema_version": 1,
+        "kind": "run_snapshot",
         "event": event,
         "observed_at": _utc_isoformat(observed_at or datetime.now(timezone.utc)),
         "run_id": str(response.benchmark_id),

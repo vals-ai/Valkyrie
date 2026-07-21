@@ -171,9 +171,9 @@ async def push_agent(agent_name: str, agent_path: Path):
                     bar_width = 30
                     filled_width = int(bar_width * progress_pct / 100)
                     bar = "█" * filled_width + "░" * (bar_width - filled_width)
-                    click.echo(f"\rUploading agent  [{bar}]  {progress_pct:.1f}%", nl=False)
+                    click.echo(f"\rUploading agent  [{bar}]  {progress_pct:.1f}%", nl=False, err=True)
 
-                click.echo()
+                click.echo(err=True)
 
                 # Complete the multipart upload
                 await client.complete_multipart_upload(

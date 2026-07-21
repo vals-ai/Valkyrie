@@ -83,8 +83,7 @@ def test_list_json_all_exhausts_cursor_pages_and_preserves_filters(monkeypatch: 
         monkeypatch,
         tracker,
         [
-            "--format",
-            "json",
+            "--json",
             "--all",
             "--agent-name",
             "mini_sweagent",
@@ -189,7 +188,8 @@ def test_list_json_all_rejects_repeated_cursor(monkeypatch: pytest.MonkeyPatch) 
     ("args", "expected_error"),
     [
         (["--format", "json"], "requires --all"),
-        (["--all"], "requires --format json"),
+        (["--json"], "requires --all"),
+        (["--all"], "requires JSON output"),
     ],
 )
 def test_list_machine_flags_validate_before_tracker_construction(

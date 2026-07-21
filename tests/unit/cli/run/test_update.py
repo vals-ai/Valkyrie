@@ -5,6 +5,7 @@ Run: uv run pytest tests/unit/cli/run/test_update.py
 Covers successful updates, CLI validation, and tracker errors.
 """
 
+import json
 from importlib import import_module
 from uuid import UUID
 
@@ -66,6 +67,16 @@ def test_update_uses_effective_tracker_concurrency(
     assert result.exit_code == 0, result.output
     assert tracker.calls == [(run_id, 9)]
     assert result.output == "✓ Run concurrency updated to 6.\n"
+
+    result = cli_runner.invoke(run, ["update", str(run_id), "--concurrency", "9", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["kind"] == "run_update"
+    assert payload["action"] == "update_concurrency"
+    assert payload["status"] == "completed"
+    assert payload["run_id"] == str(run_id)
+    assert payload["concurrency"] == 6
 
 
 @pytest.mark.parametrize("value", ["0", "-1", "1.5", "not-an-integer"])

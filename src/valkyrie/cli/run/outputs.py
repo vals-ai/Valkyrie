@@ -9,6 +9,7 @@ from httpx import Response
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import emit_json, json_option
 from valkyrie.cli.run.artifacts import download_s3_path
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
@@ -32,7 +33,8 @@ from valkyrie.cli.tracker_client import TrackerService
     default=None,
     help="Comma-separated list of task IDs to download (e.g., astropy__astropy-7606,django__django-10880)",
 )
-def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
+@json_option
+def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None, json_output: bool) -> None:
     """
     Fetch run outputs for a benchmark by its run id.
 
@@ -49,16 +51,25 @@ def outputs(run_id: UUID, output_dir: Path | None, task_ids: str | None):
                     f"{metadata.benchmark_name}_{metadata.benchmark_arguments.contract.name}_{metadata.benchmark_id}"
                 )
 
-            click.echo(f"\r\033[KFetching run outputs for run {run_id}...", nl=False)
+            if not json_output:
+                click.echo(f"\r\033[KFetching run outputs for run {run_id}...", nl=False)
 
-            response = tracker.fetch_run_outputs(
-                run_id,
-                task_ids=resolve_task_ids(task_ids),
-            )
+            selected_task_ids = resolve_task_ids(task_ids)
+            response = tracker.fetch_run_outputs(run_id, task_ids=selected_task_ids)
 
             download_run_outputs(response, output_dir)
 
-            click.echo(click.style(f"\r\033[K✓ Run outputs extracted to: {output_dir}", fg="green"))
+            if json_output:
+                emit_json(
+                    "run_outputs_download",
+                    action="download",
+                    status="completed",
+                    run_id=str(run_id),
+                    output_dir=str(output_dir.resolve()),
+                    selected_task_count=len(selected_task_ids) if selected_task_ids else None,
+                )
+            else:
+                click.echo(click.style(f"\r\033[K✓ Run outputs extracted to: {output_dir}", fg="green"))
 
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
@@ -108,19 +119,19 @@ def download_run_outputs(run_outputs_response: Response, output_dir: Path) -> No
 
     try:
         with tmp_file:
-            click.echo("\r\033[KDownloading...", nl=False)
+            click.echo("\r\033[KDownloading...", nl=False, err=True)
 
             for chunk in run_outputs_response.iter_bytes():
                 tmp_file.write(chunk)
 
-        click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False)
+        click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False, err=True)
 
         with tarfile.open(tmp_path, "r") as tar:
             tar.extractall(output_dir, filter="data")
 
         nested_tars = list(output_dir.rglob("*.tar.gz"))
         if nested_tars:
-            click.echo(f"\r\033[KUnpacking {len(nested_tars)} nested tar.gz files...", nl=False)
+            click.echo(f"\r\033[KUnpacking {len(nested_tars)} nested tar.gz files...", nl=False, err=True)
 
             for nested_tar in nested_tars:
                 extract_dir = nested_tar.parent / nested_tar.stem.replace(".tar", "")

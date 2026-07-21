@@ -1,5 +1,4 @@
 import asyncio
-import sys
 from typing import Any
 from uuid import UUID
 
@@ -8,6 +7,7 @@ from tracker.exceptions import S3Error
 
 from valkyrie.cli.exceptions import TrackerServiceError
 from valkyrie.cli.agent.storage import get_ingest_lambda_from_s3
+from valkyrie.cli.machine_output import credential_free_url, emit_json, json_option
 from valkyrie.cli.tracker_client import TrackerService
 
 
@@ -22,7 +22,8 @@ from valkyrie.cli.tracker_client import TrackerService
     default=False,
     help="Bypass the cached reading-plan URL and re-fire ingestion.",
 )
-def analyze(run_id: UUID, no_cache: bool) -> None:
+@json_option
+def analyze(run_id: UUID, no_cache: bool, json_output: bool) -> None:
     """Trigger Docent ingestion + error analysis for a finished run."""
     try:
         with TrackerService() as tracker:
@@ -49,21 +50,52 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
                 lambda_function=lambda_function,
             ):
                 if event == "started":
-                    click.echo(f"  Invoking {data.get('lambda_function')}...")
+                    if json_output:
+                        emit_json(
+                            "run_analysis_event",
+                            event="started",
+                            run_id=str(run_id),
+                            lambda_function=str(data.get("lambda_function") or lambda_function),
+                        )
+                    else:
+                        click.echo(f"  Invoking {data.get('lambda_function')}...")
                 elif event == "heartbeat":
-                    click.echo(".", nl=False)
+                    if json_output:
+                        emit_json("run_analysis_event", event="heartbeat", run_id=str(run_id))
+                    else:
+                        click.echo(".", nl=False)
                 elif event == "done":
                     terminal = (event, data)
+                    if json_output:
+                        emit_json(
+                            "run_analysis_event",
+                            event="complete",
+                            run_id=str(run_id),
+                            reading_plan_url=credential_free_url(data.get("reading_plan_url")),
+                        )
                 elif event == "error":
+                    if json_output:
+                        emit_json(
+                            "run_analysis_event",
+                            event="error",
+                            run_id=str(run_id),
+                            error_message=data.get("message") or "analyzer Lambda failed",
+                        )
                     raise click.ClickException(data.get("message") or "analyzer Lambda failed")
 
-            click.echo()
+            if not json_output:
+                click.echo()
 
             if not terminal:
+                if json_output:
+                    emit_json("run_analysis_event", event="disconnect", run_id=str(run_id))
+                    raise click.ClickException("Analysis stream ended without a terminal result.")
                 return
 
             event, data = terminal
             url = data.get("reading_plan_url")
+            if json_output:
+                return
             if url:
                 click.echo(f"  Reading plan: {click.style(url, fg='blue', underline=True)}")
             else:
@@ -85,6 +117,14 @@ def analyze(run_id: UUID, no_cache: bool) -> None:
                 ("ERROR", f"Run {run_id} errored before completing — nothing to analyze."),
             ):
                 if f"status is {status}" in msg:
-                    click.echo(click.style(line, fg="yellow"))
-                    sys.exit(1)
+                    if json_output:
+                        emit_json(
+                            "run_analysis_event",
+                            event="unavailable",
+                            run_id=str(run_id),
+                            run_status=status,
+                        )
+                    else:
+                        click.echo(click.style(line, fg="yellow"))
+                    raise click.exceptions.Exit(1)
         raise click.ClickException(msg)

@@ -137,6 +137,65 @@ class TestResultsCommand:
         assert "Overwrite" in declined_result.output
         assert existing_tracker.retrieve_calls == []
 
+    def test_json_results_emit_safe_receipts_and_stderr_confirmation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        local_tracker = MockResultsTracker(make_final_view(_RUN_ID))
+        output_path = tmp_path / "results.json"
+        monkeypatch.setattr(results_module, "TrackerService", lambda: local_tracker)
+
+        local_result = cli_runner.invoke(
+            results,
+            [str(_RUN_ID), "--path", str(output_path), "--json"],
+        )
+
+        assert local_result.exit_code == 0, local_result.output
+        assert len(local_result.stdout.splitlines()) == 1
+        local_payload = json.loads(local_result.stdout)
+        assert local_payload["kind"] == "run_results"
+        assert local_payload["target"] == "local"
+        assert local_payload["status"] == "completed"
+        assert "excluded-secret-name" not in local_result.stdout
+        assert "excluded-kwarg-value" not in local_result.stdout
+
+        s3_response = S3UploadResultsResponse(
+            s3_url="s3://bucket/results.json",
+            presigned_url="https://download.example/results?credential=presigned-secret-sentinel",
+            console_url="https://console.aws.amazon.com/s3/object/results",
+        )
+        s3_tracker = MockResultsTracker(s3_response)
+        monkeypatch.setattr(results_module, "TrackerService", lambda: s3_tracker)
+
+        s3_result = cli_runner.invoke(results, [str(_RUN_ID), "--s3", "--json"])
+
+        assert s3_result.exit_code == 0, s3_result.output
+        assert json.loads(s3_result.stdout) == {
+            "action": "write",
+            "kind": "run_results",
+            "run_id": str(_RUN_ID),
+            "schema_version": 1,
+            "s3_url": "s3://bucket/results.json",
+            "status": "completed",
+            "target": "s3",
+        }
+        assert "presigned-secret-sentinel" not in s3_result.stdout
+
+        existing_tracker = MockResultsTracker(s3_response, results_exist=True)
+        monkeypatch.setattr(results_module, "TrackerService", lambda: existing_tracker)
+
+        cancelled_result = cli_runner.invoke(results, [str(_RUN_ID), "--s3", "--json"], input="n\n")
+
+        assert cancelled_result.exit_code == 0, cancelled_result.output
+        cancelled_payload = json.loads(cancelled_result.stdout)
+        assert cancelled_payload["status"] == "cancelled"
+        assert "Overwrite" not in cancelled_result.stdout
+        assert "Overwrite" in cancelled_result.stderr
+        assert "presigned-secret-sentinel" not in cancelled_result.stdout
+        assert existing_tracker.retrieve_calls == []
+
     @pytest.mark.parametrize(
         ("path", "expected_message"),
         [

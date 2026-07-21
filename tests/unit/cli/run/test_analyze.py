@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/cli/run/test_analyze.py
 """
 
+import json
 from importlib import import_module
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
@@ -78,6 +79,55 @@ class TestAnalyzeCommand:
             no_cache=True,
             lambda_function="docent-ingest",
         )
+
+    def test_json_analysis_stream_is_jsonl_and_omits_credentialed_url(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        tracker = _tracker()
+        tracker.analyze_benchmark.return_value = iter(
+            [
+                ("started", {"lambda_function": "docent-ingest"}),
+                ("heartbeat", {}),
+                (
+                    "done",
+                    {
+                        "reading_plan_url": (
+                            "https://user:password@docent.example/plan?token=url-secret-sentinel#fragment"
+                        )
+                    },
+                ),
+            ]
+        )
+        monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
+        monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", AsyncMock(return_value="docent-ingest"))
+
+        result = cli_runner.invoke(analyze, [str(_RUN_ID), "--json"])
+
+        assert result.exit_code == 0, result.output
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [record["event"] for record in records] == ["started", "heartbeat", "complete"]
+        assert records[-1]["reading_plan_url"] is None
+        assert "url-secret-sentinel" not in result.stdout
+        assert "Invoking" not in result.stdout
+
+    def test_json_analysis_disconnect_preserves_records_and_exits_nonzero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cli_runner: CliRunner,
+    ) -> None:
+        tracker = _tracker()
+        tracker.analyze_benchmark.return_value = iter([("started", {"lambda_function": "docent-ingest"})])
+        monkeypatch.setattr(analyze_module, "TrackerService", lambda: tracker)
+        monkeypatch.setattr(analyze_module, "get_ingest_lambda_from_s3", AsyncMock(return_value="docent-ingest"))
+
+        result = cli_runner.invoke(analyze, [str(_RUN_ID), "--json"])
+
+        assert result.exit_code == 1
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [record["event"] for record in records] == ["started", "disconnect"]
+        assert "ended without a terminal result" in result.stderr
 
     @pytest.mark.parametrize(
         ("lookup_result", "lookup_error", "expected_message"),

@@ -72,8 +72,9 @@ def test_configure_cli_logging_suppresses_logs_for_non_true_values(value: str, m
     assert _emit_info_log() == ""
 
 
-def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path: Path) -> None:
-    """A real CLI process must emit exactly one JSON document even when dotenv parsing warns."""
+@pytest.mark.parametrize("logs_enabled", [False, True])
+def test_machine_json_subprocess_routes_logs_away_from_stdout(tmp_path: Path, logs_enabled: bool) -> None:
+    """A real CLI process must emit exactly one JSON document regardless of logging mode."""
     run_id = uuid4()
 
     class TrackerHandler(BaseHTTPRequestHandler):
@@ -150,7 +151,10 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
         env["HOME"] = str(home)
         env["PYTHONPATH"] = os.pathsep.join([str(site_packages), *filter(None, [env.get("PYTHONPATH")])])
         env["TRACKER_SERVICE_URL"] = f"http://127.0.0.1:{server.server_port}"
-        env.pop("VALKYRIE_CLI_LOGS", None)
+        if logs_enabled:
+            env["VALKYRIE_CLI_LOGS"] = "true"
+        else:
+            env.pop("VALKYRIE_CLI_LOGS", None)
 
         result = subprocess.run(
             [
@@ -159,8 +163,7 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
                 "run",
                 "fetch",
                 str(run_id),
-                "--format",
-                "json",
+                "--json",
             ],
             cwd=tmp_path,
             env=env,
@@ -175,7 +178,11 @@ def test_machine_json_subprocess_suppresses_import_time_dotenv_warnings(tmp_path
         thread.join(timeout=5)
 
     assert result.returncode == 0, result.stderr
-    assert result.stderr == ""
+    if logs_enabled:
+        assert "python-dotenv could not parse" in result.stderr
+        assert "HTTP Request:" in result.stderr
+    else:
+        assert result.stderr == ""
     lines = result.stdout.splitlines()
     assert len(lines) == 1
     assert json.loads(lines[0])["run_id"] == str(run_id)

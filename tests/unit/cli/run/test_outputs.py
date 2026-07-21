@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/cli/run/test_outputs.py
 """
 
+import json
 from importlib import import_module
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -52,7 +53,7 @@ class MockOutputsTracker:
 class TestOutputsCommands:
     """Tracker archive and direct S3 output download behavior."""
 
-    def test_outputs_uses_metadata_default_and_task_selection(
+    def test_outputs_uses_metadata_default_task_selection_and_json_receipt(
         self,
         monkeypatch: pytest.MonkeyPatch,
         cli_runner: CliRunner,
@@ -79,6 +80,14 @@ class TestOutputsCommands:
         assert tracker.task_ids == ["task-a", "task-b"]
         assert extraction_calls == [(tracker.response, Path(f"swebench_agent_{_RUN_ID}"))]
         assert "Run outputs extracted" in result.output
+
+        json_result = cli_runner.invoke(outputs, [str(_RUN_ID), "--output-dir", "archive", "--json"])
+
+        assert json_result.exit_code == 0, json_result.output
+        assert extraction_calls[1:] == [(tracker.response, Path("archive"))]
+        assert json.loads(json_result.stdout)["kind"] == "run_outputs_download"
+        assert "\x1b" not in json_result.stdout
+        assert "Downloading" not in json_result.stdout
 
     def test_output_path_builds_scoped_s3_key_and_reports_failures(
         self,

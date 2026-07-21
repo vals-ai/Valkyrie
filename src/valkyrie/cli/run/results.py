@@ -5,6 +5,7 @@ import click
 from tracker.types import FinalViewResponse, RetrieveResultsResponse
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import confirm_action, emit_json, json_option
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -47,13 +48,15 @@ from valkyrie.cli.tracker_client import TrackerService
     default=None,
     help="Path or http(s) URL to a text file with one task ID per line",
 )
+@json_option
 def results(
     run_id: UUID,
     path: Path | None,
     s3: bool,
     task_ids: str | None,
     task_ids_file: str | None,
-):
+    json_output: bool,
+) -> None:
     """
     Retrieve the results of a run by its run id.
 
@@ -62,20 +65,30 @@ def results(
     """
     subset_task_ids = resolve_task_ids(task_ids, task_ids_file)
 
-    click.echo(f"Retrieving results for run: {run_id}")
+    if not json_output:
+        click.echo(f"Retrieving results for run: {run_id}")
 
     try:
         with TrackerService() as tracker:
             if s3:
                 if tracker.check_results_exist_in_s3(run_id):
-                    if not click.confirm("Results already exist in S3. Overwrite?"):
+                    if not confirm_action("Results already exist in S3. Overwrite?", json_output=json_output):
+                        if json_output:
+                            emit_json(
+                                "run_results",
+                                action="write",
+                                status="cancelled",
+                                run_id=str(run_id),
+                                target="s3",
+                            )
+                            return
                         raise click.Abort()
 
             results_response: RetrieveResultsResponse = tracker.retrieve_results(run_id, s3, task_ids=subset_task_ids)
 
             if isinstance(results_response, FinalViewResponse):
-                if subset_task_ids:
-                    scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
+                scored = len(results_response.evaluation_results or {}) + len(results_response.task_errors or {})
+                if subset_task_ids and not json_output:
                     click.echo(
                         click.style(
                             f"Scored over {scored} of {len(subset_task_ids)} subset task ids.",
@@ -83,25 +96,55 @@ def results(
                         )
                     )
                 default_path: Path = Path(f"./results-{run_id}.json")
+                output_path = path or default_path
 
-                download_final_view(path or default_path, results_response)
+                saved = download_final_view(output_path, results_response, json_output=json_output) is not False
+                if json_output:
+                    emit_json(
+                        "run_results",
+                        action="write",
+                        status="completed" if saved else "cancelled",
+                        run_id=str(run_id),
+                        target="local",
+                        output_path=str(output_path.resolve()),
+                        **(
+                            {
+                                "requested_task_count": len(subset_task_ids) if subset_task_ids else None,
+                                "scored_task_count": scored,
+                            }
+                            if saved
+                            else {}
+                        ),
+                    )
             else:
-                click.echo(click.style("Download (expires in 1 day):", fg="cyan", bold=True))
-                click.echo(f"  {results_response.presigned_url}")
-                click.echo()
-                click.echo(click.style("AWS Console:", fg="cyan", bold=True))
-                click.echo(f"  {results_response.console_url}")
+                if json_output:
+                    emit_json(
+                        "run_results",
+                        action="write",
+                        status="completed",
+                        run_id=str(run_id),
+                        target="s3",
+                        s3_url=results_response.s3_url,
+                    )
+                else:
+                    click.echo(click.style("Download (expires in 1 day):", fg="cyan", bold=True))
+                    click.echo(f"  {results_response.presigned_url}")
+                    click.echo()
+                    click.echo(click.style("AWS Console:", fg="cyan", bold=True))
+                    click.echo(f"  {results_response.console_url}")
 
     except TrackerServiceError as e:
         raise click.ClickException(str(e))
 
 
-def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
+def download_final_view(path: Path, final_view: FinalViewResponse, *, json_output: bool = False) -> bool | None:
     if not path.parent.exists():
         raise click.ClickException(f"'{path.parent}' directory does not exist! Please create it first.")
 
     if path.exists():
-        if not click.confirm(f"File '{path}' already exists. Overwrite?"):
+        if not confirm_action(f"File '{path}' already exists. Overwrite?", json_output=json_output):
+            if json_output:
+                return False
             raise click.Abort()
 
     with open(path, "w") as output_file:
@@ -113,4 +156,5 @@ def download_final_view(path: Path, final_view: FinalViewResponse) -> None:
             )
         )
 
-    click.echo(click.style(f"Results saved to '{path}'", fg="green", bold=True))
+    if not json_output:
+        click.echo(click.style(f"Results saved to '{path}'", fg="green", bold=True))

@@ -11,6 +11,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID
 
+import json
+
 import httpx
 import pytest
 from click.testing import CliRunner, Result
@@ -227,6 +229,121 @@ class TestCountedStarts:
         assert str(_SECOND_RUN_ID) in details
         assert f"Track progress: valkyrie run status --ids {expected_ids}" in summary
         assert "Confirmed started run IDs:" not in result.output
+
+    def test_json_start_is_clean_allowlisted_and_complete(self, start_testbed: StartTestbed) -> None:
+        start_testbed.resolve_remote.return_value = AgentContractRequest(
+            name="remote-agent",
+            install_cmd="echo install",
+            run_cmd="echo run",
+            secrets={"STORED_KEY": "stored-secret-sentinel"},
+            kwargs={"stored": "stored-kwarg-sentinel"},
+        )
+        start_testbed.resolve_headers.return_value = {"Authorization": "header-secret-sentinel"}
+        start_testbed.set_responses([_start_response(_FIRST_RUN_ID), _start_response(_SECOND_RUN_ID)])
+
+        result = start_testbed.invoke(
+            [
+                "--count",
+                "2",
+                "--json",
+                "--secret",
+                "MODEL_KEY",
+                "cli-secret-sentinel",
+                "--kwarg",
+                "private",
+                "cli-kwarg-sentinel",
+                "--header",
+                "Authorization",
+                "header-input-sentinel",
+            ]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert len(result.stdout.splitlines()) == 1
+        assert "\x1b" not in result.stdout
+
+        payload = json.loads(result.stdout)
+        assert payload["kind"] == "run_start"
+        assert payload["outcome"] == "completed"
+        assert payload["confirmed_count"] == 2
+        assert [run["run_id"] for run in payload["runs"]] == [str(_FIRST_RUN_ID), str(_SECOND_RUN_ID)]
+        assert set(payload["runs"][0]) == {
+            "agent_name",
+            "benchmark_name",
+            "max_concurrency",
+            "run_id",
+            "started_at",
+            "total_tasks",
+        }
+        assert not any(
+            sentinel in result.stdout
+            for sentinel in [
+                "stored-secret-sentinel",
+                "stored-kwarg-sentinel",
+                "cli-secret-sentinel",
+                "cli-kwarg-sentinel",
+                "header-secret-sentinel",
+                "header-input-sentinel",
+            ]
+        )
+
+    def test_json_start_emits_confirmed_prefix_before_uncertain_failure(
+        self,
+        start_testbed: StartTestbed,
+    ) -> None:
+        start_testbed.set_responses(
+            [
+                _start_response(_FIRST_RUN_ID),
+                httpx.Response(503, json={"detail": "benchmark unavailable"}),
+            ]
+        )
+
+        result = start_testbed.invoke(["--count", "3", "--json"])
+
+        assert result.exit_code == 1
+        assert len(result.stdout.splitlines()) == 1
+
+        payload = json.loads(result.stdout)
+        assert payload["kind"] == "run_start"
+        assert payload["outcome"] == "partial"
+        assert payload["latest_request_outcome"] == "unknown"
+        assert payload["attempted_count"] == 2
+        assert payload["confirmed_count"] == 1
+        assert payload["runs"][0]["run_id"] == str(_FIRST_RUN_ID)
+        assert "benchmark unavailable" in result.stderr
+
+    def test_connected_json_start_emits_jsonl_and_streams_jsonl(self, start_testbed: StartTestbed) -> None:
+        start_testbed.stream_status.side_effect = lambda *_args, **_kwargs: start_module.click.echo(
+            '{"event":"snapshot","kind":"run_snapshot","schema_version":1}'
+        )
+
+        result = start_testbed.invoke(["--connect", "--json"])
+
+        assert result.exit_code == 0, result.output
+        records = [json.loads(line) for line in result.stdout.splitlines()]
+        assert [record["kind"] for record in records] == [
+            "run_start",
+            "run_snapshot",
+        ]
+        assert [record["event"] for record in records] == ["launch", "snapshot"]
+        assert records[0]["outcome"] == "completed"
+        assert records[0]["runs"][0]["run_id"] == str(_FIRST_RUN_ID)
+        start_testbed.stream_status.assert_called_once_with(
+            start_testbed.tracker,
+            _FIRST_RUN_ID,
+            output_format="jsonl",
+        )
+
+    def test_connected_json_start_failure_emits_eventful_summary(self, start_testbed: StartTestbed) -> None:
+        start_testbed.set_responses([httpx.Response(503, json={"detail": "benchmark unavailable"})])
+
+        result = start_testbed.invoke(["--connect", "--json"])
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["kind"] == "run_start"
+        assert payload["event"] == "launch"
+        assert payload["outcome"] == "uncertain"
 
     def test_counted_local_start_uploads_once(
         self,

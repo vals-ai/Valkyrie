@@ -3,6 +3,7 @@ from uuid import UUID
 import click
 
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import json_option, resolve_json_format
 from valkyrie.cli.run.progress import format_benchmark_status, stream_benchmark_status
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
 from valkyrie.cli.tracker_client import TrackerService
@@ -26,13 +27,16 @@ from valkyrie.cli.tracker_client import TrackerService
     show_default=True,
     help="Output format. Use json for a snapshot or jsonl with --connect.",
 )
-def fetch(run_id: UUID, connect: bool, output_format: str):
+@json_option
+def fetch(run_id: UUID, connect: bool, output_format: str, json_output: bool) -> None:
     """
     Fetch a run by its run id.
 
     Example:
         valkyrie run fetch 123e4567-e89b-12d3-a456-426614174000 --connect
     """
+
+    output_format = resolve_json_format(output_format, json_output, connected=connect)
 
     if connect and output_format == "json":
         raise click.UsageError("--format json cannot be used with --connect; use --format jsonl.")

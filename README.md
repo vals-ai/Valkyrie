@@ -184,6 +184,7 @@ Starts are fail-fast: if a request fails, no later requests are attempted. The c
 | `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
 | `--connect` | Stream run updates after the run starts |
+| `--json` | Emit one start document, or JSONL when combined with `--connect` |
 
 ### Update a running run's concurrency
 
@@ -210,19 +211,19 @@ valkyrie run fetch <id> --connect
 valkyrie run fetch <id>
 
 # One-time machine-readable snapshot
-valkyrie run fetch <id> --format json
+valkyrie run fetch <id> --json
 
 # Machine-readable stream (one JSON object per line)
-valkyrie run fetch <id> --connect --format jsonl
+valkyrie run fetch <id> --connect --json
 
 # Lightweight status for several known run IDs
-valkyrie run status --ids <id-1>,<id-2> --format json
+valkyrie run status --ids <id-1>,<id-2> --json
 
 # Show stored run and current task error messages
 valkyrie run errors <id>
 
 # Machine-readable error messages
-valkyrie run errors <id> --format json
+valkyrie run errors <id> --json
 ```
 
 Connected text fetches display the benchmark, agent, model, dataset, run ID, and other run metadata before streaming
@@ -239,15 +240,18 @@ could not be loaded. All timestamps are UTC ISO 8601 strings, and non-finite sco
 
 The version 1 machine document shapes are:
 
-- Fetch JSON/JSONL record: `schema_version`, `event`, `observed_at`, run identity, status/progress counts, score, and
-  metadata availability.
+- Fetch JSON/JSONL record: `schema_version`, `kind: "run_snapshot"`, `event`, `observed_at`, run identity,
+  status/progress counts, score, and metadata availability.
 - Run list document: `schema_version`, `kind: "run_list"`, `observed_at`, `returned_count`, and allowlisted `runs`.
 - Batch status document: `schema_version`, `kind: "run_status"`, `observed_at`, request/return counts,
   `missing_run_ids`, and lightweight `runs` containing status and task counts.
 
+See [Machine-readable CLI output](docs/CLI_JSON.md) for the supported `--json` commands, stdout/stderr rules,
+receipt safety, compatibility, and partial-start behavior.
+
 Batch status preserves the requested ID order, ignores duplicate IDs, and requests up to 50 IDs at a time. A missing
 or inaccessible ID is listed in `missing_run_ids` and makes the command exit nonzero after emitting the JSON document.
-Its `finished_tasks` count includes terminal `FINISHED`, `ERROR`, and `STOPPED` tasks. Use `run list --format json --all`
+Its `finished_tasks` count includes terminal `FINISHED`, `ERROR`, and `STOPPED` tasks. Use `run list --json --all`
 when benchmark, agent, model, or dataset identity is also needed.
 
 ### Download results
@@ -339,7 +343,7 @@ valkyrie run list \
   --label swebench_claude_code
 
 # Dump every matching run as one machine-readable JSON document
-valkyrie run list --format json --all \
+valkyrie run list --json --all \
   --model openai/gpt-5 \
   --status IN_PROGRESS
 ```
@@ -353,8 +357,9 @@ valkyrie run list --format json --all \
 | `--status` | Filter by status: `IN_PROGRESS`, `STOPPING`, `STOPPED`, `FINISHED`, `ERROR` |
 | `--order-by` | Order results (`desc` or `asc`) |
 | `--started-by` | Comma-separated list of starter emails (case-insensitive) |
-| `--format json` | Emit one versioned, allowlisted JSON document instead of a table (requires `--all`) |
-| `--all` | Fetch every matching run without interactive paging (requires `--format json`) |
+| `--json` | Emit one versioned document instead of a table (requires `--all`) |
+| `--format json` | Compatibility spelling for machine output (requires `--all`) |
+| `--all` | Fetch every matching page without opening the pager (requires JSON output) |
 
 Supports paginated navigation ([h] previous, [l] next, [q] quit).
 Machine output exhausts cursor pagination before writing stdout and excludes stored agent secrets, kwargs, and raw
@@ -495,6 +500,7 @@ Webhook configuration is persisted per-benchmark in the database. On resume or r
 | Topic | Link |
 | --- | --- |
 | Python SDK | [Guide](docs/sdk/README.md) |
+| Machine-readable CLI | [CLI_JSON.md](docs/CLI_JSON.md) |
 | Hosted vs self-hosted | [HOSTED_MODE.md](docs/HOSTED_MODE.md) |
 | Local development | [DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 | Lambda integration | [LAMBDA_USAGE.md](docs/LAMBDA_USAGE.md) |

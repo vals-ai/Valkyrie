@@ -11,6 +11,7 @@ from tracker.types import FinalViewResponse
 
 from valkyrie.cli.display import terminal_safe
 from valkyrie.cli.exceptions import TrackerServiceError
+from valkyrie.cli.machine_output import json_option, resolve_json_format
 from valkyrie.cli.tracker_client import TrackerService
 
 _TASK_ID_PREVIEW_LIMIT = 5
@@ -133,8 +134,11 @@ def format_run_errors_text(response: FinalViewResponse) -> None:
     show_default=True,
     help="Output format.",
 )
-def errors(run_id: UUID, output_format: str) -> None:
+@json_option
+def errors(run_id: UUID, output_format: str, json_output: bool) -> None:
     """Show stored run and current task error messages."""
+    output_format = resolve_json_format(output_format, json_output)
+
     try:
         with TrackerService() as tracker:
             response = tracker.retrieve_results(run_id, s3=False)

@@ -9,6 +9,7 @@ from tracker.agent.schemas import AgentConfig
 from tracker.types import StartBenchmarkResponse
 
 from valkyrie.cli.exceptions import BundlerError, ContractValidationError, TrackerServiceError
+from valkyrie.cli.machine_output import emit_json, json_option, utc_isoformat
 from valkyrie.cli.run.progress import stream_benchmark_status
 from valkyrie.cli.run.task_ids import resolve_task_ids
 from valkyrie.cli.agent.storage import get_contract_from_s3, push_agent
@@ -143,7 +144,8 @@ def resolve_webhook_config(
                 "  Warning: --interval specified but no webhook secret configured. "
                 "Run `valkyrie config set webhook <secret-name>` first. Ignoring intervals.",
                 fg="yellow",
-            )
+            ),
+            err=True,
         )
         return None, None
 
@@ -154,6 +156,68 @@ def resolve_webhook_config(
         return webhook_secret, [100]
 
     return None, None
+
+
+def emit_start_outcome(
+    responses: list[StartBenchmarkResponse],
+    *,
+    requested_count: int,
+    attempted_count: int,
+    outcome: str,
+    latest_request_outcome: str,
+    event: str | None = None,
+) -> None:
+    """Emit one versioned start result, including confirmed runs after a partial failure."""
+    emit_json(
+        "run_start",
+        **({"event": event} if event is not None else {}),
+        outcome=outcome,
+        latest_request_outcome=latest_request_outcome,
+        requested_count=requested_count,
+        attempted_count=attempted_count,
+        confirmed_count=len(responses),
+        runs=[
+            {
+                "run_id": str(response.benchmark_id),
+                "benchmark_name": response.benchmark_name,
+                "agent_name": response.agent_name,
+                "started_at": utc_isoformat(response.started_at),
+                "max_concurrency": response.concurrency,
+                "total_tasks": response.task_count,
+            }
+            for response in responses
+        ],
+    )
+
+
+def report_start_failure(
+    responses: list[StartBenchmarkResponse],
+    *,
+    requested_count: int,
+    attempted_count: int,
+    uncertain: bool,
+    rejected: bool,
+    json_output: bool,
+    connect: bool,
+) -> None:
+    """Report a failed attempt while preserving any confirmed run IDs."""
+    if json_output:
+        emit_start_outcome(
+            responses,
+            requested_count=requested_count,
+            attempted_count=attempted_count,
+            outcome="partial" if responses else "uncertain" if uncertain else "failed",
+            latest_request_outcome="unknown" if uncertain else "failed",
+            event="launch" if connect else None,
+        )
+        return
+
+    click.echo("\r\033[K", nl=False, err=True)
+    if rejected:
+        click.echo(click.style("Run failed to start!", fg="red", bold=True), err=True)
+    format_confirmed_start_summary([response.benchmark_id for response in responses], requested_count)
+    if uncertain:
+        click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"), err=True)
 
 
 @click.command(
@@ -291,6 +355,7 @@ def resolve_webhook_config(
     show_default=True,
     help="Number of independent runs to start",
 )
+@json_option
 def start(
     agent: str,
     model: str | None,
@@ -310,6 +375,7 @@ def start(
     ignore_custom_services: bool,
     connect: bool,
     count: int,
+    json_output: bool,
 ) -> None:
     """
     Run an agent on a benchmark.
@@ -333,9 +399,10 @@ def start(
     webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
     task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
-    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display)
+    if not json_output:
+        format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display)
 
-    format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
+        format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
 
     try:
         # Build agent config
@@ -368,10 +435,10 @@ def start(
         if secrets:
             contract.secrets.update({key: value for key, value in secrets})
 
-        confirmed_run_ids: list[UUID] = []
+        start_responses: list[StartBenchmarkResponse] = []
         with TrackerService() as tracker:
-            for _ in range(count):
-                click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False)
+            for attempt_index in range(count):
+                click.echo(f"\r\033[KStarting run for: {contract.name}...", nl=False, err=True)
 
                 try:
                     response = tracker.start_benchmark(
@@ -390,31 +457,71 @@ def start(
                         webhook_intervals=webhook_intervals,
                     )
                 except TrackerServiceError as error:
-                    click.echo("\r\033[K", nl=False)
-                    format_confirmed_start_summary(confirmed_run_ids, count)
-                    click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
+                    report_start_failure(
+                        start_responses,
+                        requested_count=count,
+                        attempted_count=attempt_index + 1,
+                        uncertain=True,
+                        rejected=False,
+                        json_output=json_output,
+                        connect=connect,
+                    )
                     raise click.ClickException(str(error)) from error
 
-                click.echo("\r\033[K", nl=False)
+                click.echo("\r\033[K", nl=False, err=True)
                 if response.status_code != 200:
-                    click.echo(click.style("Run failed to start!", fg="red", bold=True))
-                    format_confirmed_start_summary(confirmed_run_ids, count)
-                    if response.status_code >= 500:
-                        click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
+                    report_start_failure(
+                        start_responses,
+                        requested_count=count,
+                        attempted_count=attempt_index + 1,
+                        uncertain=response.status_code >= 500,
+                        rejected=True,
+                        json_output=json_output,
+                        connect=connect,
+                    )
                     raise click.ClickException(str(response_error_detail(response)))
 
                 try:
                     start_response = StartBenchmarkResponse.model_validate(response.json())
                 except ValueError as error:
-                    format_confirmed_start_summary(confirmed_run_ids, count)
-                    click.echo(click.style(_UNKNOWN_START_OUTCOME, fg="yellow"))
+                    report_start_failure(
+                        start_responses,
+                        requested_count=count,
+                        attempted_count=attempt_index + 1,
+                        uncertain=True,
+                        rejected=False,
+                        json_output=json_output,
+                        connect=connect,
+                    )
                     raise click.ClickException("Tracker returned a malformed 200 start response.") from error
 
-                confirmed_run_ids.append(start_response.benchmark_id)
-                format_start_benchmark_response(start_response, connect)
+                start_responses.append(start_response)
+                if json_output and connect:
+                    emit_start_outcome(
+                        start_responses,
+                        requested_count=count,
+                        attempted_count=attempt_index + 1,
+                        outcome="completed",
+                        latest_request_outcome="confirmed",
+                        event="launch",
+                    )
+                elif not json_output:
+                    format_start_benchmark_response(start_response, connect)
                 if connect:
-                    stream_benchmark_status(tracker, start_response.benchmark_id)
+                    if json_output:
+                        stream_benchmark_status(tracker, start_response.benchmark_id, output_format="jsonl")
+                    else:
+                        stream_benchmark_status(tracker, start_response.benchmark_id)
 
-        format_confirmed_start_summary(confirmed_run_ids, count)
+        if json_output and not connect:
+            emit_start_outcome(
+                start_responses,
+                requested_count=count,
+                attempted_count=count,
+                outcome="completed",
+                latest_request_outcome="confirmed",
+            )
+        elif not json_output:
+            format_confirmed_start_summary([response.benchmark_id for response in start_responses], count)
     except (BundlerError, TrackerServiceError, ContractValidationError) as e:
         raise click.ClickException(str(e))
