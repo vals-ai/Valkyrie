@@ -1197,9 +1197,7 @@ class TestStreamCommandOutputRemovedContainer:
         mock_sandbox.exec = AsyncMock()
 
         with pytest.raises(SandboxNotFoundError):
-            await sandbox_module.stream_command_output(
-                mock_sandbox, "run-agent.sh", on_output=lambda _: None
-            )
+            await sandbox_module.stream_command_output(mock_sandbox, "run-agent.sh", on_output=lambda _: None)
         # The stream raised BEFORE the timing-file reads, so the only exec call is the
         # best-effort finally cleanup (which is already wrapped in try/except).
         exec_calls = [call.args[0] for call in mock_sandbox.exec.call_args_list]
