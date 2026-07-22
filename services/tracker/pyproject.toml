@@ -26,6 +26,7 @@ dependencies = [
     "sentry-sdk[fastapi]==2.58.0",
     "python-json-logger>=3.2.1",
     "create-benchmark-service>=0.11.0",
+    "daytona-api-client-async>=0.194.0,<1",
     "aioboto3>=7.0.0",
 ]
 
