@@ -17,7 +17,7 @@ from botocore.config import Config
 from sqlmodel import Session
 
 from tracker._lambda import invoke_lambda
-from tracker.aws.clients import AwsClientProvider
+from tracker.aws.clients import AWSClientProvider
 from tracker.database.models import Benchmark, DocentReadingStatus
 from tracker.database.session import engine
 
@@ -32,7 +32,7 @@ def invoke_analyzer(
     benchmark_id: UUID,
     lambda_function: str,
     payload: dict[str, Any],
-    clients: AwsClientProvider,
+    clients: AWSClientProvider,
 ) -> dict[str, Any]:
     """Invoke an analyzer Lambda and persist status/URL onto the Benchmark row.
 
@@ -70,7 +70,7 @@ async def analyze_event_stream(
     benchmark_id: UUID,
     lambda_function: str,
     payload: dict[str, Any],
-    clients: AwsClientProvider,
+    clients: AWSClientProvider,
 ) -> AsyncGenerator[str, None]:
     """SSE event stream: started → heartbeats → done|error."""
     yield f"event: started\ndata: {json.dumps({'lambda_function': lambda_function})}\n\n"

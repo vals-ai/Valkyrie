@@ -29,7 +29,7 @@ from tests.factories import make_error_result, make_evaluation_result
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -349,7 +349,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 selected_task.task_id,
-                AwsRuntime.from_harness_config(harness_config),
+                AWSRuntime.from_harness_config(harness_config),
                 self._test_org,
                 sandbox_provider_config=DaytonaProviderConfig(
                     DAYTONA_API_KEY="key",
@@ -904,7 +904,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 task_row.task_id,
-                AwsRuntime.from_harness_config(harness_config),
+                AWSRuntime.from_harness_config(harness_config),
                 self._test_org,
                 sandbox_provider_config=sandbox_provider_config,
                 creation_semaphore=asyncio.Semaphore(1),
@@ -977,7 +977,7 @@ class TestRunRecovery:
                 benchmark_service,
                 benchmark_row.id,
                 task_row.task_id,
-                AwsRuntime.from_harness_config(harness_config),
+                AWSRuntime.from_harness_config(harness_config),
                 self._test_org,
                 sandbox_provider_config=DaytonaProviderConfig(
                     DAYTONA_API_KEY="key",
@@ -1499,7 +1499,7 @@ class TestRunRecovery:
             benchmark_row,
             database_session,
             harness_config.sandbox_provider_secret_name,
-            AwsRuntime.from_harness_config(harness_config),
+            AWSRuntime.from_harness_config(harness_config),
             self._test_org,
             sandbox_provider="daytona",
         )

@@ -19,7 +19,7 @@ from tests.unit.utils.task_execution_support import (
     make_retrieve_task_response,
     run_process_task,
 )
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, TaskStatus
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
@@ -76,7 +76,7 @@ class TestTaskExecutionRetry:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
         fail_target: str,
         error: SandboxSetupError,
         second_error: Exception | None,
@@ -169,7 +169,7 @@ class TestTaskExecutionRetry:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract,

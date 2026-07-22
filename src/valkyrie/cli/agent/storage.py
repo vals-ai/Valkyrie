@@ -11,9 +11,14 @@ import click
 import yaml
 from tracker import handle_s3_error
 from tracker.aws.s3 import (
+    copy_s3_object,
+    delete_from_s3,
+    download_from_s3,
     get_benchmark_contract_s3_key,
     get_contract_s3_key,
+    s3_object_exists,
 )
+from tracker.aws.s3 import list_agents as list_s3_agents
 from tracker.agent.bundler import get_agent_zip_stream
 from tracker.agent.contract import get_contract_from_zip_bytes, read_agent_name
 from tracker.agent.schemas import AgentConfig, validate_agent_name
@@ -189,45 +194,45 @@ async def push_agent(agent_name: str, agent_path: Path):
 
 async def update_benchmark_agent_version(agent_name: str, benchmark_id: str) -> None:
     """Overwrite the frozen benchmark agent copy from agents/<name>.zip in S3."""
-    bucket_name = cli_s3.fetch_bucket_name()
+    runtime = cli_s3.aws_runtime()
     source_key = get_contract_s3_key(agent_name)
     dest_key = get_benchmark_contract_s3_key(benchmark_id, agent_name)
 
-    if not await cli_s3.s3_object_exists(source_key, bucket_name):
+    if not await s3_object_exists(source_key, runtime):
         raise S3Error(f"Agent '{agent_name}.zip' not found in S3.")
 
-    await cli_s3.copy_s3_object(source_key, dest_key, bucket_name)
+    await copy_s3_object(source_key, dest_key, runtime)
 
 
 async def _download_agent_zip(agent_name: str) -> bytes:
-    bucket_name = cli_s3.fetch_bucket_name()
+    runtime = cli_s3.aws_runtime()
     key = get_contract_s3_key(agent_name)
 
-    if not await cli_s3.s3_object_exists(key, bucket_name):
+    if not await s3_object_exists(key, runtime):
         raise S3Error(f"Agent '{agent_name}' not found in S3.")
 
-    return await cli_s3.download_from_s3(key, bucket_name)
+    return await download_from_s3(key, runtime)
 
 
 @handle_s3_error(message="Failed to remove agent from S3")
 async def remove_agent(agent_name: str):
     """Remove an agent from S3. Raises an error if the agent doesn't exist"""
-    bucket_name = cli_s3.fetch_bucket_name()
+    runtime = cli_s3.aws_runtime()
     key = get_contract_s3_key(agent_name)
 
-    if not await cli_s3.s3_object_exists(key, bucket_name):
+    if not await s3_object_exists(key, runtime):
         raise S3Error(f"Agent '{agent_name}' could not be found.")
 
-    await cli_s3.delete_from_s3(key, bucket_name)
+    await delete_from_s3(key, runtime)
 
 
 async def list_agents() -> list[tuple[str, datetime | None]]:
     """List all agents in the S3 bucket's agents/ folder with the dates that they were added."""
-    bucket_name = cli_s3.fetch_bucket_name()
+    runtime = cli_s3.aws_runtime()
 
-    click.echo(f"\r\033[KListing agents from bucket '{bucket_name}'...", nl=False)
+    click.echo(f"\r\033[KListing agents from bucket '{runtime.resources.s3_bucket}'...", nl=False)
 
-    return await cli_s3.list_agents(bucket_name)
+    return await list_s3_agents(runtime)
 
 
 @handle_s3_error(message="Failed to download agent from S3")

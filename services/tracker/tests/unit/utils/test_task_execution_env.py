@@ -16,7 +16,7 @@ from sqlmodel import Session
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest
 from tracker.types import HarnessConfig
 
@@ -42,7 +42,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"UNRELATED_SECRET": "secret-name"}})
         run_starter = RequestIdentity(
@@ -106,7 +106,7 @@ class TestProcessTaskEnvironment:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract,

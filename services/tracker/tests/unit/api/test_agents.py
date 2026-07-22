@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 import tracker.api.agents as agents_api
 from main import app
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 
 _client = TestClient(app)
 
@@ -22,7 +22,7 @@ class TestAgentRoutes:
     def test_list_agents_returns_storage_metadata(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Agent listing must expose the names and timestamps returned by storage.
 
@@ -42,7 +42,7 @@ class TestAgentRoutes:
     def test_agent_download_url_uses_route_expiration(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Download links must use the route's configured expiration in both the signer and response.
 
@@ -72,7 +72,7 @@ class TestAgentRoutes:
     def test_agent_download_url_returns_not_found_for_missing_agent(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Missing agent artifacts must return not found instead of a useless signed URL.
 

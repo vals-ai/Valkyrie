@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 from tracker.exceptions import S3Error
 
 from valkyrie.cli.agent import storage
@@ -39,6 +40,30 @@ def _agent_zip(agent_name: str) -> bytes:
     return buffer.getvalue()
 
 
+def _configure_s3_clients(
+    monkeypatch: pytest.MonkeyPatch,
+    clients: list[AsyncMock],
+) -> None:
+    def s3_client(provider: ExplicitCredentialsAWSClientProvider) -> MockAsyncClientContext:
+        assert provider.credentials.aws_access_key_id == "key"
+        assert provider.credentials.aws_secret_access_key == "secret"
+        assert provider.credentials.aws_default_region == "us-east-1"
+
+        return MockAsyncClientContext(clients.pop(0))
+
+    monkeypatch.setattr(
+        storage.cli_s3,
+        "load_config",
+        lambda: {
+            "AWS_ACCESS_KEY_ID": "key",
+            "AWS_SECRET_ACCESS_KEY": "secret",
+            "AWS_DEFAULT_REGION": "us-east-1",
+            "S3_BUCKET": "agent-bucket",
+        },
+    )
+    monkeypatch.setattr(ExplicitCredentialsAWSClientProvider, "s3_client", s3_client)
+
+
 async def test_agent_download_ingest_and_remove_use_configured_s3(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -52,25 +77,26 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
     existing_keys = {"agents/demo.zip"}
     downloaded_keys: list[str] = []
     deleted_keys: list[str] = []
+    runtime = object()
 
-    async def s3_object_exists(key: str, bucket_name: str) -> bool:
-        assert bucket_name == "bucket"
+    async def s3_object_exists(key: str, runtime_arg: object) -> bool:
+        assert runtime_arg is runtime
         return key in existing_keys
 
-    async def download_from_s3(key: str, bucket_name: str) -> bytes:
-        assert bucket_name == "bucket"
+    async def download_from_s3(key: str, runtime_arg: object) -> bytes:
+        assert runtime_arg is runtime
         downloaded_keys.append(key)
         return _agent_zip("demo")
 
-    async def delete_from_s3(key: str, bucket_name: str) -> None:
-        assert bucket_name == "bucket"
+    async def delete_from_s3(key: str, runtime_arg: object) -> None:
+        assert runtime_arg is runtime
         deleted_keys.append(key)
         existing_keys.remove(key)
 
-    monkeypatch.setattr(storage.cli_s3, "fetch_bucket_name", lambda: "bucket")
-    monkeypatch.setattr(storage.cli_s3, "s3_object_exists", s3_object_exists)
-    monkeypatch.setattr(storage.cli_s3, "download_from_s3", download_from_s3)
-    monkeypatch.setattr(storage.cli_s3, "delete_from_s3", delete_from_s3)
+    monkeypatch.setattr(storage.cli_s3, "aws_runtime", lambda: runtime)
+    monkeypatch.setattr(storage, "s3_object_exists", s3_object_exists)
+    monkeypatch.setattr(storage, "download_from_s3", download_from_s3)
+    monkeypatch.setattr(storage, "delete_from_s3", delete_from_s3)
 
     await storage.download_agent("demo", tmp_path)
     assert (tmp_path / "demo" / "contract.yaml").exists()
@@ -88,22 +114,22 @@ async def test_agent_download_ingest_and_remove_use_configured_s3(
     assert deleted_keys == ["agents/demo.zip"]
 
 
-async def test_update_benchmark_agent_version_uses_agent_and_benchmark_keys(
+async def test_update_benchmark_agent_version_copies_configured_agent_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    exists = AsyncMock(return_value=True)
-    copy = AsyncMock()
-    monkeypatch.setattr(storage.cli_s3, "fetch_bucket_name", lambda: "test-bucket")
-    monkeypatch.setattr(storage.cli_s3, "s3_object_exists", exists)
-    monkeypatch.setattr(storage.cli_s3, "copy_s3_object", copy)
+    client = AsyncMock()
+    _configure_s3_clients(monkeypatch, [client, client])
 
     await storage.update_benchmark_agent_version("alpha", "benchmark-1")
 
-    exists.assert_awaited_once_with("agents/alpha.zip", "test-bucket")
-    copy.assert_awaited_once_with(
-        "agents/alpha.zip",
-        "benchmarks/benchmark-1/alpha.zip",
-        "test-bucket",
+    client.head_object.assert_awaited_once_with(
+        Bucket="agent-bucket",
+        Key="agents/alpha.zip",
+    )
+    client.copy_object.assert_awaited_once_with(
+        Bucket="agent-bucket",
+        CopySource={"Bucket": "agent-bucket", "Key": "agents/alpha.zip"},
+        Key="benchmarks/benchmark-1/alpha.zip",
     )
 
 
@@ -188,12 +214,8 @@ class TestPushAgent:
         def mock_zip_stream(**_kwargs: Any) -> nullcontext[io.BytesIO]:
             return nullcontext(io.BytesIO(archive))
 
-        def mock_s3_client() -> MockAsyncClientContext:
-            return MockAsyncClientContext(clients.pop(0))
-
-        monkeypatch.setattr(storage.cli_s3, "fetch_bucket_name", lambda: "agent-bucket")
+        _configure_s3_clients(monkeypatch, clients)
         monkeypatch.setattr(storage, "get_agent_zip_stream", mock_zip_stream)
-        monkeypatch.setattr(storage.cli_s3, "s3_client", mock_s3_client)
 
         await storage.push_agent("demo", Path("/unused"))
 

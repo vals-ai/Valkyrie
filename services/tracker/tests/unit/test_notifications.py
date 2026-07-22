@@ -12,7 +12,7 @@ import httpx
 import pytest
 
 import tracker.notifications as notifications_module
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import SecretsError
 from tracker.notifications import NotificationContext, SlackNotifier
@@ -36,7 +36,7 @@ def _make_context(**overrides: object) -> NotificationContext:
 
 
 def _make_notifier(
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
     *,
     secret_name: str = "test/webhook",
     intervals: tuple[int, ...] = (50,),
@@ -50,7 +50,7 @@ def _make_notifier(
 
 
 @pytest.fixture
-def notifier(aws_runtime: AwsRuntime) -> SlackNotifier:
+def notifier(aws_runtime: AWSRuntime) -> SlackNotifier:
     """Provide a notifier with the progress thresholds used by behavior tests."""
     return _make_notifier(aws_runtime, intervals=(25, 50, 100))
 
@@ -204,7 +204,7 @@ class TestSlackNotifierFireAndForget:
     )
     async def test_webhook_delivery_error_does_not_raise(
         self,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         mock_http_client: AsyncMock,
         webhook_error: httpx.HTTPError,
@@ -231,7 +231,7 @@ class TestSlackNotifierSecretResolution:
 
     async def test_resolves_secret_before_sending(
         self,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         mock_http_client: AsyncMock,
     ) -> None:
@@ -255,7 +255,7 @@ class TestSlackNotifierSecretResolution:
     )
     async def test_skips_notification_when_secret_is_unusable(
         self,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
         monkeypatch: pytest.MonkeyPatch,
         mock_http_client: AsyncMock,
         secret_result: Exception | dict[str, str],

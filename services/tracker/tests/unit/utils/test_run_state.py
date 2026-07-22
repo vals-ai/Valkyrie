@@ -22,7 +22,7 @@ from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -82,7 +82,7 @@ class TestRunState:
 
         provider_config = fetch_sandbox_provider_config(
             "provider-secret",
-            AwsRuntime.from_harness_config(harness_config).clients,
+            AWSRuntime.from_harness_config(harness_config).clients,
             "daytona",
         )
         assert provider_config.model_dump(mode="json") == {

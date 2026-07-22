@@ -10,7 +10,7 @@ from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
@@ -82,7 +82,7 @@ async def run_process_task(
     start_benchmark_request: StartBenchmarkRequest,
     task_row: Task,
     benchmark_id: UUID,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
 ) -> dict[str, dict[str, Any] | None]:
     """Run process_task with the shared deterministic unit-test dependencies.
 

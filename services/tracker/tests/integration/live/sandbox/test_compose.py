@@ -11,7 +11,7 @@ import pytest
 from benchmark_service import ComposeSource, ImageSource, Sandbox, SandboxProvider
 from benchmark_service.schemas import RetrieveTaskResponse
 
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest
 from tracker.sandbox import create_sandbox, run_agent, runtime_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
@@ -201,7 +201,7 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
             'case "$IDENTITY" in *compose-agent*) true;; *) exit 1;; esac'
         ),
     )
-    aws_runtime = AwsRuntime.from_harness_config(
+    aws_runtime = AWSRuntime.from_harness_config(
         HarnessConfig(
             aws=AWSCredentials(
                 aws_access_key_id="test",

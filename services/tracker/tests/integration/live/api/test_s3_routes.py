@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import delete_from_s3, upload_to_s3
 from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task
 from tracker.types import HarnessConfig
@@ -78,7 +78,7 @@ async def test_task_artifact_route_round_trips_real_s3_and_handles_missing_outpu
 
     object_key = f"benchmarks/{benchmark.id}/{task.task_id}/agent_output.tar.gz"
     expected_content = b"live tracker output artifact"
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
     await upload_to_s3(
         file_content=expected_content,
         s3_key=object_key,

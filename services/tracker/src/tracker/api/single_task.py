@@ -10,7 +10,7 @@ from sqlmodel import Session, desc, select
 
 from tracker.auth import get_current_org
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import S3_BENCHMARKS_PREFIX, create_presigned_url, s3_object_exists
 from tracker.database.models import (
     Benchmark,
@@ -118,7 +118,7 @@ async def get_task_artifacts(
 ) -> TaskArtifactsResponse:
     """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
     _, task = _load_task_or_404(benchmark_id, task_id, org, session)
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
     cloudwatch_url: str | None = None
     if aws_runtime.resources.log_group and aws_runtime.resources.region:

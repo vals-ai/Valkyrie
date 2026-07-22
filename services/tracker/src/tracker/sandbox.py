@@ -42,7 +42,7 @@ from tenacity import (
     wait_none,
 )
 
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     create_presigned_url,
     get_agent_result_s3_key,
@@ -254,7 +254,7 @@ async def upload_agent_artifacts(
     sandbox: Sandbox,
     contract: AgentContractRequest,
     benchmark_id: str,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
 ) -> None:
     """
     Download and extract the agent contract zip directly inside the sandbox. We generate a presigned S3 URL and have the sandbox curl + unzip it directly.
@@ -536,7 +536,7 @@ async def archive_and_upload_output(
     sandbox: Sandbox,
     output_path: str,
     agent_output_s3_key: str,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
     *,
     benchmark_id: str | None = None,
     task_id: str | None = None,
@@ -628,7 +628,7 @@ async def upload_output_artifacts(
     artifacts: list[OutputArtifactSpec],
     benchmark_id: str,
     task_id: str,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
@@ -685,7 +685,7 @@ async def run_agent(
     task_id: str,
     log_output: Callable[[str], None],
     cwd: str,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
     agent_output_s3_key: str | None = None,
     agent_timeout: float | None = None,
     benchmark_id: str | None = None,

@@ -5,14 +5,14 @@ from typing import Any
 
 from botocore.exceptions import ClientError
 
-from tracker.aws.clients import AwsClientProvider
+from tracker.aws.clients import AWSClientProvider
 from tracker.exceptions import SecretsError
 from tracker.logging import get_logger
 
 logger = get_logger(__name__)
 
 
-def fetch_aws_secret(secret_name: str, client_provider: AwsClientProvider) -> dict[str, Any] | str:
+def fetch_aws_secret(secret_name: str, client_provider: AWSClientProvider) -> dict[str, Any] | str:
     """Fetch a JSON secret from AWS Secrets Manager by name.
 
     Args:
@@ -44,7 +44,7 @@ def fetch_aws_secret(secret_name: str, client_provider: AwsClientProvider) -> di
         return secret_string
 
 
-def resolve_secrets(secrets: dict[str, str], client_provider: AwsClientProvider) -> dict[str, str]:
+def resolve_secrets(secrets: dict[str, str], client_provider: AWSClientProvider) -> dict[str, str]:
     """Resolve AWS secret references to actual values
 
     Args:

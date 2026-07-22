@@ -1,3 +1,8 @@
+"""Unit tests for tracker Lambda invocation.
+
+Run: uv run pytest tests/unit/aws/test_lambda.py
+"""
+
 import io
 import json
 from typing import cast
@@ -6,7 +11,7 @@ from unittest.mock import MagicMock
 from botocore.config import Config
 
 from tracker._lambda import invoke_lambda
-from tracker.aws.clients import AwsClientProvider
+from tracker.aws.clients import AWSClientProvider
 
 
 def test_invoke_lambda_uses_provider_config_and_returns_parsed_payload() -> None:
@@ -14,13 +19,13 @@ def test_invoke_lambda_uses_provider_config_and_returns_parsed_payload() -> None
     client.invoke.return_value = {
         "Payload": io.BytesIO(b'{"statusCode": 200, "reading_plan_url": "https://example.test/plan"}')
     }
-    provider = MagicMock(spec=AwsClientProvider)
+    provider = MagicMock(spec=AWSClientProvider)
     provider.lambda_client.return_value = client
     config = Config(read_timeout=905)
     payload = {"benchmark_id": "benchmark-1"}
 
     result = invoke_lambda(
-        cast(AwsClientProvider, provider),
+        cast(AWSClientProvider, provider),
         "analyzer-function",
         payload,
         config=config,

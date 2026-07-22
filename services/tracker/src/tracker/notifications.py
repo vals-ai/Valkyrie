@@ -9,7 +9,7 @@ from uuid import UUID
 import httpx
 from pydantic import BaseModel
 
-from tracker.aws.clients import AwsClientProvider
+from tracker.aws.clients import AWSClientProvider
 from tracker.aws.secrets import fetch_aws_secret
 from tracker.database.models import BenchmarkStatus
 from tracker.exceptions import SecretsError
@@ -117,7 +117,7 @@ def _build_terminal_message(
 
 
 class SlackNotifier:
-    def __init__(self, secret_name: str, clients: AwsClientProvider, intervals: list[int]):
+    def __init__(self, secret_name: str, clients: AWSClientProvider, intervals: list[int]):
         self._secret_name = secret_name
         self._clients = clients
         self._intervals = set(intervals)

@@ -1,5 +1,6 @@
 """AWS client providers for tracker runtimes."""
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any, Protocol, cast
@@ -20,7 +21,7 @@ def _boto3_client(service_name: str, **kwargs: Any) -> Any:
     return client_factory(service_name, **kwargs)
 
 
-class AwsClientProvider(Protocol):
+class AWSClientProvider(Protocol):
     """Construct AWS service clients for one authentication source."""
 
     def s3_client(self) -> Any:
@@ -44,20 +45,15 @@ class AwsClientProvider(Protocol):
         ...
 
 
-@dataclass(frozen=True)
-class ExplicitCredentialsAwsClientProvider:
-    """Construct AWS clients from caller-supplied credentials."""
-
-    credentials: AWSCredentials = field(repr=False)
+class _BaseAWSClientProvider(ABC):
+    @abstractmethod
+    def _client_kwargs(self) -> dict[str, Any]:
+        """Return SDK arguments for this credential source."""
+        raise NotImplementedError
 
     @lru_cache(maxsize=32)
     def _s3_session(self) -> aioboto3.Session:
-        return aioboto3.Session(
-            aws_access_key_id=self.credentials.aws_access_key_id,
-            aws_secret_access_key=self.credentials.aws_secret_access_key,
-            aws_session_token=self.credentials.aws_session_token,
-            region_name=self.credentials.aws_default_region,
-        )
+        return aioboto3.Session(**self._client_kwargs())
 
     def s3_client(self) -> Any:
         return self._s3_session().client(  # pyright: ignore[reportUnknownMemberType]
@@ -69,76 +65,45 @@ class ExplicitCredentialsAwsClientProvider:
     def cloudwatch_logs_client(self) -> Any:
         return _boto3_client(
             "logs",
-            aws_access_key_id=self.credentials.aws_access_key_id,
-            aws_secret_access_key=self.credentials.aws_secret_access_key,
-            aws_session_token=self.credentials.aws_session_token,
-            region_name=self.credentials.aws_default_region,
             config=_HIGH_CONCURRENCY_CLIENT_CONFIG,
+            **self._client_kwargs(),
         )
 
     @lru_cache(maxsize=32)
     def secretsmanager_client(self) -> Any:
-        return _boto3_client(
-            "secretsmanager",
-            aws_access_key_id=self.credentials.aws_access_key_id,
-            aws_secret_access_key=self.credentials.aws_secret_access_key,
-            aws_session_token=self.credentials.aws_session_token,
-            region_name=self.credentials.aws_default_region,
-        )
+        return _boto3_client("secretsmanager", **self._client_kwargs())
 
     @lru_cache(maxsize=32)
     def lambda_client(self, config: Config | None = None) -> Any:
-        return _boto3_client(
-            "lambda",
-            aws_access_key_id=self.credentials.aws_access_key_id,
-            aws_secret_access_key=self.credentials.aws_secret_access_key,
-            aws_session_token=self.credentials.aws_session_token,
-            region_name=self.credentials.aws_default_region,
-            config=config,
-        )
+        return _boto3_client("lambda", config=config, **self._client_kwargs())
 
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return requested_seconds
 
 
 @dataclass(frozen=True)
-class DefaultChainAwsClientProvider:
+class ExplicitCredentialsAWSClientProvider(_BaseAWSClientProvider):
+    """Construct AWS clients from caller-supplied credentials."""
+
+    credentials: AWSCredentials = field(repr=False)
+
+    def _client_kwargs(self) -> dict[str, Any]:
+        return {
+            "aws_access_key_id": self.credentials.aws_access_key_id,
+            "aws_secret_access_key": self.credentials.aws_secret_access_key,
+            "aws_session_token": self.credentials.aws_session_token,
+            "region_name": self.credentials.aws_default_region,
+        }
+
+
+@dataclass(frozen=True)
+class DefaultChainAWSClientProvider(_BaseAWSClientProvider):
     """Construct AWS clients through the SDK default credential chain."""
 
     region: str
 
-    @lru_cache(maxsize=32)
-    def _s3_session(self) -> aioboto3.Session:
-        return aioboto3.Session(region_name=self.region)
-
-    def s3_client(self) -> Any:
-        return self._s3_session().client(  # pyright: ignore[reportUnknownMemberType]
-            "s3",
-            config=_S3_CLIENT_CONFIG,
-        )
-
-    @lru_cache(maxsize=32)
-    def cloudwatch_logs_client(self) -> Any:
-        return _boto3_client(
-            "logs",
-            region_name=self.region,
-            config=_HIGH_CONCURRENCY_CLIENT_CONFIG,
-        )
-
-    @lru_cache(maxsize=32)
-    def secretsmanager_client(self) -> Any:
-        return _boto3_client(
-            "secretsmanager",
-            region_name=self.region,
-        )
-
-    @lru_cache(maxsize=32)
-    def lambda_client(self, config: Config | None = None) -> Any:
-        return _boto3_client(
-            "lambda",
-            region_name=self.region,
-            config=config,
-        )
+    def _client_kwargs(self) -> dict[str, Any]:
+        return {"region_name": self.region}
 
     def maximum_presign_ttl(self, requested_seconds: int) -> int:
         return min(requested_seconds, _DEFAULT_CHAIN_MAXIMUM_PRESIGN_TTL_SECONDS)

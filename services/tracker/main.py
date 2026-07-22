@@ -36,7 +36,7 @@ from tracker.auth import (
     resolve_descope_identity,
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.secrets import resolve_secrets
 from tracker.agent.contract import get_contract_from_zip_bytes
 from tracker.aws.s3 import (
@@ -248,7 +248,7 @@ def init_org(
     return {"org_name": org.name, "created": created, "email_claim_missing": identity.email is None}
 
 
-async def _resolve_contract_from_s3(request: StartBenchmarkRequest, aws_runtime: AwsRuntime) -> AgentContractRequest:
+async def _resolve_contract_from_s3(request: StartBenchmarkRequest, aws_runtime: AWSRuntime) -> AgentContractRequest:
     """Resolve install_cmd/run_cmd/etc by parsing the agent's contract file inside its S3 zip."""
     zip_bytes = await download_from_s3(
         get_contract_s3_key(request.contract.name),
@@ -293,7 +293,7 @@ async def start_benchmark(
         effective_harness_config = effective_harness_config.model_copy(
             update={"sandbox_provider_secret_name": provider_secret_name}
         )
-    aws_runtime = AwsRuntime.from_harness_config(effective_harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(effective_harness_config)
 
     service_headers = dict(request.service_headers)
     if request.service_auth_header_name and request.service_auth_secret_name:
@@ -441,7 +441,7 @@ async def fetch_benchmark(
     - 404 Not Found if benchmark is not found
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
@@ -486,7 +486,7 @@ async def analyze_benchmark(
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
     if benchmark_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
@@ -562,7 +562,7 @@ async def retrieve_results(
     """
     benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
     assert_org(benchmark_row, org)
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
     final_view = create_final_view(benchmark_row, session, org)
 
@@ -628,7 +628,7 @@ async def check_results_exist(
         {"exists": true/false}
     """
     benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
     exists = await s3_object_exists(s3_key, aws_runtime)
@@ -700,7 +700,7 @@ async def stop_benchmark(
     await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
     if force:
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
         # TODO: Drop the row fallback after legacy benchmark rows have aged out.
         provider_secret_name = (
             benchmark_row.arguments.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name
@@ -965,7 +965,7 @@ async def fetch_run_outputs(
         StreamingResponse
     """
     get_scoped(Benchmark, benchmark_id, session, org)
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
     benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
 
