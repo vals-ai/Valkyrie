@@ -27,6 +27,8 @@ from tracker.types import (
     StartBenchmarkRequest,
 )
 
+_MAX_BENCHMARK_SERVICE_WEBSOCKET_MESSAGE_SIZE = 16 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class BenchmarkConcurrencyUpdate:
@@ -53,7 +55,11 @@ def create_benchmark_service_client(
     headers = dict(service_headers or {})
     validate_service_headers(headers)
 
-    return BenchmarkServiceClient(url=url, headers=headers)
+    return BenchmarkServiceClient(
+        url=url,
+        headers=headers,
+        max_websocket_message_size=_MAX_BENCHMARK_SERVICE_WEBSOCKET_MESSAGE_SIZE,
+    )
 
 
 def create_benchmark_service_client_from_request(request: StartBenchmarkRequest) -> BenchmarkServiceClient:
