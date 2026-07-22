@@ -36,6 +36,11 @@ class AWSRuntimeResolution:
     runtime: AWSRuntime
     legacy_harness_config: HarnessConfig | None
 
+    @property
+    def aws_managed(self) -> bool:
+        """Return whether deployment-managed AWS authority was selected."""
+        return self.legacy_harness_config is None
+
 
 @dataclass(frozen=True)
 class HarnessHeaderState:
@@ -173,7 +178,6 @@ def deployment_aws_runtime(org_id: UUID) -> AWSRuntime:
     return AWSRuntime(
         resources=resources,
         clients=DefaultChainAWSClientProvider(resources.region),
-        managed=True,
     )
 
 
