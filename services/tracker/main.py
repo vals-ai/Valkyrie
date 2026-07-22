@@ -315,8 +315,9 @@ async def start_benchmark(
     runtime_resolution = resolve_start_aws_runtime(http_request, request.harness_config, run_starter.org.id)
     aws_runtime = runtime_resolution.runtime
     effective_harness_config = runtime_resolution.access_key_harness_config
+    aws_managed = runtime_resolution.aws_managed
 
-    if aws_runtime.managed:
+    if aws_managed:
         if not request.sandbox_provider or not request.sandbox_provider_secret_name:
             raise HTTPException(
                 status_code=400,
@@ -357,13 +358,13 @@ async def start_benchmark(
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, aws_runtime)})
-    elif aws_runtime.managed and not await s3_object_exists(get_contract_s3_key(request.contract.name), aws_runtime):
+    elif aws_managed and not await s3_object_exists(get_contract_s3_key(request.contract.name), aws_runtime):
         raise HTTPException(
             status_code=404,
             detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
         )
 
-    if aws_runtime.managed:
+    if aws_managed:
         try:
             validate_managed_execution_request(request)
         except ValueError as exc:
@@ -398,7 +399,7 @@ async def start_benchmark(
     benchmark_row = start_benchmark_request_to_benchmark(
         request,
         run_starter,
-        aws_managed=aws_runtime.managed,
+        aws_managed=aws_managed,
     )
     session.add(benchmark_row)
     session.commit()
