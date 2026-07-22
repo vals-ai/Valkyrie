@@ -50,6 +50,14 @@ DEPLOYMENT_FAILURE_STATUSES = (
     "DELETE_FAILED",
 )
 
+EVAL_RESUME_RETENTION_PREFIXES = (
+    "code-migration/benchmarks/",
+    "cyberbench/eval-resume/",
+    "emb/eval-resume/",
+    "programbench/eval-resume/",
+    "swebench/eval-resume/",
+)
+
 
 class SharedStack(Stack):
     """Shared infrastructure for all services."""
@@ -116,6 +124,14 @@ class SharedStack(Stack):
             enforce_ssl=None if self.stage.is_prod else True,
             object_ownership=None if self.stage.is_prod else aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
             versioned=None if self.stage.is_prod else True,
+            lifecycle_rules=[
+                aws_s3.LifecycleRule(
+                    prefix=prefix,
+                    expiration=cdk.Duration.days(30),
+                    noncurrent_version_expiration=cdk.Duration.days(30),
+                )
+                for prefix in EVAL_RESUME_RETENTION_PREFIXES
+            ],
         )
 
         # ── ElastiCache Redis ─────────────────────────────────────────────

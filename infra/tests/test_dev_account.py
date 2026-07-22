@@ -77,6 +77,13 @@ def dev_shared_stack() -> tuple[cdk.App, SharedStack]:
     return app, shared
 
 
+def prod_shared_stack() -> tuple[cdk.App, SharedStack]:
+    app = cdk.App(context=PROD_CONTEXT)
+    stage = Stage(PROD)
+    shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=TEST_ENV)
+    return app, shared
+
+
 def dev_tracker_template() -> assertions.Template:
     app, shared = dev_shared_stack()
     stage = Stage(DEV)
@@ -110,6 +117,27 @@ def ssm_parameter_id(template: Mapping[str, object], parameter_name: str) -> str
 
 
 class DevAccountInfrastructureTest(unittest.TestCase):
+    def test_eval_resume_artifacts_expire_after_30_days(self) -> None:
+        for _, shared in (dev_shared_stack(), prod_shared_stack()):
+            with self.subTest(stage=shared.stage.name):
+                shared_template = assertions.Template.from_stack(shared)
+                bucket = next(iter(shared_template.find_resources("AWS::S3::Bucket").values()))
+                rules = bucket["Properties"]["LifecycleConfiguration"]["Rules"]
+
+                for rule in rules:
+                    self.assertEqual(rule["NoncurrentVersionExpiration"], {"NoncurrentDays": 30})
+
+                self.assertEqual(
+                    {rule["Prefix"]: rule["ExpirationInDays"] for rule in rules if rule["Status"] == "Enabled"},
+                    {
+                        "code-migration/benchmarks/": 30,
+                        "cyberbench/eval-resume/": 30,
+                        "emb/eval-resume/": 30,
+                        "programbench/eval-resume/": 30,
+                        "swebench/eval-resume/": 30,
+                    },
+                )
+
     def test_dev_bucket_is_named_and_hardened(self) -> None:
         _, shared = dev_shared_stack()
         shared_template = assertions.Template.from_stack(shared)
