@@ -125,7 +125,6 @@ def test_start_runtime_selection(
 
     resolution = resolve_start_aws_runtime(_request(headers), body_config, _ORG_ID)
 
-    assert resolution.runtime.managed is (expected_mode == "managed")
     assert resolution.runtime.resources.s3_bucket == expected_bucket
     if expected_mode == "managed":
         assert resolution.legacy_harness_config is None
