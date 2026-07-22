@@ -514,6 +514,7 @@ async def fetch_benchmark(
         ),
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
+        error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
         executor_release_id=benchmark_row.executor_release_id,
         current_execution_release_id=benchmark_row.current_execution_release_id,
         executor_artifact_digest=benchmark_row.executor_artifact_digest,

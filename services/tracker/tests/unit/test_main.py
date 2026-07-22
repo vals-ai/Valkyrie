@@ -491,7 +491,10 @@ class TestTrackerAPI:
         # Remaining fields match what we passed into the request
         assert json_response["benchmark_name"] == request.benchmark_name
         assert json_response["agent_name"] == request.contract.name
+        assert json_response["executor_release_id"] == "test-release"
         assert json_response["current_execution_release_id"] == "test-release"
+        assert json_response["executor_artifact_digest"] == "digest-test-release"
+        assert json_response["executor_protocol_version"] == "1"
         assert json_response["concurrency"] == request.concurrency
 
     async def test_start_benchmark_keeps_dispatch_queued_when_enqueue_ack_is_ambiguous(
@@ -676,8 +679,10 @@ class TestTrackerAPI:
         Test Cases:
             - Returns 200 OK
             - Raising exception if benchmark row is not found
+            - Existing benchmark without discovered tasks returns empty progress
             - Benchmark details are returned in the response
             - Benchmark details are updated as benchmark progresses
+            - Run-level errors are returned only after the benchmark reaches ERROR
         """
 
         # Test case 1. Return 404 Not Found if benchmark does not exist
@@ -687,9 +692,25 @@ class TestTrackerAPI:
 
         # Add benchmark row to the database to fetch
         benchmark_row = example_benchmark_object
+        benchmark_row.executor_release_id = "initial-release"
+        benchmark_row.current_execution_release_id = "current-release"
+        benchmark_row.executor_artifact_uri = "s3://artifacts/initial-release.pex"
+        benchmark_row.executor_artifact_digest = "a" * 64
+        benchmark_row.executor_protocol_version = "1"
 
         database_session.add(benchmark_row)
         database_session.commit()
+
+        # Fetch during the interval between benchmark creation and task discovery.
+        query_params = {"benchmark_id": str(benchmark_row.id)}
+        response = client.get("/fetch-benchmark", params=query_params)
+
+        assert response.status_code == 200
+
+        details = response.json()["details"]
+        assert details["total_tasks"] == 0
+        assert details["finished_tasks"] == 0
+        assert details["task_breakdown"] == {}
 
         # Push some task rows that we can use to check the progress of the benchmark
         task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id) for i in range(10)]
@@ -710,6 +731,11 @@ class TestTrackerAPI:
         assert details.get("status") == BenchmarkStatus.IN_PROGRESS
         assert details.get("total_tasks") == 10
         assert details.get("finished_tasks") == 0
+        assert response.json().get("error_message") is None
+        assert response.json()["executor_release_id"] == "initial-release"
+        assert response.json()["current_execution_release_id"] == "current-release"
+        assert response.json()["executor_artifact_digest"] == "a" * 64
+        assert response.json()["executor_protocol_version"] == "1"
 
         # Test case 4. Benchmark details are updated as benchmark progresses
         # Change a few to in progress, finished and error
@@ -768,6 +794,17 @@ class TestTrackerAPI:
         # Test case 6. Final score is returned when the benchmark has a final evaluation
         assert response.status_code == 200
         assert response.json().get("final_score") == 83.25
+
+        benchmark_row.status = BenchmarkStatus.ERROR
+        benchmark_row.error_message = "Dominant task error affecting 10/10 tasks"
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmark", params=query_params)
+
+        # Test case 7. Terminal errors return the stored run-level message
+        assert response.status_code == 200
+        assert response.json().get("error_message") == "Dominant task error affecting 10/10 tasks"
 
     async def test_retrieve_results(
         self, monkeypatch: MonkeyPatch, database_session: Session, example_benchmark_object: Benchmark
@@ -1021,6 +1058,11 @@ class TestTrackerAPI:
         assert response_json.get("total_count") == 0
 
         # Add benchmark row to the database to fetch
+        example_benchmark_object.executor_release_id = "initial-release"
+        example_benchmark_object.current_execution_release_id = "current-release"
+        example_benchmark_object.executor_artifact_uri = "s3://artifacts/initial-release.pex"
+        example_benchmark_object.executor_artifact_digest = "a" * 64
+        example_benchmark_object.executor_protocol_version = "1"
         database_session.add(example_benchmark_object)
         database_session.commit()
 
@@ -1083,6 +1125,14 @@ class TestTrackerAPI:
         for row in response_json["benchmarks"]:
             assert set(row.keys()) == expected_fields
 
+        persisted_row = next(
+            row for row in response_json["benchmarks"] if row["id"] == str(example_benchmark_object.id)
+        )
+        assert persisted_row["executor_release_id"] == "initial-release"
+        assert persisted_row["current_execution_release_id"] == "current-release"
+        assert persisted_row["executor_artifact_digest"] == "a" * 64
+        assert persisted_row["executor_protocol_version"] == "1"
+
         # Clear filters and search again (checking limit and total)
         fetch_benchmarks_request.benchmark_name = None  # type: ignore[assignment]
         fetch_benchmarks_request.agent_name = None  # type: ignore[assignment]
@@ -1115,6 +1165,20 @@ class TestTrackerAPI:
         # There is 1 finished benchmark
         assert response_json.get("total_count") == 1
         assert len(response_json.get("benchmarks")) == 1
+
+        example_benchmark_object.status = BenchmarkStatus.ERROR
+        example_benchmark_object.error_message = "Dominant task error"
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+
+        fetch_benchmarks_request.status = [BenchmarkStatus.ERROR]
+        response = client.get(
+            "/fetch-benchmarks", params=fetch_benchmarks_request.model_dump(exclude_none=True, mode="json")
+        )
+        assert response.status_code == 200
+        response_json = response.json()
+        assert response_json.get("total_count") == 1
+        assert response_json["benchmarks"][0]["error_message"] == "Dominant task error"
 
     async def test_start_benchmark_accepts_custom_service_from_request(
         self,

@@ -63,7 +63,7 @@ class WorkerStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         redis_url: str,
-        bucket: aws_s3.IBucket,
+        bucket_name: str,
         database: aws_rds.DatabaseInstance,
         db_credentials: aws_rds.DatabaseSecret,
         tracker_service: aws_ecs.FargateService,
@@ -74,6 +74,7 @@ class WorkerStack(Stack):
     ):
         super().__init__(scope, id, **kwargs)
         stage_config = config_for(stage)
+        artifact_bucket = aws_s3.Bucket.from_bucket_name(self, "AgenticHarnessBucket", bucket_name)
 
         # Reuse the tracker's security group so both services share the same
         # SG — benchmark services only need to whitelist one group.
@@ -99,7 +100,7 @@ class WorkerStack(Stack):
         benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
-            "AWS_S3_BUCKET": bucket.bucket_name,
+            "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
@@ -234,7 +235,7 @@ class WorkerStack(Stack):
                 resources=["*"],
             )
         )
-        bucket.grant_read(executor_task_def.task_role)
+        artifact_bucket.grant_read(executor_task_def.task_role)
 
         self.executor_host_service = aws_ecs.FargateService(
             self,

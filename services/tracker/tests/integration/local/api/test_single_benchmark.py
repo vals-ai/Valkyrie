@@ -6,11 +6,13 @@ Exercise single-benchmark routes through the real app and local database.
 import json
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.factories import make_benchmark, make_task
 from tracker.database.models import (
+    Benchmark,
     BenchmarkStatus,
     ErrorResult,
     ExecutorRelease,
@@ -93,6 +95,50 @@ class TestSingleBenchmark:
 class TestBenchmarkStatusStream:
     """Single-benchmark status streaming."""
 
+    def test_stream_survives_task_discovery_transition(
+        self,
+        client: TestClient,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An active run must remain streamable while its task rows are being discovered.
+
+        Test cases:
+        - The first status event reports a valid empty task breakdown.
+        - A later poll reports the discovered task and completes normally.
+        """
+        benchmark = make_benchmark(name="discovering-benchmark", session=database_session)
+
+        async def finish_task_discovery(_seconds: float) -> None:
+            with Session(bind=database_session.bind) as poll_session:
+                persisted_benchmark = poll_session.get(Benchmark, benchmark.id)
+                assert persisted_benchmark is not None
+
+                persisted_benchmark.status = BenchmarkStatus.FINISHED
+                poll_session.add(make_task(persisted_benchmark, "discovered-task", status=TaskStatus.FINISHED))
+                poll_session.commit()
+
+        monkeypatch.setattr("tracker.utils.reporting.asyncio.sleep", finish_task_discovery)
+
+        with client.stream(
+            "GET",
+            "/fetch-benchmark",
+            params={"benchmark_id": str(benchmark.id), "connect": "true"},
+            headers={"Authorization": "Bearer fake"},
+        ) as response:
+            event_lines = [line for line in response.iter_lines() if line]
+
+        assert response.status_code == 200
+        assert event_lines[-1] == "event: complete"
+
+        streamed_statuses = [
+            json.loads(line.removeprefix("data: ")) for line in event_lines if line.startswith("data:")
+        ]
+        assert streamed_statuses[0]["details"]["total_tasks"] == 0
+        assert streamed_statuses[0]["details"]["finished_tasks"] == 0
+        assert streamed_statuses[0]["details"]["task_breakdown"] == {}
+        assert streamed_statuses[1]["details"]["task_breakdown"] == {"FINISHED": 1}
+
     def test_terminal_benchmark_streams_status_and_completes(
         self,
         client: TestClient,
@@ -131,6 +177,55 @@ class TestBenchmarkStatusStream:
         assert streamed_status["benchmark_name"] == "streamed-benchmark"
         assert streamed_status["details"]["status"] == "FINISHED"
         assert streamed_status["final_score"] == 0.75
+
+    def test_error_benchmark_streams_release_provenance_and_message(
+        self,
+        client: TestClient,
+        database_session: Session,
+    ) -> None:
+        """Terminal error streams expose the saved run error and current release ownership."""
+        initial_release = ExecutorRelease(
+            id="initial-release",
+            artifact_uri="s3://artifacts/initial.pex",
+            artifact_digest="a" * 64,
+            protocol_version="1",
+        )
+        current_release = ExecutorRelease(
+            id="current-release",
+            artifact_uri="s3://artifacts/current.pex",
+            artifact_digest="b" * 64,
+            protocol_version="1",
+        )
+        database_session.add_all([initial_release, current_release])
+        database_session.commit()
+
+        benchmark = make_benchmark(name="errored-benchmark", status=BenchmarkStatus.ERROR, session=database_session)
+        benchmark.error_message = "Dominant task error"
+        benchmark.executor_release_id = initial_release.id
+        benchmark.current_execution_release_id = current_release.id
+        benchmark.executor_artifact_uri = initial_release.artifact_uri
+        benchmark.executor_artifact_digest = initial_release.artifact_digest
+        benchmark.executor_protocol_version = initial_release.protocol_version
+        database_session.add(benchmark)
+        database_session.commit()
+
+        with client.stream(
+            "GET",
+            "/fetch-benchmark",
+            params={"benchmark_id": str(benchmark.id), "connect": "true"},
+            headers={"Authorization": "Bearer fake"},
+        ) as response:
+            event_lines = [line for line in response.iter_lines() if line]
+
+        assert response.status_code == 200
+        assert event_lines[-1] == "event: complete"
+
+        streamed_status = json.loads(event_lines[0].removeprefix("data: "))
+        assert streamed_status["error_message"] == "Dominant task error"
+        assert streamed_status["executor_release_id"] == initial_release.id
+        assert streamed_status["current_execution_release_id"] == current_release.id
+        assert streamed_status["executor_artifact_digest"] == initial_release.artifact_digest
+        assert streamed_status["executor_protocol_version"] == initial_release.protocol_version
 
 
 class TestBenchmarkTaskListing:

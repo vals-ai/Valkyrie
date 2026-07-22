@@ -7,7 +7,7 @@ from math import isfinite
 from typing import Literal
 from uuid import UUID
 
-from tracker.database.models import TaskStatus
+from tracker.database.models import BenchmarkStatus, TaskStatus
 from tracker.types import (
     BenchmarkStatusEntry,
     BenchmarkTableRow,
@@ -78,6 +78,7 @@ def build_run_snapshot(
         "progress_percent": round(progress_percent, 4),
         "max_concurrency": arguments.concurrency if arguments is not None else None,
         "final_score": _finite_score_or_none(response.final_score),
+        "error_message": response.error_message if details.status == BenchmarkStatus.ERROR else None,
         "s3_bucket_url": response.s3_bucket_url,
         "docent_reading_status": details.docent_reading_status.value,
         "docent_reading_url": details.docent_reading_url,

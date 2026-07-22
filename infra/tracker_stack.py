@@ -72,7 +72,7 @@ class TrackerStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         hosted_zone: aws_route53.IHostedZone | None,
-        bucket: aws_s3.IBucket,
+        bucket_name: str,
         redis_url: str,
         tracker_repository: aws_ecr.IRepository | None = None,
         image_tag: str | None = None,
@@ -80,6 +80,7 @@ class TrackerStack(Stack):
     ):
         super().__init__(scope, id, **kwargs)
         stage_config = config_for(stage)
+        artifact_bucket = aws_s3.Bucket.from_bucket_name(self, "AgenticHarnessBucket", bucket_name)
 
         # Release-test writes images only to its stage-qualified repository;
         # other stages retain the established CDK asset path.
@@ -98,7 +99,7 @@ class TrackerStack(Stack):
         benchmark_service_url = benchmark_service_base_url(stage)
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
-            "AWS_S3_BUCKET": bucket.bucket_name,
+            "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
@@ -228,7 +229,7 @@ class TrackerStack(Stack):
             ),
         )
         # Release verification streams executor artifacts from S3 before promotion.
-        bucket.grant_read(tracker_task_def.task_role)
+        artifact_bucket.grant_read(tracker_task_def.task_role)
 
         tracker_domain: str | None = None
         tracker_hosted_zone: aws_route53.IHostedZone | None = None

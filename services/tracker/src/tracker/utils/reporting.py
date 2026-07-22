@@ -32,7 +32,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.scoping import scoped_select
-from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.types import (
     AverageTaskBreakdown,
@@ -114,11 +113,6 @@ class BenchmarkContext:
         )
 
         result = self._session.exec(statement).all()
-
-        if not result:
-            raise TrackerServiceError(
-                f"No tasks have been discovered for run {self._benchmark_row.id}, cannot provide task breakdown"
-            )
 
         return {TaskStatus(status): count for status, count in result}
 
@@ -299,10 +293,14 @@ async def stream_benchmark_results(
                     ),
                     label=fresh_benchmark.label,
                     executor_release_id=fresh_benchmark.executor_release_id,
+                    current_execution_release_id=fresh_benchmark.current_execution_release_id,
                     executor_artifact_digest=fresh_benchmark.executor_artifact_digest,
                     executor_protocol_version=fresh_benchmark.executor_protocol_version,
                     final_score=fresh_benchmark.final_evaluation.final_score
                     if fresh_benchmark.final_evaluation
+                    else None,
+                    error_message=fresh_benchmark.error_message
+                    if fresh_benchmark.status == BenchmarkStatus.ERROR
                     else None,
                 )
 
@@ -480,8 +478,10 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 model=b.arguments.contract.model,
                 dataset=b.arguments.dataset or "default",
                 executor_release_id=b.executor_release_id,
+                current_execution_release_id=b.current_execution_release_id,
                 executor_artifact_digest=b.executor_artifact_digest,
                 executor_protocol_version=b.executor_protocol_version,
+                error_message=b.error_message if b.status == BenchmarkStatus.ERROR else None,
                 started_by_email=b.started_by_email,
                 started_at=b.started_at,
                 finished_at=b.finished_at,

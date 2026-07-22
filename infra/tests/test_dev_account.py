@@ -25,7 +25,7 @@ from constants import (
     DEV_TRACKER_SECURITY_GROUP_PARAMETER,
 )
 from shared import SharedStack
-from stage import DEV, PROD, Stage
+from stage import DEV, PROD, RELEASE_TEST, Stage
 from tracker_stack import TrackerStack
 
 TEST_ACCOUNT = "123456789012"
@@ -88,7 +88,7 @@ def dev_tracker_template() -> assertions.Template:
         cluster=shared.cluster,
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
-        bucket=shared.bucket,
+        bucket_name=shared.bucket_name,
         redis_url=shared.redis_url,
         env=TEST_ENV,
     )
@@ -110,7 +110,7 @@ def ssm_parameter_id(template: Mapping[str, object], parameter_name: str) -> str
 
 
 class DevAccountInfrastructureTest(unittest.TestCase):
-    def test_dev_bucket_is_account_qualified_and_hardened(self) -> None:
+    def test_dev_bucket_is_named_and_hardened(self) -> None:
         _, shared = dev_shared_stack()
         shared_template = assertions.Template.from_stack(shared)
 
@@ -119,7 +119,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         bucket = next(iter(buckets.values()))
         self.assertEqual(bucket["DeletionPolicy"], "Retain")
         self.assertEqual(bucket["UpdateReplacePolicy"], "Retain")
-        self.assertEqual(bucket["Properties"]["BucketName"], f"agentic-harness-dev-{TEST_ACCOUNT}")
+        self.assertEqual(bucket["Properties"]["BucketName"], "agentic-harness-dev")
         self.assertEqual(
             bucket["Properties"]["PublicAccessBlockConfiguration"],
             {
@@ -155,6 +155,17 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                 }
             },
         )
+
+    def test_release_test_bucket_remains_account_qualified(self) -> None:
+        app = cdk.App(context=TEST_CONTEXT)
+        stage = Stage(RELEASE_TEST)
+        shared = SharedStack(app, stage.stack_id("SharedStack"), stage=stage, env=TEST_ENV)
+        shared_template = assertions.Template.from_stack(shared)
+
+        buckets = shared_template.find_resources("AWS::S3::Bucket")
+        self.assertEqual(len(buckets), 1)
+        bucket = next(iter(buckets.values()))
+        self.assertEqual(bucket["Properties"]["BucketName"], f"agentic-harness-release-test-{TEST_ACCOUNT}")
 
     def test_dev_tracker_imports_account_local_dns_and_auth(self) -> None:
         dev_auth = {"AUTH_REQUIRED": "false", "DESCOPE_PROJECT_ID": "dev-project"}

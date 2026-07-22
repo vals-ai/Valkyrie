@@ -167,7 +167,7 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
         cluster=shared.cluster,
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
-        bucket=shared.bucket,
+        bucket_name=shared.bucket_name,
         redis_url=shared.redis_url,
         tracker_repository=tracker_repository,
         image_tag=image_tag,
@@ -181,7 +181,7 @@ def _service_templates(stage_name: str) -> tuple[assertions.Template, assertions
         cluster=shared.cluster,
         namespace=shared.namespace,
         redis_url=shared.redis_url,
-        bucket=shared.bucket,
+        bucket_name=shared.bucket_name,
         database=tracker.database,
         db_credentials=tracker.db_credentials,
         tracker_service=tracker.tracker_fargate_service,
@@ -386,6 +386,8 @@ class MonitoringStackTest(unittest.TestCase):
             "AWS::Logs::LogGroup",
             {"LogGroupName": f"{WORKER_LOG_GROUP_NAME}-dev", "RetentionInDays": 7},
         )
+        worker_policies = worker_template.find_resources("AWS::IAM::Policy")
+        self.assertTrue(any("s3:GetObject*" in json.dumps(policy) for policy in worker_policies.values()))
         monitoring_template.has_resource_properties(
             "AWS::CloudWatch::Alarm",
             {"AlarmName": "Valkyrie-DB-Connections-High-dev", "Threshold": 65},

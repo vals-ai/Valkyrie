@@ -151,6 +151,7 @@ class FetchBenchmarkResponse(ResponseModel):
     s3_bucket_url: str
     label: str | None = None
     final_score: float | None = None
+    error_message: str | None = None
     executor_release_id: str | None = None
     current_execution_release_id: str | None = None
     executor_artifact_digest: str | None = None

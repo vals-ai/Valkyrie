@@ -9,6 +9,22 @@ import click
 Page = TypeVar("Page")
 
 
+def terminal_safe(value: str, *, preserve_newlines: bool) -> str:
+    """Escape terminal control characters in user-controlled text."""
+    escaped: list[str] = []
+    for character in value:
+        if character == "\n" and preserve_newlines:
+            escaped.append(character)
+        elif character == "\t":
+            escaped.append("    ")
+        elif character.isprintable():
+            escaped.append(character)
+        else:
+            escaped.append(character.encode("unicode_escape").decode("ascii"))
+
+    return "".join(escaped)
+
+
 def local_time(dt: datetime) -> str:
     """Convert UTC time to users local time."""
     return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
