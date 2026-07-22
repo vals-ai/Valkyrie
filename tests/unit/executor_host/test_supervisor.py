@@ -127,6 +127,7 @@ async def test_run_forwards_dispatch_payload_to_executor(tmp_path: Path, monkeyp
         start_benchmark_request_json={"benchmark_name": "swebench"},
         benchmark_id_str="benchmark-1",
         verified_task_ids=["task-1"],
+        executor_dispatch_id="dispatch-1",
     )
 
     try:
@@ -245,28 +246,44 @@ async def test_failed_executor_terminalizes_dispatch(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_legacy_dispatch_without_id_still_runs(tmp_path: Path) -> None:
-    script = b"print('legacy')"
+@pytest.mark.parametrize("executor_dispatch_id", [None, ""], ids=["missing", "empty"])
+async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    executor_dispatch_id: str | None,
+) -> None:
+    script = b"print('must not run')"
     digest = hashlib.sha256(script).hexdigest()
     store = FakeDispatchStore()
+    s3_client = FakeS3Client(script)
     supervisor = ExecutorSupervisor(
         cache_dir=tmp_path,
-        s3_client=FakeS3Client(script),
+        s3_client=s3_client,
         python_executable=sys.executable,
     )
 
-    await run_executor_dispatch(
-        supervisor,
-        store,
-        executor_dispatch_id=None,
-        dispatch=_dispatch(digest=digest),
-        start_benchmark_request_json={},
-        benchmark_id_str="benchmark-1",
-        verified_task_ids=[],
-    )
+    async def unexpected_run(*args: object, **kwargs: object) -> None:
+        pytest.fail("executor must not run without a dispatch ID")
+
+    monkeypatch.setattr(supervisor, "run", unexpected_run)
+    monkeypatch.setattr(supervisor_module, "supervisor", supervisor)
+    monkeypatch.setattr(supervisor_module, "dispatch_store", store)
+
+    with pytest.raises(ValueError, match="executor_dispatch_id is required"):
+        await supervisor_module.launch_executor.original_func(
+            start_benchmark_request_json={},
+            benchmark_id_str="benchmark-1",
+            verified_task_ids=[],
+            executor_dispatch_id=executor_dispatch_id,
+            executor_release_id="release-v2",
+            executor_artifact_uri="s3://artifacts/executors/v2.pex",
+            executor_artifact_digest=digest,
+            executor_protocol_version="1",
+        )
 
     assert store.claimed == []
     assert store.finished == []
+    assert s3_client.calls == []
 
 
 @pytest.mark.asyncio
@@ -293,6 +310,7 @@ async def test_run_protects_executor_task_while_process_is_running(
         start_benchmark_request_json={},
         benchmark_id_str="benchmark-1",
         verified_task_ids=[],
+        executor_dispatch_id="dispatch-1",
     )
 
     assert protection_changes == [True, False]
@@ -322,12 +340,14 @@ async def test_task_protection_spans_concurrent_executor_processes(
             start_benchmark_request_json={},
             benchmark_id_str="benchmark-1",
             verified_task_ids=[],
+            executor_dispatch_id="dispatch-1",
         ),
         supervisor.run(
             _dispatch(digest=digest),
             start_benchmark_request_json={},
             benchmark_id_str="benchmark-2",
             verified_task_ids=[],
+            executor_dispatch_id="dispatch-2",
         ),
     )
 

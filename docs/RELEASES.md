@@ -289,10 +289,9 @@ Worker and Monitoring. Any other revision, active work, or ambiguous state
 blocks deployment. Do not recreate or restore the database as part of this
 path.
 
-The following is historical dispatch-ledger rollout guidance, not an affinity
-migration dependency: deploy the backward-compatible ExecutorHost before Tracker
-starts emitting dispatch IDs. Old queue messages omit that ID and continue
-through the existing launch path; new messages use the PostgreSQL dispatch
-lifecycle without changing the versioned executor artifact payload. The
-execution-affinity migration itself requires no ExecutorHost or infrastructure
-compatibility branch because legacy and stable workers consume separate queues.
+The legacy Worker and stable ExecutorHost consume separate queues. Legacy
+messages remain on `taskiq` and never reach the ExecutorHost. Every message on
+`valkyrie-stable` must include an executor dispatch ID and immutable artifact
+identity; the host claims the matching PostgreSQL dispatch before downloading or
+executing the artifact. The execution-affinity migration requires no
+ExecutorHost compatibility branch or queue-drain sequencing.

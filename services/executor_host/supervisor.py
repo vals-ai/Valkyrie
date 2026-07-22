@@ -262,7 +262,7 @@ class ExecutorSupervisor:
         start_benchmark_request_json: Mapping[str, object],
         benchmark_id_str: str,
         verified_task_ids: list[str],
-        executor_dispatch_id: str | None = None,
+        executor_dispatch_id: str,
     ) -> None:
         await _acquire_task_protection()
         try:
@@ -283,7 +283,7 @@ class ExecutorSupervisor:
         start_benchmark_request_json: Mapping[str, object],
         benchmark_id_str: str,
         verified_task_ids: list[str],
-        executor_dispatch_id: str | None,
+        executor_dispatch_id: str,
     ) -> None:
         artifact_path = await self.prepare_artifact(dispatch)
         payload = {
@@ -299,10 +299,7 @@ class ExecutorSupervisor:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
             executor_environment = os.environ.copy()
-            if executor_dispatch_id is None:
-                executor_environment.pop(_EXECUTOR_DISPATCH_ID_ENV, None)
-            else:
-                executor_environment[_EXECUTOR_DISPATCH_ID_ENV] = executor_dispatch_id
+            executor_environment[_EXECUTOR_DISPATCH_ID_ENV] = executor_dispatch_id
             logger.info(
                 "Launching benchmark %s dispatch_id=%s release=%s digest=%s protocol=%s",
                 benchmark_id_str,
@@ -364,17 +361,16 @@ async def run_executor_dispatch(
     executor_supervisor: ExecutorSupervisor,
     store: ExecutorDispatchStore,
     *,
-    executor_dispatch_id: str | None,
+    executor_dispatch_id: str,
     dispatch: ArtifactDispatch,
     start_benchmark_request_json: Mapping[str, object],
     benchmark_id_str: str,
     verified_task_ids: list[str],
 ) -> None:
-    if executor_dispatch_id is not None:
-        claimed = await store.claim(executor_dispatch_id, benchmark_id_str, dispatch)
-        if not claimed:
-            logger.warning("Skipping duplicate or non-queued executor dispatch %s", executor_dispatch_id)
-            return
+    claimed = await store.claim(executor_dispatch_id, benchmark_id_str, dispatch)
+    if not claimed:
+        logger.warning("Skipping duplicate or non-queued executor dispatch %s", executor_dispatch_id)
+        return
 
     try:
         await executor_supervisor.run(
@@ -385,15 +381,13 @@ async def run_executor_dispatch(
             executor_dispatch_id=executor_dispatch_id,
         )
     except BaseException:
-        if executor_dispatch_id is not None:
-            try:
-                await store.finish(executor_dispatch_id, succeeded=False)
-            except Exception:
-                logger.exception("Failed to terminalize executor dispatch %s", executor_dispatch_id)
+        try:
+            await store.finish(executor_dispatch_id, succeeded=False)
+        except Exception:
+            logger.exception("Failed to terminalize executor dispatch %s", executor_dispatch_id)
         raise
     else:
-        if executor_dispatch_id is not None:
-            await store.finish(executor_dispatch_id, succeeded=True)
+        await store.finish(executor_dispatch_id, succeeded=True)
 
 
 @broker.task("tracker.utils:process_benchmark")
@@ -407,6 +401,7 @@ async def launch_executor(
     executor_artifact_digest: str | None = None,
     executor_protocol_version: str | None = None,
 ) -> None:
+    dispatch_id = _required_string({"executor_dispatch_id": executor_dispatch_id}, "executor_dispatch_id")
     dispatch = ArtifactDispatch.from_payload(
         {
             "executor_release_id": executor_release_id,
@@ -418,7 +413,7 @@ async def launch_executor(
     await run_executor_dispatch(
         supervisor,
         dispatch_store,
-        executor_dispatch_id=executor_dispatch_id,
+        executor_dispatch_id=dispatch_id,
         dispatch=dispatch,
         start_benchmark_request_json=start_benchmark_request_json,
         benchmark_id_str=benchmark_id_str,
