@@ -226,6 +226,7 @@ async def finalize_all_error_run(benchmark_id: UUID, org: Org) -> bool:
 
 
 def _parse_start_benchmark_request(payload: dict[str, Any]) -> StartBenchmarkRequest:
+    """Validate a queued request without serializing credential-bearing input in errors."""
     request: StartBenchmarkRequest | None
     try:
         request = StartBenchmarkRequest.model_validate(payload)
