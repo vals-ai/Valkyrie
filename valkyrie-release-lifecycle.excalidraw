@@ -4,251 +4,355 @@
   "source": "mcp-excalidraw-server",
   "elements": [
     {
+      "id": "l-canvas",
+      "type": "rectangle",
+      "x": 20,
+      "y": 120,
+      "width": 1580,
+      "height": 780,
+      "backgroundColor": "#ffffff",
+      "strokeColor": "#ffffff",
+      "strokeWidth": 1,
+      "roughness": 0,
+      "fillStyle": "solid",
+      "createdAt": "2026-07-22T00:47:02.032Z",
+      "updatedAt": "2026-07-22T00:47:02.032Z",
+      "version": 1
+    },
+    {
       "id": "l-title",
       "type": "text",
       "x": 40,
       "y": 20,
-      "width": 1400,
-      "height": 46,
+      "width": 1169.28,
+      "height": 45,
       "strokeColor": "#1e1e1e",
-      "text": "How Executor releases are used and retired",
+      "text": "How Executor releases are promoted, drained, and retired",
       "fontSize": 36,
       "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "createdAt": "2026-07-22T00:47:02.032Z",
+      "updatedAt": "2026-07-22T00:47:02.032Z",
       "version": 1
     },
     {
       "id": "l-subtitle",
       "type": "text",
       "x": 40,
-      "y": 70,
-      "width": 1420,
-      "height": 32,
+      "y": 68,
+      "width": 1008.04,
+      "height": 27.5,
       "strokeColor": "#495057",
-      "text": "Each release is a fixed version. Make one current; older releases drain before manual retirement.",
+      "text": "One ACTIVE release admits future work; existing ownership drains independently.",
       "fontSize": 22,
       "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "createdAt": "2026-07-22T00:47:02.032Z",
+      "updatedAt": "2026-07-22T00:47:02.032Z",
       "version": 1
     },
     {
-      "id": "l-frame",
-      "type": "rectangle",
-      "x": 10,
-      "y": 150,
-      "width": 1480,
-      "height": 570,
-      "backgroundColor": "transparent",
-      "strokeColor": "#adb5bd",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 0,
-      "label": {
-        "text": ""
-      },
+      "id": "l-state-heading",
+      "type": "text",
+      "x": 60,
+      "y": 112,
+      "width": 150.79999999999998,
+      "height": 25,
+      "strokeColor": "#495057",
+      "text": "RELEASE STATE",
       "fontSize": 20,
       "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "createdAt": "2026-07-22T00:47:02.033Z",
+      "updatedAt": "2026-07-22T00:47:02.033Z",
       "version": 1
     },
     {
       "id": "l-candidate",
       "type": "rectangle",
-      "x": 70,
-      "y": 300,
-      "width": 250,
-      "height": 125,
+      "x": 30,
+      "y": 200,
+      "width": 280,
+      "height": 195,
       "backgroundColor": "#e7f5ff",
       "strokeColor": "#1971c2",
       "strokeWidth": 2,
       "strokeStyle": "solid",
       "roughness": 1,
-      "label": {
-        "text": "CANDIDATE\nregistered, cannot be changed"
-      },
-      "fontSize": 20,
-      "fontFamily": 2,
       "roundness": {
         "type": 3
       },
       "fillStyle": "solid",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
+      "createdAt": "2026-07-22T00:47:02.033Z",
+      "updatedAt": "2026-07-22T00:47:02.033Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "l-a-promote",
+          "type": "arrow"
+        },
+        {
+          "id": "l-candidate-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "l-candidate-text",
+      "type": "text",
+      "x": 48.2,
+      "y": 210.0,
+      "width": 243.6,
+      "height": 175.0,
+      "strokeColor": "#1971c2",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 841519137,
+      "version": 1,
+      "versionNonce": 241890443,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "CANDIDATE\nregistered +\nimmutable\nverify artifact\nfirst",
+      "originalText": "CANDIDATE\nregistered +\nimmutable\nverify artifact\nfirst",
+      "fontSize": 28,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "l-candidate",
+      "autoResize": true,
+      "lineHeight": 1.25
     },
     {
       "id": "l-active",
       "type": "rectangle",
-      "x": 430,
-      "y": 300,
-      "width": 230,
-      "height": 125,
+      "x": 420,
+      "y": 200,
+      "width": 300,
+      "height": 195,
       "backgroundColor": "#ebfbee",
-      "strokeColor": "#237a36",
+      "strokeColor": "#2b8a3e",
       "strokeWidth": 2,
       "strokeStyle": "solid",
       "roughness": 1,
-      "label": {
-        "text": "ACTIVE\nnew Executor runs use it"
-      },
-      "fontSize": 20,
-      "fontFamily": 2,
       "roundness": {
         "type": 3
       },
       "fillStyle": "solid",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
+      "createdAt": "2026-07-22T00:47:02.033Z",
+      "updatedAt": "2026-07-22T00:47:02.033Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "l-a-promote",
+          "type": "arrow"
+        },
+        {
+          "id": "l-a-drain",
+          "type": "arrow"
+        },
+        {
+          "id": "l-a-rollback",
+          "type": "arrow"
+        },
+        {
+          "id": "l-active-text",
+          "type": "text"
+        }
+      ]
     },
     {
-      "id": "l-draining-back-2",
-      "type": "rectangle",
-      "x": 775,
-      "y": 280,
-      "width": 270,
-      "height": 125,
-      "backgroundColor": "#fff9db",
-      "strokeColor": "#b85500",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 18,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
+      "id": "l-active-text",
+      "type": "text",
+      "x": 431.96,
+      "y": 227.5,
+      "width": 276.08,
+      "height": 140.0,
+      "strokeColor": "#2b8a3e",
+      "backgroundColor": "transparent",
       "fillStyle": "solid",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
-    },
-    {
-      "id": "l-draining-back-1",
-      "type": "rectangle",
-      "x": 785,
-      "y": 290,
-      "width": 270,
-      "height": 125,
-      "backgroundColor": "#fff9db",
-      "strokeColor": "#b85500",
-      "strokeWidth": 2,
+      "strokeWidth": 1,
       "strokeStyle": "solid",
-      "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 18,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 569868537,
+      "version": 1,
+      "versionNonce": 1726883974,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "ACTIVE\nnew START +\nwhole-run\nterminal recovery",
+      "originalText": "ACTIVE\nnew START +\nwhole-run\nterminal recovery",
+      "fontSize": 28,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "l-active",
+      "autoResize": true,
+      "lineHeight": 1.25
     },
     {
       "id": "l-draining",
       "type": "rectangle",
-      "x": 795,
-      "y": 300,
-      "width": 270,
-      "height": 125,
+      "x": 870,
+      "y": 200,
+      "width": 350,
+      "height": 195,
       "backgroundColor": "#fff9db",
-      "strokeColor": "#b85500",
+      "strokeColor": "#e67700",
       "strokeWidth": 2,
       "strokeStyle": "solid",
       "roughness": 1,
-      "label": {
-        "text": "DRAINING\nno new Executor runs\nexisting runs finish"
-      },
-      "fontSize": 20,
-      "fontFamily": 2,
       "roundness": {
         "type": 3
       },
       "fillStyle": "solid",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
+      "createdAt": "2026-07-22T00:47:02.033Z",
+      "updatedAt": "2026-07-22T00:47:02.033Z",
+      "version": 1,
+      "boundElements": [
+        {
+          "id": "l-a-drain",
+          "type": "arrow"
+        },
+        {
+          "id": "l-a-retire",
+          "type": "arrow"
+        },
+        {
+          "id": "l-a-rollback",
+          "type": "arrow"
+        },
+        {
+          "id": "l-draining-text",
+          "type": "text"
+        }
+      ]
+    },
+    {
+      "id": "l-draining-text",
+      "type": "text",
+      "x": 898.84,
+      "y": 210.0,
+      "width": 292.32,
+      "height": 175.0,
+      "strokeColor": "#e67700",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1160653244,
+      "version": 1,
+      "versionNonce": 667578948,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "DRAINING\nno START /\nterminal recovery\nowned continuation\nallowed",
+      "originalText": "DRAINING\nno START /\nterminal recovery\nowned continuation\nallowed",
+      "fontSize": 28,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "l-draining",
+      "autoResize": true,
+      "lineHeight": 1.25
     },
     {
       "id": "l-retired",
       "type": "rectangle",
-      "x": 1175,
-      "y": 300,
-      "width": 230,
-      "height": 125,
+      "x": 1320,
+      "y": 200,
+      "width": 250,
+      "height": 195,
       "backgroundColor": "#f1f3f5",
       "strokeColor": "#495057",
       "strokeWidth": 2,
       "strokeStyle": "solid",
       "roughness": 1,
-      "label": {
-        "text": "RETIRED\nnot used for new runs"
-      },
-      "fontSize": 20,
-      "fontFamily": 2,
       "roundness": {
         "type": 3
       },
       "fillStyle": "solid",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
-    },
-    {
-      "id": "l-deletion",
-      "type": "rectangle",
-      "x": 1060,
-      "y": 550,
-      "width": 380,
-      "height": 110,
-      "backgroundColor": "#ffffff",
-      "strokeColor": "#495057",
-      "strokeWidth": 2,
-      "strokeStyle": "dashed",
-      "roughness": 1,
-      "label": {
-        "text": "30-day retention note\nKeep the S3 package for 30 days after RETIRED.\nDelete manually only when no run is QUEUED or RUNNING."
-      },
-      "fontSize": 16,
-      "fontFamily": 2,
-      "roundness": {
-        "type": 3
-      },
-      "fillStyle": "solid",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "createdAt": "2026-07-22T00:47:02.033Z",
+      "updatedAt": "2026-07-22T00:47:02.033Z",
       "version": 1,
-      "customData": {
-        "auditRole": "annotation"
-      }
+      "boundElements": [
+        {
+          "id": "l-a-retire",
+          "type": "arrow"
+        },
+        {
+          "id": "l-retired-text",
+          "type": "text"
+        }
+      ]
     },
     {
-      "id": "l-candidate-active",
+      "id": "l-retired-text",
+      "type": "text",
+      "x": 1331.32,
+      "y": 227.5,
+      "width": 227.35999999999999,
+      "height": 140.0,
+      "strokeColor": "#495057",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1004983686,
+      "version": 1,
+      "versionNonce": 1313412810,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "RETIRED\nmanual only\nafter blockers\nclear",
+      "originalText": "RETIRED\nmanual only\nafter blockers\nclear",
+      "fontSize": 28,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "l-retired",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "l-a-promote",
       "type": "arrow",
-      "x": 328,
-      "y": 362.5,
-      "strokeColor": "#1e1e1e",
+      "x": 318,
+      "y": 297.5,
+      "strokeColor": "#1971c2",
       "strokeWidth": 2,
+      "strokeStyle": "solid",
       "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 16,
-      "fontFamily": 2,
       "points": [
         [
           0,
@@ -259,98 +363,227 @@
           0
         ]
       ],
-      "start": {
-        "id": "l-candidate"
-      },
-      "end": {
-        "id": "l-active"
-      },
       "endArrowhead": "arrow",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
+      "createdAt": "2026-07-22T00:47:02.945Z",
+      "updatedAt": "2026-07-22T00:47:02.945Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "l-candidate",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "l-active",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "boundElements": [
+        {
+          "id": "l-a-promote-text",
+          "type": "text"
+        }
+      ]
     },
     {
-      "id": "l-active-draining",
+      "id": "l-a-promote-text",
+      "type": "text",
+      "x": 324.4,
+      "y": 285.0,
+      "width": 81.2,
+      "height": 25.0,
+      "strokeColor": "#1971c2",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1492828918,
+      "version": 1,
+      "versionNonce": 878717915,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "promote",
+      "originalText": "promote",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "l-a-promote",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "l-a-drain",
       "type": "arrow",
-      "x": 668,
-      "y": 362.5,
-      "strokeColor": "#1e1e1e",
+      "x": 728,
+      "y": 297.5,
+      "strokeColor": "#343a40",
       "strokeWidth": 2,
+      "strokeStyle": "solid",
       "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 16,
-      "fontFamily": 2,
       "points": [
         [
           0,
           0
         ],
         [
-          119,
+          134,
           0
         ]
       ],
-      "start": {
-        "id": "l-active"
-      },
-      "end": {
-        "id": "l-draining"
-      },
       "endArrowhead": "arrow",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
+      "createdAt": "2026-07-22T00:47:02.945Z",
+      "updatedAt": "2026-07-22T00:47:02.945Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "l-active",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "l-draining",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "boundElements": [
+        {
+          "id": "l-a-drain-text",
+          "type": "text"
+        }
+      ]
     },
     {
-      "id": "l-draining-retired",
+      "id": "l-a-drain-text",
+      "type": "text",
+      "x": 731.2,
+      "y": 285.0,
+      "width": 127.6,
+      "height": 25.0,
+      "strokeColor": "#343a40",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1301352739,
+      "version": 1,
+      "versionNonce": 1173550032,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "next ACTIVE",
+      "originalText": "next ACTIVE",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "l-a-drain",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "l-a-retire",
       "type": "arrow",
-      "x": 1073,
-      "y": 362.5,
-      "strokeColor": "#1e1e1e",
+      "x": 1228,
+      "y": 297.5,
+      "strokeColor": "#343a40",
       "strokeWidth": 2,
+      "strokeStyle": "solid",
       "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 16,
-      "fontFamily": 2,
       "points": [
         [
           0,
           0
         ],
         [
-          94,
+          84,
           0
         ]
       ],
-      "start": {
-        "id": "l-draining"
-      },
-      "end": {
-        "id": "l-retired"
-      },
       "endArrowhead": "arrow",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
+      "createdAt": "2026-07-22T00:47:02.945Z",
+      "updatedAt": "2026-07-22T00:47:02.945Z",
+      "version": 1,
+      "startBinding": {
+        "elementId": "l-draining",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "endBinding": {
+        "elementId": "l-retired",
+        "focus": 0.0,
+        "gap": 8
+      },
+      "boundElements": [
+        {
+          "id": "l-a-retire-text",
+          "type": "text"
+        }
+      ]
     },
     {
-      "id": "l-rollback",
+      "id": "l-a-retire-text",
+      "type": "text",
+      "x": 1235.2,
+      "y": 285.0,
+      "width": 69.6,
+      "height": 25.0,
+      "strokeColor": "#343a40",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "opacity": 100,
+      "angle": 0,
+      "seed": 1116893349,
+      "version": 1,
+      "versionNonce": 1266168752,
+      "index": null,
+      "isDeleted": false,
+      "groupIds": [],
+      "frameId": null,
+      "boundElements": null,
+      "updated": 1,
+      "link": null,
+      "locked": false,
+      "text": "retire",
+      "originalText": "retire",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "l-a-retire",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "l-a-rollback",
       "type": "arrow",
-      "x": 930,
-      "y": 300,
-      "strokeColor": "#5f3dc4",
+      "x": 950,
+      "y": 200,
+      "strokeColor": "#868e96",
       "strokeWidth": 2,
+      "strokeStyle": "solid",
       "roughness": 1,
-      "label": {
-        "text": ""
-      },
-      "fontSize": 16,
-      "fontFamily": 2,
+      "groupIds": [
+        "l-rollback-group"
+      ],
       "roundness": {
         "type": 2
       },
@@ -360,129 +593,232 @@
           0
         ],
         [
-          0,
-          -75
+          -115,
+          -60
         ],
         [
-          -385,
-          -75
-        ],
-        [
-          -385,
+          -230,
           0
         ]
       ],
       "endArrowhead": "arrow",
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "createdAt": "2026-07-22T00:47:02.945Z",
+      "updatedAt": "2026-07-22T00:47:02.945Z",
       "version": 1,
-      "customData": {
-        "auditRole": "annotation"
-      }
+      "startBinding": {
+        "elementId": "l-draining",
+        "focus": -0.5428571428571428,
+        "gap": 0
+      },
+      "endBinding": {
+        "elementId": "l-active",
+        "focus": -1,
+        "gap": 0
+      },
+      "boundElements": [
+        {
+          "id": "l-rollback-label",
+          "type": "text"
+        }
+      ]
     },
     {
-      "id": "l-promote-label",
+      "id": "l-active-note",
       "type": "text",
-      "x": 325,
-      "y": 310,
-      "width": 100,
-      "height": 42,
-      "strokeColor": "#0b7285",
-      "text": "check passed\nmake current",
-      "fontSize": 16,
+      "x": 465,
+      "y": 410,
+      "width": 208.79999999999998,
+      "height": 25,
+      "strokeColor": "#2b8a3e",
+      "text": "exactly one ACTIVE",
+      "fontSize": 20,
       "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
       "version": 1
     },
     {
-      "id": "l-drain-label",
+      "id": "l-drain-note",
       "type": "text",
-      "x": 660,
-      "y": 315,
-      "width": 130,
-      "height": 42,
-      "strokeColor": "#495057",
-      "text": "make another\nrelease current",
-      "fontSize": 16,
+      "x": 925,
+      "y": 410,
+      "width": 266.79999999999995,
+      "height": 25,
+      "strokeColor": "#e67700",
+      "text": "many releases may drain",
+      "fontSize": 20,
       "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
-    },
-    {
-      "id": "l-retire-label",
-      "type": "text",
-      "x": 1080,
-      "y": 323,
-      "width": 70,
-      "height": 24,
-      "strokeColor": "#495057",
-      "text": "retire",
-      "fontSize": 16,
-      "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
       "version": 1
     },
     {
       "id": "l-rollback-label",
       "type": "text",
-      "x": 565,
-      "y": 165,
-      "width": 610,
-      "height": 44,
-      "strokeColor": "#5f3dc4",
-      "text": "Rollback: make a non-retired previously active release current again\nOnly new runs change; the current release starts draining",
-      "fontSize": 16,
-      "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
-    },
-    {
-      "id": "l-active-note",
-      "type": "text",
-      "x": 430,
-      "y": 445,
-      "width": 250,
-      "height": 40,
-      "strokeColor": "#237a36",
-      "text": "one current release",
-      "fontSize": 16,
-      "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
-      "version": 1
-    },
-    {
-      "id": "l-draining-note",
-      "type": "text",
-      "x": 790,
-      "y": 445,
+      "x": 685,
+      "y": 127.5,
       "width": 300,
-      "height": 40,
-      "strokeColor": "#b85500",
-      "text": "many releases can\ndrain at the same time",
-      "fontSize": 16,
+      "height": 25,
+      "strokeColor": "#495057",
+      "text": "rollback to verified prior",
+      "fontSize": 20,
       "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "groupIds": [
+        "l-rollback-group"
+      ],
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
+      "version": 1,
+      "originalText": "rollback to verified prior",
+      "textAlign": "center",
+      "verticalAlign": "middle",
+      "containerId": "l-a-rollback",
+      "autoResize": true,
+      "lineHeight": 1.25
+    },
+    {
+      "id": "l-gates-heading",
+      "type": "text",
+      "x": 800,
+      "y": 545,
+      "width": 185.6,
+      "height": 25,
+      "strokeColor": "#495057",
+      "text": "RETIREMENT GATES",
+      "fontSize": 20,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
       "version": 1
     },
     {
-      "id": "l-blockers-note",
-      "type": "text",
-      "x": 715,
-      "y": 505,
-      "width": 330,
-      "height": 42,
+      "id": "l-blocker-guide",
+      "type": "line",
+      "x": 1045,
+      "y": 395,
+      "strokeColor": "#e67700",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          195
+        ],
+        [
+          -245,
+          195
+        ],
+        [
+          175,
+          195
+        ]
+      ],
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
+      "version": 1
+    },
+    {
+      "id": "l-retention-guide",
+      "type": "line",
+      "x": 1445,
+      "y": 395,
       "strokeColor": "#495057",
-      "text": "Manually retire only when no run is\nQUEUED or RUNNING.",
-      "fontSize": 16,
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          195
+        ],
+        [
+          -165,
+          195
+        ],
+        [
+          125,
+          195
+        ]
+      ],
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
+      "version": 1
+    },
+    {
+      "id": "l-rollback-rule",
+      "type": "line",
+      "x": 80,
+      "y": 590,
+      "strokeColor": "#adb5bd",
+      "strokeWidth": 1,
+      "strokeStyle": "solid",
+      "roughness": 0,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          600,
+          0
+        ]
+      ],
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
+      "version": 1
+    },
+    {
+      "id": "l-rollback-detail",
+      "type": "text",
+      "x": 80,
+      "y": 615,
+      "width": 600,
+      "height": 52.5,
+      "strokeColor": "#495057",
+      "text": "Rollback never rewrites ownership\nor queued/running dispatch snapshots.",
+      "fontSize": 21,
       "fontFamily": 2,
-      "createdAt": "2026-07-21T00:32:46.162Z",
-      "updatedAt": "2026-07-21T00:32:46.162Z",
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
+      "version": 1
+    },
+    {
+      "id": "l-blockers-text",
+      "type": "text",
+      "x": 800,
+      "y": 615,
+      "width": 420,
+      "height": 120,
+      "strokeColor": "#e67700",
+      "text": "Cannot retire with\n\u2022 queued / running dispatch\n\u2022 active current owner\n\u2022 unknown active owner",
+      "fontSize": 24,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
+      "version": 1
+    },
+    {
+      "id": "l-retention-text",
+      "type": "text",
+      "x": 1280,
+      "y": 615,
+      "width": 290,
+      "height": 86.25,
+      "strokeColor": "#495057",
+      "text": "Delete artifact after\n30 days + no QUEUED /\nRUNNING dispatch",
+      "fontSize": 23,
+      "fontFamily": 2,
+      "createdAt": "2026-07-22T00:47:03.808Z",
+      "updatedAt": "2026-07-22T00:47:03.808Z",
       "version": 1
     }
   ],

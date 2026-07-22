@@ -25,10 +25,14 @@ stores the release and artifact selected for that invocation.
    Existing execution ownership and immutable dispatch snapshots are not
    rewritten.
 
+![Executor release lifecycle](../valkyrie-release-lifecycle.png)
+
 ## Execution-pinned recovery
 
 Release routing changes only when an execution crosses a whole-run terminal
 boundary. It does not change which tasks retry or resume selects.
+
+![Release coexistence and execution ownership](../valkyrie-release-coexistence.png)
 
 | Operation and benchmark state | Executor release |
 | --- | --- |
@@ -49,6 +53,8 @@ A benchmark keeps two distinct ownership facts:
 
 Every executor dispatch keeps its own immutable release and artifact snapshot.
 A release becoming `DRAINING` never rewrites queued or running dispatches.
+
+![Dispatch ownership and pinned artifact flow](../valkyrie-dispatch-ownership.png)
 
 Benchmark ownership commit is the start-admission boundary. That admission
 transaction sets both immutable initial ownership and current execution
