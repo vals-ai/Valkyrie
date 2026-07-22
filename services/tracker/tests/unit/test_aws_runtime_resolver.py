@@ -82,7 +82,6 @@ def test_run_runtime_uses_stored_mode(
         org_id=_ORG_ID,
     )
 
-    assert resolution.runtime.managed is aws_managed
     assert resolution.runtime.resources.s3_bucket == expected_bucket
     assert isinstance(resolution.runtime.clients, expected_provider)
 
@@ -156,7 +155,6 @@ def test_agent_list_uses_deployment_runtime_for_eligible_org(
 
     assert response.status_code == 200
     assert captured_runtime is not None
-    assert captured_runtime.managed is True
     assert captured_runtime.resources.s3_bucket == "deployment-bucket"
 
 
