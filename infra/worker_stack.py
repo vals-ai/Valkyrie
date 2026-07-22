@@ -5,7 +5,7 @@ tasks can finish while a new worker version is rolled out.
 """
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -16,7 +16,6 @@ from aws_cdk import (
     aws_iam,
     aws_logs,
     aws_rds,
-    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
 )
@@ -59,7 +58,7 @@ class WorkerStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         redis_url: str,
-        bucket: aws_s3.IBucket,
+        bucket_name: str,
         database: aws_rds.DatabaseInstance,
         db_credentials: aws_rds.DatabaseSecret,
         tracker_service: aws_ecs.FargateService,
@@ -80,7 +79,7 @@ class WorkerStack(Stack):
 
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
-            "AWS_S3_BUCKET": bucket.bucket_name,
+            "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
@@ -92,16 +91,21 @@ class WorkerStack(Stack):
             "DB_NAME": POSTGRES_DB,
         }
 
+        db_credentials_secret = cast(aws_secretsmanager.ISecret, db_credentials)
         db_secrets = {
-            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials, field="username"),
-            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials, field="password"),
+            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="username"),
+            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
-        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")
-
-        sentry_secrets = {
-            "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
-        }
+        sentry_secret_name = "valkyrie/sentry-dsn" if stage.is_prod else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        sentry_secrets: dict[str, aws_ecs.Secret] = {}
+        if sentry_secret_name:
+            sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "SentryDsnSecret",
+                sentry_secret_name,
+            )
+            sentry_secrets["SENTRY_DSN"] = aws_ecs.Secret.from_secrets_manager(sentry_secret)
 
         # ── Worker service ────────────────────────────────────────────────
 
@@ -150,7 +154,7 @@ class WorkerStack(Stack):
         )
 
         # Allow the worker to toggle ECS Task Protection while benchmarks run
-        worker_task_def.task_role.add_to_policy(
+        cast(aws_iam.Role, worker_task_def.task_role).add_to_policy(
             aws_iam.PolicyStatement(
                 actions=["ecs:UpdateTaskProtection"],
                 resources=["*"],

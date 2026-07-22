@@ -137,6 +137,7 @@ class FetchBenchmarkResponse(BaseModel):
     s3_bucket_url: str
     label: str | None = None
     final_score: float | None = None
+    error_message: str | None = None
 
 
 class AverageTaskBreakdown(BaseModel):
@@ -180,6 +181,16 @@ class StopBenchmarkResponse(StatusResponse):
 
 class RetryOrResumeBenchmarkResponse(StatusResponse):
     pass
+
+
+class UpdateBenchmarkConcurrencyRequest(BaseModel):
+    concurrency: int = Field(ge=1, strict=True)
+
+
+class UpdateBenchmarkConcurrencyResponse(BaseModel):
+    benchmark_id: UUID
+    status: BenchmarkStatus
+    concurrency: int
 
 
 class Order(str, Enum):

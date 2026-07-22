@@ -30,7 +30,7 @@ from tracker.types import (
     AWSCredentials,
 )
 
-from tracker.utils.resources import fetch_sandbox_provider_config
+from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
 
@@ -194,6 +194,8 @@ async def reset_to_in_progress_status(
     NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
     """
     try:
+        # Serialize retries with final-score persistence for this benchmark.
+        benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
         existing_rows = session.exec(
             select(Task)
             .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
@@ -213,6 +215,7 @@ async def reset_to_in_progress_status(
 
         # Allow re-running the end of the benchmark without running any tasks
         if not existing_rows and not new_task_ids:
+            session.commit()
             return []
 
         # Verify the task ids are still valid before priming to resume
@@ -222,11 +225,13 @@ async def reset_to_in_progress_status(
             task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
         )
 
+        if benchmark_row.final_evaluation:
+            session.delete(benchmark_row.final_evaluation)
+
         # Can already be in progress when retrying errored tasks while the run is ongoing.
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
             benchmark_row.status = BenchmarkStatus.IN_PROGRESS
             session.add(benchmark_row)
-            session.commit()
 
         for task in existing_rows:
             task.status = (

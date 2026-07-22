@@ -57,6 +57,24 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 # S3
 S3_BUCKET_NAME = "agentic-harness"
 
+# Dev account prerequisites
+DEV_TRACKER_CERTIFICATE_ARN_PARAMETER = "/valkyrie/dev/dns/tracker/certificate-arn"
+DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER = "/valkyrie/dev/dns/tracker/hosted-zone-id"
+
+# Dev shared-resource contract published for benchmark-service consumers.
+# The benchmark-services registry resolves these names at deploy time; renaming
+# any of them is a cross-repo breaking change.
+DEV_SHARED_VPC_ID_PARAMETER = "/valkyrie/dev/shared/vpc-id"
+DEV_SHARED_AVAILABILITY_ZONES_PARAMETER = "/valkyrie/dev/shared/availability-zones"
+DEV_SHARED_PUBLIC_SUBNET_IDS_PARAMETER = "/valkyrie/dev/shared/public-subnet-ids"
+DEV_SHARED_CLUSTER_NAME_PARAMETER = "/valkyrie/dev/shared/cluster-name"
+DEV_SHARED_NAMESPACE_NAME_PARAMETER = "/valkyrie/dev/shared/cloud-map-namespace-name"
+DEV_SHARED_NAMESPACE_ID_PARAMETER = "/valkyrie/dev/shared/cloud-map-namespace-id"
+DEV_SHARED_NAMESPACE_ARN_PARAMETER = "/valkyrie/dev/shared/cloud-map-namespace-arn"
+DEV_SHARED_ARTIFACT_BUCKET_PARAMETER = "/valkyrie/dev/shared/artifact-bucket-name"
+DEV_TRACKER_SECURITY_GROUP_PARAMETER = "/valkyrie/dev/tracker/security-group-id"
+DEV_TRACKER_ALB_DNS_PARAMETER = "/valkyrie/dev/tracker/alb-dns-name"
+
 # Slack notifications
 SLACK_WORKSPACE_ID_ENV = "SLACK_WORKSPACE_ID"
 VALKYRIE_ALERTS_SLACK_CHANNEL_ID_ENV = "VALKYRIE_ALERTS_SLACK_CHANNEL_ID"

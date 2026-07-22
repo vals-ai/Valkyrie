@@ -1,12 +1,13 @@
 """Tracker service stack - public-facing API with ALB and shared RDS database."""
 
 import os
-from typing import Any
+from typing import Any, cast
 
 import aws_cdk as cdk
 from aws_cdk import (
     Duration,
     Stack,
+    aws_certificatemanager,
     aws_ec2,
     aws_ecs,
     aws_ecs_patterns,
@@ -14,9 +15,9 @@ from aws_cdk import (
     aws_logs,
     aws_rds,
     aws_route53,
-    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
+    aws_ssm,
 )
 from aws_cdk.aws_ecr_assets import Platform
 from constants import (
@@ -27,6 +28,10 @@ from constants import (
     CONTAINER_HEALTH_RETRIES,
     CONTAINER_HEALTH_START_PERIOD_SECONDS,
     CONTAINER_HEALTH_TIMEOUT_SECONDS,
+    DEV_TRACKER_ALB_DNS_PARAMETER,
+    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
+    DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
+    DEV_TRACKER_SECURITY_GROUP_PARAMETER,
     POSTGRES_DB,
     POSTGRES_PORT,
     POSTGRES_USER,
@@ -63,8 +68,8 @@ class TrackerStack(Stack):
         vpc: aws_ec2.IVpc,
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
-        hosted_zone: aws_route53.IHostedZone,
-        bucket: aws_s3.IBucket,
+        hosted_zone: aws_route53.IHostedZone | None,
+        bucket_name: str,
         redis_url: str,
         **kwargs: Any,
     ):
@@ -81,7 +86,7 @@ class TrackerStack(Stack):
         # Shared environment variables
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
-            "AWS_S3_BUCKET": bucket.bucket_name,
+            "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
@@ -102,6 +107,7 @@ class TrackerStack(Stack):
             "TrackerDbCredentials",
             username=POSTGRES_USER,
         )
+        db_credentials_secret = cast(aws_secretsmanager.ISecret, self.db_credentials)
 
         self.database = aws_rds.DatabaseInstance(
             self,
@@ -113,10 +119,10 @@ class TrackerStack(Stack):
             vpc=vpc,
             vpc_subnets=aws_ec2.SubnetSelection(subnet_type=aws_ec2.SubnetType.PUBLIC),
             security_groups=[db_security_group],
-            credentials=aws_rds.Credentials.from_secret(self.db_credentials),
+            credentials=aws_rds.Credentials.from_secret(db_credentials_secret),
             database_name=POSTGRES_DB,
             allocated_storage=stage_config.database.allocated_storage_gb,
-            publicly_accessible=True,
+            publicly_accessible=stage.is_prod,
             deletion_protection=True,
             removal_policy=cdk.RemovalPolicy.RETAIN,
             backup_retention=Duration.days(stage_config.database.backup_retention_days),
@@ -129,18 +135,29 @@ class TrackerStack(Stack):
         }
 
         db_secrets = {
-            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(self.db_credentials, field="username"),
-            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(self.db_credentials, field="password"),
+            "DB_USERNAME": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="username"),
+            "DB_PASSWORD": aws_ecs.Secret.from_secrets_manager(db_credentials_secret, field="password"),
         }
 
-        sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(self, "SentryDsnSecret", "valkyrie/sentry-dsn")
+        sentry_secret_name = "valkyrie/sentry-dsn" if stage.is_prod else os.environ.get("SENTRY_DSN_SECRET_NAME", "")
+        sentry_secrets: dict[str, aws_ecs.Secret] = {}
+        if sentry_secret_name:
+            sentry_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+                self,
+                "SentryDsnSecret",
+                sentry_secret_name,
+            )
+            sentry_secrets["SENTRY_DSN"] = aws_ecs.Secret.from_secrets_manager(sentry_secret)
 
-        sentry_secrets = {
-            "SENTRY_DSN": aws_ecs.Secret.from_secrets_manager(sentry_secret),
-        }
+        auth_required = os.environ.get("AUTH_REQUIRED", "false")
+        descope_project_id = os.environ.get("DESCOPE_PROJECT_ID", "")
+        if not stage.is_prod:
+            auth_required = "true"
+            if not descope_project_id:
+                raise ValueError("Development deployments require DESCOPE_PROJECT_ID.")
 
         descope_secrets: dict[str, aws_ecs.Secret] = {}
-        if os.environ.get("AUTH_REQUIRED", "false").lower() == "true":
+        if auth_required.lower() == "true":
             descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
                 self,
                 "DescopeManagementKeySecret",
@@ -178,9 +195,9 @@ class TrackerStack(Stack):
                 **shared_env,
                 **db_env,
                 "REDIS_URL": redis_url,
-                "AUTH_REQUIRED": os.environ.get("AUTH_REQUIRED", "false"),
+                "AUTH_REQUIRED": auth_required,
                 "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL", ""),
-                "DESCOPE_PROJECT_ID": os.environ.get("DESCOPE_PROJECT_ID", ""),
+                "DESCOPE_PROJECT_ID": descope_project_id,
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
             secrets={
@@ -198,6 +215,31 @@ class TrackerStack(Stack):
             ),
         )
 
+        tracker_domain = stage.domain(TRACKER_DOMAIN)
+        certificate: aws_certificatemanager.ICertificate | None = None
+        if stage.is_prod:
+            if hosted_zone is None:
+                raise ValueError("Production requires the vals.ai hosted zone")
+            tracker_hosted_zone = hosted_zone
+        else:
+            tracker_hosted_zone = aws_route53.HostedZone.from_hosted_zone_attributes(
+                self,
+                "DevTrackerHostedZone",
+                hosted_zone_id=aws_ssm.StringParameter.value_for_string_parameter(
+                    self,
+                    DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
+                ),
+                zone_name=tracker_domain,
+            )
+            certificate = aws_certificatemanager.Certificate.from_certificate_arn(
+                self,
+                "DevTrackerCertificate",
+                aws_ssm.StringParameter.value_for_string_parameter(
+                    self,
+                    DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
+                ),
+            )
+
         self.service = aws_ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
             "TrackerService",
@@ -206,8 +248,9 @@ class TrackerStack(Stack):
             task_definition=tracker_task_def,
             service_name=stage.phys("Tracker"),
             circuit_breaker=aws_ecs.DeploymentCircuitBreaker(rollback=True),
-            domain_name=stage.domain(TRACKER_DOMAIN),
-            domain_zone=hosted_zone,
+            domain_name=tracker_domain,
+            domain_zone=tracker_hosted_zone,
+            certificate=certificate,
             protocol=aws_elasticloadbalancingv2.ApplicationProtocol.HTTPS,
             redirect_http=True,
             open_listener=False,
@@ -269,3 +312,17 @@ class TrackerStack(Stack):
             connection=aws_ec2.Port.tcp(POSTGRES_PORT),
             description="Allow VPC services to connect to RDS",
         )
+
+        if not stage.is_prod:
+            aws_ssm.StringParameter(
+                self,
+                "TrackerSecurityGroupParameter",
+                parameter_name=DEV_TRACKER_SECURITY_GROUP_PARAMETER,
+                string_value=self.service.service.connections.security_groups[0].security_group_id,
+            )
+            aws_ssm.StringParameter(
+                self,
+                "TrackerAlbDnsParameter",
+                parameter_name=DEV_TRACKER_ALB_DNS_PARAMETER,
+                string_value=self.service.load_balancer.load_balancer_dns_name,
+            )

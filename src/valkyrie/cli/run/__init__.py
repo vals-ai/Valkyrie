@@ -10,6 +10,7 @@ from valkyrie.cli.run.resume import resume, retry_command
 from valkyrie.cli.run.start import start
 from valkyrie.cli.run.status import status_runs
 from valkyrie.cli.run.stop import stop
+from valkyrie.cli.run.update import update
 
 
 @click.group()
@@ -30,6 +31,7 @@ run.add_command(retry_command)
 run.add_command(start)
 run.add_command(status_runs)
 run.add_command(stop)
+run.add_command(update)
 
 __all__ = [
     "list_runs",

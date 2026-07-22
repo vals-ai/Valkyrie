@@ -150,12 +150,28 @@ Add `--connect` to stream updates after the run starts:
 valkyrie run start --agent sweagent --benchmark swebench --connect
 ```
 
+To start three independent runs of the same benchmark:
+
+```console
+$ valkyrie run start --agent sweagent --benchmark swebench --count 3
+Run ID: <id-1>
+Run ID: <id-2>
+Run ID: <id-3>
+3 / 3 requested runs successfully started.
+Track progress: valkyrie run status --ids <id-1>,<id-2>,<id-3>
+```
+
+Start requests are sent sequentially, but accepted runs execute independently and may overlap. Approximate simultaneous task pressure and cost can scale with `count × concurrency`. `--connect` is only supported when count is `1`; it is rejected when count is greater than `1`.
+
+Starts are fail-fast: if a request fails, no later requests are attempted. The command exits nonzero and reports confirmed progress with a combined status command. After a transport/server response failure, the latest request's outcome can be unknown; verify with `valkyrie run list`.
+
 | Flag | Description |
 | --- | --- |
 | `--agent` | Agent name from S3 or path to agent directory (e.g., `sweagent` or `./agents/sweagent`). Agents on users machine are automatically uploaded to S3 before the benchmark starts. |
 | `--benchmark` | Benchmark name (e.g. `swebench`) |
 | `--model` | Model key (e.g. `openai/gpt-4o`) |
 | `--concurrency` | Number of concurrent sandbox tasks (default: 5) |
+| `-n` / `--count` | Number of independent runs to start (default: 1; hard maximum: 10) |
 | `-s` / `--secret` | Secret pair as `ENV_VAR aws_secret_name`. Repeatable. Merged with contract defaults (CLI wins on conflict) |
 | `-k` / `--kwarg` | Key-value pair passed to the agent run command. Repeatable |
 | `--lambda` | AWS Lambda function to invoke after the run completes |
@@ -168,6 +184,19 @@ valkyrie run start --agent sweagent --benchmark swebench --connect
 | `-i` / `--interval` | Progress percentage threshold for Slack notification. Repeatable. Max 3, must be divisible by 5, range 5–100. See [Slack Notifications](#slack-notifications) |
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
 | `--connect` | Stream run updates after the run starts |
+
+### Update a running run's concurrency
+
+```bash
+valkyrie run update <id> --concurrency 20
+```
+
+This updates the persisted concurrency limit for an active run without restarting it. Increases allow more tasks after
+the tracker next refreshes the run; decreases do not cancel in-flight work and pause new admissions until usage falls
+below the new limit. The value must be a positive integer, and completed, stopped, or failed runs cannot be updated.
+The limit is enforced independently by each `process_benchmark` executor. If an active retry creates overlapping
+executors, aggregate admissions may temporarily exceed the persisted value; a strict cross-executor or distributed cap
+is not provided.
 
 ### Monitor a run
 

@@ -13,7 +13,10 @@ from pydantic import BaseModel
 
 from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig
 from valkyrie.sdk.errors import ValkyrieAPIError, ValkyrieTransportError
+from valkyrie.sdk.resources.agents import AgentsResource
+from valkyrie.sdk.resources.benchmarks import BenchmarksResource
 from valkyrie.sdk.resources.runs import RunsResource
+from valkyrie.sdk.resources.services import BenchmarkServicesResource
 
 DEFAULT_BASE_URL = "https://benchmark-tracker.vals.ai"
 ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
@@ -40,6 +43,9 @@ class ValkyrieClient:
             transport=transport,
         )
         self.runs = RunsResource(self)
+        self.benchmarks = BenchmarksResource(self)
+        self.agents = AgentsResource(self)
+        self.services = BenchmarkServicesResource(self)
 
     @classmethod
     def from_config(
@@ -109,6 +115,7 @@ class ValkyrieClient:
         path: str,
         *,
         params: dict[str, Any] | None = None,
+        json: Any = None,
     ) -> AbstractAsyncContextManager[httpx.Response]:
         """Open a streaming response without a read timeout."""
         timeout = httpx.Timeout(
@@ -117,4 +124,4 @@ class ValkyrieClient:
             write=self._timeout.write,
             pool=self._timeout.pool,
         )
-        return self._client.stream(method, path, params=params, timeout=timeout)
+        return self._client.stream(method, path, params=params, json=json, timeout=timeout)

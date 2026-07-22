@@ -91,8 +91,11 @@ from tracker.types import (
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
+    UpdateBenchmarkConcurrencyRequest,
+    UpdateBenchmarkConcurrencyResponse,
 )
 from tracker.utils import (
+    BenchmarkConcurrencyUpdate,
     BenchmarkContext,
     YieldingWriter,
     build_benchmark_table_rows,
@@ -110,6 +113,8 @@ from tracker.utils import (
     start_benchmark_request_to_benchmark,
     stream_benchmark_results,
     upload_final_view,
+    update_benchmark_concurrency,
+    update_benchmark_resume_arguments,
 )
 
 configure_logging()
@@ -452,6 +457,7 @@ async def fetch_benchmark(
         ),
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
+        error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
     )
 
 
@@ -605,7 +611,7 @@ async def check_results_exist(
     org: Org = Depends(get_current_org),
 ) -> dict[str, bool]:
     """
-    Check if results.json already exists in S3 for the given benchmark.
+    Check if the benchmark's final view already exists in S3.
 
     Usage:
     curl -X GET http://<endpoint>/check-results-exist?benchmark_id=<uuid>
@@ -613,9 +619,9 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    get_scoped(Benchmark, benchmark_id, session, org)
+    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/results.json"
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
     exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
     return {"exists": exists}
 
@@ -704,11 +710,38 @@ async def stop_benchmark(
     )
 
 
-def _apply_resume_secrets(benchmark_row: Benchmark, secrets: dict[str, str]) -> None:
-    """Merge resume secrets into the stored agent contract."""
-    contract = benchmark_row.arguments.contract
-    updated_contract = contract.model_copy(update={"secrets": {**contract.secrets, **secrets}})
-    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"contract": updated_contract})
+def _update_benchmark_concurrency(
+    benchmark_id: UUID,
+    concurrency: int,
+    session: Session,
+    org: Org,
+) -> BenchmarkConcurrencyUpdate:
+    try:
+        benchmark_row = update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Not found") from exc
+
+    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state.",
+        )
+    return benchmark_row
+
+
+@app.patch("/benchmarks/{benchmark_id}/concurrency")
+def patch_benchmark_concurrency(
+    benchmark_id: TrackedBenchmarkId,
+    request: UpdateBenchmarkConcurrencyRequest,
+    session: Session = Depends(get_session),
+    org: Org = Depends(get_current_org),
+) -> UpdateBenchmarkConcurrencyResponse:
+    benchmark_row = _update_benchmark_concurrency(benchmark_id, request.concurrency, session, org)
+    return UpdateBenchmarkConcurrencyResponse(
+        benchmark_id=benchmark_row.benchmark_id,
+        status=benchmark_row.status,
+        concurrency=benchmark_row.concurrency,
+    )
 
 
 @app.post("/retry-or-resume-benchmark/{benchmark_id}")
@@ -750,13 +783,18 @@ async def retry_or_resume_benchmark(
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
 
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
+
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+        assert concurrency is not None
+        _update_benchmark_concurrency(benchmark_id, concurrency, session, org)
+        return RetryOrResumeBenchmarkResponse(status="success")
 
     effective_service_headers = forward_tracker_api_key(
         service_headers,
@@ -778,17 +816,14 @@ async def retry_or_resume_benchmark(
             status="success",
         )
 
-    if secrets:
-        _apply_resume_secrets(benchmark_row, secrets)
-        session.add(benchmark_row)
-        session.commit()
-
-    if concurrency is not None:
-        # Reassign (not in-place mutate): arguments is a JSON-backed TypeDecorator,
-        # so SQLAlchemy only detects the change when the attribute itself is replaced.
-        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
-        session.add(benchmark_row)
-        session.commit()
+    if secrets or concurrency is not None:
+        benchmark_row = update_benchmark_resume_arguments(
+            benchmark_id,
+            session,
+            org,
+            secrets=secrets,
+            concurrency=concurrency,
+        )
 
     # Ensure that credentials are included with the model dump
     resume_request_json = benchmark_row.start_benchmark_request(

@@ -3,6 +3,7 @@
 import os
 
 import aws_cdk as cdk
+from deployment_target import enforce_deployment_target
 from monitoring_stack import MonitoringStack
 from shared import SharedStack
 from stage import resolve
@@ -11,6 +12,8 @@ from worker_stack import WorkerStack
 
 app = cdk.App()
 stage = resolve(app)
+if not stage.is_prod:
+    enforce_deployment_target(stage.name, os.environ)
 
 env = cdk.Environment(
     account=os.getenv("CDK_DEFAULT_ACCOUNT"),
@@ -29,7 +32,7 @@ tracker = TrackerStack(
     cluster=shared.cluster,
     namespace=shared.namespace,
     hosted_zone=shared.hosted_zone,
-    bucket=shared.bucket,
+    bucket_name=shared.bucket_name,
     redis_url=shared.redis_url,
     env=env,
 )
@@ -43,7 +46,7 @@ worker = WorkerStack(
     cluster=shared.cluster,
     namespace=shared.namespace,
     redis_url=shared.redis_url,
-    bucket=shared.bucket,
+    bucket_name=shared.bucket_name,
     database=tracker.database,
     db_credentials=tracker.db_credentials,
     tracker_service=tracker.tracker_fargate_service,

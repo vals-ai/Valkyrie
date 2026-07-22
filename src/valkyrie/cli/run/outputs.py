@@ -103,30 +103,33 @@ def download_run_outputs(run_outputs_response: Response, output_dir: Path) -> No
     """Download run outputs from a response and extract them to a directory."""
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    tmp_file = tempfile.NamedTemporaryFile(suffix=".tar", delete=False)
+    tmp_path = Path(tmp_file.name)
 
-    with tempfile.NamedTemporaryFile(suffix=".tar", delete=False) as tmp_file:
-        tmp_path = Path(tmp_file.name)
-        click.echo("\r\033[KDownloading...", nl=False)
+    try:
+        with tmp_file:
+            click.echo("\r\033[KDownloading...", nl=False)
 
-        for chunk in run_outputs_response.iter_bytes():
-            tmp_file.write(chunk)
+            for chunk in run_outputs_response.iter_bytes():
+                tmp_file.write(chunk)
 
-    click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False)
+        click.echo(f"\r\033[KExtracting archives to {output_dir}...", nl=False)
 
-    with tarfile.open(tmp_path, "r") as tar:
-        tar.extractall(output_dir)
+        with tarfile.open(tmp_path, "r") as tar:
+            tar.extractall(output_dir, filter="data")
 
-    nested_tars = list(output_dir.rglob("*.tar.gz"))
-    if nested_tars:
-        click.echo(f"\r\033[KUnpacking {len(nested_tars)} nested tar.gz files...", nl=False)
+        nested_tars = list(output_dir.rglob("*.tar.gz"))
+        if nested_tars:
+            click.echo(f"\r\033[KUnpacking {len(nested_tars)} nested tar.gz files...", nl=False)
 
-        for nested_tar in nested_tars:
-            extract_dir = nested_tar.parent / nested_tar.stem.replace(".tar", "")
-            extract_dir.mkdir(parents=True, exist_ok=True)
+            for nested_tar in nested_tars:
+                extract_dir = nested_tar.parent / nested_tar.stem.replace(".tar", "")
+                extract_dir.mkdir(parents=True, exist_ok=True)
 
-            with tarfile.open(nested_tar, "r:gz") as tar:
-                tar.extractall(extract_dir)
+                with tarfile.open(nested_tar, "r:gz") as tar:
+                    tar.extractall(extract_dir, filter="data")
 
-            nested_tar.unlink()
+                nested_tar.unlink()
 
-    tmp_path.unlink()
+    finally:
+        tmp_path.unlink(missing_ok=True)

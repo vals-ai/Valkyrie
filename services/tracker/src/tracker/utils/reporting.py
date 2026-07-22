@@ -30,7 +30,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.scoping import scoped_select
-from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.types import (
     AverageTaskBreakdown,
@@ -112,11 +111,6 @@ class BenchmarkContext:
         )
 
         result = self._session.exec(statement).all()
-
-        if not result:
-            raise TrackerServiceError(
-                f"No tasks have been discovered for run {self._benchmark_row.id}, cannot provide task breakdown"
-            )
 
         return {TaskStatus(status): count for status, count in result}
 
@@ -298,6 +292,9 @@ async def stream_benchmark_results(
                     label=fresh_benchmark.label,
                     final_score=fresh_benchmark.final_evaluation.final_score
                     if fresh_benchmark.final_evaluation
+                    else None,
+                    error_message=fresh_benchmark.error_message
+                    if fresh_benchmark.status == BenchmarkStatus.ERROR
                     else None,
                 )
 
