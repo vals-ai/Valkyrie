@@ -116,13 +116,25 @@ This release-affinity change does not alter:
 - concurrency limits or sandbox queue scheduling;
 - task-level release assignment or automatic migration during promotion.
 
-Benchmark responses expose immutable initial and mutable current release IDs
-separately. The additive migration leaves existing current-owner values null and
-never infers ownership from the initial release, latest dispatch, or current
-`ACTIVE` release. Continuation of an `IN_PROGRESS` null-owned benchmark fails
-before mutation. Every `IN_PROGRESS` or `STOPPING` null-owned benchmark blocks
-all release retirement until it becomes terminal; terminal recovery may establish
-a new current owner from locked `ACTIVE`.
+### Benchmark release provenance
+
+Benchmark responses expose these release fields:
+
+| Field | Meaning |
+| --- | --- |
+| `executor_release_id` | Immutable release selected when the benchmark was first admitted. |
+| `current_execution_release_id` | Release currently owning execution. It changes only after a whole-run terminal retry or resume. |
+| `executor_artifact_digest` | Immutable digest of the initial release artifact; it may differ from the artifact used after a terminal handoff. |
+| `executor_protocol_version` | Immutable protocol version of the initial release. |
+
+Pre-migration benchmarks can return null for these fields. The metadata endpoint
+also exposes the initial `executor_artifact_uri`. The immutable per-dispatch
+snapshot is authoritative for the exact artifact used by each invocation.
+
+An `IN_PROGRESS` benchmark without a current execution release cannot continue.
+Any `IN_PROGRESS` or `STOPPING` benchmark without one blocks all release
+retirement. After it becomes terminal, retry or resume may establish the
+`ACTIVE` release as its current owner.
 
 ### Operator visibility
 
@@ -171,13 +183,17 @@ uv run python -m tracker.release_cli retire RELEASE_ID
 ```
 
 `verify` streams the S3 object and checks its SHA-256 digest before promotion.
+For initial activation, run `register` → `verify` → `promote` → `status` before
+accepting benchmark traffic. Until `status` reports an `ACTIVE` admission target,
+new benchmark starts return `503`.
 
 ## Artifact retention
 
 Retirement records a 30-day `artifact_retention_until` window. Artifact removal
-is allowed only after that window expires and no queued or running dispatch
-references the release. The current code exposes the deletion guard; it does not
-run an automatic cleanup job.
+is allowed only when the release is `RETIRED`, the window has expired, the
+release has no active current owner or queued/running dispatch, and no
+unattributed active benchmark exists. The current code exposes the deletion
+guard; it does not run an automatic cleanup job.
 
 An uncertain dispatch fails closed. A broker acknowledgement loss or ExecutorHost
 crash can leave a nonterminal dispatch that blocks retirement until an operator
