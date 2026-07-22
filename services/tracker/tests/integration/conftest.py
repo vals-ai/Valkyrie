@@ -18,7 +18,7 @@ from tests.integration.seed_agent_artifacts import (
     seed_test_agent_artifact,
 )
 from tests.utils import TEST_ORG_ID
-from tracker.aws.clients import ExplicitCredentialsAwsClientProvider
+from tracker.aws.clients import ExplicitCredentialsAWSClientProvider
 from tracker.aws.s3 import get_contract_s3_key
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import DEFAULT_ORG_NAME, AgentContractRequest, Org
@@ -169,7 +169,7 @@ def sandbox_provider_config(
     """Return the real provider configuration used by live service calls."""
     return fetch_sandbox_provider_config(
         daytona_secret_name,
-        ExplicitCredentialsAwsClientProvider(live_aws_credentials),
+        ExplicitCredentialsAWSClientProvider(live_aws_credentials),
         "daytona",
     )
 

@@ -14,7 +14,7 @@ from sqlalchemy import JSON, literal, tuple_, type_coerce
 from sqlalchemy.orm import selectinload
 from sqlmodel import Session, asc, case, col, desc, func, or_, select
 
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     create_benchmark_url,
@@ -253,7 +253,7 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
 
 
 async def stream_benchmark_results(
-    benchmark_id: UUID, session: Session, aws_runtime: AwsRuntime, org: Org
+    benchmark_id: UUID, session: Session, aws_runtime: AWSRuntime, org: Org
 ) -> AsyncGenerator[str]:
     """
     Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
@@ -538,7 +538,7 @@ def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> F
     return final_view
 
 
-async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, aws_runtime: AwsRuntime) -> str:
+async def upload_final_view(benchmark_row: Benchmark, final_view: FinalViewResponse, aws_runtime: AWSRuntime) -> str:
     """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
     s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
     await upload_to_s3(

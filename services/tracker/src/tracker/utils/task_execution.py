@@ -29,7 +29,7 @@ from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
 from tracker.aws.cloudwatch_logs import write_benchmark_log_event
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     get_agent_result_s3_key,
 )
@@ -284,7 +284,7 @@ def handle_early_exit(task_row: Task, task_session: Session) -> bool:
 def buffer_logs(
     log_queue: asyncio.Queue[str],
     stream_key: str,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
     force_flush: bool = False,
 ) -> None:
     """
@@ -390,7 +390,7 @@ async def process_task(
     benchmark_service: BenchmarkServiceClient,
     benchmark_id: UUID,
     task_id: str,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,
@@ -423,7 +423,7 @@ async def _process_task_attempt(
     benchmark_service: BenchmarkServiceClient,
     benchmark_id: UUID,
     task_id: str,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
     creation_semaphore: Semaphore,

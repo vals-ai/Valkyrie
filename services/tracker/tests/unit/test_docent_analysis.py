@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from sqlmodel import Session
 
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus
 from tracker.docent_analysis import invoke_analyzer
 from tracker.utils import catch_errors_during_cleanup
@@ -28,7 +28,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -57,7 +57,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         database_session.add(example_benchmark_object)
         database_session.commit()
@@ -84,7 +84,7 @@ class TestInvokeAnalyzer:
         monkeypatch: pytest.MonkeyPatch,
         database_session: Session,
         example_benchmark_object: Benchmark,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Lambda returned successfully but no reading_plan_url — still DONE; URL remains untouched."""
         database_session.add(example_benchmark_object)

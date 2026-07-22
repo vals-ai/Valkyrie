@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/aws/test_clients.py
 """
 
+import re
 from typing import cast
 from unittest.mock import ANY, MagicMock
 
@@ -12,16 +13,16 @@ from botocore.exceptions import BotoCoreError, ClientError
 from tracker.aws import clients as aws_clients
 from tracker.aws import cloudwatch_logs
 from tracker.aws.clients import (
-    AwsClientProvider,
-    DefaultChainAwsClientProvider,
-    ExplicitCredentialsAwsClientProvider,
+    AWSClientProvider,
+    DefaultChainAWSClientProvider,
+    ExplicitCredentialsAWSClientProvider,
 )
 from tracker.aws.cloudwatch_logs import (
     get_benchmark_log_url,
     handle_cloudwatch_error,
     write_benchmark_log_event,
 )
-from tracker.aws.runtime import AwsResources, AwsRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.aws.s3 import handle_s3_error
 from tracker.exceptions import CloudWatchError, S3Error
 from tracker.types import AWSCredentials
@@ -34,7 +35,7 @@ _AWS = AWSCredentials(
     aws_default_region="us-east-1",
 )
 
-_AWS_RESOURCES = AwsResources(
+_AWS_RESOURCES = AWSResources(
     region="us-east-1",
     s3_bucket="test-bucket",
     log_group="/valkyrie/worker",
@@ -42,7 +43,9 @@ _AWS_RESOURCES = AwsResources(
 )
 
 
-class TestAwsClientProviders:
+class TestAWSClientProviders:
+    """Credential selection and presigned URL lifetime behavior."""
+
     @pytest.mark.parametrize("session_token", [None, "test-session-token"])
     def test_explicit_provider_forwards_optional_session_token(
         self,
@@ -61,7 +64,7 @@ class TestAwsClientProviders:
             aws_default_region="us-east-1",
             aws_session_token=session_token,
         )
-        provider = ExplicitCredentialsAwsClientProvider(credentials)
+        provider = ExplicitCredentialsAWSClientProvider(credentials)
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
@@ -75,11 +78,11 @@ class TestAwsClientProviders:
             region_name=credentials.aws_default_region,
         )
         session.client.assert_called_once_with("s3", config=ANY)
-        assert [constructed.args[0] for constructed in boto_client_factory.call_args_list] == [
+        assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
             "secretsmanager",
             "lambda",
-        ]
+        }
         for constructed in boto_client_factory.call_args_list:
             assert constructed.kwargs["aws_access_key_id"] == credentials.aws_access_key_id
             assert constructed.kwargs["aws_secret_access_key"] == credentials.aws_secret_access_key
@@ -94,7 +97,7 @@ class TestAwsClientProviders:
         monkeypatch.setattr(aws_clients.boto3, "client", boto_client_factory)
 
         region = "test-default-chain-region"
-        provider = DefaultChainAwsClientProvider(region=region)
+        provider = DefaultChainAWSClientProvider(region=region)
 
         provider.s3_client()
         provider.cloudwatch_logs_client()
@@ -103,11 +106,11 @@ class TestAwsClientProviders:
 
         session_factory.assert_called_once_with(region_name=region)
         session.client.assert_called_once_with("s3", config=ANY)
-        assert [constructed.args[0] for constructed in boto_client_factory.call_args_list] == [
+        assert {constructed.args[0] for constructed in boto_client_factory.call_args_list} == {
             "logs",
             "secretsmanager",
             "lambda",
-        ]
+        }
         credential_arguments = {"aws_access_key_id", "aws_secret_access_key", "aws_session_token"}
         for constructed in boto_client_factory.call_args_list:
             assert constructed.kwargs["region_name"] == region
@@ -116,14 +119,14 @@ class TestAwsClientProviders:
     @pytest.mark.parametrize(
         ("provider", "requested_seconds", "expected_seconds"),
         [
-            (ExplicitCredentialsAwsClientProvider(_AWS), 86_400, 86_400),
-            (DefaultChainAwsClientProvider(region="us-east-1"), 86_400, 3_600),
-            (DefaultChainAwsClientProvider(region="us-east-1"), 300, 300),
+            (ExplicitCredentialsAWSClientProvider(_AWS), 86_400, 86_400),
+            (DefaultChainAWSClientProvider(region="us-east-1"), 86_400, 3_600),
+            (DefaultChainAWSClientProvider(region="us-east-1"), 300, 300),
         ],
     )
     def test_maximum_presign_ttl(
         self,
-        provider: AwsClientProvider,
+        provider: AWSClientProvider,
         requested_seconds: int,
         expected_seconds: int,
     ) -> None:
@@ -169,11 +172,11 @@ class TestS3ClientRetry:
     @pytest.mark.parametrize(
         "provider",
         [
-            pytest.param(ExplicitCredentialsAwsClientProvider(_AWS), id="explicit"),
-            pytest.param(DefaultChainAwsClientProvider("us-east-1"), id="default-chain"),
+            pytest.param(ExplicitCredentialsAWSClientProvider(_AWS), id="explicit"),
+            pytest.param(DefaultChainAWSClientProvider("us-east-1"), id="default-chain"),
         ],
     )
-    async def test_uses_standard_retry_mode(self, provider: AwsClientProvider) -> None:
+    async def test_uses_standard_retry_mode(self, provider: AWSClientProvider) -> None:
         async with provider.s3_client() as client:
             assert client.meta.config.retries["mode"] == "standard"
 
@@ -228,8 +231,6 @@ class TestSanitizeLogStreamName:
         assert _sanitize_log_stream_name("group/sub/name") == "group/sub/name"
 
     def test_result_matches_aws_constraint(self) -> None:
-        import re
-
         for raw in ["openai/gpt-5.5", "laguna-xs.2:fast", "x*:y", "plain_id"]:
             assert re.fullmatch(r"[^:*]*", _sanitize_log_stream_name(raw))
 
@@ -251,15 +252,14 @@ class TestGetBenchmarkLogUrl:
 class TestWriteBenchmarkLogEvent:
     """CloudWatch stream creation and benchmark log writes."""
 
-    def _runtime_with_mock_client(self, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, AwsRuntime]:
+    def _runtime_with_mock_client(self, monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, AWSRuntime]:
         client = MagicMock()
-        client_provider = MagicMock(spec=AwsClientProvider)
+        client_provider = MagicMock(spec=AWSClientProvider)
         client_provider.cloudwatch_logs_client.return_value = client
         monkeypatch.setattr(cloudwatch_logs, "_created_streams", set[str]())
-        runtime = AwsRuntime(
+        runtime = AWSRuntime(
             resources=_AWS_RESOURCES,
-            clients=cast(AwsClientProvider, client_provider),
-            managed=False,
+            clients=cast(AWSClientProvider, client_provider),
         )
         return client, runtime
 

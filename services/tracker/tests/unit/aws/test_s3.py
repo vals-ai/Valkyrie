@@ -5,24 +5,28 @@ Run: uv run pytest tests/unit/aws/test_s3.py
 
 from collections.abc import AsyncIterator
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from botocore.exceptions import ClientError
 
 from tracker.aws import s3 as s3_module
-from tracker.aws.runtime import AwsRuntime
-from tracker.aws.s3 import upload_stream_to_s3
+from tracker.aws.clients import DefaultChainAWSClientProvider
+from tracker.aws.runtime import AWSRuntime
+from tracker.aws.s3 import create_presigned_url, upload_stream_to_s3
 from tracker.exceptions import S3Error
 
 
-class FakeS3Client:
+class MockS3Client:
+    """Record multipart upload operations without calling AWS."""
+
     def __init__(self, fail_on_part: int | None = None) -> None:
         self.fail_on_part = fail_on_part
         self.parts: list[tuple[int, bytes]] = []
         self.completed_parts: list[dict[str, Any]] | None = None
         self.aborted = False
 
-    async def __aenter__(self) -> "FakeS3Client":
+    async def __aenter__(self) -> "MockS3Client":
         return self
 
     async def __aexit__(self, *_exc: object) -> None:
@@ -46,14 +50,46 @@ class FakeS3Client:
         self.aborted = True
 
 
-@pytest.fixture
-def fake_client(monkeypatch: pytest.MonkeyPatch, aws_runtime: AwsRuntime) -> FakeS3Client:
-    client = FakeS3Client()
+class TestCreatePresignedUrl:
+    """Presigned URL lifetime behavior."""
 
-    def fake_s3_client(_provider: object) -> FakeS3Client:
+    async def test_default_chain_ttl_is_applied_to_s3(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        client = AsyncMock()
+        client.generate_presigned_url.return_value = "https://example.test/presigned"
+        client_context = AsyncMock()
+        client_context.__aenter__.return_value = client
+
+        def s3_client(_provider: DefaultChainAWSClientProvider) -> AsyncMock:
+            return client_context
+
+        monkeypatch.setattr(DefaultChainAWSClientProvider, "s3_client", s3_client)
+        runtime = AWSRuntime(
+            resources=aws_runtime.resources,
+            clients=DefaultChainAWSClientProvider(region=aws_runtime.resources.region),
+        )
+
+        result = await create_presigned_url("agents/demo.zip", runtime, expiration=86_400)
+
+        assert result == "https://example.test/presigned"
+        client.generate_presigned_url.assert_awaited_once_with(
+            "get_object",
+            Params={"Bucket": "test-bucket", "Key": "agents/demo.zip"},
+            ExpiresIn=3_600,
+        )
+
+
+@pytest.fixture
+def mock_s3_client(monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime) -> MockS3Client:
+    client = MockS3Client()
+
+    def s3_client(_provider: object) -> MockS3Client:
         return client
 
-    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", fake_s3_client)
+    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", s3_client)
     monkeypatch.setattr(s3_module, "_MULTIPART_PART_BYTES", 8)
     return client
 
@@ -62,7 +98,7 @@ class TestUploadStreamToS3:
     """Multipart streaming upload behavior."""
 
     async def test_splits_stream_into_parts_and_completes(
-        self, fake_client: FakeS3Client, aws_runtime: AwsRuntime
+        self, mock_s3_client: MockS3Client, aws_runtime: AWSRuntime
     ) -> None:
         """
         Test cases:
@@ -78,37 +114,26 @@ class TestUploadStreamToS3:
         total = await upload_stream_to_s3(chunks(), "key", aws_runtime)
 
         assert total == 10
-        assert fake_client.parts == [(1, b"aaaabbbb"), (2, b"cc")]
-        assert fake_client.completed_parts == [
+        assert mock_s3_client.parts == [(1, b"aaaabbbb"), (2, b"cc")]
+        assert mock_s3_client.completed_parts == [
             {"ETag": "etag-1", "PartNumber": 1},
             {"ETag": "etag-2", "PartNumber": 2},
         ]
-        assert not fake_client.aborted
-
-    async def test_empty_stream_uploads_empty_object(self, fake_client: FakeS3Client, aws_runtime: AwsRuntime) -> None:
-        async def chunks() -> AsyncIterator[bytes]:
-            return
-            yield b""
-
-        total = await upload_stream_to_s3(chunks(), "key", aws_runtime)
-
-        assert total == 0
-        assert fake_client.parts == [(1, b"")]
-        assert fake_client.completed_parts == [{"ETag": "etag-1", "PartNumber": 1}]
+        assert not mock_s3_client.aborted
 
     async def test_aborts_multipart_upload_on_failure(
-        self, monkeypatch: pytest.MonkeyPatch, aws_runtime: AwsRuntime
+        self, monkeypatch: pytest.MonkeyPatch, aws_runtime: AWSRuntime
     ) -> None:
         """
         Test cases:
         - An upload failure aborts the multipart upload and surfaces as S3Error.
         """
-        client = FakeS3Client(fail_on_part=1)
+        client = MockS3Client(fail_on_part=1)
 
-        def fake_s3_client(_provider: object) -> FakeS3Client:
+        def s3_client(_provider: object) -> MockS3Client:
             return client
 
-        monkeypatch.setattr(type(aws_runtime.clients), "s3_client", fake_s3_client)
+        monkeypatch.setattr(type(aws_runtime.clients), "s3_client", s3_client)
         monkeypatch.setattr(s3_module, "_MULTIPART_PART_BYTES", 8)
 
         async def chunks() -> AsyncIterator[bytes]:

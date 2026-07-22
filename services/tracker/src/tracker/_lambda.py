@@ -1,21 +1,23 @@
 import json
-from typing import Any, cast
+from typing import Any
 
 from botocore.config import Config
 from botocore.exceptions import ClientError
 
-from tracker.aws.clients import AwsClientProvider
+from tracker.aws.clients import AWSClientProvider
 from tracker.exceptions import LambdaError
 
 
-def _response_status(payload: Any) -> Any:
+def _response_status(payload: object) -> int | None:
     if not isinstance(payload, dict):
         return None
-    return cast(dict[str, Any], payload).get("statusCode")
+
+    status = payload.get("statusCode")
+    return status if isinstance(status, int) else None
 
 
 def invoke_lambda(
-    client_provider: AwsClientProvider,
+    client_provider: AWSClientProvider,
     function_name: str,
     payload: dict[str, Any],
     config: Config | None = None,

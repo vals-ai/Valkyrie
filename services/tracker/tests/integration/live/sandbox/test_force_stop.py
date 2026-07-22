@@ -14,7 +14,7 @@ from sqlmodel import Session, col, select
 
 import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID, random_task_id
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark, BenchmarkStatus, Org, Task, TaskStatus
 from tracker.logging import get_logger
 from tracker.sandbox import create_sandbox
@@ -129,7 +129,7 @@ class TestForceStop:
         database_session.add(task)
         database_session.commit()
 
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
         provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_runtime.clients, "daytona")
         provider = benchmark_service.get_sandbox_provider(provider_config)
         labels = {
@@ -210,7 +210,7 @@ class TestForceStop:
         database_session.add(example_benchmark_object)
         database_session.commit()
 
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
         provider_config = fetch_sandbox_provider_config(daytona_secret_name, aws_runtime.clients, "daytona")
         provider = benchmark_service.get_sandbox_provider(provider_config)
 
@@ -311,7 +311,7 @@ class TestForceStop:
         benchmark_service = example_benchmark_object.benchmark_service(service_headers=service_headers)
         benchmark_task: Optional[asyncio.Task[None]] = None
         provider: Optional[SandboxProvider] = None
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         try:
             verify_response = await benchmark_service.verify_task_ids(

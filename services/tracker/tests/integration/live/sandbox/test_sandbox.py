@@ -18,7 +18,7 @@ import pytest
 from benchmark_service import ImageSource, Resources, Sandbox, SandboxNotFoundError, SandboxProvider
 
 from tests.utils import random_task_id
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.exceptions import SandboxError
@@ -156,7 +156,7 @@ class TestSandboxOperations:
             install_cmd="bash setup.sh",
             run_cmd="echo hello",
         )
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         agent_file = f"{contract_name}/{contract_name}/file.txt"
         setup_file = f"{contract_name}/setup.sh"
@@ -259,7 +259,7 @@ class TestSandboxOperations:
             run_cmd=run_cmd,
             final_output="/tmp/agent_output.json",
         )
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         # Expecting bundle directory to exist
         await test_sandbox.exec("mkdir -p /bundle/test_agent")
@@ -305,7 +305,7 @@ class TestSandboxOperations:
         )
 
         await test_sandbox.exec("mkdir -p /bundle/test_agent")
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
 
         await run_agent(
             test_sandbox,

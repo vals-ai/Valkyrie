@@ -10,7 +10,7 @@ import tarfile
 from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import delete_from_s3, download_from_s3, get_agent_result_s3_key
 from tracker.database.models import Benchmark
 from tracker.sandbox import archive_and_upload_output, create_sandbox
@@ -58,7 +58,7 @@ class TestUploadToS3:
         file_content = '{"result": "success", "score": 95}'
         dir_path = "/tmp/test_output_dir"
         task_id = random_task_id()
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
         file_s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output.json")
         dir_s3_key = get_agent_result_s3_key(str(example_benchmark_object.id), task_id, "test_output_dir")
 

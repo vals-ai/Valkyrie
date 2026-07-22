@@ -8,7 +8,7 @@ from urllib.parse import quote
 import logfire
 from botocore.exceptions import BotoCoreError, ClientError
 
-from tracker.aws.runtime import AwsResources, AwsRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import CloudWatchError
 
 _created_streams: set[str] = set()
@@ -42,7 +42,7 @@ def handle_cloudwatch_error(message: str) -> Callable[[Callable[_P, _R]], Callab
     return decorator
 
 
-def get_benchmark_log_url(benchmark_id: str, resources: AwsResources, task_id: str | None = None) -> str:
+def get_benchmark_log_url(benchmark_id: str, resources: AWSResources, task_id: str | None = None) -> str:
     """
     Get the CloudWatch console URL for a benchmark or specific task.
 
@@ -68,7 +68,7 @@ def get_benchmark_log_url(benchmark_id: str, resources: AwsResources, task_id: s
 
 @handle_cloudwatch_error(message="Failed to create log group")
 @logfire.instrument("create_log_group", extract_args=("benchmark_id",))
-def create_benchmark_log_group(benchmark_id: str, runtime: AwsRuntime) -> str:
+def create_benchmark_log_group(benchmark_id: str, runtime: AWSRuntime) -> str:
     """
     Create a log group for a benchmark.
 
@@ -96,7 +96,7 @@ def create_benchmark_log_group(benchmark_id: str, runtime: AwsRuntime) -> str:
 
 
 @handle_cloudwatch_error(message="Failed to create cloudwatch stream")
-def write_benchmark_log_event(stream_key: str, message: str, runtime: AwsRuntime) -> None:
+def write_benchmark_log_event(stream_key: str, message: str, runtime: AWSRuntime) -> None:
     """
     Stream a log message to CloudWatch.
 

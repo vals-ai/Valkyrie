@@ -16,7 +16,7 @@ from benchmark_service.sandbox import SandboxCommandError as ProviderSandboxComm
 from benchmark_service.sandbox import SandboxError as ProviderSandboxError
 
 from tracker import sandbox as sandbox_module
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentCausedExitReason,
     AgentContractRequest,
@@ -61,7 +61,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_downloads_file_without_exec_output(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """
         Verify artifact contents use the sandbox file-transfer API instead of command output.
@@ -81,7 +81,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output=str(len(artifact_content)))
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AwsRuntime) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -105,7 +105,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_can_upload_explicit_glob_sources(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         uploaded: list[tuple[bytes, str]] = []
 
@@ -120,7 +120,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="13")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AwsRuntime) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -150,7 +150,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_uses_result_paired_with_model_library_config(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         uploaded: list[tuple[bytes, str]] = []
 
@@ -161,7 +161,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="13")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AwsRuntime) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -185,7 +185,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_fails_when_declared_file_is_missing(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = "artifacts/missing.json"
 
@@ -334,7 +334,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = "artifacts/large.json"
 
@@ -444,7 +444,7 @@ class TestArchiveAndUploadOutput:
     async def test_archive_and_upload_output_streams_archive_to_s3(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """
         Test cases:
@@ -458,7 +458,7 @@ class TestArchiveAndUploadOutput:
             exec_commands.append(command)
             return ExecResult(exit_code=0, output="")
 
-        async def fake_upload_stream_to_s3(chunks: Any, s3_key: str, _aws_runtime: AwsRuntime) -> int:
+        async def fake_upload_stream_to_s3(chunks: Any, s3_key: str, _aws_runtime: AWSRuntime) -> int:
             data = b"".join([chunk async for chunk in chunks])
             uploaded.append((data, s3_key))
             return len(data)
@@ -498,7 +498,7 @@ class TestRunAgent:
     async def test_run_agent_uploads_declared_output_artifacts(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = AgentContractRequest(
             name="test-agent",
@@ -522,7 +522,7 @@ class TestRunAgent:
             artifacts: list[str],
             benchmark_id: str,
             task_id: str,
-            _aws_runtime: AwsRuntime,
+            _aws_runtime: AWSRuntime,
         ) -> None:
             artifact_calls.append(f"{benchmark_id}:{task_id}:{artifacts[0]}")
 
@@ -550,7 +550,7 @@ class TestRunAgent:
     async def test_run_agent_threads_benchmark_id_to_archive_and_upload(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract = AgentContractRequest(
             name="test-agent",
@@ -572,7 +572,7 @@ class TestRunAgent:
             _sandbox: Any,
             output_path: str,
             _s3_key: str,
-            _aws_runtime: AwsRuntime,
+            _aws_runtime: AWSRuntime,
             *,
             benchmark_id: str | None = None,
             task_id: str | None = None,
@@ -604,7 +604,7 @@ class TestRunAgent:
     async def test_run_agent_wraps_compose_runtime_source(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Compose runtime sources should route agent setup and execution through the wrapper.
 
@@ -656,7 +656,7 @@ class TestRunAgent:
     async def test_run_agent_shell_wraps_agent_timeout_command(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Task timeouts should apply to the full shell-form agent command.
 
@@ -1124,7 +1124,7 @@ class TestUploadAgentArtifacts:
         self,
         contract: AgentContractRequest,
         monkeypatch: pytest.MonkeyPatch,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
         exit_code: int,
         retryable: bool,
     ) -> None:

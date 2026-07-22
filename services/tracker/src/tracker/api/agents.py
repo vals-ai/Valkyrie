@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from tracker.auth import get_current_org
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import create_presigned_url, list_agents, s3_object_exists
 from tracker.database.models import Org
 from tracker.types import AgentDownloadURLResponse, AgentEntry, AgentsResponse, HarnessConfig
@@ -22,7 +22,7 @@ async def list_agents_endpoint(
     harness_config: HarnessConfig = Depends(fetch_harness_config),
 ) -> AgentsResponse:
     """List agent zips under the org's S3 bucket."""
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
     agents = await list_agents(aws_runtime)
     return AgentsResponse(
         agents=[
@@ -39,7 +39,7 @@ async def get_agent_download_url(
     harness_config: HarnessConfig = Depends(fetch_harness_config),
 ) -> AgentDownloadURLResponse:
     """Return a 5-minute presigned URL to download agents/<name>.zip."""
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
     key = f"agents/{name}.zip"
     if not await s3_object_exists(key, aws_runtime):
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")

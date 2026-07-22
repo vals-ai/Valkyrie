@@ -9,7 +9,7 @@ from typing import Any, ParamSpec, TypeVar
 import logfire
 from botocore.exceptions import BotoCoreError, ClientError
 
-from tracker.aws.runtime import AwsResources, AwsRuntime
+from tracker.aws.runtime import AWSResources, AWSRuntime
 from tracker.exceptions import S3Error
 from tracker.logging import get_logger
 
@@ -58,7 +58,7 @@ def handle_s3_error(message: str) -> Callable[[Callable[_P, Awaitable[_R]]], Cal
 
 @logfire.instrument("upload_to_s3", extract_args=("s3_key",))
 @handle_s3_error(message="Failed to upload to S3")
-async def upload_to_s3(file_content: bytes, s3_key: str, runtime: AwsRuntime) -> None:
+async def upload_to_s3(file_content: bytes, s3_key: str, runtime: AWSRuntime) -> None:
     """
     Upload file content to S3.
 
@@ -76,7 +76,7 @@ async def upload_to_s3(file_content: bytes, s3_key: str, runtime: AwsRuntime) ->
 
 @logfire.instrument("upload_stream_to_s3", extract_args=("s3_key",))
 @handle_s3_error(message="Failed to upload stream to S3")
-async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, runtime: AwsRuntime) -> int:
+async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, runtime: AWSRuntime) -> int:
     """
     Upload a byte stream to S3 via multipart upload, buffering at most one part in memory.
 
@@ -128,7 +128,7 @@ async def upload_stream_to_s3(chunks: AsyncIterable[bytes], s3_key: str, runtime
 
 
 @handle_s3_error(message="Failed to download from S3")
-async def download_from_s3(s3_key: str, runtime: AwsRuntime) -> bytes:
+async def download_from_s3(s3_key: str, runtime: AWSRuntime) -> bytes:
     """
     Download file content from S3.
 
@@ -159,7 +159,7 @@ async def _as_async_iter(keys: AsyncIterable[str] | Iterable[str]) -> AsyncItera
 
 
 async def download_many_from_s3(
-    s3_keys: AsyncIterable[str] | Iterable[str], runtime: AwsRuntime
+    s3_keys: AsyncIterable[str] | Iterable[str], runtime: AWSRuntime
 ) -> AsyncIterator[tuple[str, bytes]]:
     """Download multiple objects over a single shared client (one connection pool).
 
@@ -180,7 +180,7 @@ async def download_many_from_s3(
 
 
 @handle_s3_error(message="Failed to delete from S3")
-async def delete_from_s3(s3_key: str, runtime: AwsRuntime) -> None:
+async def delete_from_s3(s3_key: str, runtime: AWSRuntime) -> None:
     """
     Delete file from S3.
 
@@ -195,7 +195,7 @@ async def delete_from_s3(s3_key: str, runtime: AwsRuntime) -> None:
         await client.delete_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
 
 
-async def copy_s3_object(source_key: str, dest_key: str, runtime: AwsRuntime) -> None:
+async def copy_s3_object(source_key: str, dest_key: str, runtime: AWSRuntime) -> None:
     """
     Copy an S3 object from source_key to dest_key within the same bucket.
 
@@ -213,7 +213,7 @@ async def copy_s3_object(source_key: str, dest_key: str, runtime: AwsRuntime) ->
         raise S3Error(f"Failed to copy S3 object from {source_key} to {dest_key}: {e}") from e
 
 
-async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, runtime: AwsRuntime) -> None:
+async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, runtime: AWSRuntime) -> None:
     """
     Freeze the agent for a benchmark run by copying
     agents/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
@@ -230,7 +230,7 @@ async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, runtime
 
 
 @handle_s3_error(message="Failed to check S3 object existence")
-async def s3_object_exists(s3_key: str, runtime: AwsRuntime) -> bool:
+async def s3_object_exists(s3_key: str, runtime: AWSRuntime) -> bool:
     """
     Check if an S3 object exists.
 
@@ -252,7 +252,7 @@ async def s3_object_exists(s3_key: str, runtime: AwsRuntime) -> bool:
             raise
 
 
-async def list_s3_objects(prefix: str, runtime: AwsRuntime) -> AsyncIterator[str]:
+async def list_s3_objects(prefix: str, runtime: AWSRuntime) -> AsyncIterator[str]:
     """
     Yield S3 object keys with the given prefix, a page at a time (no full list held in memory).
 
@@ -278,7 +278,7 @@ async def list_s3_objects(prefix: str, runtime: AwsRuntime) -> AsyncIterator[str
 
 
 @handle_s3_error(message="Failed to create presigned URL")
-async def create_presigned_url(s3_key: str, runtime: AwsRuntime, expiration: int = 86400) -> str:
+async def create_presigned_url(s3_key: str, runtime: AWSRuntime, expiration: int = 86400) -> str:
     """
     Create a presigned URL for an S3 object.
 
@@ -304,7 +304,7 @@ async def create_presigned_url(s3_key: str, runtime: AwsRuntime, expiration: int
     return presigned_url
 
 
-def create_console_url(s3_key: str, resources: AwsResources) -> str:
+def create_console_url(s3_key: str, resources: AWSResources) -> str:
     """
     Create an AWS console URL for an S3 object.
 
@@ -321,7 +321,7 @@ def create_console_url(s3_key: str, resources: AwsResources) -> str:
     )
 
 
-def create_benchmark_url(benchmark_id: str, resources: AwsResources) -> str:
+def create_benchmark_url(benchmark_id: str, resources: AWSResources) -> str:
     """
     Create the AWS Console URL for a benchmark's S3 folder.
 
@@ -340,7 +340,7 @@ def create_benchmark_url(benchmark_id: str, resources: AwsResources) -> str:
 
 
 @handle_s3_error(message="Failed to list agents from S3")
-async def list_agents(runtime: AwsRuntime) -> list[tuple[str, datetime | None]]:
+async def list_agents(runtime: AWSRuntime) -> list[tuple[str, datetime | None]]:
     """List zipped agent bundles under the `agents/` prefix.
 
     Returns (name, last_modified) pairs, one per `agents/<name>.zip`.

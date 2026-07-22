@@ -10,7 +10,7 @@ import boto3
 from benchmark_service import ImageSource, Resources, SandboxProvider
 
 from tests.utils import random_task_id
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import get_benchmark_contract_s3_key, get_contract_s3_key
 from tracker.database.models import AgentContractRequest
 from tracker.sandbox import create_sandbox, upload_agent_artifacts
@@ -59,7 +59,7 @@ class TestUploadArtifactsAcrossImages:
         """
 
         benchmark_id = f"test-benchmark-{uuid4().hex[:5]}"
-        aws_runtime = AwsRuntime.from_harness_config(harness_config)
+        aws_runtime = AWSRuntime.from_harness_config(harness_config)
         aws_credentials = harness_config.aws
 
         # Stage the per-benchmark frozen copy that upload_agent_artifacts will now read from.

@@ -15,7 +15,7 @@ from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import invoke_lambda
 from tracker.aws.cloudwatch_logs import create_benchmark_log_group
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
     copy_agent_to_benchmark,
 )
@@ -256,7 +256,7 @@ async def process_benchmark(
     start_benchmark_request = _parse_start_benchmark_request(start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
     harness_config = start_benchmark_request.harness_config
-    aws_runtime = AwsRuntime.from_harness_config(harness_config)
+    aws_runtime = AWSRuntime.from_harness_config(harness_config)
     sandbox_provider_config = fetch_sandbox_provider_config(
         harness_config.sandbox_provider_secret_name,
         aws_runtime.clients,

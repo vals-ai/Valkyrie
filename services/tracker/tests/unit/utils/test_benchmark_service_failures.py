@@ -20,7 +20,7 @@ from websockets.http11 import Response
 import tracker.sandbox as sandbox_module
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
-from tracker.aws.runtime import AwsRuntime
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, ErrorResult, Task, TaskStatus
 from tracker.types import HarnessConfig
 from tracker.utils import (
@@ -48,7 +48,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
@@ -88,7 +88,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract, database_session, harness_config
@@ -117,7 +117,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """VALKYRIE-5D: ValidationError from retrieve_task is caught with field names."""
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
@@ -149,7 +149,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """VALKYRIE-5A: InvalidStatus from WebSocket rejection is caught with HTTP status."""
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
@@ -178,7 +178,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         contract.output_artifacts = ["artifacts/missing.json"]
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
@@ -230,7 +230,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """VALKYRIE-59: BenchmarkServiceError from setup_task is caught and stored."""
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
@@ -260,7 +260,7 @@ class TestBenchmarkServiceFailures:
         database_session: Session,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
-        aws_runtime: AwsRuntime,
+        aws_runtime: AWSRuntime,
     ) -> None:
         """Network exceptions with empty strings must still produce visible task errors.
 

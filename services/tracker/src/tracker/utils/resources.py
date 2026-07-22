@@ -11,7 +11,7 @@ from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
 from tracker.auth import RequestIdentity
-from tracker.aws.clients import AwsClientProvider
+from tracker.aws.clients import AWSClientProvider
 from tracker.aws.secrets import fetch_aws_secret
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
@@ -37,7 +37,7 @@ class BenchmarkConcurrencyUpdate:
 
 def fetch_sandbox_provider_config(
     secret_name: str,
-    clients: AwsClientProvider,
+    clients: AWSClientProvider,
     provider_type: str,
 ) -> SandboxProviderConfig:
     """Resolve sandbox provider config from the selected provider type and secret."""
