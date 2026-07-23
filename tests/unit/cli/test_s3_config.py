@@ -17,9 +17,7 @@ _BASE_CONFIG = {
 
 def test_aws_credentials_passes_session_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Temporary credentials (SSO / assumed role) must keep their session token."""
-    monkeypatch.setattr(
-        s3_config, "load_config", lambda: {**_BASE_CONFIG, "AWS_SESSION_TOKEN": "token123"}
-    )
+    monkeypatch.setattr(s3_config, "load_config", lambda: {**_BASE_CONFIG, "AWS_SESSION_TOKEN": "token123"})
     creds = s3_config.aws_credentials()
     assert creds.aws_session_token == "token123"
     assert creds.aws_access_key_id == "ASIAEXAMPLE"
