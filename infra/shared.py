@@ -54,6 +54,7 @@ EVAL_RESUME_RETENTION_PREFIXES = (
     "code-migration/benchmarks/",
     "cyberbench/eval-resume/",
     "emb/eval-resume/",
+    "harvey/eval-resume/",
     "programbench/eval-resume/",
     "swebench/eval-resume/",
 )

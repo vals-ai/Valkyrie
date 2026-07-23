@@ -133,6 +133,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                         "code-migration/benchmarks/": 30,
                         "cyberbench/eval-resume/": 30,
                         "emb/eval-resume/": 30,
+                        "harvey/eval-resume/": 30,
                         "programbench/eval-resume/": 30,
                         "swebench/eval-resume/": 30,
                     },
