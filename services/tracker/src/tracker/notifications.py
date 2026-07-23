@@ -1,4 +1,4 @@
-"""Slack webhook notifications for benchmark progress."""
+"""Slack webhook notifications for run progress."""
 
 from __future__ import annotations
 
@@ -31,25 +31,25 @@ class NotificationContext(BaseModel):
 
     benchmark_name: str
     agent_name: str
-    benchmark_id: UUID
+    run_id: UUID
     started_at: datetime
     total_tasks: int
     finished_tasks: int
     model: str | None = None
 
     @classmethod
-    def from_benchmark(cls, benchmark_row: "Benchmark", session: "Session", org: "Org") -> NotificationContext:
-        from tracker.utils import BenchmarkContext
+    def from_run(cls, run_row: "Benchmark", session: "Session", org: "Org") -> NotificationContext:
+        from tracker.utils import RunContext
 
-        details = BenchmarkContext(benchmark_row, session, org).benchmark_details
+        details = RunContext(run_row, session, org).run_details
         return cls(
-            benchmark_name=benchmark_row.name,
-            agent_name=benchmark_row.arguments.contract.name,
-            benchmark_id=benchmark_row.id,
-            started_at=benchmark_row.started_at,
+            benchmark_name=run_row.name,
+            agent_name=run_row.arguments.contract.name,
+            run_id=run_row.id,
+            started_at=run_row.started_at,
             total_tasks=details.total_tasks,
             finished_tasks=details.finished_tasks,
-            model=benchmark_row.arguments.contract.model,
+            model=run_row.arguments.contract.model,
         )
 
 
@@ -74,8 +74,8 @@ def _format_duration(started_at: datetime) -> str:
 def _build_progress_message(context: NotificationContext, percent: int) -> str:
     elapsed = _format_duration(context.started_at)
     lines = [
-        f"*Benchmark Update* — {context.benchmark_name}",
-        f"Agent: {context.agent_name} | Run: {context.benchmark_id}",
+        f"*Run Update* — {context.benchmark_name}",
+        f"Agent: {context.agent_name} | Run: {context.run_id}",
         f"Model: {context.model or 'N/A'}",
         f"Status: In Progress — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)",
         f"Elapsed: {elapsed}",
@@ -93,15 +93,15 @@ def _build_terminal_message(
     percent = int((context.finished_tasks / context.total_tasks) * 100) if context.total_tasks > 0 else 0
 
     status_labels = {
-        BenchmarkStatus.FINISHED: "Benchmark Complete",
-        BenchmarkStatus.ERROR: "Benchmark Error",
-        BenchmarkStatus.STOPPED: "Benchmark Stopped",
+        BenchmarkStatus.FINISHED: "Run Complete",
+        BenchmarkStatus.ERROR: "Run Error",
+        BenchmarkStatus.STOPPED: "Run Stopped",
     }
-    header = status_labels.get(status, f"Benchmark {status.value}")
+    header = status_labels.get(status, f"Run {status.value}")
 
     lines = [
         f"*{header}* — {context.benchmark_name}",
-        f"Agent: {context.agent_name} | Run: {context.benchmark_id}",
+        f"Agent: {context.agent_name} | Run: {context.run_id}",
         f"Model: {context.model or 'N/A'}",
         f"Status: {status.value} — {percent}% ({context.finished_tasks}/{context.total_tasks} tasks)",
     ]

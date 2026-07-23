@@ -240,7 +240,7 @@ async def copy_s3_object(source_key: str, dest_key: str, aws: "AWSCredentials", 
 
 async def copy_agent_to_benchmark(benchmark_id: str, contract_name: str, aws: "AWSCredentials", s3_bucket: str) -> None:
     """
-    Freeze the agent for a benchmark run by copying
+    Freeze the agent for a run by copying
     agents/<name>.zip -> benchmarks/<benchmark_id>/<name>.zip.
 
     # NOTE: Skips if it already exists at that location

@@ -365,8 +365,46 @@ class RunDetails(CanonicalRunModel):
     docent_reading_url: str | None = None
 
 
-class StartRunRequest(StartBenchmarkRequest):
+class StartRunRequest(BaseModel):
     """Canonical request for starting a run."""
+
+    contract: AgentContractRequest
+    benchmark_name: str
+    concurrency: int = 5
+    label: str | None = None
+    task_ids: list[str] | None = None
+    slice_str: str | None = None
+    lambda_function: str | None = None
+    dataset: str | None = None
+    harness_config: HarnessConfig
+    custom_benchmark_service: str | None = None
+    service_headers: dict[str, str] = Field(default_factory=dict, repr=False)
+    sandbox_provider: str = "daytona"
+    sandbox_provider_secret_name: str | None = None
+    service_auth_header_name: str | None = None
+    service_auth_secret_name: str | None = None
+    webhook_secret_name: str | None = None
+    webhook_intervals: list[int] | None = None
+
+    @field_validator("benchmark_name")
+    @classmethod
+    def validate_name(cls, value: str) -> str:
+        return validate_benchmark_name(value)
+
+    @field_validator("custom_benchmark_service")
+    @classmethod
+    def validate_custom_service(cls, value: str | None) -> str | None:
+        return validate_service_url_syntax(value) if value is not None else None
+
+    @property
+    def benchmark_service(self) -> BenchmarkServiceClient:
+        from tracker.utils import create_benchmark_service_client
+
+        benchmark_service_url = self.custom_benchmark_service or create_benchmark_service_url(self.benchmark_name)
+        return create_benchmark_service_client(
+            url=benchmark_service_url,
+            service_headers=self.service_headers,
+        )
 
 
 class StartRunResponse(CanonicalRunModel):
@@ -424,8 +462,19 @@ class ListRunsResponse(CanonicalRunModel):
     next_cursor: str | None = None
 
 
-class RunArguments(BenchmarkArguments):
+class RunArguments(BaseModel):
     """Arguments retained with a run."""
+
+    model_config = {"extra": "forbid"}
+
+    contract: AgentContractRequest
+    concurrency: int
+    task_ids: list[str] | None = None
+    slice_str: str | None = None
+    lambda_function: str | None = None
+    dataset: str | None = None
+    sandbox_provider: str = "daytona"
+    sandbox_provider_secret_name: str | None = None
 
 
 class RunFinalEvaluation(CanonicalRunModel):
@@ -461,8 +510,11 @@ class RunMetadataResponse(CanonicalRunModel):
     started_by_email: str | None = None
 
 
-class AnalyzeRunRequest(AnalyzeBenchmarkRequest):
+class AnalyzeRunRequest(BaseModel):
     """Canonical request for generating run analysis."""
+
+    no_cache: bool = False
+    lambda_function: str | None = None
 
 
 class StopRunResponse(StatusResponse):
@@ -473,8 +525,10 @@ class RetryOrResumeRunResponse(StatusResponse):
     pass
 
 
-class UpdateRunConcurrencyRequest(UpdateBenchmarkConcurrencyRequest):
+class UpdateRunConcurrencyRequest(BaseModel):
     """Canonical request for changing an active run's concurrency."""
+
+    concurrency: int = Field(ge=1, strict=True)
 
 
 class UpdateRunConcurrencyResponse(CanonicalRunModel):

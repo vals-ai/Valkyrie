@@ -20,7 +20,7 @@ from tracker.sandbox import create_sandbox
 from tracker.types import AWSCredentials, HarnessConfig
 from tracker.utils import fetch_sandbox_provider_config, force_stop_sandboxes
 
-process_benchmark = getattr(tracker_utils, "process_benchmark")
+process_run = getattr(tracker_utils, "process_run")
 
 logger = get_logger(__name__)
 
@@ -317,7 +317,7 @@ class TestForceStop:
             )
 
             benchmark_task = asyncio.create_task(
-                process_benchmark(
+                process_run(
                     start_benchmark_request_json=example_benchmark_object.start_benchmark_request(
                         harness_config, service_headers=service_headers
                     ).model_dump(),

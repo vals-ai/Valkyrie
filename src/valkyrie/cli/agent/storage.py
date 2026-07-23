@@ -277,7 +277,7 @@ async def get_ingest_lambda_from_s3(agent_name: str) -> str | None:
     """Read just the ``ingest_lambda`` field from the currently-pushed agent contract.
 
     Resolves to the latest pushed version, ignoring whatever snapshot is stored on a
-    benchmark run. This lets ``valk run analyze`` work on past runs after their
+    run. This lets ``valk run analyze`` work on past runs after their
     contract is updated to declare an analyzer Lambda.
 
     Reads the ``ingest_lambda`` field directly from the agent's ``contract.yaml``.

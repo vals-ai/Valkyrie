@@ -1,4 +1,4 @@
-"""Tests for stopping, resuming, and retrying benchmark runs.
+"""Tests for stopping, resuming, and retrying runs.
 
 Run: uv run pytest tests/unit/utils/test_run_recovery.py
 
@@ -48,8 +48,8 @@ from tracker.utils import (
     TrackedTaskStatus,
     force_stop_sandboxes,
     handle_early_exit,
-    initiate_stop_benchmark,
-    process_benchmark,
+    initiate_stop_run,
+    process_run,
     process_task,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
@@ -93,8 +93,8 @@ class TestRunRecovery:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
-    @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_process_benchmark_uses_persisted_and_refreshed_concurrency(
+    @pytest.mark.usefixtures("process_run_env")
+    async def test_process_run_uses_persisted_and_refreshed_concurrency(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -140,7 +140,7 @@ class TestRunRecovery:
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", unique_sandbox)
 
         process_future = asyncio.create_task(
-            process_benchmark(
+            process_run(
                 start_benchmark_request_json=request.model_dump(),
                 benchmark_id_str=str(benchmark_row.id),
                 verified_task_ids=task_ids,
@@ -274,7 +274,7 @@ class TestRunRecovery:
         database_session.refresh(benchmark_row)
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_stale_worker_cannot_continue_after_force_stop_resume(
         self,
         contract: AgentContractRequest,
@@ -410,7 +410,7 @@ class TestRunRecovery:
         assert selected_task.status == TaskStatus.PENDING
         assert selected_task.started_at == _RESUMED_ATTEMPT_AT
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_stop_and_resume(
         self,
         contract: AgentContractRequest,
@@ -480,7 +480,7 @@ class TestRunRecovery:
         database_session.commit()
 
         # Stop benchmark - only tasks that are pending become stopped
-        await initiate_stop_benchmark(benchmark_row, database_session, force=False, org=self._test_org)
+        await initiate_stop_run(benchmark_row, database_session, force=False, org=self._test_org)
 
         # Verify: 2 tasks are finished, 3 tasks are stopped
         finished_count = len(
@@ -514,8 +514,8 @@ class TestRunRecovery:
         assert len(verified_task_ids) == 3
         assert set(verified_task_ids) == set(pending_task_ids)
 
-        # Run process_benchmark to complete the remaining tasks (the 3 tasks that are pending)
-        await process_benchmark(
+        # Run process_run to complete the remaining tasks (the 3 tasks that are pending)
+        await process_run(
             start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verified_task_ids,
@@ -663,7 +663,7 @@ class TestRunRecovery:
         assert len(result_history) == 1
         assert result_history[0]["result"] == {"score": 0.5}
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_reset_lazily_creates_rows_for_unregistered_task_ids(
         self,
         example_benchmark_object: Benchmark,
@@ -700,7 +700,7 @@ class TestRunRecovery:
             "task_2": TaskStatus.PENDING,
         }
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_error_retry_with_task_ids_only_resets_requested_tasks(
         self,
         example_benchmark_object: Benchmark,
@@ -740,7 +740,7 @@ class TestRunRecovery:
         assert verified_task_ids == ["task_requested"]
         assert task_statuses == {"task_requested": TaskStatus.PENDING, "task_other": TaskStatus.ERROR}
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_resume_runs_lazily_added_task_and_recomputes_final_score(
         self,
         contract: AgentContractRequest,
@@ -821,7 +821,7 @@ class TestRunRecovery:
         assert stale_final_evaluation is None
 
         # Run the worker — the new task should make it through evaluation
-        await process_benchmark(
+        await process_run(
             start_benchmark_request_json=benchmark_row.start_benchmark_request(harness_config).model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=verified_task_ids,
@@ -1198,7 +1198,7 @@ class TestRunRecovery:
         def _unexpected_kicker() -> None:
             raise AssertionError("running retry without error tasks should not enqueue work")
 
-        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+        monkeypatch.setattr("main.process_run.kicker", _unexpected_kicker)
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
 
@@ -1226,7 +1226,7 @@ class TestRunRecovery:
             raise AssertionError("running resume should not enqueue work")
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _unexpected_verify_task_ids)
-        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+        monkeypatch.setattr("main.process_run.kicker", _unexpected_kicker)
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}")
 
@@ -1250,7 +1250,7 @@ class TestRunRecovery:
         def _unexpected_kicker() -> None:
             raise AssertionError("updating active-run concurrency should not enqueue duplicate work")
 
-        monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
+        monkeypatch.setattr("main.process_run.kicker", _unexpected_kicker)
 
         response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?concurrency=8")
 
@@ -1305,7 +1305,7 @@ class TestRunRecovery:
             "task_finished": TaskStatus.FINISHED,
         }
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_running_retry_repairs_error_and_later_finalizes_same_run(
         self,
         contract: AgentContractRequest,
@@ -1374,7 +1374,7 @@ class TestRunRecovery:
         queued_task_ids = mock_kicker.queued_calls[0]["verified_task_ids"]
         assert queued_task_ids == ["task_retry"]
 
-        await process_benchmark(
+        await process_run(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=queued_task_ids,
@@ -1385,7 +1385,7 @@ class TestRunRecovery:
         assert benchmark_row.final_evaluation is None
         assert final_score_inputs == []
 
-        await process_benchmark(
+        await process_run(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark_row.id),
             verified_task_ids=["task_original"],
@@ -1445,7 +1445,7 @@ class TestRunRecovery:
     ) -> None:
         """Reproduces the bug where force stop is called after the worker has already
         finished processing all tasks. The benchmark gets set to STOPPING but nothing
-        transitions it to STOPPED because the worker's process_benchmark has already exited.
+        transitions it to STOPPED because the worker's process_run has already exited.
 
         Test Case:
         - All tasks are in a finished state
@@ -1471,7 +1471,7 @@ class TestRunRecovery:
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
 
         # Set benchmark status to STOPPING
-        await initiate_stop_benchmark(benchmark_row, database_session, force=True, org=self._test_org)
+        await initiate_stop_run(benchmark_row, database_session, force=True, org=self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
         def _empty_list_sandboxes(*_args: Any, **_kwargs: Any) -> AsyncIterator[None]:

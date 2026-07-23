@@ -1,4 +1,4 @@
-"""Unit tests for benchmark state transitions and queries.
+"""Unit tests for run state transitions and queries.
 
 Run: uv run pytest tests/unit/utils/test_run_state.py
 """
@@ -18,6 +18,7 @@ from sqlmodel import Session, col, func, select, update
 from starlette.requests import Request
 
 import tracker.utils.harness_config as harness_config_module
+import tracker.utils as tracker_utils
 from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
@@ -45,16 +46,36 @@ from tracker.types import (
 from tracker.utils import (
     commit_task_error,
     create_task_rows,
-    fetch_benchmark_row,
+    fetch_run_row,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
     fetch_harness_config,
     fetch_sandbox_provider_config,
     has_runnable_tasks,
-    set_benchmark_final_status,
+    set_run_final_status,
     start_benchmark_request_to_benchmark,
 )
 from tracker.utils.reporting import serialize_run_snapshot
+
+
+def test_run_helpers_use_canonical_internal_names() -> None:
+    assert hasattr(tracker_utils, "RunContext")
+    assert not hasattr(tracker_utils, "BenchmarkContext")
+    assert hasattr(tracker_utils, "commit_run_error")
+    assert not hasattr(tracker_utils, "commit_benchmark_error")
+    assert hasattr(tracker_utils, "fetch_run_row")
+    assert not hasattr(tracker_utils, "fetch_benchmark_row")
+    assert hasattr(tracker_utils, "initiate_stop_run")
+    assert not hasattr(tracker_utils, "initiate_stop_benchmark")
+    assert hasattr(tracker_utils, "process_run")
+    assert not hasattr(tracker_utils, "process_benchmark")
+    assert getattr(tracker_utils.process_run, "task_name") == "tracker.utils:process_benchmark"
+    assert hasattr(tracker_utils, "set_run_final_status")
+    assert not hasattr(tracker_utils, "set_benchmark_final_status")
+    assert hasattr(tracker_utils, "stream_run_results")
+    assert not hasattr(tracker_utils, "stream_benchmark_results")
+    assert hasattr(tracker_utils, "update_run_resume_arguments")
+    assert not hasattr(tracker_utils, "update_benchmark_resume_arguments")
 
 
 def test_run_snapshot_serialization_is_canonical_only_when_requested() -> None:
@@ -88,7 +109,7 @@ client = TestClient(app)
 
 
 class TestRunState:
-    """Benchmark state transitions, task rows, and finalization."""
+    """Run state transitions, task rows, and finalization."""
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
@@ -160,7 +181,7 @@ class TestRunState:
         assert response.json() == {"status": "success"}
 
         # Check that the benchmark status is now "stopping"
-        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
+        benchmark_row = fetch_run_row(benchmark_row.id, database_session, self._test_org)
         assert benchmark_row.status == BenchmarkStatus.STOPPING
 
         # Task status in pending state should be set to "stopped" / otherwise known as no pending tasks left
@@ -256,7 +277,7 @@ class TestRunState:
         assert len(task_ids) == 5
 
         # Validate the benchmark is now in progress state
-        benchmark_row = fetch_benchmark_row(benchmark_row.id, database_session, self._test_org)
+        benchmark_row = fetch_run_row(benchmark_row.id, database_session, self._test_org)
         assert benchmark_row.status == BenchmarkStatus.IN_PROGRESS
 
         # Reset benchmark row to stopped state
@@ -577,7 +598,7 @@ class TestRunState:
 
         # Error is raised because tasks are still in the pending state
         with pytest.raises(TrackerServiceError):
-            set_benchmark_final_status(benchmark_row, database_session, self._test_org)
+            set_run_final_status(benchmark_row, database_session, self._test_org)
 
         # Make all tasks in finished state
         # NOTE: Need to manually set the finished_at timestamp because the event listener is not triggered with bulk updates
@@ -589,7 +610,7 @@ class TestRunState:
         database_session.commit()
 
         # Benchmark status is set to finished
-        set_benchmark_final_status(benchmark_row, database_session, self._test_org)
+        set_run_final_status(benchmark_row, database_session, self._test_org)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.FINISHED
 
@@ -608,7 +629,7 @@ class TestRunState:
         database_session.commit()
 
         # Benchmark status is set to stopped when stopped tasks exist
-        set_benchmark_final_status(benchmark_row, database_session, self._test_org)
+        set_run_final_status(benchmark_row, database_session, self._test_org)
         database_session.refresh(benchmark_row, attribute_names=["status"])
         assert benchmark_row.status == BenchmarkStatus.STOPPED
 

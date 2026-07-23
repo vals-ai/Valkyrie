@@ -27,7 +27,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import process_benchmark
+from tracker.utils import process_run
 from tracker.utils.task_error_summary import summarize_task_errors
 
 
@@ -202,7 +202,7 @@ class TestRunFinalization:
 
         monkeypatch.setattr(run_orchestration_module, "has_runnable_tasks", start_retry_after_check)
 
-        await process_benchmark(
+        await process_run(
             start_benchmark_request_json=request.model_dump(),
             benchmark_id_str=str(benchmark.id),
             verified_task_ids=[],
@@ -308,7 +308,7 @@ class TestRunFinalization:
                 concurrency=1,
                 harness_config=harness_config,
             )
-            await process_benchmark(request.model_dump(), str(run_row.id), [])
+            await process_run(request.model_dump(), str(run_row.id), [])
 
             with Session(postgres_engine) as assertion_session:
                 persisted_run = assertion_session.get(Benchmark, run_row.id)

@@ -265,7 +265,7 @@ async def upload_agent_artifacts(
     Args:
         sandbox: The sandbox to download and extract files in
         contract: The agent contract configuration
-        benchmark_id: The benchmark run id, used to locate the agent
+        benchmark_id: The legacy run id field used to locate the agent
         aws: AWS credentials for presigned URL generation
         s3_bucket: S3 bucket name
 

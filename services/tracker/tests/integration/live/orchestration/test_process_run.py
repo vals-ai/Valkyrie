@@ -1,4 +1,4 @@
-"""Run with `uv run pytest tests/integration/live/orchestration/test_process_benchmark.py`.
+"""Run with `uv run pytest tests/integration/live/orchestration/test_process_run.py`.
 
 Exercise tracker orchestration against real services and sandboxes.
 """
@@ -31,7 +31,7 @@ from tracker.database.models import (
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import start_benchmark_request_to_benchmark
 
-process_benchmark = getattr(tracker_utils, "process_benchmark")
+process_run = getattr(tracker_utils, "process_run")
 
 _TASK_ID: str = "astropy__astropy-12907"
 _TASK_IDS: list[str] = ["astropy__astropy-12907", "astropy__astropy-13033"]
@@ -81,10 +81,10 @@ def _assert_task_breakdown_complete(task_breakdown: TaskBreakdown) -> None:
     assert task_breakdown.sandbox_run_duration is not None
 
 
-class TestProcessBenchmark:
-    """Live benchmark orchestration success, failure, and concurrency flows."""
+class TestProcessRun:
+    """Live run orchestration success, failure, and concurrency flows."""
 
-    async def test_process_benchmark(
+    async def test_process_run(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -101,7 +101,7 @@ class TestProcessBenchmark:
             contract, harness_config, database_session, service_headers, task_ids=_TASK_IDS
         )
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS)
+        await process_run(request.model_dump(), str(benchmark.id), _TASK_IDS)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED
@@ -121,7 +121,7 @@ class TestProcessBenchmark:
 
         assert benchmark.final_evaluation is not None
 
-    async def test_process_benchmark_error(
+    async def test_process_run_error(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -152,7 +152,7 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr(Session, "commit", failing_commit)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID])
+        await process_run(request.model_dump(), str(benchmark.id), [_TASK_ID])
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -203,7 +203,7 @@ class TestProcessBenchmark:
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task_with_failure)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
+        await process_run(request.model_dump(), str(benchmark.id), task_ids)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
@@ -229,7 +229,7 @@ class TestProcessBenchmark:
         assert _TASK_ID in results
         assert failing_task not in results
 
-    async def test_process_benchmark_errors_when_all_tasks_fail_before_evaluation(
+    async def test_process_run_errors_when_all_tasks_fail_before_evaluation(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -247,7 +247,7 @@ class TestProcessBenchmark:
             failing_contract, harness_config, database_session, service_headers, task_ids=[_TASK_ID]
         )
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID])
+        await process_run(request.model_dump(), str(benchmark.id), [_TASK_ID])
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -264,7 +264,7 @@ class TestProcessBenchmark:
         assert "Required output artifact missing" in task_errors[_TASK_ID]
         assert benchmark.fetch_evaluation_results(database_session) == {}
 
-    async def test_concurrent_benchmarks_same_task(
+    async def test_concurrent_runs_same_task(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -291,7 +291,7 @@ class TestProcessBenchmark:
 
         await gather(
             *[
-                process_benchmark(
+                process_run(
                     benchmark.start_benchmark_request(harness_config, service_headers=service_headers).model_dump(),
                     str(benchmark.id),
                     [_TASK_ID],

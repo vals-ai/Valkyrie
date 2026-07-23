@@ -30,23 +30,19 @@ from tracker.types import (
     AWSCredentials,
 )
 
-from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_config
+from tracker.utils.resources import fetch_run_row, fetch_sandbox_provider_config
 
 logger = get_logger(__name__)
 
 
-async def initiate_stop_benchmark(
-    benchmark_row: Benchmark,
+async def initiate_stop_run(
+    run_row: Benchmark,
     session: Session,
     force: bool,
     org: Org,
     task_ids: list[str] | None = None,
 ) -> None:
-    """
-    Sets the flags to initiate the stopping process for a benchmark.
-
-    Benchmark - Stopping status
-    Tasks - Stopped status
+    """Set the flags that initiate the stopping process for a run.
 
     NOTE: Tasks that have already started will continue to run and finish.
     """
@@ -54,7 +50,7 @@ async def initiate_stop_benchmark(
         # Update all rows where tasks are pending or building to stopped
         task_update = (
             update(Task)
-            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.benchmark) == run_row.id)
             .where(col(Task.org_id) == org.id)
             .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
         )
@@ -65,11 +61,11 @@ async def initiate_stop_benchmark(
         session.commit()
 
         if task_ids is None and (result.rowcount > 0 or force):
-            benchmark_row.status = BenchmarkStatus.STOPPING
-            session.add(benchmark_row)
+            run_row.status = BenchmarkStatus.STOPPING
+            session.add(run_row)
             session.commit()
     except Exception as e:
-        raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e
+        raise TrackerServiceError(f"Unexpected error stopping run {run_row.id}: {str(e)}") from e
 
 
 async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> str | None:
@@ -195,7 +191,7 @@ async def reset_to_in_progress_status(
     """
     try:
         # Serialize retries with final-score persistence for this benchmark.
-        benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
+        benchmark_row = fetch_run_row(benchmark_row.id, session, org, for_update=True)
         existing_rows = session.exec(
             select(Task)
             .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))

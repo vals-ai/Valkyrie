@@ -13,7 +13,7 @@ _REQUIRED_ENVIRONMENT_VARIABLES: dict[str, str | None | int] = {
     "AWS_ACCESS_KEY_ID": None,  # AWS ACCESS KEY
     "AWS_SECRET_ACCESS_KEY": None,  # AWS SECRETS KEY
     "AWS_DEFAULT_REGION": None,  # What region your secrets are in
-    "S3_BUCKET": None,  # Center point where all agents and benchmark results are uploaded
+    "S3_BUCKET": None,  # Center point where all agents and run results are uploaded
     "LOG_GROUP": "benchmarks",  # the prefix to the cloudwatch logs (e.x. benchmarks/<benchmark_id>)
     "LOG_RETENTION_POLICY": 365,  # How long logs are kept until auto deleted
 }

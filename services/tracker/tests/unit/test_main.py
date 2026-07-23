@@ -46,12 +46,14 @@ from tracker.database.models import (
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.types import (
+    AnalyzeBenchmarkRequest,
     BenchmarkTableRow,
     FetchBenchmarksRequest,
     FinalViewResponse,
     HarnessConfig,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
+    StartRunRequest,
     StatusResponse,
 )
 from tracker.utils import fetch_harness_config, update_run_concurrency
@@ -802,11 +804,17 @@ class TestTrackerAPI:
             calls.append(("continue", kwargs))
             return StatusResponse(status="success")
 
+        async def _analyze_benchmark(**kwargs: Any) -> dict[str, str]:
+            calls.append(("analyze", kwargs))
+            assert isinstance(kwargs["body"], AnalyzeBenchmarkRequest)
+            return {"status": "analysis-started"}
+
         monkeypatch.setattr("main.start_benchmark", _start_benchmark)
         monkeypatch.setattr("main.stop_benchmark", _stop_benchmark)
         monkeypatch.setattr("main.retry_or_resume_benchmark", _retry_or_resume_benchmark)
+        monkeypatch.setattr("main.analyze_benchmark", _analyze_benchmark)
 
-        start_request = StartBenchmarkRequest(
+        start_request = StartRunRequest(
             contract=contract,
             benchmark_name="swebench",
             concurrency=3,
@@ -825,6 +833,7 @@ class TestTrackerAPI:
             params={"retry_mode": "from_scratch"},
             json={"task_ids": [], "service_headers": {}, "secrets": {"TOKEN": "secret-name"}},
         )
+        analyzed = client.post(f"/runs/{run_id}/analysis", json={"no_cache": True})
 
         assert started.status_code == 200
         assert started.json()["run_id"] == str(run_id)
@@ -832,6 +841,7 @@ class TestTrackerAPI:
         assert stopped.json() == {"status": "success"}
         assert resumed.json() == {"status": "success"}
         assert retried.json() == {"status": "success"}
+        assert analyzed.json() == {"status": "analysis-started"}
 
         assert calls[1][0] == "stop"
         assert calls[1][1]["benchmark_id"] == run_id
@@ -843,6 +853,8 @@ class TestTrackerAPI:
         assert calls[2][1]["task_ids"] == ["task-2"]
         assert calls[2][1]["service_headers"] == {"X-Test": "value"}
         assert calls[3][1]["retry"] is True
+        assert calls[4][0] == "analyze"
+        assert calls[4][1]["benchmark_id"] == run_id
         assert calls[3][1]["retry_mode"].value == "from_scratch"
         assert calls[3][1]["secrets"] == {"TOKEN": "secret-name"}
 

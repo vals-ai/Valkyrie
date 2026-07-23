@@ -34,7 +34,7 @@ async def _capture_sandbox_environment(
 class TestProcessTaskEnvironment:
     """Tracker-owned environment variables passed to agent tasks."""
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_process_task_injects_tracker_owned_attribution_env(
         self,
         contract: AgentContractRequest,
@@ -97,7 +97,7 @@ class TestProcessTaskEnvironment:
         assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
         assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_process_task_omits_identity_email_when_unavailable(
         self,
         contract: AgentContractRequest,

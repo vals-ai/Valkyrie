@@ -112,11 +112,11 @@ from tracker.types import (
     UpdateRunConcurrencyResponse,
 )
 from tracker.utils import (
-    BenchmarkContext,
     RunConcurrencyUpdate,
+    RunContext,
     YieldingWriter,
     build_benchmark_table_rows,
-    commit_benchmark_error,
+    commit_run_error,
     create_benchmark_service_client,
     create_final_view,
     fetch_filtered_benchmark_rows,
@@ -124,14 +124,14 @@ from tracker.utils import (
     fetch_harness_config,
     try_fetch_harness_config,
     force_stop_sandboxes,
-    initiate_stop_benchmark,
-    process_benchmark,
+    initiate_stop_run,
+    process_run,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
-    stream_benchmark_results,
+    stream_run_results,
     upload_final_view,
     update_run_concurrency,
-    update_benchmark_resume_arguments,
+    update_run_resume_arguments,
 )
 
 configure_logging()
@@ -374,7 +374,7 @@ async def start_benchmark(
         )
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
-        commit_benchmark_error(benchmark_row, session, error_message)
+        commit_run_error(benchmark_row, session, error_message)
         error_response = StartBenchmarkErrorResponse(
             benchmark_id=benchmark_row.id,
             error_message=error_message,
@@ -383,7 +383,7 @@ async def start_benchmark(
         raise TrackerServiceError(error_response.model_dump_json()) from e
 
     await (
-        process_benchmark.kicker()
+        process_run.kicker()
         .with_labels(**_taskiq_labels())
         .kiq(
             start_benchmark_request_json=request.model_dump(),
@@ -463,7 +463,7 @@ async def fetch_benchmark(
     # and additional updates about the tasks completed
     if connect:
         return StreamingResponse(
-            stream_benchmark_results(benchmark_id, session, harness_config, org),
+            stream_run_results(benchmark_id, session, harness_config, org),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -472,12 +472,12 @@ async def fetch_benchmark(
             },
         )
 
-    benchmark_context = BenchmarkContext(benchmark_row, session, org)
+    run_context = RunContext(benchmark_row, session, org)
 
     return FetchBenchmarkResponse(
         benchmark_name=benchmark_row.name,
         benchmark_id=benchmark_row.id,
-        details=benchmark_context.benchmark_details,
+        details=run_context.run_details,
         s3_bucket_url=create_benchmark_url(
             str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
@@ -715,7 +715,7 @@ async def stop_benchmark(
         await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
     )
 
-    await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
+    await initiate_stop_run(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
     if force:
         # TODO: Drop the row fallback after legacy benchmark rows have aged out.
@@ -844,7 +844,7 @@ async def retry_or_resume_benchmark(
         )
 
     if secrets or concurrency is not None:
-        benchmark_row = update_benchmark_resume_arguments(
+        benchmark_row = update_run_resume_arguments(
             benchmark_id,
             session,
             org,
@@ -860,7 +860,7 @@ async def retry_or_resume_benchmark(
     # start the benchmark with the same args used to create it
     # we will delegate inside what tasks we are running
     await (
-        process_benchmark.kicker()
+        process_run.kicker()
         .with_labels(**_taskiq_labels())
         .kiq(
             start_benchmark_request_json=resume_request_json,
@@ -990,7 +990,7 @@ async def fetch_run_outputs(
         for prefix in prefixes:
             async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
                 if _safe_output_tar_member(key, benchmark_prefix) is None:
-                    logger.warning("Skipping unsafe output archive member for benchmark %s", benchmark_id)
+                    logger.warning("Skipping unsafe output archive member for run %s", benchmark_id)
                     continue
                 yield key
 
@@ -1096,9 +1096,10 @@ async def start_run(
     session: Session = Depends(get_session),
     run_starter: RequestIdentity = Depends(get_current_starter),
 ) -> StartRunResponse:
+    legacy_request = StartBenchmarkRequest.model_validate(request.model_dump())
     response = await start_benchmark(
         http_request=http_request,
-        request=request,
+        request=legacy_request,
         session=session,
         run_starter=run_starter,
     )
@@ -1132,7 +1133,7 @@ async def get_run_events(
 ) -> StreamingResponse:
     get_scoped(Benchmark, run_id, session, org)
     return StreamingResponse(
-        stream_benchmark_results(run_id, session, harness_config, org, canonical=True),
+        stream_run_results(run_id, session, harness_config, org, canonical=True),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1218,9 +1219,10 @@ async def analyze_run(
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> dict[str, str] | StreamingResponse:
+    legacy_body = AnalyzeBenchmarkRequest.model_validate(body.model_dump())
     return await analyze_benchmark(
         benchmark_id=run_id,
-        body=body,
+        body=legacy_body,
         session=session,
         harness_config=harness_config,
         org=org,

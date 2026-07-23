@@ -26,7 +26,7 @@ def _make_context(**overrides: object) -> NotificationContext:
     context = NotificationContext(
         benchmark_name="swebench",
         agent_name="claude_code",
-        benchmark_id=uuid4(),
+        run_id=uuid4(),
         started_at=datetime.now(ZoneInfo("UTC")),
         total_tasks=100,
         finished_tasks=0,
@@ -97,7 +97,7 @@ class TestSlackNotifierThresholds:
         await notifier.check_and_notify(context)
         await notifier.check_and_notify(
             _make_context(
-                benchmark_id=context.benchmark_id,
+                run_id=context.run_id,
                 started_at=context.started_at,
                 finished_tasks=26,
             )
@@ -119,7 +119,7 @@ class TestSlackNotifierThresholds:
 
 
 class TestSlackNotifierTerminal:
-    """Terminal benchmark notifications for finished, error, and stopped runs."""
+    """Terminal run notifications for finished, error, and stopped runs."""
 
     async def test_terminal_finished_includes_score(self, notifier: SlackNotifier, mock_send: AsyncMock) -> None:
         """Finished notification includes final score."""
@@ -132,7 +132,7 @@ class TestSlackNotifierTerminal:
         mock_send.assert_called_once()
         message = mock_send.call_args[0][0]
         assert "Final Score: 0.42" in message
-        assert "Benchmark Complete" in message
+        assert "Run Complete" in message
 
     async def test_terminal_error_includes_message(self, notifier: SlackNotifier, mock_send: AsyncMock) -> None:
         """Error notification includes error message."""
@@ -145,7 +145,7 @@ class TestSlackNotifierTerminal:
         mock_send.assert_called_once()
         message = mock_send.call_args[0][0]
         assert "Connection timeout" in message
-        assert "Benchmark Error" in message
+        assert "Run Error" in message
 
     async def test_terminal_stopped(self, notifier: SlackNotifier, mock_send: AsyncMock) -> None:
         """Stopped notification has correct header."""
@@ -156,7 +156,7 @@ class TestSlackNotifierTerminal:
 
         mock_send.assert_called_once()
         message = mock_send.call_args[0][0]
-        assert "Benchmark Stopped" in message
+        assert "Run Stopped" in message
 
 
 class TestMessageContent:
@@ -165,10 +165,10 @@ class TestMessageContent:
     def test_progress_message_contains_all_fields(self) -> None:
         context = _make_context(finished_tasks=25, model="anthropic/claude-sonnet-4-20250514")
         message = _build_progress_message(context, percent=25)
-        assert "Benchmark Update" in message
+        assert "Run Update" in message
         assert context.benchmark_name in message
         assert context.agent_name in message
-        assert str(context.benchmark_id) in message
+        assert str(context.run_id) in message
         assert "Model: anthropic/claude-sonnet-4-20250514" in message
         assert "25% (25/100 tasks)" in message
 
@@ -180,10 +180,10 @@ class TestMessageContent:
     def test_terminal_message_contains_all_fields(self) -> None:
         context = _make_context(finished_tasks=100, model="anthropic/claude-sonnet-4-20250514")
         message = _build_terminal_message(context, status=BenchmarkStatus.FINISHED, final_score=0.42)
-        assert "Benchmark Complete" in message
+        assert "Run Complete" in message
         assert context.benchmark_name in message
         assert context.agent_name in message
-        assert str(context.benchmark_id) in message
+        assert str(context.run_id) in message
         assert "Model: anthropic/claude-sonnet-4-20250514" in message
         assert "100% (100/100 tasks)" in message
         assert "Final Score: 0.42" in message
@@ -195,7 +195,7 @@ class TestMessageContent:
 
 
 class TestSlackNotifierFireAndForget:
-    """Webhook failures that must not interrupt benchmark work."""
+    """Webhook failures that must not interrupt run work."""
 
     @pytest.mark.parametrize(
         "webhook_error",

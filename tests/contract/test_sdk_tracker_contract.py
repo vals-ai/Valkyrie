@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from services.tracker.main import app
 from tracker.database.models import (
     AgentContractRequest,
+    BenchmarkArguments,
     OutputArtifact,
 )
 from tracker.types import (
@@ -20,6 +21,7 @@ from tracker.types import (
     AgentDownloadURLResponse,
     AgentEntry,
     AgentsResponse,
+    AnalyzeBenchmarkRequest,
     AnalyzeRunRequest,
     AverageTaskBreakdown,
     BenchmarkServiceCatalogResponse,
@@ -47,6 +49,7 @@ from tracker.types import (
     S3UploadResultsResponse,
     SingleTaskResponse,
     StartBenchmarkResponse,
+    StartBenchmarkRequest,
     StartRunRequest,
     StartRunResponse,
     StopRunResponse,
@@ -55,6 +58,7 @@ from tracker.types import (
     TaskSummary,
     UpdateRunConcurrencyRequest,
     UpdateRunConcurrencyResponse,
+    UpdateBenchmarkConcurrencyRequest,
 )
 from valkyrie.sdk.models import (
     AWSCredentials as SDKAWSCredentials,
@@ -286,6 +290,13 @@ def test_sdk_and_tracker_wire_models_have_the_same_fields(
         tracker_default = tracker_field.get_default(call_default_factory=True)
         sdk_default = sdk_field.get_default(call_default_factory=True)
         assert _normalized_default(tracker_default) == _normalized_default(sdk_default)
+
+
+def test_canonical_run_requests_do_not_inherit_legacy_benchmark_models() -> None:
+    assert not issubclass(StartRunRequest, StartBenchmarkRequest)
+    assert not issubclass(RunArguments, BenchmarkArguments)
+    assert not issubclass(AnalyzeRunRequest, AnalyzeBenchmarkRequest)
+    assert not issubclass(UpdateRunConcurrencyRequest, UpdateBenchmarkConcurrencyRequest)
 
 
 def _normalized_wire_schema(value: Any) -> Any:

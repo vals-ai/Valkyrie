@@ -60,7 +60,7 @@ from tracker.types import (
     StartBenchmarkRequest,
 )
 
-from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
+from tracker.utils.resources import fetch_run_row, fetch_task_row
 
 logger = get_logger(__name__)
 
@@ -198,7 +198,7 @@ class TaskMonitor:
 
     async def _refresh_concurrency(self) -> None:
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+            benchmark_row = fetch_run_row(self._benchmark_id, session, self._org)
             concurrency = benchmark_row.arguments.concurrency
         await self._limiter.resize(concurrency)
 
@@ -226,7 +226,7 @@ class TaskMonitor:
 
         """
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
+            benchmark_row = fetch_run_row(self._benchmark_id, session, self._org)
             task_row = self._fetch_task_row(task_id)
 
             # If task has been stopped or benchmark has errored we need to exit
@@ -241,8 +241,8 @@ class TaskMonitor:
             return
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
-            notification_context = NotificationContext.from_benchmark(benchmark_row, session, self._org)
+            benchmark_row = fetch_run_row(self._benchmark_id, session, self._org)
+            notification_context = NotificationContext.from_run(benchmark_row, session, self._org)
             await self._notifier.check_and_notify(notification_context)
 
     async def track_tasks(self) -> None:
@@ -447,7 +447,7 @@ async def _process_task_attempt(
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, task_session, org)
+        benchmark_row = fetch_run_row(benchmark_id, task_session, org)
         task_row = fetch_task_row(task_row.id, task_session, org)
 
         if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
@@ -575,7 +575,7 @@ async def _process_task_attempt(
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
-            # are filterable per benchmark run and separable from other environments sharing the
+            # are filterable per run and separable from other environments sharing the
             # same Daytona account (sandbox OTLP export is account-level).
             "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
                 f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"

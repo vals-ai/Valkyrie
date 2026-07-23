@@ -86,8 +86,8 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
     )
 
 
-def fetch_benchmark_row(
-    benchmark_id: UUID,
+def fetch_run_row(
+    run_id: UUID,
     session: Session,
     org: Org,
     *,
@@ -96,7 +96,7 @@ def fetch_benchmark_row(
     """Fetch an org-scoped benchmark, optionally locking it for a state transition.
 
     Arguments
-    - benchmark_id: Run identifier to fetch.
+    - run_id: Run identifier to fetch.
     - session: Database session used for the query.
     - org: Organization expected to contain the run.
     - for_update: Lock and refresh the row until the transaction completes.
@@ -107,30 +107,30 @@ def fetch_benchmark_row(
     Raises
     - ValueError: The run is missing or belongs to another organization.
     """
-    benchmark_row = session.get(
+    run_row = session.get(
         Benchmark,
-        benchmark_id,
+        run_id,
         populate_existing=for_update,
         with_for_update=for_update or None,
     )
-    if not benchmark_row:
-        raise ValueError(f"Run with id {benchmark_id} not found")
-    if benchmark_row.org_id != org.id:
-        raise ValueError(f"Run {benchmark_id} does not belong to org {org.id}")
-    return benchmark_row
+    if not run_row:
+        raise ValueError(f"Run with id {run_id} not found")
+    if run_row.org_id != org.id:
+        raise ValueError(f"Run {run_id} does not belong to org {org.id}")
+    return run_row
 
 
-def _fetch_locked_benchmark(benchmark_id: UUID, session: Session, org: Org) -> Benchmark:
-    benchmark_row = session.exec(
+def _fetch_locked_run(run_id: UUID, session: Session, org: Org) -> Benchmark:
+    run_row = session.exec(
         select(Benchmark)
-        .where(Benchmark.id == benchmark_id)
+        .where(Benchmark.id == run_id)
         .where(Benchmark.org_id == org.id)
         .with_for_update()
         .execution_options(populate_existing=True)
     ).one_or_none()
-    if benchmark_row is None:
-        raise ValueError(f"Run with id {benchmark_id} not found")
-    return benchmark_row
+    if run_row is None:
+        raise ValueError(f"Run with id {run_id} not found")
+    return run_row
 
 
 def update_run_concurrency(
@@ -140,26 +140,26 @@ def update_run_concurrency(
     org: Org,
 ) -> RunConcurrencyUpdate:
     """Lock an org-scoped run and persist a new active-run concurrency limit."""
-    benchmark_row = _fetch_locked_benchmark(run_id, session, org)
-    if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
+    run_row = _fetch_locked_run(run_id, session, org)
+    if run_row.status != BenchmarkStatus.IN_PROGRESS:
         return RunConcurrencyUpdate(
-            run_id=benchmark_row.id,
-            status=benchmark_row.status,
-            concurrency=benchmark_row.arguments.concurrency,
+            run_id=run_row.id,
+            status=run_row.status,
+            concurrency=run_row.arguments.concurrency,
         )
 
-    benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": concurrency})
+    run_row.arguments = run_row.arguments.model_copy(update={"concurrency": concurrency})
     result = RunConcurrencyUpdate(
-        run_id=benchmark_row.id,
-        status=benchmark_row.status,
-        concurrency=benchmark_row.arguments.concurrency,
+        run_id=run_row.id,
+        status=run_row.status,
+        concurrency=run_row.arguments.concurrency,
     )
     session.commit()
     return result
 
 
-def update_benchmark_resume_arguments(
-    benchmark_id: UUID,
+def update_run_resume_arguments(
+    run_id: UUID,
     session: Session,
     org: Org,
     *,
@@ -167,8 +167,8 @@ def update_benchmark_resume_arguments(
     concurrency: int | None,
 ) -> Benchmark:
     """Lock and freshly merge JSON-backed arguments used by resume and retry."""
-    benchmark_row = _fetch_locked_benchmark(benchmark_id, session, org)
-    arguments = benchmark_row.arguments
+    run_row = _fetch_locked_run(run_id, session, org)
+    arguments = run_row.arguments
 
     if secrets:
         contract = arguments.contract
@@ -177,9 +177,9 @@ def update_benchmark_resume_arguments(
     if concurrency is not None:
         arguments = arguments.model_copy(update={"concurrency": concurrency})
 
-    benchmark_row.arguments = arguments
+    run_row.arguments = arguments
     session.commit()
-    return benchmark_row
+    return run_row
 
 
 def fetch_task_row(task_id: UUID, session: Session, org: Org) -> Task:

@@ -22,8 +22,8 @@ from tracker.database.models import AgentContractRequest, BenchmarkStatus, Error
 from tracker.exceptions import OutputArtifactError
 from tracker.types import HarnessConfig
 from tracker.utils import (
-    fetch_benchmark_row,
-    process_benchmark,
+    fetch_run_row,
+    process_run,
 )
 
 
@@ -39,7 +39,7 @@ class TestBenchmarkServiceFailures:
         ).one()
         return error_message
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_connection_closed_after_messages_produces_elapsed_error(
         self,
         contract: AgentContractRequest,
@@ -76,7 +76,7 @@ class TestBenchmarkServiceFailures:
             (1011, "keepalive ping timeout"),
         ],
     )
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_connection_closed_preserves_remote_close_details(
         self,
         code: int,
@@ -106,7 +106,7 @@ class TestBenchmarkServiceFailures:
         assert reason in error_message
         assert "last application message received" in error_message
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_validation_error_produces_human_readable_message(
         self,
         contract: AgentContractRequest,
@@ -137,7 +137,7 @@ class TestBenchmarkServiceFailures:
         assert "source.image.image" in error_message
         assert "resources.vcpu" in error_message
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_invalid_status_produces_human_readable_message(
         self,
         contract: AgentContractRequest,
@@ -165,7 +165,7 @@ class TestBenchmarkServiceFailures:
         assert "rejected the WebSocket connection" in error_message
         assert "404" in error_message
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_output_artifact_error_marks_task_error_without_generic_exception(
         self,
         contract: AgentContractRequest,
@@ -192,7 +192,7 @@ class TestBenchmarkServiceFailures:
         assert "Output artifact error" in error_message
         assert "Required output artifact missing" in error_message
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_benchmark_service_error_produces_human_readable_message(
         self,
         contract: AgentContractRequest,
@@ -221,7 +221,7 @@ class TestBenchmarkServiceFailures:
         error_message = self._latest_task_error(database_session, task_row)
         assert "ProgramBench task container failed to start" in error_message
 
-    @pytest.mark.usefixtures("process_benchmark_env")
+    @pytest.mark.usefixtures("process_run_env")
     async def test_empty_network_error_stores_visible_message(
         self,
         contract: AgentContractRequest,
@@ -258,8 +258,8 @@ class TestBenchmarkServiceFailures:
         assert self._latest_task_error(database_session, task_row) == "ConnectTimeout"
         assert any("[ERROR] ConnectTimeout" in message for message in logged_messages)
 
-    @pytest.mark.usefixtures("process_benchmark_env")
-    async def test_benchmark_service_error_in_process_benchmark(
+    @pytest.mark.usefixtures("process_run_env")
+    async def test_benchmark_service_error_in_process_run(
         self,
         contract: AgentContractRequest,
         database_session: Session,
@@ -280,14 +280,14 @@ class TestBenchmarkServiceFailures:
 
         monkeypatch.setattr(BenchmarkServiceClient, "final_score", _mock_final_score)
 
-        await process_benchmark(
+        await process_run(
             start_benchmark_request_json=start_benchmark_request.model_dump(),
             benchmark_id_str=str(benchmark_id),
             verified_task_ids=["task_0"],
         )
 
         with Session(bind=database_session.bind) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, TEST_ORG)
+            benchmark_row = fetch_run_row(benchmark_id, session, TEST_ORG)
             assert benchmark_row.status == BenchmarkStatus.ERROR
             assert benchmark_row.error_message is not None
             assert "Final score failed with status code 404" in benchmark_row.error_message

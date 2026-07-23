@@ -453,7 +453,7 @@ valkyrie run start --benchmark my-benchmark --agent sweagent \
 
 ## Slack Notifications
 
-Valkyrie can send Slack webhook notifications as benchmark runs progress. Store an AWS Secrets Manager secret name (pointing to your Slack webhook URL) and get notified automatically when runs hit defined thresholds or reach a terminal state (finished, error, stopped).
+Valkyrie can send Slack webhook notifications as runs progress. Store an AWS Secrets Manager secret name (pointing to your Slack webhook URL) and get notified automatically when runs hit defined thresholds or reach a terminal state (finished, error, stopped).
 
 ### Setting up the webhook
 

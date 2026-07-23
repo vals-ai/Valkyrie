@@ -387,7 +387,7 @@ def set_finished_at_when_benchmark_finished(_mapper: Mapper[Benchmark], _connect
         - https://docs.sqlalchemy.org/en/13/orm/session_api.html#sqlalchemy.orm.attributes.get_history
     """
 
-    # Benchmark statuses we want the finished_at timestamp to be set when updated to
+    # Run statuses that set finished_at when entered.
     finished_states = [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR]
 
     # Check that the status has actually changed between the current and previous state

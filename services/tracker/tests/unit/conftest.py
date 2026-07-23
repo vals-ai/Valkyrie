@@ -192,13 +192,13 @@ def mock_sandbox_operations(monkeypatch: pytest.MonkeyPatch) -> None:
 def mock_kicker(monkeypatch: pytest.MonkeyPatch) -> MockKicker:
     """Record queued benchmark work without starting the broker."""
     kicker = MockKicker()
-    monkeypatch.setattr("main.process_benchmark.kicker", lambda: kicker)
+    monkeypatch.setattr("main.process_run.kicker", lambda: kicker)
 
     return kicker
 
 
 @pytest.fixture
-def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> None:
+def process_run_env(monkeypatch: pytest.MonkeyPatch, database_session: Session) -> None:
     """Use deterministic local dependencies for run-orchestration behavior tests."""
 
     @asynccontextmanager

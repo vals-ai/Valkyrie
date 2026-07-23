@@ -60,19 +60,19 @@ class TaskCounts(NamedTuple):
     failed_tasks: int
 
 
-class BenchmarkContext:
-    _benchmark_row: Benchmark
+class RunContext:
+    _run_row: Benchmark
     _session: Session
     _org: Org
 
-    def __init__(self, benchmark_row: Benchmark, session: Session, org: Org):
-        self._benchmark_row = benchmark_row
+    def __init__(self, run_row: Benchmark, session: Session, org: Org):
+        self._run_row = run_row
         self._session = session
         self._org = org
 
     @property
     def _status(self) -> BenchmarkStatus:
-        return self._benchmark_row.status
+        return self._run_row.status
 
     @cached_property
     def _task_counts(self) -> TaskCounts:
@@ -85,7 +85,7 @@ class BenchmarkContext:
                 func.count(case((Task.status == TaskStatus.ERROR, 1))).label("failed_tasks"),
             )
             .select_from(Task)
-            .where(Task.benchmark == self._benchmark_row.id)
+            .where(Task.benchmark == self._run_row.id)
             .where(Task.org_id == self._org.id)
         )
 
@@ -100,12 +100,12 @@ class BenchmarkContext:
         """
         Returns a mapping between the task status and the number of tasks in that status
 
-        Provides a breakdown of the benchmark.
+        Provides a breakdown of the run.
         """
         statement = (
             select(Task.status, func.count(col(Task.id)))
             .select_from(Task)
-            .where(Task.benchmark == self._benchmark_row.id)
+            .where(Task.benchmark == self._run_row.id)
             .where(Task.org_id == self._org.id)
             .group_by(Task.status)
             .having(func.count(col(Task.id)) > 0)  # Exclude all with count of 0
@@ -116,15 +116,15 @@ class BenchmarkContext:
         return {TaskStatus(status): count for status, count in result}
 
     @cached_property
-    def benchmark_details(self) -> BenchmarkDetails:
+    def run_details(self) -> BenchmarkDetails:
         return BenchmarkDetails(
             status=self._status,
-            started_at=self._benchmark_row.started_at,
+            started_at=self._run_row.started_at,
             total_tasks=self._task_counts.total_tasks,
             finished_tasks=self._task_counts.finished_tasks,
             task_breakdown=self._task_breakdown,
-            docent_reading_status=self._benchmark_row.docent_reading_status,
-            docent_reading_url=self._benchmark_row.docent_reading_url,
+            docent_reading_status=self._run_row.docent_reading_status,
+            docent_reading_url=self._run_row.docent_reading_url,
         )
 
 
@@ -253,23 +253,15 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
     )
 
 
-async def stream_benchmark_results(
-    benchmark_id: UUID,
+async def stream_run_results(
+    run_id: UUID,
     session: Session,
     harness_config: HarnessConfig,
     org: Org,
     *,
     canonical: bool = False,
 ) -> AsyncGenerator[str]:
-    """
-    Generate Server-Sent Events with benchmark updates. User connects to this when they want to view live updates of a benchmark.
-
-    Usage from client:
-        curl -X GET http://<endpoint>/stream-benchmark-results/<benchmark_id>?connect=true
-
-    Returns:
-        AsyncGenerator[str]
-    """
+    """Generate Server-Sent Events with live run updates."""
     PULL_INTERVAL = 5
 
     EVENT_COMPLETE = "event: complete\n\n"
@@ -280,48 +272,44 @@ async def stream_benchmark_results(
     try:
         while True:
             with Session(bind=session.bind) as fresh_session:
-                fresh_benchmark = fresh_session.get(Benchmark, benchmark_id)
-                if not fresh_benchmark or fresh_benchmark.org_id != org.id:
+                fresh_run = fresh_session.get(Benchmark, run_id)
+                if not fresh_run or fresh_run.org_id != org.id:
                     yield f"{EVENT_ERROR} {json.dumps({'error': 'Run not found'})}\n\n"
                     break
 
-                fresh_session.refresh(fresh_benchmark)
-                benchmark_context = BenchmarkContext(fresh_benchmark, fresh_session, org)
+                fresh_session.refresh(fresh_run)
+                run_context = RunContext(fresh_run, fresh_session, org)
 
                 response_data = FetchBenchmarkResponse(
-                    benchmark_name=fresh_benchmark.name,
-                    benchmark_id=fresh_benchmark.id,
-                    details=benchmark_context.benchmark_details,
+                    benchmark_name=fresh_run.name,
+                    benchmark_id=fresh_run.id,
+                    details=run_context.run_details,
                     s3_bucket_url=create_benchmark_url(
-                        str(fresh_benchmark.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
+                        str(fresh_run.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
                     ),
-                    label=fresh_benchmark.label,
-                    final_score=fresh_benchmark.final_evaluation.final_score
-                    if fresh_benchmark.final_evaluation
-                    else None,
-                    error_message=fresh_benchmark.error_message
-                    if fresh_benchmark.status == BenchmarkStatus.ERROR
-                    else None,
+                    label=fresh_run.label,
+                    final_score=fresh_run.final_evaluation.final_score if fresh_run.final_evaluation else None,
+                    error_message=fresh_run.error_message if fresh_run.status == BenchmarkStatus.ERROR else None,
                 )
 
                 response_json = serialize_run_snapshot(response_data, canonical=canonical)
                 yield f"{DATA_PREFIX} {response_json}\n\n"
 
-                if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
+                if fresh_run.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
                     yield EVENT_COMPLETE
                     break
 
             await asyncio.sleep(PULL_INTERVAL)
 
     except asyncio.CancelledError:
-        logger.info(f"Client disconnected from benchmark {benchmark_id} stream")
+        logger.info(f"Client disconnected from run {run_id} stream")
         yield DISCONNECT
 
 
 def serialize_run_snapshot(response: FetchBenchmarkResponse, *, canonical: bool) -> str:
     """Serialize one SSE snapshot without changing the stored or legacy result shape."""
     if canonical:
-        return GetRunResponse.from_legacy(response).model_dump_json(by_alias=True)
+        return GetRunResponse.from_legacy(response).model_dump_json()
     return response.model_dump_json()
 
 
