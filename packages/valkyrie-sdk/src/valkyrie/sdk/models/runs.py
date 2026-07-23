@@ -147,6 +147,7 @@ class GetRunResponse(ResponseModel):
     s3_bucket_url: str
     label: str | None = None
     final_score: float | None = None
+    error_message: str | None = None
 
 
 class RunSummary(ResponseModel):

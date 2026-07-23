@@ -21,7 +21,7 @@ class DevFormatter(logging.Formatter):
         color = self.COLORS.get(record.levelname, "")
         level = f"{color}{record.levelname:<8}{self.RESET}"
         context_parts: list[str] = []
-        for field in ("request_id", "benchmark_id", "task_id"):
+        for field in ("request_id", "run_id", "benchmark_id", "task_id"):
             value = getattr(record, field, "")
             if value:
                 context_parts.append(f"{field}={value}")
@@ -35,7 +35,7 @@ _JSON_FORMATTER = {
     "()": "pythonjsonlogger.json.JsonFormatter",
     "fmt": (
         "%(asctime)s %(levelname)s %(name)s %(module)s %(funcName)s %(message)s "
-        "%(request_id)s %(benchmark_id)s %(task_id)s"
+        "%(request_id)s %(run_id)s %(benchmark_id)s %(task_id)s"
     ),
     "rename_fields": {
         "asctime": "timestamp",

@@ -16,7 +16,8 @@
     },
     "s3_bucket_url": "s3://runs-bucket/run",
     "label": "nightly",
-    "final_score": null
+    "final_score": null,
+    "error_message": null
   },
   "sse": {
     "event": "",
@@ -37,7 +38,8 @@
       },
       "s3_bucket_url": "s3://runs-bucket/run",
       "label": "nightly",
-      "final_score": null
+      "final_score": null,
+      "error_message": null
     }
   }
 }

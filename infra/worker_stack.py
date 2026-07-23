@@ -16,7 +16,6 @@ from aws_cdk import (
     aws_iam,
     aws_logs,
     aws_rds,
-    aws_s3,
     aws_secretsmanager,
     aws_servicediscovery,
 )
@@ -59,7 +58,7 @@ class WorkerStack(Stack):
         cluster: aws_ecs.ICluster,
         namespace: aws_servicediscovery.IPrivateDnsNamespace,
         redis_url: str,
-        bucket: aws_s3.IBucket,
+        bucket_name: str,
         database: aws_rds.DatabaseInstance,
         db_credentials: aws_rds.DatabaseSecret,
         tracker_service: aws_ecs.FargateService,
@@ -80,7 +79,7 @@ class WorkerStack(Stack):
 
         shared_env = {
             "BROKER_ENVIRONMENT": stage_config.runtime_environment,
-            "AWS_S3_BUCKET": bucket.bucket_name,
+            "AWS_S3_BUCKET": bucket_name,
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",

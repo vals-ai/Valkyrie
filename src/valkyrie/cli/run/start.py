@@ -136,7 +136,7 @@ def validate_intervals(intervals: tuple[int, ...]) -> list[int]:
 def resolve_webhook_config(
     intervals: tuple[int, ...], webhook_secret: str | None
 ) -> tuple[str | None, list[int] | None]:
-    """Resolve webhook secret and intervals for a benchmark run."""
+    """Resolve webhook secret and intervals for a run."""
     if intervals and not webhook_secret:
         click.echo(
             click.style(
@@ -190,7 +190,7 @@ def resolve_webhook_config(
     type=str,
     default=None,
     required=False,
-    help="Lambda function to invoke at the end of the benchmark run",
+    help="Lambda function to invoke at the end of the run",
 )
 @click.option(
     "--task-ids",

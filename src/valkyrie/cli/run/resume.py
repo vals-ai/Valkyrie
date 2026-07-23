@@ -100,8 +100,8 @@ def resume(
 
     try:
         with TrackerService() as tracker:
-            benchmark_info = tracker.fetch_run(run_id)
-            service_headers = benchmark_service_headers(benchmark_info.benchmark_name)
+            run_info = tracker.fetch_run(run_id)
+            service_headers = benchmark_service_headers(run_info.benchmark_name)
 
             if update_agent:
                 metadata = tracker.fetch_run_metadata(run_id)

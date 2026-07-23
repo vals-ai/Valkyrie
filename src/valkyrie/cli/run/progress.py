@@ -7,7 +7,7 @@ import click
 from tracker.database.models import DocentReadingStatus, TaskStatus
 from tracker.types import GetRunResponse, RunDetails, RunMetadataResponse, RunStatus
 
-from valkyrie.cli.display import local_time
+from valkyrie.cli.display import local_time, terminal_safe
 from valkyrie.cli.run.snapshot import fetch_run_metadata, format_run_snapshot_json
 from valkyrie.cli.tracker_client import TrackerService
 
@@ -58,6 +58,19 @@ class RunFormatter:
         return f"{' │ '.join(parts)}" if parts else ""
 
 
+def _display_run_error(run_response: GetRunResponse) -> None:
+    """Display the stored run error as terminal-safe red text.
+
+    Arguments
+    - run_response: Run response that may contain an error message.
+    """
+    if not run_response.error_message:
+        return
+
+    safe_error = terminal_safe(run_response.error_message, preserve_newlines=True)
+    click.secho(f"Error: {safe_error}", fg="red")
+
+
 def format_run_status(run_response: GetRunResponse) -> None:
     """Format and display run status in a box with a progress bar."""
     details = run_response.details
@@ -85,6 +98,8 @@ def format_run_status(run_response: GetRunResponse) -> None:
     if breakdown_text:
         click.echo(f"│ {breakdown_text}")
     click.echo("└" + "─" * 79)
+    if details.status == RunStatus.ERROR and run_response.error_message:
+        _display_run_error(run_response)
 
 
 def format_run_identity(
@@ -152,6 +167,13 @@ def stream_run_status(
 ) -> None:
     """Stream and display live run status updates."""
     initial = tracker.fetch_run(run_id)
+    if output_format == "text" and initial.details.status in {
+        RunStatus.FINISHED,
+        RunStatus.ERROR,
+        RunStatus.STOPPED,
+    }:
+        format_run_status(initial)
+        return
     s3_url = initial.s3_bucket_url
     metadata = fetch_run_metadata(tracker, run_id) if show_identity or output_format == "jsonl" else None
     if output_format == "jsonl":
@@ -205,7 +227,14 @@ def stream_run_status(
                     click.echo(format_run_snapshot_json(latest, metadata, event=_completion_event(latest)))
                 else:
                     click.echo("\n")
-                    click.echo(click.style("✓ Run completed!", fg="green", bold=True))
+                    completion_event = _completion_event(latest)
+                    if completion_event == "error":
+                        click.echo(click.style("✗ Run errored.", fg="red", bold=True))
+                        _display_run_error(latest)
+                    elif completion_event == "stopped":
+                        click.echo(click.style("Run stopped.", fg="cyan", bold=True))
+                    else:
+                        click.echo(click.style("✓ Run completed!", fg="green", bold=True))
                     click.echo("┌─ Next Steps " + "─" * 66)
                     _stream_next_steps(run_id, s3_url)
                 break
@@ -216,6 +245,7 @@ def stream_run_status(
                 else:
                     click.echo("\n")
                     click.echo(click.style("✗ Run errored.", fg="red", bold=True))
+                    _display_run_error(latest)
                     click.echo("┌─ Next Steps " + "─" * 66)
                     _stream_next_steps(run_id, s3_url)
                 break

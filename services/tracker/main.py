@@ -72,7 +72,7 @@ from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
+from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var, run_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
@@ -179,8 +179,8 @@ TrackedBenchmarkId = Annotated[UUID, Depends(bind_benchmark_id)]
 
 
 def bind_run_id(run_id: UUID) -> UUID:
-    """Bind the canonical run id to the existing internal logging context."""
-    benchmark_id_var.set(str(run_id))
+    """Bind the canonical run id to the dual logging context."""
+    run_id_var.set(str(run_id))
     return run_id
 
 
@@ -483,6 +483,7 @@ async def fetch_benchmark(
         ),
         label=benchmark_row.label,
         final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
+        error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
     )
 
 

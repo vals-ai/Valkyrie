@@ -30,7 +30,6 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.scoping import scoped_select
-from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.types import (
     AverageTaskBreakdown,
@@ -113,11 +112,6 @@ class BenchmarkContext:
         )
 
         result = self._session.exec(statement).all()
-
-        if not result:
-            raise TrackerServiceError(
-                f"No tasks have been discovered for run {self._benchmark_row.id}, cannot provide task breakdown"
-            )
 
         return {TaskStatus(status): count for status, count in result}
 
@@ -305,9 +299,12 @@ async def stream_benchmark_results(
                     final_score=fresh_benchmark.final_evaluation.final_score
                     if fresh_benchmark.final_evaluation
                     else None,
+                    error_message=fresh_benchmark.error_message
+                    if fresh_benchmark.status == BenchmarkStatus.ERROR
+                    else None,
                 )
 
-                response_json = serialize_benchmark_snapshot(response_data, canonical=canonical)
+                response_json = serialize_run_snapshot(response_data, canonical=canonical)
                 yield f"{DATA_PREFIX} {response_json}\n\n"
 
                 if fresh_benchmark.status in [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]:
@@ -321,7 +318,7 @@ async def stream_benchmark_results(
         yield DISCONNECT
 
 
-def serialize_benchmark_snapshot(response: FetchBenchmarkResponse, *, canonical: bool) -> str:
+def serialize_run_snapshot(response: FetchBenchmarkResponse, *, canonical: bool) -> str:
     """Serialize one SSE snapshot without changing the stored or legacy result shape."""
     if canonical:
         return GetRunResponse.from_legacy(response).model_dump_json(by_alias=True)

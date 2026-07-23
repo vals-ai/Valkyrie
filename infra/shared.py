@@ -104,8 +104,7 @@ class SharedStack(Stack):
             )
 
         bucket_name = self.stage.phys(S3_BUCKET_NAME)
-        if not self.stage.is_prod:
-            bucket_name = f"{bucket_name}-{self.account}"
+        self.bucket_name = bucket_name
 
         self.bucket = aws_s3.Bucket(
             self,

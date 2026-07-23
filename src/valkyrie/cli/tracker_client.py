@@ -481,7 +481,7 @@ class TrackerService:
         webhook_intervals: list[int] | None = None,
     ) -> Response:
         """
-        Start a benchmark run on the tracker service.
+        Start a run on the tracker service.
 
         Args:
             contract: Agent contract request
@@ -490,7 +490,7 @@ class TrackerService:
             task_ids: Optional list of specific task IDs to run
             slice_str: Optional slice string for task selection
             label: Optional run label
-            lambda_function: Optional lambda function to invoke after benchmark
+            lambda_function: Optional lambda function to invoke after the run
 
         Returns:
             Run response with status, message, and results
@@ -541,7 +541,7 @@ class TrackerService:
             run_id: Run id
 
         Returns:
-            GetRunResponse with benchmark information
+            GetRunResponse with run information
         """
         try:
             response = self._get_with_legacy_fallback(
@@ -576,7 +576,7 @@ class TrackerService:
                 if response.status_code != 200:
                     response.read()
                     details = response_error_detail(response)
-                    raise TrackerServiceError(f"analyze-benchmark failed: {details}")
+                    raise TrackerServiceError(f"Run analysis failed: {details}")
 
                 # Cached short-circuit returns a single JSON body; fresh
                 # invocations return SSE. Normalize both to a ("done", payload)
@@ -600,7 +600,7 @@ class TrackerService:
                         if event_name in ("done", "error"):
                             return
         except httpx.HTTPError as e:
-            raise TrackerServiceError(f"analyze-benchmark failed: {e}") from e
+            raise TrackerServiceError(f"Run analysis failed: {e}") from e
 
     def stream_run(self, run_id: UUID) -> Generator[str, None, None]:
         """
@@ -608,8 +608,8 @@ class TrackerService:
 
         possible values for the generator:
         - data: {GetRunResponse}
-        - event: complete: benchmark completed
-        - event: error: benchmark error
+        - event: complete: run completed
+        - event: error: run error
         - event: disconnect: client disconnected from stream
 
         Args:
@@ -885,7 +885,7 @@ class TrackerService:
             run_id: Run id
 
         Returns:
-            RunMetadataResponse with benchmark metadata
+            RunMetadataResponse with run metadata
         """
         try:
             response = self._get_with_legacy_fallback(

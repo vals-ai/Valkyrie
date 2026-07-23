@@ -54,7 +54,7 @@ from tracker.utils import (
     set_benchmark_final_status,
     start_benchmark_request_to_benchmark,
 )
-from tracker.utils.reporting import serialize_benchmark_snapshot
+from tracker.utils.reporting import serialize_run_snapshot
 
 
 def test_run_snapshot_serialization_is_canonical_only_when_requested() -> None:
@@ -73,8 +73,8 @@ def test_run_snapshot_serialization_is_canonical_only_when_requested() -> None:
         s3_bucket_url="s3://bucket/run",
     )
 
-    legacy = serialize_benchmark_snapshot(response, canonical=False)
-    canonical = serialize_benchmark_snapshot(response, canonical=True)
+    legacy = serialize_run_snapshot(response, canonical=False)
+    canonical = serialize_run_snapshot(response, canonical=True)
 
     assert '"benchmark_id"' in legacy
     assert '"run_id"' not in legacy

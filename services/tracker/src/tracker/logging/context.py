@@ -4,14 +4,17 @@ import contextvars
 import logging
 
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="")
-benchmark_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("benchmark_id", default="")
+run_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("run_id", default="")
+# Compatibility alias for existing log consumers and worker code.
+benchmark_id_var = run_id_var
 task_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("task_id", default="")
 
 
 def get_context_tags() -> dict[str, str]:
-    """Current request/benchmark/task context vars. Values may be empty strings if unset."""
+    """Current request/run/task context vars with the legacy run-id alias."""
     return {
         "request_id": request_id_var.get(""),
+        "run_id": run_id_var.get(""),
         "benchmark_id": benchmark_id_var.get(""),
         "task_id": task_id_var.get(""),
     }

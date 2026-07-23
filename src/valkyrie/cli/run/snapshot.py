@@ -1,4 +1,4 @@
-"""Safe machine-readable snapshots for benchmark runs."""
+"""Safe machine-readable snapshots for runs."""
 
 import json
 from collections.abc import Mapping
@@ -9,10 +9,11 @@ from uuid import UUID
 
 from tracker.database.models import TaskStatus
 from tracker.types import (
+    GetRunResponse,
+    RunMetadataResponse,
+    RunStatus,
     RunStatusEntry,
     RunSummary,
-    RunMetadataResponse,
-    GetRunResponse,
 )
 
 from valkyrie.cli.exceptions import TrackerServiceError
@@ -78,6 +79,7 @@ def build_run_snapshot(
         "progress_percent": round(progress_percent, 4),
         "max_concurrency": arguments.concurrency if arguments is not None else None,
         "final_score": _finite_score_or_none(response.final_score),
+        "error_message": response.error_message if details.status == RunStatus.ERROR else None,
         "s3_bucket_url": response.s3_bucket_url,
         "docent_reading_status": details.docent_reading_status.value,
         "docent_reading_url": details.docent_reading_url,

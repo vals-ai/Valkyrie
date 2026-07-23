@@ -591,8 +591,10 @@ class TestTrackerAPI:
         Test Cases:
             - Returns 200 OK
             - Raising exception if benchmark row is not found
+            - Existing benchmark without discovered tasks returns empty progress
             - Benchmark details are returned in the response
             - Benchmark details are updated as benchmark progresses
+            - Run-level errors are returned only after the benchmark reaches ERROR
         """
 
         # Test case 1. Return 404 Not Found if benchmark does not exist
@@ -605,6 +607,17 @@ class TestTrackerAPI:
 
         database_session.add(benchmark_row)
         database_session.commit()
+
+        # Fetch during the interval between benchmark creation and task discovery.
+        query_params = {"benchmark_id": str(benchmark_row.id)}
+        response = client.get("/fetch-benchmark", params=query_params)
+
+        assert response.status_code == 200
+
+        details = response.json()["details"]
+        assert details["total_tasks"] == 0
+        assert details["finished_tasks"] == 0
+        assert details["task_breakdown"] == {}
 
         # Push some task rows that we can use to check the progress of the benchmark
         task_rows = [Task(org_id=TEST_ORG_ID, task_id=f"task_{i}", benchmark=benchmark_row.id) for i in range(10)]
@@ -625,6 +638,7 @@ class TestTrackerAPI:
         assert details.get("status") == BenchmarkStatus.IN_PROGRESS
         assert details.get("total_tasks") == 10
         assert details.get("finished_tasks") == 0
+        assert response.json().get("error_message") is None
 
         # Test case 4. Benchmark details are updated as benchmark progresses
         # Change a few to in progress, finished and error
@@ -684,6 +698,17 @@ class TestTrackerAPI:
         assert response.status_code == 200
         assert response.json().get("final_score") == 83.25
 
+        benchmark_row.status = BenchmarkStatus.ERROR
+        benchmark_row.error_message = "Dominant task error affecting 10/10 tasks"
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        response = client.get("/fetch-benchmark", params=query_params)
+
+        # Test case 7. Terminal errors return the stored run-level message
+        assert response.status_code == 200
+        assert response.json().get("error_message") == "Dominant task error affecting 10/10 tasks"
+
     async def test_canonical_run_read_routes_translate_only_the_http_boundary(
         self,
         monkeypatch: MonkeyPatch,
@@ -714,6 +739,15 @@ class TestTrackerAPI:
         assert fetched.status_code == 200
         assert fetched.json()["run_id"] == str(benchmark_row.id)
         assert "benchmark_id" not in fetched.json()
+
+        benchmark_row.status = BenchmarkStatus.ERROR
+        benchmark_row.error_message = "Canonical run error"
+        database_session.add(benchmark_row)
+        database_session.commit()
+
+        errored = client.get(f"/runs/{benchmark_row.id}")
+        assert errored.status_code == 200
+        assert errored.json()["error_message"] == "Canonical run error"
 
         assert listed.status_code == 200
         assert listed.json()["runs"][0]["run_id"] == str(benchmark_row.id)

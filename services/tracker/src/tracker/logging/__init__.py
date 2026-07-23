@@ -5,6 +5,7 @@ from tracker.logging.context import (
     ContextFilter,
     benchmark_id_var,
     request_id_var,
+    run_id_var,
     task_id_var,
 )
 from tracker.logging.logger import get_logger
@@ -16,5 +17,6 @@ __all__ = [
     "configure_logging",
     "get_logger",
     "request_id_var",
+    "run_id_var",
     "task_id_var",
 ]

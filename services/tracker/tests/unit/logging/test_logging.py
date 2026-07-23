@@ -26,6 +26,7 @@ class ContextLogRecord(logging.LogRecord):
     """Log record fields added by the tracker context filter."""
 
     request_id: str
+    run_id: str
     benchmark_id: str
     task_id: str
 
@@ -69,6 +70,7 @@ class TestContextFilter:
         context_filter.filter(record)
 
         assert record.request_id == ""
+        assert record.run_id == ""
         assert record.benchmark_id == ""
         assert record.task_id == ""
 
@@ -79,6 +81,7 @@ class TestContextFilter:
             context_filter.filter(record)
 
             assert record.request_id == "req-123"
+            assert record.run_id == "bench-456"
             assert record.benchmark_id == "bench-456"
             assert record.task_id == "task-789"
         finally:

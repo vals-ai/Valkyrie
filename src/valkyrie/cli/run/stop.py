@@ -30,7 +30,7 @@ from valkyrie.cli.tracker_client import TrackerService
     is_flag=True,
     required=False,
     default=False,
-    help="Force stop the benchmark run",
+    help="Force stop the run",
 )
 def stop(run_id: UUID, task_ids: str | None, task_ids_file: str | None, force: bool):
     """
