@@ -1,3 +1,10 @@
+"""Tests for sandbox queue admission.
+
+Run: pytest tests/unit/scheduler/test_admission.py
+
+Covers provider selection and queued sandbox lifecycle behavior.
+"""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Callable
@@ -6,21 +13,14 @@ from datetime import UTC, datetime
 from typing import cast
 
 import pytest
-from benchmark_service import DaytonaProviderConfig, Sandbox, SandboxConnectionError
+from benchmark_service import ImageSource, Resources, Sandbox, SandboxError, SandboxProvider, SandboxSource
 from redis.asyncio import Redis
 
-from tracker.scheduler.admission import DaytonaQueueContext, create_daytona_queue_context, enter_queued_sandbox
-from tracker.scheduler.capacity import (
-    CapacityObservationUnavailableError,
-    CapacitySnapshot,
-    ImpossibleResourceDemandError,
-    InvalidCapacityObservationError,
-    ResourceVector,
-)
+from tracker.scheduler.admission import SandboxQueueContext, create_queue_context, enter_queued_sandbox
 from tracker.scheduler.gate import QueueTicket, RedisQueueGate
 
 
-class FakeGate:
+class MockGate:
     def __init__(self) -> None:
         self.waited = 0
         self.left = 0
@@ -37,6 +37,7 @@ class FakeGate:
         self.left += 1
 
     async def wait(self) -> None:
+        assert not self.locked
         self.waited += 1
 
     @asynccontextmanager
@@ -48,68 +49,69 @@ class FakeGate:
             self.locked = False
 
 
-class FakeSandbox:
-    id = "sandbox-id"
-    name = "sandbox-name"
+class MockProvider:
+    def __init__(
+        self,
+        responses: list[bool | Exception],
+        events: list[str],
+        *,
+        pool_id: str | None = "pool",
+    ) -> None:
+        self._responses = iter(responses)
+        self._events = events
+        self._pool_id = pool_id
+        self.requests: list[tuple[SandboxSource, Resources]] = []
+
+    @property
+    def admission_pool_id(self) -> str | None:
+        return self._pool_id
+
+    async def check_admission(
+        self,
+        source: SandboxSource,
+        resources: Resources,
+    ) -> bool:
+        response = next(self._responses)
+        self.requests.append((source, resources))
+        if isinstance(response, Exception):
+            self._events.append("check:error")
+            raise response
+        self._events.append(f"check:{response}")
+
+        return response
 
 
-def _provider_config() -> DaytonaProviderConfig:
-    return DaytonaProviderConfig(
-        DAYTONA_API_KEY="secret",
-        DAYTONA_API_URL="https://daytona.example",
-        DAYTONA_TARGET="us",
-    )
+def _source() -> SandboxSource:
+    return ImageSource(image="sandbox-image")
 
 
-def _context(gate: FakeGate) -> DaytonaQueueContext:
-    return DaytonaQueueContext(
-        gate=cast(RedisQueueGate, gate),
-        pool_key="pool",
-        organization_id="org",
-        priority=3,
-        provider_config=_provider_config(),
-    )
+def _resources() -> Resources:
+    return Resources(vcpu=1, memory=2, disk=3)
 
 
 def _ticket() -> QueueTicket:
     return QueueTicket(pool_key="pool", task_key="attempt", priority=3, enqueued_at=datetime(2026, 1, 1, tzinfo=UTC))
 
 
-def _snapshot(cpu_available: int, *, cpu_total: int | None = None) -> CapacitySnapshot:
-    total = cpu_available if cpu_total is None else cpu_total
-    return CapacitySnapshot(
-        total=ResourceVector(cpu_millis=total),
-        used=ResourceVector(cpu_millis=total - cpu_available),
-    )
-
-
-def test_builds_context_from_existing_provider_config_without_exposing_key() -> None:
-    context = create_daytona_queue_context(
-        redis=cast(Redis, object()),
-        provider_config=_provider_config(),
-        organization_id="org",
+def _context(gate: MockGate, provider: MockProvider) -> SandboxQueueContext:
+    return SandboxQueueContext(
+        gate=cast(RedisQueueGate, gate),
+        pool_id="pool",
         priority=3,
+        provider=cast(SandboxProvider, provider),
     )
-
-    assert context.pool_key.startswith("daytona:")
-    assert context.organization_id == "org"
-    assert context.priority == 3
-    assert "secret" not in repr(context)
 
 
 def _factory(
-    gate: FakeGate,
+    gate: MockGate,
     events: list[str],
-    failure: Exception | None = None,
 ) -> Callable[[], AbstractAsyncContextManager[Sandbox]]:
     @asynccontextmanager
     async def sandbox() -> AsyncGenerator[Sandbox]:
         assert gate.locked
         events.append("create")
-        if failure:
-            raise failure
         try:
-            yield cast(Sandbox, FakeSandbox())
+            yield cast(Sandbox, object())
         finally:
             events.append("cleanup")
 
@@ -118,154 +120,96 @@ def _factory(
 
 async def _enter(
     stack: AsyncExitStack,
-    gate: FakeGate,
+    gate: MockGate,
+    provider: MockProvider,
     events: list[str],
     *,
-    demand: ResourceVector,
-    stopped: Callable[[], bool],
     mark_building: Callable[[], bool] = lambda: True,
-    failure: Exception | None = None,
 ) -> Sandbox | None:
     return await enter_queued_sandbox(
         stack=stack,
-        context=_context(gate),
+        context=_context(gate, provider),
         ticket=_ticket(),
-        demand=demand,
-        create=_factory(gate, events, failure),
-        stopped=stopped,
+        source=_source(),
+        resources=_resources(),
+        create=_factory(gate, events),
         mark_building=mark_building,
     )
 
 
-@pytest.mark.asyncio
-async def test_waits_for_capacity_and_releases_lock_after_create(monkeypatch: pytest.MonkeyPatch) -> None:
-    gate = FakeGate()
-    observations = iter([_snapshot(0, cpu_total=1000), _snapshot(1000)])
-    events: list[str] = []
+class TestCreateQueueContext:
+    """Provider-specific queue setup."""
 
-    async def observe(**_kwargs: str) -> CapacitySnapshot:
-        return next(observations)
+    def test_selects_provider_pool_and_rejects_queue_disabled_provider(self) -> None:
+        provider = MockProvider([], [])
 
-    monkeypatch.setattr("tracker.scheduler.admission.observe_daytona_capacity", observe)
-    async with AsyncExitStack() as stack:
-        sandbox = await _enter(stack, gate, events, demand=ResourceVector(cpu_millis=1000), stopped=lambda: False)
-        assert sandbox is not None
-        assert not gate.locked
-        assert events == ["create"]
+        context = create_queue_context(
+            redis=cast(Redis, object()),
+            provider=cast(SandboxProvider, provider),
+            priority=3,
+        )
 
-    assert events == ["create", "cleanup"]
-    assert gate.waited == 1
-    assert gate.left == 1
+        assert context.pool_id == "pool"
+        assert context.provider is provider
 
-
-@pytest.mark.asyncio
-async def test_impossible_demand_fails_without_blocking_or_creating(monkeypatch: pytest.MonkeyPatch) -> None:
-    gate = FakeGate()
-    events: list[str] = []
-
-    async def observe(**_kwargs: str) -> CapacitySnapshot:
-        return _snapshot(1000)
-
-    monkeypatch.setattr("tracker.scheduler.admission.observe_daytona_capacity", observe)
-    with pytest.raises(ImpossibleResourceDemandError, match="exceeds total Daytona capacity"):
-        async with AsyncExitStack() as stack:
-            await _enter(stack, gate, events, demand=ResourceVector(cpu_millis=2000), stopped=lambda: gate.waited > 0)
-
-    assert events == []
-    assert gate.waited == 0
-    assert gate.left == 1
-
-
-@pytest.mark.asyncio
-async def test_transient_observation_falls_back_to_create_and_cleans_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gate = FakeGate()
-    events: list[str] = []
-
-    async def unavailable(**_kwargs: str) -> CapacitySnapshot:
-        raise CapacityObservationUnavailableError
-
-    monkeypatch.setattr("tracker.scheduler.admission.observe_daytona_capacity", unavailable)
-    with pytest.raises(SandboxConnectionError, match="capacity"):
-        async with AsyncExitStack() as stack:
-            await _enter(
-                stack,
-                gate,
-                events,
-                demand=ResourceVector(cpu_millis=1000),
-                stopped=lambda: False,
-                failure=SandboxConnectionError("capacity"),
+        with pytest.raises(ValueError, match="does not support queued admission"):
+            create_queue_context(
+                redis=cast(Redis, object()),
+                provider=cast(SandboxProvider, MockProvider([], [], pool_id=None)),
+                priority=3,
             )
 
-    assert events == ["create"]
-    assert gate.waited == 0
-    assert gate.left == 1
 
+class TestEnterQueuedSandbox:
+    """Queued sandbox lifecycle behavior."""
 
-@pytest.mark.asyncio
-async def test_rechecks_task_ownership_after_acquiring_the_start_lock(monkeypatch: pytest.MonkeyPatch) -> None:
-    gate = FakeGate()
-    ownership_checks = iter([False, True])
+    async def test_waits_then_marks_building_before_create_and_defers_cleanup(self) -> None:
+        gate = MockGate()
+        events: list[str] = []
+        provider = MockProvider([False, True], events)
 
-    async def unexpected_observation(**_kwargs: str) -> CapacitySnapshot:
-        raise AssertionError("lost task ownership must prevent capacity observation")
+        def mark_building() -> bool:
+            events.append("mark_building")
 
-    monkeypatch.setattr("tracker.scheduler.admission.observe_daytona_capacity", unexpected_observation)
-    async with AsyncExitStack() as stack:
-        sandbox = await _enter(
-            stack,
-            gate,
-            [],
-            demand=ResourceVector(cpu_millis=1000),
-            stopped=lambda: next(ownership_checks),
-        )
+            return True
 
-    assert sandbox is None
-    assert gate.left == 1
-
-
-@pytest.mark.asyncio
-async def test_cleans_created_sandbox_when_building_transition_loses_ownership(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    gate = FakeGate()
-    events: list[str] = []
-
-    async def observe(**_kwargs: str) -> CapacitySnapshot:
-        return _snapshot(1000)
-
-    monkeypatch.setattr("tracker.scheduler.admission.observe_daytona_capacity", observe)
-    async with AsyncExitStack() as stack:
-        sandbox = await _enter(
-            stack,
-            gate,
-            events,
-            demand=ResourceVector(cpu_millis=1000),
-            stopped=lambda: False,
-            mark_building=lambda: False,
-        )
-        assert sandbox is None
-        assert events == ["create"]
-
-    assert events == ["create", "cleanup"]
-    assert gate.left == 1
-    assert gate.waited == 0
-
-
-@pytest.mark.asyncio
-async def test_stop_and_invalid_capacity_leave_the_queue(monkeypatch: pytest.MonkeyPatch) -> None:
-    gate = FakeGate()
-
-    async def invalid(**_kwargs: str) -> CapacitySnapshot:
-        raise InvalidCapacityObservationError
-
-    monkeypatch.setattr("tracker.scheduler.admission.observe_daytona_capacity", invalid)
-    async with AsyncExitStack() as stack:
-        assert await _enter(stack, gate, [], demand=ResourceVector(), stopped=lambda: True) is None
-    assert gate.left == 1
-
-    with pytest.raises(InvalidCapacityObservationError):
         async with AsyncExitStack() as stack:
-            await _enter(stack, gate, [], demand=ResourceVector(), stopped=lambda: False)
-    assert gate.left == 2
+            sandbox = await _enter(stack, gate, provider, events, mark_building=mark_building)
+
+            assert sandbox is not None
+            assert events == ["check:False", "check:True", "mark_building", "create"]
+            assert not gate.locked
+
+        assert events == ["check:False", "check:True", "mark_building", "create", "cleanup"]
+        assert provider.requests == [(_source(), _resources()), (_source(), _resources())]
+        assert gate.waited == 1
+        assert gate.left == 1
+
+    async def test_provider_error_creates_nothing_and_removes_ticket(self) -> None:
+        gate = MockGate()
+        events: list[str] = []
+        provider = MockProvider([SandboxError("capacity request failed")], events)
+
+        with pytest.raises(SandboxError, match="capacity request failed"):
+            async with AsyncExitStack() as stack:
+                await _enter(stack, gate, provider, events)
+
+        assert events == ["check:error"]
+        assert gate.left == 1
+
+    async def test_failed_building_transition_creates_nothing_and_removes_ticket(self) -> None:
+        gate = MockGate()
+        events: list[str] = []
+        provider = MockProvider([True], events)
+
+        def mark_building() -> bool:
+            events.append("mark_building")
+
+            return False
+
+        async with AsyncExitStack() as stack:
+            sandbox = await _enter(stack, gate, provider, events, mark_building=mark_building)
+
+        assert sandbox is None
+        assert events == ["check:True", "mark_building"]
+        assert gate.left == 1

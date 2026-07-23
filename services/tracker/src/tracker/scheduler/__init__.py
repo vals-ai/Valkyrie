@@ -1,1 +1,1 @@
-"""Redis-backed sandbox admission."""
+"""Redis-backed sandbox admission primitives."""
