@@ -24,6 +24,7 @@
         "kwargs": {}
       },
       "concurrency": 2,
+      "priority": null,
       "task_ids": [
         "task-1",
         "task-2"

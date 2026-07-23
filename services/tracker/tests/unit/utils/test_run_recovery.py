@@ -10,13 +10,13 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import pytest
-from benchmark_service import SandboxQuery
+from benchmark_service import SandboxProvider, SandboxQuery
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse, VerifyTaskIdsResponse
@@ -355,6 +355,7 @@ class TestRunRecovery:
                     DAYTONA_API_URL="url",
                     DAYTONA_TARGET="target",
                 ),
+                sandbox_provider=cast(SandboxProvider, MockSubsetSandboxProvider([])),
                 creation_semaphore=asyncio.Semaphore(1),
             )
         )
@@ -907,6 +908,7 @@ class TestRunRecovery:
                 harness_config,
                 self._test_org,
                 sandbox_provider_config=sandbox_provider_config,
+                sandbox_provider=cast(SandboxProvider, MockSubsetSandboxProvider([])),
                 creation_semaphore=asyncio.Semaphore(1),
             )
         finally:
@@ -984,6 +986,7 @@ class TestRunRecovery:
                     DAYTONA_API_URL="url",
                     DAYTONA_TARGET="target",
                 ),
+                sandbox_provider=cast(SandboxProvider, MockSubsetSandboxProvider([])),
                 creation_semaphore=asyncio.Semaphore(1),
             )
         finally:
@@ -1005,7 +1008,11 @@ class TestRunRecovery:
         benchmark_row = example_benchmark_object
         benchmark_row.status = BenchmarkStatus.STOPPED
         benchmark_row.arguments = benchmark_row.arguments.model_copy(
-            update={"sandbox_provider": "modal", "sandbox_provider_secret_name": "ModalSecrets"}
+            update={
+                "priority": 0,
+                "sandbox_provider": "daytona",
+                "sandbox_provider_secret_name": "DaytonaSecrets",
+            }
         )
         database_session.add(benchmark_row)
         database_session.commit()
@@ -1021,7 +1028,7 @@ class TestRunRecovery:
         monkeypatch.setattr("main.reset_to_in_progress_status", _mock_reset_to_in_progress_status)
 
         response = client.post(
-            f"/retry-or-resume-benchmark/{benchmark_row.id}?concurrency=20",
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
             json={"task_ids": [], "service_headers": {}},
             headers={"X-Api-Key": "tracker-api-key"},
         )
@@ -1030,12 +1037,8 @@ class TestRunRecovery:
         assert observed_headers["X-Descope-Api-Key"] == "tracker-api-key"
 
         queued_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
-        assert queued_request["concurrency"] == 20
-        assert queued_request["sandbox_provider"] == "modal"
-        assert queued_request["harness_config"]["sandbox_provider_secret_name"] == "ModalSecrets"
+        assert queued_request["priority"] == 0
         assert queued_request["service_headers"]["X-Descope-Api-Key"] == "tracker-api-key"
-        database_session.refresh(benchmark_row)
-        assert benchmark_row.arguments.concurrency == 20
 
     async def test_force_stop_uses_stored_provider_secret(
         self,
@@ -1409,7 +1412,7 @@ class TestRunRecovery:
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
 
-        tracked_task = TrackedTask(asyncio.sleep(0), org=self._test_org)
+        tracked_task = TrackedTask(asyncio.sleep(0), org=self._test_org, started_at=task_row.started_at)
         setattr(tracked_task, "_status", TrackedTaskStatus.WAITING)
 
         cancel_mock = Mock()

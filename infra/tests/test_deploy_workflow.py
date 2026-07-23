@@ -9,10 +9,14 @@ WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "deploy.yaml"
 class DeployWorkflowTest(unittest.TestCase):
     def test_dev_push_deploys_all_through_protected_validated_path(self) -> None:
         workflow = WORKFLOW.read_text(encoding="utf-8")
+        production_job = workflow.split("  deploy-production:", maxsplit=1)[1].split(
+            "  run-dev-operation:", maxsplit=1
+        )[0]
         dev_job = workflow.split("  run-dev-operation:", maxsplit=1)[1]
 
         self.assertIn("branches: [dev, prod]", workflow)
         self.assertIn("uv run cdk deploy --all -c stage=prod --require-approval never", workflow)
+        self.assertIn("SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}", production_job)
         self.assertIn(
             "github.ref == 'refs/heads/dev' && (github.event_name == 'push' || "
             "github.event_name == 'workflow_dispatch')",
@@ -24,6 +28,7 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}", dev_job)
         self.assertIn('PRODUCTION_ACCOUNT_ID: "613431292675"', dev_job)
         self.assertIn("SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}", dev_job)
+        self.assertIn("SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}", dev_job)
         self.assertIn('"$DEV_ACCOUNT_ID" == "$PRODUCTION_ACCOUNT_ID"', dev_job)
         self.assertIn('"$OPERATION" != "credentials-only" && -z "$DESCOPE_PROJECT_ID"', dev_job)
         self.assertIn("DESCOPE_PROJECT_ID before planning or deploying", dev_job)

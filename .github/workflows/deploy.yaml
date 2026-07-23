@@ -83,6 +83,7 @@ jobs:
           AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
           DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
         run: |
           cd infra
           uv run cdk deploy --all -c stage=prod --require-approval never
@@ -102,6 +103,7 @@ jobs:
       OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
       PRODUCTION_ACCOUNT_ID: "613431292675"
       SCOPE: ${{ github.event_name == 'push' && 'all' || inputs.scope }}
+      SANDBOX_QUEUE_ENABLED: ${{ vars.SANDBOX_QUEUE_ENABLED }}
       SENTRY_DSN_SECRET_NAME: ${{ vars.SENTRY_DSN_SECRET_NAME }}
 
     steps:

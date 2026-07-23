@@ -3,10 +3,7 @@
 from dataclasses import dataclass
 from uuid import UUID
 
-from benchmark_service import (
-    SandboxProviderConfig,
-    sandbox_provider_config_from_mapping,
-)
+from benchmark_service import SandboxProviderConfig, sandbox_provider_config_from_mapping
 from benchmark_service.client import BenchmarkServiceClient
 from sqlmodel import Session, select
 
@@ -74,6 +71,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
         arguments=BenchmarkArguments(
             contract=request.contract,
             concurrency=request.concurrency,
+            priority=request.priority,
             task_ids=request.task_ids,
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,

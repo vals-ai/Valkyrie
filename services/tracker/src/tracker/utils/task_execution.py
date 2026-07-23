@@ -6,9 +6,9 @@ import time
 import traceback
 from asyncio import Semaphore
 from collections.abc import Coroutine
-from contextlib import suppress
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from types import TracebackType
 from typing import Any
@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    Sandbox,
+    SandboxProvider,
     SandboxProviderConfig,
 )
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
@@ -35,6 +37,7 @@ from tracker.aws.s3 import (
 from tracker.aws.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
+    Benchmark,
     BenchmarkStatus,
     ErrorResult,
     EvaluationResult,
@@ -54,6 +57,8 @@ from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
+from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
+from tracker.scheduler.gate import QueueTicket
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -128,10 +133,12 @@ class TrackedTask:
     _status: str
     _task: asyncio.Task[Any] | None
     _org: Org
+    _attempt_started_at: datetime
 
-    def __init__(self, coro: Coroutine[Any, Any, Any], org: Org):
+    def __init__(self, coro: Coroutine[Any, Any, Any], org: Org, started_at: datetime):
         self._coro = coro
         self._org = org
+        self._attempt_started_at = _normalized_attempt_time(started_at)
         self._status = TrackedTaskStatus.WAITING
         self._task = None
 
@@ -142,6 +149,10 @@ class TrackedTask:
     @property
     def task(self) -> asyncio.Task[Any] | None:
         return self._task
+
+    @property
+    def attempt_started_at(self) -> datetime:
+        return self._attempt_started_at
 
     async def run(self, limiter: ResizableLimiter, task_row: Task) -> dict[str, dict[str, Any] | None]:
         async def _wrap_coro():
@@ -180,6 +191,7 @@ class TaskMonitor:
     _notifier: SlackNotifier | None
     _org: Org
     _limiter: ResizableLimiter
+    _cancellation_requested: set[str]
     _TRACK_INTERVAL: int = 2
 
     def __init__(
@@ -195,53 +207,33 @@ class TaskMonitor:
         self._org = org
         self._notifier = notifier
         self._limiter = limiter
+        self._cancellation_requested = set()
 
-    async def _refresh_concurrency(self) -> None:
+    def _load_state(self, task_ids: list[str]) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
-            concurrency = benchmark_row.arguments.concurrency
-        await self._limiter.resize(concurrency)
+            task_states = {
+                task_id: (TaskStatus(status), started_at)
+                for task_id, status, started_at in session.exec(
+                    select(Task.task_id, Task.status, Task.started_at)
+                    .where(col(Task.task_id).in_(task_ids))
+                    .where(Task.benchmark == self._benchmark_id)
+                    .where(Task.org_id == self._org.id)
+                ).all()
+            }
 
-    def _fetch_task_row(self, task_id: str) -> Task:
-        with Session(bind=engine) as session:
-            task_row = session.exec(
-                select(Task)
-                .where(Task.task_id == task_id)
-                .where(Task.benchmark == self._benchmark_id)
-                .where(Task.org_id == self._org.id)
-                .limit(1)
-            ).first()
-
-            if not task_row:
+        for task_id in task_ids:
+            if task_id not in task_states:
                 raise ValueError(f"Task with id {task_id} not found")
 
-            return task_row
+        return benchmark_row, task_states
 
-    def _validate_task(self, task_id: str) -> bool:
-        """
-        If the task status has been set to stopped we return False to exit the task early.
-
-        Returns:
-            True if the task should continue to be processed, False if the task should be stopped early
-
-        """
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
-            task_row = self._fetch_task_row(task_id)
-
-            # If task has been stopped or benchmark has errored we need to exit
-            if task_row.status == TaskStatus.STOPPED or benchmark_row.status == BenchmarkStatus.ERROR:
-                return False
-
-        return True
-
-    async def _check_notifications(self) -> None:
+    async def _check_notifications(self, benchmark_row: Benchmark) -> None:
         """Check notification thresholds using DB task counts."""
         if not self._notifier:
             return
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(self._benchmark_id, session, self._org)
             notification_context = NotificationContext.from_benchmark(benchmark_row, session, self._org)
             await self._notifier.check_and_notify(notification_context)
 
@@ -250,27 +242,35 @@ class TaskMonitor:
         Tracks tasks and cancels them when they are no longer valid.
         """
 
-        exit_condition_met: bool = False
-
-        while not exit_condition_met and self._task_tracking:
-            await self._refresh_concurrency()
-            tasks_to_check: list[str] = list(self._task_tracking.keys())
-            for task_id in tasks_to_check:
-                task = self._task_tracking[task_id]
-
-                if task.status == TrackedTaskStatus.DONE:
+        while self._task_tracking:
+            for task_id, tracked_task in list(self._task_tracking.items()):
+                if tracked_task.status == TrackedTaskStatus.DONE:
                     del self._task_tracking[task_id]
-                    continue
-
-                if not self._validate_task(task_id) and task.task is not None and not task.task.done():
-                    task.task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
-
-            await self._check_notifications()
+                    self._cancellation_requested.discard(task_id)
 
             if not self._task_tracking:
-                exit_condition_met = True
+                break
 
-            await asyncio.sleep(self._TRACK_INTERVAL)
+            tasks_to_check: list[str] = list(self._task_tracking.keys())
+            benchmark_row, task_states = self._load_state(tasks_to_check)
+            await self._limiter.resize(benchmark_row.arguments.concurrency)
+
+            for task_id in tasks_to_check:
+                tracked_task = self._task_tracking[task_id]
+                status, started_at = task_states[task_id]
+                invalid = (
+                    status == TaskStatus.STOPPED
+                    or benchmark_row.status == BenchmarkStatus.ERROR
+                    or _normalized_attempt_time(started_at) != tracked_task.attempt_started_at
+                )
+                task = tracked_task.task
+                if invalid and task is not None and not task.done() and task_id not in self._cancellation_requested:
+                    self._cancellation_requested.add(task_id)
+                    task.cancel(f"Task {task_id} has been invalidated. Run has been requested to stop")
+
+            await self._check_notifications(benchmark_row)
+            if self._task_tracking:
+                await asyncio.sleep(self._TRACK_INTERVAL)
 
 
 def handle_early_exit(task_row: Task, task_session: Session) -> bool:
@@ -330,6 +330,7 @@ def _commit_task_status(
     error_message: str | None = None,
     extra: dict[str, Any] | None = None,
     expected_started_at: datetime | None = None,
+    expected_status: TaskStatus | None = None,
 ) -> bool:
     from_status = task.status
     span_attributes = {
@@ -352,6 +353,8 @@ def _commit_task_status(
             task_update = task_update.where(col(Task.status) != TaskStatus.STOPPED)
         if expected_started_at is not None:
             task_update = task_update.where(col(Task.started_at) == expected_started_at)
+        if expected_status is not None:
+            task_update = task_update.where(col(Task.status) == expected_status)
 
         result = session.exec(task_update.values(**values))
         if result.rowcount == 0:
@@ -369,6 +372,7 @@ def commit_task_status_transition(
     to_status: TaskStatus,
     *,
     expected_started_at: datetime | None = None,
+    expected_status: TaskStatus | None = None,
 ) -> bool:
     fetch_start = time.monotonic()
     task = fetch_task_row(task_row_id, session, org)
@@ -378,6 +382,7 @@ def commit_task_status_transition(
         to_status,
         extra={"fetch_duration_ms": elapsed_ms(fetch_start)},
         expected_started_at=expected_started_at,
+        expected_status=expected_status,
     )
 
 
@@ -391,9 +396,13 @@ async def process_task(
     harness_config: HarnessConfig,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
+    sandbox_provider: SandboxProvider,
     creation_semaphore: Semaphore,
+    *,
+    queue_context: SandboxQueueContext | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
+    queue_enqueued_at = datetime.now(UTC)
     return await _process_task_attempt(
         task_row,
         start_benchmark_request,
@@ -403,8 +412,11 @@ async def process_task(
         harness_config,
         org,
         sandbox_provider_config,
+        sandbox_provider,
         creation_semaphore,
         dependency_setup_recovery=_DependencySetupRecoveryState(),
+        queue_context=queue_context,
+        queue_enqueued_at=queue_enqueued_at,
     )
 
 
@@ -424,8 +436,12 @@ async def _process_task_attempt(
     harness_config: HarnessConfig,
     org: Org,
     sandbox_provider_config: SandboxProviderConfig,
+    sandbox_provider: SandboxProvider,
     creation_semaphore: Semaphore,
     dependency_setup_recovery: _DependencySetupRecoveryState,
+    *,
+    queue_context: SandboxQueueContext | None = None,
+    queue_enqueued_at: datetime,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -542,9 +558,19 @@ async def _process_task_attempt(
 
                 raise e from e
 
-        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
-        sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
+        if queue_context is not None and task_row.status == TaskStatus.EVALUATING:
+            with Session(bind=engine) as task_session:
+                if not commit_task_status_transition(
+                    task_row.id,
+                    task_session,
+                    org,
+                    TaskStatus.PENDING,
+                    expected_started_at=attempt_started_at,
+                    expected_status=TaskStatus.EVALUATING,
+                ):
+                    return {task_id: None}
 
+        task_data = await benchmark_service.retrieve_task(task_id=task_id, dataset=start_benchmark_request.dataset)
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
             "Benchmark": start_benchmark_request.benchmark_name,
@@ -552,15 +578,16 @@ async def _process_task_attempt(
             "Task": task_row.task_id,
         }
 
-        with Session(bind=engine) as task_session:
-            if not commit_task_status_transition(
-                task_row.id,
-                task_session,
-                org,
-                TaskStatus.BUILDING,
-                expected_started_at=attempt_started_at,
-            ):
-                return {task_id: None}
+        if queue_context is None:
+            with Session(bind=engine) as task_session:
+                if not commit_task_status_transition(
+                    task_row.id,
+                    task_session,
+                    org,
+                    TaskStatus.BUILDING,
+                    expected_started_at=attempt_started_at,
+                ):
+                    return {task_id: None}
 
         identity = {
             "benchmark_name": benchmark_name,
@@ -586,15 +613,55 @@ async def _process_task_attempt(
         task_breakdown = TaskBreakdown()
 
         start_sandbox_build_time = time.perf_counter()
-        async with create_sandbox(
-            provider=sandbox_provider,
-            sandbox_name=task_row.task_id,
-            source=task_data.source,
-            labels=labels,
-            env_vars=env_vars,
-            resources=task_data.resources,
-            creation_semaphore=creation_semaphore,
-        ) as sandbox:
+
+        def sandbox_context() -> AbstractAsyncContextManager[Sandbox]:
+            nonlocal start_sandbox_build_time
+            start_sandbox_build_time = time.perf_counter()
+            return create_sandbox(
+                provider=sandbox_provider,
+                sandbox_name=task_row.task_id,
+                source=task_data.source,
+                labels=labels,
+                env_vars=env_vars,
+                resources=task_data.resources,
+                creation_semaphore=creation_semaphore,
+            )
+
+        async with AsyncExitStack() as sandbox_stack:
+            if queue_context is None:
+                sandbox = await sandbox_stack.enter_async_context(sandbox_context())
+            else:
+                attempt_identity_time = _normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC)
+                ticket = QueueTicket(
+                    pool_key=queue_context.pool_id,
+                    task_key=f"{benchmark_id}:{task_row.id}:{attempt_identity_time.isoformat()}",
+                    priority=queue_context.priority,
+                    enqueued_at=queue_enqueued_at,
+                )
+
+                def mark_building() -> bool:
+                    with Session(bind=engine) as task_session:
+                        return commit_task_status_transition(
+                            task_row.id,
+                            task_session,
+                            org,
+                            TaskStatus.BUILDING,
+                            expected_started_at=attempt_started_at,
+                            expected_status=TaskStatus.PENDING,
+                        )
+
+                sandbox = await enter_queued_sandbox(
+                    stack=sandbox_stack,
+                    context=queue_context,
+                    ticket=ticket,
+                    source=task_data.source,
+                    resources=task_data.resources,
+                    create=sandbox_context,
+                    mark_building=mark_building,
+                )
+                if sandbox is None:
+                    return {task_id: None}
+
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
             start_sandbox_run_time = time.perf_counter()
 
@@ -749,6 +816,16 @@ async def _process_task_attempt(
     except SandboxSetupError as e:
         if task_is_stopped():
             return {task_id: None}
+        if queue_context is not None:
+            with Session(bind=engine) as task_session:
+                if not commit_task_status_transition(
+                    task_row.id,
+                    task_session,
+                    org,
+                    TaskStatus.PENDING,
+                    expected_started_at=attempt_started_at,
+                ):
+                    return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
         raise
     except OutputArtifactError as e:

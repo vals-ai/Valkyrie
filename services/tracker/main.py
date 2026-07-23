@@ -1,3 +1,4 @@
+import asyncio
 import io
 import logging
 import tarfile
@@ -24,6 +25,7 @@ from tracker.api.agents import router as agents_router
 from tracker.api.benchmark_services import router as benchmark_services_router
 from tracker.api.benchmarks_status import router as benchmarks_status_router
 from tracker.api.filter_options import router as filter_options_router
+from tracker.api.scheduler_overview import router as scheduler_overview_router
 from tracker.api.single_benchmark import router as single_benchmark_router
 from tracker.api.single_task import router as single_task_router
 from tracker.auth import (
@@ -54,6 +56,7 @@ from tracker.agent.schemas import AgentConfig
 from tracker.config import (
     AUTH_REQUIRED,
     ENVIRONMENT,
+    SANDBOX_QUEUE_ENABLED,
     create_benchmark_service_url,
 )
 from tracker.database.models import (
@@ -116,6 +119,7 @@ from tracker.utils import (
     update_benchmark_concurrency,
     update_benchmark_resume_arguments,
 )
+from tracker.utils.resources import fetch_sandbox_provider_config
 
 configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
@@ -139,6 +143,7 @@ app.include_router(agents_router)
 app.include_router(benchmark_services_router)
 app.include_router(benchmarks_status_router)
 app.include_router(filter_options_router)
+app.include_router(scheduler_overview_router)
 app.include_router(single_benchmark_router)
 app.include_router(single_task_router)
 
@@ -298,6 +303,30 @@ async def start_benchmark(
             ),
         }
     )
+
+    provider_config = await asyncio.to_thread(
+        fetch_sandbox_provider_config,
+        request.harness_config.sandbox_provider_secret_name,
+        request.harness_config.aws,
+        request.sandbox_provider,
+    )
+    provider = provider_config.create_provider()
+    try:
+        queue_configured = SANDBOX_QUEUE_ENABLED and provider.admission_pool_id is not None
+    finally:
+        await provider.close()
+
+    if queue_configured and request.priority is None:
+        request = request.model_copy(update={"priority": 3})
+    elif not queue_configured and request.priority is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Queue priority requires a sandbox provider configured for admission"
+                if SANDBOX_QUEUE_ENABLED
+                else "Queue priority requires sandbox queue to be enabled"
+            ),
+        )
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})

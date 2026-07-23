@@ -496,6 +496,7 @@ class TestRunState:
             benchmark=example_benchmark_object.id,
             status=TaskStatus.IN_PROGRESS,
         )
+        database_session.add(example_benchmark_object)
         database_session.add(task_row)
         database_session.commit()
 

@@ -251,6 +251,8 @@ def test_format_start_benchmark_response_prints_run_outputs_command(capsys: pyte
     format_start_benchmark_response(response)
 
     output = capsys.readouterr().out
+    assert "Admission:" not in output
+    assert "Priority:" not in output
     assert "Run outputs:" in output
     assert f"valkyrie run outputs {run_id} --output-dir ." in output
     assert "Agent outputs:" not in output

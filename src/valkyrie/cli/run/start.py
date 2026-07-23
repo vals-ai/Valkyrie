@@ -30,13 +30,20 @@ def cont(value: str) -> str:
 
 
 def format_run_start_details(
-    benchmark: str, dataset: str | None, concurrency: int, slice_str: str | None, task_ids: str | None
+    benchmark: str,
+    dataset: str | None,
+    concurrency: int,
+    slice_str: str | None,
+    task_ids: str | None,
+    priority: int | None,
 ) -> None:
     """Format and display the start details of a run."""
     click.echo("┌─ Benchmark " + "─" * 67)
     click.echo(row("Name:", benchmark))
     click.echo(row("Dataset:", dataset or "default"))
     click.echo(row("Concurrency:", str(concurrency)))
+    if priority is not None:
+        click.echo(row("Priority override:", str(priority)))
     if slice_str:
         click.echo(row("Slice:", slice_str))
     if task_ids:
@@ -182,7 +189,7 @@ def resolve_webhook_config(
     type=click.IntRange(min=1),
     default=5,
     required=False,
-    help="Number of concurrent tasks to run (e.g., 5)",
+    help="Maximum concurrent tasks; defaults to 5",
 )
 @click.option(
     "--lambda",
@@ -227,6 +234,13 @@ def resolve_webhook_config(
     required=False,
     default=None,
     help="Named sandbox provider from config (e.g., daytona, modal)",
+)
+@click.option(
+    "--priority",
+    type=click.IntRange(0, 4),
+    required=False,
+    default=None,
+    help="Override configured queue priority: 0 (highest) through 4 (lowest); default is 3",
 )
 @click.option(
     "--label",
@@ -302,6 +316,7 @@ def start(
     slice_str: str | None,
     dataset: str | None,
     provider: str | None,
+    priority: int | None,
     label: str | None,
     kwargs: tuple[tuple[str, str]],
     secrets: tuple[tuple[str, str]],
@@ -333,7 +348,7 @@ def start(
     webhook_secret, webhook_intervals = resolve_webhook_config(intervals, TrackerService.get_webhook_secret())
 
     task_ids_display = ",".join(formatted_task_ids) if formatted_task_ids else None
-    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display)
+    format_run_start_details(benchmark, dataset, concurrency, slice_str, task_ids_display, priority)
 
     format_agent_start_details(agent, model, secrets, kwargs, service_headers, webhook_secret, webhook_intervals)
 
@@ -384,6 +399,7 @@ def start(
                         label,
                         lambda_function,
                         dataset,
+                        priority=priority,
                         service_headers=service_headers or None,
                         provider=provider,
                         webhook_secret_name=webhook_secret if webhook_intervals else None,

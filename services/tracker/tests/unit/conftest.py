@@ -163,7 +163,12 @@ def mock_cloudwatch(monkeypatch: pytest.MonkeyPatch) -> None:
         return None
 
     def _mock_fetch_aws_secret(*_args: Any, **_kwargs: Any) -> dict[str, str]:
-        return {"DAYTONA_API_KEY": "test-key", "DAYTONA_API_URL": "http://localhost:8001", "DAYTONA_TARGET": "us"}
+        return {
+            "DAYTONA_API_KEY": "test-key",
+            "DAYTONA_API_URL": "http://localhost:8001",
+            "DAYTONA_ORGANIZATION_ID": "test-organization",
+            "DAYTONA_TARGET": "us",
+        }
 
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.create_benchmark_log_group", _mock_create_benchmark_log_group)
     monkeypatch.setattr("tracker.aws.cloudwatch_logs.write_benchmark_log_event", _mock_write_benchmark_log_event)

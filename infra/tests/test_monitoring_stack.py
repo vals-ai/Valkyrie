@@ -343,6 +343,29 @@ class MonitoringStackTest(unittest.TestCase):
                     },
                 )
 
+    def test_services_receive_sandbox_queue_flag_from_deployment_environment(self) -> None:
+        for deployment_environment, expected_value in (
+            ({}, "false"),
+            ({"SANDBOX_QUEUE_ENABLED": ""}, "false"),
+            ({"SANDBOX_QUEUE_ENABLED": "true"}, "true"),
+        ):
+            with (
+                self.subTest(environment=deployment_environment),
+                mock.patch.dict(os.environ, deployment_environment, clear=True),
+            ):
+                tracker_template, worker_template = _service_templates(PROD)
+
+            expected_env = assertions.Match.array_with([{"Name": "SANDBOX_QUEUE_ENABLED", "Value": expected_value}])
+            for template in (tracker_template, worker_template):
+                template.has_resource_properties(
+                    "AWS::ECS::TaskDefinition",
+                    {
+                        "ContainerDefinitions": assertions.Match.array_with(
+                            [assertions.Match.object_like({"Environment": expected_env})]
+                        )
+                    },
+                )
+
     def test_dev_sentry_secret_is_optional(self) -> None:
         with mock.patch.dict(os.environ, TEST_DEV_ENV, clear=True):
             tracker_template, worker_template = _service_templates(DEV)

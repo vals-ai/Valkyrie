@@ -158,6 +158,7 @@ class BenchmarkArguments(BaseModel):
 
     contract: AgentContractRequest
     concurrency: int
+    priority: int | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
@@ -286,6 +287,7 @@ class Benchmark(SQLModel, table=True):
             contract=self.arguments.contract,
             benchmark_name=self.name,
             concurrency=self.arguments.concurrency,
+            priority=self.arguments.priority,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
             lambda_function=self.arguments.lambda_function,

@@ -11,6 +11,7 @@ from sqlmodel import Session
 from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
+from tracker.scheduler.admission import SandboxQueueContext
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
 
@@ -82,6 +83,8 @@ async def run_process_task(
     task_row: Task,
     benchmark_id: UUID,
     harness_config: HarnessConfig,
+    *,
+    queue_context: SandboxQueueContext | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Run process_task with the shared deterministic unit-test dependencies.
 
@@ -94,18 +97,22 @@ async def run_process_task(
     Returns
     - The task result mapping returned by process_task.
     """
+    benchmark_service = start_benchmark_request.benchmark_service
+    sandbox_provider_config = fetch_sandbox_provider_config(
+        harness_config.sandbox_provider_secret_name,
+        harness_config.aws,
+        start_benchmark_request.sandbox_provider,
+    )
     return await process_task(
         task_row=task_row,
         start_benchmark_request=start_benchmark_request,
-        benchmark_service=start_benchmark_request.benchmark_service,
+        benchmark_service=benchmark_service,
         benchmark_id=benchmark_id,
         task_id="task_0",
         harness_config=harness_config,
         org=TEST_ORG,
-        sandbox_provider_config=fetch_sandbox_provider_config(
-            harness_config.sandbox_provider_secret_name,
-            harness_config.aws,
-            start_benchmark_request.sandbox_provider,
-        ),
+        sandbox_provider_config=sandbox_provider_config,
+        sandbox_provider=benchmark_service.get_sandbox_provider(sandbox_provider_config),
         creation_semaphore=Semaphore(1),
+        queue_context=queue_context,
     )

@@ -90,6 +90,7 @@ class TrackerStack(Stack):
             "ENVIRONMENT": stage_config.runtime_environment,
             "BENCHMARK_SERVICE_CLOUDMAP_NAMESPACE": namespace.namespace_name,
             "DAYTONA_HAPPY_EYEBALLS_DELAY": "none",
+            "SANDBOX_QUEUE_ENABLED": os.environ.get("SANDBOX_QUEUE_ENABLED") or "false",
         }
 
         # ── RDS ──────────────────────────────────────────────────────────

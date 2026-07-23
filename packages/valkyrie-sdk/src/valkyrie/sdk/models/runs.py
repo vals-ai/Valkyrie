@@ -65,6 +65,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    priority: int | None = Field(default=None, strict=True, ge=0, le=4)
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
@@ -195,6 +196,7 @@ class BenchmarkArguments(ResponseModel):
 
     contract: AgentContractRequest
     concurrency: int
+    priority: int | None = Field(default=None, strict=True)
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None

@@ -227,6 +227,35 @@ async def test_start_can_omit_optional_run_configuration(make_client, sdk_config
     assert captured_body["service_headers"] == {}
     assert captured_body["webhook_secret_name"] is None
     assert captured_body["webhook_intervals"] is None
+    assert captured_body["concurrency"] == 5
+    assert "use_queue" not in captured_body
+    assert captured_body["priority"] is None
+
+
+async def test_start_serializes_explicit_queue_priority(make_client, sdk_config) -> None:
+    captured_body: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "benchmark_name": "swebench",
+                "agent_name": "sweagent",
+                "benchmark_id": str(uuid4()),
+                "concurrency": 5,
+                "started_at": "2026-07-08T12:00:00Z",
+                "task_count": 1,
+                "cloudwatch_url": "https://logs.test",
+                "s3_bucket_url": "s3://runs-bucket/run",
+            },
+        )
+
+    client = make_client(handler, config=sdk_config(default_sandbox_provider="daytona"))
+    async with client:
+        await client.runs.start("sweagent", "swebench", priority=3)
+
+    assert captured_body["priority"] == 3
 
 
 async def test_start_overlays_a_supplied_contract_without_mutating_it(make_client) -> None:
@@ -564,6 +593,8 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
         with pytest.raises(ValkyrieSDKError, match="concurrency") as exc_info:
             await client.runs.start("agent", "swebench", concurrency=0)
         assert isinstance(exc_info.value, ValkyrieRunError)
+        with pytest.raises(ValkyrieSDKError, match="priority must be"):
+            await client.runs.start("agent", "swebench", priority=5)
         with pytest.raises(ValkyrieSDKError, match="agent must not be blank") as exc_info:
             await client.runs.start(" ", "swebench")
         assert isinstance(exc_info.value, ValkyrieRunError)
@@ -576,7 +607,6 @@ async def test_start_validates_inputs_before_request(make_client, sdk_config) ->
         with pytest.raises(ValkyrieSDKError, match="concurrency") as exc_info:
             await client.runs.retry(uuid4(), concurrency=0)
         assert isinstance(exc_info.value, ValkyrieRunError)
-
     no_webhook_client = make_client(handler, config=sdk_config(webhook=None))
     async with no_webhook_client:
         with pytest.raises(ValkyrieConfigError, match="webhook_intervals require"):

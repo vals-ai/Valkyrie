@@ -8,8 +8,9 @@ from uuid import UUID
 
 import logfire
 import sentry_sdk
-from benchmark_service.client import BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
+from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from opentelemetry import trace
+from redis.asyncio import Redis
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import invoke_lambda, lambda_client
@@ -17,7 +18,7 @@ from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.aws.s3 import (
     copy_agent_to_benchmark,
 )
-from tracker.config import broker
+from tracker.config import REDIS_URL, SANDBOX_QUEUE_ENABLED, broker
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -33,6 +34,7 @@ from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
+from tracker.scheduler.admission import SandboxQueueContext, create_queue_context
 from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
@@ -237,12 +239,6 @@ async def process_benchmark(
     start_benchmark_request: StartBenchmarkRequest = StartBenchmarkRequest(**start_benchmark_request_json)
     benchmark_id: UUID = UUID(benchmark_id_str)
     harness_config: HarnessConfig = start_benchmark_request.harness_config
-    sandbox_provider_config = fetch_sandbox_provider_config(
-        harness_config.sandbox_provider_secret_name,
-        harness_config.aws,
-        start_benchmark_request.sandbox_provider,
-    )
-    benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
 
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
@@ -272,7 +268,68 @@ async def process_benchmark(
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
 
     finalization_deferred = False
+    failure_recorded = False
+    benchmark_service: BenchmarkServiceClient | None = None
+    queue_context: SandboxQueueContext | None = None
+    queue_redis: Redis | None = None
+    task_rows: Sequence[tuple[str, Task]] = ()
+
+    def record_failure(error_message: str) -> bool:
+        with Session(bind=engine) as session:
+            return _commit_process_benchmark_error(
+                benchmark_id,
+                session,
+                org,
+                [task_row for _, task_row in task_rows],
+                error_message,
+            )
+
     try:
+        # Persist the accepted task selection before provider setup so a
+        # configuration failure can be retried through the normal run flow.
+        with Session(bind=engine) as session:
+            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            task_rows = create_task_rows(verified_task_ids, benchmark_row, session, org)
+            limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
+
+        task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
+        missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
+        if missing_task_ids:
+            raise TrackerServiceError(
+                f"Race condition occured when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
+            )
+
+        try:
+            sandbox_provider_config = fetch_sandbox_provider_config(
+                harness_config.sandbox_provider_secret_name,
+                harness_config.aws,
+                start_benchmark_request.sandbox_provider,
+            )
+        except Exception as error:
+            logger.warning(
+                "Sandbox provider configuration resolution failed (%s)",
+                type(error).__name__,
+            )
+            raise TrackerServiceError("Sandbox provider configuration is unavailable") from error
+        benchmark_service = create_benchmark_service_client_from_request(start_benchmark_request)
+        try:
+            sandbox_provider = benchmark_service.get_sandbox_provider(sandbox_provider_config)
+        except Exception as error:
+            logger.warning(
+                "Sandbox provider construction failed (%s)",
+                type(error).__name__,
+            )
+            raise TrackerServiceError("Sandbox provider configuration is unavailable") from error
+        if SANDBOX_QUEUE_ENABLED and start_benchmark_request.priority is not None:
+            if sandbox_provider.admission_pool_id is None:
+                raise TrackerServiceError("Configured sandbox provider does not support queued admission")
+            queue_redis = Redis.from_url(REDIS_URL)  # pyright: ignore[reportUnknownMemberType]
+            queue_context = create_queue_context(
+                redis=queue_redis,
+                provider=sandbox_provider,
+                priority=start_benchmark_request.priority,
+            )
+
         # Copy the agent into the benchmarks S3 folder
         await copy_agent_to_benchmark(
             str(benchmark_id),
@@ -285,19 +342,6 @@ async def process_benchmark(
         create_benchmark_log_group(
             str(benchmark_id), harness_config.aws, harness_config.log_group, harness_config.log_retention_policy
         )
-
-        # Create tasks inside of the database for each task id
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            task_rows: Sequence[tuple[str, Task]] = create_task_rows(verified_task_ids, benchmark_row, session, org)
-            limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
-
-        task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
-        missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
-        if missing_task_ids:
-            raise TrackerServiceError(
-                f"Race condition occured when resuming run {benchmark_id}. Missing task ids: {', '.join(missing_task_ids)}"
-            )
 
         # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
         creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
@@ -314,9 +358,12 @@ async def process_benchmark(
                     harness_config,
                     org,
                     sandbox_provider_config=sandbox_provider_config,
+                    sandbox_provider=sandbox_provider,
                     creation_semaphore=creation_semaphore,
+                    queue_context=queue_context,
                 ),
                 org,
+                task_row.started_at,
             )
             for task_id, task_row in task_rows
         }
@@ -390,47 +437,57 @@ async def process_benchmark(
 
                 invoke_lambda(lambda_client(harness_config.aws), arguments.lambda_function, lambda_payload)
 
+    except asyncio.CancelledError:
+        finalization_deferred = not record_failure("Run was interrupted")
+        failure_recorded = True
+        raise
     except BenchmarkServiceUnauthenticatedError as e:
         logfire.warn("process_benchmark failed due to benchmark service auth error")
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            error_message = f"{str(e)}\n{traceback.format_exc()}"
-            logger.warning(error_message)
-            commit_benchmark_error(benchmark_row, session, error_message)
+        error_message = f"{str(e)}\n{traceback.format_exc()}"
+        logger.warning(error_message)
+        finalization_deferred = not record_failure(error_message)
+        failure_recorded = True
     except BenchmarkServiceError as e:
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            error_message = str(e)
-            commit_benchmark_error(benchmark_row, session, error_message)
+        finalization_deferred = not record_failure(str(e))
+        failure_recorded = True
+    except TrackerServiceError as e:
+        finalization_deferred = not record_failure(str(e))
+        failure_recorded = True
     except Exception as e:
         logfire.exception("process_benchmark failed")
         sentry_sdk.capture_exception(e)
-        with Session(bind=engine) as session:
-            benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-            error_message = f"{str(e)}\n{traceback.format_exc()}"
-            commit_benchmark_error(benchmark_row, session, error_message)
+        finalization_deferred = not record_failure(f"{str(e)}\n{traceback.format_exc()}")
+        failure_recorded = True
     finally:
-        if not finalization_deferred:
-            with Session(bind=engine) as session:
-                # Handle any misalignments between the benchmark status and tasks
-                catch_errors_during_cleanup(benchmark_id, session, org)
-
-        if notifier and not finalization_deferred:
-            try:
+        try:
+            if not finalization_deferred and not failure_recorded:
                 with Session(bind=engine) as session:
-                    benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-                    notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
-                    final_score = benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
-                    await notifier.send_terminal_notification(
-                        notification_context,
-                        status=benchmark_row.status,
-                        final_score=final_score,
-                        error_message=benchmark_row.error_message,
-                    )
-            except Exception as notification_error:
-                logger.warning(f"Failed to send terminal notification: {notification_error}")
+                    # Handle any misalignments between the benchmark status and tasks
+                    catch_errors_during_cleanup(benchmark_id, session, org)
 
-        await benchmark_service.close()
+            if notifier and not finalization_deferred:
+                try:
+                    with Session(bind=engine) as session:
+                        benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                        notification_context = NotificationContext.from_benchmark(benchmark_row, session, org)
+                        final_score = (
+                            benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None
+                        )
+                        await notifier.send_terminal_notification(
+                            notification_context,
+                            status=benchmark_row.status,
+                            final_score=final_score,
+                            error_message=benchmark_row.error_message,
+                        )
+                except Exception as notification_error:
+                    logger.warning(f"Failed to send terminal notification: {notification_error}")
+        finally:
+            try:
+                if benchmark_service is not None:
+                    await benchmark_service.close()
+            finally:
+                if queue_redis is not None:
+                    await queue_redis.aclose()
 
 
 def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_message: str) -> None:
@@ -438,6 +495,48 @@ def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_mes
     benchmark_row.error_message = error_message
     session.add(benchmark_row)
     session.commit()
+
+
+def _commit_process_benchmark_error(
+    benchmark_id: UUID,
+    session: Session,
+    org: Org,
+    owned_task_rows: Sequence[Task],
+    error_message: str,
+) -> bool:
+    benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+    terminal_statuses = [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]
+    if benchmark_row.status in terminal_statuses:
+        return True
+
+    expected_attempts = {task_row.id: task_row.started_at for task_row in owned_task_rows}
+    if expected_attempts:
+        current_rows = session.exec(
+            select(Task)
+            .where(col(Task.id).in_(expected_attempts))
+            .where(Task.benchmark == benchmark_id)
+            .where(Task.org_id == org.id)
+            .with_for_update()
+        ).all()
+        for task_row in current_rows:
+            if task_row.started_at != expected_attempts[task_row.id] or task_row.status not in _RUNNABLE_TASK_STATUSES:
+                continue
+            session.add(ErrorResult(org_id=org.id, task=task_row.id, error_message="Run failed"))
+            task_row.status = TaskStatus.ERROR
+            session.add(task_row)
+
+    session.flush()
+    if has_runnable_tasks(session, benchmark_row, org):
+        session.commit()
+        return False
+
+    if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
+        benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
+    benchmark_row.status = BenchmarkStatus.ERROR
+    benchmark_row.error_message = error_message
+    session.add(benchmark_row)
+    session.commit()
+    return True
 
 
 def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) -> None:
@@ -454,30 +553,16 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
     if benchmark_row.status in terminal_statuses:
         return
 
-    # Force non exited tasks to be ERROR
-    task_terminal_statuses = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
-    undetected_exit_tasks = session.exec(
+    runnable_tasks = session.exec(
         select(Task)
-        .where(col(Task.benchmark) == benchmark_id)
-        .where(col(Task.org_id) == org.id)
-        .where(col(Task.status).notin_(task_terminal_statuses))
+        .where(Task.benchmark == benchmark_id)
+        .where(Task.org_id == org.id)
+        .where(col(Task.status).in_(_RUNNABLE_TASK_STATUSES))
     ).all()
-    for task in undetected_exit_tasks:
-        session.add(ErrorResult(org_id=org.id, task=task.id, error_message="Undetected exit of task"))
-        task.status = TaskStatus.ERROR
-        session.add(task)
-    session.commit()
-
-    # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
-    # helper uses try/finally so this only fires when the worker process was
-    # killed mid-invocation (no try/finally cleanup ran).
-    if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
-        benchmark_row.docent_reading_status = DocentReadingStatus.ERROR
-        session.add(benchmark_row)
-
-    # Force benchmark to ERROR so that the user knows they can retry any failed tasks
-    commit_benchmark_error(
-        benchmark_row,
+    _commit_process_benchmark_error(
+        benchmark_id,
         session,
+        org,
+        runnable_tasks,
         f"Run {benchmark_id} exited without finishing",
     )

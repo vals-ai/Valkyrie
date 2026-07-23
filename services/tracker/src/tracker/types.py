@@ -60,6 +60,7 @@ class StartBenchmarkRequest(BaseModel):
     contract: AgentContractRequest
     benchmark_name: str
     concurrency: int = 5
+    priority: int | None = Field(default=None, strict=True, ge=0, le=4)
     label: str | None = None
     task_ids: list[str] | None = None
     slice_str: str | None = None
@@ -410,3 +411,71 @@ class TaskArtifactsResponse(BaseModel):
     cloudwatch_url: str | None
     agent_output_url: str | None
     agent_output_expires_in: int | None
+
+
+class SchedulerSummaryResponse(BaseModel):
+    waiting: int = 0
+    building: int = 0
+    in_progress: int = 0
+    evaluating: int = 0
+
+
+class SchedulerActiveStatus(str, Enum):
+    BUILDING = "BUILDING"
+    IN_PROGRESS = "IN_PROGRESS"
+    EVALUATING = "EVALUATING"
+
+
+class SchedulerPoolResponse(BaseModel):
+    pool_id: str
+    waiting: int
+
+
+class SchedulerWaitingEntryResponse(BaseModel):
+    benchmark_uuid: UUID
+    task_uuid: UUID
+    benchmark_name: str
+    external_task_id: str
+    started_by_email: str | None = None
+    pool_id: str
+    position: int
+    priority: int
+    enqueued_at: datetime
+
+    @field_serializer("enqueued_at")
+    def _serialize_waiting_datetime(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+
+class SchedulerActiveEntryResponse(BaseModel):
+    benchmark_uuid: UUID
+    task_uuid: UUID
+    benchmark_name: str
+    external_task_id: str
+    started_by_email: str | None = None
+    status: SchedulerActiveStatus
+    started_at: datetime
+
+    @field_serializer("started_at")
+    def _serialize_active_datetime(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+
+class SchedulerOverviewResponse(BaseModel):
+    observed_at: datetime
+    summary: SchedulerSummaryResponse
+    pools: list[SchedulerPoolResponse]
+    waiting_entries: list[SchedulerWaitingEntryResponse]
+    active_entries: list[SchedulerActiveEntryResponse]
+    waiting_capped: bool
+    active_capped: bool
+
+    @field_serializer("observed_at")
+    def _serialize_observed_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result

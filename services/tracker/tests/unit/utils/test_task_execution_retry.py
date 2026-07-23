@@ -5,10 +5,12 @@ Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any
+from datetime import UTC, datetime
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from benchmark_service import SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
@@ -22,6 +24,8 @@ from tests.unit.utils.task_execution_support import (
 from tracker.database.models import AgentContractRequest, TaskStatus
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
+from tracker.scheduler.admission import SandboxQueueContext
+from tracker.scheduler.gate import QueueTicket, RedisQueueGate
 from tracker.types import HarnessConfig
 from tracker.utils import task_execution as task_execution_module
 
@@ -160,6 +164,78 @@ class TestTaskExecutionRetry:
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status
+
+    async def test_queued_recovery_retry_preserves_pending_attempt_and_fifo_position(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        request, task_row, benchmark_id = create_task_environment(contract, database_session, harness_config)
+        request = request.model_copy(update={"priority": 0})
+        actual_queue_entry_time = datetime(2026, 7, 22, 12, 0, tzinfo=UTC)
+        durable_attempt_time = task_row.started_at.replace(tzinfo=UTC)
+        assert durable_attempt_time != actual_queue_entry_time
+        task_row.status = TaskStatus.EVALUATING
+        task_row.eval_resume_state = None
+        database_session.add(task_row)
+        database_session.commit()
+        context = SandboxQueueContext(
+            gate=cast(RedisQueueGate, object()),
+            pool_id="pool",
+            priority=0,
+            provider=Mock(spec=SandboxProvider),
+        )
+        tickets: list[QueueTicket] = []
+        sandbox_entry_count = 0
+        upload_calls = 0
+
+        @asynccontextmanager
+        async def create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
+            nonlocal sandbox_entry_count
+            sandbox_entry_count += 1
+            yield AsyncMock(id=f"sandbox-{sandbox_entry_count}", name="sandbox")
+
+        async def admit(**kwargs: Any) -> AsyncMock:
+            tickets.append(kwargs["ticket"])
+            assert kwargs["mark_building"]()
+            return await kwargs["stack"].enter_async_context(kwargs["create"]())
+
+        async def upload(*_args: Any, **_kwargs: Any) -> None:
+            nonlocal upload_calls
+            upload_calls += 1
+            if upload_calls == 1:
+                raise SandboxSetupError("retry sandbox setup")
+
+        async def retrieve(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
+            return make_retrieve_task_response()
+
+        async def evaluate(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {"status": "success", "score": 1.0}
+
+        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
+        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
+        task_execution_datetime = Mock(wraps=datetime)
+        task_execution_datetime.now.return_value = actual_queue_entry_time
+        monkeypatch.setattr("tracker.utils.task_execution.datetime", task_execution_datetime)
+        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
+        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", create_sandbox)
+        monkeypatch.setattr("tracker.utils.task_execution.enter_queued_sandbox", admit)
+        monkeypatch.setattr("tracker.utils.task_execution.upload_agent_artifacts", upload)
+        monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", retrieve)
+        monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", evaluate)
+
+        result = await run_process_task(request, task_row, benchmark_id, harness_config, queue_context=context)
+
+        database_session.refresh(task_row)
+        assert result == {"task_0": {"status": "success", "score": 1.0}}
+        assert sandbox_entry_count == 2
+        assert len(tickets) == 2 and tickets[0] == tickets[1]
+        assert tickets[0].enqueued_at == actual_queue_entry_time
+        assert tickets[0].task_key.endswith(f":{durable_attempt_time.isoformat()}")
+        assert task_row.status == TaskStatus.FINISHED
 
     async def test_process_task_spans_timed_status_transitions(
         self,

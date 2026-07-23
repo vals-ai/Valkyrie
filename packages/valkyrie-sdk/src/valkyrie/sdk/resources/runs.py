@@ -44,6 +44,7 @@ class RunsResource:
         *,
         model: str | None = None,
         concurrency: int = 5,
+        priority: int | None = None,
         task_ids: Sequence[str] | None = None,
         slice_str: str | None = None,
         dataset: str | None = None,
@@ -59,6 +60,8 @@ class RunsResource:
         """Start a run from an uploaded agent name or complete contract."""
         if concurrency < 1:
             raise ValkyrieRunError("concurrency must be greater than 0")
+        if priority is not None and (type(priority) is not int or priority not in range(5)):
+            raise ValkyrieRunError("priority must be an integer from 0 to 4")
         if not benchmark.strip():
             raise ValkyrieRunError("benchmark must not be blank")
         if task_ids and slice_str:
@@ -73,6 +76,7 @@ class RunsResource:
             contract=contract,
             benchmark_name=benchmark,
             concurrency=concurrency,
+            priority=priority,
             task_ids=list(task_ids) if task_ids else None,
             slice_str=slice_str,
             dataset=dataset,
