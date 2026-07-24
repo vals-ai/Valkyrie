@@ -976,6 +976,8 @@ async def run_agent(
             result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
             if result.exit_code == _SUCCESS_EXIT_CODE:
                 final_output = contract.final_output
+        if final_output is None and not contract.output_artifacts:
+            return
         await upload_task_artifacts(
             sandbox,
             final_output,

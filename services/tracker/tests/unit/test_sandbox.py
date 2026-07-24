@@ -668,6 +668,34 @@ async def test_available_artifacts_publish_partial_index_without_canonical_write
 class TestRunAgent:
     """Agent execution, output collection, and runtime command construction."""
 
+    async def test_run_agent_skips_artifact_collection_without_declared_outputs(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_runtime: AWSRuntime,
+    ) -> None:
+        upload = AsyncMock()
+        monkeypatch.setattr(sandbox_module, "_exec", AsyncMock(return_value=ExecResult(exit_code=0)))
+        monkeypatch.setattr(
+            sandbox_module,
+            "stream_command_output",
+            AsyncMock(return_value=(None, 0.0)),
+        )
+        monkeypatch.setattr(sandbox_module, "upload_task_artifacts", upload)
+
+        await run_agent(
+            Mock(id="sandbox-123", name="task-alias"),
+            AgentContractRequest(name="test-agent", run_cmd="true"),
+            "/tmp/problem.txt",
+            "task_0",
+            lambda _msg: None,
+            "/workspace",
+            aws_runtime=aws_runtime,
+            benchmark_id="benchmark-123",
+            artifact_attempt_id="abc123",
+        )
+
+        upload.assert_not_awaited()
+
     async def test_run_agent_preserves_artifacts_after_nonzero_exit(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -735,7 +763,11 @@ class TestRunAgent:
         with pytest.raises(asyncio.CancelledError):
             await run_agent(
                 Mock(id="sandbox-123", name="task-alias"),
-                AgentContractRequest(name="test-agent", run_cmd="sleep 10"),
+                AgentContractRequest(
+                    name="test-agent",
+                    run_cmd="sleep 10",
+                    final_output="/workspace",
+                ),
                 "/tmp/problem.txt",
                 "task_0",
                 lambda _msg: None,
@@ -747,7 +779,7 @@ class TestRunAgent:
 
         upload.assert_awaited_once_with(
             ANY,
-            None,
+            "/workspace",
             [],
             "benchmark-123",
             "task_0",
