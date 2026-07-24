@@ -4,7 +4,7 @@ This guide explains how to create agent contracts for Valkyrie.
 
 ## Overview
 
-An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed.
+An agent contract defines how to install and run an agent in a sandbox environment. Valkyrie handles bundling, deployment, and evaluation - you just need to specify how your agent is set up and executed. If you need to create a CLI to run your agent, visit the [Creating a CLI](#creating-a-cli) section to learn how.
 
 ## Complete Contract Template
 
@@ -291,7 +291,7 @@ WRAPPER
 chmod +x /usr/local/bin/my_agent
 ```
 
-## Creating a CLI if your agent does not support it
+## Creating a CLI
 
 In order for valkyrie to pass in the required CLI arguments to your agent, the agent must accept CLI arguments. If
 your agent does not currently support it, you can easily add it.
