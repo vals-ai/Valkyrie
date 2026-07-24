@@ -1,4 +1,4 @@
-"""Select legacy or deployment AWS authority for tracker operations."""
+"""Select request-provided or deployment-managed AWS authority."""
 
 from dataclasses import dataclass
 from typing import Never
@@ -33,20 +33,20 @@ class ManagedAWSConfigurationError(ManagedAWSError):
 
 @dataclass(frozen=True)
 class AWSRuntimeResolution:
-    """Resolved AWS runtime and any legacy request configuration used to build it."""
+    """Resolved AWS runtime and any access-key configuration used to build it."""
 
     runtime: AWSRuntime
-    legacy_harness_config: HarnessConfig | None
+    access_key_harness_config: HarnessConfig | None
 
     @property
     def aws_managed(self) -> bool:
         """Return whether deployment-managed AWS authority was selected."""
-        return self.legacy_harness_config is None
+        return self.access_key_harness_config is None
 
 
 @dataclass(frozen=True)
 class HarnessHeaderState:
-    """Presence and completeness of legacy AWS request headers."""
+    """Presence and completeness of access-key request headers."""
 
     present: bool
     config: HarnessConfig | None
@@ -73,7 +73,7 @@ def parse_log_retention_policy(value: int | str | None, *, source: str) -> int:
 
 
 def _parse_harness_headers(request: Request) -> dict[str, str]:
-    """Normalize legacy harness headers into field names."""
+    """Normalize access-key request headers into field names."""
     prefix = "x-harness-"
     return {
         key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
@@ -81,7 +81,7 @@ def _parse_harness_headers(request: Request) -> dict[str, str]:
 
 
 def _build_harness_config(flat: dict[str, str]) -> HarnessConfig:
-    """Build a legacy harness config from complete normalized headers."""
+    """Build a harness config from complete normalized headers."""
     return HarnessConfig(
         aws=AWSCredentials(
             aws_access_key_id=flat["aws_access_key_id"],
@@ -100,7 +100,7 @@ def _build_harness_config(flat: dict[str, str]) -> HarnessConfig:
 
 
 def inspect_harness_headers(request: Request) -> HarnessHeaderState:
-    """Inspect legacy headers without treating their absence as an error."""
+    """Inspect access-key headers without treating their absence as an error."""
     flat = _parse_harness_headers(request)
     first_missing_key = next((key for key in _REQUIRED_HARNESS_HEADER_KEYS if not flat.get(key)), None)
     return HarnessHeaderState(
@@ -111,18 +111,18 @@ def inspect_harness_headers(request: Request) -> HarnessHeaderState:
 
 
 def _raise_missing_header(key: str) -> Never:
-    """Raise a client error naming a missing legacy harness header."""
+    """Raise a client error naming a missing access-key header."""
     header_name = key.replace("_", "-")
     raise HTTPException(status_code=400, detail=f"Missing harness config header 'x-harness-{header_name}'")
 
 
 def try_fetch_harness_config(request: Request) -> HarnessConfig | None:
-    """Return complete legacy request headers, if supplied."""
+    """Return complete access-key request headers, if supplied."""
     return inspect_harness_headers(request).config
 
 
 def fetch_harness_config(request: Request) -> HarnessConfig:
-    """Return complete legacy request headers or name the first missing header."""
+    """Return complete access-key request headers or name the first missing header."""
     state = inspect_harness_headers(request)
     if state.config is not None:
         return state.config
@@ -206,12 +206,11 @@ def resolve_run_aws_runtime(
     *,
     aws_managed: bool,
     org_id: UUID,
-    legacy_harness_config: HarnessConfig | None = None,
 ) -> AWSRuntimeResolution:
     """Resolve AWS authority from a persisted run mode."""
     if aws_managed:
         return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
-    harness_config = legacy_harness_config or fetch_harness_config(request)
+    harness_config = fetch_harness_config(request)
     return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
 
 
@@ -220,23 +219,19 @@ def resolve_optional_run_aws_runtime(
     *,
     aws_managed: bool,
     org_id: UUID,
-    legacy_harness_config: HarnessConfig | None = None,
 ) -> AWSRuntime | None:
-    """Resolve AWS authority when legacy metadata links may be omitted."""
+    """Resolve AWS authority when access-key metadata links may be omitted."""
     if aws_managed:
         return _http_deployment_runtime(org_id)
-    harness_config = legacy_harness_config or try_fetch_harness_config(request)
+    harness_config = try_fetch_harness_config(request)
     return AWSRuntime.from_harness_config(harness_config) if harness_config is not None else None
 
 
 def resolve_non_run_aws_runtime(
     request: Request,
     org_id: UUID,
-    legacy_harness_config: HarnessConfig | None = None,
 ) -> AWSRuntime:
     """Resolve agent-library operations from complete headers or managed eligibility."""
-    if legacy_harness_config is not None:
-        return AWSRuntime.from_harness_config(legacy_harness_config)
     header_state = inspect_harness_headers(request)
     if header_state.config is not None:
         return AWSRuntime.from_harness_config(header_state.config)

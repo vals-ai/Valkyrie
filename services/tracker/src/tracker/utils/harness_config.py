@@ -1,4 +1,4 @@
-"""Deprecated compatibility exports for legacy harness-header imports.
+"""Deprecated import path for harness-header helpers.
 
 Import from tracker.aws.resolver instead.
 """

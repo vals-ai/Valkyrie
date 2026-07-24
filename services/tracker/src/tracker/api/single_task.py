@@ -21,8 +21,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.database.session import get_session
-from tracker.types import HarnessConfig, SingleTaskResponse, TaskArtifactsResponse
-from tracker.utils.harness_config import try_fetch_harness_config
+from tracker.types import SingleTaskResponse, TaskArtifactsResponse
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -114,7 +113,6 @@ async def get_task_artifacts(
     task_id: str,
     request: Request,
     org: Org = Depends(get_current_org),
-    legacy_harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
     session: Session = Depends(get_session),
 ) -> TaskArtifactsResponse:
     """CloudWatch URL + presigned URL for the agent's output tarball, for the SingleTask page."""
@@ -123,7 +121,6 @@ async def get_task_artifacts(
         request,
         aws_managed=benchmark.aws_managed,
         org_id=org.id,
-        legacy_harness_config=legacy_harness_config,
     ).runtime
 
     cloudwatch_url: str | None = None

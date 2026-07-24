@@ -17,7 +17,7 @@ from tracker.utils import fetch_harness_config
 
 @pytest.fixture
 def harness_headers(harness_config: HarnessConfig) -> dict[str, str]:
-    """Build complete legacy AWS request headers from the live configuration."""
+    """Build complete access-key request headers from the live configuration."""
     headers = {
         "X-Harness-AWS-Access-Key-Id": harness_config.aws.aws_access_key_id,
         "X-Harness-AWS-Secret-Access-Key": harness_config.aws.aws_secret_access_key,

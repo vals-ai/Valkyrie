@@ -92,7 +92,12 @@ class TestRunState:
             "DAYTONA_TARGET": "target",
         }
 
-    def test_stop_benchmark(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+    def test_stop_benchmark(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_headers: dict[str, str],
+    ) -> None:
         """Tests the flow of updating the benchmark related objects to the proper states when stopping a benchmark
 
         Test Cases:
@@ -125,7 +130,10 @@ class TestRunState:
         database_session.commit()
 
         # Test request to stop the benchmark
-        response: Response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=false")
+        response: Response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}?force=false",
+            headers=harness_headers,
+        )
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 

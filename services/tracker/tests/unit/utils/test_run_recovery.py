@@ -165,6 +165,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
     ) -> None:
         """Apply selected stops and reject invalid selections without affecting other work.
 
@@ -235,21 +236,25 @@ class TestRunRecovery:
         graceful_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=false",
             json={"task_ids": ["task_pending", "task_evaluating"]},
+            headers=harness_headers,
         )
 
         force_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=true",
             json={"task_ids": ["task_force_selected"]},
+            headers=harness_headers,
         )
 
         empty_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}",
             json={"task_ids": []},
+            headers=harness_headers,
         )
 
         missing_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}",
             json={"task_ids": ["task_not_in_run"]},
+            headers=harness_headers,
         )
 
         assert graceful_response.status_code == 200, graceful_response.text
@@ -283,6 +288,7 @@ class TestRunRecovery:
         database_session: Session,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
+        harness_headers: dict[str, str],
     ) -> None:
         """Keep an old worker from continuing after force stop and immediate resume.
 
@@ -365,10 +371,12 @@ class TestRunRecovery:
         stop_response = client.post(
             f"/stop-benchmark/{benchmark_row.id}?force=true",
             json={"task_ids": [selected_task.task_id]},
+            headers=harness_headers,
         )
         resume_response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}",
             json={"task_ids": [selected_task.task_id]},
+            headers=harness_headers,
         )
         continue_retrieval.set()
 
@@ -588,6 +596,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
     ) -> None:
         """Retried tasks should keep prior attempts visible in exported results.
 
@@ -648,7 +657,11 @@ class TestRunRecovery:
             )
         database_session.commit()
 
-        response = client.get("/retrieve-results", params={"benchmark_id": str(benchmark_row.id)})
+        response = client.get(
+            "/retrieve-results",
+            params={"benchmark_id": str(benchmark_row.id)},
+            headers=harness_headers,
+        )
 
         assert response.status_code == 200
         evaluation_results = response.json()["evaluation_results"]
@@ -1001,6 +1014,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
         mock_kicker: MockKicker,
     ) -> None:
         benchmark_row = example_benchmark_object
@@ -1024,7 +1038,7 @@ class TestRunRecovery:
         response = client.post(
             f"/retry-or-resume-benchmark/{benchmark_row.id}?concurrency=20",
             json={"task_ids": [], "service_headers": {}},
-            headers={"X-Api-Key": "tracker-api-key"},
+            headers={**harness_headers, "X-Api-Key": "tracker-api-key"},
         )
 
         assert response.status_code == 200
@@ -1043,6 +1057,7 @@ class TestRunRecovery:
         example_benchmark_object: Benchmark,
         database_session: Session,
         monkeypatch: MonkeyPatch,
+        harness_headers: dict[str, str],
     ) -> None:
         """Force stop should use the provider secret stored with the run.
 
@@ -1076,7 +1091,10 @@ class TestRunRecovery:
 
         monkeypatch.setattr("main.force_stop_sandboxes", _mock_force_stop_sandboxes)
 
-        response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=true")
+        response = client.post(
+            f"/stop-benchmark/{benchmark_row.id}?force=true",
+            headers=harness_headers,
+        )
 
         assert response.status_code == 200
         assert captured == {
@@ -1118,7 +1136,7 @@ class TestRunRecovery:
         assert response.status_code == 400
         detail = response.json()["detail"]
         assert "sandbox provider secret name" in detail
-        assert "legacy AWS configuration" not in detail
+        assert "x-harness-sandbox-provider-secret-name" not in detail
         database_session.expire_all()
         stored_benchmark = database_session.get(Benchmark, benchmark_row.id)
         stored_task = database_session.get(Task, pending_task.id)

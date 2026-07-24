@@ -23,7 +23,7 @@ class AWSRuntime:
 
     @classmethod
     def from_harness_config(cls, harness_config: HarnessConfig) -> AWSRuntime:
-        """Convert the legacy access-key wire contract into an internal runtime."""
+        """Convert access-key request configuration into an internal runtime."""
         return cls(
             resources=AWSResources(
                 region=harness_config.aws.aws_default_region,

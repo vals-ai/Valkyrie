@@ -17,8 +17,7 @@ from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
-from tracker.types import HarnessConfig, SingleBenchmarkResponse, TasksResponse, TaskSummary
-from tracker.utils.harness_config import try_fetch_harness_config
+from tracker.types import SingleBenchmarkResponse, TasksResponse, TaskSummary
 
 router = APIRouter(prefix="/benchmarks")
 
@@ -50,7 +49,6 @@ def get_single_benchmark(
     benchmark_id: UUID,
     request: Request,
     org: Org = Depends(get_current_org),
-    legacy_harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
     session: Session = Depends(get_session),
 ) -> SingleBenchmarkResponse:
     """Fetch a single benchmark with task counts + final score for the SingleRun page."""
@@ -70,7 +68,6 @@ def get_single_benchmark(
         request,
         aws_managed=benchmark.aws_managed,
         org_id=org.id,
-        legacy_harness_config=legacy_harness_config,
     )
     if aws_runtime:
         aws_resources = aws_runtime.resources

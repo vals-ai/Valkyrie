@@ -173,7 +173,7 @@ RetrieveResultsResponse = FinalViewResponse | S3UploadResultsResponse
 
 
 class AWSRuntimeResponse(BaseModel):
-    mode: Literal["legacy", "managed"]
+    mode: Literal["access_key", "managed"]
     region: str | None = None
     s3_bucket: str | None = None
 

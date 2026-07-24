@@ -23,6 +23,7 @@ class TestAgentRoutes:
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
+        harness_headers: dict[str, str],
     ) -> None:
         """Agent listing must expose the names and timestamps returned by storage.
 
@@ -33,7 +34,7 @@ class TestAgentRoutes:
         list_agents = AsyncMock(return_value=[("agent-a", datetime(2026, 1, 2, tzinfo=timezone.utc))])
         monkeypatch.setattr(agents_api, "list_agents", list_agents)
 
-        response = _client.get("/agents")
+        response = _client.get("/agents", headers=harness_headers)
 
         assert response.status_code == 200
         assert response.json() == {"agents": [{"name": "agent-a", "last_modified": "2026-01-02 00:00:00+00:00"}]}
@@ -43,6 +44,7 @@ class TestAgentRoutes:
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
+        harness_headers: dict[str, str],
     ) -> None:
         """Download links must use the route's configured expiration in both the signer and response.
 
@@ -54,7 +56,7 @@ class TestAgentRoutes:
         monkeypatch.setattr(agents_api, "s3_object_exists", exists)
         monkeypatch.setattr(agents_api, "create_presigned_url", presigned_url)
 
-        response = _client.get("/agents/agent-a/download-url")
+        response = _client.get("/agents/agent-a/download-url", headers=harness_headers)
 
         assert response.status_code == 200
         assert response.json() == {
@@ -73,6 +75,7 @@ class TestAgentRoutes:
         self,
         monkeypatch: pytest.MonkeyPatch,
         aws_runtime: AWSRuntime,
+        harness_headers: dict[str, str],
     ) -> None:
         """Missing agent artifacts must return not found instead of a useless signed URL.
 
@@ -83,7 +86,7 @@ class TestAgentRoutes:
         exists = AsyncMock(return_value=False)
         monkeypatch.setattr(agents_api, "s3_object_exists", exists)
 
-        response = _client.get("/agents/missing/download-url")
+        response = _client.get("/agents/missing/download-url", headers=harness_headers)
 
         assert response.status_code == 404
         assert response.json()["detail"] == "Agent 'missing' not found in S3"

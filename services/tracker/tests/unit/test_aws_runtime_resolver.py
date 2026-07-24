@@ -18,8 +18,6 @@ from tracker.aws.resolver import (
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark
-from tracker.types import HarnessConfig
-from tracker.utils import try_fetch_harness_config
 
 _ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
 _OTHER_ORG_ID = UUID("00000000-0000-0000-0000-000000000002")
@@ -65,7 +63,7 @@ def _configure_managed_runtime(
     ("aws_managed", "expected_bucket", "expected_provider"),
     [
         pytest.param(True, "deployment-bucket", DefaultChainAWSClientProvider, id="stored-managed"),
-        pytest.param(False, "header-bucket", ExplicitCredentialsAWSClientProvider, id="stored-legacy"),
+        pytest.param(False, "header-bucket", ExplicitCredentialsAWSClientProvider, id="stored-access-keys"),
     ],
 )
 def test_run_runtime_uses_stored_mode(
@@ -86,11 +84,24 @@ def test_run_runtime_uses_stored_mode(
     assert isinstance(resolution.runtime.clients, expected_provider)
 
 
+def test_managed_run_ignores_partial_access_key_headers(monkeypatch: pytest.MonkeyPatch) -> None:
+    _configure_managed_runtime(monkeypatch)
+
+    resolution = resolve_run_aws_runtime(
+        _request({"x-harness-aws-access-key-id": "ignored"}),
+        aws_managed=True,
+        org_id=_ORG_ID,
+    )
+
+    assert resolution.runtime.resources.s3_bucket == "deployment-bucket"
+    assert isinstance(resolution.runtime.clients, DefaultChainAWSClientProvider)
+
+
 @pytest.mark.parametrize(
     ("aws_managed", "expected_bucket"),
     [
         pytest.param(True, "deployment-bucket", id="managed-metadata-has-runtime"),
-        pytest.param(False, None, id="legacy-metadata-omits-aws-links"),
+        pytest.param(False, None, id="access-key-metadata-omits-aws-links"),
     ],
 )
 def test_optional_run_runtime_preserves_stored_mode(
@@ -136,7 +147,6 @@ def test_deployment_runtime_metadata_requires_eligible_org(
 
 def test_agent_list_uses_deployment_runtime_for_eligible_org(
     monkeypatch: pytest.MonkeyPatch,
-    harness_config: HarnessConfig,
 ) -> None:
     _configure_managed_runtime(monkeypatch)
     captured_runtime: AWSRuntime | None = None
@@ -147,11 +157,7 @@ def test_agent_list_uses_deployment_runtime_for_eligible_org(
         return []
 
     monkeypatch.setattr("tracker.api.agents.list_agents", list_agents)
-    app.dependency_overrides.pop(try_fetch_harness_config, None)
-    try:
-        response = TestClient(app).get("/agents")
-    finally:
-        app.dependency_overrides[try_fetch_harness_config] = lambda: harness_config
+    response = TestClient(app).get("/agents")
 
     assert response.status_code == 200
     assert captured_runtime is not None

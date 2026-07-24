@@ -58,6 +58,7 @@ class TestBenchmarkStatusQueries:
         database_session: Session,
         example_benchmark_object: Benchmark,
         monkeypatch: pytest.MonkeyPatch,
+        harness_headers: dict[str, str],
     ) -> None:
         """Result existence must check the canonical results S3 key."""
         example_benchmark_object.id = _RESULTS_RUN_ID
@@ -66,7 +67,10 @@ class TestBenchmarkStatusQueries:
         exists_mock = AsyncMock(return_value=True)
         monkeypatch.setattr("main.s3_object_exists", exists_mock)
 
-        response = _client.get(f"/check-results-exist?benchmark_id={_RESULTS_RUN_ID}")
+        response = _client.get(
+            f"/check-results-exist?benchmark_id={_RESULTS_RUN_ID}",
+            headers=harness_headers,
+        )
 
         assert response.status_code == 200
         assert response.json() == {"exists": True}
