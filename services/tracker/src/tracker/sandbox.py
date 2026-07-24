@@ -584,6 +584,10 @@ def _output_artifact_path(artifact: OutputArtifactSpec) -> str:
     return artifact if isinstance(artifact, str) else artifact.path
 
 
+def _output_artifact_is_required(artifact: OutputArtifactSpec) -> bool:
+    return isinstance(artifact, str) or artifact.required
+
+
 def _output_artifact_source(artifact: OutputArtifactSpec) -> str:
     artifact_path = _output_artifact_path(artifact)
     source = artifact.source if not isinstance(artifact, str) else None
@@ -617,11 +621,12 @@ async def _resolve_output_artifact_sandbox_path(sandbox: Sandbox, artifact: Outp
         if source_result.exit_code == _SUCCESS_EXIT_CODE and source_path:
             return source_path
     else:
-        exists = await _exec(sandbox, f"test -f {shlex.quote(source)}")
+        quoted_source = shlex.quote(source)
+        exists = await _exec(sandbox, f"test -f {quoted_source} && ! test -L {quoted_source}")
         if exists.exit_code == _SUCCESS_EXIT_CODE:
             return source
 
-    raise OutputArtifactError(f"Required output artifact missing: {source}")
+    raise OutputArtifactError(f"Output artifact missing: {source}")
 
 
 async def upload_output_artifacts(
@@ -634,8 +639,10 @@ async def upload_output_artifacts(
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
+    required_artifacts = [artifact for artifact in artifacts if _output_artifact_is_required(artifact)]
+    optional_artifacts = [artifact for artifact in artifacts if not _output_artifact_is_required(artifact)]
 
-    for artifact in artifacts:
+    for artifact in [*required_artifacts, *optional_artifacts]:
         artifact_path = _output_artifact_path(artifact)
         try:
             total_bytes = await _upload_output_artifact(
@@ -648,7 +655,7 @@ async def upload_output_artifacts(
                 total_bytes,
             )
         except Exception:
-            if isinstance(artifact, str) or artifact.required:
+            if _output_artifact_is_required(artifact):
                 raise
             logger.warning(
                 "output_artifact.optional_skip",

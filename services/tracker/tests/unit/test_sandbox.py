@@ -31,6 +31,7 @@ from tracker.exceptions import (
     SandboxSetupError,
 )
 from tracker.sandbox import (
+    OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES,
     create_sandbox,
     run_agent,
     upload_agent_artifacts,
@@ -74,7 +75,10 @@ class TestOutputArtifacts:
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
+            if (
+                command == "test -f /tmp/valkyrie/artifacts/turns.jsonl"
+                " && ! test -L /tmp/valkyrie/artifacts/turns.jsonl"
+            ):
                 return ExecResult(exit_code=0, output="")
             if command == "stat -c%s /tmp/valkyrie/artifacts/turns.jsonl":
                 return ExecResult(exit_code=0, output=str(len(artifact_content)))
@@ -156,7 +160,10 @@ class TestOutputArtifacts:
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command == "test -f /logs/model-library-run/result.json":
+            if (
+                command
+                == "test -f /logs/model-library-run/result.json && ! test -L /logs/model-library-run/result.json"
+            ):
                 return ExecResult(exit_code=0, output="")
             if command == "stat -c%s /logs/model-library-run/result.json":
                 return ExecResult(exit_code=0, output="13")
@@ -192,12 +199,15 @@ class TestOutputArtifacts:
         artifact = "artifacts/missing.json"
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            assert command == "test -f /tmp/valkyrie/artifacts/missing.json"
+            assert (
+                command == "test -f /tmp/valkyrie/artifacts/missing.json"
+                " && ! test -L /tmp/valkyrie/artifacts/missing.json"
+            )
             return ExecResult(exit_code=1, output="")
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
 
-        with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
+        with pytest.raises(OutputArtifactError, match="Output artifact missing"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
     async def test_upload_output_artifacts_skips_missing_optional_model_patch(
@@ -226,8 +236,116 @@ class TestOutputArtifacts:
             "bucket",
         )
 
-        exec_mock.assert_awaited_once_with(sandbox, "test -f /logs/artifacts/model.patch")
+        exec_mock.assert_awaited_once_with(
+            sandbox,
+            "test -f /logs/artifacts/model.patch && ! test -L /logs/artifacts/model.patch",
+        )
         upload_mock.assert_not_awaited()
+
+    @pytest.mark.parametrize("required", [True, False])
+    async def test_upload_output_artifacts_does_not_follow_non_glob_symlinks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+        required: bool,
+    ) -> None:
+        source = "/logs/symlink result.json"
+        uploaded: list[bytes] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -f '/logs/symlink result.json' && ! test -L '/logs/symlink result.json'":
+                return ExecResult(exit_code=1, output="")
+            if command == "stat -c%s '/logs/symlink result.json'":
+                return ExecResult(exit_code=0, output="6")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+            uploaded.append(file_content)
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+
+        sandbox = Mock()
+        sandbox.id = "sandbox-123"
+        sandbox.name = "task-alias"
+        sandbox.download_file = AsyncMock(return_value=b"secret")
+        artifact = OutputArtifact(path="artifacts/result.json", source=source, required=required)
+
+        if required:
+            with pytest.raises(OutputArtifactError, match="Output artifact missing"):
+                await upload_output_artifacts(
+                    sandbox,
+                    [artifact],
+                    "benchmark-123",
+                    "task_0",
+                    harness_config.aws,
+                    "bucket",
+                )
+        else:
+            await upload_output_artifacts(
+                sandbox,
+                [artifact],
+                "benchmark-123",
+                "task_0",
+                harness_config.aws,
+                "bucket",
+            )
+
+        assert uploaded == []
+
+    async def test_upload_output_artifacts_prioritizes_required_artifacts_for_total_size_limit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+    ) -> None:
+        optional_source = "/logs/optional.json"
+        required_source = "/logs/required.json"
+        uploaded: list[tuple[bytes, str]] = []
+
+        async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command in {
+                f"test -f {optional_source} && ! test -L {optional_source}",
+                f"test -f {required_source} && ! test -L {required_source}",
+            }:
+                return ExecResult(exit_code=0, output="")
+            if command == f"stat -c%s {optional_source}":
+                return ExecResult(exit_code=0, output=str(OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES))
+            if command == f"stat -c%s {required_source}":
+                return ExecResult(exit_code=0, output="1")
+            raise AssertionError(f"unexpected command: {command}")
+
+        async def fake_download_file(path: str) -> bytes:
+            return path.encode()
+
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+            uploaded.append((file_content, s3_key))
+
+        monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
+        monkeypatch.setattr(sandbox_module, "upload_to_s3", fake_upload_to_s3)
+
+        sandbox = Mock()
+        sandbox.id = "sandbox-123"
+        sandbox.name = "task-alias"
+        sandbox.download_file = fake_download_file
+
+        await upload_output_artifacts(
+            sandbox,
+            [
+                OutputArtifact(path="telemetry/optional.json", source=optional_source, required=False),
+                OutputArtifact(path="scoring/required.json", source=required_source),
+            ],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
+
+        assert uploaded == [
+            (
+                required_source.encode(),
+                "benchmarks/benchmark-123/task_0/scoring/required.json",
+            )
+        ]
 
     async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(
         self,
@@ -237,7 +355,7 @@ class TestOutputArtifacts:
         artifact = "artifacts/large.json"
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command == "test -f /tmp/valkyrie/artifacts/large.json":
+            if command == "test -f /tmp/valkyrie/artifacts/large.json && ! test -L /tmp/valkyrie/artifacts/large.json":
                 return ExecResult(exit_code=0, output="")
             if command == "stat -c%s /tmp/valkyrie/artifacts/large.json":
                 return ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES + 1))
@@ -327,7 +445,10 @@ class TestOutputArtifacts:
         )
 
         assert exec_mock.await_args_list == [
-            call(sandbox, "test -f /logs/trajectory_atif.json"),
+            call(
+                sandbox,
+                "test -f /logs/trajectory_atif.json && ! test -L /logs/trajectory_atif.json",
+            ),
             call(sandbox, "stat -c%s /logs/trajectory_atif.json"),
         ]
         upload_mock.assert_not_awaited()
