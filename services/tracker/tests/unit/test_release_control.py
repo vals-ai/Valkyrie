@@ -19,6 +19,7 @@ from tracker.database.models import (
 )
 from tracker.release_control import (
     ReleaseControlError,
+    activate_release,
     active_executor_release_counts,
     artifact_deletion_allowed,
     create_executor_dispatch,
@@ -57,12 +58,132 @@ def _dispatch(
 
 
 class FakeS3Client:
-    def __init__(self, content: bytes) -> None:
+    def __init__(self, content: bytes, *, key: str = "v1.pex") -> None:
         self.content = content
+        self.key = key
 
     def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
-        assert (Bucket, Key) == ("artifacts", "v1.pex")
+        assert (Bucket, Key) == ("artifacts", self.key)
         return {"Body": io.BytesIO(self.content)}
+
+
+def test_activate_release_registers_verifies_and_promotes_in_one_session(database_session: Session) -> None:
+    content = b"executor artifact"
+    release = ExecutorRelease(
+        id="git-abc123-def456",
+        artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
+        artifact_digest=hashlib.sha256(content).hexdigest(),
+        protocol_version="1",
+    )
+
+    activated = activate_release(
+        database_session,
+        release,
+        expected_bucket="artifacts",
+        expected_prefix="releases",
+        s3_client=FakeS3Client(content, key="releases/git-abc123-def456/executor.pex"),
+    )
+
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert activated.status == ExecutorReleaseStatus.ACTIVE
+    assert activated.readiness_verified
+    assert admission is not None
+    assert admission.release_id == release.id
+
+
+def test_activate_release_is_idempotent_for_exact_active_release(database_session: Session) -> None:
+    content = b"executor artifact"
+    release = ExecutorRelease(
+        id="git-abc123-def456",
+        artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
+        artifact_digest=hashlib.sha256(content).hexdigest(),
+        protocol_version="1",
+    )
+    client = FakeS3Client(content, key="releases/git-abc123-def456/executor.pex")
+    first = activate_release(
+        database_session,
+        release,
+        expected_bucket="artifacts",
+        expected_prefix="releases",
+        s3_client=client,
+    )
+    activated_at = first.activated_at
+
+    second = activate_release(
+        database_session,
+        ExecutorRelease(
+            id=release.id,
+            artifact_uri=release.artifact_uri,
+            artifact_digest=release.artifact_digest,
+            protocol_version=release.protocol_version,
+        ),
+        expected_bucket="artifacts",
+        expected_prefix="releases",
+        s3_client=client,
+    )
+
+    assert second.status == ExecutorReleaseStatus.ACTIVE
+    assert second.activated_at is not None
+    assert activated_at is not None
+    assert second.activated_at.replace(tzinfo=None) == activated_at.replace(tzinfo=None)
+
+
+def test_activate_release_rejects_release_id_reuse_with_different_content(database_session: Session) -> None:
+    existing = ExecutorRelease(
+        id="git-abc123-def456",
+        artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
+        artifact_digest="a" * 64,
+        protocol_version="1",
+    )
+    register_release(database_session, existing)
+
+    with pytest.raises(ReleaseControlError, match="different immutable identity"):
+        activate_release(
+            database_session,
+            ExecutorRelease(
+                id=existing.id,
+                artifact_uri=existing.artifact_uri,
+                artifact_digest="b" * 64,
+                protocol_version=existing.protocol_version,
+            ),
+            expected_bucket="artifacts",
+            expected_prefix="releases",
+            s3_client=FakeS3Client(b"irrelevant"),
+        )
+
+
+def test_activate_release_digest_failure_rolls_back_new_candidate(database_session: Session) -> None:
+    release = ExecutorRelease(
+        id="git-abc123-def456",
+        artifact_uri="s3://artifacts/releases/git-abc123-def456/executor.pex",
+        artifact_digest="a" * 64,
+        protocol_version="1",
+    )
+
+    with pytest.raises(ReleaseControlError, match="digest mismatch"):
+        activate_release(
+            database_session,
+            release,
+            expected_bucket="artifacts",
+            expected_prefix="releases",
+            s3_client=FakeS3Client(b"different", key="releases/git-abc123-def456/executor.pex"),
+        )
+    database_session.rollback()
+
+    assert database_session.get(ExecutorRelease, release.id) is None
+
+
+def test_activate_release_rejects_artifact_outside_configured_location(database_session: Session) -> None:
+    release = _release("git-abc123-def456")
+
+    with pytest.raises(ReleaseControlError, match="configured S3 bucket and prefix"):
+        activate_release(
+            database_session,
+            release,
+            expected_bucket="release-artifacts",
+            expected_prefix="releases",
+            s3_client=FakeS3Client(b"irrelevant"),
+        )
 
 
 def test_verify_release_artifact_marks_candidate_ready(database_session: Session) -> None:
@@ -199,8 +320,11 @@ def test_select_active_release_rejects_invalid_admission_target(
     release = _release("invalid")
     release.status = status
     release.readiness_verified = readiness_verified
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    admission.release_id = release.id
     database_session.add(release)
-    database_session.add(ExecutorAdmission(release_id=release.id))
+    database_session.add(admission)
     database_session.commit()
 
     with pytest.raises(ReleaseControlError, match="No active executor release"):

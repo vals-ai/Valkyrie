@@ -46,7 +46,7 @@ class TaskProtectionMiddleware(TaskiqMiddleware):
     """
     Use middleware to enable ECS task protection while any task is running and release task protection when no benchmarks are running
 
-    NOTE: Use a lock to count ongoing benchmarks across the whole worker service
+    NOTE: A lock counts ongoing benchmarks across one task-consumer process.
     """
 
     def __init__(self) -> None:

@@ -9,6 +9,7 @@ from dateutil.parser import isoparse
 from pytest import CaptureFixture, MonkeyPatch
 from sqlmodel import Session
 
+from executor_protocol import SUPPORTED_PROTOCOL_VERSION
 from tracker import release_cli
 from tracker.database.models import (
     Benchmark,
@@ -33,8 +34,11 @@ def active_executor_release(database_session: Session) -> None:
         status=ExecutorReleaseStatus.ACTIVE,
         readiness_verified=True,
     )
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    admission.release_id = release.id
     database_session.add(release)
-    database_session.add(ExecutorAdmission(release_id=release.id))
+    database_session.add(admission)
     database_session.commit()
 
 
@@ -48,6 +52,32 @@ def _release_status(
     release_cli.main(["status"])
 
     return json.loads(capsys.readouterr().out)
+
+
+def test_register_defaults_to_supported_protocol_version(
+    database_session: Session,
+    monkeypatch: MonkeyPatch,
+    capsys: CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(release_cli, "engine", database_session.get_bind())
+
+    release_cli.main(
+        [
+            "register",
+            "candidate-default-protocol",
+            "s3://artifacts/candidate-default-protocol.pex",
+            "a" * 64,
+        ]
+    )
+
+    database_session.expire_all()
+    release = database_session.get(ExecutorRelease, "candidate-default-protocol")
+    assert release is not None
+    assert release.protocol_version == SUPPORTED_PROTOCOL_VERSION
+    assert json.loads(capsys.readouterr().out) == {
+        "id": "candidate-default-protocol",
+        "status": ExecutorReleaseStatus.CANDIDATE.value,
+    }
 
 
 def test_status_exposes_active_candidates_and_retirement_blockers(

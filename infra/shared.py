@@ -1,6 +1,6 @@
 """Shared infrastructure: VPC, ECS Cluster, Service Discovery namespace, S3, ElastiCache."""
 
-from typing import Any
+from typing import Any, cast
 
 import aws_cdk as cdk
 from aws_cdk import (
@@ -12,6 +12,7 @@ from aws_cdk import (
     aws_elasticache,
     aws_events,
     aws_events_targets,
+    aws_iam,
     aws_route53,
     aws_s3,
     aws_servicediscovery,
@@ -32,6 +33,8 @@ from constants import (
     DEV_SHARED_TRACKER_REPOSITORY_URI_PARAMETER,
     DEV_SHARED_VPC_ID_PARAMETER,
     ELASTICACHE_NODE_TYPE,
+    EXECUTOR_RELEASE_BUCKET_NAME,
+    EXECUTOR_RELEASE_PREFIX,
     NAMESPACE,
     REDIS_PORT,
     RELEASE_TEST_EXECUTOR_HOST_REPOSITORY_NAME,
@@ -126,6 +129,31 @@ class SharedStack(Stack):
             versioned=None if self.stage.is_prod else True,
         )
 
+        if self.stage.is_release_test:
+            self.executor_release_bucket = self.bucket
+        else:
+            self.executor_release_bucket = aws_s3.Bucket(
+                self,
+                "ExecutorReleaseBucket",
+                bucket_name=f"{self.stage.phys(EXECUTOR_RELEASE_BUCKET_NAME)}-{self.account}",
+                block_public_access=aws_s3.BlockPublicAccess.BLOCK_ALL,
+                encryption=aws_s3.BucketEncryption.S3_MANAGED,
+                enforce_ssl=True,
+                object_ownership=aws_s3.ObjectOwnership.BUCKET_OWNER_ENFORCED,
+                versioned=True,
+                removal_policy=cdk.RemovalPolicy.RETAIN,
+            )
+        self.executor_release_bucket.add_to_resource_policy(
+            aws_iam.PolicyStatement(
+                sid="RequireConditionalExecutorReleaseWrites",
+                effect=aws_iam.Effect.DENY,
+                principals=[cast(aws_iam.IPrincipal, aws_iam.AnyPrincipal())],
+                actions=["s3:PutObject"],
+                resources=[self.executor_release_bucket.arn_for_objects(f"{EXECUTOR_RELEASE_PREFIX}/*")],
+                conditions={"Null": {"s3:if-none-match": "true"}},
+            )
+        )
+
         self.tracker_repository: aws_ecr.Repository | None = None
         self.executor_host_repository: aws_ecr.Repository | None = None
         if self.stage.is_release_test:
@@ -152,7 +180,7 @@ class SharedStack(Stack):
 
         # ── ElastiCache Redis ─────────────────────────────────────────────
         # Single-node Redis used as the Taskiq message broker, shared by
-        # the tracker (producer) and worker (consumer).
+        # Tracker (producer) and ExecutorHost (consumer).
 
         redis_sg = aws_ec2.SecurityGroup(
             self,

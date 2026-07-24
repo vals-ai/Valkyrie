@@ -24,6 +24,7 @@ from sqlmodel import (
 )
 
 from tracker.database.utils import has_field_changed
+from executor_protocol import ExecutorDispatchStatus as ExecutorDispatchStatus
 
 if TYPE_CHECKING:
     from benchmark_service.client import BenchmarkServiceClient
@@ -73,13 +74,6 @@ class ExecutorDispatchKind(str, Enum):
     START = "START"
     RETRY = "RETRY"
     RESUME = "RESUME"
-
-
-class ExecutorDispatchStatus(str, Enum):
-    QUEUED = "QUEUED"
-    RUNNING = "RUNNING"
-    FINISHED = "FINISHED"
-    FAILED = "FAILED"
 
 
 class DocentReadingStatus(str, Enum):

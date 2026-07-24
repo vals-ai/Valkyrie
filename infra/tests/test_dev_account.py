@@ -23,6 +23,7 @@ from constants import (
     DEV_TRACKER_CERTIFICATE_ARN_PARAMETER,
     DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER,
     DEV_TRACKER_SECURITY_GROUP_PARAMETER,
+    executor_release_launch_parameter,
 )
 from shared import SharedStack
 from stage import DEV, PROD, RELEASE_TEST, Stage
@@ -58,6 +59,7 @@ DEV_SHARED_CONTRACT_PARAMETERS = {
 DEV_TRACKER_CONTRACT_PARAMETERS = {
     DEV_TRACKER_SECURITY_GROUP_PARAMETER,
     DEV_TRACKER_ALB_DNS_PARAMETER,
+    executor_release_launch_parameter(DEV),
 }
 
 
@@ -89,6 +91,7 @@ def dev_tracker_template() -> assertions.Template:
         namespace=shared.namespace,
         hosted_zone=shared.hosted_zone,
         bucket_name=shared.bucket_name,
+        executor_release_bucket=shared.executor_release_bucket,
         redis_url=shared.redis_url,
         env=TEST_ENV,
     )
@@ -115,11 +118,18 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         shared_template = assertions.Template.from_stack(shared)
 
         buckets = shared_template.find_resources("AWS::S3::Bucket")
-        self.assertEqual(len(buckets), 1)
-        bucket = next(iter(buckets.values()))
+        self.assertEqual(len(buckets), 2)
+        buckets_by_name = {bucket["Properties"]["BucketName"]: bucket for bucket in buckets.values()}
+        self.assertEqual(
+            set(buckets_by_name),
+            {"agentic-harness-dev", f"valkyrie-executor-releases-dev-{TEST_ACCOUNT}"},
+        )
+        bucket = buckets_by_name["agentic-harness-dev"]
+        release_bucket = buckets_by_name[f"valkyrie-executor-releases-dev-{TEST_ACCOUNT}"]
         self.assertEqual(bucket["DeletionPolicy"], "Retain")
         self.assertEqual(bucket["UpdateReplacePolicy"], "Retain")
-        self.assertEqual(bucket["Properties"]["BucketName"], "agentic-harness-dev")
+        self.assertEqual(release_bucket["DeletionPolicy"], "Retain")
+        self.assertEqual(release_bucket["UpdateReplacePolicy"], "Retain")
         self.assertEqual(
             bucket["Properties"]["PublicAccessBlockConfiguration"],
             {
@@ -136,6 +146,11 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         )
         self.assertEqual(
             bucket["Properties"]["BucketEncryption"],
+            {"ServerSideEncryptionConfiguration": [{"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]},
+        )
+        self.assertEqual(release_bucket["Properties"]["VersioningConfiguration"], {"Status": "Enabled"})
+        self.assertEqual(
+            release_bucket["Properties"]["BucketEncryption"],
             {"ServerSideEncryptionConfiguration": [{"ServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]},
         )
         shared_template.has_resource_properties(
@@ -155,6 +170,19 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                 }
             },
         )
+        conditional_write_statements = [
+            statement
+            for policy in shared_template.find_resources("AWS::S3::BucketPolicy").values()
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]
+            if statement.get("Sid") == "RequireConditionalExecutorReleaseWrites"
+        ]
+        self.assertEqual(len(conditional_write_statements), 1)
+        conditional_write = conditional_write_statements[0]
+        self.assertEqual(conditional_write["Action"], "s3:PutObject")
+        self.assertEqual(conditional_write["Effect"], "Deny")
+        self.assertEqual(conditional_write["Principal"], {"AWS": "*"})
+        self.assertEqual(conditional_write["Condition"], {"Null": {"s3:if-none-match": "true"}})
+        self.assertIn("releases/*", json.dumps(conditional_write["Resource"]))
 
     def test_release_test_bucket_remains_account_qualified(self) -> None:
         app = cdk.App(context=TEST_CONTEXT)
@@ -177,7 +205,11 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         certificate_parameter = ssm_parameter_id(template, DEV_TRACKER_CERTIFICATE_ARN_PARAMETER)
         rendered = json.dumps(template)
         iam_policies = tracker_template.find_resources("AWS::IAM::Policy")
-        self.assertTrue(any("s3:GetObject*" in json.dumps(policy) for policy in iam_policies.values()))
+        rendered_policies = json.dumps(iam_policies)
+        self.assertIn("s3:GetObject", rendered_policies)
+        self.assertIn("s3:PutObject", rendered_policies)
+        self.assertNotIn("s3:DeleteObject", rendered_policies)
+        self.assertNotIn("s3:ListBucket", rendered_policies)
         self.assertIn("devEvalInfraDescopeManagementKey", rendered)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
         self.assertNotIn("valkyrie/sentry-dsn", rendered)
@@ -216,6 +248,88 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                 )
             },
         )
+
+    def test_dev_release_control_is_one_sealed_task_with_environment_bound_role(self) -> None:
+        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
+            template = dev_tracker_template()
+
+        template.has_resource_properties(
+            "AWS::ECS::TaskDefinition",
+            {
+                "Family": "ValkyrieExecutorRelease-dev",
+                "ContainerDefinitions": [
+                    assertions.Match.object_like(
+                        {
+                            "Name": "ExecutorRelease",
+                            "EntryPoint": assertions.Match.array_with(
+                                ["/app/.venv/bin/python", "-m", "tracker.release_entrypoint"]
+                            ),
+                        }
+                    )
+                ],
+            },
+        )
+        template.has_resource_properties(
+            "AWS::SSM::Parameter",
+            {"Name": executor_release_launch_parameter(DEV), "Type": "String"},
+        )
+        roles = template.find_resources("AWS::IAM::Role")
+        release_role_id, release_role = next(
+            (logical_id, role)
+            for logical_id, role in roles.items()
+            if role["Properties"].get("RoleName") == "ValkyrieExecutorRelease-dev"
+        )
+        trust = json.dumps(release_role["Properties"]["AssumeRolePolicyDocument"])
+        self.assertIn("token.actions.githubusercontent.com:aud", trust)
+        self.assertIn("sts.amazonaws.com", trust)
+        self.assertIn("repo:vals-ai/Valkyrie:environment:dev", trust)
+
+        release_policy = next(
+            policy
+            for policy in template.find_resources("AWS::IAM::Policy").values()
+            if {"Ref": release_role_id} in policy["Properties"]["Roles"]
+        )
+        statements = cast(list[Mapping[str, object]], release_policy["Properties"]["PolicyDocument"]["Statement"])
+
+        def statement_for(action: str) -> Mapping[str, object]:
+            return next(
+                statement
+                for statement in statements
+                if action
+                in (
+                    [statement["Action"]]
+                    if isinstance(statement["Action"], str)
+                    else cast(list[object], statement["Action"])
+                )
+            )
+
+        s3_statement = statement_for("s3:PutObject")
+        self.assertEqual(s3_statement["Action"], "s3:PutObject")
+        self.assertIn("releases/*", json.dumps(s3_statement["Resource"]))
+        self.assertNotEqual(s3_statement["Resource"], "*")
+
+        run_statement = statement_for("ecs:RunTask")
+        self.assertNotEqual(run_statement["Resource"], "*")
+        self.assertIn("ecs:cluster", json.dumps(run_statement["Condition"]))
+
+        describe_statement = statement_for("ecs:DescribeTasks")
+        self.assertEqual(describe_statement["Resource"], "*")
+        self.assertIn("ecs:cluster", json.dumps(describe_statement["Condition"]))
+
+        pass_role_statement = statement_for("iam:PassRole")
+        pass_role_resources = cast(list[object], pass_role_statement["Resource"])
+        self.assertEqual(len(pass_role_resources), 2)
+        self.assertNotIn("*", pass_role_resources)
+        self.assertIn("ecs-tasks.amazonaws.com", json.dumps(pass_role_statement["Condition"]))
+
+        ssm_statement = statement_for("ssm:GetParameter")
+        self.assertNotEqual(ssm_statement["Resource"], "*")
+        self.assertIn("ExecutorReleaseLaunchConfig", json.dumps(ssm_statement["Resource"]))
+
+        policies = json.dumps(template.find_resources("AWS::IAM::Policy"))
+        for forbidden in ("s3:GetObject", "s3:DeleteObject", "s3:ListBucket", "ecs:ExecuteCommand", "ecs:StopTask"):
+            self.assertNotIn(forbidden, json.dumps(release_policy))
+        self.assertNotIn("s3:DeleteObject", policies)
 
     def test_dev_tracker_requires_descope_project(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):

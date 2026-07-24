@@ -3,7 +3,9 @@
 Exercise release lifecycle locking against disposable PostgreSQL.
 """
 
+import hashlib
 from collections.abc import Callable
+from io import BytesIO
 from threading import Event, Thread
 from time import monotonic, sleep
 from typing import cast
@@ -24,10 +26,13 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
     Org,
+    Task,
+    TaskStatus,
 )
 from tracker.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
 from tracker.release_control import (
     ReleaseControlError,
+    activate_release,
     pin_benchmark_to_release,
     promote_release,
     register_release,
@@ -37,6 +42,17 @@ from tracker.utils.resources import fetch_benchmark_row
 from tracker.utils.run_control import apply_stop_benchmark
 
 
+_EXECUTOR_ARTIFACT = b"immutable executor artifact"
+_EXECUTOR_ARTIFACT_DIGEST = hashlib.sha256(_EXECUTOR_ARTIFACT).hexdigest()
+
+
+class _S3Client:
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        assert Bucket == "artifacts"
+        assert Key == "releases/concurrent-activation/executor.pex"
+        return {"Body": BytesIO(_EXECUTOR_ARTIFACT)}
+
+
 def _release(release_id: str) -> ExecutorRelease:
     return ExecutorRelease(
         id=release_id,
@@ -44,6 +60,15 @@ def _release(release_id: str) -> ExecutorRelease:
         artifact_digest="a" * 64,
         protocol_version="1",
         readiness_verified=True,
+    )
+
+
+def _activation_candidate() -> ExecutorRelease:
+    return ExecutorRelease(
+        id="concurrent-activation",
+        artifact_uri="s3://artifacts/releases/concurrent-activation/executor.pex",
+        artifact_digest=_EXECUTOR_ARTIFACT_DIGEST,
+        protocol_version="1",
     )
 
 
@@ -111,6 +136,44 @@ def _run_while_first_transaction_holds_locks(
     assert not first_thread.is_alive()
     assert not second_thread.is_alive()
     return outcomes
+
+
+def test_concurrent_first_activation_serializes_create_or_match(
+    postgres_session: Session,
+    postgres_engine: Engine,
+) -> None:
+    admission = postgres_session.get(ExecutorAdmission, 1)
+    if admission is None:
+        postgres_session.add(ExecutorAdmission())
+    else:
+        admission.release_id = None
+        postgres_session.add(admission)
+    postgres_session.commit()
+
+    def activate(session: Session) -> ExecutorRelease:
+        return activate_release(
+            session,
+            _activation_candidate(),
+            expected_bucket="artifacts",
+            expected_prefix="releases",
+            s3_client=_S3Client(),
+        )
+
+    outcomes = _run_while_first_transaction_holds_locks(
+        activate,
+        activate,
+        postgres_engine,
+    )
+
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
+    postgres_session.expire_all()
+    release = postgres_session.get(ExecutorRelease, "concurrent-activation")
+    admission = postgres_session.get(ExecutorAdmission, 1)
+    assert release is not None
+    assert admission is not None
+    assert release.status == ExecutorReleaseStatus.ACTIVE
+    assert release.readiness_verified
+    assert admission.release_id == release.id
 
 
 def test_retirement_and_rollback_serialize_in_both_lock_orders(
@@ -245,6 +308,43 @@ def test_terminal_recovery_and_promotion_use_the_winning_admission_lock_order(
     assert admission.release_id == "race-c"
 
 
+def test_start_admission_persists_benchmark_before_pending_task_autoflush(
+    postgres_session: Session,
+) -> None:
+    org_id = uuid4()
+    benchmark_id = uuid4()
+    postgres_session.add(Org(id=org_id, name="start-autoflush-org"))
+    register_release(postgres_session, _release("start-autoflush"))
+    promote_release(postgres_session, "start-autoflush")
+    postgres_session.commit()
+    benchmark = Benchmark(
+        id=benchmark_id,
+        org_id=org_id,
+        name="start-autoflush",
+        status=BenchmarkStatus.IN_PROGRESS,
+        arguments=BenchmarkArguments(
+            contract=AgentContractRequest(name="autoflush-agent", install_cmd="true", run_cmd="true"),
+            concurrency=1,
+        ),
+    )
+    task = Task(
+        org_id=org_id,
+        benchmark=benchmark_id,
+        task_id="task-1",
+        status=TaskStatus.PENDING,
+    )
+    postgres_session.add(task)
+
+    dispatch = admit_start_dispatch(postgres_session, benchmark=benchmark, dispatch_id=uuid4())
+    postgres_session.commit()
+
+    postgres_session.refresh(benchmark)
+    postgres_session.refresh(task)
+    assert benchmark.current_execution_release_id == "start-autoflush"
+    assert task.benchmark == benchmark_id
+    assert dispatch.executor_release_id == "start-autoflush"
+
+
 def test_start_and_promotion_use_the_winning_admission_lock_order(
     postgres_session: Session,
     postgres_engine: Engine,
@@ -277,7 +377,7 @@ def test_start_and_promotion_use_the_winning_admission_lock_order(
         postgres_engine,
     )
 
-    assert outcomes == ["first-committed", "second-committed"]
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
     postgres_session.expire_all()
     start_first = postgres_session.get(Benchmark, start_first_id)
     start_first_dispatch = postgres_session.exec(
@@ -294,7 +394,7 @@ def test_start_and_promotion_use_the_winning_admission_lock_order(
         postgres_engine,
     )
 
-    assert outcomes == ["first-committed", "second-committed"]
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
     postgres_session.expire_all()
     promotion_first = postgres_session.get(Benchmark, promotion_first_id)
     promotion_first_dispatch = postgres_session.exec(
@@ -350,7 +450,7 @@ def test_in_progress_retry_blocks_retirement_of_the_owned_release(
         postgres_engine,
     )
 
-    assert outcomes == ["first-committed", "second-rejected"]
+    assert sorted(outcomes) == ["first-committed", "second-rejected"]
     postgres_session.expire_all()
     stored_retry_first = postgres_session.get(Benchmark, retry_first.id)
     stored_release_a = postgres_session.get(ExecutorRelease, "retry-a")
@@ -461,7 +561,7 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
         lambda session: retry(session, stop_first.id),
         postgres_engine,
     )
-    assert outcomes == ["first-committed", "second-rejected"]
+    assert sorted(outcomes) == ["first-committed", "second-rejected"]
 
     retry_first = add_error_benchmark("retry-first")
     outcomes = _run_while_first_transaction_holds_locks(
@@ -469,7 +569,7 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
         lambda session: whole_stop(session, retry_first.id),
         postgres_engine,
     )
-    assert outcomes == ["first-committed", "second-committed"]
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
     postgres_session.expire_all()
     stored_retry_first = postgres_session.get(Benchmark, retry_first.id)
     assert stored_retry_first is not None

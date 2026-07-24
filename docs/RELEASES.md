@@ -174,6 +174,63 @@ Package-R Tracker image: its migration history cannot resolve `e9f0a1b2c3d4` and
 its runtime does not maintain current ownership. Fix Tracker failures forward;
 database restoration is a separately approved disaster-recovery operation.
 
+### First executor-dispatch cutover
+
+The first deployment from the legacy three-field Taskiq message contract is a
+manual outage. Perform these steps in order:
+
+1. From the new release source, deploy the stage's `MonitoringStack` target with
+   CDK `--exclusively` and verify that it no longer imports the legacy Worker
+   service. Do not deploy `WorkerStack` or use all-stack scope in this step. This
+   releases the cross-stack export before the later Worker deletion.
+2. Force-stop any run that cannot drain normally.
+3. Suspend Tracker scaling, set its desired count to zero, and verify that no
+   Tracker task remains. This stops new legacy messages from being admitted.
+4. Keep legacy Workers running until every benchmark is terminal and the Redis
+   `taskiq` consumer group reports both zero pending messages and zero lag. Stream
+   key existence alone is not proof that the queue drained.
+5. Suspend legacy Worker scaling, set its desired count to zero, and verify that
+   no Worker task remains.
+6. Run the forward-only all-stack deployment and activation. It deletes the
+   drained legacy service but retains `/valkyrie/worker` log history. After the
+   new Tracker and ExecutorHost are healthy, resume Tracker scaling and restore
+   its normal service count. Do not deploy a pre-Package-R Tracker image after
+   the migrations commit.
+
+This procedure is operational only; the migrations contain no cutover state or
+compatibility branch. It applies once, to the first executor-dispatch rollout.
+Later deployments use the immutable release path normally and do not require an
+outage or queue drain.
+
+## Automated deployment
+
+An all-stack `dev` or `prod` deployment builds one ARM64/Python 3.12 PEX from the
+exact Tracker source and locked runtime dependencies. The artifact digest is part
+of the release ID and S3 key, so different bytes cannot reuse an existing release
+identity. The workflow uploads with create-only semantics, then runs one sealed
+release-control task. Its `activate` transaction creates or matches the immutable
+release, verifies the S3 digest, promotes it, and confirms it is the active
+admission target before committing. PostgreSQL serializes overlapping
+activations on the singleton admission row before either task creates or matches
+the release.
+
+Dev activation runs automatically after a successful all-stack deployment.
+Production stack deployment completes first; executor upload and activation wait
+for approval on the protected `production-release` GitHub Environment. That
+environment must require reviewers, permit only `prod`, and define
+`PRODUCTION_RELEASE_APPROVAL_CONFIGURED=true`. The AWS accounts must already
+contain the account-owned GitHub OIDC provider used by the environment-bound
+release roles.
+
+The manual cutover above must complete before the first all-stack deployment.
+After that cutover, new starts may return `503` between a later stack deployment
+and approved activation, while existing runs continue on their pinned artifacts.
+Previous active releases drain normally.
+
+Partial, plan, and credentials-only deployments never publish or activate an
+executor release. The release workflow does not retire releases or delete
+artifacts.
+
 ## Operator commands
 
 Run these commands from the Tracker environment with its database settings and
@@ -181,16 +238,19 @@ AWS credentials:
 
 ```bash
 uv run python -m tracker.release_cli status
+uv run python -m tracker.release_cli activate RELEASE_ID s3://bucket/key SHA256_DIGEST
 uv run python -m tracker.release_cli register RELEASE_ID s3://bucket/key SHA256_DIGEST
 uv run python -m tracker.release_cli verify RELEASE_ID
 uv run python -m tracker.release_cli promote RELEASE_ID
 uv run python -m tracker.release_cli retire RELEASE_ID
 ```
 
-`verify` streams the S3 object and checks its SHA-256 digest before promotion.
-For initial activation, run `register` → `verify` → `promote` → `status` before
-accepting benchmark traffic. Until `status` reports an `ACTIVE` admission target,
-new benchmark starts return `503`.
+`activate` is the rerunnable happy-path operation used by deployment. It requires
+`EXECUTOR_RELEASE_BUCKET` and `EXECUTOR_RELEASE_PREFIX`, streams the S3 object,
+checks its SHA-256 digest, promotes it, and commits once. The granular commands
+remain for trusted investigation and rollback by re-promoting a verified prior
+release. Until `status` reports an `ACTIVE` admission target, new benchmark starts
+return `503`.
 
 ## Artifact retention
 
@@ -229,10 +289,16 @@ reports an active-execution or retention blocker.
 
 ## Release-test
 
-The current release-test stage is dev-sized but runs in the production AWS
-account. Every operation must specify `STAGE=release-test`, account
-`613431292675`, and region `us-east-1`; unrelated account resources remain
-outside the release-test boundary.
+The release-test stage is dev-sized and targets the account selected by
+`DEV_ACCOUNT_ID`; the target guard also permits an explicit production-account
+campaign. Production-account validation uses `STAGE=release-test`, account
+`613431292675`, and region `us-east-1`. Unrelated account resources remain outside
+the release-test boundary.
+
+Release-test also publishes `/valkyrie/release-test/executor-release/launch-config`
+and the same sealed activation task used by deployment. It reuses the existing
+release-test bucket and creates no GitHub OIDC release role; an explicitly
+authorized release-test operator may use it for live deployment proof.
 
 The Package R driver is a static Fargate task definition, not a service. It has a
 no-ingress security group, explicit VPC/database/Redis/DNS/HTTPS egress, retained
@@ -242,7 +308,7 @@ Public IP assignment is a launch-time requirement because the stage has public
 subnets and no NAT gateway; it does not expose Tracker, whose ALB remains
 internal.
 
-Before synthesis, set:
+Before running the release-test driver, set:
 
 ```bash
 export RELEASE_TEST_DRIVER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:613431292675:secret:valkyrie/release-test/package-r-driver-SUFFIX
@@ -250,6 +316,22 @@ export RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN=arn:aws:secretsmanager:us-east-1
 export RELEASE_TEST_OPERATOR_PRINCIPAL_ARN=arn:aws:iam::613431292675:role/ROLE_NAME
 export RELEASE_TEST_IMAGE_TAG=package-r-RUN_ID
 ```
+
+Package R staging is create-only. With credentials for the authorized operator
+role, upload the executor artifact under its reserved prefix and require that the
+key does not already exist:
+
+```bash
+export RELEASE_TEST_ARTIFACT_BUCKET=agentic-harness-release-test-613431292675
+export PACKAGE_R_EXECUTOR_ARTIFACT=/path/to/executor.pex
+aws s3api put-object \
+  --bucket "$RELEASE_TEST_ARTIFACT_BUCKET" \
+  --key "releases/package-r/$(basename "$PACKAGE_R_EXECUTOR_ARTIFACT")" \
+  --body "$PACKAGE_R_EXECUTOR_ARTIFACT" \
+  --if-none-match '*'
+```
+
+A repeated key fails rather than replacing immutable release bytes.
 
 The principal must be an IAM role ARN, not an STS assumed-role session ARN. Both
 secret references must be complete generated ARNs, including their suffixes; a
@@ -286,9 +368,9 @@ preflight.
 The stage connects to `benchmarks.vals.ai`. Local clients outside the VPC cannot
 call the internal Tracker directly; use the driver for HTTP and database proof.
 
-The legacy Worker and stable ExecutorHost consume separate queues. Legacy
-messages remain on `taskiq` and never reach the ExecutorHost. Every message on
-`valkyrie-stable` must include an executor dispatch ID and immutable artifact
-identity; the host claims the matching PostgreSQL dispatch before downloading or
-executing the artifact. The execution-affinity migration requires no
-ExecutorHost compatibility branch or queue-drain sequencing.
+After the one-time cutover, no legacy Worker or `taskiq` consumer is deployed.
+Every message on `valkyrie-stable` must include an executor dispatch ID and
+immutable artifact identity; ExecutorHost claims the matching PostgreSQL dispatch
+before downloading or executing the artifact. Drain `taskiq` manually during the
+cutover above; following deployments require no compatibility branch or
+queue-drain sequence.

@@ -4,6 +4,7 @@ import os
 from typing import Any
 
 from dotenv import load_dotenv
+from executor_protocol import DEFAULT_STABLE_QUEUE_NAME
 from taskiq import InMemoryBroker, TaskiqEvents
 from taskiq_redis import RedisStreamBroker
 from taskiq_redis.redis_backend import RedisAsyncResultBackend
@@ -42,8 +43,7 @@ AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-LEGACY_QUEUE_NAME = "taskiq"
-STABLE_QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", "valkyrie-stable")
+STABLE_QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_STABLE_QUEUE_NAME)
 
 
 def _build_database_url() -> str:

@@ -44,6 +44,7 @@ def admit_start_dispatch(
     dispatch_id: UUID,
 ) -> ExecutorDispatch:
     """Select the active release and persist one start dispatch."""
+    session.add(benchmark)
     release = select_active_release(session, for_update=True)
     pin_benchmark_to_release(benchmark, release)
     dispatch = create_executor_dispatch(
@@ -52,7 +53,6 @@ def admit_start_dispatch(
         ExecutorDispatchKind.START,
         dispatch_id=dispatch_id,
     )
-    session.add(benchmark)
     session.add(dispatch)
     session.flush()
     return dispatch

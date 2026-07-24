@@ -1,0 +1,16 @@
+*
+!.dockerignore
+!services/
+!services/tracker/
+!services/tracker/Dockerfile
+!services/tracker/pyproject.toml
+!services/tracker/uv.lock
+!services/tracker/alembic.ini
+!services/tracker/main.py
+!services/tracker/entrypoint.sh
+!services/tracker/src/
+!services/tracker/src/**
+!services/executor_host/
+!services/executor_host/Dockerfile
+!services/executor_host/requirements.txt
+!services/executor_host/supervisor.py

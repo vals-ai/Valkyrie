@@ -53,7 +53,7 @@ from tracker.aws.s3 import (
     s3_object_exists,
 )
 from tracker.agent.schemas import AgentConfig
-from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_url
+from tracker.config import AUTH_REQUIRED, ENVIRONMENT, broker, create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -78,6 +78,7 @@ from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
+from executor_protocol import EXECUTOR_TASK_NAME, executor_task_signature
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.release_control import ReleaseControlError
 from tracker.middleware import RequestContextMiddleware
@@ -114,7 +115,6 @@ from tracker.utils import (
     try_fetch_harness_config,
     force_stop_sandboxes,
     initiate_stop_benchmark,
-    process_benchmark,
     reset_to_in_progress_status,
     start_benchmark_request_to_benchmark,
     stream_benchmark_results,
@@ -127,6 +127,10 @@ configure_logging()
 configure_observability("valkyrie-tracker", environment=ENVIRONMENT)
 
 logger = get_logger(__name__)
+
+# Tracker publishes the stable wire contract; ExecutorHost resolves the same
+# task name before launching the pinned executor artifact.
+process_benchmark = broker.task(EXECUTOR_TASK_NAME)(executor_task_signature)
 
 
 def _operation_id(route: APIRoute) -> str:

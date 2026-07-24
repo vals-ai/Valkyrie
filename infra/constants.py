@@ -35,10 +35,10 @@ TRACKER_PORT = 8000
 REDIS_PORT = 6379
 POSTGRES_PORT = 5432
 
-# ElastiCache Redis (shared by tracker + worker)
+# ElastiCache Redis (shared by Tracker + ExecutorHost)
 ELASTICACHE_NODE_TYPE = "cache.t4g.micro"
 
-# Worker Service
+# ExecutorHost and retained legacy log history
 WORKER_LOG_GROUP_NAME = "/valkyrie/worker"
 EXECUTOR_HOST_LOG_GROUP_NAME = "/valkyrie/executor-host"
 DRIVER_LOG_GROUP_NAME = "/valkyrie/package-r-driver"
@@ -58,6 +58,27 @@ ALB_IDLE_TIMEOUT_SECONDS = 60
 
 # S3
 S3_BUCKET_NAME = "agentic-harness"
+EXECUTOR_RELEASE_BUCKET_NAME = "valkyrie-executor-releases"
+EXECUTOR_RELEASE_PREFIX = "releases"
+EXECUTOR_RELEASE_ROLE_NAME = "ValkyrieExecutorRelease"
+
+DOCKER_ASSET_EXCLUDES = (
+    ".git/**",
+    ".pi-subagents/**",
+    ".scratch/**",
+    ".venv/**",
+    "**/.pytest_cache/**",
+    "**/.ruff_cache/**",
+    "**/.venv/**",
+    "**/__pycache__/**",
+    "**/node_modules/**",
+    "infra/cdk.out/**",
+)
+
+
+def executor_release_launch_parameter(stage_name: str) -> str:
+    return f"/valkyrie/{stage_name}/executor-release/launch-config"
+
 
 # Release-test service images. Dedicated repositories keep deployment writes
 # inside the stage boundary instead of the account-wide CDK bootstrap repository.

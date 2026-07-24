@@ -16,6 +16,7 @@ from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
     DEFAULT_ORG_NAME,
+    ExecutorAdmission,
     ExecutorDispatch,
     ExecutorDispatchKind,
     ExecutorDispatchStatus,
@@ -54,7 +55,8 @@ def database_session() -> Generator[Session, None, None]:
 
     try:
         with Session(test_engine, expire_on_commit=False) as session:
-            # Seed the default organization so foreign keys resolve.
+            # Mirror migration-owned singleton rows and the default organization.
+            session.add(ExecutorAdmission())
             session.add(Org(id=TEST_ORG_ID, name=DEFAULT_ORG_NAME))
             session.commit()
             yield session

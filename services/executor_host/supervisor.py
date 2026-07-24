@@ -14,22 +14,27 @@ import urllib.request
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol, cast
-from urllib.parse import urlparse
+from typing import Mapping, Protocol, Unpack, cast
 
 import boto3
 import psycopg2  # pyright: ignore[reportMissingModuleSource]
 from psycopg2.extensions import connection as PostgresConnection  # pyright: ignore[reportMissingModuleSource]
 from taskiq_redis import RedisStreamBroker
+from executor_protocol import (
+    DEFAULT_EXECUTOR_RELEASE_PREFIX,
+    DEFAULT_STABLE_QUEUE_NAME,
+    EXECUTOR_TASK_NAME,
+    SUPPORTED_PROTOCOL_VERSION,
+    ExecutorPayload,
+    validate_executor_artifact_uri,
+    validate_executor_digest,
+)
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_PROTOCOL_VERSION = "1"
-DEFAULT_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_CACHE_DIR = "/var/cache/valkyrie-executors"
 ECS_AGENT_URI = os.environ.get("ECS_AGENT_URI")
 _PROTECTION_EXPIRY_MINUTES = 1440
-_DEFAULT_EXECUTOR_ARTIFACT_PREFIX = "releases"
 _AUTHORITY_LOSS_GRACE_SECONDS = 10
 _active_execution_count = 0
 _execution_lock = asyncio.Lock()
@@ -88,9 +93,7 @@ class ArtifactDispatch:
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> ArtifactDispatch:
-        digest = _required_string(payload, "executor_artifact_digest").lower()
-        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
-            raise ValueError("executor_artifact_digest must be a 64-character SHA-256 digest")
+        digest = validate_executor_digest(_required_string(payload, "executor_artifact_digest"))
         protocol_version = _required_string(payload, "executor_protocol_version")
         if protocol_version != SUPPORTED_PROTOCOL_VERSION:
             raise ValueError(f"Unsupported executor protocol version: {protocol_version}")
@@ -373,24 +376,6 @@ def _required_string(payload: Mapping[str, object], key: str) -> str:
     return value
 
 
-def parse_s3_uri(uri: str) -> tuple[str, str]:
-    parsed = urlparse(uri)
-    key = parsed.path.lstrip("/")
-    if parsed.scheme != "s3" or not parsed.netloc:
-        raise ValueError(f"Executor artifact URI must use s3://: {uri}")
-    if not key:
-        raise ValueError("Executor artifact URI must contain an S3 key")
-    return parsed.netloc, key
-
-
-def validate_artifact_uri(uri: str, expected_bucket: str, expected_prefix: str) -> tuple[str, str]:
-    bucket, key = parse_s3_uri(uri)
-    prefix = expected_prefix.strip("/")
-    if bucket != expected_bucket or not prefix or not key.startswith(f"{prefix}/"):
-        raise ValueError("Executor artifact URI is outside the configured S3 bucket and prefix")
-    return bucket, key
-
-
 def verify_file_digest(path: Path, expected_digest: str) -> None:
     digest = hashlib.sha256()
     with path.open("rb") as artifact:
@@ -420,16 +405,16 @@ class ExecutorSupervisor:
         self.cache_dir = cache_dir
         self.s3_client = s3_client
         self.python_executable = python_executable
-        self.artifact_bucket = artifact_bucket or os.environ.get("AWS_S3_BUCKET", "agentic-harness")
+        self.artifact_bucket = artifact_bucket or os.environ.get("EXECUTOR_RELEASE_BUCKET", "agentic-harness")
         self.artifact_prefix = artifact_prefix or os.environ.get(
             "EXECUTOR_RELEASE_PREFIX",
-            _DEFAULT_EXECUTOR_ARTIFACT_PREFIX,
+            DEFAULT_EXECUTOR_RELEASE_PREFIX,
         )
         self.authority_check_interval = authority_check_interval
         self.sleep = sleep
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
-        bucket, key = validate_artifact_uri(
+        bucket, key = validate_executor_artifact_uri(
             dispatch.artifact_uri,
             self.artifact_bucket,
             self.artifact_prefix,
@@ -570,7 +555,7 @@ async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
 
 
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_QUEUE_NAME)
+QUEUE_NAME = os.environ.get("STABLE_QUEUE_NAME", DEFAULT_STABLE_QUEUE_NAME)
 CACHE_DIR = Path(os.environ.get("EXECUTOR_CACHE_DIR", DEFAULT_CACHE_DIR))
 
 broker = RedisStreamBroker(
@@ -587,7 +572,7 @@ async def _terminalize_after_failure(
     store: ExecutorDispatchStore,
     authority: DispatchAuthority,
     task_ids: list[str],
-) -> None:
+) -> bool:
     try:
         terminalized = await store.terminalize(authority, task_ids)
         if not terminalized:
@@ -595,11 +580,14 @@ async def _terminalize_after_failure(
                 "Executor dispatch %s no longer had terminalization authority",
                 authority.dispatch_id,
             )
+            return False
+        return True
     except Exception:
         logger.exception(
             "Failed to terminalize executor dispatch %s",
             authority.dispatch_id,
         )
+        return False
 
 
 async def run_executor_dispatch(
@@ -661,32 +649,17 @@ async def run_executor_dispatch(
         await _release_task_protection()
 
 
-@broker.task("tracker.utils:process_benchmark")
-async def launch_executor(
-    start_benchmark_request_json: dict[str, object],
-    benchmark_id_str: str,
-    verified_task_ids: list[str],
-    executor_dispatch_id: str | None = None,
-    executor_release_id: str | None = None,
-    executor_artifact_uri: str | None = None,
-    executor_artifact_digest: str | None = None,
-    executor_protocol_version: str | None = None,
-) -> None:
-    dispatch_id = _required_string({"executor_dispatch_id": executor_dispatch_id}, "executor_dispatch_id")
-    dispatch = ArtifactDispatch.from_payload(
-        {
-            "executor_release_id": executor_release_id,
-            "executor_artifact_uri": executor_artifact_uri,
-            "executor_artifact_digest": executor_artifact_digest,
-            "executor_protocol_version": executor_protocol_version,
-        }
-    )
+@broker.task(EXECUTOR_TASK_NAME)
+async def launch_executor(**payload: Unpack[ExecutorPayload]) -> None:
+    raw_payload: dict[str, object] = dict(payload)
+    dispatch_id = _required_string(raw_payload, "executor_dispatch_id")
+    dispatch = ArtifactDispatch.from_payload(raw_payload)
     await run_executor_dispatch(
         supervisor,
         dispatch_store,
         executor_dispatch_id=dispatch_id,
         dispatch=dispatch,
-        start_benchmark_request_json=start_benchmark_request_json,
-        benchmark_id_str=benchmark_id_str,
-        verified_task_ids=verified_task_ids,
+        start_benchmark_request_json=payload["start_benchmark_request_json"],
+        benchmark_id_str=payload["benchmark_id_str"],
+        verified_task_ids=payload["verified_task_ids"],
     )

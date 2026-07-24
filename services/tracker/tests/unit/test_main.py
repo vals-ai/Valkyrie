@@ -77,8 +77,11 @@ def active_executor_release(database_session: Session) -> None:
         status=ExecutorReleaseStatus.ACTIVE,
         readiness_verified=True,
     )
+    admission = database_session.get(ExecutorAdmission, 1)
+    assert admission is not None
+    admission.release_id = release.id
     database_session.add(release)
-    database_session.add(ExecutorAdmission(release_id=release.id))
+    database_session.add(admission)
     database_session.commit()
 
 

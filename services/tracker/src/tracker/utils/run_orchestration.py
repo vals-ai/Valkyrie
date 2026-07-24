@@ -29,6 +29,7 @@ from tracker.database.session import engine
 from tracker.dispatch_control import record_dispatch_failure, terminalize_active_dispatches
 from tracker.exceptions import ExecutionAuthorityRevoked, TrackerServiceError
 from tracker.execution_authority import ExecutionAuthority, lock_execution_authority
+from executor_protocol import EXECUTOR_TASK_NAME
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.types import (
@@ -266,24 +267,15 @@ async def upload_final_view_if_current(
     await upload_final_view(benchmark, final_view, harness_config)
 
 
-# Pin the Taskiq task name to its pre-refactor value so in-flight messages
-# enqueued as `tracker.utils:process_benchmark` still match after the module move.
-@broker.task("tracker.utils:process_benchmark")
+# Keep the Tracker producer and ExecutorHost on one stable Taskiq wire name.
+@broker.task(EXECUTOR_TASK_NAME)
 @logfire.instrument("process_benchmark")
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any],
     benchmark_id_str: str,
     verified_task_ids: list[str],
     executor_dispatch_id: str,
-    *,
-    executor_release_id: str | None = None,
-    executor_artifact_uri: str | None = None,
-    executor_artifact_digest: str | None = None,
-    executor_protocol_version: str | None = None,
 ) -> None:
-    # The stable ExecutorHost consumes these release fields. The legacy worker
-    # accepts them only so Taskiq can type the shared message during migration.
-    _ = executor_release_id, executor_artifact_uri, executor_artifact_digest, executor_protocol_version
     try:
         authority = ExecutionAuthority(
             benchmark_id=UUID(benchmark_id_str),
@@ -630,7 +622,7 @@ def catch_errors_during_cleanup(
     undetected_exit_tasks = session.exec(undetected_exit_tasks_query).all()
 
     # Sweep stale RUNNING analyzer invocations to ERROR. The invoke_analyzer
-    # helper uses try/finally so this only fires when the worker process was
+    # helper uses try/finally so this only fires when the executor process was
     # killed mid-invocation (no try/finally cleanup ran).
     if benchmark_row.docent_reading_status == DocentReadingStatus.RUNNING:
         benchmark_row.docent_reading_status = DocentReadingStatus.ERROR

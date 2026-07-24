@@ -8,6 +8,7 @@ import logging
 import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -18,11 +19,10 @@ from services.executor_host.supervisor import (  # pyright: ignore[reportMissing
     DispatchAuthorityLostError,
     ExecutorSupervisor,
     PostgresExecutorDispatchStore,
-    parse_s3_uri,
     run_executor_dispatch,
-    validate_artifact_uri,
     verify_file_digest,
 )
+from executor_protocol import validate_executor_artifact_uri
 
 
 class FakeDispatchStore:
@@ -144,16 +144,6 @@ def _supervisor(
     )
 
 
-def test_parse_s3_uri_requires_bucket_and_key() -> None:
-    expected_uri = ("bucket", "path/to/executor.pex")
-    assert parse_s3_uri("s3://bucket/path/to/executor.pex") == expected_uri
-
-    with pytest.raises(ValueError, match="s3://"):
-        parse_s3_uri("https://bucket/path/to/executor.pex")
-    with pytest.raises(ValueError, match="key"):
-        parse_s3_uri("s3://bucket/")
-
-
 def test_dispatch_rejects_missing_or_invalid_identity() -> None:
     with pytest.raises(ValueError, match="executor_artifact_digest"):
         ArtifactDispatch.from_payload(
@@ -202,23 +192,27 @@ async def test_prepare_artifact_downloads_and_verifies_by_digest(tmp_path: Path)
 
 
 def test_validate_artifact_uri_requires_configured_bucket_and_prefix() -> None:
-    assert validate_artifact_uri(
+    assert validate_executor_artifact_uri(
         "s3://artifacts/executors/v2.pex",
         "artifacts",
         "executors",
     ) == ("artifacts", "executors/v2.pex")
 
+    with pytest.raises(ValueError, match="identify an S3 object"):
+        validate_executor_artifact_uri("https://artifacts/executors/v2.pex", "artifacts", "executors")
+    with pytest.raises(ValueError, match="identify an S3 object"):
+        validate_executor_artifact_uri("s3://artifacts/", "artifacts", "executors")
     with pytest.raises(ValueError, match="configured S3 bucket and prefix"):
-        validate_artifact_uri("s3://other/executors/v2.pex", "artifacts", "executors")
+        validate_executor_artifact_uri("s3://other/executors/v2.pex", "artifacts", "executors")
     with pytest.raises(ValueError, match="configured S3 bucket and prefix"):
-        validate_artifact_uri("s3://artifacts/other/v2.pex", "artifacts", "executors")
+        validate_executor_artifact_uri("s3://artifacts/other/v2.pex", "artifacts", "executors")
 
 
 @pytest.mark.asyncio
 async def test_postgres_claim_is_status_fenced_and_returns_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cursor = RecordingCursor((True,))
+    cursor = RecordingCursor(("dispatch-1",))
     store = PostgresExecutorDispatchStore(
         host="db",
         port="5432",
@@ -529,7 +523,7 @@ async def test_launch_executor_rejects_invalid_dispatch_id_without_side_effects(
             start_benchmark_request_json={},
             benchmark_id_str="benchmark-1",
             verified_task_ids=[],
-            executor_dispatch_id=executor_dispatch_id,
+            executor_dispatch_id=cast(str, executor_dispatch_id),
             executor_release_id="release-v2",
             executor_artifact_uri="s3://artifacts/executors/v2.pex",
             executor_artifact_digest=digest,

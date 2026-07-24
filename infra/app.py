@@ -49,13 +49,14 @@ tracker = TrackerStack(
     namespace=shared.namespace,
     hosted_zone=shared.hosted_zone,
     bucket_name=shared.bucket_name,
+    executor_release_bucket=shared.executor_release_bucket,
     redis_url=shared.redis_url,
     tracker_repository=tracker_repository,
     image_tag=release_test_image_tag,
     env=env,
 )
 
-# Worker service (Taskiq worker) - deployed independently
+# Stable ExecutorHost, retained under the historical WorkerStack identity
 worker = WorkerStack(
     app,
     stage.stack_id("WorkerStack"),
@@ -65,10 +66,10 @@ worker = WorkerStack(
     namespace=shared.namespace,
     redis_url=shared.redis_url,
     bucket_name=shared.bucket_name,
+    executor_release_bucket=shared.executor_release_bucket,
     database=tracker.database,
     db_credentials=tracker.db_credentials,
     tracker_service=tracker.tracker_fargate_service,
-    tracker_repository=tracker_repository,
     executor_host_repository=executor_host_repository,
     image_tag=release_test_image_tag,
     env=env,
@@ -100,7 +101,6 @@ monitoring = MonitoringStack(
     stage=stage,
     cluster=shared.cluster,
     tracker_service=tracker.tracker_fargate_service,
-    worker_service=worker.worker_service,
     load_balancer=tracker.service.load_balancer,
     target_group=tracker.service.target_group,
     database=tracker.database,
@@ -111,6 +111,6 @@ monitoring = MonitoringStack(
 # Deployment order
 tracker.add_dependency(shared)
 worker.add_dependency(tracker)
-monitoring.add_dependency(worker)
+monitoring.add_dependency(tracker)
 
 app.synth()

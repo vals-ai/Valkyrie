@@ -22,6 +22,11 @@ from tracker.database.models import (
     ExecutorRelease,
     ExecutorReleaseStatus,
 )
+from executor_protocol import (
+    SUPPORTED_PROTOCOL_VERSION,
+    validate_executor_artifact_uri,
+    validate_executor_digest,
+)
 from tracker.types import (
     ExecutorDispatchBlocker,
     ExecutorExecutionBlocker,
@@ -35,7 +40,6 @@ _ACTIVE_DISPATCH_STATUSES = (
     ExecutorDispatchStatus.QUEUED,
     ExecutorDispatchStatus.RUNNING,
 )
-_SUPPORTED_PROTOCOL_VERSION = "1"
 _ARTIFACT_RETENTION_DAYS = 30
 _logger = logging.getLogger(__name__)
 
@@ -85,6 +89,44 @@ def register_release(session: Session, release: ExecutorRelease) -> ExecutorRele
         extra={"event": "registered", "release_id": release.id, "status": release.status.value},
     )
     return release
+
+
+def activate_release(
+    session: Session,
+    candidate: ExecutorRelease,
+    *,
+    expected_bucket: str,
+    expected_prefix: str,
+    s3_client: S3Client | None = None,
+) -> ExecutorRelease:
+    """Create-or-match, verify, promote, and assert one immutable release."""
+    _validate_release_manifest(candidate)
+    try:
+        validate_executor_artifact_uri(candidate.artifact_uri, expected_bucket, expected_prefix)
+    except ValueError as error:
+        raise ReleaseControlError(str(error)) from error
+
+    _get_required_admission(session, for_update=True)
+    release = session.get(ExecutorRelease, candidate.id)
+    if release is None:
+        release = register_release(session, candidate)
+    elif (
+        release.artifact_uri != candidate.artifact_uri
+        or release.artifact_digest != candidate.artifact_digest
+        or release.protocol_version != candidate.protocol_version
+    ):
+        raise ReleaseControlError(f"Executor release {candidate.id!r} already has a different immutable identity")
+
+    verify_release_artifact(session, release.id, s3_client=s3_client)
+    activated = promote_release(session, release.id)
+    admission = _get_required_admission(session)
+    if (
+        admission.release_id != activated.id
+        or activated.status != ExecutorReleaseStatus.ACTIVE
+        or not activated.readiness_verified
+    ):
+        raise ReleaseControlError(f"Executor release {activated.id!r} did not become active")
+    return activated
 
 
 def verify_release_artifact(
@@ -245,7 +287,7 @@ def resolve_current_execution_release(
 
 def promote_release(session: Session, release_id: str) -> ExecutorRelease:
     """Promote a ready candidate or previously draining release for new benchmarks."""
-    admission = _get_admission(session, for_update=True)
+    admission = _get_required_admission(session, for_update=True)
     release = _get_release(session, release_id, populate_existing=True, for_update=True)
     if release.status == ExecutorReleaseStatus.RETIRED:
         raise ReleaseControlError(f"Retired executor release {release_id!r} cannot be promoted")
@@ -253,12 +295,12 @@ def promote_release(session: Session, release_id: str) -> ExecutorRelease:
     if not release.readiness_verified:
         raise ReleaseControlError(f"Executor release {release_id!r} is not ready")
 
-    if admission is not None and admission.release_id == release_id:
+    if admission.release_id == release_id:
         if release.status != ExecutorReleaseStatus.ACTIVE:
             raise ReleaseControlError("Admission points to a release that is not active")
         return release
 
-    if admission is not None and admission.release_id is not None:
+    if admission.release_id is not None:
         previous = _get_release(session, admission.release_id, populate_existing=True)
         if previous.status == ExecutorReleaseStatus.ACTIVE:
             previous.status = ExecutorReleaseStatus.DRAINING
@@ -275,11 +317,8 @@ def promote_release(session: Session, release_id: str) -> ExecutorRelease:
     release.retired_at = None
     session.add(release)
 
-    if admission is None:
-        admission = ExecutorAdmission(release_id=release_id)
-    else:
-        admission.release_id = release_id
-        admission.updated_at = datetime.now(UTC)
+    admission.release_id = release_id
+    admission.updated_at = datetime.now(UTC)
     session.add(admission)
     session.flush()
     _logger.info(
@@ -450,15 +489,22 @@ def _get_admission(session: Session, *, for_update: bool = False) -> ExecutorAdm
     return session.exec(statement).one_or_none()
 
 
+def _get_required_admission(session: Session, *, for_update: bool = False) -> ExecutorAdmission:
+    admission = _get_admission(session, for_update=for_update)
+    if admission is None:
+        raise ReleaseControlError("Executor admission state is not initialized")
+    return admission
+
+
 def _validate_release_manifest(release: ExecutorRelease) -> None:
-    digest = release.artifact_digest.lower()
-    if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
-        raise ReleaseControlError("Executor artifact digest must be a 64-character SHA-256 digest")
-    if release.protocol_version != _SUPPORTED_PROTOCOL_VERSION:
+    try:
+        release.artifact_digest = validate_executor_digest(release.artifact_digest)
+    except ValueError as error:
+        raise ReleaseControlError(str(error)) from error
+    if release.protocol_version != SUPPORTED_PROTOCOL_VERSION:
         raise ReleaseControlError(f"Unsupported executor protocol version: {release.protocol_version}")
     if not release.artifact_uri.startswith("s3://"):
         raise ReleaseControlError("Executor artifact URI must use s3://")
-    release.artifact_digest = digest
 
 
 def _get_release(
