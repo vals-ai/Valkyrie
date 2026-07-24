@@ -246,17 +246,18 @@ Before synthesis, set:
 
 ```bash
 export RELEASE_TEST_DRIVER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:613431292675:secret:valkyrie/release-test/package-r-driver-SUFFIX
+export RELEASE_TEST_SANDBOX_PROVIDER_SECRET_ARN=arn:aws:secretsmanager:us-east-1:613431292675:secret:SANDBOX_PROVIDER_SECRET-SUFFIX
 export RELEASE_TEST_OPERATOR_PRINCIPAL_ARN=arn:aws:iam::613431292675:role/ROLE_NAME
 export RELEASE_TEST_IMAGE_TAG=package-r-RUN_ID
 ```
 
-The principal must be an IAM role ARN, not an STS assumed-role session ARN. The
-secret reference must be its complete generated ARN, including the suffix; a
-name or partial ARN is not valid for ECS injection. The secret must contain
-exactly `tracker_api_key` and
-`benchmark_authorization`; ECS injects those values and the database credentials
-from Secrets Manager. Never put secret values in task command or environment
-overrides.
+The principal must be an IAM role ARN, not an STS assumed-role session ARN. Both
+secret references must be complete generated ARNs, including their suffixes; a
+name or partial ARN is not valid. The sandbox-provider ARN identifies the secret
+that the Driver task role may read. The driver secret must contain exactly
+`tracker_api_key` and `benchmark_authorization`; ECS injects those values and the
+database credentials from Secrets Manager. Never put secret values in task
+command or environment overrides.
 
 Release-test owns immutable `valkyrie/release-test/tracker` and
 `valkyrie/release-test/executor-host` ECR repositories. This avoids mutating the
@@ -284,15 +285,6 @@ preflight.
 
 The stage connects to `benchmarks.vals.ai`. Local clients outside the VPC cannot
 call the internal Tracker directly; use the driver for HTTP and database proof.
-
-For migration `e9f0a1b2c3d4`, first prove empty and populated paths in disposable
-local PostgreSQL. In release-test, proceed only when the database is inactive
-and its revision is exactly predecessor `d8e9f0a1b2c3` or already at head. Take
-a named snapshot before a predecessor migration, deploy Tracker first, verify
-schema/data/status, run the expected downgrade rejection, and only then deploy
-Worker and Monitoring. Any other revision, active work, or ambiguous state
-blocks deployment. Do not recreate or restore the database as part of this
-path.
 
 The legacy Worker and stable ExecutorHost consume separate queues. Legacy
 messages remain on `taskiq` and never reach the ExecutorHost. Every message on

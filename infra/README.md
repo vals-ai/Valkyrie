@@ -76,8 +76,9 @@ make plan STAGE=release-test SCOPE=all AWS_REGION=us-east-1 \
   DEV_ACCOUNT_ID="$DEV_ACCOUNT_ID" PROFILE=vals-dev-admin
 ```
 
-`SCOPE` accepts `shared`, `tracker`, `worker`, `monitoring`, or `all`. CDK follows
-the existing stack dependencies when an individual stack is selected. The
+`SCOPE` accepts `shared`, `tracker`, `worker`, `monitoring`, `driver`
+(`release-test` only), or `all`. CDK follows the existing stack dependencies
+when an individual stack is selected. The
 Makefile defaults `PRODUCTION_ACCOUNT_ID` to the Vals production account so a
 dev target cannot select it accidentally. Self-hosted operators can override
 that value for their own production account.
