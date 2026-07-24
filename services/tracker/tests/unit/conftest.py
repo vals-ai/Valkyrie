@@ -23,7 +23,7 @@ from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
-from tracker.utils import TaskMonitor, fetch_harness_config
+from tracker.utils import TaskMonitor
 
 # Set the default AWS credentials before importing modules that create clients.
 os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
@@ -140,16 +140,6 @@ def override_starter(monkeypatch: pytest.MonkeyPatch) -> None:
             name=None,
         ),
     )
-
-
-@pytest.fixture(autouse=True)
-def override_harness_config(harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Provide harness configuration to the required retry dependency."""
-
-    def get_test_harness_config() -> HarnessConfig:
-        return harness_config
-
-    monkeypatch.setitem(app.dependency_overrides, fetch_harness_config, get_test_harness_config)
 
 
 @pytest.fixture(autouse=True)

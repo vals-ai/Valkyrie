@@ -37,7 +37,6 @@ from tracker.auth import (
 )
 from tracker.aws.cloudwatch_logs import get_benchmark_log_url
 from tracker.aws.resolver import (
-    fetch_harness_config,
     resolve_aws_runtime_metadata,
     resolve_run_aws_runtime,
     resolve_start_aws_runtime,
@@ -861,7 +860,6 @@ def patch_benchmark_concurrency(
 async def retry_or_resume_benchmark(
     benchmark_id: TrackedBenchmarkId,
     http_request: Request,
-    legacy_harness_config: OptionalHarnessConfig,
     retry: bool = Query(default=False),
     retry_mode: RetryMode = Query(default=RetryMode.AUTO),
     concurrency: int | None = Query(default=None),
@@ -893,7 +891,6 @@ async def retry_or_resume_benchmark(
         http_request,
         aws_managed=benchmark_row.aws_managed,
         org_id=org.id,
-        legacy_harness_config=legacy_harness_config,
     )
 
     if benchmark_row.status == BenchmarkStatus.STOPPING:
@@ -963,10 +960,10 @@ async def retry_or_resume_benchmark(
             service_headers=effective_service_headers,
         )
     else:
-        legacy_harness_config = runtime_resolution.legacy_harness_config
-        assert legacy_harness_config is not None
-        resume_request = benchmark_row.legacy_start_benchmark_request(
-            legacy_harness_config,
+        access_key_harness_config = runtime_resolution.access_key_harness_config
+        assert access_key_harness_config is not None
+        resume_request = benchmark_row.access_key_start_benchmark_request(
+            access_key_harness_config,
             service_headers=effective_service_headers,
         )
 

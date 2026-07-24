@@ -77,12 +77,30 @@ def _configure_managed_runtime(
         "expected_status",
     ),
     [
-        pytest.param("complete", True, False, False, False, "legacy", "header-bucket", None, id="headers-over-body"),
         pytest.param(
-            "partial", True, True, True, True, "legacy", "test-bucket", None, id="partial-headers-body-fallback"
+            "complete",
+            True,
+            False,
+            False,
+            False,
+            "access_key",
+            "header-bucket",
+            None,
+            id="headers-over-body",
+        ),
+        pytest.param(
+            "partial",
+            True,
+            True,
+            True,
+            True,
+            "access_key",
+            "test-bucket",
+            None,
+            id="partial-headers-body-fallback",
         ),
         pytest.param("partial", False, True, True, True, None, None, 400, id="partial-headers-rejected"),
-        pytest.param("none", True, False, False, False, "legacy", "test-bucket", None, id="body-only"),
+        pytest.param("none", True, False, False, False, "access_key", "test-bucket", None, id="body-only"),
         pytest.param("none", False, True, True, True, "managed", "deployment-bucket", None, id="managed-eligible"),
         pytest.param("none", False, False, True, True, None, None, 503, id="managed-gate-closed"),
         pytest.param("none", False, True, False, True, None, None, 403, id="managed-ineligible"),
@@ -97,7 +115,7 @@ def test_start_runtime_selection(
     submissions_enabled: bool,
     eligible: bool,
     resources_configured: bool,
-    expected_mode: Literal["legacy", "managed"] | None,
+    expected_mode: Literal["access_key", "managed"] | None,
     expected_bucket: str | None,
     expected_status: int | None,
 ) -> None:
@@ -126,10 +144,10 @@ def test_start_runtime_selection(
 
     assert resolution.runtime.resources.s3_bucket == expected_bucket
     if expected_mode == "managed":
-        assert resolution.legacy_harness_config is None
+        assert resolution.access_key_harness_config is None
         assert isinstance(resolution.runtime.clients, DefaultChainAWSClientProvider)
     else:
-        assert resolution.legacy_harness_config is not None
+        assert resolution.access_key_harness_config is not None
         assert isinstance(resolution.runtime.clients, ExplicitCredentialsAWSClientProvider)
 
 

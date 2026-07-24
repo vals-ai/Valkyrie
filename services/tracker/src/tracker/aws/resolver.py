@@ -131,7 +131,7 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
 
 
 def resolve_start_harness_config(request: Request, body_config: HarnessConfig | None) -> HarnessConfig | None:
-    """Apply legacy header-over-body precedence for a start request."""
+    """Apply access-key header-over-body precedence for a start request."""
     state = inspect_harness_headers(request)
     if state.config is not None:
         return state.config
@@ -219,7 +219,7 @@ def resolve_start_aws_runtime(
     body_config: HarnessConfig | None,
     org_id: UUID,
 ) -> AWSRuntimeResolution:
-    """Resolve a new run without reinterpreting partial legacy input as managed."""
+    """Resolve a new run without reinterpreting partial access-key input as managed."""
     harness_config = resolve_start_harness_config(request, body_config)
     if harness_config is not None:
         return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)

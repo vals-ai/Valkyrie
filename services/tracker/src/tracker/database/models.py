@@ -285,15 +285,15 @@ class Benchmark(SQLModel, table=True):
 
         return errors_by_task_id
 
-    def legacy_start_benchmark_request(
+    def access_key_start_benchmark_request(
         self, harness_config: "HarnessConfig", service_headers: dict[str, str] | None = None
     ) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
         if self.aws_managed:
-            raise ValueError("Managed runs cannot create legacy worker requests")
+            raise ValueError("Managed runs cannot create access-key worker requests")
 
-        # TODO: Remove this fallback after legacy benchmark rows have been migrated for a few weeks.
+        # Older rows may persist the provider secret only in benchmark arguments.
         if self.arguments.sandbox_provider_secret_name:
             harness_config = harness_config.model_copy(
                 update={"sandbox_provider_secret_name": self.arguments.sandbox_provider_secret_name}
@@ -319,7 +319,7 @@ class Benchmark(SQLModel, table=True):
         from tracker.types import StartBenchmarkRequest
 
         if not self.aws_managed:
-            raise ValueError("Legacy runs cannot create managed worker requests")
+            raise ValueError("Access-key runs cannot create managed worker requests")
         if not self.arguments.sandbox_provider_secret_name:
             raise ValueError("Managed runs require a sandbox provider secret name")
 

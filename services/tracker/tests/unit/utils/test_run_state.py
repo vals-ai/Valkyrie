@@ -186,7 +186,12 @@ class TestRunState:
         response: Response = client.post(f"/stop-benchmark/{benchmark_row.id}?force=false")
         assert response.status_code == 400
 
-    def test_resume_benchmark(self, example_benchmark_object: Benchmark, database_session: Session) -> None:
+    def test_resume_benchmark(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        harness_headers: dict[str, str],
+    ) -> None:
         """Tests the flow of updating the benchmark related objects to the proper states when resuming a benchmark
 
         Test Cases:
@@ -223,7 +228,10 @@ class TestRunState:
         assert len(task_ids) == 5
 
         # Test request to resume the benchmark
-        response: Response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
+        response: Response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",
+            headers=harness_headers,
+        )
         assert response.status_code == 200, response.text
         assert response.json() == {"status": "success"}
 
@@ -258,7 +266,10 @@ class TestRunState:
         database_session.commit()
 
         # Call resume benchmark with retry enabled
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true")
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+            headers=harness_headers,
+        )
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
@@ -273,6 +284,7 @@ class TestRunState:
         example_benchmark_object: Benchmark,
         database_session: Session,
         harness_config: HarnessConfig,
+        harness_headers: dict[str, str],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Tests edge cases for resuming a benchmark
@@ -290,7 +302,10 @@ class TestRunState:
         database_session.add(benchmark_row)
         database_session.commit()
 
-        response: Response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
+        response: Response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",
+            headers=harness_headers,
+        )
         assert response.status_code == 200
 
         # Set benchmark to stopped state but add only finished tasks
@@ -307,7 +322,10 @@ class TestRunState:
         database_session.commit()
 
         # No stopped tasks to resume, but this is allowed (re-runs post-task steps like lambda)
-        response = client.post(f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false")
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=false",
+            headers=harness_headers,
+        )
         assert response.status_code == 200
 
         # Ensure that we can recreate the environment the benchmark was started in
@@ -328,7 +346,7 @@ class TestRunState:
         )
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
-        recreated_start_benchmark_request = benchmark_row.legacy_start_benchmark_request(harness_config)
+        recreated_start_benchmark_request = benchmark_row.access_key_start_benchmark_request(harness_config)
         assert recreated_start_benchmark_request == original_start_benchmark_request.model_copy(
             update={
                 "harness_config": harness_config.model_copy(update={"sandbox_provider_secret_name": "ModalSecrets"}),
@@ -360,6 +378,7 @@ class TestRunState:
         response = client.post(
             f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
             json={"task_ids": ["task_5"]},
+            headers=harness_headers,
         )
         assert response.status_code == 500
         assert response.json() == {"detail": "Benchmark service request failed"}
@@ -379,6 +398,7 @@ class TestRunState:
         response = client.post(
             f"/retry-or-resume-benchmark/{example_benchmark_object.id}?retry=false",
             json={"task_ids": task_ids},
+            headers=harness_headers,
         )
         assert response.status_code == 200
         assert response.json() == {"status": "success"}

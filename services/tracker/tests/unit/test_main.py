@@ -1554,6 +1554,7 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
+        harness_headers: dict[str, str],
     ) -> None:
         """Test that BenchmarkServiceUnauthenticatedError returns 502 without capturing to Sentry.
 
@@ -1617,6 +1618,7 @@ class TestTrackerAPI:
             f"/retry-or-resume-benchmark/{benchmark.id}",
             json={"task_ids": [], "service_headers": {}},
             params={"retry": "true"},
+            headers=harness_headers,
         )
         assert response.status_code == 502
         assert response.json() == {"detail": "Benchmark service authentication failed"}

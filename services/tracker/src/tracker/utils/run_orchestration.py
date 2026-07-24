@@ -267,7 +267,7 @@ def _parse_worker_execution(
             raise ValueError("Queued benchmark request is incomplete and cannot be processed.")
         request = _parse_start_benchmark_request(start_benchmark_request_json)
         if request.harness_config is None:
-            raise ValueError("Queued legacy benchmark request has no AWS configuration.")
+            raise ValueError("Queued access-key benchmark request has no AWS configuration.")
         return _WorkerExecution(
             request=request,
             benchmark_id=UUID(benchmark_id_str),
@@ -276,7 +276,7 @@ def _parse_worker_execution(
         )
 
     if start_benchmark_request_json is not None or benchmark_id_str is not None or verified_task_ids is not None:
-        raise ValueError("Queued benchmark request mixes legacy and managed execution inputs.")
+        raise ValueError("Queued benchmark request mixes access-key and managed execution inputs.")
     try:
         context = ManagedExecutionContext.model_validate(execution_context_json)
     except ValidationError:
@@ -360,7 +360,7 @@ async def process_benchmark(
             sandbox_provider_config = _managed_worker_preflight(execution, aws_runtime)
         else:
             if benchmark_row.aws_managed:
-                raise TrackerServiceError("Legacy worker input does not match the stored run mode")
+                raise TrackerServiceError("Access-key worker input does not match the stored run mode")
             harness_config = start_benchmark_request.harness_config
             assert harness_config is not None
             aws_runtime = AWSRuntime.from_harness_config(harness_config)

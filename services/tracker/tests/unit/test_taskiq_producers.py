@@ -18,7 +18,7 @@ from tracker.types import HarnessConfig, StartBenchmarkRequest
 
 client = TestClient(app)
 
-_LEGACY_TASK_KWARGS = {
+_ACCESS_KEY_TASK_KWARGS = {
     "start_benchmark_request_json",
     "benchmark_id_str",
     "verified_task_ids",
@@ -177,10 +177,11 @@ def test_managed_start_rejects_aws_authority_before_persistence(
     assert payloads == []
 
 
-def test_legacy_start_and_resume_keep_v1_task_kwargs(
+def test_access_key_start_and_resume_keep_v1_task_kwargs(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
+    harness_headers: dict[str, str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payloads = _capture_task_payloads(monkeypatch)
@@ -204,15 +205,18 @@ def test_legacy_start_and_resume_keep_v1_task_kwargs(
     assert benchmark is not None
     assert benchmark.aws_managed is False
     assert len(payloads) == 1
-    assert set(payloads[0]) == _LEGACY_TASK_KWARGS
+    assert set(payloads[0]) == _ACCESS_KEY_TASK_KWARGS
     assert payloads[0]["start_benchmark_request_json"]["harness_config"] is not None
 
     _stop_benchmark(benchmark, database_session)
     payloads.clear()
 
-    response = client.post(f"/retry-or-resume-benchmark/{benchmark.id}")
+    response = client.post(
+        f"/retry-or-resume-benchmark/{benchmark.id}",
+        headers=harness_headers,
+    )
 
     assert response.status_code == 200
     assert len(payloads) == 1
-    assert set(payloads[0]) == _LEGACY_TASK_KWARGS
+    assert set(payloads[0]) == _ACCESS_KEY_TASK_KWARGS
     assert payloads[0]["start_benchmark_request_json"]["harness_config"] is not None

@@ -22,7 +22,7 @@ from tracker.utils.run_orchestration import (
 _TASK_IDS = ["task-1", "task-2"]
 
 
-def _legacy_request(contract: AgentContractRequest, harness_config: HarnessConfig) -> StartBenchmarkRequest:
+def _access_key_request(contract: AgentContractRequest, harness_config: HarnessConfig) -> StartBenchmarkRequest:
     return StartBenchmarkRequest(
         contract=contract,
         benchmark_name="test-benchmark",
@@ -75,11 +75,11 @@ def _persist_benchmark(
     return benchmark
 
 
-def test_taskiq_adapter_accepts_exact_legacy_shape(
+def test_taskiq_adapter_accepts_exact_access_key_shape(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
 ) -> None:
-    request = _legacy_request(contract, harness_config)
+    request = _access_key_request(contract, harness_config)
     benchmark_id = uuid4()
 
     execution = _parse_worker_execution(
@@ -120,7 +120,7 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
     benchmark_id = uuid4()
     context = _execution_context(request, benchmark_id)
 
-    with pytest.raises(ValueError, match="mixes legacy and managed"):
+    with pytest.raises(ValueError, match="mixes access-key and managed"):
         _parse_worker_execution({}, None, None, context)
 
     invalid_version = {**context, "version": 1}
@@ -137,13 +137,13 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
 
     with pytest.raises(ValueError, match="incomplete"):
         _parse_worker_execution(
-            _legacy_request(contract, harness_config).model_dump(mode="json"),
+            _access_key_request(contract, harness_config).model_dump(mode="json"),
             None,
             _TASK_IDS,
             None,
         )
 
-    with pytest.raises(ValueError, match="legacy benchmark request has no AWS configuration"):
+    with pytest.raises(ValueError, match="access-key benchmark request has no AWS configuration"):
         _parse_worker_execution(
             request.model_dump(mode="json"),
             str(benchmark_id),
@@ -160,14 +160,14 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
         _parse_worker_execution(None, None, None, context_without_provider)
 
 
-async def test_managed_worker_input_for_legacy_row_marks_run_error(
+async def test_managed_worker_input_for_access_key_row_marks_run_error(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
     database_session: Session,
     process_benchmark_env: None,
 ) -> None:
-    legacy_request = _legacy_request(contract, harness_config)
-    benchmark = _persist_benchmark(database_session, legacy_request, aws_managed=False)
+    access_key_request = _access_key_request(contract, harness_config)
+    benchmark = _persist_benchmark(database_session, access_key_request, aws_managed=False)
     context = _execution_context(_managed_request(contract), benchmark.id)
 
     await process_benchmark(execution_context_json=context)
@@ -177,7 +177,7 @@ async def test_managed_worker_input_for_legacy_row_marks_run_error(
     assert "Managed worker input does not match the stored run mode" in (benchmark.error_message or "")
 
 
-async def test_legacy_worker_input_for_managed_row_marks_run_error(
+async def test_access_key_worker_input_for_managed_row_marks_run_error(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,
     database_session: Session,
@@ -185,17 +185,17 @@ async def test_legacy_worker_input_for_managed_row_marks_run_error(
 ) -> None:
     managed_request = _managed_request(contract)
     benchmark = _persist_benchmark(database_session, managed_request, aws_managed=True)
-    legacy_request = _legacy_request(contract, harness_config)
+    access_key_request = _access_key_request(contract, harness_config)
 
     await process_benchmark(
-        start_benchmark_request_json=legacy_request.model_dump(mode="json"),
+        start_benchmark_request_json=access_key_request.model_dump(mode="json"),
         benchmark_id_str=str(benchmark.id),
         verified_task_ids=_TASK_IDS,
     )
 
     database_session.refresh(benchmark)
     assert benchmark.status == BenchmarkStatus.ERROR
-    assert "Legacy worker input does not match the stored run mode" in (benchmark.error_message or "")
+    assert "Access-key worker input does not match the stored run mode" in (benchmark.error_message or "")
 
 
 async def test_ineligible_managed_worker_marks_run_error(

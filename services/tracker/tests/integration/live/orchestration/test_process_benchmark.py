@@ -293,7 +293,7 @@ class TestProcessBenchmark:
         await gather(
             *[
                 process_benchmark(
-                    benchmark.legacy_start_benchmark_request(
+                    benchmark.access_key_start_benchmark_request(
                         harness_config,
                         service_headers=service_headers,
                     ).model_dump(),
