@@ -1,4 +1,7 @@
-"""Compatibility exports for legacy harness-header dependencies."""
+"""Deprecated compatibility exports for legacy harness-header imports.
+
+Import from tracker.aws.resolver instead.
+"""
 
 from tracker.aws.resolver import (
     HarnessHeaderState,

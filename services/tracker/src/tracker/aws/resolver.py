@@ -33,6 +33,8 @@ class ManagedAWSConfigurationError(ManagedAWSError):
 
 @dataclass(frozen=True)
 class AWSRuntimeResolution:
+    """Resolved AWS runtime and any legacy request configuration used to build it."""
+
     runtime: AWSRuntime
     legacy_harness_config: HarnessConfig | None
 
@@ -52,6 +54,7 @@ class HarnessHeaderState:
 
 
 def parse_log_retention_policy(value: int | str | None, *, source: str) -> int:
+    """Parse a positive log-retention value, defaulting to 30 days."""
     if value in (None, ""):
         return 30
     try:
@@ -70,6 +73,7 @@ def parse_log_retention_policy(value: int | str | None, *, source: str) -> int:
 
 
 def _parse_harness_headers(request: Request) -> dict[str, str]:
+    """Normalize legacy harness headers into field names."""
     prefix = "x-harness-"
     return {
         key[len(prefix) :].replace("-", "_"): value for key, value in request.headers.items() if key.startswith(prefix)
@@ -77,6 +81,7 @@ def _parse_harness_headers(request: Request) -> dict[str, str]:
 
 
 def _build_harness_config(flat: dict[str, str]) -> HarnessConfig:
+    """Build a legacy harness config from complete normalized headers."""
     return HarnessConfig(
         aws=AWSCredentials(
             aws_access_key_id=flat["aws_access_key_id"],
@@ -106,6 +111,7 @@ def inspect_harness_headers(request: Request) -> HarnessHeaderState:
 
 
 def _raise_missing_header(key: str) -> Never:
+    """Raise a client error naming a missing legacy harness header."""
     header_name = key.replace("_", "-")
     raise HTTPException(status_code=400, detail=f"Missing harness config header 'x-harness-{header_name}'")
 
@@ -125,6 +131,7 @@ def fetch_harness_config(request: Request) -> HarnessConfig:
 
 
 def _eligible_org_ids() -> frozenset[UUID]:
+    """Parse organizations allowed to use deployment AWS authority."""
     try:
         return frozenset(
             UUID(value.strip()) for value in config.AWS_DEPLOYMENT_ROLE_ORG_IDS.split(",") if value.strip()
@@ -134,6 +141,7 @@ def _eligible_org_ids() -> frozenset[UUID]:
 
 
 def _managed_resources() -> AWSResources:
+    """Build non-secret AWS resources from deployment configuration."""
     missing = [
         name
         for name, value in (
@@ -166,10 +174,12 @@ def _managed_resources() -> AWSResources:
 
 
 def organization_can_use_managed_aws(org_id: UUID) -> bool:
+    """Return whether an organization may use deployment AWS authority."""
     return org_id in _eligible_org_ids()
 
 
 def deployment_aws_runtime(org_id: UUID) -> AWSRuntime:
+    """Build a default-chain runtime for an eligible organization."""
     if not organization_can_use_managed_aws(org_id):
         raise ManagedAWSEligibilityError(
             "Managed AWS access is not available for this organization. Configure AWS access keys and try again."
@@ -182,6 +192,7 @@ def deployment_aws_runtime(org_id: UUID) -> AWSRuntime:
 
 
 def _http_deployment_runtime(org_id: UUID) -> AWSRuntime:
+    """Translate managed-runtime configuration failures into HTTP errors."""
     try:
         return deployment_aws_runtime(org_id)
     except ManagedAWSEligibilityError as exc:

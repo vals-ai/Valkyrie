@@ -700,6 +700,23 @@ async def validate_tasks_exist(
     return requested_task_ids
 
 
+def _resolve_force_stop_provider_secret_name(
+    benchmark_row: Benchmark,
+    legacy_harness_config: HarnessConfig | None,
+) -> str:
+    """Return the persisted or legacy provider secret name for force-stop."""
+    provider_secret_name = benchmark_row.arguments.sandbox_provider_secret_name
+    if not provider_secret_name and legacy_harness_config is not None:
+        provider_secret_name = legacy_harness_config.sandbox_provider_secret_name
+    if provider_secret_name:
+        return provider_secret_name
+
+    detail = "The run does not have a sandbox provider secret name."
+    if legacy_harness_config is not None:
+        detail += " Provide the x-harness-sandbox-provider-secret-name header and retry."
+    raise HTTPException(status_code=400, detail=detail)
+
+
 @app.post("/stop-benchmark/{benchmark_id}")
 async def stop_benchmark(
     benchmark_id: TrackedBenchmarkId,
@@ -741,22 +758,18 @@ async def stop_benchmark(
         legacy_harness_config=legacy_harness_config,
     )
 
-    provider_secret_name: str | None = None
-    if force:
-        resolved_harness_config = runtime_resolution.legacy_harness_config
-        provider_secret_name = benchmark_row.arguments.sandbox_provider_secret_name or (
-            resolved_harness_config.sandbox_provider_secret_name if resolved_harness_config is not None else None
+    provider_secret_name = (
+        _resolve_force_stop_provider_secret_name(
+            benchmark_row,
+            runtime_resolution.legacy_harness_config,
         )
-        if not provider_secret_name:
-            detail = "The run does not have a sandbox provider secret name."
-            if resolved_harness_config is not None:
-                detail += " Provide the x-harness-sandbox-provider-secret-name header and retry."
-            raise HTTPException(status_code=400, detail=detail)
+        if force
+        else None
+    )
 
     await initiate_stop_benchmark(benchmark_row, session, force, org, task_ids=selected_task_ids)
 
-    if force:
-        assert provider_secret_name is not None
+    if provider_secret_name is not None:
         await force_stop_sandboxes(
             benchmark_row,
             session,
