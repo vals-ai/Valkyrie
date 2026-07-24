@@ -304,29 +304,32 @@ async def start_benchmark(
         }
     )
 
-    provider_config = await asyncio.to_thread(
-        fetch_sandbox_provider_config,
-        request.harness_config.sandbox_provider_secret_name,
-        request.harness_config.aws,
-        request.sandbox_provider,
-    )
-    provider = provider_config.create_provider()
-    try:
-        queue_configured = SANDBOX_QUEUE_ENABLED and provider.admission_pool_id is not None
-    finally:
-        await provider.close()
-
-    if queue_configured and request.priority is None:
-        request = request.model_copy(update={"priority": 3})
-    elif not queue_configured and request.priority is not None:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Queue priority requires a sandbox provider configured for admission"
-                if SANDBOX_QUEUE_ENABLED
-                else "Queue priority requires sandbox queue to be enabled"
-            ),
+    if not SANDBOX_QUEUE_ENABLED:
+        if request.priority is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Queue priority requires sandbox queue to be enabled",
+            )
+    else:
+        provider_config = await asyncio.to_thread(
+            fetch_sandbox_provider_config,
+            request.harness_config.sandbox_provider_secret_name,
+            request.harness_config.aws,
+            request.sandbox_provider,
         )
+        provider = provider_config.create_provider()
+        try:
+            queue_configured = provider.admission_pool_id is not None
+        finally:
+            await provider.close()
+
+        if queue_configured and request.priority is None:
+            request = request.model_copy(update={"priority": 3})
+        elif not queue_configured and request.priority is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Queue priority requires a sandbox provider configured for admission",
+            )
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})

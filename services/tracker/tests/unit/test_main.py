@@ -441,7 +441,7 @@ class TestTrackerAPI:
         provider.close.assert_awaited_once_with()
 
     @pytest.mark.parametrize(("requested_priority", "expected_status"), [(None, 200), (1, 400)])
-    async def test_start_benchmark_disables_queued_admission_when_environment_flag_is_false(
+    async def test_start_benchmark_bypasses_provider_resolution_when_environment_flag_is_false(
         self,
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
@@ -452,10 +452,10 @@ class TestTrackerAPI:
         expected_status: int,
     ) -> None:
         monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", False, raising=False)
-        provider = Mock(admission_pool_id="shared-pool", close=AsyncMock())
-        provider_config = Mock()
-        provider_config.create_provider.return_value = provider
-        monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
+        monkeypatch.setattr(
+            "main.fetch_sandbox_provider_config",
+            Mock(side_effect=RuntimeError("provider resolution must not run")),
+        )
         request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
@@ -464,7 +464,8 @@ class TestTrackerAPI:
             sandbox_provider="modal",
         )
 
-        response = client.post("/start-benchmark", json=request.model_dump())
+        no_raise_client = TestClient(app, raise_server_exceptions=False)
+        response = no_raise_client.post("/start-benchmark", json=request.model_dump())
 
         assert response.status_code == expected_status
         if requested_priority is None:
@@ -476,7 +477,6 @@ class TestTrackerAPI:
             assert response.json() == {"detail": "Queue priority requires sandbox queue to be enabled"}
             assert database_session.exec(select(Benchmark)).all() == []
             assert mock_kicker.queued_calls == []
-        provider.close.assert_awaited_once_with()
 
     @pytest.mark.parametrize(("requested_priority", "expected_status"), [(None, 200), (1, 400)])
     async def test_start_benchmark_respects_provider_without_queue_configuration(
