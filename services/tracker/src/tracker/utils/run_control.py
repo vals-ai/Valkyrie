@@ -36,6 +36,30 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_sandbox_provider_
 logger = get_logger(__name__)
 
 
+def apply_stop_benchmark(
+    benchmark_row: Benchmark,
+    session: Session,
+    force: bool,
+    org: Org,
+    task_ids: list[str] | None = None,
+) -> None:
+    """Apply the Stop state transition without committing the transaction."""
+    task_update = (
+        update(Task)
+        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.org_id) == org.id)
+        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
+    )
+    if task_ids:
+        task_update = task_update.where(col(Task.task_id).in_(task_ids))
+
+    result = session.exec(task_update.values(status=TaskStatus.STOPPED))
+
+    if task_ids is None and (result.rowcount > 0 or force):
+        benchmark_row.status = BenchmarkStatus.STOPPING
+        session.add(benchmark_row)
+
+
 async def initiate_stop_benchmark(
     benchmark_row: Benchmark,
     session: Session,
@@ -45,20 +69,7 @@ async def initiate_stop_benchmark(
 ) -> None:
     """Initiate Stop without interrupting work that already started unless forced."""
     try:
-        task_update = (
-            update(Task)
-            .where(col(Task.benchmark) == benchmark_row.id)
-            .where(col(Task.org_id) == org.id)
-            .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING]))
-        )
-        if task_ids:
-            task_update = task_update.where(col(Task.task_id).in_(task_ids))
-
-        result = session.exec(task_update.values(status=TaskStatus.STOPPED))
-
-        if task_ids is None and (result.rowcount > 0 or force):
-            benchmark_row.status = BenchmarkStatus.STOPPING
-            session.add(benchmark_row)
+        apply_stop_benchmark(benchmark_row, session, force, org, task_ids)
         session.commit()
     except Exception as e:
         raise TrackerServiceError(f"Unexpected error stopping run {benchmark_row.id}: {str(e)}") from e

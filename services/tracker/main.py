@@ -186,7 +186,7 @@ async def _enqueue_executor_dispatch(
             await (
                 process_benchmark.kicker()
                 .with_labels(**_taskiq_labels())
-                .kiq(  # pyright: ignore[reportCallIssue] -- stable host owns these dispatch fields
+                .kiq(
                     start_benchmark_request_json=start_benchmark_request_json,
                     benchmark_id_str=str(dispatch.benchmark_id),
                     verified_task_ids=verified_task_ids,

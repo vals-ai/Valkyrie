@@ -5,9 +5,11 @@ Exercise release lifecycle locking against disposable PostgreSQL.
 
 from collections.abc import Callable
 from threading import Event, Thread
-from time import sleep
+from time import monotonic, sleep
+from typing import cast
 from uuid import UUID, uuid4
 
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 from sqlmodel import Session, select
 
@@ -23,17 +25,16 @@ from tracker.database.models import (
     ExecutorReleaseStatus,
     Org,
 )
+from tracker.dispatch_control import admit_recovery_dispatch, admit_start_dispatch
 from tracker.release_control import (
     ReleaseControlError,
-    create_executor_dispatch,
     pin_benchmark_to_release,
     promote_release,
     register_release,
-    resolve_current_execution_release,
     retire_if_empty,
-    select_active_release,
 )
 from tracker.utils.resources import fetch_benchmark_row
+from tracker.utils.run_control import apply_stop_benchmark
 
 
 def _release(release_id: str) -> ExecutorRelease:
@@ -46,20 +47,6 @@ def _release(release_id: str) -> ExecutorRelease:
     )
 
 
-def _dispatch(
-    benchmark_id: UUID,
-    release: ExecutorRelease,
-    kind: ExecutorDispatchKind,
-) -> ExecutorDispatch:
-    dispatch_id = uuid4()
-    return create_executor_dispatch(
-        benchmark_id,
-        release,
-        kind,
-        dispatch_id=dispatch_id,
-    )
-
-
 def _run_while_first_transaction_holds_locks(
     first: Callable[[Session], object],
     second: Callable[[Session], object],
@@ -67,7 +54,8 @@ def _run_while_first_transaction_holds_locks(
 ) -> list[str]:
     first_locked = Event()
     release_first = Event()
-    second_started = Event()
+    second_connection_ready = Event()
+    second_backend_pid: list[int] = []
     outcomes: list[str] = []
 
     def run_first() -> None:
@@ -80,8 +68,10 @@ def _run_while_first_transaction_holds_locks(
 
     def run_second() -> None:
         assert first_locked.wait(5)
-        second_started.set()
         with Session(database_bind) as session:
+            backend_pid = cast(int, session.connection().execute(text("SELECT pg_backend_pid()")).scalar_one())
+            second_backend_pid.append(backend_pid)
+            second_connection_ready.set()
             try:
                 second(session)
                 session.commit()
@@ -94,9 +84,27 @@ def _run_while_first_transaction_holds_locks(
     second_thread = Thread(target=run_second)
     first_thread.start()
     second_thread.start()
-    assert second_started.wait(5)
-    sleep(0.1)
-    assert second_thread.is_alive()
+    assert second_connection_ready.wait(5)
+
+    deadline = monotonic() + 5
+    with Session(database_bind) as observer:
+        while monotonic() < deadline:
+            wait_event_type = cast(
+                str | None,
+                observer.connection()
+                .execute(
+                    text("SELECT wait_event_type FROM pg_stat_activity WHERE pid = :pid"),
+                    {"pid": second_backend_pid[0]},
+                )
+                .scalar_one_or_none(),
+            )
+            if wait_event_type == "Lock":
+                break
+            assert second_thread.is_alive(), "second transaction completed without waiting on a PostgreSQL lock"
+            sleep(0.01)
+        else:
+            raise AssertionError("second transaction did not enter a PostgreSQL lock wait")
+
     release_first.set()
     first_thread.join(5)
     second_thread.join(5)
@@ -173,14 +181,17 @@ def test_terminal_recovery_and_promotion_use_the_winning_admission_lock_order(
     postgres_session.commit()
 
     def recover(session: Session, benchmark_id: UUID) -> None:
-        release = select_active_release(session, for_update=True)
         benchmark = session.get(Benchmark, benchmark_id, with_for_update=True)
         assert benchmark is not None
+        pre_action_status = benchmark.status
         benchmark.status = BenchmarkStatus.IN_PROGRESS
-        benchmark.current_execution_release_id = release.id
-        session.add(benchmark)
-        session.add(_dispatch(benchmark.id, release, ExecutorDispatchKind.RESUME))
-        session.flush()
+        admit_recovery_dispatch(
+            session,
+            benchmark=benchmark,
+            pre_action_status=pre_action_status,
+            dispatch_id=uuid4(),
+            kind=ExecutorDispatchKind.RESUME,
+        )
 
     outcomes = _run_while_first_transaction_holds_locks(
         lambda session: recover(session, benchmark_a.id),
@@ -247,7 +258,6 @@ def test_start_and_promotion_use_the_winning_admission_lock_order(
     postgres_session.commit()
 
     def start(session: Session, *, benchmark_id: UUID, name: str) -> None:
-        release = select_active_release(session, for_update=True)
         benchmark = Benchmark(
             id=benchmark_id,
             org_id=race_org_id,
@@ -258,10 +268,7 @@ def test_start_and_promotion_use_the_winning_admission_lock_order(
                 concurrency=1,
             ),
         )
-        pin_benchmark_to_release(benchmark, release)
-        session.add(benchmark)
-        session.add(_dispatch(benchmark.id, release, ExecutorDispatchKind.START))
-        session.flush()
+        admit_start_dispatch(session, benchmark=benchmark, dispatch_id=uuid4())
 
     start_first_id = uuid4()
     outcomes = _run_while_first_transaction_holds_locks(
@@ -298,13 +305,13 @@ def test_start_and_promotion_use_the_winning_admission_lock_order(
     assert promotion_first_dispatch.executor_release_id == "start-c"
 
 
-def test_retirement_and_retry_serialize_on_the_owned_release(
+def test_in_progress_retry_blocks_retirement_of_the_owned_release(
     postgres_session: Session,
     postgres_engine: Engine,
 ) -> None:
     race_org_id = uuid4()
     postgres_session.add(Org(id=race_org_id, name="retire-retry-race-org"))
-    for release_id in ("retry-a", "retry-b", "retry-c", "retry-d"):
+    for release_id in ("retry-a", "retry-b"):
         register_release(postgres_session, _release(release_id))
     promote_release(postgres_session, "retry-a")
     promote_release(postgres_session, "retry-b")
@@ -312,7 +319,7 @@ def test_retirement_and_retry_serialize_on_the_owned_release(
     retry_first = Benchmark(
         org_id=race_org_id,
         name="retry-first",
-        status=BenchmarkStatus.ERROR,
+        status=BenchmarkStatus.IN_PROGRESS,
         arguments=BenchmarkArguments(
             contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
             concurrency=1,
@@ -327,11 +334,15 @@ def test_retirement_and_retry_serialize_on_the_owned_release(
     def retry(session: Session, benchmark_id: UUID) -> None:
         benchmark = session.get(Benchmark, benchmark_id, populate_existing=True, with_for_update=True)
         assert benchmark is not None
-        release = resolve_current_execution_release(session, benchmark, for_update=True)
+        pre_action_status = benchmark.status
         benchmark.status = BenchmarkStatus.IN_PROGRESS
-        session.add(benchmark)
-        session.add(_dispatch(benchmark.id, release, ExecutorDispatchKind.RETRY))
-        session.flush()
+        admit_recovery_dispatch(
+            session,
+            benchmark=benchmark,
+            pre_action_status=pre_action_status,
+            dispatch_id=uuid4(),
+            kind=ExecutorDispatchKind.RETRY,
+        )
 
     outcomes = _run_while_first_transaction_holds_locks(
         lambda session: retry(session, retry_first.id),
@@ -343,39 +354,59 @@ def test_retirement_and_retry_serialize_on_the_owned_release(
     postgres_session.expire_all()
     stored_retry_first = postgres_session.get(Benchmark, retry_first.id)
     stored_release_a = postgres_session.get(ExecutorRelease, "retry-a")
+    dispatch = postgres_session.exec(
+        select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == retry_first.id)
+    ).one()
     assert stored_retry_first is not None
     assert stored_release_a is not None
     assert stored_retry_first.status == BenchmarkStatus.IN_PROGRESS
     assert stored_release_a.status == ExecutorReleaseStatus.DRAINING
+    assert dispatch.executor_release_id == "retry-a"
 
-    promote_release(postgres_session, "retry-c")
-    promote_release(postgres_session, "retry-d")
-    retire_first = Benchmark(
-        org_id=race_org_id,
-        name="retire-first",
+
+def test_terminal_retry_after_retirement_uses_the_active_release(postgres_session: Session) -> None:
+    org_id = uuid4()
+    postgres_session.add(Org(id=org_id, name="terminal-retire-retry-org"))
+    old_release = register_release(postgres_session, _release("terminal-old"))
+    register_release(postgres_session, _release("terminal-active"))
+    promote_release(postgres_session, old_release.id)
+    promote_release(postgres_session, "terminal-active")
+
+    benchmark = Benchmark(
+        org_id=org_id,
+        name="terminal-retry",
         status=BenchmarkStatus.ERROR,
-        arguments=retry_first.arguments,
+        arguments=BenchmarkArguments(
+            contract=AgentContractRequest(name="race-agent", install_cmd="true", run_cmd="true"),
+            concurrency=1,
+        ),
     )
-    release_c = postgres_session.get(ExecutorRelease, "retry-c")
-    assert release_c is not None
-    pin_benchmark_to_release(retire_first, release_c)
-    postgres_session.add(retire_first)
+    pin_benchmark_to_release(benchmark, old_release)
+    postgres_session.add(benchmark)
     postgres_session.commit()
 
-    outcomes = _run_while_first_transaction_holds_locks(
-        lambda session: retire_if_empty(session, "retry-c"),
-        lambda session: retry(session, retire_first.id),
-        postgres_engine,
-    )
-
-    assert outcomes == ["first-committed", "second-rejected"]
+    retire_if_empty(postgres_session, old_release.id)
+    postgres_session.commit()
     postgres_session.expire_all()
-    stored_retire_first = postgres_session.get(Benchmark, retire_first.id)
-    stored_release_c = postgres_session.get(ExecutorRelease, "retry-c")
-    assert stored_retire_first is not None
-    assert stored_release_c is not None
-    assert stored_retire_first.status == BenchmarkStatus.ERROR
-    assert stored_release_c.status == ExecutorReleaseStatus.RETIRED
+
+    benchmark = postgres_session.get(Benchmark, benchmark.id, populate_existing=True, with_for_update=True)
+    assert benchmark is not None
+    pre_action_status = benchmark.status
+    benchmark.status = BenchmarkStatus.IN_PROGRESS
+    dispatch = admit_recovery_dispatch(
+        postgres_session,
+        benchmark=benchmark,
+        pre_action_status=pre_action_status,
+        dispatch_id=uuid4(),
+        kind=ExecutorDispatchKind.RETRY,
+    )
+    postgres_session.commit()
+
+    stored_old_release = postgres_session.get(ExecutorRelease, old_release.id)
+    assert stored_old_release is not None
+    assert stored_old_release.status == ExecutorReleaseStatus.RETIRED
+    assert benchmark.current_execution_release_id == "terminal-active"
+    assert dispatch.executor_release_id == "terminal-active"
 
 
 def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
@@ -407,24 +438,22 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
         benchmark = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
         if benchmark.status not in (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING):
             raise ReleaseControlError(f"Cannot stop benchmark from {benchmark.status}")
-        benchmark.status = BenchmarkStatus.STOPPING
-        session.add(benchmark)
+        apply_stop_benchmark(benchmark, session, force=True, org=org)
         session.flush()
 
     def retry(session: Session, benchmark_id: UUID) -> None:
         benchmark = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
         if benchmark.status == BenchmarkStatus.STOPPING:
             raise ReleaseControlError("Cannot retry a stopping benchmark")
-        dispatch_release = (
-            resolve_current_execution_release(session, benchmark, for_update=True)
-            if benchmark.status == BenchmarkStatus.IN_PROGRESS
-            else select_active_release(session, for_update=True)
-        )
+        pre_action_status = benchmark.status
         benchmark.status = BenchmarkStatus.IN_PROGRESS
-        benchmark.current_execution_release_id = dispatch_release.id
-        session.add(benchmark)
-        session.add(_dispatch(benchmark.id, dispatch_release, ExecutorDispatchKind.RETRY))
-        session.flush()
+        admit_recovery_dispatch(
+            session,
+            benchmark=benchmark,
+            pre_action_status=pre_action_status,
+            dispatch_id=uuid4(),
+            kind=ExecutorDispatchKind.RETRY,
+        )
 
     stop_first = add_error_benchmark("stop-first")
     outcomes = _run_while_first_transaction_holds_locks(

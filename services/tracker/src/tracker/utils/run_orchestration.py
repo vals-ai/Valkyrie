@@ -275,7 +275,15 @@ async def process_benchmark(
     benchmark_id_str: str,
     verified_task_ids: list[str],
     executor_dispatch_id: str,
+    *,
+    executor_release_id: str | None = None,
+    executor_artifact_uri: str | None = None,
+    executor_artifact_digest: str | None = None,
+    executor_protocol_version: str | None = None,
 ) -> None:
+    # The stable ExecutorHost consumes these release fields. The legacy worker
+    # accepts them only so Taskiq can type the shared message during migration.
+    _ = executor_release_id, executor_artifact_uri, executor_artifact_digest, executor_protocol_version
     try:
         authority = ExecutionAuthority(
             benchmark_id=UUID(benchmark_id_str),

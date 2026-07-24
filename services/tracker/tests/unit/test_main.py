@@ -26,8 +26,10 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
+from taskiq.message import BrokerMessage, TaskiqMessage
 
 import main as main_module
+import services.executor_host.supervisor as executor_host  # pyright: ignore[reportMissingImports]
 from main import app, tracker_service_error_handler
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
@@ -50,6 +52,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.config import STABLE_QUEUE_NAME
 from tracker.exceptions import TrackerServiceError
 from tracker.types import (
     BenchmarkTableRow,
@@ -497,7 +500,7 @@ class TestTrackerAPI:
         assert json_response["executor_protocol_version"] == "1"
         assert json_response["concurrency"] == request.concurrency
 
-    async def test_start_benchmark_enqueues_committed_dispatch(
+    async def test_start_benchmark_serializes_committed_dispatch_for_executor_host(
         self,
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
@@ -505,21 +508,28 @@ class TestTrackerAPI:
         harness_config: HarnessConfig,
     ) -> None:
         observed_at_enqueue: dict[str, Any] = {}
+        taskiq_message: TaskiqMessage | None = None
 
-        class InspectingKicker:
-            def with_labels(self, **_labels: str) -> "InspectingKicker":
-                return self
+        async def capture_message(message: BrokerMessage) -> None:
+            nonlocal taskiq_message
+            taskiq_message = TaskiqMessage.model_validate(
+                main_module.process_benchmark.broker.serializer.loadb(message.message)
+            )
+            kwargs = taskiq_message.kwargs
+            with Session(database_session.get_bind()) as assertion_session:
+                benchmark_id = UUID(kwargs["benchmark_id_str"])
+                dispatch_id = UUID(kwargs["executor_dispatch_id"])
+                observed_at_enqueue["benchmark"] = assertion_session.get(Benchmark, benchmark_id)
+                observed_at_enqueue["dispatch"] = assertion_session.get(ExecutorDispatch, dispatch_id)
+                observed_at_enqueue["tasks"] = assertion_session.exec(
+                    select(Task).where(Task.benchmark == benchmark_id)
+                ).all()
 
-            async def kiq(self, **kwargs: Any) -> None:
-                with Session(database_session.get_bind()) as assertion_session:
-                    benchmark_id = UUID(kwargs["benchmark_id_str"])
-                    dispatch_id = UUID(kwargs["executor_dispatch_id"])
-                    observed_at_enqueue["benchmark"] = assertion_session.get(Benchmark, benchmark_id)
-                    observed_at_enqueue["dispatch"] = assertion_session.get(ExecutorDispatch, dispatch_id)
-                    observed_at_enqueue["tasks"] = assertion_session.exec(
-                        select(Task).where(Task.benchmark == benchmark_id)
-                    ).all()
-                observed_at_enqueue["kwargs"] = kwargs
+        active_release = database_session.get(ExecutorRelease, "test-release")
+        assert active_release is not None
+        active_release.artifact_digest = "a" * 64
+        database_session.add(active_release)
+        database_session.commit()
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -528,24 +538,74 @@ class TestTrackerAPI:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: InspectingKicker())
+        task = main_module.process_benchmark
+        monkeypatch.setattr(task, "kicker", lambda: type(task).kicker(task))
+        monkeypatch.setattr(task.broker, "kick", capture_message)
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
 
         response = client.post("/start-benchmark", json=request.model_dump())
 
         assert response.status_code == 200
+        assert taskiq_message is not None
         benchmark = observed_at_enqueue["benchmark"]
         dispatch = observed_at_enqueue["dispatch"]
         tasks = observed_at_enqueue["tasks"]
-        assert benchmark is not None
+        assert isinstance(benchmark, Benchmark)
         assert benchmark.executor_release_id == "test-release"
         assert benchmark.current_execution_release_id == "test-release"
-        assert dispatch is not None
+        assert isinstance(dispatch, ExecutorDispatch)
         assert dispatch.status == ExecutorDispatchStatus.QUEUED
         assert dispatch.benchmark_id == benchmark.id
         assert dispatch.executor_release_id == benchmark.current_execution_release_id
         assert [task.task_id for task in tasks] == ["task_0"]
-        assert observed_at_enqueue["kwargs"]["verified_task_ids"] == ["task_0"]
+        assert taskiq_message.args == []
+        assert set(taskiq_message.kwargs) == {
+            "start_benchmark_request_json",
+            "benchmark_id_str",
+            "verified_task_ids",
+            "executor_dispatch_id",
+            "executor_release_id",
+            "executor_artifact_uri",
+            "executor_artifact_digest",
+            "executor_protocol_version",
+        }
+
+        observed_host: dict[str, object] = {}
+
+        async def capture_dispatch(
+            _supervisor: executor_host.ExecutorSupervisor,
+            _store: executor_host.ExecutorDispatchStore,
+            *,
+            executor_dispatch_id: str,
+            dispatch: executor_host.ArtifactDispatch,
+            start_benchmark_request_json: dict[str, object],
+            benchmark_id_str: str,
+            verified_task_ids: list[str],
+        ) -> None:
+            observed_host.update(
+                executor_dispatch_id=executor_dispatch_id,
+                dispatch=dispatch,
+                start_benchmark_request_json=start_benchmark_request_json,
+                benchmark_id_str=benchmark_id_str,
+                verified_task_ids=verified_task_ids,
+            )
+
+        monkeypatch.setattr(executor_host, "run_executor_dispatch", capture_dispatch)
+        await executor_host.launch_executor.original_func(**taskiq_message.kwargs)
+
+        assert taskiq_message.task_name == executor_host.launch_executor.task_name
+        assert STABLE_QUEUE_NAME == executor_host.QUEUE_NAME
+        assert taskiq_message.kwargs["executor_protocol_version"] == executor_host.SUPPORTED_PROTOCOL_VERSION
+        assert observed_host["executor_dispatch_id"] == str(dispatch.id)
+        assert observed_host["benchmark_id_str"] == str(benchmark.id)
+        assert observed_host["verified_task_ids"] == ["task_0"]
+        assert observed_host["start_benchmark_request_json"] == request.model_dump()
+        host_dispatch = observed_host["dispatch"]
+        assert isinstance(host_dispatch, executor_host.ArtifactDispatch)
+        assert host_dispatch.release_id == dispatch.executor_release_id
+        assert host_dispatch.artifact_uri == dispatch.executor_artifact_uri
+        assert host_dispatch.artifact_digest == dispatch.executor_artifact_digest
+        assert host_dispatch.protocol_version == dispatch.executor_protocol_version
 
     async def test_start_benchmark_enqueue_failure_is_retryable(
         self,
