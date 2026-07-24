@@ -161,7 +161,7 @@ output_artifacts:
     source: /logs/{task_id}/trajectory_atif.json
     required: false
   - path: artifacts/model.patch
-    source: /logs/{task_id}/model.patch
+    source: /logs/{task_id}/artifacts/model.patch
     required: false
 ```
 

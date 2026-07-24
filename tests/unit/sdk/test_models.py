@@ -32,6 +32,11 @@ def test_agent_contract_normalizes_output_artifacts() -> None:
         output_artifacts=[
             "reports/result.json",
             {"path": "logs/run.txt", "source": "/workspace/logs/*.txt"},
+            {
+                "path": "artifacts/model.patch",
+                "source": "/logs/artifacts/model.patch",
+                "required": False,
+            },
         ],
     )
 
@@ -40,17 +45,15 @@ def test_agent_contract_normalizes_output_artifacts() -> None:
         path="logs/run.txt",
         source="/workspace/logs/*.txt",
     )
-
-
-def test_output_artifact_can_be_optional() -> None:
-    artifact = OutputArtifact(
-        path="atif/trajectory.json",
-        source="/logs/trajectory_atif.json",
+    assert contract.output_artifacts[2] == OutputArtifact(
+        path="artifacts/model.patch",
+        source="/logs/artifacts/model.patch",
         required=False,
     )
 
-    assert artifact.required is False
-    assert artifact.model_dump(mode="json")["required"] is False
+    serialized = contract.model_dump(mode="json")["output_artifacts"]
+    assert "required" not in serialized[1]
+    assert serialized[2]["required"] is False
 
 
 @pytest.mark.parametrize("path", ["/absolute", "../escape", "a/../b"])

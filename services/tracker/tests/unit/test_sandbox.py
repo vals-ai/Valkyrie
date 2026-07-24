@@ -199,43 +199,14 @@ class TestOutputArtifacts:
         with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
-    async def test_upload_output_artifacts_skips_missing_optional_file(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
-    ) -> None:
-        artifact = OutputArtifact(
-            path="atif/trajectory.json",
-            source="/logs/trajectory_atif.json",
-            required=False,
-        )
-
-        sandbox = Mock()
-        exec_mock = AsyncMock(return_value=ExecResult(exit_code=1, output=""))
-        upload_mock = AsyncMock()
-        monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
-        monkeypatch.setattr(sandbox_module, "upload_to_s3", upload_mock)
-
-        await upload_output_artifacts(
-            sandbox,
-            [artifact],
-            "benchmark-123",
-            "task_0",
-            harness_config.aws,
-            "bucket",
-        )
-
-        exec_mock.assert_awaited_once_with(sandbox, "test -f /logs/trajectory_atif.json")
-        upload_mock.assert_not_awaited()
-
-    async def test_missing_optional_model_patch_never_affects_task_result(
+    async def test_upload_output_artifacts_skips_missing_optional_model_patch(
         self,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
     ) -> None:
         artifact = OutputArtifact(
             path="artifacts/model.patch",
-            source="/logs/model.patch",
+            source="/logs/artifacts/model.patch",
             required=False,
         )
 
@@ -254,7 +225,7 @@ class TestOutputArtifacts:
             "bucket",
         )
 
-        exec_mock.assert_awaited_once_with(sandbox, "test -f /logs/model.patch")
+        exec_mock.assert_awaited_once_with(sandbox, "test -f /logs/artifacts/model.patch")
         upload_mock.assert_not_awaited()
 
     async def test_upload_output_artifacts_fails_when_file_exceeds_tracker_limit(

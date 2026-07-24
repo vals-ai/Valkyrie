@@ -590,10 +590,6 @@ def _output_artifact_source(artifact: OutputArtifactSpec) -> str:
     return source or str(OUTPUT_ARTIFACTS_SANDBOX_ROOT / artifact_path)
 
 
-def _output_artifact_is_required(artifact: OutputArtifactSpec) -> bool:
-    return isinstance(artifact, str) or artifact.required
-
-
 def _format_output_artifact_source(source: str, task_id: str) -> str:
     return source.replace("{task_id}", task_id)
 
@@ -652,7 +648,7 @@ async def upload_output_artifacts(
                 total_bytes,
             )
         except Exception:
-            if _output_artifact_is_required(artifact):
+            if isinstance(artifact, str) or artifact.required:
                 raise
             logger.warning(
                 "output_artifact.optional_skip",
