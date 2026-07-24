@@ -62,8 +62,8 @@ def create_benchmark_service_client_from_request(request: StartBenchmarkRequest)
     return create_benchmark_service_client(url, service_headers=request.service_headers)
 
 
-def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
-    """Convert a StartBenchmarkRequest to a Benchmark database model."""
+def start_request_to_run_row(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
+    """Convert a start request to the physically named Benchmark run row."""
     return Benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,

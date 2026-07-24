@@ -52,7 +52,7 @@ from tracker.utils import (
     process_run,
     process_task,
     reset_to_in_progress_status,
-    start_benchmark_request_to_benchmark,
+    start_request_to_run_row,
     update_run_concurrency,
 )
 
@@ -109,7 +109,7 @@ class TestRunRecovery:
             task_ids=task_ids,
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row = start_request_to_run_row(request, self._test_starter)
         benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"concurrency": 1})
         database_session.add(benchmark_row)
         database_session.commit()
@@ -297,7 +297,7 @@ class TestRunRecovery:
             task_ids=["task_selected"],
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(start_request, self._test_starter)
+        benchmark_row = start_request_to_run_row(start_request, self._test_starter)
         selected_task = Task(
             org_id=TEST_ORG_ID,
             task_id="task_selected",
@@ -452,7 +452,7 @@ class TestRunRecovery:
             harness_config=harness_config,
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
+        benchmark_row = start_request_to_run_row(start_benchmark_request, self._test_starter)
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -502,7 +502,7 @@ class TestRunRecovery:
         database_session.commit()
 
         verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
+            run_row=benchmark_row,
             session=database_session,
             benchmark_service=start_benchmark_request.benchmark_service,
             retry=False,
@@ -570,7 +570,7 @@ class TestRunRecovery:
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
         verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
+            run_row=benchmark_row,
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
             retry=False,
@@ -630,7 +630,7 @@ class TestRunRecovery:
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _mock_request_verify_task_ids)
 
         verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
+            run_row=benchmark_row,
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
             retry=True,
@@ -679,7 +679,7 @@ class TestRunRecovery:
         database_session.commit()
 
         verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
+            run_row=benchmark_row,
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
             retry=False,
@@ -724,7 +724,7 @@ class TestRunRecovery:
         database_session.commit()
 
         verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
+            run_row=benchmark_row,
             session=database_session,
             benchmark_service=benchmark_row.benchmark_service(),
             retry=True,
@@ -764,7 +764,7 @@ class TestRunRecovery:
             task_ids=existing_task_ids,
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, self._test_starter)
+        benchmark_row = start_request_to_run_row(start_benchmark_request, self._test_starter)
         benchmark_row.status = BenchmarkStatus.FINISHED
         benchmark_row.finished_at = datetime.now(ZoneInfo("UTC"))
         database_session.add(benchmark_row)
@@ -805,7 +805,7 @@ class TestRunRecovery:
 
         # Resume with a new task id — should be lazily created as PENDING
         verified_task_ids = await reset_to_in_progress_status(
-            benchmark_row=benchmark_row,
+            run_row=benchmark_row,
             session=database_session,
             benchmark_service=start_benchmark_request.benchmark_service,
             retry=False,
@@ -855,7 +855,7 @@ class TestRunRecovery:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row = start_request_to_run_row(request, self._test_starter)
         database_session.add(benchmark_row)
         database_session.commit()
 
@@ -936,7 +936,7 @@ class TestRunRecovery:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
-        benchmark_row = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark_row = start_request_to_run_row(request, self._test_starter)
         database_session.add(benchmark_row)
         database_session.commit()
 

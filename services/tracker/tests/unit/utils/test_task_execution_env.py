@@ -86,6 +86,9 @@ class TestProcessTaskEnvironment:
         assert len(captured_env_vars) == 1
         env_vars = captured_env_vars[0]
         assert env_vars["RUN_ID"] == str(benchmark_id)
+        assert env_vars["DAYTONA_SANDBOX_OTEL_EXTRA_LABELS"].startswith(
+            f"run_id={benchmark_id},benchmark_id={benchmark_id},"
+        )
         assert "QUESTION_ID" not in env_vars
         assert env_vars["TASK_ID"] == "task_0"
         assert json.loads(env_vars["IDENTITY"]) == {

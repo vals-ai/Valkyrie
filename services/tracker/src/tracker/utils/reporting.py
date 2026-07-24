@@ -177,13 +177,13 @@ def _fetch_result_histories(
     }
 
 
-def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID) -> dict[str, dict[str, Any]]:
+def fetch_evaluation_results(run_id: UUID, session: Session, org_id: UUID) -> dict[str, dict[str, Any]]:
     """Select the latest successful evaluation result for each finished task."""
     statement = (
         select(EvaluationResult, Task.id, Task.task_id, TaskBreakdown)
         .join(Task, col(EvaluationResult.task) == col(Task.id))
         .outerjoin(TaskBreakdown, col(Task.task_breakdown) == col(TaskBreakdown.id))
-        .where(Task.benchmark == benchmark_id)
+        .where(Task.benchmark == run_id)
         .where(Task.org_id == org_id)
         .where(Task.status == TaskStatus.FINISHED)
         .order_by(desc(EvaluationResult.created_at))
@@ -224,11 +224,11 @@ def fetch_evaluation_results(benchmark_id: UUID, session: Session, org_id: UUID)
     return evaluation_results
 
 
-def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: UUID) -> AverageTaskBreakdown | None:
+def fetch_average_task_breakdown(run_id: UUID, session: Session, org_id: UUID) -> AverageTaskBreakdown | None:
     """
-    Fetch the average task breakdown for a given benchmark.
+    Fetch the average task breakdown for a run.
 
-    Returns None if there are no task metrics available for the benchmark.
+    Returns None if there are no task metrics available for the run.
     """
     row = session.exec(
         select(
@@ -238,7 +238,7 @@ def fetch_average_task_breakdown(benchmark_id: UUID, session: Session, org_id: U
             func.avg(TaskBreakdown.sandbox_run_duration),
         )
         .join(Task, col(Task.task_breakdown) == col(TaskBreakdown.id))
-        .where(Task.benchmark == benchmark_id)
+        .where(Task.benchmark == run_id)
         .where(Task.org_id == org_id)
     ).one()
 
@@ -326,11 +326,11 @@ def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
     return datetime.fromisoformat(payload["started_at"]), UUID(payload["id"])
 
 
-def fetch_filtered_benchmark_rows(
+def fetch_filtered_run_rows(
     request: FetchBenchmarksRequest, session: Session, org: Org
 ) -> tuple[Sequence[Benchmark], int | None, str | None]:
     """
-    Creates a query to fetch benchmark rows from the database based on the fetch benchmark request.
+    Create a query that fetches physical Benchmark rows representing runs.
 
     When request.cursor is a non-empty string, uses keyset pagination (tuple comparison on
     started_at, id) and returns next_cursor. total_count is None in this path.
@@ -343,7 +343,7 @@ def fetch_filtered_benchmark_rows(
 
     Returns:
         tuple[Sequence[Benchmark], int | None, str | None]
-        Sequence of benchmark rows, optional total count, optional next cursor
+        Sequence of run rows, optional total count, optional next cursor
 
     """
 
@@ -417,15 +417,15 @@ def fetch_filtered_benchmark_rows(
 
         # Fetch one extra row to detect whether there is a next page
         query = query.limit(request.limit + 1)
-        benchmark_rows: Sequence[Benchmark] = session.exec(query).all()
+        run_rows: Sequence[Benchmark] = session.exec(query).all()
 
         next_cursor: str | None = None
-        if len(benchmark_rows) > request.limit:
-            benchmark_rows = benchmark_rows[: request.limit]
-            last_row = benchmark_rows[-1]
+        if len(run_rows) > request.limit:
+            run_rows = run_rows[: request.limit]
+            last_row = run_rows[-1]
             next_cursor = encode_cursor(last_row.started_at, last_row.id)
 
-        return benchmark_rows, None, next_cursor
+        return run_rows, None, next_cursor
 
     # Legacy offset/limit path — compute total_count for backward compat
     total_count = session.exec(select(func.count()).select_from(query.subquery())).one()
@@ -434,46 +434,46 @@ def fetch_filtered_benchmark_rows(
         return [], 0, None
 
     query = query.limit(request.limit).offset(request.offset)
-    benchmark_rows = session.exec(query).all()
+    run_rows = session.exec(query).all()
 
-    return benchmark_rows, total_count, None
+    return run_rows, total_count, None
 
 
-def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session) -> list[BenchmarkTableRow]:
-    """Batch-load task counts + run-by emails for a page of benchmarks.
+def build_run_table_rows(run_rows: Sequence[Benchmark], session: Session) -> list[BenchmarkTableRow]:
+    """Build legacy table-row DTOs for a page of run rows.
 
     Caller must have eager-loaded `final_evaluation`. Avoids the N+1 of
     Benchmark.create_benchmark_table_row in a loop.
     """
-    if not benchmarks:
+    if not run_rows:
         return []
 
-    bench_ids = [b.id for b in benchmarks]
+    run_ids = [run_row.id for run_row in run_rows]
 
     count_rows = session.exec(
         select(Task.benchmark, Task.status, func.count())
-        .where(col(Task.benchmark).in_(bench_ids))
+        .where(col(Task.benchmark).in_(run_ids))
         .group_by(col(Task.benchmark), col(Task.status))
     ).all()
-    counts_by_bench: dict[UUID, dict[TaskStatus, int]] = {}
-    for bench_id, status, count in count_rows:
-        counts_by_bench.setdefault(bench_id, {})[TaskStatus(status)] = count
+    counts_by_run: dict[UUID, dict[TaskStatus, int]] = {}
+    for run_id, status, count in count_rows:
+        counts_by_run.setdefault(run_id, {})[TaskStatus(status)] = count
 
     rows: list[BenchmarkTableRow] = []
-    for b in benchmarks:
-        counts = counts_by_bench.get(b.id, {})
+    for run_row in run_rows:
+        counts = counts_by_run.get(run_row.id, {})
         rows.append(
             BenchmarkTableRow(
-                id=b.id,
-                name=b.name,
-                agent_name=b.arguments.contract.name,
-                label=b.label,
-                model=b.arguments.contract.model,
-                dataset=b.arguments.dataset or "default",
-                started_by_email=b.started_by_email,
-                started_at=b.started_at,
-                finished_at=b.finished_at,
-                status=b.status,
+                id=run_row.id,
+                name=run_row.name,
+                agent_name=run_row.arguments.contract.name,
+                label=run_row.label,
+                model=run_row.arguments.contract.model,
+                dataset=run_row.arguments.dataset or "default",
+                started_by_email=run_row.started_by_email,
+                started_at=run_row.started_at,
+                finished_at=run_row.finished_at,
+                status=run_row.status,
                 total_tasks=sum(counts.values()),
                 finished_tasks=(
                     counts.get(TaskStatus.FINISHED, 0)
@@ -481,7 +481,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                     + counts.get(TaskStatus.STOPPED, 0)
                 ),
                 task_state_counts={k.value: v for k, v in counts.items()},
-                final_score=b.final_evaluation.final_score if b.final_evaluation else None,
+                final_score=run_row.final_evaluation.final_score if run_row.final_evaluation else None,
             )
         )
     return rows
@@ -515,38 +515,36 @@ class YieldingWriter(io.RawIOBase):
         return chunk
 
 
-def create_final_view(benchmark_row: Benchmark, session: Session, org: Org) -> FinalViewResponse:
-    """Creates final view of a benchmark that includes metadata about evaluations and score"""
+def create_final_view(run_row: Benchmark, session: Session, org: Org) -> FinalViewResponse:
+    """Create the legacy-compatible stored final view for a run."""
     tasks_stopped: int = session.exec(
         select(func.count(col(Task.id)))
-        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.benchmark) == run_row.id)
         .where(col(Task.org_id) == org.id)
         .where(col(Task.status) == TaskStatus.STOPPED)
     ).one()
 
     final_view: FinalViewResponse = FinalViewResponse(
-        benchmark_name=benchmark_row.name,
-        status=benchmark_row.status,
-        error_message=benchmark_row.error_message,
-        benchmark_id=benchmark_row.id,
-        benchmark_arguments=benchmark_row.arguments,
-        started_at=benchmark_row.started_at,
-        finished_at=benchmark_row.finished_at,
-        tasks_stopped=tasks_stopped or None,  # NOTE: Only include if we stopped the benchmark
-        final_evaluation=benchmark_row.final_evaluation,
-        evaluation_results=benchmark_row.fetch_evaluation_results(session),
-        task_errors=benchmark_row.fetch_tasks_with_errors(session),
-        average_task_breakdown=fetch_average_task_breakdown(benchmark_row.id, session, org.id),
+        benchmark_name=run_row.name,
+        status=run_row.status,
+        error_message=run_row.error_message,
+        benchmark_id=run_row.id,
+        benchmark_arguments=run_row.arguments,
+        started_at=run_row.started_at,
+        finished_at=run_row.finished_at,
+        tasks_stopped=tasks_stopped or None,  # NOTE: Only include if the run has stopped tasks.
+        final_evaluation=run_row.final_evaluation,
+        evaluation_results=run_row.fetch_evaluation_results(session),
+        task_errors=run_row.fetch_tasks_with_errors(session),
+        average_task_breakdown=fetch_average_task_breakdown(run_row.id, session, org.id),
     )
 
     return final_view
 
 
-async def upload_final_view(
-    benchmark_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig
-) -> str:
-    """Uploads the final view to the root of the benchmark folder and returns the s3 key"""
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_row.id}/{benchmark_row.name}.json"
+async def upload_final_view(run_row: Benchmark, final_view: FinalViewResponse, harness_config: HarnessConfig) -> str:
+    """Upload the final view to the existing physical S3 prefix and return its key."""
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{run_row.id}/{run_row.name}.json"
     await upload_to_s3(
         final_view.model_dump_json(indent=4, exclude_none=True).encode(),
         s3_key,

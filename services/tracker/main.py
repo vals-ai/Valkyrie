@@ -72,7 +72,7 @@ from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
-from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var, run_id_var
+from tracker.logging import configure_logging, get_logger, request_id_var, run_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
@@ -115,11 +115,11 @@ from tracker.utils import (
     RunConcurrencyUpdate,
     RunContext,
     YieldingWriter,
-    build_benchmark_table_rows,
+    build_run_table_rows,
     commit_run_error,
     create_benchmark_service_client,
     create_final_view,
-    fetch_filtered_benchmark_rows,
+    fetch_filtered_run_rows,
     fetch_final_score_inputs,
     fetch_harness_config,
     try_fetch_harness_config,
@@ -127,7 +127,7 @@ from tracker.utils import (
     initiate_stop_run,
     process_run,
     reset_to_in_progress_status,
-    start_benchmark_request_to_benchmark,
+    start_request_to_run_row,
     stream_run_results,
     upload_final_view,
     update_run_concurrency,
@@ -171,7 +171,7 @@ logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
 
 def bind_benchmark_id(benchmark_id: UUID) -> UUID:
     """Dependency that binds benchmark_id to the logging context."""
-    benchmark_id_var.set(str(benchmark_id))
+    run_id_var.set(str(benchmark_id))
     return benchmark_id
 
 
@@ -353,11 +353,11 @@ async def start_benchmark(
         logger.error("Failed to verify task ids for %s", request.benchmark_name, exc_info=True)
         raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
 
-    # Create benchmark row only after pre-flight checks pass.
-    benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
-    session.add(benchmark_row)
+    # Create the run row only after pre-flight checks pass.
+    run_row = start_request_to_run_row(request, run_starter)
+    session.add(run_row)
     session.commit()
-    benchmark_id_var.set(str(benchmark_row.id))
+    run_id_var.set(str(run_row.id))
 
     if run_starter.access_key_id is not None and run_starter.email is None:
         logger.warning(
@@ -367,16 +367,16 @@ async def start_benchmark(
 
     try:
         await copy_agent_to_benchmark(
-            str(benchmark_row.id),
+            str(run_row.id),
             request.contract.name,
             request.harness_config.aws,
             request.harness_config.s3_bucket,
         )
     except Exception as e:
         error_message = f"{str(e)}\n{traceback.format_exc()}"
-        commit_run_error(benchmark_row, session, error_message)
+        commit_run_error(run_row, session, error_message)
         error_response = StartBenchmarkErrorResponse(
-            benchmark_id=benchmark_row.id,
+            benchmark_id=run_row.id,
             error_message=error_message,
         )
 
@@ -387,23 +387,23 @@ async def start_benchmark(
         .with_labels(**_taskiq_labels())
         .kiq(
             start_benchmark_request_json=request.model_dump(),
-            benchmark_id_str=str(benchmark_row.id),
+            benchmark_id_str=str(run_row.id),
             verified_task_ids=verify_response.task_ids,
         )
     )
 
     return StartBenchmarkResponse(
-        benchmark_name=benchmark_row.name,
+        benchmark_name=run_row.name,
         agent_name=request.contract.name,
-        benchmark_id=benchmark_row.id,
+        benchmark_id=run_row.id,
         concurrency=request.concurrency,
-        started_at=benchmark_row.started_at,
+        started_at=run_row.started_at,
         task_count=len(verify_response.task_ids),
         cloudwatch_url=get_benchmark_log_url(
-            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group
+            str(run_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group
         ),
         s3_bucket_url=create_benchmark_url(
-            str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
+            str(run_row.id), request.harness_config.aws.aws_default_region, request.harness_config.s3_bucket
         ),
     )
 
@@ -457,7 +457,7 @@ async def fetch_benchmark(
     - 200 OK if benchmark is found
     - 404 Not Found if benchmark is not found
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    run_row = get_scoped(Benchmark, benchmark_id, session, org)
 
     # When we connect to the client every 60 seconds we send the latest benchmark status
     # and additional updates about the tasks completed
@@ -472,18 +472,18 @@ async def fetch_benchmark(
             },
         )
 
-    run_context = RunContext(benchmark_row, session, org)
+    run_context = RunContext(run_row, session, org)
 
     return FetchBenchmarkResponse(
-        benchmark_name=benchmark_row.name,
-        benchmark_id=benchmark_row.id,
+        benchmark_name=run_row.name,
+        benchmark_id=run_row.id,
         details=run_context.run_details,
         s3_bucket_url=create_benchmark_url(
-            str(benchmark_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
+            str(run_row.id), harness_config.aws.aws_default_region, harness_config.s3_bucket
         ),
-        label=benchmark_row.label,
-        final_score=benchmark_row.final_evaluation.final_score if benchmark_row.final_evaluation else None,
-        error_message=benchmark_row.error_message if benchmark_row.status == BenchmarkStatus.ERROR else None,
+        label=run_row.label,
+        final_score=run_row.final_evaluation.final_score if run_row.final_evaluation else None,
+        error_message=run_row.error_message if run_row.status == BenchmarkStatus.ERROR else None,
     )
 
 
@@ -503,29 +503,25 @@ async def analyze_benchmark(
     Cache short-circuit: when the benchmark already has docent_reading_status=DONE and
     no_cache=false, returns the existing reading_plan_url without invoking the Lambda.
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    run_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    if benchmark_row.status != BenchmarkStatus.FINISHED:
+    if run_row.status != BenchmarkStatus.FINISHED:
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot analyze run {benchmark_id}: status is {benchmark_row.status.value} (must be FINISHED).",
+            detail=f"Cannot analyze run {benchmark_id}: status is {run_row.status.value} (must be FINISHED).",
         )
 
-    if (
-        not body.no_cache
-        and benchmark_row.docent_reading_status == DocentReadingStatus.DONE
-        and benchmark_row.docent_reading_url
-    ):
+    if not body.no_cache and run_row.docent_reading_status == DocentReadingStatus.DONE and run_row.docent_reading_url:
         return {
             "status": "done",
-            "reading_plan_url": benchmark_row.docent_reading_url,
+            "reading_plan_url": run_row.docent_reading_url,
         }
 
     if not body.lambda_function:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"No ingest_lambda provided for agent '{benchmark_row.arguments.contract.name}'. "
+                f"No ingest_lambda provided for agent '{run_row.arguments.contract.name}'. "
                 "The CLI normally resolves this from the agent's pushed contract — if you're "
                 "calling this endpoint directly, supply `lambda_function` in the request body."
             ),
@@ -534,14 +530,14 @@ async def analyze_benchmark(
     payload: dict[str, Any] = {
         "run_id": str(benchmark_id),
         "benchmark_id": str(benchmark_id),
-        "benchmark_name": benchmark_row.name,
+        "benchmark_name": run_row.name,
         "s3_bucket": harness_config.s3_bucket,
-        "contract": {"name": benchmark_row.arguments.contract.name},
+        "contract": {"name": run_row.arguments.contract.name},
     }
 
     return StreamingResponse(
         analyze_event_stream(
-            benchmark_id=benchmark_row.id,
+            benchmark_id=run_row.id,
             lambda_function=body.lambda_function,
             payload=payload,
             aws=harness_config.aws,
@@ -578,10 +574,10 @@ async def retrieve_results(
     curl -X GET http://<endpoint>/retrieve-results?benchmark_id=<uuid>&s3=false
     curl -X GET 'http://<endpoint>/retrieve-results?benchmark_id=<uuid>&task_ids=task_1&task_ids=task_2'
     """
-    benchmark_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
-    assert_org(benchmark_row, org)
+    run_row = session.get(Benchmark, benchmark_id, options=[joinedload(Benchmark.final_evaluation)])
+    assert_org(run_row, org)
 
-    final_view = create_final_view(benchmark_row, session, org)
+    final_view = create_final_view(run_row, session, org)
 
     if task_ids:
         task_ids_set = set(task_ids)
@@ -596,28 +592,28 @@ async def retrieve_results(
         # (e.g. stopped/errored) still count toward the denominator instead of being dropped.
         scored_results = {
             task_id: result
-            for task_id, result in fetch_final_score_inputs(session, benchmark_row, org).items()
+            for task_id, result in fetch_final_score_inputs(session, run_row, org).items()
             if task_id in task_ids_set
         }
 
         effective_service_headers = forward_tracker_api_key(None, http_request.headers.get("x-api-key"))
-        benchmark_service = benchmark_row.benchmark_service(service_headers=effective_service_headers)
+        benchmark_service = run_row.benchmark_service(service_headers=effective_service_headers)
         try:
             resp = await benchmark_service.final_score(
                 evaluation_results=scored_results,
-                dataset=benchmark_row.arguments.dataset,
+                dataset=run_row.arguments.dataset,
             )
         finally:
             await benchmark_service.close()
         final_view.final_evaluation = FinalEvaluation(
             org_id=org.id,
-            benchmark=benchmark_row.id,
+            benchmark=run_row.id,
             final_score=resp.final_score,
             properties=resp.metadata,
         )
 
     if s3:
-        s3_key = await upload_final_view(benchmark_row, final_view, harness_config)
+        s3_key = await upload_final_view(run_row, final_view, harness_config)
 
         https_url = f"s3://{harness_config.s3_bucket}/{s3_key}"
         presigned_url = await create_presigned_url(
@@ -646,15 +642,15 @@ async def check_results_exist(
     Returns:
         {"exists": true/false}
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    run_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{benchmark_row.name}.json"
+    s3_key = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/{run_row.name}.json"
     exists = await s3_object_exists(s3_key, harness_config.aws, harness_config.s3_bucket)
     return {"exists": exists}
 
 
 async def validate_tasks_exist(
-    benchmark_row: Benchmark,
+    run_row: Benchmark,
     task_ids: list[str],
     session: Session,
     org: Org,
@@ -667,7 +663,7 @@ async def validate_tasks_exist(
     existing_task_ids = set(
         session.exec(
             select(Task.task_id)
-            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.benchmark) == run_row.id)
             .where(col(Task.org_id) == org.id)
             .where(col(Task.task_id).in_(requested_task_ids))
         ).all()
@@ -676,7 +672,7 @@ async def validate_tasks_exist(
     if missing_task_ids:
         raise HTTPException(
             status_code=400,
-            detail=f"Task IDs are not part of run {benchmark_row.id}: {', '.join(missing_task_ids)}",
+            detail=f"Task IDs are not part of run {run_row.id}: {', '.join(missing_task_ids)}",
         )
 
     return requested_task_ids
@@ -701,34 +697,32 @@ async def stop_benchmark(
     Returns:
         StopBenchmarkResponse
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    run_row = get_scoped(Benchmark, benchmark_id, session, org)
 
     valid_stop_states = [BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPING]
 
-    if benchmark_row.status not in valid_stop_states:
+    if run_row.status not in valid_stop_states:
         raise HTTPException(
             status_code=400,
-            detail=f"Run {benchmark_id} is currently in the {benchmark_row.status} state. Can only pause an in progress or error run.",
+            detail=f"Run {benchmark_id} is currently in the {run_row.status} state. Can only pause an in progress or error run.",
         )
 
-    selected_task_ids = (
-        await validate_tasks_exist(benchmark_row, task_ids, session, org) if task_ids is not None else None
-    )
+    selected_task_ids = await validate_tasks_exist(run_row, task_ids, session, org) if task_ids is not None else None
 
-    await initiate_stop_run(benchmark_row, session, force, org, task_ids=selected_task_ids)
+    await initiate_stop_run(run_row, session, force, org, task_ids=selected_task_ids)
 
     if force:
         # TODO: Drop the row fallback after legacy benchmark rows have aged out.
         provider_secret_name = (
-            benchmark_row.arguments.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name
+            run_row.arguments.sandbox_provider_secret_name or harness_config.sandbox_provider_secret_name
         )
         await force_stop_sandboxes(
-            benchmark_row,
+            run_row,
             session,
             provider_secret_name,
             harness_config.aws,
             org,
-            sandbox_provider=benchmark_row.arguments.sandbox_provider,
+            sandbox_provider=run_row.arguments.sandbox_provider,
             task_ids=selected_task_ids,
         )
 
@@ -802,15 +796,15 @@ async def retry_or_resume_benchmark(
     Returns:
         RetryOrResumeBenchmarkResponse
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    run_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    if benchmark_row.status == BenchmarkStatus.STOPPING:
+    if run_row.status == BenchmarkStatus.STOPPING:
         raise HTTPException(
             status_code=400,
-            detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
+            detail=f"Run {benchmark_id} is in the {run_row.status} state. Cannot continue a run that is stopping.",
         )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
+    if run_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
@@ -818,7 +812,7 @@ async def retry_or_resume_benchmark(
     if concurrency is not None and concurrency < 1:
         raise HTTPException(status_code=400, detail="Concurrency must be greater than 0.")
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
+    if run_row.status == BenchmarkStatus.IN_PROGRESS and not retry:
         assert concurrency is not None
         _update_run_concurrency(benchmark_id, concurrency, session, org)
         return RetryOrResumeBenchmarkResponse(status="success")
@@ -829,22 +823,22 @@ async def retry_or_resume_benchmark(
     )
 
     verified_task_ids = await reset_to_in_progress_status(
-        benchmark_row=benchmark_row,
+        run_row=run_row,
         session=session,
-        benchmark_service=benchmark_row.benchmark_service(service_headers=effective_service_headers),
+        benchmark_service=run_row.benchmark_service(service_headers=effective_service_headers),
         retry=retry,
         retry_mode=retry_mode,
         rerun_task_ids=task_ids,
         org=org,
     )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+    if run_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
         return RetryOrResumeBenchmarkResponse(
             status="success",
         )
 
     if secrets or concurrency is not None:
-        benchmark_row = update_run_resume_arguments(
+        run_row = update_run_resume_arguments(
             benchmark_id,
             session,
             org,
@@ -853,7 +847,7 @@ async def retry_or_resume_benchmark(
         )
 
     # Ensure that credentials are included with the model dump
-    resume_request_json = benchmark_row.start_benchmark_request(
+    resume_request_json = run_row.start_benchmark_request(
         harness_config, service_headers=effective_service_headers
     ).model_dump()
 
@@ -864,7 +858,7 @@ async def retry_or_resume_benchmark(
         .with_labels(**_taskiq_labels())
         .kiq(
             start_benchmark_request_json=resume_request_json,
-            benchmark_id_str=str(benchmark_row.id),
+            benchmark_id_str=str(run_row.id),
             verified_task_ids=verified_task_ids,
         )
     )
@@ -916,10 +910,10 @@ async def fetch_benchmarks(
         offset=offset,
     )
 
-    benchmark_rows, total_count, next_cursor = fetch_filtered_benchmark_rows(request, session, org)
+    run_rows, total_count, next_cursor = fetch_filtered_run_rows(request, session, org)
 
     return FetchBenchmarksResponse(
-        benchmarks=build_benchmark_table_rows(benchmark_rows, session),
+        benchmarks=build_run_table_rows(run_rows, session),
         total_count=total_count,
         next_cursor=next_cursor,
     )
@@ -940,17 +934,17 @@ async def fetch_benchmark_metadata(
     Returns:
         FetchBenchmarkMetadataResponse
     """
-    benchmark_row = get_scoped(Benchmark, benchmark_id, session, org)
+    run_row = get_scoped(Benchmark, benchmark_id, session, org)
 
-    return benchmark_row.benchmark_metadata
+    return run_row.benchmark_metadata
 
 
-def _safe_output_tar_member(s3_key: str, benchmark_prefix: str) -> str | None:
-    """Return a safe relative tar member name for an object under a benchmark prefix."""
-    if not s3_key.startswith(benchmark_prefix):
+def _safe_output_tar_member(s3_key: str, run_prefix: str) -> str | None:
+    """Return a safe relative tar member name for an object under a run prefix."""
+    if not s3_key.startswith(run_prefix):
         return None
 
-    relative_path = s3_key[len(benchmark_prefix) :]
+    relative_path = s3_key[len(run_prefix) :]
     parts = relative_path.split("/")
     if (
         not relative_path
@@ -983,13 +977,13 @@ async def fetch_run_outputs(
     """
     get_scoped(Benchmark, benchmark_id, session, org)
 
-    benchmark_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
+    run_prefix = f"{S3_BENCHMARKS_PREFIX}/{benchmark_id}/"
 
     async def output_keys() -> AsyncIterator[str]:
-        prefixes = [f"{benchmark_prefix}{task_id}/" for task_id in task_ids] if task_ids else [benchmark_prefix]
+        prefixes = [f"{run_prefix}{task_id}/" for task_id in task_ids] if task_ids else [run_prefix]
         for prefix in prefixes:
             async for key in list_s3_objects(prefix, harness_config.aws, harness_config.s3_bucket):
-                if _safe_output_tar_member(key, benchmark_prefix) is None:
+                if _safe_output_tar_member(key, run_prefix) is None:
                     logger.warning("Skipping unsafe output archive member for run %s", benchmark_id)
                     continue
                 yield key
@@ -1012,7 +1006,7 @@ async def fetch_run_outputs(
         # and reads one object into memory at a time (bounded by the largest object).
         with tarfile.open(fileobj=writer, mode="w|") as tar:
             async for s3_key, data in download_many_from_s3(all_keys(), harness_config.aws, harness_config.s3_bucket):
-                relative_path = s3_key.removeprefix(benchmark_prefix)
+                relative_path = s3_key.removeprefix(run_prefix)
                 tarinfo = tarfile.TarInfo(name=relative_path)
                 tarinfo.size = len(data)
                 tar.addfile(tarinfo, fileobj=io.BytesIO(data))

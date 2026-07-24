@@ -12,7 +12,7 @@ from tests.utils import TEST_ORG_ID
 from tracker.auth import RequestIdentity
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
+from tracker.utils import fetch_sandbox_provider_config, process_task, start_request_to_run_row
 
 TEST_ORG = Org(id=TEST_ORG_ID, name="default")
 _TEST_STARTER = RequestIdentity(org=TEST_ORG, access_key_id=None, email=None, name=None)
@@ -47,16 +47,16 @@ def create_task_environment(
     harness_config: HarnessConfig,
     run_starter: RequestIdentity | None = None,
 ) -> tuple[StartBenchmarkRequest, Task, UUID]:
-    """Persist the benchmark and task rows required by process-task tests.
+    """Persist the run and task rows required by process-task tests.
 
     Arguments
-    - contract: Agent contract used by the benchmark request.
+    - contract: Agent contract used by the run request.
     - database_session: Test database session receiving the rows.
     - harness_config: Harness configuration stored with the request.
-    - run_starter: Optional identity that started the benchmark.
+    - run_starter: Optional identity that started the run.
 
     Returns
-    - The request, task row, and benchmark ID needed to run the task.
+    - The request, task row, and run ID needed to run the task.
     """
     start_benchmark_request = StartBenchmarkRequest(
         benchmark_name="swebench",
@@ -65,30 +65,30 @@ def create_task_environment(
         task_ids=["task_0"],
         harness_config=harness_config,
     )
-    benchmark_row = start_benchmark_request_to_benchmark(start_benchmark_request, run_starter or _TEST_STARTER)
-    benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-    database_session.add(benchmark_row)
+    run_row = start_request_to_run_row(start_benchmark_request, run_starter or _TEST_STARTER)
+    run_row.status = BenchmarkStatus.IN_PROGRESS
+    database_session.add(run_row)
     database_session.commit()
 
-    task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=benchmark_row.id)
+    task_row = Task(org_id=TEST_ORG_ID, task_id="task_0", benchmark=run_row.id)
     database_session.add(task_row)
     database_session.commit()
 
-    return start_benchmark_request, task_row, benchmark_row.id
+    return start_benchmark_request, task_row, run_row.id
 
 
 async def run_process_task(
     start_benchmark_request: StartBenchmarkRequest,
     task_row: Task,
-    benchmark_id: UUID,
+    run_id: UUID,
     harness_config: HarnessConfig,
 ) -> dict[str, dict[str, Any] | None]:
     """Run process_task with the shared deterministic unit-test dependencies.
 
     Arguments
-    - start_benchmark_request: Request that created the benchmark.
+    - start_benchmark_request: Legacy-named request that created the run.
     - task_row: Persisted task being processed.
-    - benchmark_id: Parent benchmark identifier.
+    - run_id: Parent run identifier.
     - harness_config: Harness configuration used for provider resolution.
 
     Returns
@@ -98,7 +98,7 @@ async def run_process_task(
         task_row=task_row,
         start_benchmark_request=start_benchmark_request,
         benchmark_service=start_benchmark_request.benchmark_service,
-        benchmark_id=benchmark_id,
+        run_id=run_id,
         task_id="task_0",
         harness_config=harness_config,
         org=TEST_ORG,

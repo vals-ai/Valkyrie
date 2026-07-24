@@ -31,7 +31,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
-from tracker.logging import get_logger
+from tracker.logging import get_logger, run_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.types import (
     FinalViewResponse,
@@ -89,25 +89,25 @@ def set_run_final_status(run_row: Benchmark, session: Session, org: Org) -> None
 
 def create_task_rows(
     verified_task_ids: list[str],
-    benchmark_row: Benchmark,
+    run_row: Benchmark,
     session: Session,
     org: Org,
 ) -> Sequence[tuple[str, Task]]:
     """
-    Create task_rows that do not already exist in the database for the benchmark row.
+    Create task rows that do not already exist in the database for the run.
 
-    NOTE: Only return runnable tasks to support resuming the benchmark.
+    NOTE: Only return runnable tasks to support resuming the run.
     """
     # Find task ids that already exist so that we can filter them out
     existing_task_ids: Sequence[str] = session.exec(
-        select(Task.task_id).where(Task.benchmark == benchmark_row.id).where(col(Task.task_id).in_(verified_task_ids))
+        select(Task.task_id).where(Task.benchmark == run_row.id).where(col(Task.task_id).in_(verified_task_ids))
     ).all()
 
     # NOTE: Must maintain same order that was passed in
     task_ids_to_create = [task_id for task_id in verified_task_ids if task_id not in existing_task_ids]
 
     for task_id in task_ids_to_create:
-        task_row = Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id)
+        task_row = Task(org_id=org.id, task_id=task_id, benchmark=run_row.id)
         session.add(task_row)
 
     session.commit()
@@ -115,7 +115,7 @@ def create_task_rows(
 
     task_rows = session.exec(
         select(Task.task_id, Task)
-        .where(Task.benchmark == benchmark_row.id)
+        .where(Task.benchmark == run_row.id)
         .where(Task.org_id == org.id)
         .where(col(Task.task_id).in_(verified_task_ids))
         .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.EVALUATING]))
@@ -125,11 +125,11 @@ def create_task_rows(
     return [(task_id, task_rows_by_id[task_id]) for task_id in verified_task_ids if task_id in task_rows_by_id]
 
 
-def has_runnable_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> bool:
+def has_runnable_tasks(session: Session, run_row: Benchmark, org: Org) -> bool:
     return (
         session.exec(
             select(Task.id)
-            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.benchmark == run_row.id)
             .where(Task.org_id == org.id)
             .where(col(Task.status).in_(_RUNNABLE_TASK_STATUSES))
         ).first()
@@ -137,11 +137,11 @@ def has_runnable_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> 
     )
 
 
-def has_stopped_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> bool:
+def has_stopped_tasks(session: Session, run_row: Benchmark, org: Org) -> bool:
     return (
         session.exec(
             select(Task.id)
-            .where(Task.benchmark == benchmark_row.id)
+            .where(Task.benchmark == run_row.id)
             .where(Task.org_id == org.id)
             .where(Task.status == TaskStatus.STOPPED)
         ).first()
@@ -149,16 +149,16 @@ def has_stopped_tasks(session: Session, benchmark_row: Benchmark, org: Org) -> b
     )
 
 
-def fetch_final_score_inputs(session: Session, benchmark_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:
+def fetch_final_score_inputs(session: Session, run_row: Benchmark, org: Org) -> dict[str, dict[str, Any] | None]:
     """
     Return a mapping of the task IDs to their latest evaluation results. If a task is not finished we default to None.
     """
-    # Fetch task rows which belong to the benchmark we are running
+    # Fetch task rows which belong to the run.
     task_rows = cast(
         Sequence[tuple[UUID, str, TaskStatus]],
         session.exec(
             select(Task.id, Task.task_id, Task.status)
-            .where(col(Task.benchmark) == benchmark_row.id)
+            .where(col(Task.benchmark) == run_row.id)
             .where(col(Task.org_id) == org.id)
         ).all(),
     )
@@ -236,6 +236,7 @@ async def process_run(
     # Legacy broker argument names remain stable for already-enqueued tasks.
     run_request = StartBenchmarkRequest(**start_benchmark_request_json)
     run_id = UUID(benchmark_id_str)
+    run_id_var.set(benchmark_id_str)
     harness_config: HarnessConfig = run_request.harness_config
     sandbox_provider_config = fetch_sandbox_provider_config(
         harness_config.sandbox_provider_secret_name,
@@ -246,6 +247,8 @@ async def process_run(
 
     sentry_sdk.set_tag("benchmark_name", run_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", run_request.contract.name)
+    sentry_sdk.set_tag("run_id", benchmark_id_str)
+    sentry_sdk.set_tag("benchmark_id", benchmark_id_str)
     trace.get_current_span().set_attributes(
         {
             "run_id": benchmark_id_str,

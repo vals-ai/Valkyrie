@@ -80,14 +80,15 @@ async def stop_sandbox(sandbox: Sandbox, provider: SandboxProvider) -> str | Non
 
 
 async def sandbox_generator(
-    benchmark_row: Benchmark,
+    run_row: Benchmark,
     provider: SandboxProvider,
     task_ids: list[str] | None = None,
 ) -> AsyncGenerator[Sandbox, None]:
+    """Yield all sandboxes for a run.
+
+    The persisted provider labels remain unchanged for compatibility.
     """
-    Generator that yields all sandboxes for a given benchmark.
-    """
-    labels = {"Benchmark": benchmark_row.name, "Id": str(benchmark_row.id)}
+    labels = {"Benchmark": run_row.name, "Id": str(run_row.id)}
     queries = (
         [SandboxQuery(labels={**labels, "Task": task_id}) for task_id in task_ids]
         if task_ids
@@ -103,7 +104,7 @@ async def sandbox_generator(
 
 
 async def force_stop_sandboxes(
-    benchmark_row: Benchmark,
+    run_row: Benchmark,
     session: Session,
     sandbox_provider_secret_name: str,
     aws: AWSCredentials,
@@ -118,7 +119,7 @@ async def force_stop_sandboxes(
     Raises:
         TrackerServiceError: If there are any errors stopping the sandboxes
     """
-    benchmark_service = benchmark_row.benchmark_service()
+    benchmark_service = run_row.benchmark_service()
     provider = benchmark_service.get_sandbox_provider(
         fetch_sandbox_provider_config(sandbox_provider_secret_name, aws, sandbox_provider)
     )
@@ -126,7 +127,7 @@ async def force_stop_sandboxes(
     # Update all tasks being processed to stopped
     task_update = (
         update(Task)
-        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.benchmark) == run_row.id)
         .where(col(Task.org_id) == org.id)
         .where(col(Task.status).in_([TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]))
     )
@@ -140,7 +141,7 @@ async def force_stop_sandboxes(
     # Iterate through each running sandbox and stop it, collecting error messages
     results: dict[str, str | None] = {}
     try:
-        async for sandbox in sandbox_generator(benchmark_row, provider, task_ids=task_ids):
+        async for sandbox in sandbox_generator(run_row, provider, task_ids=task_ids):
             result = await stop_sandbox(sandbox, provider)
             results[sandbox.name] = result
     finally:
@@ -154,14 +155,14 @@ async def force_stop_sandboxes(
     finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
     tasks_still_running: int = session.exec(
         select(func.count(col(Task.id)))
-        .where(col(Task.benchmark) == benchmark_row.id)
+        .where(col(Task.benchmark) == run_row.id)
         .where(col(Task.org_id) == org.id)
         .where(col(Task.status).notin_(finished_statuses))
     ).one()
 
     if not tasks_still_running:
-        benchmark_row.status = BenchmarkStatus.STOPPED
-        session.add(benchmark_row)
+        run_row.status = BenchmarkStatus.STOPPED
+        session.add(run_row)
         session.commit()
 
     if error_message:
@@ -169,7 +170,7 @@ async def force_stop_sandboxes(
 
 
 async def reset_to_in_progress_status(
-    benchmark_row: Benchmark,
+    run_row: Benchmark,
     session: Session,
     benchmark_service: BenchmarkServiceClient,
     retry: bool,
@@ -178,32 +179,30 @@ async def reset_to_in_progress_status(
     org: Org,
 ) -> list[str]:
     """
-    Resets valid tasks to in progress and to allow for retrying or resuming the benchmark.
+    Resets valid tasks to in progress and allows retrying or resuming the run.
 
     Retry: we reset objects with an error status ontop of the stopped status
     Rerun Task IDs: even if task has been finished we restart it. If the task has no
         row yet, a fresh PENDING row is created when valid in the current dataset.
 
-    Benchmark - In progress status
+    Run - In progress status
     Tasks - Pending status, or Evaluating status when retrying durable eval state
 
-    NOTE: Will raise if benchmark is in a stopped state with no stopped tasks.
+    NOTE: Will raise if the run is in a stopped state with no stopped tasks.
     """
     try:
-        # Serialize retries with final-score persistence for this benchmark.
-        benchmark_row = fetch_run_row(benchmark_row.id, session, org, for_update=True)
+        # Serialize retries with final-score persistence for this run.
+        run_row = fetch_run_row(run_row.id, session, org, for_update=True)
         existing_rows = session.exec(
-            select(Task)
-            .where(*_retry_task_filters(benchmark_row, retry, rerun_task_ids, org))
-            .order_by(asc(Task.started_at))
+            select(Task).where(*_retry_task_filters(run_row, retry, rerun_task_ids, org)).order_by(asc(Task.started_at))
         ).all()
         existing_by_task_id: dict[str, Task] = {task.task_id: task for task in existing_rows}
 
-        if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+        if run_row.status == BenchmarkStatus.IN_PROGRESS:
             missing_task_ids = [task_id for task_id in rerun_task_ids if task_id not in existing_by_task_id]
             if missing_task_ids:
                 raise TrackerServiceError(
-                    f"{', '.join(missing_task_ids)} cannot be retried while run {benchmark_row.id} is in progress because they are not in ERROR status"
+                    f"{', '.join(missing_task_ids)} cannot be retried while run {run_row.id} is in progress because they are not in ERROR status"
                 )
             new_task_ids = []
         else:
@@ -218,16 +217,16 @@ async def reset_to_in_progress_status(
         # Raises if any task ids are invalid
         all_requested_task_ids = [task.task_id for task in existing_rows] + new_task_ids
         verify_response = await benchmark_service.verify_task_ids(
-            task_ids=all_requested_task_ids, slice_str=None, dataset=benchmark_row.arguments.dataset
+            task_ids=all_requested_task_ids, slice_str=None, dataset=run_row.arguments.dataset
         )
 
-        if benchmark_row.final_evaluation:
-            session.delete(benchmark_row.final_evaluation)
+        if run_row.final_evaluation:
+            session.delete(run_row.final_evaluation)
 
         # Can already be in progress when retrying errored tasks while the run is ongoing.
-        if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
-            benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-            session.add(benchmark_row)
+        if run_row.status != BenchmarkStatus.IN_PROGRESS:
+            run_row.status = BenchmarkStatus.IN_PROGRESS
+            session.add(run_row)
 
         for task in existing_rows:
             task.status = (
@@ -242,7 +241,7 @@ async def reset_to_in_progress_status(
             session.add(task)
 
         for task_id in new_task_ids:
-            session.add(Task(org_id=org.id, task_id=task_id, benchmark=benchmark_row.id, status=TaskStatus.PENDING))
+            session.add(Task(org_id=org.id, task_id=task_id, benchmark=run_row.id, status=TaskStatus.PENDING))
 
         session.commit()
 
@@ -250,19 +249,19 @@ async def reset_to_in_progress_status(
     except (TrackerServiceError, BenchmarkServiceError):
         raise
     except Exception as e:
-        raise TrackerServiceError(f"Unexpected error resuming run {benchmark_row.id}: {str(e)}") from e
+        raise TrackerServiceError(f"Unexpected error resuming run {run_row.id}: {str(e)}") from e
 
 
-def _retry_task_filters(benchmark_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
+def _retry_task_filters(run_row: Benchmark, retry: bool, rerun_task_ids: list[str], org: Org) -> list[Any]:
     """Select retryable rows.
 
     Active retries on in-progress runs are limited to ERROR tasks. Finished tasks must wait until the run is terminal.
     """
     filters = [
-        col(Task.benchmark) == benchmark_row.id,
+        col(Task.benchmark) == run_row.id,
         col(Task.org_id) == org.id,
     ]
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+    if run_row.status == BenchmarkStatus.IN_PROGRESS:
         filters.append(col(Task.status) == TaskStatus.ERROR)
         if rerun_task_ids:
             filters.append(col(Task.task_id).in_(rerun_task_ids))

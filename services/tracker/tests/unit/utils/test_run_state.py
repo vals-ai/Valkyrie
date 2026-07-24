@@ -47,13 +47,13 @@ from tracker.utils import (
     commit_task_error,
     create_task_rows,
     fetch_run_row,
-    fetch_filtered_benchmark_rows,
+    fetch_filtered_run_rows,
     fetch_final_score_inputs,
     fetch_harness_config,
     fetch_sandbox_provider_config,
     has_runnable_tasks,
     set_run_final_status,
-    start_benchmark_request_to_benchmark,
+    start_request_to_run_row,
 )
 from tracker.utils.reporting import serialize_run_snapshot
 
@@ -61,10 +61,14 @@ from tracker.utils.reporting import serialize_run_snapshot
 def test_run_helpers_use_canonical_internal_names() -> None:
     assert hasattr(tracker_utils, "RunContext")
     assert not hasattr(tracker_utils, "BenchmarkContext")
+    assert hasattr(tracker_utils, "build_run_table_rows")
+    assert not hasattr(tracker_utils, "build_benchmark_table_rows")
     assert hasattr(tracker_utils, "commit_run_error")
     assert not hasattr(tracker_utils, "commit_benchmark_error")
     assert hasattr(tracker_utils, "fetch_run_row")
     assert not hasattr(tracker_utils, "fetch_benchmark_row")
+    assert hasattr(tracker_utils, "fetch_filtered_run_rows")
+    assert not hasattr(tracker_utils, "fetch_filtered_benchmark_rows")
     assert hasattr(tracker_utils, "initiate_stop_run")
     assert not hasattr(tracker_utils, "initiate_stop_benchmark")
     assert hasattr(tracker_utils, "process_run")
@@ -74,6 +78,8 @@ def test_run_helpers_use_canonical_internal_names() -> None:
     assert not hasattr(tracker_utils, "set_benchmark_final_status")
     assert hasattr(tracker_utils, "stream_run_results")
     assert not hasattr(tracker_utils, "stream_benchmark_results")
+    assert hasattr(tracker_utils, "start_request_to_run_row")
+    assert not hasattr(tracker_utils, "start_benchmark_request_to_benchmark")
     assert hasattr(tracker_utils, "update_run_resume_arguments")
     assert not hasattr(tracker_utils, "update_benchmark_resume_arguments")
 
@@ -364,7 +370,7 @@ class TestRunState:
             sandbox_provider="modal",
         )
 
-        benchmark_row = start_benchmark_request_to_benchmark(original_start_benchmark_request, self._test_starter)
+        benchmark_row = start_request_to_run_row(original_start_benchmark_request, self._test_starter)
         assert benchmark_row.arguments.sandbox_provider_secret_name == "ModalSecrets"
 
         recreated_start_benchmark_request = benchmark_row.start_benchmark_request(harness_config)
@@ -569,6 +575,7 @@ class TestRunState:
         assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
         assert transition_record["to_status"] == TaskStatus.ERROR.value
         assert transition_record["task_id"] == "task_0"
+        assert transition_record["run_id"] == str(example_benchmark_object.id)
         assert transition_record["benchmark_id"] == str(example_benchmark_object.id)
         assert transition_record["entered"] and transition_record["exited"]
         assert transition_record["has_error_message"] is True
@@ -644,7 +651,7 @@ class TestFetchStartedByFilter:
         make_benchmark(started_by_email="bob@vals.ai", session=database_session)
         make_benchmark(started_by_email=None, session=database_session)
 
-        rows, total, _ = fetch_filtered_benchmark_rows(
+        rows, total, _ = fetch_filtered_run_rows(
             FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
             database_session,
             org,
@@ -659,7 +666,7 @@ class TestFetchStartedByFilter:
         make_benchmark(started_by_email="bob@vals.ai", session=database_session)
         make_benchmark(started_by_email="carol@vals.ai", session=database_session)
 
-        rows, total, _ = fetch_filtered_benchmark_rows(
+        rows, total, _ = fetch_filtered_run_rows(
             FetchBenchmarksRequest(started_by=["alice@vals.ai", "bob@vals.ai"], limit=10),
             database_session,
             org,
@@ -676,7 +683,7 @@ class TestFetchStartedByFilter:
         assert org is not None
         make_benchmark(started_by_email="alice@vals.ai", session=database_session)
 
-        rows, total, _ = fetch_filtered_benchmark_rows(
+        rows, total, _ = fetch_filtered_run_rows(
             FetchBenchmarksRequest(started_by=["ALICE@VALS.AI"], limit=10),
             database_session,
             org,
@@ -690,7 +697,7 @@ class TestFetchStartedByFilter:
         make_benchmark(started_by_email="alice@vals.ai", session=database_session)
         make_benchmark(started_by_email=None, session=database_session)
 
-        _, total, _ = fetch_filtered_benchmark_rows(
+        _, total, _ = fetch_filtered_run_rows(
             FetchBenchmarksRequest(started_by=None, limit=10),
             database_session,
             org,
@@ -703,7 +710,7 @@ class TestFetchStartedByFilter:
         assert org is not None
         make_benchmark(started_by_email="alice@vals.ai", session=database_session)
 
-        rows, total, _ = fetch_filtered_benchmark_rows(
+        rows, total, _ = fetch_filtered_run_rows(
             FetchBenchmarksRequest(started_by=["  alice@vals.ai  "], limit=10),
             database_session,
             org,
@@ -729,7 +736,7 @@ class TestFetchStartedByFilter:
         assert default_org is not None
         make_benchmark(started_by_email="alice@vals.ai", session=database_session)
 
-        rows, total, _ = fetch_filtered_benchmark_rows(
+        rows, total, _ = fetch_filtered_run_rows(
             FetchBenchmarksRequest(started_by=["alice@vals.ai"], limit=10),
             database_session,
             default_org,
@@ -751,7 +758,7 @@ def test_fetch_filtered_by_label(database_session: Session) -> None:
     make_benchmark(started_by_email="bob@vals.ai", label="manual", session=database_session)
     make_benchmark(started_by_email="carol@vals.ai", label=None, session=database_session)
 
-    rows, total, _ = fetch_filtered_benchmark_rows(
+    rows, total, _ = fetch_filtered_run_rows(
         FetchBenchmarksRequest(label="nightLY", limit=10),
         database_session,
         org,

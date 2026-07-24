@@ -29,7 +29,7 @@ from tracker.database.models import (
     TaskStatus,
 )
 from tracker.types import HarnessConfig, StartBenchmarkRequest
-from tracker.utils import start_benchmark_request_to_benchmark
+from tracker.utils import start_request_to_run_row
 
 process_run = getattr(tracker_utils, "process_run")
 
@@ -57,7 +57,7 @@ def _create_benchmark(
         harness_config=harness_config,
         service_headers=service_headers,
     )
-    benchmark = start_benchmark_request_to_benchmark(
+    benchmark = start_request_to_run_row(
         request,
         RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
     )

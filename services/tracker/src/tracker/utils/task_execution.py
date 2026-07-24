@@ -50,7 +50,7 @@ from tracker.exceptions import (
     SandboxSetupError,
     TrackerServiceError,
 )
-from tracker.logging import get_logger, task_id_var
+from tracker.logging import get_logger, run_id_var, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
@@ -175,7 +175,7 @@ class TrackedTask:
 
 
 class TaskMonitor:
-    _benchmark_id: UUID
+    _run_id: UUID
     _task_tracking: dict[str, TrackedTask]
     _notifier: SlackNotifier | None
     _org: Org
@@ -184,13 +184,13 @@ class TaskMonitor:
 
     def __init__(
         self,
-        benchmark_id: UUID,
+        run_id: UUID,
         task_tracking: dict[str, TrackedTask],
         org: Org,
         limiter: ResizableLimiter,
         notifier: SlackNotifier | None = None,
     ):
-        self._benchmark_id = benchmark_id
+        self._run_id = run_id
         self._task_tracking = task_tracking
         self._org = org
         self._notifier = notifier
@@ -198,8 +198,8 @@ class TaskMonitor:
 
     async def _refresh_concurrency(self) -> None:
         with Session(bind=engine) as session:
-            benchmark_row = fetch_run_row(self._benchmark_id, session, self._org)
-            concurrency = benchmark_row.arguments.concurrency
+            run_row = fetch_run_row(self._run_id, session, self._org)
+            concurrency = run_row.arguments.concurrency
         await self._limiter.resize(concurrency)
 
     def _fetch_task_row(self, task_id: str) -> Task:
@@ -207,7 +207,7 @@ class TaskMonitor:
             task_row = session.exec(
                 select(Task)
                 .where(Task.task_id == task_id)
-                .where(Task.benchmark == self._benchmark_id)
+                .where(Task.benchmark == self._run_id)
                 .where(Task.org_id == self._org.id)
                 .limit(1)
             ).first()
@@ -226,11 +226,11 @@ class TaskMonitor:
 
         """
         with Session(bind=engine) as session:
-            benchmark_row = fetch_run_row(self._benchmark_id, session, self._org)
+            run_row = fetch_run_row(self._run_id, session, self._org)
             task_row = self._fetch_task_row(task_id)
 
-            # If task has been stopped or benchmark has errored we need to exit
-            if task_row.status == TaskStatus.STOPPED or benchmark_row.status == BenchmarkStatus.ERROR:
+            # If the task has been stopped or the run has errored, exit.
+            if task_row.status == TaskStatus.STOPPED or run_row.status == BenchmarkStatus.ERROR:
                 return False
 
         return True
@@ -241,8 +241,8 @@ class TaskMonitor:
             return
 
         with Session(bind=engine) as session:
-            benchmark_row = fetch_run_row(self._benchmark_id, session, self._org)
-            notification_context = NotificationContext.from_run(benchmark_row, session, self._org)
+            run_row = fetch_run_row(self._run_id, session, self._org)
+            notification_context = NotificationContext.from_run(run_row, session, self._org)
             await self._notifier.check_and_notify(notification_context)
 
     async def track_tasks(self) -> None:
@@ -333,6 +333,7 @@ def _commit_task_status(
 ) -> bool:
     from_status = task.status
     span_attributes = {
+        "run_id": str(task.benchmark),
         "benchmark_id": str(task.benchmark),
         "task_id": task.task_id,
         "from_status": from_status.value,
@@ -386,7 +387,7 @@ async def process_task(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
     benchmark_service: BenchmarkServiceClient,
-    benchmark_id: UUID,
+    run_id: UUID,
     task_id: str,
     harness_config: HarnessConfig,
     org: Org,
@@ -398,7 +399,7 @@ async def process_task(
         task_row,
         start_benchmark_request,
         benchmark_service,
-        benchmark_id,
+        run_id,
         task_id,
         harness_config,
         org,
@@ -419,7 +420,7 @@ async def _process_task_attempt(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
     benchmark_service: BenchmarkServiceClient,
-    benchmark_id: UUID,
+    run_id: UUID,
     task_id: str,
     harness_config: HarnessConfig,
     org: Org,
@@ -433,13 +434,17 @@ async def _process_task_attempt(
     NOTE: When we close the sandbox the agent process will be killed and we will instantly go to evaluating,
     the evaluation will fail since the instance no longer exists. We handle this inside of the exception caught.
     """
+    run_id_var.set(str(run_id))
     task_id_var.set(task_id)
     sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
     sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
+    sentry_sdk.set_tag("run_id", str(run_id))
+    sentry_sdk.set_tag("benchmark_id", str(run_id))
     trace.get_current_span().set_attributes(
         {
             "task_id": task_id,
-            "benchmark_id": str(benchmark_id),
+            "run_id": str(run_id),
+            "benchmark_id": str(run_id),
             "benchmark_name": start_benchmark_request.benchmark_name,
             "agent_name": start_benchmark_request.contract.name,
         }
@@ -447,23 +452,23 @@ async def _process_task_attempt(
 
     requested_attempt_started_at = task_row.started_at
     with Session(bind=engine) as task_session:
-        benchmark_row = fetch_run_row(benchmark_id, task_session, org)
+        run_row = fetch_run_row(run_id, task_session, org)
         task_row = fetch_task_row(task_row.id, task_session, org)
 
         if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
             return {task_id: None}
         attempt_started_at = task_row.started_at
-        if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
+        if run_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
             handle_early_exit(task_row, task_session)
             return {task_id: None}
-        benchmark_name = benchmark_row.name
-        benchmark_agent_name = benchmark_row.arguments.contract.name
-        benchmark_started_by_email = benchmark_row.started_by_email
+        benchmark_name = run_row.name
+        run_agent_name = run_row.arguments.contract.name
+        run_started_by_email = run_row.started_by_email
 
     # Setup logging infrastructure before try block so it's always available
     # Suffix is required to version control streams, never delete between retries
     stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
-    stream_key: str = f"{benchmark_id}:{task_id}_{stream_suffix}"
+    stream_key: str = f"{run_id}:{task_id}_{stream_suffix}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
 
     last_log_time: float = time.monotonic()
@@ -548,7 +553,7 @@ async def _process_task_attempt(
         # Labels that show up in the UI we can use to filter sandboxes
         labels = {
             "Benchmark": start_benchmark_request.benchmark_name,
-            "Id": str(benchmark_id),
+            "Id": str(run_id),
             "Task": task_row.task_id,
         }
 
@@ -564,21 +569,21 @@ async def _process_task_attempt(
 
         identity = {
             "benchmark_name": benchmark_name,
-            "agent_name": benchmark_agent_name,
+            "agent_name": run_agent_name,
         }
-        if benchmark_started_by_email:
-            identity["email"] = benchmark_started_by_email
+        if run_started_by_email:
+            identity["email"] = run_started_by_email
 
         env_vars = {
             **resolve_secrets(start_benchmark_request.contract.secrets, harness_config.aws),
-            "RUN_ID": str(benchmark_id),
+            "RUN_ID": str(run_id),
             "TASK_ID": task_row.task_id,
             "IDENTITY": json.dumps(identity),
             # Tags sandbox-internal OTel telemetry with our IDs + environment so traces/logs/metrics
             # are filterable per run and separable from other environments sharing the
             # same Daytona account (sandbox OTLP export is account-level).
             "DAYTONA_SANDBOX_OTEL_EXTRA_LABELS": (
-                f"benchmark_id={benchmark_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
+                f"run_id={run_id},benchmark_id={run_id},task_id={task_row.task_id},environment={ENVIRONMENT}"
             ),
         }
 
@@ -613,7 +618,7 @@ async def _process_task_attempt(
                 await upload_agent_artifacts(
                     sandbox,
                     start_benchmark_request.contract,
-                    str(benchmark_id),
+                    str(run_id),
                     harness_config.aws,
                     harness_config.s3_bucket,
                 )
@@ -634,7 +639,7 @@ async def _process_task_attempt(
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
                 if start_benchmark_request.contract.final_output:
-                    agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
+                    agent_output_s3_key = get_agent_result_s3_key(str(run_id), task_id, "agent_output.tar.gz")
 
                 try:
                     exit_reason, agent_run_time = await run_agent(
@@ -648,7 +653,7 @@ async def _process_task_attempt(
                         s3_bucket=harness_config.s3_bucket,
                         agent_output_s3_key=agent_output_s3_key,
                         agent_timeout=task_data.agent_timeout,
-                        benchmark_id=str(benchmark_id),
+                        benchmark_id=str(run_id),
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
                     )
@@ -658,7 +663,8 @@ async def _process_task_attempt(
                 logger.info(
                     "agent.run.complete",
                     extra={
-                        "benchmark_id": str(benchmark_id),
+                        "run_id": str(run_id),
+                        "benchmark_id": str(run_id),
                         "task_id": task_row.task_id,
                         "sandbox_id": sandbox.id,
                         "sandbox_name": sandbox.name,
@@ -686,7 +692,8 @@ async def _process_task_attempt(
                 logger.info(
                     "task.evaluation.start",
                     extra={
-                        "benchmark_id": str(benchmark_id),
+                        "run_id": str(run_id),
+                        "benchmark_id": str(run_id),
                         "task_id": task_row.task_id,
                         "sandbox_id": sandbox.id,
                         "sandbox_name": sandbox.name,

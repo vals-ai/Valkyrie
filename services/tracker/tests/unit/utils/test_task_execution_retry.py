@@ -239,6 +239,7 @@ class TestTaskExecutionRetry:
             (TaskStatus.EVALUATING.value, TaskStatus.FINISHED.value),
         ]
         assert all(record["task_id"] == "task_0" for record in transition_records)
+        assert all(record["run_id"] == str(benchmark_id) for record in transition_records)
         assert all(record["benchmark_id"] == str(benchmark_id) for record in transition_records)
         assert all(record["entered"] and record["exited"] for record in transition_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
@@ -250,10 +251,12 @@ class TestTaskExecutionRetry:
 
         agent_run_record = next(record for record in log_records if record["message"] == "agent.run.complete")
         assert agent_run_record["task_id"] == "task_0"
+        assert agent_run_record["run_id"] == str(benchmark_id)
         assert agent_run_record["benchmark_id"] == str(benchmark_id)
         assert agent_run_record["exit_reason"] is None
 
         evaluation_start_record = next(record for record in log_records if record["message"] == "task.evaluation.start")
         assert evaluation_start_record["task_id"] == "task_0"
+        assert evaluation_start_record["run_id"] == str(benchmark_id)
         assert evaluation_start_record["benchmark_id"] == str(benchmark_id)
         assert evaluation_start_record["sandbox_id"] == "mock-sandbox-id"
