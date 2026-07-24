@@ -90,7 +90,7 @@ class TestTaskExecutionRetry:
             - Task ends in FINISHED state after the retry succeeds
             - The sandbox context manager is entered twice (one per attempt)
         """
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
             harness_config,
@@ -150,7 +150,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        result = await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         expected_result = None if expected_status is TaskStatus.ERROR else {"status": "success", "score": 1.0}
         assert result == {"task_0": expected_result}
@@ -168,7 +168,7 @@ class TestTaskExecutionRetry:
         monkeypatch: pytest.MonkeyPatch,
         harness_config: HarnessConfig,
     ) -> None:
-        start_benchmark_request, task_row, benchmark_id = create_task_environment(
+        start_benchmark_request, task_row, benchmark_id, authority = create_task_environment(
             contract,
             database_session,
             harness_config,
@@ -228,7 +228,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr(BenchmarkServiceClient, "retrieve_task", _mock_retrieve_task)
         monkeypatch.setattr(BenchmarkServiceClient, "evaluate_instance", _mock_evaluate_instance)
 
-        await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config)
+        await run_process_task(start_benchmark_request, task_row, benchmark_id, harness_config, authority)
 
         transition_records = [record for record in span_records if record["message"] == "task.status_transition"]
 

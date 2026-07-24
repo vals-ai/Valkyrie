@@ -23,6 +23,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
+from tracker.dispatch_control import terminalize_active_dispatches
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.sandbox import delete_sandbox
@@ -42,16 +43,8 @@ async def initiate_stop_benchmark(
     org: Org,
     task_ids: list[str] | None = None,
 ) -> None:
-    """
-    Sets the flags to initiate the stopping process for a benchmark.
-
-    Benchmark - Stopping status
-    Tasks - Stopped status
-
-    NOTE: Tasks that have already started will continue to run and finish.
-    """
+    """Initiate Stop without interrupting work that already started unless forced."""
     try:
-        # Update all rows where tasks are pending or building to stopped
         task_update = (
             update(Task)
             .where(col(Task.benchmark) == benchmark_row.id)
@@ -153,7 +146,9 @@ async def force_stop_sandboxes(
         f"{task_alias}: {error_message}" for task_alias, error_message in results.items() if error_message
     )
 
-    # If all tasks are already in a stopped state, we need to update the final status here since the worker has exited
+    # Sandbox teardown releases the request's original benchmark lock. Reacquire
+    # it so Retry admission cannot land between the runnable check and revocation.
+    benchmark_row = fetch_benchmark_row(benchmark_row.id, session, org, for_update=True)
     finished_statuses: list[TaskStatus] = [TaskStatus.FINISHED, TaskStatus.ERROR, TaskStatus.STOPPED]
     tasks_still_running: int = session.exec(
         select(func.count(col(Task.id)))
@@ -164,8 +159,9 @@ async def force_stop_sandboxes(
 
     if not tasks_still_running:
         benchmark_row.status = BenchmarkStatus.STOPPED
+        terminalize_active_dispatches(session, benchmark_row.id)
         session.add(benchmark_row)
-        session.commit()
+    session.commit()
 
     if error_message:
         raise TrackerServiceError(f"Unexpected errors stopping sandboxes:\n{error_message}")
@@ -226,10 +222,11 @@ async def reset_to_in_progress_status(
         if benchmark_row.final_evaluation:
             session.delete(benchmark_row.final_evaluation)
 
-        # Can already be in progress when retrying errored tasks while the run is ongoing.
+        # Retry/resume always starts a new active execution.
         if benchmark_row.status != BenchmarkStatus.IN_PROGRESS:
             benchmark_row.status = BenchmarkStatus.IN_PROGRESS
-            session.add(benchmark_row)
+        benchmark_row.finished_at = None
+        session.add(benchmark_row)
 
         for task in existing_rows:
             task.status = (

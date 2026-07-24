@@ -1,11 +1,11 @@
+import asyncio
 import io
 import logging
 import tarfile
-import traceback
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 import logfire
@@ -42,20 +42,18 @@ from tracker.aws.s3 import (
     S3_BENCHMARKS_PREFIX,
     copy_agent_to_benchmark,
     create_benchmark_url,
+    delete_from_s3,
     create_console_url,
     create_presigned_url,
     download_from_s3,
     download_many_from_s3,
+    get_benchmark_contract_s3_key,
     get_contract_s3_key,
     list_s3_objects,
     s3_object_exists,
 )
 from tracker.agent.schemas import AgentConfig
-from tracker.config import (
-    AUTH_REQUIRED,
-    ENVIRONMENT,
-    create_benchmark_service_url,
-)
+from tracker.config import AUTH_REQUIRED, ENVIRONMENT, create_benchmark_service_url
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -69,19 +67,19 @@ from tracker.database.models import (
     Task,
 )
 from tracker.database.scoping import assert_org, get_scoped
+from tracker.dispatch_control import (
+    EnqueueFailureResolution,
+    admit_recovery_dispatch,
+    admit_start_dispatch,
+    resolve_enqueue_failure,
+)
 from tracker.database.session import check_database_connection, get_session
 from tracker.docent_analysis import (
     analyze_event_stream,
 )
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
-from tracker.release_control import (
-    ReleaseControlError,
-    create_executor_dispatch,
-    pin_benchmark_to_release,
-    resolve_current_execution_release,
-    select_active_release,
-)
+from tracker.release_control import ReleaseControlError
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
@@ -96,7 +94,6 @@ from tracker.types import (
     RetrieveResultsResponse,
     RetryOrResumeBenchmarkResponse,
     S3UploadResultsResponse,
-    StartBenchmarkErrorResponse,
     StartBenchmarkRequest,
     StartBenchmarkResponse,
     StopBenchmarkResponse,
@@ -108,7 +105,6 @@ from tracker.utils import (
     BenchmarkContext,
     YieldingWriter,
     build_benchmark_table_rows,
-    commit_benchmark_error,
     create_benchmark_service_client,
     create_final_view,
     fetch_benchmark_row,
@@ -181,37 +177,77 @@ def _taskiq_labels() -> dict[str, str]:
 async def _enqueue_executor_dispatch(
     dispatch: ExecutorDispatch,
     *,
+    session: Session,
     start_benchmark_request_json: dict[str, Any],
-    benchmark_id: UUID,
     verified_task_ids: list[str],
 ) -> None:
-    try:
-        await (
-            process_benchmark.kicker()
-            .with_labels(**_taskiq_labels())
-            .kiq(  # pyright: ignore[reportCallIssue] -- stable host consumes executor_dispatch_id
-                start_benchmark_request_json=start_benchmark_request_json,
-                benchmark_id_str=str(benchmark_id),
-                verified_task_ids=verified_task_ids,
-                executor_dispatch_id=str(dispatch.id),
-                executor_release_id=dispatch.executor_release_id,
-                executor_artifact_uri=dispatch.executor_artifact_uri,
-                executor_artifact_digest=dispatch.executor_artifact_digest,
-                executor_protocol_version=dispatch.executor_protocol_version,
+    for attempt in range(3):
+        try:
+            await (
+                process_benchmark.kicker()
+                .with_labels(**_taskiq_labels())
+                .kiq(  # pyright: ignore[reportCallIssue] -- stable host owns these dispatch fields
+                    start_benchmark_request_json=start_benchmark_request_json,
+                    benchmark_id_str=str(dispatch.benchmark_id),
+                    verified_task_ids=verified_task_ids,
+                    executor_dispatch_id=str(dispatch.id),
+                    executor_release_id=dispatch.executor_release_id,
+                    executor_artifact_uri=dispatch.executor_artifact_uri,
+                    executor_artifact_digest=dispatch.executor_artifact_digest,
+                    executor_protocol_version=dispatch.executor_protocol_version,
+                )
             )
+            return
+        except Exception as exc:
+            if attempt < 2:
+                await asyncio.sleep(0.1 * (2**attempt))
+                continue
+
+            logger.exception(
+                "Executor dispatch enqueue acknowledgement failed",
+                extra={"executor_dispatch_id": str(dispatch.id)},
+            )
+            resolution = resolve_enqueue_failure(
+                session,
+                benchmark_id=dispatch.benchmark_id,
+                dispatch_id=dispatch.id,
+                task_ids=verified_task_ids,
+            )
+            if resolution == EnqueueFailureResolution.DELIVERED:
+                return
+            if resolution == EnqueueFailureResolution.SUPERSEDED:
+                raise HTTPException(
+                    status_code=409, detail="Executor dispatch was superseded by a newer Retry"
+                ) from exc
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "message": "Executor dispatch enqueue acknowledgement failed; use Retry to continue",
+                    "benchmark_id": str(dispatch.benchmark_id),
+                    "executor_dispatch_id": str(dispatch.id),
+                },
+            ) from exc
+
+
+async def _delete_uncommitted_agent_copy(
+    *,
+    created: bool,
+    benchmark_id: UUID,
+    request: StartBenchmarkRequest,
+) -> None:
+    if not created:
+        return
+    try:
+        await delete_from_s3(
+            get_benchmark_contract_s3_key(str(benchmark_id), request.contract.name),
+            request.harness_config.aws,
+            request.harness_config.s3_bucket,
         )
-    except Exception as exc:
+    except Exception:
         logger.exception(
-            "Executor dispatch enqueue acknowledgement failed",
-            extra={"executor_dispatch_id": str(dispatch.id)},
+            "Failed to delete uncommitted benchmark agent copy",
+            extra={"benchmark_id": str(benchmark_id)},
         )
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "message": "Executor dispatch enqueue acknowledgement failed",
-                "executor_dispatch_id": str(dispatch.id),
-            },
-        ) from exc
 
 
 @app.exception_handler(TrackerServiceError)
@@ -373,16 +409,43 @@ async def start_benchmark(
         logger.error("Failed to verify task ids for %s", request.benchmark_name, exc_info=True)
         raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
 
-    # Create benchmark row only after pre-flight checks pass.
-    try:
-        active_release = select_active_release(session, for_update=True)
-    except ReleaseControlError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
     benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
-    pin_benchmark_to_release(benchmark_row, active_release)
-    session.add(benchmark_row)
-    session.commit()
+    dispatch_id = uuid4()
+    agent_copy_created = False
+    try:
+        agent_copy_created = bool(
+            await copy_agent_to_benchmark(
+                str(benchmark_row.id),
+                request.contract.name,
+                request.harness_config.aws,
+                request.harness_config.s3_bucket,
+            )
+        )
+        for task_id in verify_response.task_ids:
+            session.add(Task(org_id=benchmark_row.org_id, benchmark=benchmark_row.id, task_id=task_id))
+        executor_dispatch = admit_start_dispatch(
+            session,
+            benchmark=benchmark_row,
+            dispatch_id=dispatch_id,
+        )
+        session.commit()
+    except ReleaseControlError as exc:
+        session.rollback()
+        await _delete_uncommitted_agent_copy(
+            created=agent_copy_created,
+            benchmark_id=benchmark_row.id,
+            request=request,
+        )
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        session.rollback()
+        await _delete_uncommitted_agent_copy(
+            created=agent_copy_created,
+            benchmark_id=benchmark_row.id,
+            request=request,
+        )
+        raise TrackerServiceError("Failed to admit benchmark execution") from exc
+
     benchmark_id_var.set(str(benchmark_row.id))
 
     if run_starter.access_key_id is not None and run_starter.email is None:
@@ -391,31 +454,10 @@ async def start_benchmark(
             run_starter.access_key_id,
         )
 
-    try:
-        await copy_agent_to_benchmark(
-            str(benchmark_row.id),
-            request.contract.name,
-            request.harness_config.aws,
-            request.harness_config.s3_bucket,
-        )
-    except Exception as e:
-        error_message = f"{str(e)}\n{traceback.format_exc()}"
-        commit_benchmark_error(benchmark_row, session, error_message)
-        error_response = StartBenchmarkErrorResponse(
-            benchmark_id=benchmark_row.id,
-            error_message=error_message,
-        )
-
-        raise TrackerServiceError(error_response.model_dump_json()) from e
-
-    executor_dispatch = create_executor_dispatch(benchmark_row.id, active_release, ExecutorDispatchKind.START)
-    session.add(executor_dispatch)
-    session.commit()
-
     await _enqueue_executor_dispatch(
         executor_dispatch,
+        session=session,
         start_benchmark_request_json=request.model_dump(),
-        benchmark_id=benchmark_row.id,
         verified_task_ids=verify_response.task_ids,
     )
 
@@ -871,6 +913,8 @@ async def retry_or_resume_benchmark(
         http_request.headers.get("x-api-key"),
     )
 
+    dispatch_id = uuid4()
+    pre_action_status: BenchmarkStatus | None = None
     try:
         benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
         if benchmark_row.status == BenchmarkStatus.STOPPING:
@@ -894,19 +938,6 @@ async def retry_or_resume_benchmark(
             session.rollback()
             return RetryOrResumeBenchmarkResponse(status="success")
 
-        if pre_action_status == BenchmarkStatus.IN_PROGRESS:
-            try:
-                dispatch_release = resolve_current_execution_release(session, benchmark_row, for_update=True)
-            except ReleaseControlError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-        else:
-            try:
-                dispatch_release = select_active_release(session, for_update=True)
-            except ReleaseControlError as exc:
-                raise HTTPException(status_code=503, detail=str(exc)) from exc
-            benchmark_row.current_execution_release_id = dispatch_release.id
-            session.add(benchmark_row)
-
         if secrets or concurrency is not None:
             benchmark_row = update_benchmark_resume_arguments(
                 benchmark_id,
@@ -916,26 +947,33 @@ async def retry_or_resume_benchmark(
                 concurrency=concurrency,
             )
 
-        # Ensure that credentials are included with the model dump.
-        resume_request_json = benchmark_row.start_benchmark_request(
-            harness_config, service_headers=effective_service_headers
-        ).model_dump()
-
+        resume_request = benchmark_row.start_benchmark_request(
+            harness_config,
+            service_headers=effective_service_headers,
+        )
         dispatch_kind = ExecutorDispatchKind.RETRY if retry else ExecutorDispatchKind.RESUME
-        executor_dispatch = create_executor_dispatch(benchmark_row.id, dispatch_release, dispatch_kind)
-        session.add(executor_dispatch)
+        executor_dispatch = admit_recovery_dispatch(
+            session,
+            benchmark=benchmark_row,
+            pre_action_status=pre_action_status,
+            dispatch_id=dispatch_id,
+            kind=dispatch_kind,
+        )
         session.commit()
+    except ReleaseControlError as exc:
+        session.rollback()
+        status_code = 409 if pre_action_status == BenchmarkStatus.IN_PROGRESS else 503
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
     except Exception:
         session.rollback()
         raise
 
     await _enqueue_executor_dispatch(
         executor_dispatch,
-        start_benchmark_request_json=resume_request_json,
-        benchmark_id=benchmark_row.id,
+        session=session,
+        start_benchmark_request_json=resume_request.model_dump(),
         verified_task_ids=verified_task_ids,
     )
-
     return RetryOrResumeBenchmarkResponse(status="success")
 
 

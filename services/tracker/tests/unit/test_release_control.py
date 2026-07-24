@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
 import io
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.exc import IntegrityError
@@ -21,7 +21,6 @@ from tracker.release_control import (
     ReleaseControlError,
     active_executor_release_counts,
     artifact_deletion_allowed,
-    bootstrap_legacy_release,
     create_executor_dispatch,
     mark_draining,
     promote_release,
@@ -40,6 +39,20 @@ def _release(release_id: str) -> ExecutorRelease:
         protocol_version="1",
         readiness_verified=True,
         created_at=datetime.now(UTC),
+    )
+
+
+def _dispatch(
+    benchmark_id: UUID,
+    release: ExecutorRelease,
+    kind: ExecutorDispatchKind,
+) -> ExecutorDispatch:
+    dispatch_id = uuid4()
+    return create_executor_dispatch(
+        benchmark_id,
+        release,
+        kind,
+        dispatch_id=dispatch_id,
     )
 
 
@@ -194,7 +207,7 @@ def test_select_active_release_rejects_invalid_admission_target(
         select_active_release(database_session)
 
 
-def test_bootstrap_legacy_release_pins_resumable_benchmarks(
+def test_promote_release_does_not_backfill_legacy_benchmark_ownership(
     database_session: Session,
     example_benchmark_object: Benchmark,
 ) -> None:
@@ -208,37 +221,23 @@ def test_bootstrap_legacy_release_pins_resumable_benchmarks(
     )
     database_session.add(example_benchmark_object)
     database_session.add(terminal_benchmark)
+    register_release(database_session, _release("legacy"))
+    register_release(database_session, _release("unrelated"))
     database_session.commit()
 
-    active = bootstrap_legacy_release(database_session, _release("legacy"))
+    promote_release(database_session, "legacy")
+    promote_release(database_session, "unrelated")
+    database_session.commit()
 
     database_session.refresh(example_benchmark_object)
     database_session.refresh(terminal_benchmark)
-    assert active.status == ExecutorReleaseStatus.ACTIVE
-    assert example_benchmark_object.executor_release_id == "legacy"
-    assert example_benchmark_object.executor_artifact_uri == "s3://artifacts/legacy.pex"
-    assert example_benchmark_object.executor_artifact_digest == "a" * 64
-    assert example_benchmark_object.executor_protocol_version == "1"
-    assert terminal_benchmark.executor_release_id == "legacy"
-    assert terminal_benchmark.executor_artifact_uri == "s3://artifacts/legacy.pex"
-    assert terminal_benchmark.executor_artifact_digest == "a" * 64
-    assert terminal_benchmark.executor_protocol_version == "1"
-
-
-def test_bootstrap_legacy_release_is_caller_transactional(
-    database_session: Session,
-    example_benchmark_object: Benchmark,
-) -> None:
-    database_session.add(example_benchmark_object)
-    database_session.commit()
-
-    bootstrap_legacy_release(database_session, _release("legacy"))
-    database_session.rollback()
-
-    database_session.refresh(example_benchmark_object)
-    assert database_session.get(ExecutorRelease, "legacy") is None
-    assert database_session.get(ExecutorAdmission, 1) is None
     assert example_benchmark_object.executor_release_id is None
+    assert example_benchmark_object.current_execution_release_id is None
+    assert terminal_benchmark.executor_release_id is None
+    assert terminal_benchmark.current_execution_release_id is None
+
+    with pytest.raises(ReleaseControlError, match="unattributed active executor work"):
+        retire_if_empty(database_session, "legacy")
 
 
 def test_draining_is_idempotent_and_candidate_cannot_drain(database_session: Session) -> None:
@@ -343,7 +342,7 @@ def test_active_work_deduplicates_current_owner_and_dispatch_on_the_same_release
     benchmark.executor_protocol_version = release.protocol_version
     database_session.add(benchmark)
     database_session.flush()
-    dispatch = create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.RETRY)
+    dispatch = _dispatch(benchmark.id, release, ExecutorDispatchKind.RETRY)
     dispatch.status = ExecutorDispatchStatus.RUNNING
     database_session.add(dispatch)
     database_session.commit()
@@ -367,7 +366,7 @@ def test_null_current_owner_with_start_dispatch_history_blocks_every_retirement(
     benchmark.executor_protocol_version = release_a.protocol_version
     database_session.add(benchmark)
     database_session.flush()
-    dispatch = create_executor_dispatch(benchmark.id, release_a, ExecutorDispatchKind.START)
+    dispatch = _dispatch(benchmark.id, release_a, ExecutorDispatchKind.START)
     dispatch.status = ExecutorDispatchStatus.FINISHED
     dispatch.finished_at = datetime.now(UTC)
     database_session.add(dispatch)
@@ -416,7 +415,7 @@ def test_active_retry_dispatch_blocks_its_release_across_successive_promotions(
     database_session.commit()
 
     promote_release(database_session, "v2")
-    retry_dispatch = create_executor_dispatch(
+    retry_dispatch = _dispatch(
         benchmark.id,
         select_active_release(database_session),
         ExecutorDispatchKind.RETRY,

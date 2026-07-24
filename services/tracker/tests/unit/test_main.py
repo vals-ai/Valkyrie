@@ -9,7 +9,7 @@ import tarfile
 from collections.abc import AsyncIterator
 from datetime import timezone
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
 import httpx
@@ -27,8 +27,8 @@ from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
 from sqlmodel import Session, select
 
+import main as main_module
 from main import app, tracker_service_error_handler
-from tests.unit.utils.task_execution_support import MockKicker
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker.auth import RequestIdentity, get_current_org, get_current_starter
 from tracker.database.models import (
@@ -409,7 +409,7 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
-        mock_kicker: MockKicker,
+        mock_kicker: Any,
     ) -> None:
         """Test start benchmark of the fastapi server.
 
@@ -473,10 +473,6 @@ class TestTrackerAPI:
         assert benchmark_row.executor_artifact_digest == "digest-test-release"
         assert benchmark_row.executor_protocol_version == "1"
         queued_call = mock_kicker.queued_calls[0]
-        assert queued_call["executor_release_id"] == "test-release"
-        assert queued_call["executor_artifact_uri"] == "s3://artifacts/test-release.pex"
-        assert queued_call["executor_artifact_digest"] == "digest-test-release"
-        assert queued_call["executor_protocol_version"] == "1"
         dispatch_id = UUID(queued_call["executor_dispatch_id"])
         dispatch = database_session.get(ExecutorDispatch, dispatch_id)
         assert dispatch is not None
@@ -487,6 +483,10 @@ class TestTrackerAPI:
         assert dispatch.executor_artifact_uri == "s3://artifacts/test-release.pex"
         assert dispatch.executor_artifact_digest == "digest-test-release"
         assert dispatch.executor_protocol_version == "1"
+        assert queued_call["verified_task_ids"] == [f"task_{i}" for i in range(500)]
+        task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        assert len(task_rows) == 500
+        assert all(task.started_at <= dispatch.created_at for task in task_rows)
 
         # Remaining fields match what we passed into the request
         assert json_response["benchmark_name"] == request.benchmark_name
@@ -497,17 +497,29 @@ class TestTrackerAPI:
         assert json_response["executor_protocol_version"] == "1"
         assert json_response["concurrency"] == request.concurrency
 
-    async def test_start_benchmark_keeps_dispatch_queued_when_enqueue_ack_is_ambiguous(
+    async def test_start_benchmark_enqueues_committed_dispatch(
         self,
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
     ) -> None:
-        class AmbiguousKicker(MockKicker):
+        observed_at_enqueue: dict[str, Any] = {}
+
+        class InspectingKicker:
+            def with_labels(self, **_labels: str) -> "InspectingKicker":
+                return self
+
             async def kiq(self, **kwargs: Any) -> None:
-                await super().kiq(**kwargs)
-                raise RuntimeError("broker acknowledgement lost")
+                with Session(database_session.get_bind()) as assertion_session:
+                    benchmark_id = UUID(kwargs["benchmark_id_str"])
+                    dispatch_id = UUID(kwargs["executor_dispatch_id"])
+                    observed_at_enqueue["benchmark"] = assertion_session.get(Benchmark, benchmark_id)
+                    observed_at_enqueue["dispatch"] = assertion_session.get(ExecutorDispatch, dispatch_id)
+                    observed_at_enqueue["tasks"] = assertion_session.exec(
+                        select(Task).where(Task.benchmark == benchmark_id)
+                    ).all()
+                observed_at_enqueue["kwargs"] = kwargs
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -516,30 +528,81 @@ class TestTrackerAPI:
             task_ids=["task_0"],
             harness_config=harness_config,
         )
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: InspectingKicker())
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
-        monkeypatch.setattr("main.process_benchmark.kicker", lambda: AmbiguousKicker())
+
+        response = client.post("/start-benchmark", json=request.model_dump())
+
+        assert response.status_code == 200
+        benchmark = observed_at_enqueue["benchmark"]
+        dispatch = observed_at_enqueue["dispatch"]
+        tasks = observed_at_enqueue["tasks"]
+        assert benchmark is not None
+        assert benchmark.executor_release_id == "test-release"
+        assert benchmark.current_execution_release_id == "test-release"
+        assert dispatch is not None
+        assert dispatch.status == ExecutorDispatchStatus.QUEUED
+        assert dispatch.benchmark_id == benchmark.id
+        assert dispatch.executor_release_id == benchmark.current_execution_release_id
+        assert [task.task_id for task in tasks] == ["task_0"]
+        assert observed_at_enqueue["kwargs"]["verified_task_ids"] == ["task_0"]
+
+    async def test_start_benchmark_enqueue_failure_is_retryable(
+        self,
+        contract: AgentContractRequest,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        harness_config: HarnessConfig,
+    ) -> None:
+        class FailingKicker:
+            def with_labels(self, **_labels: str) -> "FailingKicker":
+                return self
+
+            async def kiq(self, **_kwargs: Any) -> None:
+                raise RuntimeError("redis unavailable")
+
+        failing_kicker = FailingKicker()
+        monkeypatch.setattr("main.process_benchmark.kicker", lambda: failing_kicker)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
 
         response = client.post("/start-benchmark", json=request.model_dump())
 
         assert response.status_code == 503
-        dispatches = database_session.exec(select(ExecutorDispatch)).all()
-        assert len(dispatches) == 1
-        assert dispatches[0].status == ExecutorDispatchStatus.QUEUED
-        assert response.json()["detail"] == {
-            "message": "Executor dispatch enqueue acknowledgement failed",
-            "executor_dispatch_id": str(dispatches[0].id),
-        }
+        benchmark_id = UUID(response.json()["detail"]["benchmark_id"])
+        benchmark = database_session.get(Benchmark, benchmark_id)
+        dispatch = database_session.exec(
+            select(ExecutorDispatch).where(ExecutorDispatch.benchmark_id == benchmark_id)
+        ).one()
+        task = database_session.exec(select(Task).where(Task.benchmark == benchmark_id)).one()
+        assert benchmark is not None
+        assert benchmark.status == BenchmarkStatus.ERROR
+        assert dispatch.status == ExecutorDispatchStatus.FAILED
+        assert task.status == TaskStatus.ERROR
 
+    @pytest.mark.parametrize("agent_copy_created", [False, True])
     async def test_start_benchmark_rejects_without_active_executor_release(
         self,
         contract: AgentContractRequest,
         database_session: Session,
         harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+        agent_copy_created: bool,
     ) -> None:
         admission = database_session.get(ExecutorAdmission, 1)
         assert admission is not None
         database_session.delete(admission)
         database_session.commit()
+        copy_agent = AsyncMock(return_value=agent_copy_created)
+        delete_agent_copy = AsyncMock()
+        monkeypatch.setattr("main.copy_agent_to_benchmark", copy_agent)
+        monkeypatch.setattr("main.delete_from_s3", delete_agent_copy)
 
         request = StartBenchmarkRequest(
             contract=contract,
@@ -553,6 +616,63 @@ class TestTrackerAPI:
         assert response.status_code == 503
         expected_detail = "No active executor release is configured"
         assert response.json().get("detail") == expected_detail
+        copy_agent.assert_awaited_once()
+        if agent_copy_created:
+            copy_call = copy_agent.await_args
+            assert copy_call is not None
+            copied_benchmark_id = copy_call.args[0]
+            delete_agent_copy.assert_awaited_once_with(
+                f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
+                harness_config.aws,
+                harness_config.s3_bucket,
+            )
+        else:
+            delete_agent_copy.assert_not_awaited()
+
+    async def test_start_admission_failure_rolls_back_and_deletes_created_copy(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        copy_agent = AsyncMock(return_value=True)
+        delete_agent_copy = AsyncMock()
+        admit_start_dispatch = main_module.admit_start_dispatch
+
+        def fail_after_admission(*args: Any, **kwargs: Any) -> None:
+            admit_start_dispatch(*args, **kwargs)
+            raise RuntimeError("commit preparation failed")
+
+        monkeypatch.setattr(main_module, "copy_agent_to_benchmark", copy_agent)
+        monkeypatch.setattr(main_module, "delete_from_s3", delete_agent_copy)
+        monkeypatch.setattr(main_module, "admit_start_dispatch", fail_after_admission)
+        monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name="swebench",
+            concurrency=1,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/start-benchmark",
+            json=request.model_dump(),
+        )
+
+        assert response.status_code == 500
+        assert database_session.exec(select(Benchmark)).all() == []
+        assert database_session.exec(select(Task)).all() == []
+        assert database_session.exec(select(ExecutorDispatch)).all() == []
+        copy_call = copy_agent.await_args
+        assert copy_call is not None
+        copied_benchmark_id = copy_call.args[0]
+        delete_agent_copy.assert_awaited_once_with(
+            f"benchmarks/{copied_benchmark_id}/{contract.name}.zip",
+            harness_config.aws,
+            harness_config.s3_bucket,
+        )
 
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
         self,
@@ -585,7 +705,7 @@ class TestTrackerAPI:
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
         harness_config: HarnessConfig,
-        mock_kicker: MockKicker,
+        mock_kicker: Any,
     ) -> None:
         observed_headers: dict[str, str] = {}
 
@@ -630,7 +750,7 @@ class TestTrackerAPI:
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
-        mock_kicker: MockKicker,
+        mock_kicker: Any,
     ) -> None:
         """Start requests should keep the provider secret chosen by the client.
 
@@ -1500,11 +1620,6 @@ class TestTrackerAPI:
         benchmark_row = database_session.get(Benchmark, benchmark_id)
         assert benchmark_row is not None
         assert benchmark_row.label == "nightly"
-
-        database_session.add(
-            Task(org_id=TEST_ORG_ID, task_id="task_0", status=TaskStatus.PENDING, benchmark=benchmark_id)
-        )
-        database_session.commit()
 
         fetch_response = client.get("/fetch-benchmark", params={"benchmark_id": str(benchmark_id)})
         assert fetch_response.status_code == 200

@@ -11,9 +11,10 @@ import signal
 import sys
 import tempfile
 import urllib.request
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Protocol
+from typing import Mapping, Protocol, cast
 from urllib.parse import urlparse
 
 import boto3
@@ -28,7 +29,8 @@ DEFAULT_QUEUE_NAME = "valkyrie-stable"
 DEFAULT_CACHE_DIR = "/var/cache/valkyrie-executors"
 ECS_AGENT_URI = os.environ.get("ECS_AGENT_URI")
 _PROTECTION_EXPIRY_MINUTES = 1440
-_EXECUTOR_DISPATCH_ID_ENV = "VALKYRIE_EXECUTOR_DISPATCH_ID"
+_DEFAULT_EXECUTOR_ARTIFACT_PREFIX = "releases"
+_AUTHORITY_LOSS_GRACE_SECONDS = 10
 _active_execution_count = 0
 _execution_lock = asyncio.Lock()
 
@@ -100,16 +102,39 @@ class ArtifactDispatch:
         )
 
 
-class ExecutorDispatchStore(Protocol):
-    async def claim(self, dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> bool: ...
+@dataclass(frozen=True)
+class DispatchAuthority:
+    dispatch_id: str
+    benchmark_id: str
 
-    async def finish(self, dispatch_id: str, *, succeeded: bool) -> None: ...
+
+class ExecutorDispatchStore(Protocol):
+    async def claim(
+        self,
+        dispatch_id: str,
+        benchmark_id: str,
+        dispatch: ArtifactDispatch,
+    ) -> DispatchAuthority | None: ...
+
+    async def is_current(self, authority: DispatchAuthority) -> bool: ...
+
+    async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool: ...
+
+    async def finish(self, authority: DispatchAuthority) -> bool: ...
 
 
 class PostgresExecutorDispatchStore:
     """Persist dispatch lifecycle at the stable process-owner boundary."""
 
-    def __init__(self, *, host: str, port: str, dbname: str, user: str, password: str) -> None:
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: str,
+        dbname: str,
+        user: str,
+        password: str,
+    ) -> None:
         self.host = host
         self.port = port
         self.dbname = dbname
@@ -135,23 +160,48 @@ class PostgresExecutorDispatchStore:
             password=self.password,
         )
 
-    async def claim(self, dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> bool:
-        return await asyncio.to_thread(self._claim, dispatch_id, benchmark_id, dispatch)
+    async def claim(
+        self,
+        dispatch_id: str,
+        benchmark_id: str,
+        dispatch: ArtifactDispatch,
+    ) -> DispatchAuthority | None:
+        claimed = await asyncio.to_thread(
+            self._claim,
+            dispatch_id,
+            benchmark_id,
+            dispatch,
+        )
+        if not claimed:
+            return None
+        return DispatchAuthority(
+            dispatch_id=dispatch_id,
+            benchmark_id=benchmark_id,
+        )
 
-    def _claim(self, dispatch_id: str, benchmark_id: str, dispatch: ArtifactDispatch) -> bool:
+    def _claim(
+        self,
+        dispatch_id: str,
+        benchmark_id: str,
+        dispatch: ArtifactDispatch,
+    ) -> bool:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
-                UPDATE executordispatch
-                SET status = 'RUNNING', started_at = CURRENT_TIMESTAMP
-                WHERE id = %s::uuid
-                  AND benchmark_id = %s::uuid
-                  AND executor_release_id = %s
-                  AND executor_artifact_uri = %s
-                  AND executor_artifact_digest = %s
-                  AND executor_protocol_version = %s
-                  AND status = 'QUEUED'
-                RETURNING id
+                UPDATE executordispatch AS dispatch
+                SET status = 'RUNNING',
+                    started_at = CURRENT_TIMESTAMP
+                FROM benchmark
+                WHERE dispatch.id = %s::uuid
+                  AND dispatch.benchmark_id = benchmark.id
+                  AND benchmark.id = %s::uuid
+                  AND benchmark.status = 'IN_PROGRESS'
+                  AND dispatch.executor_release_id = %s
+                  AND dispatch.executor_artifact_uri = %s
+                  AND dispatch.executor_artifact_digest = %s
+                  AND dispatch.executor_protocol_version = %s
+                  AND dispatch.status = 'QUEUED'
+                RETURNING dispatch.id
                 """,
                 (
                     dispatch_id,
@@ -164,23 +214,156 @@ class PostgresExecutorDispatchStore:
             )
             return cursor.fetchone() is not None
 
-    async def finish(self, dispatch_id: str, *, succeeded: bool) -> None:
-        await asyncio.to_thread(self._finish, dispatch_id, succeeded=succeeded)
+    async def is_current(self, authority: DispatchAuthority) -> bool:
+        return await asyncio.to_thread(self._is_current, authority)
 
-    def _finish(self, dispatch_id: str, *, succeeded: bool) -> None:
-        status = "FINISHED" if succeeded else "FAILED"
+    def _is_current(self, authority: DispatchAuthority) -> bool:
         with self._connect() as connection, connection.cursor() as cursor:
             cursor.execute(
                 """
+                SELECT dispatch.id
+                FROM executordispatch AS dispatch
+                JOIN benchmark ON benchmark.id = dispatch.benchmark_id
+                WHERE dispatch.id = %s::uuid
+                  AND benchmark.status != 'STOPPED'
+                  AND dispatch.status = 'RUNNING'
+                """,
+                (authority.dispatch_id,),
+            )
+            return cursor.fetchone() is not None
+
+    async def terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
+        return await asyncio.to_thread(self._terminalize, authority, task_ids)
+
+    def _terminalize(self, authority: DispatchAuthority, task_ids: list[str]) -> bool:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status
+                FROM benchmark
+                WHERE id = %s::uuid
+                FOR UPDATE
+                """,
+                (authority.benchmark_id,),
+            )
+            benchmark_row = cursor.fetchone()
+            if benchmark_row is None:
+                return False
+            cursor.execute(
+                """
                 UPDATE executordispatch
-                SET status = %s, finished_at = CURRENT_TIMESTAMP
-                WHERE id = %s::uuid AND status = 'RUNNING'
+                SET status = 'FAILED', finished_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                  AND benchmark_id = %s::uuid
+                  AND status = 'RUNNING'
                 RETURNING id
                 """,
-                (status, dispatch_id),
+                (authority.dispatch_id, authority.benchmark_id),
+            )
+            failed_dispatch_row = cursor.fetchone()
+            if failed_dispatch_row is None:
+                return False
+            cursor.execute(
+                """
+                UPDATE task
+                SET status = 'ERROR', finished_at = CURRENT_TIMESTAMP
+                WHERE benchmark = %s::uuid
+                  AND task_id = ANY(%s)
+                  AND started_at <= (
+                      SELECT created_at
+                      FROM executordispatch
+                      WHERE id = %s::uuid
+                  )
+                  AND status IN ('PENDING', 'BUILDING', 'IN_PROGRESS', 'EVALUATING')
+                """,
+                (authority.benchmark_id, task_ids, authority.dispatch_id),
+            )
+            if benchmark_row[0] == "IN_PROGRESS":
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM executordispatch
+                        WHERE benchmark_id = %s::uuid
+                          AND id != %s::uuid
+                          AND status IN ('QUEUED', 'RUNNING')
+                    )
+                    """,
+                    (authority.benchmark_id, authority.dispatch_id),
+                )
+                active_dispatch_row = cursor.fetchone()
+                assert active_dispatch_row is not None
+                if not bool(active_dispatch_row[0]):
+                    cursor.execute(
+                        """
+                        UPDATE benchmark
+                        SET status = 'ERROR',
+                            finished_at = CURRENT_TIMESTAMP,
+                            error_message = 'Executor host failed'
+                        WHERE id = %s::uuid
+                        """,
+                        (authority.benchmark_id,),
+                    )
+            return True
+
+    async def finish(self, authority: DispatchAuthority) -> bool:
+        return await asyncio.to_thread(self._finish, authority)
+
+    def _finish(self, authority: DispatchAuthority) -> bool:
+        with self._connect() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT status
+                FROM benchmark
+                WHERE id = %s::uuid
+                FOR UPDATE
+                """,
+                (authority.benchmark_id,),
+            )
+            benchmark_row = cursor.fetchone()
+            if benchmark_row is None or benchmark_row[0] in ("STOPPING", "STOPPED"):
+                return False
+
+            cursor.execute(
+                """
+                UPDATE executordispatch
+                SET status = 'FINISHED', finished_at = CURRENT_TIMESTAMP
+                WHERE id = %s::uuid
+                  AND benchmark_id = %s::uuid
+                  AND status = 'RUNNING'
+                RETURNING id
+                """,
+                (authority.dispatch_id, authority.benchmark_id),
             )
             if cursor.fetchone() is None:
-                raise RuntimeError(f"Executor dispatch {dispatch_id} was not running during terminalization")
+                return False
+
+            if benchmark_row[0] == "IN_PROGRESS":
+                cursor.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM executordispatch
+                        WHERE benchmark_id = %s::uuid
+                          AND status IN ('QUEUED', 'RUNNING')
+                    )
+                    """,
+                    (authority.benchmark_id,),
+                )
+                active_dispatch_row = cursor.fetchone()
+                assert active_dispatch_row is not None
+                if not bool(active_dispatch_row[0]):
+                    cursor.execute(
+                        """
+                        UPDATE benchmark
+                        SET status = 'ERROR',
+                            finished_at = CURRENT_TIMESTAMP,
+                            error_message = 'Executor exited without finalizing benchmark'
+                        WHERE id = %s::uuid
+                        """,
+                        (authority.benchmark_id,),
+                    )
+            return True
 
 
 def _required_string(payload: Mapping[str, object], key: str) -> str:
@@ -200,6 +383,14 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
     return parsed.netloc, key
 
 
+def validate_artifact_uri(uri: str, expected_bucket: str, expected_prefix: str) -> tuple[str, str]:
+    bucket, key = parse_s3_uri(uri)
+    prefix = expected_prefix.strip("/")
+    if bucket != expected_bucket or not prefix or not key.startswith(f"{prefix}/"):
+        raise ValueError("Executor artifact URI is outside the configured S3 bucket and prefix")
+    return bucket, key
+
+
 def verify_file_digest(path: Path, expected_digest: str) -> None:
     digest = hashlib.sha256()
     with path.open("rb") as artifact:
@@ -210,6 +401,10 @@ def verify_file_digest(path: Path, expected_digest: str) -> None:
         raise ValueError(f"Executor artifact digest mismatch: expected {expected_digest}, got {actual_digest}")
 
 
+class DispatchAuthorityLostError(RuntimeError):
+    pass
+
+
 class ExecutorSupervisor:
     def __init__(
         self,
@@ -217,12 +412,28 @@ class ExecutorSupervisor:
         *,
         s3_client: S3Client | None = None,
         python_executable: str = sys.executable,
+        artifact_bucket: str | None = None,
+        artifact_prefix: str | None = None,
+        authority_check_interval: float = 5,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.cache_dir = cache_dir
         self.s3_client = s3_client
         self.python_executable = python_executable
+        self.artifact_bucket = artifact_bucket or os.environ.get("AWS_S3_BUCKET", "agentic-harness")
+        self.artifact_prefix = artifact_prefix or os.environ.get(
+            "EXECUTOR_RELEASE_PREFIX",
+            _DEFAULT_EXECUTOR_ARTIFACT_PREFIX,
+        )
+        self.authority_check_interval = authority_check_interval
+        self.sleep = sleep
 
     async def prepare_artifact(self, dispatch: ArtifactDispatch) -> Path:
+        bucket, key = validate_artifact_uri(
+            dispatch.artifact_uri,
+            self.artifact_bucket,
+            self.artifact_prefix,
+        )
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = self.cache_dir / f"{dispatch.artifact_digest}.pex"
         try:
@@ -232,7 +443,6 @@ class ExecutorSupervisor:
         except (OSError, ValueError):
             pass
 
-        bucket, key = parse_s3_uri(dispatch.artifact_uri)
         temporary_fd, temporary_name = tempfile.mkstemp(
             dir=self.cache_dir,
             prefix=f".{dispatch.artifact_digest}.",
@@ -241,7 +451,10 @@ class ExecutorSupervisor:
         os.close(temporary_fd)
         temporary_path = Path(temporary_name)
         try:
-            client = self.s3_client or boto3.client("s3")
+            client = self.s3_client or cast(
+                S3Client,
+                boto3.client("s3"),  # pyright: ignore[reportUnknownMemberType]
+            )
 
             def download() -> None:
                 client.download_file(bucket, key, str(temporary_path))
@@ -257,53 +470,29 @@ class ExecutorSupervisor:
 
     async def run(
         self,
+        artifact_path: Path,
         dispatch: ArtifactDispatch,
         *,
         start_benchmark_request_json: Mapping[str, object],
-        benchmark_id_str: str,
         verified_task_ids: list[str],
-        executor_dispatch_id: str,
+        authority: DispatchAuthority,
+        is_current: Callable[[], Awaitable[bool]],
     ) -> None:
-        await _acquire_task_protection()
-        try:
-            await self._run(
-                dispatch,
-                start_benchmark_request_json=start_benchmark_request_json,
-                benchmark_id_str=benchmark_id_str,
-                verified_task_ids=verified_task_ids,
-                executor_dispatch_id=executor_dispatch_id,
-            )
-        finally:
-            await _release_task_protection()
-
-    async def _run(
-        self,
-        dispatch: ArtifactDispatch,
-        *,
-        start_benchmark_request_json: Mapping[str, object],
-        benchmark_id_str: str,
-        verified_task_ids: list[str],
-        executor_dispatch_id: str,
-    ) -> None:
-        artifact_path = await self.prepare_artifact(dispatch)
+        if not await is_current():
+            raise DispatchAuthorityLostError(f"Executor dispatch {authority.dispatch_id} was superseded before spawn")
         payload = {
             "start_benchmark_request_json": dict(start_benchmark_request_json),
-            "benchmark_id_str": benchmark_id_str,
+            "benchmark_id_str": authority.benchmark_id,
             "verified_task_ids": verified_task_ids,
-            "executor_release_id": dispatch.release_id,
-            "executor_artifact_uri": dispatch.artifact_uri,
-            "executor_artifact_digest": dispatch.artifact_digest,
-            "executor_protocol_version": dispatch.protocol_version,
+            "executor_dispatch_id": authority.dispatch_id,
         }
         with tempfile.TemporaryDirectory(dir=self.cache_dir, prefix=".dispatch-") as temporary_directory:
             payload_path = Path(temporary_directory) / "payload.json"
             payload_path.write_text(json.dumps(payload))
-            executor_environment = os.environ.copy()
-            executor_environment[_EXECUTOR_DISPATCH_ID_ENV] = executor_dispatch_id
             logger.info(
                 "Launching benchmark %s dispatch_id=%s release=%s digest=%s protocol=%s",
-                benchmark_id_str,
-                executor_dispatch_id,
+                authority.benchmark_id,
+                authority.dispatch_id,
                 dispatch.release_id,
                 dispatch.artifact_digest,
                 dispatch.protocol_version,
@@ -313,17 +502,54 @@ class ExecutorSupervisor:
                 str(artifact_path),
                 str(payload_path),
                 start_new_session=True,
-                env=executor_environment,
             )
             try:
-                return_code = await process.wait()
-            except BaseException as error:
-                if not isinstance(error, asyncio.CancelledError):
-                    raise
+                return_code = await self._wait_with_authority(process, is_current)
+            except BaseException:
                 await _terminate_process_group(process)
                 raise
             if return_code != 0:
-                raise RuntimeError(f"Executor for benchmark {benchmark_id_str} exited with status {return_code}")
+                raise RuntimeError(f"Executor for benchmark {authority.benchmark_id} exited with status {return_code}")
+
+    async def _wait_with_authority(
+        self,
+        process: asyncio.subprocess.Process,
+        is_current: Callable[[], Awaitable[bool]],
+    ) -> int:
+        process_task = asyncio.create_task(process.wait())
+        authority_task = asyncio.create_task(self._wait_for_authority_loss(is_current))
+        try:
+            done, _ = await asyncio.wait(
+                (process_task, authority_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if authority_task in done:
+                await authority_task
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(process_task),
+                        timeout=_AUTHORITY_LOSS_GRACE_SECONDS,
+                    )
+                except TimeoutError:
+                    await _terminate_process_group(process)
+                    await process_task
+                raise DispatchAuthorityLostError("Executor dispatch was superseded")
+            authority_task.cancel()
+            try:
+                await authority_task
+            except asyncio.CancelledError:
+                pass
+            return await process_task
+        except BaseException:
+            authority_task.cancel()
+            process_task.cancel()
+            raise
+
+    async def _wait_for_authority_loss(self, is_current: Callable[[], Awaitable[bool]]) -> None:
+        while True:
+            await self.sleep(self.authority_check_interval)
+            if not await is_current():
+                return
 
 
 async def _terminate_process_group(process: asyncio.subprocess.Process) -> None:
@@ -357,6 +583,25 @@ supervisor = ExecutorSupervisor(CACHE_DIR)
 dispatch_store = PostgresExecutorDispatchStore.from_environment()
 
 
+async def _terminalize_after_failure(
+    store: ExecutorDispatchStore,
+    authority: DispatchAuthority,
+    task_ids: list[str],
+) -> None:
+    try:
+        terminalized = await store.terminalize(authority, task_ids)
+        if not terminalized:
+            logger.warning(
+                "Executor dispatch %s no longer had terminalization authority",
+                authority.dispatch_id,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to terminalize executor dispatch %s",
+            authority.dispatch_id,
+        )
+
+
 async def run_executor_dispatch(
     executor_supervisor: ExecutorSupervisor,
     store: ExecutorDispatchStore,
@@ -367,27 +612,53 @@ async def run_executor_dispatch(
     benchmark_id_str: str,
     verified_task_ids: list[str],
 ) -> None:
-    claimed = await store.claim(executor_dispatch_id, benchmark_id_str, dispatch)
-    if not claimed:
-        logger.warning("Skipping duplicate or non-queued executor dispatch %s", executor_dispatch_id)
-        return
-
+    await _acquire_task_protection()
     try:
-        await executor_supervisor.run(
-            dispatch,
-            start_benchmark_request_json=start_benchmark_request_json,
-            benchmark_id_str=benchmark_id_str,
-            verified_task_ids=verified_task_ids,
-            executor_dispatch_id=executor_dispatch_id,
+        claim_task = asyncio.create_task(
+            store.claim(
+                executor_dispatch_id,
+                benchmark_id_str,
+                dispatch,
+            )
         )
-    except BaseException:
         try:
-            await store.finish(executor_dispatch_id, succeeded=False)
-        except Exception:
-            logger.exception("Failed to terminalize executor dispatch %s", executor_dispatch_id)
-        raise
-    else:
-        await store.finish(executor_dispatch_id, succeeded=True)
+            authority = await asyncio.shield(claim_task)
+        except asyncio.CancelledError:
+            authority = await claim_task
+            if authority is not None:
+                await _terminalize_after_failure(store, authority, verified_task_ids)
+            raise
+
+        if authority is None:
+            logger.warning(
+                "Skipping duplicate, superseded, or non-queued executor dispatch %s",
+                executor_dispatch_id,
+            )
+            return
+
+        try:
+            artifact_path = await executor_supervisor.prepare_artifact(dispatch)
+            await executor_supervisor.run(
+                artifact_path,
+                dispatch,
+                start_benchmark_request_json=start_benchmark_request_json,
+                verified_task_ids=verified_task_ids,
+                authority=authority,
+                is_current=lambda: store.is_current(authority),
+            )
+            if not await store.finish(authority):
+                logger.warning(
+                    "Executor dispatch %s lost authority before successful finish",
+                    authority.dispatch_id,
+                )
+        except asyncio.CancelledError:
+            await _terminalize_after_failure(store, authority, verified_task_ids)
+            raise
+        except BaseException:
+            await _terminalize_after_failure(store, authority, verified_task_ids)
+            raise
+    finally:
+        await _release_task_protection()
 
 
 @broker.task("tracker.utils:process_benchmark")

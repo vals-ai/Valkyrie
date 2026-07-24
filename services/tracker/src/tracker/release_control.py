@@ -31,7 +31,10 @@ from tracker.types import (
 )
 
 _ACTIVE_BENCHMARK_STATUSES = (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)
-_ACTIVE_DISPATCH_STATUSES = (ExecutorDispatchStatus.QUEUED, ExecutorDispatchStatus.RUNNING)
+_ACTIVE_DISPATCH_STATUSES = (
+    ExecutorDispatchStatus.QUEUED,
+    ExecutorDispatchStatus.RUNNING,
+)
 _SUPPORTED_PROTOCOL_VERSION = "1"
 _ARTIFACT_RETENTION_DAYS = 30
 _logger = logging.getLogger(__name__)
@@ -132,19 +135,6 @@ def verify_release_artifact(
     return release
 
 
-def bootstrap_legacy_release(session: Session, release: ExecutorRelease) -> ExecutorRelease:
-    """Pin existing benchmarks' initial admission metadata to a verified legacy release."""
-    registered = register_release(session, release)
-    active = promote_release(session, registered.id)
-
-    benchmarks = session.exec(select(Benchmark).where(col(Benchmark.executor_release_id).is_(None))).all()
-    for benchmark in benchmarks:
-        pin_benchmark_to_release(benchmark, active)
-        session.add(benchmark)
-    session.flush()
-    return active
-
-
 def pin_benchmark_to_release(benchmark: Benchmark, release: ExecutorRelease) -> None:
     """Persist the initial executor identity for a benchmark exactly once."""
     if benchmark.executor_release_id is not None:
@@ -161,9 +151,12 @@ def create_executor_dispatch(
     benchmark_id: UUID,
     release: ExecutorRelease,
     kind: ExecutorDispatchKind,
+    *,
+    dispatch_id: UUID,
 ) -> ExecutorDispatch:
-    """Snapshot the selected release for one queued executor invocation."""
+    """Snapshot one release identity for queued execution."""
     return ExecutorDispatch(
+        id=dispatch_id,
         benchmark_id=benchmark_id,
         kind=kind,
         executor_release_id=release.id,

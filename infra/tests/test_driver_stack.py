@@ -199,6 +199,16 @@ class DriverStackTest(unittest.TestCase):
             self.assertIn("logs:CreateLogStream", rendered)
             self.assertIn("logs:PutLogEvents", rendered)
             self.assertNotIn("s3:DeleteObject", rendered)
+            benchmark_objects = next(
+                statement
+                for statement in statements
+                if "/benchmarks/*" in json.dumps(statement["Resource"])
+                and "s3:PutObject" in statement["Action"]
+            )
+            self.assertEqual(
+                set(benchmark_objects["Action"]),
+                {"s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"},
+            )
             list_bucket = [statement for statement in statements if statement["Action"] == "s3:ListBucket"]
             self.assertTrue(all("Condition" in statement for statement in list_bucket))
             campaign_list = [

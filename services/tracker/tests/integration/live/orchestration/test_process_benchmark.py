@@ -90,6 +90,7 @@ class TestProcessBenchmark:
         database_session: Session,
         harness_config: HarnessConfig,
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """Multiple tasks run concurrently and produce a complete benchmark result.
 
@@ -101,7 +102,8 @@ class TestProcessBenchmark:
             contract, harness_config, database_session, service_headers, task_ids=_TASK_IDS
         )
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS)
+        authority_kwargs = executor_authority_kwargs(benchmark)
+        await process_benchmark(request.model_dump(), str(benchmark.id), _TASK_IDS, **authority_kwargs)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED
@@ -128,6 +130,7 @@ class TestProcessBenchmark:
         harness_config: HarnessConfig,
         monkeypatch: pytest.MonkeyPatch,
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """Benchmark-level errors set the benchmark status and error message.
 
@@ -150,9 +153,10 @@ class TestProcessBenchmark:
 
             original_commit(self)
 
+        authority_kwargs = executor_authority_kwargs(benchmark)
         monkeypatch.setattr(Session, "commit", failing_commit)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID])
+        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -165,6 +169,7 @@ class TestProcessBenchmark:
         harness_config: HarnessConfig,
         monkeypatch: pytest.MonkeyPatch,
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """One task can fail setup while the other still completes through the real service path.
 
@@ -202,8 +207,9 @@ class TestProcessBenchmark:
             )
 
         monkeypatch.setattr(BenchmarkServiceClient, "setup_task", setup_task_with_failure)
+        authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
+        await process_benchmark(request.model_dump(), str(benchmark.id), task_ids, **authority_kwargs)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.FINISHED, benchmark.error_message
@@ -235,6 +241,7 @@ class TestProcessBenchmark:
         database_session: Session,
         harness_config: HarnessConfig,
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """A run with no successful task results fails before final scoring.
 
@@ -246,8 +253,9 @@ class TestProcessBenchmark:
         benchmark, request = _create_benchmark(
             failing_contract, harness_config, database_session, service_headers, task_ids=[_TASK_ID]
         )
+        authority_kwargs = executor_authority_kwargs(benchmark)
 
-        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID])
+        await process_benchmark(request.model_dump(), str(benchmark.id), [_TASK_ID], **authority_kwargs)
 
         database_session.refresh(benchmark)
         assert benchmark.status == BenchmarkStatus.ERROR
@@ -270,6 +278,7 @@ class TestProcessBenchmark:
         database_session: Session,
         harness_config: HarnessConfig,
         service_headers: dict[str, str],
+        executor_authority_kwargs: Any,
     ) -> None:
         """Same task ID can run across two separate benchmarks concurrently without result collisions.
 
@@ -288,6 +297,7 @@ class TestProcessBenchmark:
             database_session.add(benchmark)
 
         database_session.commit()
+        authority_by_benchmark = {benchmark.id: executor_authority_kwargs(benchmark) for benchmark in benchmarks}
 
         await gather(
             *[
@@ -295,6 +305,7 @@ class TestProcessBenchmark:
                     benchmark.start_benchmark_request(harness_config, service_headers=service_headers).model_dump(),
                     str(benchmark.id),
                     [_TASK_ID],
+                    **authority_by_benchmark[benchmark.id],
                 )
                 for benchmark in benchmarks
             ]

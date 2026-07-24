@@ -541,6 +541,7 @@ async def archive_and_upload_output(
     *,
     benchmark_id: str | None = None,
     task_id: str | None = None,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
@@ -552,7 +553,11 @@ async def archive_and_upload_output(
 
     try:
         archive_bytes = await upload_stream_to_s3(
-            sandbox.stream_download(archive_path), agent_output_s3_key, aws, s3_bucket
+            sandbox.stream_download(archive_path),
+            agent_output_s3_key,
+            aws,
+            s3_bucket,
+            should_continue=execution_is_current,
         )
 
         logger.info(
@@ -631,6 +636,7 @@ async def upload_output_artifacts(
     task_id: str,
     aws: AWSCredentials,
     s3_bucket: str,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
@@ -662,8 +668,13 @@ async def upload_output_artifacts(
                 f"Output artifacts are too large: {total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
             )
 
+        if execution_is_current is not None and not execution_is_current():
+            return
+
         s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
         file_content = await sandbox.download_file(sandbox_path)
+        if execution_is_current is not None and not execution_is_current():
+            return
         await upload_to_s3(file_content, s3_key, aws, s3_bucket)
 
         logger.info(
@@ -694,6 +705,7 @@ async def run_agent(
     benchmark_id: str | None = None,
     runtime_source: SandboxSource | None = None,
     dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
+    execution_is_current: Callable[[], bool] | None = None,
 ) -> tuple[AgentCausedExitReason | None, float]:
     """
     Run the agent inside the sandbox for a given task.
@@ -707,6 +719,7 @@ async def run_agent(
         agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
         runtime_source: Optional source used to adapt agent commands to the task runtime
+        execution_is_current: Optional execution-authority check before output uploads
 
     Returns:
         AgentCausedExitReason if the agent was terminated abnormally but recoverably
@@ -753,7 +766,11 @@ async def run_agent(
     # Upload any output from the agent to S3
     if contract.final_output:
         result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
-        if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
+        if (
+            result.exit_code == _SUCCESS_EXIT_CODE
+            and agent_output_s3_key
+            and (execution_is_current is None or execution_is_current())
+        ):
             await archive_and_upload_output(
                 sandbox,
                 contract.final_output,
@@ -762,6 +779,7 @@ async def run_agent(
                 s3_bucket,
                 benchmark_id=benchmark_id,
                 task_id=task_id,
+                execution_is_current=execution_is_current,
             )
 
     if contract.output_artifacts:
@@ -774,6 +792,7 @@ async def run_agent(
             task_id,
             aws,
             s3_bucket,
+            execution_is_current,
         )
 
     # Return why the agent terminated abnormally, or None on clean exit

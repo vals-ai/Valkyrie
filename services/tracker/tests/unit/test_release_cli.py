@@ -172,6 +172,7 @@ def test_status_exposes_null_owner_with_dispatch_history(
             benchmark_id=example_benchmark_object.id,
             kind=ExecutorDispatchKind.START,
             status=ExecutorDispatchStatus.FINISHED,
+            finished_at=datetime.now(timezone.utc),
             executor_release_id=release.id,
             executor_artifact_uri=release.artifact_uri,
             executor_artifact_digest=release.artifact_digest,

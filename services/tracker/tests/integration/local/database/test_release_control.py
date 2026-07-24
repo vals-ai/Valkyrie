@@ -46,6 +46,20 @@ def _release(release_id: str) -> ExecutorRelease:
     )
 
 
+def _dispatch(
+    benchmark_id: UUID,
+    release: ExecutorRelease,
+    kind: ExecutorDispatchKind,
+) -> ExecutorDispatch:
+    dispatch_id = uuid4()
+    return create_executor_dispatch(
+        benchmark_id,
+        release,
+        kind,
+        dispatch_id=dispatch_id,
+    )
+
+
 def _run_while_first_transaction_holds_locks(
     first: Callable[[Session], object],
     second: Callable[[Session], object],
@@ -165,7 +179,7 @@ def test_terminal_recovery_and_promotion_use_the_winning_admission_lock_order(
         benchmark.status = BenchmarkStatus.IN_PROGRESS
         benchmark.current_execution_release_id = release.id
         session.add(benchmark)
-        session.add(create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.RESUME))
+        session.add(_dispatch(benchmark.id, release, ExecutorDispatchKind.RESUME))
         session.flush()
 
     outcomes = _run_while_first_transaction_holds_locks(
@@ -246,7 +260,7 @@ def test_start_and_promotion_use_the_winning_admission_lock_order(
         )
         pin_benchmark_to_release(benchmark, release)
         session.add(benchmark)
-        session.add(create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.START))
+        session.add(_dispatch(benchmark.id, release, ExecutorDispatchKind.START))
         session.flush()
 
     start_first_id = uuid4()
@@ -316,7 +330,7 @@ def test_retirement_and_retry_serialize_on_the_owned_release(
         release = resolve_current_execution_release(session, benchmark, for_update=True)
         benchmark.status = BenchmarkStatus.IN_PROGRESS
         session.add(benchmark)
-        session.add(create_executor_dispatch(benchmark.id, release, ExecutorDispatchKind.RETRY))
+        session.add(_dispatch(benchmark.id, release, ExecutorDispatchKind.RETRY))
         session.flush()
 
     outcomes = _run_while_first_transaction_holds_locks(
@@ -409,7 +423,7 @@ def test_whole_stop_and_retry_serialize_on_the_benchmark_row(
         benchmark.status = BenchmarkStatus.IN_PROGRESS
         benchmark.current_execution_release_id = dispatch_release.id
         session.add(benchmark)
-        session.add(create_executor_dispatch(benchmark.id, dispatch_release, ExecutorDispatchKind.RETRY))
+        session.add(_dispatch(benchmark.id, dispatch_release, ExecutorDispatchKind.RETRY))
         session.flush()
 
     stop_first = add_error_benchmark("stop-first")

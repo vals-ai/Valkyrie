@@ -205,7 +205,7 @@ class DriverStack(Stack):
         )
         task_role.add_to_policy(
             aws_iam.PolicyStatement(
-                actions=["s3:GetObject", "s3:PutObject"],
+                actions=["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"],
                 resources=[bucket.arn_for_objects("benchmarks/*")],
             )
         )

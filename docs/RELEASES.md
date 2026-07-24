@@ -56,14 +56,12 @@ A release becoming `DRAINING` never rewrites queued or running dispatches.
 
 ![Dispatch ownership and pinned artifact flow](../valkyrie-dispatch-ownership.png)
 
-Benchmark ownership commit is the start-admission boundary. That admission
-transaction sets both immutable initial ownership and current execution
-ownership to the locked `ACTIVE` release. If A becomes `DRAINING` after that
-commit but before its `START` dispatch is created, the already-admitted benchmark
-remains on A. Its benchmark ownership blocks A from retirement until the
-dispatch ledger represents it or the benchmark becomes terminal. Benchmark and
-`START` dispatch persistence are deliberately not made atomic by this
-recovery-affinity change.
+Start admission atomically persists benchmark ownership and its queued `START`
+dispatch before enqueueing Redis. The transaction sets both immutable initial
+ownership and current execution ownership to the locked `ACTIVE` release and
+snapshots that release into the dispatch. If A becomes `DRAINING` after the
+transaction commits, the admitted benchmark and dispatch remain on A and block
+its retirement until their active work becomes terminal.
 
 ### Deployment during an active run
 
@@ -77,15 +75,19 @@ Given release A running a benchmark at 40/100 when B is promoted:
 
 ### Whole-run stop and recovery
 
-For a graceful whole-run stop, tasks already running finish on the current
-execution release. Tasks selected by the existing stop behavior become stopped.
-After the benchmark reaches `STOPPED`, the existing resume behavior runs its
-selected work on the `ACTIVE` release and establishes that release as the new
-current execution release.
+A non-forced whole-run Stop moves `PENDING`, `BUILDING`, and `EVALUATING`
+tasks to `STOPPED`. When it changes whole-run work, the benchmark enters
+`STOPPING`; already `IN_PROGRESS` tasks and the current dispatch remain active
+until normal finalization makes the run terminal. Resume then runs selected work
+on the `ACTIVE` release and establishes that release as the new current
+execution release.
 
-For a forced whole-run stop, interrupted tasks follow the existing stop and
-resume selection behavior. After the benchmark reaches `STOPPED`, resumed work
-uses the `ACTIVE` release.
+A forced whole-run Stop also marks `IN_PROGRESS` tasks `STOPPED` and tears down
+remaining sandboxes. Once no runnable work remains, it makes the benchmark
+`STOPPED` and revokes active dispatches under the benchmark lock. A task-scoped
+Stop preserves active dispatches while runnable work remains. If a forced
+task-scoped Stop exhausts runnable work, it performs the same terminal transition
+so an immediate Resume follows terminal recovery.
 
 For example, after A reaches a whole-run terminal state and recovery starts on
 B, later mid-run retries stay on B even if C has been promoted. A later
@@ -110,7 +112,7 @@ recovery fails explicitly. It never silently switches releases.
 
 This release-affinity change does not alter:
 
-- task selection for retry, resume, graceful stop, or forced stop;
+- task selection for retry or resume;
 - scoring, result history, or run IDs;
 - partial-task stop behavior;
 - concurrency limits or sandbox queue scheduling;
@@ -154,9 +156,12 @@ null current ownership, regardless of dispatch history.
 
 An invalid or missing persisted owner for in-progress recovery is a `409`
 conflict. Terminal recovery without a valid `ACTIVE` release is a `503` service
-availability failure. A post-commit enqueue acknowledgement failure is also a
-`503`; Tracker leaves the immutable dispatch `QUEUED` and returns/logs its ID for
-operator investigation.
+availability failure. After retrying a failed enqueue acknowledgement, Tracker
+keeps a dispatch that was already claimed, rejects one superseded by newer work,
+or marks a still-unclaimed dispatch `FAILED`. That failure errors only eligible
+task attempts selected for that enqueue, errors the benchmark only when no active
+sibling remains, and returns a `503` with the benchmark and dispatch IDs so Retry
+can continue the run.
 
 Executor rollback means promoting a verified previous executor release and
 allowing existing executions to drain on their current owners. It does not roll
