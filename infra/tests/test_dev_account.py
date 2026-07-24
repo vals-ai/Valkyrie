@@ -26,6 +26,7 @@ from constants import (
 )
 from shared import SharedStack
 from stage import DEV, PROD, Stage
+from stage_config import SHARED_DESCOPE_PROJECT_ID
 from tracker_stack import TrackerStack
 
 TEST_ACCOUNT = "123456789012"
@@ -157,7 +158,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         )
 
     def test_dev_tracker_imports_account_local_dns_and_auth(self) -> None:
-        dev_auth = {"AUTH_REQUIRED": "false", "DESCOPE_PROJECT_ID": "dev-project"}
+        dev_auth = {"AUTH_REQUIRED": "false", "DESCOPE_MANAGEMENT_SECRET_NAME": "dev-descope-management-key"}
         with mock.patch.dict(os.environ, dev_auth, clear=True):
             tracker_template = dev_tracker_template()
 
@@ -165,7 +166,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         hosted_zone_parameter = ssm_parameter_id(template, DEV_TRACKER_HOSTED_ZONE_ID_PARAMETER)
         certificate_parameter = ssm_parameter_id(template, DEV_TRACKER_CERTIFICATE_ARN_PARAMETER)
         rendered = json.dumps(template)
-        self.assertIn("devEvalInfraDescopeManagementKey", rendered)
+        self.assertIn("dev-descope-management-key", rendered)
         self.assertNotIn("/vals/dev/descope/project-id", rendered)
         self.assertNotIn("valkyrie/sentry-dsn", rendered)
         self.assertFalse(tracker_template.find_resources("AWS::CertificateManager::Certificate"))
@@ -191,7 +192,7 @@ class DevAccountInfrastructureTest(unittest.TestCase):
                                 "Environment": assertions.Match.array_with(
                                     [
                                         {"Name": "AUTH_REQUIRED", "Value": "true"},
-                                        {"Name": "DESCOPE_PROJECT_ID", "Value": "dev-project"},
+                                        {"Name": "DESCOPE_PROJECT_ID", "Value": SHARED_DESCOPE_PROJECT_ID},
                                     ]
                                 ),
                                 "Secrets": assertions.Match.array_with(
@@ -206,7 +207,12 @@ class DevAccountInfrastructureTest(unittest.TestCase):
 
     def test_dev_tracker_requires_descope_project(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(ValueError, "Development deployments require DESCOPE_PROJECT_ID"):
+            with self.assertRaisesRegex(ValueError, "Hosted deployments require DESCOPE_MANAGEMENT_SECRET_NAME"):
+                dev_tracker_template()
+
+    def test_dev_tracker_rejects_wildcard_descope_secret(self) -> None:
+        with mock.patch.dict(os.environ, {"DESCOPE_MANAGEMENT_SECRET_NAME": "*"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "Secret name must be a Secrets Manager name"):
                 dev_tracker_template()
 
     def test_dev_stacks_publish_the_shared_resource_contract(self) -> None:
@@ -214,7 +220,11 @@ class DevAccountInfrastructureTest(unittest.TestCase):
         shared_template = assertions.Template.from_stack(shared)
         self.assertEqual(published_parameter_names(shared_template), DEV_SHARED_CONTRACT_PARAMETERS)
 
-        with mock.patch.dict(os.environ, {"DESCOPE_PROJECT_ID": "dev-project"}, clear=True):
+        with mock.patch.dict(
+            os.environ,
+            {"DESCOPE_MANAGEMENT_SECRET_NAME": "dev-descope-management-key"},
+            clear=True,
+        ):
             tracker_template = dev_tracker_template()
         self.assertEqual(published_parameter_names(tracker_template), DEV_TRACKER_CONTRACT_PARAMETERS)
 

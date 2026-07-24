@@ -232,12 +232,10 @@ async def reset_to_in_progress_status(
             session.add(benchmark_row)
 
         for task in existing_rows:
-            task.status = (
-                TaskStatus.EVALUATING
-                if retry_mode == RetryMode.AUTO and task.eval_resume_state is not None
-                else TaskStatus.PENDING
-            )
-            task.started_at = datetime.now(ZoneInfo("UTC"))
+            resume_evaluation = retry_mode == RetryMode.AUTO and task.eval_resume_state is not None
+            task.status = TaskStatus.EVALUATING if resume_evaluation else TaskStatus.PENDING
+            if not resume_evaluation:
+                task.started_at = datetime.now(ZoneInfo("UTC"))
             task.finished_at = None
             if retry_mode == RetryMode.FROM_SCRATCH:
                 task.eval_resume_state = None

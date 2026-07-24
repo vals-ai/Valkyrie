@@ -39,15 +39,23 @@ def create_benchmark_service_url(benchmark_name: str) -> str:
 
 
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "agentic-harness")
-AWS_DEPLOYMENT_ROLE_ORG_IDS = os.environ.get("AWS_DEPLOYMENT_ROLE_ORG_IDS", "")
+AWS_MANAGED_TENANT_IDS = os.environ.get("AWS_MANAGED_TENANT_IDS", "")
 AWS_DEPLOYMENT_REGION = os.environ.get("AWS_DEPLOYMENT_REGION") or os.environ.get("AWS_REGION")
 AWS_DEPLOYMENT_S3_BUCKET = os.environ.get("AWS_DEPLOYMENT_S3_BUCKET")
 AWS_DEPLOYMENT_LOG_GROUP = os.environ.get("AWS_DEPLOYMENT_LOG_GROUP")
 AWS_DEPLOYMENT_LOG_RETENTION_DAYS = os.environ.get("AWS_DEPLOYMENT_LOG_RETENTION_DAYS")
+AWS_DEPLOYMENT_SANDBOX_PROVIDER = os.environ.get("AWS_DEPLOYMENT_SANDBOX_PROVIDER", "")
+AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME = os.environ.get("AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", "")
+AWS_MANAGED_AGENT_SECRET_NAMES = os.environ.get("AWS_MANAGED_AGENT_SECRET_NAMES", "")
 AWS_MANAGED_SUBMISSIONS_ENABLED = os.environ.get("AWS_MANAGED_SUBMISSIONS_ENABLED", "false").lower() == "true"
+BENCHMARK_SERVICE_ACCESS_KEY_SECRET_PREFIX = os.environ.get("BENCHMARK_SERVICE_ACCESS_KEY_SECRET_PREFIX", "")
 BROKER_ENVIRONMENT = os.environ.get("BROKER_ENVIRONMENT", "production")
 ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
 REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+
+
+def managed_tenant_ids() -> frozenset[str]:
+    return frozenset(value.strip() for value in AWS_MANAGED_TENANT_IDS.split(",") if value.strip())
 
 
 def _build_database_url() -> str:

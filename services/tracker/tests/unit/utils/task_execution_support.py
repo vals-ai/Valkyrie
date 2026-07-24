@@ -9,14 +9,14 @@ from benchmark_service.schemas import RetrieveTaskResponse
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
-from tracker.auth import RequestIdentity
+from tracker.auth import RequestIdentity, SelfHostedIdentity
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, BenchmarkStatus, Org, Task
 from tracker.types import HarnessConfig, StartBenchmarkRequest
 from tracker.utils import fetch_sandbox_provider_config, process_task, start_benchmark_request_to_benchmark
 
 TEST_ORG = Org(id=TEST_ORG_ID, name="default")
-_TEST_STARTER = RequestIdentity(org=TEST_ORG, access_key_id=None, email=None, name=None)
+_TEST_STARTER = SelfHostedIdentity(org=TEST_ORG)
 
 
 class MockKicker:
@@ -99,6 +99,7 @@ async def run_process_task(
     Returns
     - The task result mapping returned by process_task.
     """
+    assert start_benchmark_request.harness_config is not None
     return await process_task(
         task_row=task_row,
         start_benchmark_request=start_benchmark_request,

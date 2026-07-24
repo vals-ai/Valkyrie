@@ -223,6 +223,8 @@ async def test_compose_sandbox_methods_use_daytona_outer_from_retrieve_task(
         logs.append,
         task_data.cwd,
         aws_runtime=aws_runtime,
+        benchmark_id=_COMPOSE_RUN_ID,
+        artifact_attempt_id="1",
         runtime_source=task_data.source,
     )
 

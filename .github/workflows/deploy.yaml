@@ -51,6 +51,11 @@ jobs:
           aws-region: us-east-1
           allowed-account-ids: "613431292675"
 
+      - name: Validate production Descope management secret
+        env:
+          DESCOPE_MANAGEMENT_SECRET_NAME: ${{ vars.DESCOPE_MANAGEMENT_SECRET_NAME }}
+        run: test -n "$DESCOPE_MANAGEMENT_SECRET_NAME"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -80,9 +85,13 @@ jobs:
           SLACK_WORKSPACE_ID: ${{ secrets.SLACK_WORKSPACE_ID }}
           VALKYRIE_ALERTS_SLACK_CHANNEL_ID: ${{ secrets.VALKYRIE_ALERTS_SLACK_CHANNEL_ID }}
           DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID: ${{ secrets.DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID }}
-          AUTH_REQUIRED: ${{ secrets.AUTH_REQUIRED }}
+          AWS_DEPLOYMENT_SANDBOX_PROVIDER: ${{ vars.AWS_DEPLOYMENT_SANDBOX_PROVIDER }}
+          AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME: ${{ vars.AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME }}
+          AWS_MANAGED_AGENT_SECRET_NAMES: ${{ vars.AWS_MANAGED_AGENT_SECRET_NAMES }}
+          AWS_MANAGED_TENANT_IDS: ${{ vars.AWS_MANAGED_TENANT_IDS }}
+          AWS_MANAGED_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_SUBMISSIONS_ENABLED }}
           BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
-          DESCOPE_PROJECT_ID: ${{ secrets.DESCOPE_PROJECT_ID }}
+          DESCOPE_MANAGEMENT_SECRET_NAME: ${{ vars.DESCOPE_MANAGEMENT_SECRET_NAME }}
         run: |
           cd infra
           uv run cdk deploy --all -c stage=prod --require-approval never
@@ -95,9 +104,15 @@ jobs:
       AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEPLOYMENT_SANDBOX_PROVIDER: ${{ vars.AWS_DEPLOYMENT_SANDBOX_PROVIDER }}
+      AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME: ${{ vars.AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME }}
+      AWS_MANAGED_AGENT_SECRET_NAMES: ${{ vars.AWS_MANAGED_AGENT_SECRET_NAMES }}
+      AWS_MANAGED_TENANT_IDS: ${{ vars.AWS_MANAGED_TENANT_IDS }}
+      AWS_MANAGED_SUBMISSIONS_ENABLED: ${{ vars.AWS_MANAGED_SUBMISSIONS_ENABLED }}
+      BENCHMARK_CATALOG_URL: ${{ secrets.BENCHMARK_CATALOG_URL }}
       CDK_DEFAULT_ACCOUNT: ${{ vars.DEV_ACCOUNT_ID }}
       CDK_DEFAULT_REGION: ${{ vars.AWS_REGION }}
-      DESCOPE_PROJECT_ID: ${{ vars.DESCOPE_PROJECT_ID }}
+      DESCOPE_MANAGEMENT_SECRET_NAME: ${{ vars.DESCOPE_MANAGEMENT_SECRET_NAME }}
       DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
       OPERATION: ${{ github.event_name == 'push' && 'deploy' || inputs.operation }}
       PRODUCTION_ACCOUNT_ID: "613431292675"
@@ -112,8 +127,8 @@ jobs:
             echo "::error::The dev Environment must define DEV_ACCOUNT_ID, AWS_DEPLOY_ROLE_ARN, and AWS_REGION."
             exit 1
           fi
-          if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_PROJECT_ID" ]]; then
-            echo "::error::The dev Environment must define DESCOPE_PROJECT_ID before planning or deploying."
+          if [[ "$OPERATION" != "credentials-only" && -z "$DESCOPE_MANAGEMENT_SECRET_NAME" ]]; then
+            echo "::error::The dev Environment must define DESCOPE_MANAGEMENT_SECRET_NAME before planning or deploying."
             exit 1
           fi
           if [[ ! "$DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then

@@ -10,7 +10,7 @@ import logfire
 from botocore.exceptions import BotoCoreError, ClientError
 
 from tracker.aws.runtime import AWSResources, AWSRuntime
-from tracker.exceptions import S3Error
+from tracker.exceptions import S3Error, S3ObjectExistsError
 from tracker.logging import get_logger
 
 logger = get_logger(__name__)
@@ -72,6 +72,31 @@ async def upload_to_s3(file_content: bytes, s3_key: str, runtime: AWSRuntime) ->
     """
     async with runtime.clients.s3_client() as client:
         await client.put_object(Bucket=runtime.resources.s3_bucket, Key=s3_key, Body=file_content)
+
+
+async def upload_to_s3_if_absent(
+    file_content: bytes,
+    s3_key: str,
+    runtime: AWSRuntime,
+) -> None:
+    """Create an S3 object only when no object exists at the key."""
+    try:
+        async with runtime.clients.s3_client() as client:
+            await client.put_object(
+                Bucket=runtime.resources.s3_bucket,
+                Key=s3_key,
+                Body=file_content,
+                IfNoneMatch="*",
+            )
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in {
+            "ConditionalRequestConflict",
+            "PreconditionFailed",
+        }:
+            raise S3ObjectExistsError(f"S3 object already exists: {s3_key}") from exc
+        raise S3Error(f"Failed to upload to S3: {exc}") from exc
+    except BotoCoreError as exc:
+        raise S3Error(f"Failed to upload to S3: {exc}") from exc
 
 
 @logfire.instrument("upload_stream_to_s3", extract_args=("s3_key",))
@@ -144,6 +169,24 @@ async def download_from_s3(s3_key: str, runtime: AWSRuntime) -> bytes:
     """
     async with runtime.clients.s3_client() as client:
         response = await client.get_object(Bucket=runtime.resources.s3_bucket, Key=s3_key)
+        async with response["Body"] as stream:
+            return await stream.read()
+
+
+@handle_s3_error(message="Failed to download range from S3")
+async def download_range_from_s3(
+    s3_key: str,
+    start: int,
+    end: int,
+    runtime: AWSRuntime,
+) -> bytes:
+    """Download one inclusive byte range from an S3 object."""
+    async with runtime.clients.s3_client() as client:
+        response = await client.get_object(
+            Bucket=runtime.resources.s3_bucket,
+            Key=s3_key,
+            Range=f"bytes={start}-{end}",
+        )
         async with response["Body"] as stream:
             return await stream.read()
 

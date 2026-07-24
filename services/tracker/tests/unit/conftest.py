@@ -19,7 +19,7 @@ from sqlmodel import Session, SQLModel, create_engine
 
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID
-from tracker.auth import RequestIdentity, get_current_org, get_current_starter
+from tracker.auth import SelfHostedIdentity, get_current_org, get_current_starter
 from tracker.database.models import Org
 from tracker.database.session import get_session
 from tracker.types import AWSCredentials, HarnessConfig
@@ -84,7 +84,6 @@ def mock_s3(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tracker.aws.s3.download_from_s3", _mock_download_from_s3)
     monkeypatch.setattr("tracker.aws.s3.get_contract_s3_key", _mock_get_contract_s3_key)
     monkeypatch.setattr("tracker.utils.reporting.upload_to_s3", _mock_upload_to_s3)
-    monkeypatch.setattr("main.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
     monkeypatch.setattr("tracker.utils.run_orchestration.copy_agent_to_benchmark", _mock_copy_agent_to_benchmark)
 
 
@@ -116,12 +115,7 @@ def override_starter(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(
         app.dependency_overrides,
         get_current_starter,
-        lambda: RequestIdentity(
-            org=test_org,
-            access_key_id=None,
-            email=None,
-            name=None,
-        ),
+        lambda: SelfHostedIdentity(org=test_org),
     )
 
 
@@ -212,6 +206,8 @@ def process_benchmark_env(monkeypatch: pytest.MonkeyPatch, database_session: Ses
     async def _mock_create_sandbox(*_args: Any, **_kwargs: Any) -> AsyncGenerator[AsyncMock, None]:
         mock_sandbox = AsyncMock()
         mock_sandbox.id = "mock-sandbox-id"
+        mock_sandbox.name = "mock-sandbox-name"
+        mock_sandbox.state = "started"
         yield mock_sandbox
 
     async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:

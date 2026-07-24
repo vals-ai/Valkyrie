@@ -29,7 +29,8 @@ from tests.factories import make_error_result, make_evaluation_result
 from tests.unit.utils.task_execution_support import MockKicker, make_retrieve_task_response
 from tests.utils import TEST_ORG_ID, async_iterator
 from tracker import config
-from tracker.auth import RequestIdentity
+from tracker.auth import SelfHostedIdentity
+from tracker.aws.cloudwatch_logs import task_log_attempt_id
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
@@ -93,7 +94,7 @@ class TestRunRecovery:
     """Benchmark stop, retry, resume, and stale-worker recovery."""
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
-    _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+    _test_starter = SelfHostedIdentity(org=_test_org)
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_benchmark_uses_persisted_and_refreshed_concurrency(
@@ -565,6 +566,7 @@ class TestRunRecovery:
             task_id="task_0",
             benchmark=benchmark_row.id,
             status=TaskStatus.STOPPED,
+            started_at=_ORIGINAL_ATTEMPT_AT,
             eval_resume_state=eval_resume_state,
         )
         database_session.add(benchmark_row)
@@ -590,6 +592,10 @@ class TestRunRecovery:
         assert verified_task_ids == [task_row.task_id]
         assert task_row.status == expected_status
         assert task_row.eval_resume_state == expected_state
+        if expected_status == TaskStatus.EVALUATING:
+            assert task_row.started_at == _ORIGINAL_ATTEMPT_AT
+        else:
+            assert task_row.started_at != _ORIGINAL_ATTEMPT_AT
 
     async def test_retry_preserves_previous_task_history_for_export(
         self,
@@ -936,6 +942,7 @@ class TestRunRecovery:
         assert task_row.status == TaskStatus.FINISHED
         assert task_row.eval_resume_state == {"artifact_prefix": "s3://bucket/run", "job_id": "job-1"}
         assert evaluation.instance_id is None
+        assert evaluation.attempt_id == task_log_attempt_id(task_row.started_at)
 
     async def test_process_task_keeps_stopped_eval_resume_task_stopped(
         self,
@@ -1125,7 +1132,7 @@ class TestRunRecovery:
         database_session.add_all([benchmark_row, pending_task])
         database_session.commit()
 
-        monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(TEST_ORG_ID))
+        monkeypatch.setattr(config, "AWS_MANAGED_TENANT_IDS", "default")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket")
         monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group")
@@ -1403,6 +1410,8 @@ class TestRunRecovery:
             sandbox_count += 1
             mock_sandbox = AsyncMock()
             mock_sandbox.id = f"mock-sandbox-id-{sandbox_count}"
+            mock_sandbox.name = f"mock-sandbox-{sandbox_count}"
+            mock_sandbox.state = "started"
             yield mock_sandbox
 
         async def _mock_final_score(

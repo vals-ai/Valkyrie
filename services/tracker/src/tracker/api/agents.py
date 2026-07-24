@@ -23,7 +23,7 @@ async def list_agents_endpoint(
     legacy_harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
 ) -> AgentsResponse:
     """List agent zips under the org's S3 bucket."""
-    aws_runtime = resolve_non_run_aws_runtime(request, org.id, legacy_harness_config)
+    aws_runtime = resolve_non_run_aws_runtime(request, org.name, legacy_harness_config)
     agents = await list_agents(aws_runtime)
     return AgentsResponse(
         agents=[
@@ -41,7 +41,7 @@ async def get_agent_download_url(
     legacy_harness_config: HarnessConfig | None = Depends(try_fetch_harness_config),
 ) -> AgentDownloadURLResponse:
     """Return a 5-minute presigned URL to download agents/<name>.zip."""
-    aws_runtime = resolve_non_run_aws_runtime(request, org.id, legacy_harness_config)
+    aws_runtime = resolve_non_run_aws_runtime(request, org.name, legacy_harness_config)
     key = f"agents/{name}.zip"
     if not await s3_object_exists(key, aws_runtime):
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found in S3")

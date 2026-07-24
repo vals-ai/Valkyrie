@@ -85,7 +85,7 @@ def start_benchmark_request_to_benchmark(
         org_id=run_starter.org.id,
         name=request.benchmark_name,
         label=request.label,
-        custom_benchmark_service=request.custom_benchmark_service,
+        custom_benchmark_service=None if aws_managed else request.custom_benchmark_service,
         aws_managed=aws_managed,
         webhook_secret_name=request.webhook_secret_name,
         webhook_intervals=request.webhook_intervals,
@@ -99,7 +99,7 @@ def start_benchmark_request_to_benchmark(
             sandbox_provider=request.sandbox_provider,
             sandbox_provider_secret_name=provider_secret_name,
         ),
-        started_by_id=run_starter.access_key_id,
+        started_by_id=run_starter.principal_id,
         started_by_email=run_starter.email,
     )
 

@@ -8,31 +8,31 @@ from asyncio import Semaphore
 from collections.abc import Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from types import TracebackType
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 import logfire
 import sentry_sdk
 from benchmark_service import (
+    Resources,
+    Sandbox,
     SandboxProviderConfig,
 )
+from benchmark_service.sandbox.daytona import DaytonaProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError
 from opentelemetry import trace
 from pydantic import ValidationError
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, col, select, update
-from tenacity import retry as tenacity_retry
-from tenacity import retry_if_exception_type, stop_after_attempt, wait_fixed
 from websockets.exceptions import ConnectionClosedError, InvalidStatus
 
-from tracker.aws.cloudwatch_logs import write_benchmark_log_event
+from tracker.aws.cloudwatch_logs import task_log_attempt_id, write_benchmark_log_event
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import (
-    get_agent_result_s3_key,
-)
 from tracker.aws.secrets import resolve_secrets
 from tracker.config import ENVIRONMENT
 from tracker.database.models import (
@@ -41,11 +41,13 @@ from tracker.database.models import (
     EvaluationResult,
     Org,
     Task,
+    TaskAttempt,
     TaskBreakdown,
     TaskStatus,
 )
 from tracker.database.session import engine
 from tracker.exceptions import (
+    CloudWatchError,
     DependencySetupExhaustedError,
     OutputArtifactError,
     SandboxSetupError,
@@ -53,9 +55,11 @@ from tracker.exceptions import (
 )
 from tracker.logging import get_logger, task_id_var
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.observability import elapsed_ms, retry_callback
+from tracker.observability import elapsed_ms, incr
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.types import (
+    SandboxResourceSnapshot,
+    SandboxSnapshot,
     StartBenchmarkRequest,
 )
 
@@ -64,6 +68,7 @@ from tracker.utils.resources import fetch_benchmark_row, fetch_task_row
 logger = get_logger(__name__)
 
 _PTY_TASK_RETRY_LIMIT: int = 1
+_PTY_TASK_RETRY_WAIT_SECONDS: int = 2
 
 
 @dataclass
@@ -79,6 +84,27 @@ def _normalized_attempt_time(value: datetime) -> datetime:
 
 def _exception_message(exc: BaseException) -> str:
     return str(exc).strip() or type(exc).__name__
+
+
+def sandbox_snapshot(
+    sandbox: Sandbox,
+    resources: Resources,
+    provider: SandboxProviderConfig,
+) -> dict[str, Any]:
+    region = provider.DAYTONA_TARGET if isinstance(provider, DaytonaProviderConfig) else None
+    return SandboxSnapshot(
+        name=sandbox.name,
+        state=sandbox.state,
+        region=region,
+        resources=SandboxResourceSnapshot(
+            cpu_cores=resources.vcpu,
+            memory_gib=resources.memory,
+            disk_gib=resources.disk,
+            gpu_count=resources.gpu,
+            gpu_type=resources.gpu_type,
+        ),
+        recorded_at=datetime.now(ZoneInfo("UTC")),
+    ).model_dump(mode="json")
 
 
 class TrackedTaskStatus(str, Enum):
@@ -283,8 +309,7 @@ def handle_early_exit(task_row: Task, task_session: Session) -> bool:
 
 def buffer_logs(
     log_queue: asyncio.Queue[str],
-    stream_key: str,
-    aws_runtime: AWSRuntime,
+    write_queue: asyncio.Queue[str | None],
     force_flush: bool = False,
 ) -> None:
     """
@@ -297,9 +322,19 @@ def buffer_logs(
     while not log_queue.empty():
         messages.append(log_queue.get_nowait())
 
-    message = "".join(messages)
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws_runtime)
+    write_queue.put_nowait("".join(messages))
+
+
+async def write_buffered_logs(
+    write_queue: asyncio.Queue[str | None],
+    stream_key: str,
+    aws_runtime: AWSRuntime,
+) -> None:
+    while (message := await write_queue.get()) is not None:
+        try:
+            await asyncio.to_thread(write_benchmark_log_event, stream_key, message, aws_runtime)
+        except CloudWatchError:
+            logger.exception("Failed to write task logs")
 
 
 def save_eval_resume_state(
@@ -383,6 +418,70 @@ def commit_task_status_transition(
     )
 
 
+def ensure_task_attempt(
+    task: Task,
+    session: Session,
+    sandbox_provider: str,
+) -> TaskAttempt:
+    attempt_id = task_log_attempt_id(task.started_at)
+    values = {
+        "id": uuid4(),
+        "org_id": task.org_id,
+        "task": task.id,
+        "attempt_id": attempt_id,
+        "started_at": task.started_at,
+        "sandbox_provider": sandbox_provider,
+    }
+    match session.get_bind().dialect.name:
+        case "postgresql":
+            statement = postgresql_insert(TaskAttempt)
+        case "sqlite":
+            statement = sqlite_insert(TaskAttempt)
+        case dialect:
+            raise AssertionError(f"Unsupported task attempt database: {dialect}")
+    session.exec(statement.values(**values).on_conflict_do_nothing(index_elements=["task", "attempt_id"]))
+    session.commit()
+    attempt = session.exec(
+        select(TaskAttempt).where(col(TaskAttempt.task) == task.id).where(col(TaskAttempt.attempt_id) == attempt_id)
+    ).one()
+    return attempt
+
+
+def commit_task_sandbox_started(
+    task_row_id: UUID,
+    session: Session,
+    org: Org,
+    instance_id: str,
+    snapshot: dict[str, Any],
+    expected_started_at: datetime,
+) -> bool:
+    attempt_update = (
+        update(TaskAttempt)
+        .where(col(TaskAttempt.task) == task_row_id)
+        .where(col(TaskAttempt.org_id) == org.id)
+        .where(col(TaskAttempt.attempt_id) == task_log_attempt_id(expected_started_at))
+        .where(col(TaskAttempt.sandbox_instance_id).is_(None))
+    )
+    attempt_result = session.exec(
+        attempt_update.values(
+            sandbox_instance_id=instance_id,
+            sandbox_snapshot=snapshot,
+        )
+    )
+    if attempt_result.rowcount == 0:
+        session.rollback()
+        return False
+    session.commit()
+
+    task = fetch_task_row(task_row_id, session, org)
+    return _commit_task_status(
+        task,
+        session,
+        TaskStatus.IN_PROGRESS,
+        expected_started_at=expected_started_at,
+    )
+
+
 @logfire.instrument("process_task", extract_args=("benchmark_id", "task_id"))
 async def process_task(
     task_row: Task,
@@ -396,27 +495,103 @@ async def process_task(
     creation_semaphore: Semaphore,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
-    return await _process_task_attempt(
-        task_row,
-        start_benchmark_request,
-        benchmark_service,
-        benchmark_id,
-        task_id,
-        aws_runtime,
-        org,
-        sandbox_provider_config,
-        creation_semaphore,
-        dependency_setup_recovery=_DependencySetupRecoveryState(),
+    dependency_setup_recovery = _DependencySetupRecoveryState()
+    for retry_index in range(_PTY_TASK_RETRY_LIMIT + 1):
+        try:
+            return await _process_task_attempt(
+                task_row,
+                start_benchmark_request,
+                benchmark_service,
+                benchmark_id,
+                task_id,
+                aws_runtime,
+                org,
+                sandbox_provider_config,
+                creation_semaphore,
+                dependency_setup_recovery=dependency_setup_recovery,
+            )
+        except SandboxSetupError as error:
+            if retry_index == _PTY_TASK_RETRY_LIMIT:
+                logger.error(
+                    "task sandbox retries exhausted",
+                    exc_info=True,
+                    extra={"benchmark_id": str(benchmark_id), "task_id": task_id},
+                )
+                logfire.exception("task sandbox retries exhausted")
+                sentry_sdk.capture_exception(error)
+                with Session(bind=engine) as session:
+                    current_task = fetch_task_row(task_row.id, session, org)
+                    commit_task_error(
+                        current_task,
+                        session,
+                        _exception_message(error),
+                        expected_started_at=task_row.started_at,
+                    )
+                return {task_id: None}
+
+            next_task = _prepare_task_retry(task_row, org, error)
+            if next_task is None:
+                return {task_id: None}
+            task_row = next_task
+            logger.warning(
+                "task sandbox attempt failed; retrying",
+                extra={
+                    "benchmark_id": str(benchmark_id),
+                    "task_id": task_id,
+                    "error_class": type(error).__name__,
+                },
+            )
+            incr("valkyrie.task.retry", tags={"error_class": type(error).__name__})
+            await asyncio.sleep(_PTY_TASK_RETRY_WAIT_SECONDS)
+
+    raise AssertionError("task retry loop exhausted")
+
+
+def _prepare_task_retry(task_row: Task, org: Org, error: SandboxSetupError) -> Task | None:
+    """Record one failed sandbox attempt and advance the task to a distinct attempt."""
+    previous_started_at = task_row.started_at
+    previous_attempt_id = task_log_attempt_id(previous_started_at)
+    next_started_at = datetime.now(ZoneInfo("UTC"))
+    if int(task_log_attempt_id(next_started_at), 16) <= int(previous_attempt_id, 16):
+        next_started_at = previous_started_at + timedelta(microseconds=1)
+
+    with Session(bind=engine) as session:
+        task_update = (
+            update(Task)
+            .where(col(Task.id) == task_row.id)
+            .where(col(Task.org_id) == org.id)
+            .where(col(Task.started_at) == previous_started_at)
+            .where(col(Task.status) != TaskStatus.STOPPED)
+        )
+        result = session.exec(
+            task_update.values(
+                status=TaskStatus.PENDING,
+                started_at=next_started_at,
+                finished_at=None,
+            )
+        )
+        if result.rowcount == 0:
+            session.rollback()
+            return None
+        session.add(
+            ErrorResult(
+                org_id=org.id,
+                task=task_row.id,
+                attempt_id=previous_attempt_id,
+                error_message=_exception_message(error),
+            )
+        )
+        session.commit()
+
+    return task_row.model_copy(
+        update={
+            "status": TaskStatus.PENDING,
+            "started_at": next_started_at,
+            "finished_at": None,
+        }
     )
 
 
-@tenacity_retry(
-    retry=retry_if_exception_type(SandboxSetupError),
-    stop=stop_after_attempt(_PTY_TASK_RETRY_LIMIT + 1),
-    wait=wait_fixed(2),
-    before_sleep=retry_callback("valkyrie.task"),
-    reraise=True,
-)
 async def _process_task_attempt(
     task_row: Task,
     start_benchmark_request: StartBenchmarkRequest,
@@ -455,6 +630,12 @@ async def _process_task_attempt(
         if _normalized_attempt_time(task_row.started_at) != _normalized_attempt_time(requested_attempt_started_at):
             return {task_id: None}
         attempt_started_at = task_row.started_at
+        attempt = ensure_task_attempt(
+            task_row,
+            task_session,
+            start_benchmark_request.sandbox_provider,
+        )
+        attempt_instance_id = attempt.sandbox_instance_id
         if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
             handle_early_exit(task_row, task_session)
             return {task_id: None}
@@ -464,9 +645,10 @@ async def _process_task_attempt(
 
     # Setup logging infrastructure before try block so it's always available
     # Suffix is required to version control streams, never delete between retries
-    stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
+    stream_suffix = task_log_attempt_id(task_row.started_at)
     stream_key: str = f"{benchmark_id}:{task_id}_{stream_suffix}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
+    write_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
     last_log_time: float = time.monotonic()
 
@@ -475,7 +657,7 @@ async def _process_task_attempt(
         nonlocal last_log_time
         last_log_time = time.monotonic()
         log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key, aws_runtime)
+        buffer_logs(log_queue, write_queue)
 
     # Auto flush if process takes a while to produce next log
     # If a process pauses without producing anymore logs, the logs we have collected get stuck
@@ -483,9 +665,10 @@ async def _process_task_attempt(
         while True:
             await asyncio.sleep(1)
             if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
+                buffer_logs(log_queue, write_queue, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
+    write_task = asyncio.create_task(write_buffered_logs(write_queue, stream_key, aws_runtime))
 
     def on_eval_resume_state(state: dict[str, Any]) -> None:
         save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at)
@@ -514,7 +697,8 @@ async def _process_task_attempt(
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
                     task=task_row.id,
-                    instance_id=None,
+                    attempt_id=stream_suffix,
+                    instance_id=attempt_instance_id,
                     result=evaluation_result,
                     agent_caused_exit_reason=None,
                 )
@@ -597,17 +781,28 @@ async def _process_task_attempt(
             resources=task_data.resources,
             creation_semaphore=creation_semaphore,
         ) as sandbox:
+            snapshot = sandbox_snapshot(
+                sandbox,
+                task_data.resources,
+                sandbox_provider_config,
+            )
             task_breakdown.sandbox_build_duration = time.perf_counter() - start_sandbox_build_time
             start_sandbox_run_time = time.perf_counter()
+            log_output(
+                f"Sandbox created: provider={type(sandbox_provider).__name__} "
+                f"id={sandbox.id} name={sandbox.name} state={sandbox.state} "
+                f"resources={task_data.resources.model_dump_json()}\n"
+            )
 
             try:
                 with Session(bind=engine) as task_session:
-                    if not commit_task_status_transition(
+                    if not commit_task_sandbox_started(
                         task_row.id,
                         task_session,
                         org,
-                        TaskStatus.IN_PROGRESS,
-                        expected_started_at=attempt_started_at,
+                        sandbox.id,
+                        snapshot,
+                        attempt_started_at,
                     ):
                         return {task_id: None}
 
@@ -630,12 +825,7 @@ async def _process_task_attempt(
                 )
 
                 # Force flush the logs if anything has been buffered
-                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
-
-                # Compute the S3 key for the agent's output archive
-                agent_output_s3_key = None
-                if start_benchmark_request.contract.final_output:
-                    agent_output_s3_key = get_agent_result_s3_key(str(benchmark_id), task_id, "agent_output.tar.gz")
+                buffer_logs(log_queue, write_queue, force_flush=True)
 
                 try:
                     exit_reason, agent_run_time = await run_agent(
@@ -646,9 +836,9 @@ async def _process_task_attempt(
                         log_output,
                         task_data.cwd,
                         aws_runtime=aws_runtime,
-                        agent_output_s3_key=agent_output_s3_key,
-                        agent_timeout=task_data.agent_timeout,
                         benchmark_id=str(benchmark_id),
+                        artifact_attempt_id=stream_suffix,
+                        agent_timeout=task_data.agent_timeout,
                         runtime_source=task_data.source,
                         dependency_setup_mode=dependency_setup_recovery.mode,
                     )
@@ -708,13 +898,14 @@ async def _process_task_attempt(
                 task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
+                buffer_logs(log_queue, write_queue, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
                 # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
                 evaluation_result_row = EvaluationResult(
                     org_id=org.id,
                     task=task_row.id,
+                    attempt_id=stream_suffix,
                     instance_id=sandbox.id,
                     result=evaluation_result,
                     agent_caused_exit_reason=exit_reason,
@@ -835,7 +1026,9 @@ async def _process_task_attempt(
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
             await flush_task
-        buffer_logs(log_queue, stream_key, aws_runtime, force_flush=True)
+        buffer_logs(log_queue, write_queue, force_flush=True)
+        write_queue.put_nowait(None)
+        await write_task
 
 
 def commit_task_error(
@@ -843,9 +1036,16 @@ def commit_task_error(
     session: Session,
     error_message: str,
     *,
-    expected_started_at: datetime | None = None,
+    expected_started_at: datetime,
 ) -> bool:
-    session.add(ErrorResult(org_id=task_row.org_id, task=task_row.id, error_message=error_message))
+    session.add(
+        ErrorResult(
+            org_id=task_row.org_id,
+            task=task_row.id,
+            attempt_id=task_log_attempt_id(expected_started_at),
+            error_message=error_message,
+        )
+    )
     return _commit_task_status(
         task_row,
         session,

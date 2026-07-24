@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 from typing import Never
-from uuid import UUID
 
 from fastapi import HTTPException, Request
 
@@ -137,15 +136,6 @@ def resolve_start_harness_config(request: Request, body_config: HarnessConfig | 
     return None
 
 
-def _eligible_org_ids() -> frozenset[UUID]:
-    try:
-        return frozenset(
-            UUID(value.strip()) for value in config.AWS_DEPLOYMENT_ROLE_ORG_IDS.split(",") if value.strip()
-        )
-    except ValueError as exc:
-        raise ManagedAWSConfigurationError("AWS_DEPLOYMENT_ROLE_ORG_IDS contains an invalid organization ID") from exc
-
-
 def _managed_resources() -> AWSResources:
     missing = [
         name
@@ -178,12 +168,12 @@ def _managed_resources() -> AWSResources:
     )
 
 
-def organization_can_use_managed_aws(org_id: UUID) -> bool:
-    return org_id in _eligible_org_ids()
+def organization_can_use_managed_aws(tenant_id: str) -> bool:
+    return tenant_id in config.managed_tenant_ids()
 
 
-def deployment_aws_runtime(org_id: UUID) -> AWSRuntime:
-    if not organization_can_use_managed_aws(org_id):
+def deployment_aws_runtime(tenant_id: str) -> AWSRuntime:
+    if not organization_can_use_managed_aws(tenant_id):
         raise ManagedAWSEligibilityError(
             "Managed AWS access is not available for this organization. Configure AWS access keys and try again."
         )
@@ -194,9 +184,9 @@ def deployment_aws_runtime(org_id: UUID) -> AWSRuntime:
     )
 
 
-def _http_deployment_runtime(org_id: UUID) -> AWSRuntime:
+def _http_deployment_runtime(tenant_id: str) -> AWSRuntime:
     try:
-        return deployment_aws_runtime(org_id)
+        return deployment_aws_runtime(tenant_id)
     except ManagedAWSEligibilityError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ManagedAWSConfigurationError as exc:
@@ -206,7 +196,7 @@ def _http_deployment_runtime(org_id: UUID) -> AWSRuntime:
 def resolve_start_aws_runtime(
     request: Request,
     body_config: HarnessConfig | None,
-    org_id: UUID,
+    tenant_id: str,
 ) -> AWSRuntimeResolution:
     """Resolve a new run without reinterpreting partial legacy input as managed."""
     harness_config = resolve_start_harness_config(request, body_config)
@@ -217,19 +207,19 @@ def resolve_start_aws_runtime(
             status_code=503,
             detail="Managed AWS submissions are temporarily unavailable. Configure AWS access keys and try again.",
         )
-    return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
+    return AWSRuntimeResolution(_http_deployment_runtime(tenant_id), None)
 
 
 def resolve_run_aws_runtime(
     request: Request,
     *,
     aws_managed: bool,
-    org_id: UUID,
+    tenant_id: str,
     legacy_harness_config: HarnessConfig | None = None,
 ) -> AWSRuntimeResolution:
     """Resolve AWS authority from a persisted run mode."""
     if aws_managed:
-        return AWSRuntimeResolution(_http_deployment_runtime(org_id), None)
+        return AWSRuntimeResolution(_http_deployment_runtime(tenant_id), None)
     harness_config = legacy_harness_config or fetch_harness_config(request)
     return AWSRuntimeResolution(AWSRuntime.from_harness_config(harness_config), harness_config)
 
@@ -238,19 +228,19 @@ def resolve_optional_run_aws_runtime(
     request: Request,
     *,
     aws_managed: bool,
-    org_id: UUID,
+    tenant_id: str,
     legacy_harness_config: HarnessConfig | None = None,
 ) -> AWSRuntime | None:
     """Resolve AWS authority when legacy metadata links may be omitted."""
     if aws_managed:
-        return _http_deployment_runtime(org_id)
+        return _http_deployment_runtime(tenant_id)
     harness_config = legacy_harness_config or try_fetch_harness_config(request)
     return AWSRuntime.from_harness_config(harness_config) if harness_config is not None else None
 
 
 def resolve_non_run_aws_runtime(
     request: Request,
-    org_id: UUID,
+    tenant_id: str,
     legacy_harness_config: HarnessConfig | None = None,
 ) -> AWSRuntime:
     """Resolve agent-library operations from complete headers or managed eligibility."""
@@ -261,14 +251,16 @@ def resolve_non_run_aws_runtime(
         return AWSRuntime.from_harness_config(header_state.config)
     if header_state.first_missing_key is not None and header_state.present:
         _raise_missing_header(header_state.first_missing_key)
-    return _http_deployment_runtime(org_id)
+    return _http_deployment_runtime(tenant_id)
 
 
-def resolve_aws_runtime_metadata(org_id: UUID) -> AWSResources | None:
+def resolve_aws_runtime_metadata(tenant_id: str) -> AWSResources | None:
     """Return non-secret deployment resource locations for an eligible organization."""
     try:
-        if not organization_can_use_managed_aws(org_id):
+        if not config.AWS_MANAGED_SUBMISSIONS_ENABLED or not organization_can_use_managed_aws(tenant_id):
             return None
+        if not config.AWS_DEPLOYMENT_SANDBOX_PROVIDER or not config.AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME:
+            raise ManagedAWSConfigurationError("Managed sandbox configuration is unavailable")
         return _managed_resources()
     except ManagedAWSConfigurationError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

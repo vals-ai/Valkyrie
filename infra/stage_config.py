@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from aws_cdk import aws_logs
 from stage import DEV, PROD, Stage
 
+SHARED_DESCOPE_PROJECT_ID = "P2ktNOjz5Tgzs9wwS3VpShnCbmik"
+
 
 @dataclass(frozen=True)
 class ServiceConfig:
@@ -28,8 +30,12 @@ class DatabaseConfig:
 class ManagedAWSRuntimeConfig:
     benchmark_log_group_prefix: str
     benchmark_log_retention_days: int
-    deployment_role_org_ids: tuple[str, ...] = ()
+    benchmark_service_access_key_secret_prefix: str
+    sandbox_provider: str
+    sandbox_provider_secret_name: str
+    managed_tenant_ids: tuple[str, ...] = ("vals.ai",)
     submissions_enabled: bool = False
+    worker_secret_names: tuple[str, ...] = ()
     tracker_secret_name_prefixes: tuple[str, ...] = ()
     worker_secret_name_prefixes: tuple[str, ...] = ()
     tracker_lambda_function_name_patterns: tuple[str, ...] = ()
@@ -61,6 +67,10 @@ PROD_CONFIG = StageConfig(
     managed_aws=ManagedAWSRuntimeConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=365,
+        benchmark_service_access_key_secret_prefix="valkyrie/benchmark-service-access-key",
+        sandbox_provider="daytona",
+        sandbox_provider_secret_name="",
+        managed_tenant_ids=("vals.ai",),
     ),
 )
 
@@ -78,6 +88,10 @@ DEV_CONFIG = StageConfig(
     managed_aws=ManagedAWSRuntimeConfig(
         benchmark_log_group_prefix="/valkyrie/benchmarks",
         benchmark_log_retention_days=7,
+        benchmark_service_access_key_secret_prefix="valkyrie/benchmark-service-access-key",
+        sandbox_provider="daytona",
+        sandbox_provider_secret_name="",
+        managed_tenant_ids=("vals.ai",),
     ),
 )
 

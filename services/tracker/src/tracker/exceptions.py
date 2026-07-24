@@ -82,6 +82,10 @@ class S3Error(TrackerServiceError):
         return "S3 error: " + super().__str__()
 
 
+class S3ObjectExistsError(S3Error):
+    """A conditional S3 object create lost publication."""
+
+
 class CloudWatchError(TrackerServiceError):
     """Exception raised for CloudWatch operation errors."""
 

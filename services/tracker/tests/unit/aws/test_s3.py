@@ -13,8 +13,13 @@ from botocore.exceptions import ClientError
 from tracker.aws import s3 as s3_module
 from tracker.aws.clients import DefaultChainAWSClientProvider
 from tracker.aws.runtime import AWSRuntime
-from tracker.aws.s3 import create_presigned_url, upload_stream_to_s3
-from tracker.exceptions import S3Error
+from tracker.aws.s3 import (
+    create_presigned_url,
+    download_range_from_s3,
+    upload_stream_to_s3,
+    upload_to_s3_if_absent,
+)
+from tracker.exceptions import S3Error, S3ObjectExistsError
 
 
 class MockS3Client:
@@ -80,6 +85,61 @@ class TestCreatePresignedUrl:
             Params={"Bucket": "test-bucket", "Key": "agents/demo.zip"},
             ExpiresIn=3_600,
         )
+
+
+async def test_download_range_uses_one_inclusive_get(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    body = AsyncMock()
+    body.__aenter__.return_value = body
+    body.read.return_value = b"content"
+    client = AsyncMock()
+    client.get_object.return_value = {"Body": body}
+    context = AsyncMock()
+    context.__aenter__.return_value = client
+
+    def s3_client(_provider: object) -> AsyncMock:
+        return context
+
+    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", s3_client)
+
+    content = await download_range_from_s3("pack", 10, 19, aws_runtime)
+
+    assert content == b"content"
+    client.get_object.assert_awaited_once_with(
+        Bucket="test-bucket",
+        Key="pack",
+        Range="bytes=10-19",
+    )
+
+
+async def test_conditional_upload_never_overwrites_existing_object(
+    monkeypatch: pytest.MonkeyPatch,
+    aws_runtime: AWSRuntime,
+) -> None:
+    client = AsyncMock()
+    client.put_object.side_effect = ClientError(
+        {"Error": {"Code": "PreconditionFailed", "Message": "exists"}},
+        "PutObject",
+    )
+    context = AsyncMock()
+    context.__aenter__.return_value = client
+
+    def s3_client(_provider: object) -> AsyncMock:
+        return context
+
+    monkeypatch.setattr(type(aws_runtime.clients), "s3_client", s3_client)
+
+    with pytest.raises(S3ObjectExistsError):
+        await upload_to_s3_if_absent(b"index", "index.json", aws_runtime)
+
+    client.put_object.assert_awaited_once_with(
+        Bucket="test-bucket",
+        Key="index.json",
+        Body=b"index",
+        IfNoneMatch="*",
+    )
 
 
 @pytest.fixture

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Annotated, Literal, cast
 
-from descope import AuthException, DescopeClient
-from fastapi import Depends, HTTPException, Request
+from descope.descope_client import DescopeClient
+from descope.exceptions import AuthException
+from fastapi import Depends, HTTPException, Request, Security
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import ReadTimeout
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, select
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from tracker import config
 from tracker.config import AUTH_REQUIRED, DESCOPE_MANAGEMENT_KEY, DESCOPE_PROJECT_ID
 from tracker.database.models import DEFAULT_ORG_NAME, Org
 from tracker.database.session import get_session
@@ -24,39 +28,72 @@ logger = get_logger(__name__)
 BENCHMARK_SERVICE_API_KEY_HEADER = "X-Descope-Api-Key"
 DESCOPE_ACCESS_KEY_ID_FIELD = "keyId"
 DESCOPE_CUSTOM_CLAIMS_FIELD = "customClaims"
+DESCOPE_BENCHMARK_SERVICE_PURPOSE = "valkyrie_benchmark_service"
 DESCOPE_SESSION_TOKEN_FIELD = "sessionToken"
 DESCOPE_USER_ID_CLAIM = "user_id"
 
 
 @dataclass(frozen=True)
-class RequestIdentity:
-    """Identity that authenticated the current request.
-
-    In hosted mode `access_key_id` is always set. `email` and `name` are populated
-    from Descope claims or the bound user profile when the caller requests it. In
-    self-hosted mode all three are None. The access key id is persisted as
-    `Benchmark.started_by_id` to preserve the exact credential used to start the run.
-    """
-
+class BearerIdentity:
     org: Org
-    access_key_id: str | None
+    principal_id: str
     email: str | None
-    name: str | None
+    kind: Literal["bearer"] = "bearer"
 
 
 @dataclass(frozen=True)
-class DescopeUserProfile:
+class AccessKeyIdentity:
+    org: Org
+    principal_id: str
     email: str | None
-    name: str | None
+    kind: Literal["access_key"] = "access_key"
+
+
+@dataclass(frozen=True)
+class SelfHostedIdentity:
+    org: Org
+    principal_id: None = None
+    email: None = None
+    kind: Literal["self_hosted"] = "self_hosted"
+
+
+RequestIdentity = BearerIdentity | AccessKeyIdentity | SelfHostedIdentity
 
 
 @dataclass(frozen=True)
 class DescopeIdentity:
     tenant_name: str
-    access_key_id: str
+    principal_id: str
     email: str | None
-    name: str | None
 
+
+@dataclass(frozen=True)
+class BearerCredential:
+    token: str
+
+
+@dataclass(frozen=True)
+class AccessKeyCredential:
+    cleartext: str
+
+
+RequestCredential = BearerCredential | AccessKeyCredential
+
+_bearer_scheme = HTTPBearer(
+    auto_error=False,
+    bearerFormat="JWT",
+    scheme_name="DescopeBearer",
+)
+_access_key_scheme = APIKeyHeader(
+    name="x-api-key",
+    auto_error=False,
+    scheme_name="DescopeAccessKey",
+)
+BearerSecurity = Annotated[
+    HTTPAuthorizationCredentials | None,
+    Security(_bearer_scheme),
+]
+AccessKeySecurity = Annotated[str | None, Security(_access_key_scheme)]
 
 _cached_default_org: Org | None = None
 _descope_client: DescopeClient | None = (
@@ -72,8 +109,10 @@ _descope_client: DescopeClient | None = (
 def _get_descope_claim(jwt_response: Mapping[str, object], claim_name: str) -> object:
     """Read a claim from the exchange response or its nested session token."""
     session_token = jwt_response.get(DESCOPE_SESSION_TOKEN_FIELD)
-    if isinstance(session_token, Mapping) and claim_name in session_token:
-        return session_token.get(claim_name)
+    if isinstance(session_token, Mapping):
+        session_claims = cast(Mapping[str, object], session_token)
+        if claim_name in session_claims:
+            return session_claims.get(claim_name)
 
     return jwt_response.get(claim_name)
 
@@ -107,32 +146,54 @@ def _get_descope_custom_string_claim(
         if not isinstance(claim_source, Mapping):
             continue
 
-        custom_claims = claim_source.get(DESCOPE_CUSTOM_CLAIMS_FIELD)
-        if isinstance(custom_claims, Mapping) and claim_name in custom_claims:
-            return _normalize_optional_string(custom_claims.get(claim_name), lowercase=lowercase)
+        claims = cast(Mapping[str, object], claim_source)
+        custom_claims = claims.get(DESCOPE_CUSTOM_CLAIMS_FIELD)
+        if isinstance(custom_claims, Mapping):
+            typed_custom_claims = cast(Mapping[str, object], custom_claims)
+            if claim_name in typed_custom_claims:
+                return _normalize_optional_string(typed_custom_claims.get(claim_name), lowercase=lowercase)
 
     return None
 
 
-def _load_descope_user_profile(user_id: str) -> DescopeUserProfile:
-    """Load email/name from the Descope user record bound to an access key."""
+def _get_descope_tenants(jwt_response: Mapping[str, object]) -> list[str]:
+    tenant_claims = jwt_response.get("tenants")
+    if not isinstance(tenant_claims, Mapping):
+        return []
+    return [tenant for tenant in cast(Mapping[object, object], tenant_claims) if isinstance(tenant, str)]
+
+
+def _eligible_bearer_tenant(jwt_response: Mapping[str, object]) -> str:
+    allowed_tenants = config.managed_tenant_ids()
+    eligible_tenants = [tenant for tenant in _get_descope_tenants(jwt_response) if tenant in allowed_tenants]
+    if not eligible_tenants:
+        raise HTTPException(status_code=403, detail="Session is not eligible for managed Valkyrie")
+    if len(eligible_tenants) > 1:
+        raise HTTPException(status_code=400, detail="Session matches multiple managed Valkyrie tenants")
+    return eligible_tenants[0]
+
+
+def _load_descope_user_email(user_id: str) -> str | None:
+    """Load email from a Descope user record."""
     if not _descope_client:
-        return DescopeUserProfile(email=None, name=None)
+        return None
 
     try:
-        user_response = _descope_client.mgmt.user.load_by_user_id(user_id)
+        user_response = cast(
+            Mapping[str, object],
+            _descope_client.mgmt.user.load_by_user_id(user_id),  # pyright: ignore[reportUnknownMemberType]
+        )
     except Exception:
         logger.warning("Failed to load Descope user profile for user_id=%s", user_id, exc_info=True)
-        return DescopeUserProfile(email=None, name=None)
+        return None
 
     user = user_response.get("user")
     if not isinstance(user, Mapping):
         logger.warning("Descope user profile response did not include a user object for user_id=%s", user_id)
-        return DescopeUserProfile(email=None, name=None)
+        return None
 
-    email = _normalize_optional_string(user.get("email"), lowercase=True)
-    name = _normalize_optional_string(user.get("name") or user.get("displayName"))
-    return DescopeUserProfile(email=email, name=name)
+    user_claims = cast(Mapping[str, object], user)
+    return _normalize_optional_string(user_claims.get("email"), lowercase=True)
 
 
 def get_default_org(session: Session) -> Org:
@@ -147,12 +208,31 @@ def get_default_org(session: Session) -> Org:
     return org
 
 
+def _extract_request_credential(request: Request) -> RequestCredential:
+    authorization = request.headers.get("authorization")
+    api_key = request.headers.get("x-api-key")
+
+    if authorization is not None and api_key is not None:
+        raise HTTPException(status_code=401, detail="Send Authorization OR x-api-key, not both")
+    if api_key is not None:
+        if not api_key.strip():
+            raise HTTPException(status_code=401, detail="Missing Authorization or x-api-key header")
+        return AccessKeyCredential(api_key)
+    if authorization is None:
+        raise HTTPException(status_code=401, detail="Missing Authorization or x-api-key header")
+
+    scheme, separator, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or separator != " " or not token or any(char.isspace() for char in token):
+        raise HTTPException(status_code=401, detail="Authorization must be Bearer <session JWT>")
+    return BearerCredential(token)
+
+
 def extract_api_key(request: Request) -> str:
     """Extract API key from request headers. Raises 401 if missing."""
-    api_key = request.headers.get("x-api-key")
-    if not api_key:
-        raise HTTPException(status_code=401, detail="Missing API key")
-    return api_key
+    credential = _extract_request_credential(request)
+    if not isinstance(credential, AccessKeyCredential):
+        raise HTTPException(status_code=401, detail="This endpoint requires x-api-key")
+    return credential.cleartext
 
 
 @retry(
@@ -161,9 +241,12 @@ def extract_api_key(request: Request) -> str:
     wait=wait_exponential(multiplier=0.5, min=0.5, max=2),
     reraise=True,
 )
-def _exchange_access_key(api_key: str, descope_client: DescopeClient) -> dict[str, Any]:
+def _exchange_access_key(api_key: str, descope_client: DescopeClient) -> Mapping[str, object]:
     """Call Descope with retries on transient network errors."""
-    return descope_client.exchange_access_key(api_key)
+    return cast(
+        Mapping[str, object],
+        descope_client.exchange_access_key(api_key),  # pyright: ignore[reportUnknownMemberType]
+    )
 
 
 def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False) -> DescopeIdentity:
@@ -171,7 +254,7 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
 
     Lightweight callers use only the exchanged access-key JWT. Callers that need
     attribution can request the bound user profile, which adds one Descope
-    management API lookup when the JWT carries user_id but no email.
+    management API lookup when the JWT carries user_id but lacks email.
 
     Supported access-key response shape:
         {
@@ -194,7 +277,11 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
         logger.exception("Descope API key validation failed")
         raise HTTPException(status_code=503, detail="Auth service unavailable") from exc
 
-    tenants = list(jwt_response.get("tenants", {}).keys())
+    purpose = _get_descope_custom_string_claim(jwt_response, "purpose")
+    if purpose == DESCOPE_BENCHMARK_SERVICE_PURPOSE:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    tenants = _get_descope_tenants(jwt_response)
     if len(tenants) != 1:
         raise HTTPException(
             status_code=400,
@@ -208,20 +295,36 @@ def resolve_descope_identity(api_key: str, *, include_user_profile: bool = False
         raise HTTPException(status_code=400, detail="Descope JWT missing access key id")
 
     email = _get_descope_string_claim(jwt_response, "email", lowercase=True)
-    name = _get_descope_string_claim(jwt_response, "name")
     user_id = _get_descope_custom_string_claim(jwt_response, DESCOPE_USER_ID_CLAIM)
 
     if include_user_profile and email is None and user_id is not None:
-        profile = _load_descope_user_profile(user_id)
-        email = profile.email
-        name = name or profile.name
+        email = _load_descope_user_email(user_id)
 
-    return DescopeIdentity(tenant_name=tenants[0], access_key_id=access_key_id, email=email, name=name)
+    return DescopeIdentity(tenant_name=tenants[0], principal_id=access_key_id, email=email)
 
 
 def find_org_by_tenant(tenant_name: str, session: Session) -> Org | None:
     """Look up an org by Descope tenant name. Returns None if not found."""
     return session.exec(select(Org).where(Org.name == tenant_name)).first()
+
+
+def _find_or_create_org(tenant_name: str, session: Session) -> Org:
+    org = find_org_by_tenant(tenant_name, session)
+    if org:
+        return org
+
+    org = Org(name=tenant_name)
+    session.add(org)
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        org = find_org_by_tenant(tenant_name, session)
+        assert org is not None
+        return org
+
+    session.refresh(org)
+    return org
 
 
 def forward_tracker_api_key(
@@ -248,78 +351,105 @@ def forward_tracker_api_key(
     return forwarded_headers
 
 
-def _extract_bearer_token(request: Request) -> str | None:
-    auth = request.headers.get("authorization")
-    if not auth:
-        return None
-    parts = auth.split(" ", 1)
-    if len(parts) != 2 or parts[0].lower() != "bearer":
-        return None
-    return parts[1]
-
-
-def resolve_bearer_session(jwt: str, session: Session) -> Org:
-    """Validate a Descope session JWT and resolve the org."""
+def resolve_bearer_session(
+    jwt: str,
+    session: Session,
+    *,
+    include_user_profile: bool = False,
+) -> BearerIdentity:
+    """Validate a Descope session JWT and resolve its user and organization."""
     if not _descope_client:
         raise RuntimeError("Descope client not initialized — check DESCOPE_PROJECT_ID and AUTH_REQUIRED")
 
     try:
-        jwt_response = _descope_client.validate_session(jwt)
+        jwt_response = cast(
+            Mapping[str, object],
+            _descope_client.validate_session(jwt),  # pyright: ignore[reportUnknownMemberType]
+        )
     except AuthException as exc:
         logger.warning("Descope session validation failed: %s", exc.error_message)
         raise HTTPException(status_code=401, detail="Invalid session") from exc
 
-    tenants = list(jwt_response.get("tenants", {}).keys())
-    if not tenants:
-        raise HTTPException(status_code=400, detail="Session token has no tenant")
-    tenant_name = tenants[0]
+    if _get_descope_custom_string_claim(jwt_response, "purpose") == DESCOPE_BENCHMARK_SERVICE_PURPOSE:
+        raise HTTPException(status_code=401, detail="Invalid session")
 
-    org = find_org_by_tenant(tenant_name, session)
-    if not org:
-        raise HTTPException(status_code=404, detail=f"Organization '{tenant_name}' not configured")
+    tenant = _eligible_bearer_tenant(jwt_response)
 
-    return org
+    subject = (
+        _get_descope_string_claim(jwt_response, "userId")
+        or _get_descope_string_claim(jwt_response, DESCOPE_USER_ID_CLAIM)
+        or _get_descope_string_claim(jwt_response, "sub")
+    )
+    if subject is None:
+        raise HTTPException(status_code=400, detail="Descope session missing user subject")
 
+    email = _get_descope_string_claim(jwt_response, "email", lowercase=True)
+    user = jwt_response.get("user")
+    if isinstance(user, Mapping):
+        user_claims = cast(Mapping[str, object], user)
+        email = email or _normalize_optional_string(user_claims.get("email"), lowercase=True)
 
-def get_current_org(request: Request, session: Session = Depends(get_session)) -> Org:
-    """Resolve the current org from either an Authorization: Bearer or x-api-key header."""
-    if not AUTH_REQUIRED:
-        return get_default_org(session)
+    if include_user_profile and email is None:
+        email = _load_descope_user_email(subject)
 
-    bearer = _extract_bearer_token(request)
-    api_key = request.headers.get("x-api-key") or ""
-
-    if bearer and api_key:
-        raise HTTPException(status_code=401, detail="Send Authorization OR x-api-key, not both")
-    if not bearer and not api_key:
-        raise HTTPException(status_code=401, detail="Missing Authorization or x-api-key header")
-
-    if bearer:
-        return resolve_bearer_session(bearer, session)
-
-    identity = resolve_descope_identity(api_key)
-    org = find_org_by_tenant(identity.tenant_name, session)
-    if not org:
-        raise HTTPException(status_code=404, detail=f"Organization '{identity.tenant_name}' not configured")
-
-    return org
+    return BearerIdentity(
+        org=_find_or_create_org(tenant, session),
+        principal_id=subject,
+        email=email,
+    )
 
 
-def get_current_starter(request: Request, session: Session = Depends(get_session)) -> RequestIdentity:
-    """FastAPI dependency that returns the full identity behind the current request.
+def _resolve_hosted_identity(
+    request: Request,
+    session: Session,
+    *,
+    include_user_profile: bool,
+) -> RequestIdentity:
+    credential = _extract_request_credential(request)
+    if isinstance(credential, BearerCredential):
+        return resolve_bearer_session(
+            credential.token,
+            session,
+            include_user_profile=include_user_profile,
+        )
 
-    Self-hosted (AUTH_REQUIRED=False): returns RequestIdentity with default org and Nones.
-    Hosted (AUTH_REQUIRED=True): validates Descope API key and resolves org + identity.
-    """
-    if not AUTH_REQUIRED:
-        return RequestIdentity(org=get_default_org(session), access_key_id=None, email=None, name=None)
-
-    api_key = extract_api_key(request)
-    identity = resolve_descope_identity(api_key, include_user_profile=True)
+    identity = resolve_descope_identity(credential.cleartext, include_user_profile=include_user_profile)
     org = find_org_by_tenant(identity.tenant_name, session)
     if not org:
         raise HTTPException(
             status_code=404,
             detail=f"Organization '{identity.tenant_name}' not configured — run valk config init",
         )
-    return RequestIdentity(org=org, access_key_id=identity.access_key_id, email=identity.email, name=identity.name)
+    return AccessKeyIdentity(
+        org=org,
+        principal_id=identity.principal_id,
+        email=identity.email,
+    )
+
+
+def get_current_org(
+    request: Request,
+    session: Session = Depends(get_session),
+    _bearer: BearerSecurity = None,
+    _api_key: AccessKeySecurity = None,
+) -> Org:
+    """Resolve the current org from either an Authorization: Bearer or x-api-key header."""
+    if not AUTH_REQUIRED:
+        return get_default_org(session)
+    return _resolve_hosted_identity(request, session, include_user_profile=False).org
+
+
+def get_current_starter(
+    request: Request,
+    session: Session = Depends(get_session),
+    _bearer: BearerSecurity = None,
+    _api_key: AccessKeySecurity = None,
+) -> RequestIdentity:
+    """FastAPI dependency that returns the full identity behind the current request.
+
+    Self-hosted (AUTH_REQUIRED=False): returns the default organization identity.
+    Hosted (AUTH_REQUIRED=True): validates one Descope credential and resolves org + identity.
+    """
+    if not AUTH_REQUIRED:
+        return SelfHostedIdentity(org=get_default_org(session))
+    return _resolve_hosted_identity(request, session, include_user_profile=True)

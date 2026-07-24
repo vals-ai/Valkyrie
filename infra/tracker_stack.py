@@ -44,9 +44,9 @@ from constants import (
     VPC_CIDR,
 )
 from constructs import Construct
-from runtime_iam import create_tracker_task_role, managed_runtime_environment
+from runtime_iam import create_tracker_task_role, managed_runtime_environment, validate_secret_name
 from stage import Stage
-from stage_config import config_for
+from stage_config import SHARED_DESCOPE_PROJECT_ID, config_for
 
 _ARM64_PLATFORM = aws_ecs.RuntimePlatform(
     cpu_architecture=aws_ecs.CpuArchitecture.ARM64,
@@ -154,23 +154,20 @@ class TrackerStack(Stack):
             )
             sentry_secrets["SENTRY_DSN"] = aws_ecs.Secret.from_secrets_manager(sentry_secret)
 
-        auth_required = os.environ.get("AUTH_REQUIRED", "false")
-        descope_project_id = os.environ.get("DESCOPE_PROJECT_ID", "")
-        if not stage.is_prod:
-            auth_required = "true"
-            if not descope_project_id:
-                raise ValueError("Development deployments require DESCOPE_PROJECT_ID.")
+        descope_management_secret_name = os.environ.get("DESCOPE_MANAGEMENT_SECRET_NAME", "")
+        if not descope_management_secret_name:
+            raise ValueError("Hosted deployments require DESCOPE_MANAGEMENT_SECRET_NAME.")
+        descope_management_secret_name = validate_secret_name(descope_management_secret_name)
 
         descope_secrets: dict[str, aws_ecs.Secret] = {}
-        if auth_required.lower() == "true":
-            descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
-                self,
-                "DescopeManagementKeySecret",
-                "devEvalInfraDescopeManagementKey",
-            )
-            descope_secrets["DESCOPE_MANAGEMENT_KEY"] = aws_ecs.Secret.from_secrets_manager(
-                descope_management_key_secret,
-            )
+        descope_management_key_secret = aws_secretsmanager.Secret.from_secret_name_v2(
+            self,
+            "DescopeManagementKeySecret",
+            descope_management_secret_name,
+        )
+        descope_secrets["DESCOPE_MANAGEMENT_KEY"] = aws_ecs.Secret.from_secrets_manager(
+            descope_management_key_secret,
+        )
 
         # ── Tracker API service ──────────────────────────────────────────
 
@@ -204,9 +201,9 @@ class TrackerStack(Stack):
                 **shared_env,
                 **db_env,
                 "REDIS_URL": redis_url,
-                "AUTH_REQUIRED": auth_required,
+                "AUTH_REQUIRED": "true",
                 "BENCHMARK_CATALOG_URL": os.environ.get("BENCHMARK_CATALOG_URL", ""),
-                "DESCOPE_PROJECT_ID": descope_project_id,
+                "DESCOPE_PROJECT_ID": SHARED_DESCOPE_PROJECT_ID,
                 "SENTRY_RELEASE": os.environ.get("SENTRY_RELEASE", ""),
             },
             secrets={

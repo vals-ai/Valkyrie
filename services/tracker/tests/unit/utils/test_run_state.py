@@ -21,7 +21,8 @@ import tracker.utils.harness_config as harness_config_module
 from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
-from tracker.auth import RequestIdentity
+from tracker.auth import SelfHostedIdentity
+from tracker.aws.cloudwatch_logs import task_log_attempt_id
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import (
     AgentContractRequest,
@@ -57,7 +58,7 @@ class TestRunState:
     """Benchmark state transitions, task rows, and finalization."""
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
-    _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
+    _test_starter = SelfHostedIdentity(org=_test_org)
 
     def test_fetch_sandbox_provider_config_combines_provider_type_with_secret(
         self, harness_config: HarnessConfig, monkeypatch: pytest.MonkeyPatch
@@ -507,17 +508,23 @@ class TestRunState:
         )
         database_session.add(task_row)
         database_session.commit()
+        attempt_started_at = task_row.started_at
+        expected_attempt_id = task_log_attempt_id(attempt_started_at)
 
-        commit_task_error(task_row, database_session, "agent failed")
+        commit_task_error(
+            task_row,
+            database_session,
+            "agent failed",
+            expected_started_at=attempt_started_at,
+        )
 
         database_session.refresh(task_row)
         assert task_row.status == TaskStatus.ERROR
-        error_message = database_session.exec(
-            select(ErrorResult.error_message)
-            .where(ErrorResult.task == task_row.id)
-            .where(ErrorResult.org_id == TEST_ORG_ID)
+        error = database_session.exec(
+            select(ErrorResult).where(ErrorResult.task == task_row.id).where(ErrorResult.org_id == TEST_ORG_ID)
         ).one()
-        assert error_message == "agent failed"
+        assert error.error_message == "agent failed"
+        assert error.attempt_id == expected_attempt_id
         transition_record = next(record for record in span_records if record["message"] == "task.status_transition")
         assert transition_record["from_status"] == TaskStatus.IN_PROGRESS.value
         assert transition_record["to_status"] == TaskStatus.ERROR.value

@@ -30,7 +30,7 @@ from sqlmodel import Session, select
 from main import app, tracker_service_error_handler
 from tests.unit.utils.task_execution_support import MockKicker
 from tests.utils import TEST_ORG_ID, async_iterator
-from tracker.auth import RequestIdentity, get_current_org, get_current_starter
+from tracker.auth import AccessKeyIdentity, get_current_org, get_current_starter
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -305,6 +305,34 @@ class TestTrackerAPI:
             "status": "done",
             "reading_plan_url": "https://results.example/reading-plan",
         }
+
+    def test_self_hosted_analyze_preserves_sse(
+        self,
+        monkeypatch: MonkeyPatch,
+        database_session: Session,
+        example_benchmark_object: Benchmark,
+    ) -> None:
+        example_benchmark_object.status = BenchmarkStatus.FINISHED
+        database_session.add(example_benchmark_object)
+        database_session.commit()
+        monkeypatch.setattr(
+            "main.analyze_event_stream",
+            lambda **_kwargs: async_iterator(
+                [
+                    'event: started\ndata: {"lambda_function":"docent-analyzer"}\n\n',
+                    'event: done\ndata: {"reading_plan_url":"https://results.example/reading-plan"}\n\n',
+                ]
+            ),
+        )
+
+        response = client.post(
+            f"/analyze-benchmark/{example_benchmark_object.id}",
+            json={"lambda_function": "docent-analyzer", "no_cache": True},
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/event-stream")
+        assert "event: done" in response.text
 
     async def test_tracker_service_error_hides_internal_detail(
         self,
@@ -712,7 +740,13 @@ class TestTrackerAPI:
         database_session.commit()
 
         query_params = {"benchmark_id": str(benchmark_row.id)}
-        response = client.get("/retrieve-results", params=query_params)
+
+        def unexpected_runtime_resolution(*_args: Any, **_kwargs: Any) -> None:
+            raise AssertionError("AWS runtime must not be resolved")
+
+        with monkeypatch.context() as context:
+            context.setattr("main.resolve_run_aws_runtime", unexpected_runtime_resolution)
+            response = client.get("/retrieve-results", params=query_params)
         assert response.status_code == 200
         response_json = response.json()
 
@@ -1097,11 +1131,10 @@ class TestTrackerAPI:
         harness_config: HarnessConfig,
     ) -> None:
         test_org = Org(id=TEST_ORG_ID, name="default")
-        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+        app.dependency_overrides[get_current_starter] = lambda: AccessKeyIdentity(
             org=test_org,
-            access_key_id="K2abc",
+            principal_id="K2abc",
             email="alice@vals.ai",
-            name="Alice",
         )
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)
@@ -1157,15 +1190,14 @@ class TestTrackerAPI:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Hosted-mode start with an email-less access key emits a one-shot warning. Self-hosted
-        identity (access_key_id is None) must NOT warn — that's the bug fix for the warning
+        identity (principal_id is None) must NOT warn — that's the bug fix for the warning
         firing on every authenticated request.
         """
         test_org = Org(id=TEST_ORG_ID, name="default")
-        app.dependency_overrides[get_current_starter] = lambda: RequestIdentity(
+        app.dependency_overrides[get_current_starter] = lambda: AccessKeyIdentity(
             org=test_org,
-            access_key_id="K2abc",
+            principal_id="K2abc",
             email=None,
-            name=None,
         )
 
         monkeypatch.setattr(BenchmarkServiceClient, "verify_task_ids", _verify_single_task_id)

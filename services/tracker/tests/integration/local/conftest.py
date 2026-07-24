@@ -58,6 +58,7 @@ def local_app(
 ) -> Generator[FastAPI, None, None]:
     """Configure the local app and database shared by API clients."""
     monkeypatch.setenv("AUTH_REQUIRED", "true")
+    monkeypatch.setenv("AWS_MANAGED_TENANT_IDS", DEFAULT_ORG_NAME)
     monkeypatch.setenv("DESCOPE_PROJECT_ID", "P_fake")
 
     importlib.reload(config_module)

@@ -4,6 +4,7 @@ Run: uv run pytest tests/unit/agent/test_bundler.py
 """
 
 import zipfile
+import subprocess
 from io import BytesIO
 from pathlib import Path
 
@@ -14,7 +15,14 @@ from pydantic import ValidationError
 import tracker.agent.bundler as bundler_module
 from tracker.agent.bundler import get_agent_zip_stream
 from tracker.agent.contract import get_contract_from_zip_bytes, read_agent_name
-from tracker.agent.schemas import AgentConfig, AgentContract, OutputArtifact, validate_agent_name
+from tracker.agent.schemas import (
+    AgentConfig,
+    AgentContract,
+    OutputArtifact,
+    bind_shell_variables,
+    prepare_shell_command,
+    validate_agent_name,
+)
 from tracker.exceptions import BundlerError
 
 _zip_directory_to_file = getattr(bundler_module, "_zip_directory_to_file")
@@ -79,7 +87,10 @@ secrets:
         assert contract.name == "agent-a"
         assert contract.model == "gpt-4o"
         assert contract.install_cmd == "echo install"
-        assert contract.run_cmd == "python run.py --problem {problem_statement_path} --model gpt-4o"
+        assert contract.run_cmd.count("export VALKYRIE_ARG_") == 1
+        assert '--problem "${VALKYRIE_ARG_' in contract.run_cmd
+        assert '--model "${VALKYRIE_ARG_' in contract.run_cmd
+        assert "=gpt-4o" in contract.run_cmd
         assert contract.final_output == "/tmp/final.txt"
         output_artifact = contract.output_artifacts[0]
         assert isinstance(output_artifact, OutputArtifact)
@@ -94,6 +105,95 @@ secrets:
 
         with pytest.raises(BundlerError, match="No contract file found"):
             get_contract_from_zip_bytes("agent-a", zip_buffer.getvalue(), AgentConfig())
+
+    def test_get_contract_from_zip_bytes_shell_quotes_arguments(self) -> None:
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr(
+                "agent-a/contract.yaml",
+                """
+name: agent-a
+install_cmd: echo install
+run_cmd: python run.py --problem {problem_statement_path} --model {model}
+kwargs:
+  model:
+    type: str
+    required: true
+""",
+            )
+
+        contract = get_contract_from_zip_bytes(
+            "agent-a",
+            zip_buffer.getvalue(),
+            AgentConfig(model="model; printenv"),
+        )
+
+        assert contract.run_cmd.count("export VALKYRIE_ARG_") == 1
+        assert "='model; printenv'" in contract.run_cmd
+        assert '--model "${VALKYRIE_ARG_' in contract.run_cmd
+
+    def test_get_contract_from_zip_bytes_rejects_quoted_placeholders(self) -> None:
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w") as zf:
+            zf.writestr(
+                "agent-a/contract.yaml",
+                """
+name: agent-a
+install_cmd: echo install
+run_cmd: 'python run.py --problem {problem_statement_path} --model "{model}"'
+kwargs:
+  model:
+    type: str
+    required: true
+""",
+            )
+
+        with pytest.raises(BundlerError, match="must be a standalone shell argument"):
+            get_contract_from_zip_bytes(
+                "agent-a",
+                zip_buffer.getvalue(),
+                AgentConfig(model='model"; printenv; #'),
+            )
+
+
+def test_shell_arguments_are_data(tmp_path: Path) -> None:
+    for index, value in enumerate(
+        (
+            "$(touch marker)",
+            "`touch marker`",
+            "value; touch marker",
+            'value"; touch marker; #',
+        )
+    ):
+        marker = tmp_path / f"marker-{index}"
+        payload = value.replace("marker", str(marker))
+        template = prepare_shell_command("printf '%s\\n' {model}", ["model"])
+        command = bind_shell_variables(template, {"model": payload})
+
+        result = subprocess.run(
+            ["/bin/sh", "-c", command],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.stdout == f"{payload}\n"
+        assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat <<EOF\n{model}\nEOF",
+        "eval {model}",
+        "sh -c {model}",
+        "echo $( {model} )",
+        "echo `{model}`",
+    ],
+)
+def test_dynamic_arguments_reject_shell_reinterpretation(command: str) -> None:
+    with pytest.raises(ValueError):
+        prepare_shell_command(command, ["model"])
 
 
 class TestAgentNameValidation:

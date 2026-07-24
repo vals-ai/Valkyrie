@@ -272,6 +272,8 @@ class TestSandboxOperations:
             log_output=log_callback,
             cwd="/",
             aws_runtime=aws_runtime,
+            benchmark_id="sandbox-live-test",
+            artifact_attempt_id="1",
         )
 
         output = "\n".join(logged_messages)
@@ -315,6 +317,8 @@ class TestSandboxOperations:
             log_output=log_callback,
             cwd="/",
             aws_runtime=aws_runtime,
+            benchmark_id="sandbox-live-test",
+            artifact_attempt_id="1",
         )
 
         output = "\n".join(logged_messages)

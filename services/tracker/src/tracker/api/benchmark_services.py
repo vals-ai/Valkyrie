@@ -9,8 +9,10 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request
 import httpx
 
-from tracker.auth import get_current_org
-from tracker.config import BENCHMARK_CATALOG_URL
+from tracker.auth import BENCHMARK_SERVICE_API_KEY_HEADER, RequestIdentity, get_current_org, get_current_starter
+from tracker.aws.resolver import resolve_non_run_aws_runtime
+from tracker.benchmark_service_credentials import ensure_managed_benchmark_service_headers
+from tracker.config import AUTH_REQUIRED, BENCHMARK_CATALOG_URL
 from tracker.database.models import Org
 from tracker.types import (
     BenchmarkServiceCatalogResponse,
@@ -54,26 +56,33 @@ async def _ping_service(client: httpx.AsyncClient, name: str, url: str) -> Bench
 @router.get("", response_model=BenchmarkServiceCatalogResponse)
 async def catalog_benchmark_services(
     request: Request,
-    _org: Org = Depends(get_current_org),
+    org: Org = Depends(get_current_org),
 ) -> BenchmarkServiceCatalogResponse:
     """Fetch catalog benchmark services visible to the caller."""
     if not BENCHMARK_CATALOG_URL:
         return BenchmarkServiceCatalogResponse(services=[])
 
-    headers: dict[str, str] = {}
-    if api_key := request.headers.get("x-api-key"):
-        headers["X-Api-Key"] = api_key
+    api_key = request.headers.get("x-api-key")
+    if AUTH_REQUIRED and not api_key:
+        runtime = resolve_non_run_aws_runtime(request, org.name)
+        service_headers = ensure_managed_benchmark_service_headers(org, runtime.clients)
+        headers = {"X-Api-Key": service_headers[BENCHMARK_SERVICE_API_KEY_HEADER]}
+    else:
+        headers = {"X-Api-Key": api_key} if api_key else {}
 
     try:
         async with httpx.AsyncClient(timeout=CATALOG_REQUEST_TIMEOUT_SECONDS) as client:
-            response = await client.get(f"{BENCHMARK_CATALOG_URL}/benchmark-services", headers=headers)
+            response = await client.get(
+                f"{BENCHMARK_CATALOG_URL}/benchmark-services",
+                headers=headers,
+            )
     except httpx.HTTPError as exc:
         logger.warning("Benchmark catalog request failed: %s", exc)
         raise HTTPException(status_code=502, detail="Failed to list benchmark services") from exc
 
     if response.status_code != 200:
         logger.warning("Benchmark catalog returned HTTP %s", response.status_code)
-        raise HTTPException(status_code=response.status_code, detail="Failed to list benchmark services")
+        raise HTTPException(status_code=502, detail="Failed to list benchmark services")
 
     try:
         payload: object = response.json()
@@ -90,9 +99,15 @@ async def catalog_benchmark_services(
 @router.post("", response_model=BenchmarkServicesResponse)
 async def list_benchmark_services(
     request: BenchmarkServicesRequest,
-    _org: Org = Depends(get_current_org),
+    identity: RequestIdentity = Depends(get_current_starter),
 ) -> BenchmarkServicesResponse:
     """Health-check the caller-provided benchmark services with concurrent pings."""
+    match identity.kind:
+        case "bearer":
+            raise HTTPException(status_code=403, detail="Bearer sessions cannot health-check custom services")
+        case "access_key" | "self_hosted":
+            pass
+
     if not request.services:
         return BenchmarkServicesResponse(services=[])
 

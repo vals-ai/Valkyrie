@@ -27,3 +27,5 @@ exclude = [
   ".*",
 ]
 typeCheckingMode = "strict"
+venv = ".venv"
+venvPath = "."

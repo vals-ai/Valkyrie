@@ -16,6 +16,10 @@ from fastapi.testclient import TestClient
 
 import tracker.api.benchmark_services as benchmark_services_api
 from main import app
+from tests.utils import TEST_ORG_ID
+from tracker.auth import AccessKeyIdentity, BearerIdentity, get_current_starter
+from tracker.aws.runtime import AWSRuntime
+from tracker.database.models import Org
 
 _client = TestClient(app)
 _ResponseHandler = Callable[[httpx.Request], Coroutine[None, None, httpx.Response]]
@@ -70,6 +74,36 @@ class TestBenchmarkServicesCatalog:
             ]
         }
 
+    def test_bearer_catalog_uses_tracker_managed_credential(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        requests: list[httpx.Request] = []
+        runtime = cast(AWSRuntime, SimpleNamespace(clients=object()))
+
+        async def handle_request(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            return httpx.Response(200, json={"services": []})
+
+        def resolve_runtime(_request: object, _tenant_id: str) -> AWSRuntime:
+            return runtime
+
+        def managed_headers(_org: object, clients: object) -> dict[str, str]:
+            assert clients is runtime.clients
+            return {"X-Descope-Api-Key": "managed-key"}
+
+        monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
+        monkeypatch.setattr(benchmark_services_api, "AUTH_REQUIRED", True)
+        monkeypatch.setattr(benchmark_services_api, "resolve_non_run_aws_runtime", resolve_runtime)
+        monkeypatch.setattr(
+            benchmark_services_api,
+            "ensure_managed_benchmark_service_headers",
+            managed_headers,
+        )
+        _install_http_transport(monkeypatch, handle_request)
+
+        response = _client.get("/benchmark-services", headers={"Authorization": "Bearer session"})
+
+        assert response.status_code == 200
+        assert requests[0].headers["X-Api-Key"] == "managed-key"
+
     def test_benchmark_services_endpoint_defaults_missing_services_to_empty(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -91,25 +125,30 @@ class TestBenchmarkServicesCatalog:
         assert response.status_code == 200
         assert response.json() == {"services": []}
 
-    def test_benchmark_services_endpoint_hides_catalog_error_detail(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize("downstream_status", [401, 403, 503])
+    def test_benchmark_services_endpoint_hides_catalog_error_detail(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        downstream_status: int,
+    ) -> None:
         """
         Verify downstream catalog failures retain only a stable public error.
 
         Test cases:
-        - The downstream status remains available to the caller.
+        - Downstream statuses are normalized so they cannot impersonate Tracker auth failures.
         - The downstream response body is not reflected.
         """
         sensitive_detail = "sensitive-catalog-provider-detail"
 
         async def handle_request(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(503, json={"detail": sensitive_detail})
+            return httpx.Response(downstream_status, json={"detail": sensitive_detail})
 
         monkeypatch.setattr(benchmark_services_api, "BENCHMARK_CATALOG_URL", "https://catalog.example")
         _install_http_transport(monkeypatch, handle_request)
 
         response = _client.get("/benchmark-services", headers={"X-Api-Key": "tenant-key"})
 
-        assert response.status_code == 503
+        assert response.status_code == 502
         assert response.json() == {"detail": "Failed to list benchmark services"}
         assert sensitive_detail not in response.text
 
@@ -235,6 +274,38 @@ class TestPingService:
 
 class TestBenchmarkServicesHealth:
     """Benchmark service endpoint health aggregation."""
+
+    @pytest.mark.parametrize(
+        "identity",
+        [
+            AccessKeyIdentity(
+                org=Org(id=TEST_ORG_ID, name="default"),
+                principal_id="K2abc",
+                email="alice@vals.ai",
+            ),
+            BearerIdentity(
+                org=Org(id=TEST_ORG_ID, name="default"),
+                principal_id="U2abc",
+                email="alice@vals.ai",
+            ),
+        ],
+    )
+    def test_benchmark_services_endpoint_is_legacy_only(
+        self,
+        identity: AccessKeyIdentity | BearerIdentity,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setitem(app.dependency_overrides, get_current_starter, lambda: identity)
+
+        response = _client.post("/benchmark-services", json={"services": []})
+
+        if identity.kind == "bearer":
+            assert response.status_code == 403
+            assert response.json() == {"detail": "Bearer sessions cannot health-check custom services"}
+            return
+
+        assert response.status_code == 200
+        assert response.json() == {"services": []}
 
     def test_benchmark_services_endpoint_hides_health_transport_error_detail(
         self,

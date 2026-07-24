@@ -6,10 +6,12 @@ Run: uv run pytest tests/unit/test_docent_analysis.py
 from __future__ import annotations
 
 import pytest
-from sqlmodel import Session
+from sqlmodel import Session, select
 
+from tests.utils import TEST_ORG_ID
+from tracker.aws.cloudwatch_logs import task_log_attempt_id
 from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus
+from tracker.database.models import Benchmark, BenchmarkStatus, DocentReadingStatus, ErrorResult, Org, Task, TaskStatus
 from tracker.docent_analysis import invoke_analyzer
 from tracker.utils import catch_errors_during_cleanup
 
@@ -114,12 +116,15 @@ def test_cleanup_sweeps_running_docent_status_to_error(
     """A benchmark stuck at IN_PROGRESS with docent_reading_status=RUNNING is
     swept to ERROR (both the benchmark itself and the analyzer status).
     """
-    from tests.utils import TEST_ORG_ID
-    from tracker.database.models import Org
-
     example_benchmark_object.status = BenchmarkStatus.IN_PROGRESS
     example_benchmark_object.docent_reading_status = DocentReadingStatus.RUNNING
-    database_session.add(example_benchmark_object)
+    task = Task(
+        org_id=TEST_ORG_ID,
+        task_id="interrupted-task",
+        benchmark=example_benchmark_object.id,
+        status=TaskStatus.IN_PROGRESS,
+    )
+    database_session.add_all([example_benchmark_object, task])
     database_session.commit()
 
     org = database_session.get(Org, TEST_ORG_ID)
@@ -128,5 +133,7 @@ def test_cleanup_sweeps_running_docent_status_to_error(
     catch_errors_during_cleanup(example_benchmark_object.id, database_session, org)
 
     database_session.refresh(example_benchmark_object)
+    error = database_session.exec(select(ErrorResult).where(ErrorResult.task == task.id)).one()
     assert example_benchmark_object.docent_reading_status == DocentReadingStatus.ERROR
     assert example_benchmark_object.status == BenchmarkStatus.ERROR
+    assert error.attempt_id == task_log_attempt_id(task.started_at)

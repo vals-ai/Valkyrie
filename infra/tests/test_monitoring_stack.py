@@ -35,7 +35,7 @@ TEST_DEPLOYMENT_SLACK_ENV = {
     SLACK_WORKSPACE_ID_ENV: "TTESTWORKSPACE",
     DEPLOYMENT_NOTIFICATIONS_SLACK_CHANNEL_ID_ENV: "CDEPLOYCHANNEL",
 }
-TEST_DEV_ENV = {"DESCOPE_PROJECT_ID": "dev-project"}
+TEST_DEV_ENV = {"DESCOPE_MANAGEMENT_SECRET_NAME": "test-descope-management-key"}
 TEST_AWS_ACCOUNT = os.environ.get("CDK_DEFAULT_ACCOUNT", "123456789012")
 TEST_AWS_REGION = os.environ.get("CDK_DEFAULT_REGION", "us-east-1")
 SHARED_STACK_CONTEXT = {
@@ -317,7 +317,7 @@ class MonitoringStackTest(unittest.TestCase):
             (PROD, "production", "local"),
             (DEV, "dev", "local-dev"),
         ):
-            environment = TEST_DEV_ENV if stage_name == DEV else {}
+            environment = TEST_DEV_ENV
             with self.subTest(stage=stage_name), mock.patch.dict(os.environ, environment, clear=True):
                 tracker_template, worker_template = service_templates(stage_name)
 

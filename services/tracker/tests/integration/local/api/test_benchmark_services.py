@@ -11,7 +11,11 @@ from fastapi.testclient import TestClient
 class TestBenchmarkServices:
     """Benchmark service endpoint responses and authentication."""
 
-    def test_benchmark_services_returns_pings(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_benchmark_services_returns_pings(
+        self,
+        access_key_client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Service health aggregation must keep healthy and failed entries distinct.
 
         Test cases:
@@ -30,9 +34,9 @@ class TestBenchmarkServices:
 
         monkeypatch.setattr(httpx, "AsyncClient", build_client)
 
-        response = client.post(
+        response = access_key_client.post(
             "/benchmark-services",
-            headers={"Authorization": "Bearer fake"},
+            headers={"x-api-key": "fake-key"},
             json={
                 "services": [
                     {"name": "swebench", "url": "http://up:8001"},

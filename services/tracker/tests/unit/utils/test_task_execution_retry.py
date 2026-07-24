@@ -3,6 +3,7 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 """
 
+import asyncio
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
@@ -11,16 +12,16 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
-from sqlmodel import Session
-from tenacity import wait_none
+from sqlmodel import Session, select
 
 from tests.unit.utils.task_execution_support import (
     create_task_environment,
     make_retrieve_task_response,
     run_process_task,
 )
+from tracker.aws.cloudwatch_logs import task_log_attempt_id
 from tracker.aws.runtime import AWSRuntime
-from tracker.database.models import AgentContractRequest, TaskStatus
+from tracker.database.models import AgentContractRequest, ErrorResult, EvaluationResult, Org, TaskAttempt, TaskStatus
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
 from tracker.types import HarnessConfig
@@ -29,13 +30,6 @@ from tracker.utils import task_execution as task_execution_module
 
 class TestTaskExecutionRetry:
     """Task execution retries, callbacks, and transition spans."""
-
-    def test_process_task_retry_decorator_uses_observability_retry_callback(self) -> None:
-        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
-        before_sleep = retryable_process_task.retry.before_sleep
-
-        assert before_sleep is not None
-        assert callable(before_sleep)
 
     @pytest.mark.parametrize(
         "fail_target,error,second_error,expected_dependency_modes,expected_status",
@@ -68,6 +62,13 @@ class TestTaskExecutionRetry:
                 [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.FINAL_FRESH_SANDBOX],
                 TaskStatus.ERROR,
             ),
+            (
+                "tracker.utils.task_execution.run_agent",
+                SandboxSetupError("first sandbox setup failed"),
+                SandboxSetupError("second sandbox setup failed"),
+                [DependencySetupMode.IN_PLACE_RETRIES, DependencySetupMode.IN_PLACE_RETRIES],
+                TaskStatus.ERROR,
+            ),
         ],
     )
     async def test_process_task_retries_on_sandbox_setup_error(
@@ -97,9 +98,8 @@ class TestTaskExecutionRetry:
             database_session,
             harness_config,
         )
-
-        retryable_process_task = getattr(task_execution_module, "_process_task_attempt")
-        monkeypatch.setattr(retryable_process_task.retry, "wait", wait_none())
+        initial_attempt_id = task_log_attempt_id(task_row.started_at)
+        monkeypatch.setattr(task_execution_module, "_PTY_TASK_RETRY_WAIT_SECONDS", 0)
 
         sandbox_entry_count = 0
 
@@ -110,15 +110,28 @@ class TestTaskExecutionRetry:
             mock_sandbox = AsyncMock()
             mock_sandbox.id = f"mock-sandbox-{sandbox_entry_count}"
             mock_sandbox.name = f"mock-sandbox-{sandbox_entry_count}"
+            mock_sandbox.state = "started"
             yield mock_sandbox
 
         call_count = 0
         dependency_modes: list[DependencySetupMode] = []
+        artifact_attempt_ids: list[str] = []
+        log_stream_keys: list[str] = []
+
+        async def _capture_log_stream(
+            write_queue: asyncio.Queue[str | None],
+            stream_key: str,
+            _aws_runtime: AWSRuntime,
+        ) -> None:
+            log_stream_keys.append(stream_key)
+            while await write_queue.get() is not None:
+                pass
 
         async def _fails_first_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             nonlocal call_count
             call_count += 1
             dependency_modes.append(_kwargs["dependency_setup_mode"])
+            artifact_attempt_ids.append(_kwargs["artifact_attempt_id"])
             if call_count == 1:
                 raise error
             if second_error:
@@ -133,6 +146,7 @@ class TestTaskExecutionRetry:
 
         async def _mock_run_agent(*_args: Any, **_kwargs: Any) -> tuple[None, float]:
             dependency_modes.append(_kwargs["dependency_setup_mode"])
+            artifact_attempt_ids.append(_kwargs["artifact_attempt_id"])
             return None, 0.0
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
@@ -145,6 +159,7 @@ class TestTaskExecutionRetry:
         monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.run_orchestration.engine", database_session.bind)
         monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
+        monkeypatch.setattr("tracker.utils.task_execution.write_buffered_logs", _capture_log_stream)
         monkeypatch.setattr("tracker.utils.task_execution.create_sandbox", _mock_create_sandbox)
         monkeypatch.setattr(fail_target, _fails_first_run_agent if is_run_agent_target else _fails_first_other)
         if not is_run_agent_target:
@@ -162,6 +177,63 @@ class TestTaskExecutionRetry:
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status
+        current_attempt_id = task_log_attempt_id(task_row.started_at)
+        assert current_attempt_id != initial_attempt_id
+        assert artifact_attempt_ids[-1] == current_attempt_id
+        assert [stream.rsplit("_", 1)[-1] for stream in log_stream_keys] == [
+            initial_attempt_id,
+            current_attempt_id,
+        ]
+        if len(artifact_attempt_ids) == 2:
+            assert artifact_attempt_ids == [initial_attempt_id, current_attempt_id]
+
+        errors = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
+        evaluations = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).all()
+        attempts = database_session.exec(
+            select(TaskAttempt).where(TaskAttempt.task == task_row.id).order_by(TaskAttempt.started_at)
+        ).all()
+        assert [attempt.attempt_id for attempt in attempts] == [initial_attempt_id, current_attempt_id]
+        assert [attempt.sandbox_instance_id for attempt in attempts] == [
+            "mock-sandbox-1",
+            "mock-sandbox-2",
+        ]
+        if expected_status == TaskStatus.FINISHED:
+            assert len(errors) == 1
+            assert errors[0].attempt_id == initial_attempt_id
+            assert len(evaluations) == 1
+            assert evaluations[0].attempt_id == current_attempt_id
+        else:
+            assert len(errors) == 2
+            assert {error.attempt_id for error in errors} == {initial_attempt_id, current_attempt_id}
+            assert evaluations == []
+
+    def test_stopped_task_does_not_record_or_start_retry(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: HarnessConfig,
+    ) -> None:
+        _, task_row, _ = create_task_environment(
+            contract,
+            database_session,
+            harness_config,
+        )
+        task_row.status = TaskStatus.STOPPED
+        database_session.add(task_row)
+        database_session.commit()
+        org = database_session.get(Org, task_row.org_id)
+        assert org is not None
+        monkeypatch.setattr(task_execution_module, "engine", database_session.bind)
+
+        retried = task_execution_module._prepare_task_retry(
+            task_row,
+            org,
+            SandboxSetupError("sandbox failed after stop"),
+        )
+
+        assert retried is None
+        assert database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all() == []
 
     async def test_process_task_spans_timed_status_transitions(
         self,
@@ -182,6 +254,7 @@ class TestTaskExecutionRetry:
             mock_sandbox = AsyncMock()
             mock_sandbox.id = "mock-sandbox-id"
             mock_sandbox.name = "mock-sandbox-name"
+            mock_sandbox.state = "started"
             yield mock_sandbox
 
         async def _mock_retrieve_task(*_args: Any, **_kwargs: Any) -> RetrieveTaskResponse:
@@ -246,6 +319,10 @@ class TestTaskExecutionRetry:
         assert all(record["entered"] and record["exited"] for record in transition_records)
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
         assert run_agent_kwargs["benchmark_id"] == str(benchmark_id)
+        database_session.refresh(task_row)
+        assert run_agent_kwargs["artifact_attempt_id"] == task_log_attempt_id(task_row.started_at)
+        evaluation = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).one()
+        assert evaluation.attempt_id == run_agent_kwargs["artifact_attempt_id"]
 
         event_names = [record["message"] for record in log_records]
         assert "agent.run.complete" in event_names

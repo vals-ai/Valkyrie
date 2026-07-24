@@ -21,6 +21,7 @@ from tracker.database.models import (
     Org,
     TaskStatus,
 )
+from tracker.types import ERROR_EXCERPT_MAX_LENGTH, TASK_LIST_ERROR_EXCERPT_MAX_LENGTH
 
 _client = TestClient(app)
 
@@ -37,6 +38,7 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
     - A benchmark from another organization returns 404.
     """
     benchmark = example_benchmark_object
+    benchmark.error_message = "r" * (ERROR_EXCERPT_MAX_LENGTH + 1)
     database_session.add(benchmark)
     database_session.flush()
     database_session.add_all(
@@ -86,6 +88,8 @@ def test_single_benchmark_reports_terminal_progress_and_enforces_org_scope(
         "STOPPED": 1,
     }
     assert response_body["final_score"] == 0.75
+    assert response_body["error_message"] == "r" * ERROR_EXCERPT_MAX_LENGTH
+    assert response_body["runtime"] == "legacy"
     assert str(benchmark.id) in response_body["cloudwatch_url"]
     assert str(benchmark.id) in response_body["s3_bucket_url"]
     assert other_org_response.status_code == 404
@@ -132,7 +136,11 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     database_session.add_all(
         [
             make_error_result(literal_task, "old failure", now - timedelta(minutes=1)),
-            make_error_result(literal_task, "latest failure", now),
+            make_error_result(
+                literal_task,
+                "latest failure" + "!" * TASK_LIST_ERROR_EXCERPT_MAX_LENGTH,
+                now,
+            ),
             make_error_result(other_error, "other failure", now),
         ]
     )
@@ -152,7 +160,16 @@ def test_benchmark_tasks_filter_literal_search_and_latest_error(
     assert sorted_body["total_count"] == 3
     assert [task["status"] for task in sorted_body["tasks"]] == ["ERROR", "ERROR", "FINISHED"]
     literal_row = next(task for task in sorted_body["tasks"] if task["task_id"] == literal_task.task_id)
-    assert literal_row["error_message"] == "latest failure"
+    assert (
+        literal_row["error_message"]
+        == ("latest failure" + "!" * TASK_LIST_ERROR_EXCERPT_MAX_LENGTH)[:TASK_LIST_ERROR_EXCERPT_MAX_LENGTH]
+    )
     assert literal_search_response.status_code == 200
     assert literal_search_response.json()["total_count"] == 1
     assert literal_search_response.json()["tasks"][0]["task_id"] == "literal_%_match"
+
+    oversized_page = _client.get(
+        f"/benchmarks/{benchmark.id}/tasks",
+        params={"limit": 101},
+    )
+    assert oversized_page.status_code == 422

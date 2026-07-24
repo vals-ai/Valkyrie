@@ -478,6 +478,7 @@ def build_benchmark_table_rows(benchmarks: Sequence[Benchmark], session: Session
                 ),
                 task_state_counts={k.value: v for k, v in counts.items()},
                 final_score=b.final_evaluation.final_score if b.final_evaluation else None,
+                runtime="managed" if b.aws_managed else "legacy",
             )
         )
     return rows

@@ -17,7 +17,14 @@ from tracker.aws.s3 import create_benchmark_url
 from tracker.database.models import Benchmark, ErrorResult, Org, Task, TaskStatus
 from tracker.database.scoping import get_scoped
 from tracker.database.session import get_session
-from tracker.types import HarnessConfig, SingleBenchmarkResponse, TasksResponse, TaskSummary
+from tracker.types import (
+    ERROR_EXCERPT_MAX_LENGTH,
+    TASK_LIST_ERROR_EXCERPT_MAX_LENGTH,
+    HarnessConfig,
+    SingleBenchmarkResponse,
+    TasksResponse,
+    TaskSummary,
+)
 from tracker.utils.harness_config import try_fetch_harness_config
 
 router = APIRouter(prefix="/benchmarks")
@@ -69,7 +76,7 @@ def get_single_benchmark(
     aws_runtime = resolve_optional_run_aws_runtime(
         request,
         aws_managed=benchmark.aws_managed,
-        org_id=org.id,
+        tenant_id=org.name,
         legacy_harness_config=legacy_harness_config,
     )
     if aws_runtime:
@@ -94,9 +101,10 @@ def get_single_benchmark(
         task_state_counts={status.value: count for status, count in task_state_counts.items()},
         started_by_email=benchmark.started_by_email,
         final_score=benchmark.fetch_final_score(session),
-        error_message=benchmark.error_message,
+        error_message=benchmark.error_message[:ERROR_EXCERPT_MAX_LENGTH] if benchmark.error_message else None,
         cloudwatch_url=cloudwatch_url,
         s3_bucket_url=s3_bucket_url,
+        runtime="managed" if benchmark.aws_managed else "legacy",
     )
 
 
@@ -107,7 +115,7 @@ def get_benchmark_tasks(
     task_id_search: str | None = None,
     sort: Literal["task_id", "started_at", "duration", "status"] = Query(default="started_at"),
     sort_dir: Literal["asc", "desc"] = Query(default="desc"),
-    limit: int = Query(default=50, ge=1, le=500),
+    limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
@@ -160,7 +168,11 @@ def get_benchmark_tasks(
                 status=task.status,
                 started_at=task.started_at,
                 finished_at=task.finished_at,
-                error_message=error_message if task.status == TaskStatus.ERROR else None,
+                error_message=(
+                    error_message[:TASK_LIST_ERROR_EXCERPT_MAX_LENGTH]
+                    if task.status == TaskStatus.ERROR and error_message
+                    else None
+                ),
             )
             for task, error_message in rows
         ],

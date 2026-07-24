@@ -17,7 +17,7 @@ from sqlmodel import Session, select
 
 import tracker.utils as tracker_utils
 from tests.utils import TEST_ORG_ID
-from tracker.auth import RequestIdentity
+from tracker.auth import SelfHostedIdentity
 from tracker.database.models import (
     AgentContractRequest,
     Benchmark,
@@ -59,7 +59,7 @@ def _create_benchmark(
     )
     benchmark = start_benchmark_request_to_benchmark(
         request,
-        RequestIdentity(org=Org(id=TEST_ORG_ID, name="default"), access_key_id=None, email=None, name=None),
+        SelfHostedIdentity(org=Org(id=TEST_ORG_ID, name="default")),
         aws_managed=False,
     )
     session.add(benchmark)

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Literal, cast
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 from benchmark_service.client import BenchmarkServiceClient
@@ -12,14 +13,19 @@ from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_valid
 
 from tracker.config import create_benchmark_service_url
 from tracker.database.models import (
+    AgentCausedExitReason,
     AgentContractRequest,
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
     FinalEvaluation,
+    MutationOperationKind,
     TaskStatus,
 )
 from tracker.outbound_security import validate_benchmark_name, validate_service_url_syntax
+
+ERROR_EXCERPT_MAX_LENGTH = 4_000
+TASK_LIST_ERROR_EXCERPT_MAX_LENGTH = 512
 
 
 def _serialize_utc(value: datetime | None) -> str | None:
@@ -54,6 +60,26 @@ class HarnessConfig(BaseModel):
     log_group: str
     log_retention_policy: int
     sandbox_provider_secret_name: str
+
+
+class SandboxResourceSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    cpu_cores: float = Field(ge=0)
+    memory_gib: float = Field(ge=0)
+    disk_gib: float = Field(ge=0)
+    gpu_count: float = Field(ge=0)
+    gpu_type: str | None
+
+
+class SandboxSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    state: str
+    region: str | None
+    resources: SandboxResourceSnapshot
+    recorded_at: datetime
 
 
 class StartBenchmarkRequest(BaseModel):
@@ -130,6 +156,58 @@ class StartBenchmarkResponse(BaseModel):
     s3_bucket_url: str
 
 
+class ProcessingMutationResponse(BaseModel):
+    state: Literal["processing"] = "processing"
+    operation_id: UUID
+
+
+class UncertainMutationResponse(BaseModel):
+    state: Literal["uncertain"] = "uncertain"
+    operation_id: UUID
+
+
+MutationProgressResponse = Annotated[
+    ProcessingMutationResponse | UncertainMutationResponse,
+    Field(discriminator="state"),
+]
+
+
+class ProcessingMutationOperationResponse(BaseModel):
+    state: Literal["processing"] = "processing"
+    operation_id: UUID
+    kind: MutationOperationKind
+
+
+class SucceededMutationOperationResponse(BaseModel):
+    state: Literal["succeeded"] = "succeeded"
+    operation_id: UUID
+    kind: MutationOperationKind
+    response: dict[str, Any]
+
+
+class FailedMutationOperationResponse(BaseModel):
+    state: Literal["failed"] = "failed"
+    operation_id: UUID
+    kind: MutationOperationKind
+    status_code: int
+    detail: str = Field(max_length=ERROR_EXCERPT_MAX_LENGTH)
+
+
+class UncertainMutationOperationResponse(BaseModel):
+    state: Literal["uncertain"] = "uncertain"
+    operation_id: UUID
+    kind: MutationOperationKind
+
+
+MutationOperationResponse = Annotated[
+    ProcessingMutationOperationResponse
+    | SucceededMutationOperationResponse
+    | FailedMutationOperationResponse
+    | UncertainMutationOperationResponse,
+    Field(discriminator="state"),
+]
+
+
 class FetchBenchmarkResponse(BaseModel):
     benchmark_name: str
     benchmark_id: UUID
@@ -137,7 +215,12 @@ class FetchBenchmarkResponse(BaseModel):
     s3_bucket_url: str
     label: str | None = None
     final_score: float | None = None
-    error_message: str | None = None
+    error_message: str | None = Field(default=None, max_length=ERROR_EXCERPT_MAX_LENGTH)
+
+
+class AnalyzeBenchmarkResponse(BaseModel):
+    status: Literal["done"]
+    reading_plan_url: str
 
 
 class AverageTaskBreakdown(BaseModel):
@@ -194,31 +277,78 @@ def _contains_forbidden_managed_aws_key(value: object) -> bool:
     return False
 
 
-def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
+def validate_managed_execution_has_no_aws_credentials(request: StartBenchmarkRequest) -> None:
     if request.harness_config is not None or _contains_forbidden_managed_aws_key(request.model_dump(mode="python")):
         raise ValueError("Managed execution cannot include AWS credentials")
+
+
+def validate_managed_execution_request(request: StartBenchmarkRequest) -> None:
+    validate_managed_execution_has_no_aws_credentials(request)
     if not request.sandbox_provider or not request.sandbox_provider_secret_name:
         raise ValueError("Managed execution requires a sandbox provider and provider secret name")
 
 
-class ManagedExecutionContext(BaseModel):
+class _ManagedExecutionContext(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal[2]
     benchmark_id: UUID
     verified_task_ids: list[str]
     start_benchmark_request: StartBenchmarkRequest
 
     @model_validator(mode="after")
-    def validate_credential_free_request(self) -> "ManagedExecutionContext":
+    def validate_credential_free_request(self) -> "_ManagedExecutionContext":
         validate_managed_execution_request(self.start_benchmark_request)
         return self
 
 
-class AWSRuntimeResponse(BaseModel):
-    mode: Literal["legacy", "managed"]
-    region: str | None = None
-    s3_bucket: str | None = None
+class ManagedExecutionContextV2(_ManagedExecutionContext):
+    version: Literal[2]
+
+
+class ManagedExecutionContextV3(_ManagedExecutionContext):
+    version: Literal[3]
+
+    @model_validator(mode="after")
+    def validate_tracker_owned_benchmark_service(self) -> "ManagedExecutionContextV3":
+        request = self.start_benchmark_request
+        if (
+            request.custom_benchmark_service
+            or request.service_headers
+            or request.service_auth_header_name
+            or request.service_auth_secret_name
+        ):
+            raise ValueError("Managed v3 execution cannot include benchmark-service overrides")
+        if (
+            request.lambda_function is not None
+            or request.webhook_secret_name is not None
+            or request.webhook_intervals is not None
+        ):
+            raise ValueError("Managed v3 execution cannot include deployment integrations")
+        return self
+
+
+ManagedExecutionContext = Annotated[
+    ManagedExecutionContextV2 | ManagedExecutionContextV3,
+    Field(discriminator="version"),
+]
+
+
+class LegacyAWSRuntimeResponse(BaseModel):
+    mode: Literal["legacy"] = "legacy"
+    region: None = None
+    s3_bucket: None = None
+
+
+class ManagedAWSRuntimeResponse(BaseModel):
+    mode: Literal["managed"] = "managed"
+    region: str
+    s3_bucket: str
+
+
+AWSRuntimeResponse = Annotated[
+    LegacyAWSRuntimeResponse | ManagedAWSRuntimeResponse,
+    Field(discriminator="mode"),
+]
 
 
 class StatusResponse(BaseModel):
@@ -284,6 +414,7 @@ class BenchmarkTableRow(BaseModel):
     task_state_counts: dict[str, int] = {}
     final_score: float | None = None
     error_message: str | None = None
+    runtime: Literal["managed", "legacy"]
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -381,9 +512,10 @@ class SingleBenchmarkResponse(BaseModel):
     task_state_counts: dict[str, int] = {}
     started_by_email: str | None = None
     final_score: float | None = None
-    error_message: str | None = None
+    error_message: str | None = Field(default=None, max_length=ERROR_EXCERPT_MAX_LENGTH)
     cloudwatch_url: str | None = None
     s3_bucket_url: str | None = None
+    runtime: Literal["managed", "legacy"]
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -402,7 +534,7 @@ class TaskSummary(BaseModel):
     status: TaskStatus
     started_at: datetime
     finished_at: datetime | None
-    error_message: str | None = None
+    error_message: str | None = Field(default=None, max_length=TASK_LIST_ERROR_EXCERPT_MAX_LENGTH)
 
     @field_serializer("started_at")
     def _serialize_started_at(self, value: datetime) -> str:
@@ -426,7 +558,7 @@ class SingleTaskResponse(BaseModel):
     status: TaskStatus
     started_at: datetime
     finished_at: datetime | None
-    error_message: str | None
+    error_message: str | None = Field(max_length=ERROR_EXCERPT_MAX_LENGTH)
     evaluation_result: dict[str, Any] | None
     agent_caused_exit_reason: str | None
 
@@ -439,6 +571,112 @@ class SingleTaskResponse(BaseModel):
     @field_serializer("finished_at")
     def _serialize_finished_at(self, value: datetime | None) -> str | None:
         return _serialize_utc(value)
+
+
+class TaskAttemptBase(BaseModel):
+    id: UUID
+    attempt_id: str | None
+    created_at: datetime
+
+    @field_serializer("created_at")
+    def _serialize_created_at(self, value: datetime) -> str:
+        result = _serialize_utc(value)
+        assert result is not None
+        return result
+
+
+class ErrorTaskAttempt(TaskAttemptBase):
+    kind: Literal["error"] = "error"
+    error_message: str = Field(max_length=ERROR_EXCERPT_MAX_LENGTH)
+    error_message_truncated: bool
+    error_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class EvaluationTaskAttempt(TaskAttemptBase):
+    kind: Literal["evaluation"] = "evaluation"
+    instance_id: str | None
+    agent_caused_exit_reason: AgentCausedExitReason | None
+
+
+class ExecutionTaskAttempt(TaskAttemptBase):
+    kind: Literal["execution"] = "execution"
+    status: TaskStatus
+    instance_id: str | None
+
+
+TaskAttempt = Annotated[
+    ErrorTaskAttempt | EvaluationTaskAttempt | ExecutionTaskAttempt,
+    Field(discriminator="kind"),
+]
+
+
+class TaskAttemptsResponse(BaseModel):
+    attempts: list[TaskAttempt]
+    total_count: int
+
+
+def summarize_attempt_error(message: str) -> tuple[str, bool, str]:
+    return (
+        message[:ERROR_EXCERPT_MAX_LENGTH],
+        len(message) > ERROR_EXCERPT_MAX_LENGTH,
+        hashlib.sha256(message.encode()).hexdigest(),
+    )
+
+
+class TaskLogAttemptsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=20, ge=1, le=50)
+    cursor: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
+class TaskLogAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    started_at: datetime
+    is_current: bool
+    creation_time_ms: int
+    first_event_time_ms: int | None
+    last_event_time_ms: int | None
+    last_ingestion_time_ms: int | None
+
+
+class TaskLogAttemptsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempts: list[TaskLogAttempt]
+    current_attempt_id: str
+    next_cursor: str | None
+
+
+class TaskLogEventsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    direction: Literal["forward", "backward"] = "forward"
+    limit: int = Field(default=1_000, ge=1, le=10_000)
+    cursor: str | None = Field(default=None, min_length=1, max_length=4096)
+
+
+class TaskLogEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    timestamp_ms: int
+    ingestion_time_ms: int
+    message: str
+
+
+class TaskLogEventsResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: str
+    is_current: bool
+    is_active: bool
+    task_status: TaskStatus
+    direction: Literal["forward", "backward"]
+    events: list[TaskLogEvent]
+    older_cursor: str | None
+    newer_cursor: str | None
 
 
 class AgentEntry(BaseModel):
@@ -460,3 +698,55 @@ class TaskArtifactsResponse(BaseModel):
     cloudwatch_url: str | None
     agent_output_url: str | None
     agent_output_expires_in: int | None
+
+
+class TaskArtifactIndexResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: str
+    is_current: bool
+    archive_available: bool
+    file_count: int
+    pack_size_bytes: int
+    trajectory_path: str | None
+    diff_path: str | None
+
+
+class TaskArtifactDirectory(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["directory"] = "directory"
+    path: str
+
+
+class TaskArtifactFile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["file"] = "file"
+    path: str
+    size_bytes: int
+
+
+TaskArtifactTreeItem = Annotated[
+    TaskArtifactDirectory | TaskArtifactFile,
+    Field(discriminator="kind"),
+]
+
+
+class TaskArtifactFilesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: str
+    prefix: str
+    items: list[TaskArtifactTreeItem]
+    next_cursor: str | None
+
+
+class TaskArtifactContentResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_id: str
+    path: str
+    size_bytes: int
+    next_cursor: str | None
+    content_base64: str

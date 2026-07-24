@@ -4,13 +4,16 @@ Run: uv run pytest tests/unit/utils/test_task_execution.py
 """
 
 import asyncio
+import threading
 from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import pytest
 from sqlmodel import Session
 
+import tracker.utils.task_execution as task_execution
 from tests.utils import TEST_ORG_ID
+from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import Benchmark, Org, Task, TaskStatus
 from tracker.utils import ResizableLimiter, TaskMonitor, TrackedTask, TrackedTaskStatus
 
@@ -19,6 +22,45 @@ class TestTaskExecution:
     """Task monitoring and tracked task state transitions."""
 
     _test_org = Org(id=TEST_ORG_ID, name="default")
+
+    async def test_buffered_log_writer_orders_and_drains_final_messages(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[str] = []
+        first_started = threading.Event()
+        release_first = threading.Event()
+
+        def write(_stream_key: str, message: str, _runtime: AWSRuntime) -> None:
+            calls.append(message)
+            if message == "first":
+                first_started.set()
+                release_first.wait(timeout=1)
+
+        monkeypatch.setattr(task_execution, "write_benchmark_log_event", write)
+        log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
+        write_queue: asyncio.Queue[str | None] = asyncio.Queue()
+        runtime = Mock(spec=AWSRuntime)
+        for message in ["first", "second"]:
+            log_queue.put_nowait(message)
+            task_execution.buffer_logs(log_queue, write_queue, force_flush=True)
+        write_queue.put_nowait(None)
+
+        writer = asyncio.create_task(
+            task_execution.write_buffered_logs(
+                write_queue,
+                "run:task",
+                runtime,
+            )
+        )
+        while not first_started.is_set():
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.01)
+        assert calls == ["first"]
+
+        release_first.set()
+        await asyncio.wait_for(writer, timeout=1)
+        assert calls == ["first", "second"]
 
     async def test_resizable_limiter_increase_wakes_waiting_admission(self) -> None:
         limiter = ResizableLimiter(limit=1)

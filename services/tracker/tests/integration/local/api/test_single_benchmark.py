@@ -40,6 +40,7 @@ class TestSingleBenchmark:
         assert response_body["status"] == "FINISHED"
         assert response_body["final_score"] is None
         assert response_body["total_tasks"] == 0
+        assert response_body["runtime"] == "legacy"
 
     def test_get_single_benchmark_includes_final_score(self, client: TestClient, database_session: Session) -> None:
         """Completed run detail must include its persisted final score.

@@ -42,13 +42,18 @@ from tenacity import (
     wait_none,
 )
 
+from tracker.agent.schemas import bind_shell_variables, prepare_shell_command
 from tracker.aws.runtime import AWSRuntime
 from tracker.aws.s3 import (
+    copy_s3_object,
     create_presigned_url,
+    delete_from_s3,
     get_agent_result_s3_key,
     get_benchmark_contract_s3_key,
+    s3_object_exists,
     upload_stream_to_s3,
     upload_to_s3,
+    upload_to_s3_if_absent,
 )
 from tracker.database.models import (
     MAX_OUTPUT_ARTIFACT_BYTES,
@@ -60,6 +65,8 @@ from tracker.exceptions import (
     AgentRunFailedError,
     DependencySetupExhaustedError,
     OutputArtifactError,
+    S3Error,
+    S3ObjectExistsError,
     SandboxError,
     SandboxSetupError,
     SSLConnectionError,
@@ -71,6 +78,15 @@ from tracker.observability import (
     incr,
     retry_callback,
     set_sandbox_context,
+)
+from tracker.task_artifacts import (
+    MAX_ARTIFACT_FILES,
+    MAX_ARTIFACT_INDEX_BYTES,
+    MAX_ARTIFACT_PACK_BYTES,
+    build_artifact_index,
+    serialize_artifact_index,
+    task_artifact_generation_key,
+    task_artifact_index_key,
 )
 
 logger = get_logger(__name__)
@@ -335,6 +351,11 @@ class DependencySetupMode(str, Enum):
     FINAL_FRESH_SANDBOX = "final_fresh_sandbox"
 
 
+class ArtifactCollectionMode(str, Enum):
+    REQUIRED = "required"
+    AVAILABLE = "available"
+
+
 async def _install_agent_dependencies_once(
     sandbox: Sandbox,
     contract: AgentContractRequest,
@@ -542,25 +563,48 @@ async def archive_and_upload_output(
     task_id: str | None = None,
 ) -> None:
     """Compress a file in the sandbox into a tar.gz and upload it to S3"""
+    await _archive_and_upload_output(
+        sandbox,
+        output_path,
+        agent_output_s3_key,
+        aws_runtime,
+        benchmark_id=benchmark_id,
+        task_id=task_id,
+    )
+
+
+async def _archive_and_upload_output(
+    sandbox: Sandbox,
+    output_path: str,
+    s3_key: str,
+    aws_runtime: AWSRuntime,
+    *,
+    benchmark_id: str | None,
+    task_id: str | None,
+) -> None:
     archive_path = f"/tmp/{uuid.uuid4().hex}.tar.gz"
     start = time.monotonic()
 
-    tar_result = await _exec(sandbox, f"tar -czf {shlex.quote(archive_path)} {shlex.quote(output_path)}")
+    tar_result = await _exec(
+        sandbox,
+        f"tar -czf {shlex.quote(archive_path)} -- {shlex.quote(output_path)}",
+    )
     if tar_result.exit_code != 0:
         raise SandboxError(f"Failed to create archive from {output_path}")
 
     try:
         archive_bytes = await upload_stream_to_s3(
-            sandbox.stream_download(archive_path), agent_output_s3_key, aws_runtime
+            sandbox.stream_download(archive_path),
+            s3_key,
+            aws_runtime,
         )
-
         logger.info(
             "agent_output.archive_and_upload.complete",
             extra={
                 "sandbox_id": sandbox.id,
                 "sandbox_name": sandbox.name,
                 "output_path": output_path,
-                "s3_key": agent_output_s3_key,
+                "s3_key": s3_key,
                 "benchmark_id": benchmark_id,
                 "task_id": task_id,
                 "archive_bytes": archive_bytes,
@@ -573,6 +617,182 @@ async def archive_and_upload_output(
             await _exec(sandbox, f"rm -f {shlex.quote(archive_path)}")
         except Exception:
             pass
+
+
+async def upload_task_artifacts(
+    sandbox: Sandbox,
+    final_output: str | None,
+    artifacts: list[OutputArtifactSpec],
+    benchmark_id: str,
+    task_id: str,
+    attempt_id: str,
+    aws_runtime: AWSRuntime,
+    mode: ArtifactCollectionMode,
+) -> None:
+    """Upload an immutable per-attempt archive, content pack, and index."""
+    index_key = task_artifact_index_key(benchmark_id, task_id, attempt_id)
+    if await s3_object_exists(index_key, aws_runtime):
+        return
+
+    generation = uuid.uuid4().hex
+    archive_key = (
+        task_artifact_generation_key(
+            benchmark_id,
+            task_id,
+            attempt_id,
+            generation,
+            "agent_output.tar.gz",
+        )
+        if final_output
+        else None
+    )
+    pack_key = task_artifact_generation_key(
+        benchmark_id,
+        task_id,
+        attempt_id,
+        generation,
+        "content.pack",
+    )
+    staging_dir = f"/tmp/valkyrie-artifacts-{uuid.uuid4().hex}"
+    pack_path = f"{staging_dir}/content.pack"
+    manifest_path = f"{staging_dir}/manifest"
+    generation_keys: list[str] = []
+    published = False
+
+    try:
+        if final_output and archive_key:
+            await _reject_artifact_root_symlink(sandbox, final_output)
+            await _archive_and_upload_output(
+                sandbox,
+                final_output,
+                archive_key,
+                aws_runtime,
+                benchmark_id=benchmark_id,
+                task_id=task_id,
+            )
+            generation_keys.append(archive_key)
+
+        if artifacts and mode is ArtifactCollectionMode.REQUIRED:
+            await upload_output_artifacts(
+                sandbox,
+                artifacts,
+                benchmark_id,
+                task_id,
+                aws_runtime,
+            )
+
+        sources: list[tuple[str, str]] = []
+        if final_output:
+            final_output = str(PurePosixPath(final_output))
+            is_directory = (await _exec(sandbox, f"test -d {shlex.quote(final_output)}")).exit_code == 0
+            logical_path = "agent_output" if is_directory else f"agent_output/{PurePosixPath(final_output).name}"
+            sources.append((final_output, logical_path))
+        for artifact in artifacts:
+            sandbox_path = await _resolve_output_artifact_sandbox_path(
+                sandbox,
+                artifact,
+                task_id,
+                mode,
+            )
+            if sandbox_path is None:
+                continue
+            sources.append((str(PurePosixPath(sandbox_path)), _output_artifact_path(artifact)))
+
+        setup = await _exec(
+            sandbox,
+            f"mkdir -p {shlex.quote(staging_dir)} && : > {shlex.quote(pack_path)} && : > {shlex.quote(manifest_path)}",
+        )
+        if setup.exit_code != 0:
+            raise SandboxError("Failed to create artifact staging directory")
+
+        file_count = 0
+        for source, _ in sources:
+            count_result = await _exec(
+                sandbox,
+                f"find -P -- {shlex.quote(source)} -path '*/.valkyrie' -prune -o -type f -printf . | wc -c",
+            )
+            if count_result.exit_code != 0:
+                raise SandboxError("Failed to enumerate task artifacts")
+            file_count += int(count_result.stdout.strip())
+        if file_count > MAX_ARTIFACT_FILES:
+            raise OutputArtifactError(f"Task artifacts exceed {MAX_ARTIFACT_FILES} files")
+
+        build_script = (
+            "source=$1; logical_root=$2; pack=$3; manifest=$4; shift 4; "
+            "for file do "
+            'if [ "$file" = "$source" ]; then logical=$logical_root; '
+            'else relative=${file#"$source"}; relative=${relative#/}; '
+            "logical=$logical_root/$relative; fi; "
+            'offset=$(stat -c%s -- "$pack") || exit 1; '
+            f"remaining=$(({MAX_ARTIFACT_PACK_BYTES} - offset)); "
+            'limit=$((remaining + 1)); head -c "$limit" -- "$file" >> "$pack" || exit 1; '
+            'end=$(stat -c%s -- "$pack") || exit 1; size=$((end - offset)); '
+            '[ "$size" -le "$remaining" ] || exit 1; '
+            'printf "%s\\0%s\\0%s\\0" "$logical" "$size" "$offset" >> "$manifest"; '
+            "done"
+        )
+        for source, logical_root in sources:
+            build_command = (
+                f"find -P -- {shlex.quote(source)} -path '*/.valkyrie' -prune -o -type f"
+                f" -exec sh -c {shlex.quote(build_script)} sh"
+                f" {shlex.quote(source)} {shlex.quote(logical_root)}"
+                f" {shlex.quote(pack_path)} {shlex.quote(manifest_path)} {{}} +"
+            )
+            if (await _exec(sandbox, build_command)).exit_code != 0:
+                raise OutputArtifactError("Failed to build task artifact pack")
+
+        manifest_size_result = await _exec(sandbox, f"stat -c%s -- {shlex.quote(manifest_path)}")
+        if manifest_size_result.exit_code != 0:
+            raise SandboxError("Failed to stat task artifact manifest")
+        if int(manifest_size_result.stdout.strip()) > MAX_ARTIFACT_INDEX_BYTES:
+            raise OutputArtifactError("Task artifact manifest is too large")
+
+        pack_size_result = await _exec(sandbox, f"stat -c%s -- {shlex.quote(pack_path)}")
+        if pack_size_result.exit_code != 0:
+            raise SandboxError("Failed to stat task artifact pack")
+        manifest = await sandbox.download_file(manifest_path)
+        index = build_artifact_index(
+            manifest,
+            int(pack_size_result.stdout.strip()),
+            generation,
+            archive_key is not None,
+        )
+        index_content = serialize_artifact_index(index)
+        pack_size_bytes = await upload_stream_to_s3(
+            sandbox.stream_download(pack_path),
+            pack_key,
+            aws_runtime,
+        )
+        generation_keys.append(pack_key)
+        if pack_size_bytes != index.pack_size_bytes:
+            raise OutputArtifactError("Uploaded task artifact pack size changed")
+        try:
+            await upload_to_s3_if_absent(index_content, index_key, aws_runtime)
+        except S3ObjectExistsError:
+            return
+        published = True
+
+        if archive_key and mode is ArtifactCollectionMode.REQUIRED:
+            canonical_archive_key = get_agent_result_s3_key(
+                benchmark_id,
+                task_id,
+                "agent_output.tar.gz",
+            )
+            try:
+                await copy_s3_object(archive_key, canonical_archive_key, aws_runtime)
+            except S3Error:
+                logger.exception("Failed to refresh canonical task artifact archive")
+    finally:
+        try:
+            await _exec(sandbox, f"rm -rf {shlex.quote(staging_dir)}")
+        except Exception:
+            pass
+        if not published:
+            for key in generation_keys:
+                try:
+                    await delete_from_s3(key, aws_runtime)
+                except Exception:
+                    logger.exception("Failed to clean unpublished task artifact generation")
 
 
 OUTPUT_ARTIFACTS_SANDBOX_ROOT = PurePosixPath("/tmp/valkyrie")
@@ -606,20 +826,34 @@ def _find_root_for_glob(source: str) -> str:
     return root
 
 
-async def _resolve_output_artifact_sandbox_path(sandbox: Sandbox, artifact: OutputArtifactSpec, task_id: str) -> str:
+async def _reject_artifact_root_symlink(sandbox: Sandbox, source: str) -> None:
+    if (await _exec(sandbox, f"test -L {shlex.quote(source)}")).exit_code == _SUCCESS_EXIT_CODE:
+        raise OutputArtifactError(f"Task artifact source cannot be a symlink: {source}")
+
+
+async def _resolve_output_artifact_sandbox_path(
+    sandbox: Sandbox,
+    artifact: OutputArtifactSpec,
+    task_id: str,
+    mode: ArtifactCollectionMode,
+) -> str | None:
     source = _format_output_artifact_source(_output_artifact_source(artifact), task_id)
     if _has_glob(source):
         find_root = _find_root_for_glob(source)
-        find_command = f"find {shlex.quote(find_root)} -type f -path {shlex.quote(source)} | sort | head -n 1"
+        await _reject_artifact_root_symlink(sandbox, find_root)
+        find_command = f"find -P {shlex.quote(find_root)} -type f -path {shlex.quote(source)} | sort | head -n 1"
         source_result = await _exec(sandbox, find_command)
         source_path = source_result.stdout.strip()
         if source_result.exit_code == _SUCCESS_EXIT_CODE and source_path:
             return source_path
     else:
+        await _reject_artifact_root_symlink(sandbox, source)
         exists = await _exec(sandbox, f"test -f {shlex.quote(source)}")
         if exists.exit_code == _SUCCESS_EXIT_CODE:
             return source
 
+    if mode is ArtifactCollectionMode.AVAILABLE:
+        return None
     raise OutputArtifactError(f"Required output artifact missing: {source}")
 
 
@@ -635,7 +869,13 @@ async def upload_output_artifacts(
 
     for artifact in artifacts:
         artifact_path = _output_artifact_path(artifact)
-        sandbox_path = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
+        sandbox_path = await _resolve_output_artifact_sandbox_path(
+            sandbox,
+            artifact,
+            task_id,
+            ArtifactCollectionMode.REQUIRED,
+        )
+        assert sandbox_path is not None
         quoted_path = shlex.quote(sandbox_path)
 
         size_result = await _exec(sandbox, f"stat -c%s {quoted_path}")
@@ -686,9 +926,9 @@ async def run_agent(
     log_output: Callable[[str], None],
     cwd: str,
     aws_runtime: AWSRuntime,
-    agent_output_s3_key: str | None = None,
+    benchmark_id: str,
+    artifact_attempt_id: str,
     agent_timeout: float | None = None,
-    benchmark_id: str | None = None,
     runtime_source: SandboxSource | None = None,
     dependency_setup_mode: DependencySetupMode = DependencySetupMode.IN_PLACE_RETRIES,
 ) -> tuple[AgentCausedExitReason | None, float]:
@@ -701,7 +941,6 @@ async def run_agent(
         problem_path: Path inside the sandbox where the problem statement file was written during setup
         log_output: Callback to log output
         cwd: Working directory to run the agent in
-        agent_output_s3_key: S3 key to where we will upload the final output archive to
         agent_timeout: Optional timeout in seconds to enforce on the agent command
         runtime_source: Optional source used to adapt agent commands to the task runtime
 
@@ -716,27 +955,53 @@ async def run_agent(
     if runtime_source is not None:
         sandbox = runtime_sandbox(sandbox, runtime_source)
 
-    await install_agent_dependencies(sandbox, contract, log_output, dependency_setup_mode)
-
-    run_cmd = contract.run_cmd.replace("{problem_statement_path}", problem_path).replace("{task_id}", task_id)
-
-    for kwarg_key, kwarg_value in contract.kwargs.items():
-        run_cmd = run_cmd.replace(f"{{{kwarg_key}}}", kwarg_value)
+    runtime_arguments = {
+        **contract.kwargs,
+        "problem_statement_path": problem_path,
+        "task_id": task_id,
+    }
+    try:
+        run_cmd = prepare_shell_command(contract.run_cmd, runtime_arguments)
+        run_cmd = bind_shell_variables(run_cmd, runtime_arguments)
+    except ValueError as exc:
+        raise SandboxError(str(exc)) from exc
 
     # Apply timeout if specified
     if agent_timeout is not None:
         run_cmd = f"timeout {agent_timeout:g} sh -c {shlex.quote(run_cmd)}"
 
-    # Create cwd if it does not already exist
-    await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
+    async def collect_artifacts(mode: ArtifactCollectionMode) -> None:
+        final_output = None
+        if contract.final_output:
+            result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
+            if result.exit_code == _SUCCESS_EXIT_CODE:
+                final_output = contract.final_output
+        await upload_task_artifacts(
+            sandbox,
+            final_output,
+            contract.output_artifacts,
+            benchmark_id,
+            task_id,
+            artifact_attempt_id,
+            aws_runtime,
+            mode,
+        )
 
-    # Run the agent without including task directory dependencies
-    exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
-        sandbox,
-        f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
-        log_output,
-        contract.egress_allowlist,
-    )
+    try:
+        await install_agent_dependencies(sandbox, contract, log_output, dependency_setup_mode)
+        await _exec(sandbox, f"mkdir -p {shlex.quote(cwd)}")
+        exit_reason, agent_run_time = await _stream_command_output_with_egress_allowlist(
+            sandbox,
+            f"cd {shlex.quote(cwd)} && PYTHONSAFEPATH=1 {run_cmd}",
+            log_output,
+            contract.egress_allowlist,
+        )
+    except (Exception, asyncio.CancelledError):
+        try:
+            await asyncio.shield(collect_artifacts(ArtifactCollectionMode.AVAILABLE))
+        except Exception:
+            logger.exception("Failed to preserve artifacts after agent failure")
+        raise
 
     if exit_reason == AgentCausedExitReason.TIMEOUT:
         log_output(
@@ -747,29 +1012,7 @@ async def run_agent(
             f"[WARNING]:`{contract.name}` was killed by the OS (exit code {_OS_KILL_EXIT_CODE}, likely out-of-memory). The process has been terminated and evaluation will proceed."
         )
 
-    # Upload any output from the agent to S3
-    if contract.final_output:
-        result = await _exec(sandbox, f"test -e {shlex.quote(contract.final_output)}")
-        if result.exit_code == _SUCCESS_EXIT_CODE and agent_output_s3_key:
-            await archive_and_upload_output(
-                sandbox,
-                contract.final_output,
-                agent_output_s3_key,
-                aws_runtime,
-                benchmark_id=benchmark_id,
-                task_id=task_id,
-            )
-
-    if contract.output_artifacts:
-        if benchmark_id is None:
-            raise SandboxError("benchmark_id is required to upload output artifacts")
-        await upload_output_artifacts(
-            sandbox,
-            contract.output_artifacts,
-            benchmark_id,
-            task_id,
-            aws_runtime,
-        )
+    await collect_artifacts(ArtifactCollectionMode.REQUIRED)
 
     # Return why the agent terminated abnormally, or None on clean exit
     return exit_reason, agent_run_time

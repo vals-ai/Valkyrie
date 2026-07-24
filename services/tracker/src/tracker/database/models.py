@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, field_serializer, field_validator
-from sqlalchemy import Connection, Dialect, Index, event, text
+from sqlalchemy import Connection, Dialect, Enum as SAEnum, Index, Text, event, text
 from sqlalchemy.orm import Mapped, Mapper
 from sqlmodel import (
     JSON,
@@ -42,6 +42,87 @@ DEFAULT_ORG_NAME = "default"
 class Org(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     name: str = Field(unique=True, index=True)
+
+
+class MutationOperationState(str, Enum):
+    PROCESSING = "processing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+
+
+def _mutation_operation_state_values(states: type[MutationOperationState]) -> list[str]:
+    return [state.value for state in states]
+
+
+class MutationOperationKind(str, Enum):
+    ANALYZE_BENCHMARK = "analyze_benchmark"
+    START_BENCHMARK = "start_benchmark"
+    STOP_BENCHMARK = "stop_benchmark"
+    RETRY_OR_RESUME_BENCHMARK = "retry_or_resume_benchmark"
+
+
+def _mutation_operation_kind_values(kinds: type[MutationOperationKind]) -> list[str]:
+    return [kind.value for kind in kinds]
+
+
+class MutationOperation(SQLModel, table=True):
+    __table_args__ = (
+        CheckConstraint(
+            "("
+            "state = 'succeeded' AND response IS NOT NULL "
+            "AND failure_status_code IS NULL AND failure_detail IS NULL"
+            ") OR ("
+            "state = 'failed' AND response IS NULL "
+            "AND failure_status_code IS NOT NULL AND failure_detail IS NOT NULL"
+            ") OR ("
+            "state IN ('processing', 'uncertain') AND response IS NULL "
+            "AND failure_status_code IS NULL AND failure_detail IS NULL"
+            ")",
+            name="mutation_operation_state_payload",
+        ),
+        CheckConstraint(
+            "length(request_fingerprint) = 64",
+            name="mutation_operation_fingerprint_is_sha256",
+        ),
+        CheckConstraint(
+            "length(failure_detail) <= 4000",
+            name="mutation_operation_failure_detail_is_bounded",
+        ),
+    )
+
+    org_id: UUID = Field(foreign_key="org.id", primary_key=True)
+    operation_id: UUID = Field(primary_key=True)
+    kind: MutationOperationKind = Field(
+        sa_column=Column(
+            SAEnum(
+                MutationOperationKind,
+                values_callable=_mutation_operation_kind_values,
+                name="mutationoperationkind",
+            ),
+            nullable=False,
+        ),
+    )
+    request_fingerprint: str = Field(max_length=64)
+    state: MutationOperationState = Field(
+        default=MutationOperationState.PROCESSING,
+        sa_column=Column(
+            SAEnum(
+                MutationOperationState,
+                values_callable=_mutation_operation_state_values,
+                name="mutationoperationstate",
+            ),
+            nullable=False,
+        ),
+    )
+    response: dict[str, Any] | None = Field(
+        default=None,
+        sa_column=Column(JSON(none_as_null=True), nullable=True),
+    )
+    failure_status_code: int | None = None
+    failure_detail: str | None = Field(default=None, sa_column=Column(Text, nullable=True))
+    created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")).replace(tzinfo=None))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")).replace(tzinfo=None))
 
 
 class TaskStatus(str, Enum):
@@ -145,6 +226,10 @@ class AgentContractRequest(BaseModel):
                 raise ValueError("output_artifacts paths must be relative paths")
             if not path.parts or ".." in path.parts or "." in path.parts:
                 raise ValueError("output_artifacts paths cannot contain empty, '.', or '..' path parts")
+            if ".valkyrie" in path.parts:
+                raise ValueError("output_artifacts paths cannot use the reserved .valkyrie directory")
+            if path.parts[0] == "agent_output":
+                raise ValueError("output_artifacts paths cannot use the reserved agent_output directory")
             if isinstance(artifact, str):
                 normalized_artifacts.append(str(path))
             else:
@@ -302,7 +387,7 @@ class Benchmark(SQLModel, table=True):
             service_headers=service_headers or {},
         )
 
-    def managed_start_benchmark_request(self, service_headers: dict[str, str] | None = None) -> "StartBenchmarkRequest":
+    def managed_start_benchmark_request(self) -> "StartBenchmarkRequest":
         from tracker.types import StartBenchmarkRequest
 
         if not self.aws_managed:
@@ -317,15 +402,10 @@ class Benchmark(SQLModel, table=True):
             label=self.label,
             task_ids=self.arguments.task_ids,
             slice_str=self.arguments.slice_str,
-            lambda_function=self.arguments.lambda_function,
             dataset=self.arguments.dataset,
             harness_config=None,
             sandbox_provider=self.arguments.sandbox_provider,
             sandbox_provider_secret_name=self.arguments.sandbox_provider_secret_name,
-            custom_benchmark_service=self.custom_benchmark_service,
-            webhook_secret_name=self.webhook_secret_name,
-            webhook_intervals=self.webhook_intervals,
-            service_headers=service_headers or {},
         )
 
     def benchmark_service(self, service_headers: dict[str, str] | None = None) -> "BenchmarkServiceClient":
@@ -382,6 +462,7 @@ class Benchmark(SQLModel, table=True):
             task_state_counts={k.value: v for k, v in task_state_counts.items()},
             final_score=(self.final_evaluation.final_score if self.final_evaluation else None),
             label=self.label,
+            runtime="managed" if self.aws_managed else "legacy",
         )
 
     def fetch_task_state_counts(self, session: Session) -> dict[TaskStatus, int]:
@@ -448,6 +529,27 @@ class Task(SQLModel, table=True):
     task_breakdown: UUID | None = Field(default=None, foreign_key="taskbreakdown.id")
 
 
+class TaskAttempt(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint("task", "attempt_id", name="unique_task_attempt"),
+        Index(
+            "ix_taskattempt_org_task_started_at",
+            "org_id",
+            "task",
+            text("started_at DESC"),
+        ),
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    org_id: UUID = Field(foreign_key="org.id")
+    task: UUID = Field(foreign_key="task.id")
+    attempt_id: str = Field(max_length=32)
+    started_at: datetime
+    sandbox_provider: str
+    sandbox_instance_id: str | None = Field(default=None, max_length=300)
+    sandbox_snapshot: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON, nullable=True))
+
+
 @event.listens_for(Task, "before_insert")
 @event.listens_for(Task, "before_update")
 def set_finished_at_when_task_finished(_mapper: Mapper[Task], _connection: Connection, target: Task):
@@ -478,14 +580,35 @@ class ResultBase(SQLModel):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     org_id: UUID = Field(foreign_key="org.id")
     task: UUID = Field(foreign_key="task.id")
+    attempt_id: str | None = Field(default=None, max_length=32)
     created_at: datetime = Field(default_factory=lambda: datetime.now(ZoneInfo("UTC")))
 
 
 class EvaluationResult(ResultBase, table=True):
+    __table_args__ = (
+        Index(
+            "ix_evaluationresult_org_task_created_at_id",
+            "org_id",
+            "task",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
     instance_id: str | None = Field(default=None, unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 
 
 class ErrorResult(ResultBase, table=True):
+    __table_args__ = (
+        Index(
+            "ix_errorresult_org_task_created_at_id",
+            "org_id",
+            "task",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
     error_message: str = Field(nullable=False)

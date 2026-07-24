@@ -21,11 +21,10 @@ from tracker.aws.resolver import (
 )
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest, Benchmark
-from tracker.types import HarnessConfig, ManagedExecutionContext, StartBenchmarkRequest
+from tracker.types import HarnessConfig, ManagedExecutionContextV2, StartBenchmarkRequest
 from tracker.utils import try_fetch_harness_config
 
-_ORG_ID = UUID("00000000-0000-0000-0000-000000000001")
-_OTHER_ORG_ID = UUID("00000000-0000-0000-0000-000000000002")
+_MANAGED_TENANT_ID = "default"
 
 _COMPLETE_HARNESS_HEADERS = {
     "x-harness-aws-access-key-id": "header-access-key",
@@ -58,12 +57,14 @@ def _configure_managed_runtime(
     submissions_enabled: bool = True,
     resources_configured: bool = True,
 ) -> None:
-    monkeypatch.setattr(config, "AWS_DEPLOYMENT_ROLE_ORG_IDS", str(_ORG_ID if eligible else _OTHER_ORG_ID))
+    monkeypatch.setattr(config, "AWS_MANAGED_TENANT_IDS", _MANAGED_TENANT_ID if eligible else "other")
     monkeypatch.setattr(config, "AWS_MANAGED_SUBMISSIONS_ENABLED", submissions_enabled)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_REGION", "deployment-region" if resources_configured else None)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_S3_BUCKET", "deployment-bucket" if resources_configured else None)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_GROUP", "deployment-log-group" if resources_configured else None)
     monkeypatch.setattr(config, "AWS_DEPLOYMENT_LOG_RETENTION_DAYS", "30" if resources_configured else None)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER", "daytona")
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", "deployment-provider-secret")
 
 
 @pytest.mark.parametrize(
@@ -117,13 +118,13 @@ def test_start_runtime_selection(
 
     if expected_status is not None:
         with pytest.raises(HTTPException) as exc_info:
-            resolve_start_aws_runtime(_request(headers), body_config, _ORG_ID)
+            resolve_start_aws_runtime(_request(headers), body_config, _MANAGED_TENANT_ID)
         assert exc_info.value.status_code == expected_status
         if header_mode == "partial":
             assert exc_info.value.detail == "Missing harness config header 'x-harness-aws-secret-access-key'"
         return
 
-    resolution = resolve_start_aws_runtime(_request(headers), body_config, _ORG_ID)
+    resolution = resolve_start_aws_runtime(_request(headers), body_config, _MANAGED_TENANT_ID)
 
     assert resolution.runtime.resources.s3_bucket == expected_bucket
     if expected_mode == "managed":
@@ -152,7 +153,7 @@ def test_run_runtime_uses_stored_mode(
     resolution = resolve_run_aws_runtime(
         _request(_COMPLETE_HARNESS_HEADERS),
         aws_managed=aws_managed,
-        org_id=_ORG_ID,
+        tenant_id=_MANAGED_TENANT_ID,
     )
 
     assert resolution.runtime.resources.s3_bucket == expected_bucket
@@ -176,7 +177,7 @@ def test_optional_run_runtime_preserves_stored_mode(
     runtime = resolve_optional_run_aws_runtime(
         _request(),
         aws_managed=aws_managed,
-        org_id=_ORG_ID,
+        tenant_id=_MANAGED_TENANT_ID,
     )
 
     assert (runtime.resources.s3_bucket if runtime is not None else None) == expected_bucket
@@ -189,22 +190,44 @@ def test_run_runtime_rejects_managed_run_for_ineligible_org(monkeypatch: pytest.
         resolve_run_aws_runtime(
             _request(_COMPLETE_HARNESS_HEADERS),
             aws_managed=True,
-            org_id=_ORG_ID,
+            tenant_id=_MANAGED_TENANT_ID,
         )
 
     assert exc_info.value.status_code == 403
 
 
-@pytest.mark.parametrize("eligible", [True, False])
-def test_deployment_runtime_metadata_requires_eligible_org(
+@pytest.mark.parametrize(
+    ("eligible", "submissions_enabled", "expected_bucket"),
+    [
+        pytest.param(True, True, "deployment-bucket", id="ready"),
+        pytest.param(False, True, None, id="ineligible"),
+        pytest.param(True, False, None, id="submissions-disabled"),
+    ],
+)
+def test_deployment_runtime_metadata_requires_ready_managed_submissions(
     monkeypatch: pytest.MonkeyPatch,
     eligible: bool,
+    submissions_enabled: bool,
+    expected_bucket: str | None,
 ) -> None:
-    _configure_managed_runtime(monkeypatch, eligible=eligible, submissions_enabled=False)
+    _configure_managed_runtime(monkeypatch, eligible=eligible, submissions_enabled=submissions_enabled)
 
-    resources = resolve_aws_runtime_metadata(_ORG_ID)
+    resources = resolve_aws_runtime_metadata(_MANAGED_TENANT_ID)
 
-    assert (resources.s3_bucket if resources is not None else None) == ("deployment-bucket" if eligible else None)
+    assert (resources.s3_bucket if resources is not None else None) == expected_bucket
+
+
+def test_deployment_runtime_metadata_rejects_missing_sandbox_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    monkeypatch.setattr(config, "AWS_DEPLOYMENT_SANDBOX_PROVIDER_SECRET_NAME", "")
+
+    with pytest.raises(HTTPException) as exc_info:
+        resolve_aws_runtime_metadata(_MANAGED_TENANT_ID)
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "Managed sandbox configuration is unavailable"
 
 
 def _mapping_keys(value: Any) -> Iterator[str]:
@@ -231,7 +254,7 @@ def test_managed_execution_context_is_recursively_credential_free(harness_config
         sandbox_provider_secret_name="sandbox-provider-secret",
         service_headers={"Authorization": "benchmark-service-token"},
     )
-    context = ManagedExecutionContext(
+    context = ManagedExecutionContextV2(
         version=2,
         benchmark_id=UUID("00000000-0000-0000-0000-000000000003"),
         verified_task_ids=["task-1"],
@@ -248,7 +271,7 @@ def test_managed_execution_context_is_recursively_credential_free(harness_config
     assert forbidden_keys.isdisjoint(_mapping_keys(payload))
 
     with pytest.raises(ValidationError, match="Managed execution cannot include AWS credentials"):
-        ManagedExecutionContext(
+        ManagedExecutionContextV2(
             version=2,
             benchmark_id=context.benchmark_id,
             verified_task_ids=context.verified_task_ids,
@@ -262,7 +285,7 @@ def test_managed_execution_context_is_recursively_credential_free(harness_config
         ),
     ):
         with pytest.raises(ValidationError, match="Managed execution cannot include AWS credentials"):
-            ManagedExecutionContext(
+            ManagedExecutionContextV2(
                 version=2,
                 benchmark_id=context.benchmark_id,
                 verified_task_ids=context.verified_task_ids,

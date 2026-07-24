@@ -15,7 +15,7 @@ from sqlmodel import Session
 
 import tracker.utils.task_execution as utils_module
 from tests.unit.utils.task_execution_support import TEST_ORG, create_task_environment, run_process_task
-from tracker.auth import RequestIdentity
+from tracker.auth import AccessKeyIdentity
 from tracker.aws.runtime import AWSRuntime
 from tracker.database.models import AgentContractRequest
 from tracker.types import HarnessConfig
@@ -29,7 +29,7 @@ async def _capture_sandbox_environment(
     **_kwargs: Any,
 ) -> AsyncGenerator[SimpleNamespace, None]:
     captured_env_vars.append(env_vars)
-    yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name")
+    yield SimpleNamespace(id="mock-sandbox-id", name="mock-sandbox-name", state="started")
 
 
 class TestProcessTaskEnvironment:
@@ -45,11 +45,10 @@ class TestProcessTaskEnvironment:
         aws_runtime: AWSRuntime,
     ) -> None:
         contract = contract.model_copy(update={"secrets": {"UNRELATED_SECRET": "secret-name"}})
-        run_starter = RequestIdentity(
+        run_starter = AccessKeyIdentity(
             org=TEST_ORG,
-            access_key_id="access-key-id",
+            principal_id="access-key-id",
             email="starter@example.com",
-            name="Starter User",
         )
         start_benchmark_request, task_row, benchmark_id = create_task_environment(
             contract,
@@ -64,6 +63,7 @@ class TestProcessTaskEnvironment:
             }
         )
         captured_env_vars: list[dict[str, str]] = []
+        task_logs: list[str] = []
 
         def _mock_resolve_secrets(*_args: Any, **_kwargs: Any) -> dict[str, str]:
             return {
@@ -75,7 +75,12 @@ class TestProcessTaskEnvironment:
                 "MODEL_GATEWAY_API_KEY": "gateway-key",
             }
 
+        def _capture_task_logs(log_queue: Any, *_args: Any, **_kwargs: Any) -> None:
+            while not log_queue.empty():
+                task_logs.append(log_queue.get_nowait())
+
         monkeypatch.setattr(utils_module, "resolve_secrets", _mock_resolve_secrets)
+        monkeypatch.setattr(utils_module, "buffer_logs", _capture_task_logs)
         monkeypatch.setattr(
             utils_module,
             "create_sandbox",
@@ -98,6 +103,10 @@ class TestProcessTaskEnvironment:
         assert env_vars["UNRELATED_SECRET"] == "secret-value"
         assert env_vars["MODEL_GATEWAY_URL"] == "https://gateway.example.test"
         assert env_vars["MODEL_GATEWAY_API_KEY"] == "gateway-key"
+        assert (
+            "Sandbox created: provider=Mock id=mock-sandbox-id name=mock-sandbox-name state=started "
+            'resources={"vcpu":2,"memory":4,"disk":5,"gpu":0,"gpu_type":null}\n'
+        ) in task_logs
 
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_task_omits_identity_email_when_unavailable(
