@@ -15,6 +15,8 @@ name: my_agent
 
 install_cmd: "bash setup.sh"
 
+# CLI is required to run the agent, you may need to make a python file, install it as a package, import it
+# inside, and wrap it in a CLI to accept arguments
 run_cmd: >-
   my_agent --task {problem_statement_path}
   --model {model}
@@ -287,6 +289,41 @@ source /bundle/my_agent/submodule/my_agent/.venv/bin/activate
 exec python /bundle/my_agent/submodule/my_agent/main.py "$@"
 WRAPPER
 chmod +x /usr/local/bin/my_agent
+```
+
+## Creating a CLI if your agent does not support it
+
+In order for valkyrie to pass in the required CLI arguments to your agent, the agent must accept CLI arguments. If
+your agent does not currently support it, you can easily add it.
+
+```python
+# run_agent.py
+import argparse
+from pathlib import Path
+
+from agent import agent
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("problem_statement_path", type=Path)
+    parser.add_argument("task_id")
+    arguments = parser.parse_args()
+
+    problem_statement = arguments.problem_statement_path.read_text()
+    agent.run(
+        problem_statement=problem_statement,
+        task_id=arguments.task_id,
+    )
+
+
+if __name__ == "__main__":
+    """
+    uv run python run_agent.py \
+      "{problem_statement_path}" \
+      "{task_id}"
+    """
+    main()
 ```
 
 The entire agent directory is bundled to `/bundle/<agent_name>/` in the sandbox (`contract.yaml` will be excluded).
