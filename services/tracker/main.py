@@ -137,7 +137,7 @@ def _exclude_request_arguments_from_telemetry(
     _request: Request | WebSocket,
     _attributes: dict[str, Any],
 ) -> None:
-    """Keep parsed request values, which can contain credentials, out of telemetry."""
+    """Drop parsed request values and validation errors because either may contain secrets."""
     return None
 
 

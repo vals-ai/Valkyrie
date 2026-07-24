@@ -3,7 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from functools import lru_cache
-from typing import Any, Protocol, cast
+from typing import Any, cast
 
 import aioboto3
 import boto3
@@ -21,31 +21,9 @@ def _boto3_client(service_name: str, **kwargs: Any) -> Any:
     return client_factory(service_name, **kwargs)
 
 
-class AWSClientProvider(Protocol):
+class AWSClientProvider(ABC):
     """Construct AWS service clients for one authentication source."""
 
-    def s3_client(self) -> Any:
-        """Open an async S3 client for use as a context manager."""
-        ...
-
-    def cloudwatch_logs_client(self) -> Any:
-        """Return a synchronous CloudWatch Logs client."""
-        ...
-
-    def secretsmanager_client(self) -> Any:
-        """Return a synchronous Secrets Manager client."""
-        ...
-
-    def lambda_client(self, config: Config | None = None) -> Any:
-        """Return a synchronous Lambda client using the requested config."""
-        ...
-
-    def maximum_presign_ttl(self, requested_seconds: int) -> int:
-        """Return the longest safe presigned URL lifetime."""
-        ...
-
-
-class _BaseAWSClientProvider(ABC):
     @abstractmethod
     def _client_kwargs(self) -> dict[str, Any]:
         """Return SDK arguments for this credential source."""
@@ -82,7 +60,7 @@ class _BaseAWSClientProvider(ABC):
 
 
 @dataclass(frozen=True)
-class ExplicitCredentialsAWSClientProvider(_BaseAWSClientProvider):
+class ExplicitCredentialsAWSClientProvider(AWSClientProvider):
     """Construct AWS clients from caller-supplied credentials."""
 
     credentials: AWSCredentials = field(repr=False)
@@ -97,7 +75,7 @@ class ExplicitCredentialsAWSClientProvider(_BaseAWSClientProvider):
 
 
 @dataclass(frozen=True)
-class DefaultChainAWSClientProvider(_BaseAWSClientProvider):
+class DefaultChainAWSClientProvider(AWSClientProvider):
     """Construct AWS clients through the SDK default credential chain."""
 
     region: str
