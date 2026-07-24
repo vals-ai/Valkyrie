@@ -202,8 +202,7 @@ class DriverStackTest(unittest.TestCase):
             benchmark_objects = next(
                 statement
                 for statement in statements
-                if "/benchmarks/*" in json.dumps(statement["Resource"])
-                and "s3:PutObject" in statement["Action"]
+                if "/benchmarks/*" in json.dumps(statement["Resource"]) and "s3:PutObject" in statement["Action"]
             )
             self.assertEqual(
                 set(benchmark_objects["Action"]),
