@@ -293,8 +293,7 @@ chmod +x /usr/local/bin/my_agent
 
 ## Creating a CLI
 
-In order for valkyrie to pass in the required CLI arguments to your agent, the agent must accept CLI arguments. If
-your agent does not currently support it, you can easily add it.
+In order for valkyrie to pass in the required CLI arguments to your agent, the agent must accept CLI arguments. If your agent currently does not have a CLI, you can use this example to add it
 
 ```python
 # run_agent.py
