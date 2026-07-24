@@ -51,6 +51,7 @@ _install_agent_dependencies = getattr(sandbox_module, "install_agent_dependencie
 _install_agent_dependencies_with_retries = getattr(sandbox_module, "_install_agent_dependencies_with_retries")
 _stream_command_output_with_egress_allowlist = getattr(sandbox_module, "_stream_command_output_with_egress_allowlist")
 _upload_agent_artifacts = getattr(sandbox_module, "upload_agent_artifacts")
+_upload_output_artifact = getattr(sandbox_module, "_upload_output_artifact")
 
 
 class TestOutputArtifacts:
@@ -250,6 +251,49 @@ class TestOutputArtifacts:
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
         upload_mock.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        ("stat_result", "total_bytes", "error"),
+        (
+            (ExecResult(exit_code=1, output=""), 0, "Failed to stat"),
+            (ExecResult(exit_code=0, output="not-a-size"), 0, "Failed to parse"),
+            (
+                ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES)),
+                1,
+                "Output artifacts are too large",
+            ),
+        ),
+    )
+    async def test_upload_output_artifact_rejects_invalid_sizes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        harness_config: Any,
+        stat_result: ExecResult,
+        total_bytes: int,
+        error: str,
+    ) -> None:
+        sandbox = Mock()
+        sandbox.download_file = AsyncMock()
+        exec_mock = AsyncMock(
+            side_effect=[
+                ExecResult(exit_code=0, output=""),
+                stat_result,
+            ]
+        )
+        monkeypatch.setattr(sandbox_module, "_exec", exec_mock)
+
+        with pytest.raises(OutputArtifactError, match=error):
+            await _upload_output_artifact(
+                sandbox,
+                "artifacts/result.json",
+                "benchmark-123",
+                "task_0",
+                harness_config.aws,
+                "bucket",
+                total_bytes,
+            )
+
+        sandbox.download_file.assert_not_awaited()
 
     async def test_upload_output_artifacts_skips_invalid_optional_file(
         self,

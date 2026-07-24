@@ -6,7 +6,23 @@ Run: uv run pytest tests/unit/database/test_models.py
 from sqlmodel import Session
 
 from tests.utils import TEST_ORG_ID
-from tracker.database.models import AgentContractRequest, Benchmark, BenchmarkArguments, Task, TaskStatus
+from tracker.database.models import (
+    AgentContractRequest,
+    Benchmark,
+    BenchmarkArguments,
+    OutputArtifact,
+    Task,
+    TaskStatus,
+)
+
+
+def test_required_output_artifact_omits_default_from_serialized_contract() -> None:
+    artifact = OutputArtifact(path="logs/result.json")
+
+    assert artifact.model_dump(mode="json") == {
+        "path": "logs/result.json",
+        "source": None,
+    }
 
 
 def test_create_benchmark_table_row_counts_stopped_tasks_as_finished(database_session: Session) -> None:
