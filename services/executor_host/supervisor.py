@@ -79,6 +79,15 @@ async def _release_task_protection() -> None:
             await _set_task_protection(enabled=False)
 
 
+async def _await_task_completion(task: asyncio.Task[None]) -> None:
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            pass
+    await task
+
+
 class S3Client(Protocol):
     def download_file(self, bucket: str, key: str, filename: str) -> None:
         pass
@@ -572,22 +581,18 @@ async def _terminalize_after_failure(
     store: ExecutorDispatchStore,
     authority: DispatchAuthority,
     task_ids: list[str],
-) -> bool:
+) -> None:
     try:
-        terminalized = await store.terminalize(authority, task_ids)
-        if not terminalized:
+        if not await store.terminalize(authority, task_ids):
             logger.warning(
                 "Executor dispatch %s no longer had terminalization authority",
                 authority.dispatch_id,
             )
-            return False
-        return True
     except Exception:
         logger.exception(
             "Failed to terminalize executor dispatch %s",
             authority.dispatch_id,
         )
-        return False
 
 
 async def run_executor_dispatch(
@@ -600,7 +605,15 @@ async def run_executor_dispatch(
     benchmark_id_str: str,
     verified_task_ids: list[str],
 ) -> None:
-    await _acquire_task_protection()
+    protection_task = asyncio.create_task(_acquire_task_protection())
+    try:
+        await asyncio.shield(protection_task)
+    except asyncio.CancelledError:
+        await _await_task_completion(protection_task)
+        release_task = asyncio.create_task(_release_task_protection())
+        await _await_task_completion(release_task)
+        raise
+
     try:
         claim_task = asyncio.create_task(
             store.claim(

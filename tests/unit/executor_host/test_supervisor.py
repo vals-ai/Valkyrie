@@ -598,6 +598,86 @@ async def test_task_protection_is_acquired_before_claim(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("repeat_acquisition_cancellation", "repeat_release_cancellation"),
+    [(False, False), (True, False), (False, True)],
+    ids=["single", "repeated-acquisition", "repeated-release"],
+)
+async def test_cancellation_during_protection_acquisition_releases_before_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    repeat_acquisition_cancellation: bool,
+    repeat_release_cancellation: bool,
+) -> None:
+    protection_calls: list[bool] = []
+    enable_started = asyncio.Event()
+    finish_enable = asyncio.Event()
+    release_started = asyncio.Event()
+    finish_release = asyncio.Event()
+    release_completed = asyncio.Event()
+    store = FakeDispatchStore(claim_result=False)
+
+    async def block_task_protection(*, enabled: bool) -> None:
+        protection_calls.append(enabled)
+        if enabled and protection_calls == [True]:
+            enable_started.set()
+            await finish_enable.wait()
+        elif not enabled and repeat_release_cancellation and protection_calls == [True, False]:
+            release_started.set()
+            await finish_release.wait()
+            release_completed.set()
+
+    monkeypatch.setattr(supervisor_module, "_set_task_protection", block_task_protection)
+    artifact = b"unused"
+    dispatch = _dispatch(digest=hashlib.sha256(artifact).hexdigest())
+    task = asyncio.create_task(
+        run_executor_dispatch(
+            _supervisor(tmp_path, content=artifact),
+            store,
+            executor_dispatch_id="dispatch-1",
+            dispatch=dispatch,
+            start_benchmark_request_json={},
+            benchmark_id_str="benchmark-1",
+            verified_task_ids=[],
+        )
+    )
+    await enable_started.wait()
+    task.cancel()
+    if repeat_acquisition_cancellation:
+        asyncio.get_running_loop().call_soon(task.cancel)
+    asyncio.get_running_loop().call_soon(finish_enable.set)
+    if repeat_release_cancellation:
+        await release_started.wait()
+        task.cancel()
+        finish_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert protection_calls == [True, False]
+    assert release_completed.is_set() is repeat_release_cancellation
+    assert getattr(supervisor_module, "_active_execution_count") == 0
+    assert store.claimed == []
+    assert store.finished == []
+    assert store.terminalized == []
+
+    await run_executor_dispatch(
+        _supervisor(tmp_path, content=artifact),
+        store,
+        executor_dispatch_id="dispatch-2",
+        dispatch=dispatch,
+        start_benchmark_request_json={},
+        benchmark_id_str="benchmark-1",
+        verified_task_ids=[],
+    )
+
+    assert protection_calls == [True, False, True, False]
+    assert getattr(supervisor_module, "_active_execution_count") == 0
+    assert len(store.claimed) == 1
+
+
+@pytest.mark.asyncio
 async def test_cancellation_after_claim_terminalizes_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

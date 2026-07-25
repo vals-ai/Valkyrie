@@ -242,11 +242,6 @@ def active_executor_release_work(session: Session) -> ActiveExecutorReleaseWork:
     )
 
 
-def active_executor_release_counts(session: Session) -> dict[str, int]:
-    """Count active dispatches and current-owner executions once per release."""
-    return active_executor_release_work(session).counts_by_release
-
-
 def select_active_release(session: Session, *, for_update: bool = False) -> ExecutorRelease:
     """Return the healthy release currently admitted for new benchmarks."""
     admission = _get_admission(session, for_update=for_update)
@@ -332,28 +327,6 @@ def promote_release(session: Session, release_id: str) -> ExecutorRelease:
     return release
 
 
-def mark_draining(session: Session, release_id: str) -> ExecutorRelease:
-    """Mark an admitted predecessor as draining without changing its timestamp."""
-    admission = _get_admission(session, for_update=True)
-    release = _get_release(session, release_id, populate_existing=True, for_update=True)
-    if release.status == ExecutorReleaseStatus.DRAINING:
-        return release
-    if release.status != ExecutorReleaseStatus.ACTIVE:
-        raise ReleaseControlError(f"Executor release {release_id!r} cannot drain from {release.status}")
-    if admission is not None and admission.release_id == release_id:
-        raise ReleaseControlError("The active executor release must be replaced before draining")
-
-    release.status = ExecutorReleaseStatus.DRAINING
-    release.draining_at = datetime.now(UTC)
-    session.add(release)
-    session.flush()
-    _logger.info(
-        "executor_release_lifecycle",
-        extra={"event": "draining", "release_id": release.id, "status": release.status.value},
-    )
-    return release
-
-
 def retire_if_empty(session: Session, release_id: str) -> bool:
     """Retire a drained release when it owns no active executor work."""
     admission = _get_admission(session, for_update=True)
@@ -389,24 +362,40 @@ def retire_if_empty(session: Session, release_id: str) -> bool:
     return True
 
 
-def artifact_deletion_allowed(session: Session, release_id: str, *, now: datetime | None = None) -> bool:
-    """Return true only after retirement retention expires and no active run owns the release."""
-    release = _get_release(session, release_id)
+def _artifact_deletion_allowed(
+    release: ExecutorRelease,
+    active_work: ActiveExecutorReleaseWork,
+    now: datetime,
+) -> bool:
     if release.status != ExecutorReleaseStatus.RETIRED or release.artifact_retention_until is None:
         return False
     retention_until = release.artifact_retention_until
     if retention_until.tzinfo is None:
         retention_until = retention_until.replace(tzinfo=UTC)
-    if (now or datetime.now(UTC)) < retention_until:
+    return (
+        now >= retention_until
+        and not active_work.unattributed_executions
+        and active_work.counts_by_release.get(release.id, 0) == 0
+    )
+
+
+def artifact_deletion_allowed(session: Session, release_id: str, *, now: datetime | None = None) -> bool:
+    """Return true only after retirement retention expires and no active run owns the release."""
+    release = _get_release(session, release_id)
+    if release.status != ExecutorReleaseStatus.RETIRED or release.artifact_retention_until is None:
         return False
-    active_work = active_executor_release_work(session)
-    return not active_work.unattributed_executions and active_work.counts_by_release.get(release_id, 0) == 0
+    return _artifact_deletion_allowed(
+        release,
+        active_executor_release_work(session),
+        now or datetime.now(UTC),
+    )
 
 
 def executor_releases_status(session: Session) -> ExecutorReleasesResponse:
     """Build the global release-health report for trusted operators."""
     admission = session.get(ExecutorAdmission, 1)
     active_work = active_executor_release_work(session)
+    now = datetime.now(UTC)
     active_counts = active_work.counts_by_release
     unattributed_count = len(active_work.unattributed_executions)
 
@@ -423,10 +412,14 @@ def executor_releases_status(session: Session) -> ExecutorReleasesResponse:
         elif release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED) and unattributed_count:
             noun = "execution" if unattributed_count == 1 else "executions"
             blocker = f"{unattributed_count} unattributed active {noun}"
-        elif release.status == ExecutorReleaseStatus.RETIRED and not artifact_deletion_allowed(session, release.id):
+        elif release.status == ExecutorReleaseStatus.RETIRED and not _artifact_deletion_allowed(
+            release,
+            active_work,
+            now,
+        ):
             if retention_until is None:
                 blocker = "artifact retention is unset"
-            elif retention_until > datetime.now(UTC):
+            elif retention_until > now:
                 blocker = f"artifact retained until {retention_until.isoformat()}"
         entries.append(
             ExecutorReleaseStatusEntry(

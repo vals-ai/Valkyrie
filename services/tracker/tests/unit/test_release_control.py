@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
+from tracker import release_control as release_control_module
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -20,10 +21,9 @@ from tracker.database.models import (
 from tracker.release_control import (
     ReleaseControlError,
     activate_release,
-    active_executor_release_counts,
+    active_executor_release_work,
     artifact_deletion_allowed,
     create_executor_dispatch,
-    mark_draining,
     promote_release,
     register_release,
     retire_if_empty,
@@ -364,28 +364,6 @@ def test_promote_release_does_not_backfill_legacy_benchmark_ownership(
         retire_if_empty(database_session, "legacy")
 
 
-def test_draining_is_idempotent_and_candidate_cannot_drain(database_session: Session) -> None:
-    register_release(database_session, _release("v1"))
-    register_release(database_session, _release("v2"))
-    register_release(database_session, _release("candidate"))
-    promote_release(database_session, "v1")
-    promote_release(database_session, "v2")
-
-    with pytest.raises(ReleaseControlError, match="active executor release"):
-        mark_draining(database_session, "v2")
-
-    draining = database_session.get(ExecutorRelease, "v1")
-    assert draining is not None
-    draining_at = draining.draining_at
-    assert mark_draining(database_session, "v1").draining_at == draining_at
-
-    with pytest.raises(ReleaseControlError, match="cannot drain"):
-        mark_draining(database_session, "candidate")
-
-    promote_release(database_session, "v1")
-    assert select_active_release(database_session).id == "v1"
-
-
 def test_retirement_rejects_the_current_admission_target(database_session: Session) -> None:
     register_release(database_session, _release("v1"))
     promote_release(database_session, "v1")
@@ -471,7 +449,7 @@ def test_active_work_deduplicates_current_owner_and_dispatch_on_the_same_release
     database_session.add(dispatch)
     database_session.commit()
 
-    assert active_executor_release_counts(database_session) == {release.id: 1}
+    assert active_executor_release_work(database_session).counts_by_release == {release.id: 1}
 
 
 def test_null_current_owner_with_start_dispatch_history_blocks_every_retirement(
@@ -517,6 +495,52 @@ def test_artifact_deletion_allowed_treats_naive_retention_timestamp_as_utc(datab
         database_session,
         release.id,
         now=retention_until.replace(tzinfo=UTC),
+    )
+
+
+def test_release_status_uses_one_active_work_and_clock_snapshot(
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed_now = datetime(2026, 8, 19, tzinfo=UTC)
+    expired = _release("expired")
+    expired.status = ExecutorReleaseStatus.RETIRED
+    expired.artifact_retention_until = fixed_now - timedelta(seconds=1)
+    retained = _release("retained")
+    retained.status = ExecutorReleaseStatus.RETIRED
+    retained.artifact_retention_until = fixed_now + timedelta(seconds=1)
+    database_session.add_all([expired, retained])
+    database_session.commit()
+
+    active_work_calls = 0
+    active_work = release_control_module.active_executor_release_work(database_session)
+
+    def capture_active_work(_session: Session) -> release_control_module.ActiveExecutorReleaseWork:
+        nonlocal active_work_calls
+        active_work_calls += 1
+        return active_work
+
+    class CountingClock:
+        calls = 0
+
+        @classmethod
+        def now(cls, tz: object | None = None) -> datetime:
+            assert tz is UTC
+            cls.calls += 1
+            return fixed_now
+
+    monkeypatch.setattr(release_control_module, "active_executor_release_work", capture_active_work)
+    monkeypatch.setattr(release_control_module, "datetime", CountingClock)
+
+    response = release_control_module.executor_releases_status(database_session)
+    entries = {entry.id: entry for entry in response.entries}
+
+    assert active_work_calls == 1
+    assert CountingClock.calls == 1
+    assert entries[expired.id].retirement_blocker is None
+    assert (
+        entries[retained.id].retirement_blocker
+        == f"artifact retained until {retained.artifact_retention_until.isoformat()}"
     )
 
 

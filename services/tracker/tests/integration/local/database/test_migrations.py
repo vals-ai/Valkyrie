@@ -24,11 +24,13 @@ from tracker.database.models import (
 
 _TRACKER_ROOT = Path(__file__).resolve().parents[4]
 _ALEMBIC_INI = _TRACKER_ROOT / "alembic.ini"
+_EXECUTOR_RELEASE_OWNERSHIP_REVISION = "c7d8e9f0a1b2"
+_EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR = "6f3c2d9a8b10"
 _CURRENT_OWNERSHIP_REVISION = "e9f0a1b2c3d4"
 _PREVIOUS_REVISION = "d8e9f0a1b2c3"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def migration_database_url() -> Generator[str, None, None]:
     with PostgresContainer("postgres:16-alpine") as postgres:
         yield postgres.get_connection_url()
@@ -43,6 +45,39 @@ def _run_alembic(database_url: str, *args: str) -> subprocess.CompletedProcess[s
         text=True,
         check=False,
     )
+
+
+def test_executor_release_ownership_downgrade_restores_predecessor_schema(
+    migration_database_url: str,
+) -> None:
+    upgrade = _run_alembic(migration_database_url, "upgrade", _EXECUTOR_RELEASE_OWNERSHIP_REVISION)
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    downgrade = _run_alembic(migration_database_url, "downgrade", _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR)
+    assert downgrade.returncode == 0, downgrade.stderr
+
+    engine = create_engine(migration_database_url)
+    inspector = inspect(engine)
+    assert "executorrelease" not in inspector.get_table_names()
+    assert "executoradmission" not in inspector.get_table_names()
+    benchmark_columns = {column["name"] for column in inspector.get_columns("benchmark")}
+    assert (
+        not {
+            "executor_release_id",
+            "executor_artifact_uri",
+            "executor_artifact_digest",
+            "executor_protocol_version",
+        }
+        & benchmark_columns
+    )
+    with engine.connect() as connection:
+        revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+        release_status_enum_exists = connection.execute(
+            text("SELECT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'executorreleasestatus')")
+        ).scalar_one()
+    assert revision == _EXECUTOR_RELEASE_OWNERSHIP_PREDECESSOR
+    assert release_status_enum_exists is False
+    engine.dispose()
 
 
 def test_current_execution_ownership_migration_rejects_downgrade(

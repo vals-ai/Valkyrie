@@ -89,6 +89,5 @@ def downgrade() -> None:
     op.drop_column("benchmark", "executor_artifact_uri")
     op.drop_column("benchmark", "executor_release_id")
     op.drop_table("executoradmission")
-    op.drop_column("executorrelease", "artifact_retention_until")
     op.drop_table("executorrelease")
     sa.Enum(name=_RELEASE_STATUS_ENUM).drop(op.get_bind(), checkfirst=True)
