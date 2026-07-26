@@ -1,4 +1,4 @@
-name: Retry evaluation from scratch
+name: Retry evaluation
 
 on:
   workflow_dispatch:
@@ -70,7 +70,7 @@ jobs:
             printf 'AWS_DEFAULT_REGION: "%s"\n' "$AWS_REGION"
           } >> ~/.config/valkyrie/valkyrie.yaml
 
-      - name: Validate completed run and collect every task ID
+      - name: Validate completed run and collect every evaluated task ID
         run: |
           set -euo pipefail
 
@@ -83,9 +83,13 @@ jobs:
             exit 1
           fi
 
+          jq -e '
+            ((.task_errors // {}) | length == 0)
+            and ((.evaluation_results // {}) | length > 0)
+          ' "$RUNNER_TEMP/before-results.json"
+
           jq -r '
-            [(.evaluation_results // {}), (.task_errors // {})]
-            | map(keys) | add | unique[]
+            (.evaluation_results // {}) | keys[]
           ' "$RUNNER_TEMP/before-results.json" > "$RUNNER_TEMP/task-ids.txt"
 
           task_count="$(wc -l < "$RUNNER_TEMP/task-ids.txt" | tr -d ' ')"
@@ -95,11 +99,10 @@ jobs:
             exit 1
           fi
 
-      - name: Retry every task from scratch
+      - name: Retry evaluation for every task
         run: |
           valk run retry "$RUN_ID" \
             --task-ids-file "$RUNNER_TEMP/task-ids.txt" \
-            --from-scratch \
             --connect
 
       - name: Verify retried results
@@ -113,10 +116,29 @@ jobs:
             --argjson total_tasks "$total_tasks" \
             --slurpfile before "$RUNNER_TEMP/before-results.json" \
             '
-              .status == "FINISHED"
+              . as $after
+              | .status == "FINISHED"
               and ((.task_errors // {}) | length == 0)
               and ((.evaluation_results // {}) | length == $total_tasks)
               and (.finished_at != $before[0].finished_at)
               and (.final_evaluation != null)
+              and (
+                [
+                  $after.evaluation_results
+                  | to_entries[]
+                  | . as $result
+                  | $before[0].evaluation_results[$result.key] as $previous
+                  | ($previous.task_breakdown.agent_run_duration != null)
+                    and (
+                      ($result.value.attempts // 1)
+                      == (($previous.attempts // 1) + 1)
+                    )
+                    and (
+                      $result.value.task_breakdown.agent_run_duration
+                      == $previous.task_breakdown.agent_run_duration
+                    )
+                ]
+                | all
+              )
             ' \
             "$RUNNER_TEMP/after-results.json"
