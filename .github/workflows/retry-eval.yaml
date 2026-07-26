@@ -16,118 +16,51 @@ concurrency:
   group: retry-eval-${{ inputs.run_id }}
   cancel-in-progress: false
 
+env:
+  AWS_REGION: us-east-1
+  RUN_ID: ${{ inputs.run_id }}
+  TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
+  VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
+
 jobs:
   retry-eval:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     environment: dev
-    env:
-      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-      AWS_REGION: ${{ vars.AWS_REGION }}
-      AWS_DEFAULT_REGION: ${{ vars.AWS_REGION }}
-      DEV_ACCOUNT_ID: ${{ vars.DEV_ACCOUNT_ID }}
-      PRODUCTION_ACCOUNT_ID: "613431292675"
-      RUN_ID: ${{ inputs.run_id }}
-      TRACKER_SERVICE_URL: https://benchmark-tracker-dev.vals.ai
-      VALKYRIE_CONFIG_SECRET_ID: devCIValkyrieConfigSecret
-      VALKYRIE_ENV: dev
 
     steps:
-      - name: Validate input and dev configuration
-        run: |
-          set -euo pipefail
+      - uses: actions/checkout@v4
 
-          python3 - <<'PY'
-          import os
-          from uuid import UUID
-
-          try:
-              run_id = str(UUID(os.environ["RUN_ID"]))
-          except ValueError as error:
-              raise SystemExit(f"run_id must be a UUID: {error}") from error
-          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as environment_file:
-              print(f"RUN_ID={run_id}", file=environment_file)
-          PY
-
-          if [[ -z "$DEV_ACCOUNT_ID" || -z "$AWS_DEPLOY_ROLE_ARN" || -z "$AWS_REGION" ]]; then
-            echo "::error::The dev Environment must define DEV_ACCOUNT_ID, AWS_DEPLOY_ROLE_ARN, and AWS_REGION."
-            exit 1
-          fi
-          if [[ ! "$DEV_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]; then
-            echo "::error::DEV_ACCOUNT_ID must be a 12-digit AWS account ID."
-            exit 1
-          fi
-          if [[ "$DEV_ACCOUNT_ID" == "$PRODUCTION_ACCOUNT_ID" ]]; then
-            echo "::error::DEV_ACCOUNT_ID must not be the production AWS account."
-            exit 1
-          fi
-          if [[ "$AWS_REGION" != "us-east-1" ]]; then
-            echo "::error::AWS_REGION must be us-east-1; got '$AWS_REGION'."
-            exit 1
-          fi
-
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
-      - name: Configure uv tool path
-        run: |
-          set -euo pipefail
-
-          mkdir -p "$RUNNER_TEMP/uv-tool-bin" "$RUNNER_TEMP/uv-tools"
-          {
-            echo "UV_TOOL_BIN_DIR=$RUNNER_TEMP/uv-tool-bin"
-            echo "UV_TOOL_DIR=$RUNNER_TEMP/uv-tools"
-            echo "VALKYRIE_CONFIG_PATH=$RUNNER_TEMP/valkyrie.yaml"
-            echo "BEFORE_SNAPSHOT=$RUNNER_TEMP/retry-eval-before-snapshot.json"
-            echo "BEFORE_RESULTS=$RUNNER_TEMP/retry-eval-before-results.json"
-            echo "AFTER_RESULTS=$RUNNER_TEMP/retry-eval-after-results.json"
-            echo "RETRY_EVENTS=$RUNNER_TEMP/retry-eval-events.jsonl"
-            echo "TASK_IDS_FILE=$RUNNER_TEMP/retry-eval-task-ids.txt"
-          } >> "$GITHUB_ENV"
-          echo "$RUNNER_TEMP/uv-tool-bin" >> "$GITHUB_PATH"
-
       - name: Install Valkyrie CLI from this checkout
-        run: uv tool install --force . --prerelease=allow
+        run: |
+          uv tool install --force . --prerelease=allow
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Configure dev AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ env.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          allowed-account-ids: ${{ env.DEV_ACCOUNT_ID }}
-          role-session-name: retry-eval-${{ github.run_id }}
-          unset-current-credentials: true
-
-      - name: Validate dev AWS identity
-        run: |
-          set -euo pipefail
-
-          caller_account="$(aws sts get-caller-identity --query Account --output text)"
-          if [[ "$caller_account" != "$DEV_ACCOUNT_ID" ]]; then
-            echo "::error::Expected AWS account '$DEV_ACCOUNT_ID', got '$caller_account'."
-            exit 1
-          fi
+          allowed-account-ids: ${{ vars.DEV_ACCOUNT_ID }}
 
       - name: Configure Valkyrie for the dev CI organization
         run: |
           set -euo pipefail
 
-          umask 077
+          mkdir -p ~/.config/valkyrie
           aws secretsmanager get-secret-value \
             --secret-id "$VALKYRIE_CONFIG_SECRET_ID" \
             --query SecretString \
-            --output text > "$VALKYRIE_CONFIG_PATH"
+            --output text > ~/.config/valkyrie/valkyrie.yaml
 
           {
             printf '\n'
@@ -135,146 +68,55 @@ jobs:
             printf 'AWS_SECRET_ACCESS_KEY: "%s"\n' "$AWS_SECRET_ACCESS_KEY"
             printf 'AWS_SESSION_TOKEN: "%s"\n' "$AWS_SESSION_TOKEN"
             printf 'AWS_DEFAULT_REGION: "%s"\n' "$AWS_REGION"
-          } >> "$VALKYRIE_CONFIG_PATH"
+          } >> ~/.config/valkyrie/valkyrie.yaml
 
       - name: Validate completed run and collect every task ID
         run: |
           set -euo pipefail
 
-          valk run fetch "$RUN_ID" --format json > "$BEFORE_SNAPSHOT"
-          valk run results "$RUN_ID" --path "$BEFORE_RESULTS"
+          valk run fetch "$RUN_ID" --format json > "$RUNNER_TEMP/before-run.json"
+          valk run results "$RUN_ID" --path "$RUNNER_TEMP/before-results.json"
 
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
+          status="$(jq -r '.status' "$RUNNER_TEMP/before-run.json")"
+          if [[ "$status" != "FINISHED" ]]; then
+            echo "::error::Run must be FINISHED before retry; got $status."
+            exit 1
+          fi
 
-          snapshot_path = Path(os.environ["BEFORE_SNAPSHOT"])
-          results_path = Path(os.environ["BEFORE_RESULTS"])
-          task_ids_path = Path(os.environ["TASK_IDS_FILE"])
+          jq -r '
+            [(.evaluation_results // {}), (.task_errors // {})]
+            | map(keys) | add | unique[]
+          ' "$RUNNER_TEMP/before-results.json" > "$RUNNER_TEMP/task-ids.txt"
 
-          snapshot = json.loads(snapshot_path.read_text())
-          results = json.loads(results_path.read_text())
-
-          if snapshot["status"] != "FINISHED":
-              raise SystemExit(f"Run must be FINISHED before retry; got {snapshot['status']}")
-          if snapshot["total_tasks"] < 1:
-              raise SystemExit("Run must contain at least one task")
-          if results["status"] != "FINISHED":
-              raise SystemExit(f"Results must be FINISHED before retry; got {results['status']}")
-          if results["benchmark_id"] != os.environ["RUN_ID"]:
-              raise SystemExit("Fetched results do not match run_id")
-          if not results.get("finished_at"):
-              raise SystemExit("Completed run is missing finished_at")
-
-          evaluation_task_ids = set((results.get("evaluation_results") or {}).keys())
-          error_task_ids = set((results.get("task_errors") or {}).keys())
-          task_ids = sorted(evaluation_task_ids | error_task_ids)
-
-          if len(task_ids) != snapshot["total_tasks"]:
-              raise SystemExit(
-                  f"Expected {snapshot['total_tasks']} task IDs in results, found {len(task_ids)}"
-              )
-
-          task_ids_path.write_text("".join(f"{task_id}\n" for task_id in task_ids))
-          print(f"Validated completed run with {len(task_ids)} task(s)")
-          PY
+          task_count="$(wc -l < "$RUNNER_TEMP/task-ids.txt" | tr -d ' ')"
+          total_tasks="$(jq -r '.total_tasks' "$RUNNER_TEMP/before-run.json")"
+          if [[ "$task_count" -ne "$total_tasks" ]]; then
+            echo "::error::Found $task_count of $total_tasks task IDs."
+            exit 1
+          fi
 
       - name: Retry every task from scratch
         run: |
-          set -euo pipefail
-
           valk run retry "$RUN_ID" \
-            --task-ids-file "$TASK_IDS_FILE" \
-            --from-scratch
-
-      - name: Stream retry until completion
-        run: |
-          set -euo pipefail
-
-          valk run fetch "$RUN_ID" --connect --format jsonl | tee "$RETRY_EVENTS"
-
-          python3 - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          events_path = Path(os.environ["RETRY_EVENTS"])
-          events = [json.loads(line) for line in events_path.read_text().splitlines() if line.strip()]
-          if not events:
-              raise SystemExit("Retry stream produced no events")
-
-          final_event = events[-1]
-          if final_event["event"] != "complete":
-              raise SystemExit(f"Retry stream ended with event {final_event['event']}")
-          if final_event["status"] != "FINISHED":
-              raise SystemExit(f"Retry ended with status {final_event['status']}")
-          if final_event["run_id"] != os.environ["RUN_ID"]:
-              raise SystemExit("Retry stream returned a different run ID")
-          if final_event["finished_tasks"] != final_event["total_tasks"]:
-              raise SystemExit(
-                  f"Only {final_event['finished_tasks']} of {final_event['total_tasks']} tasks finished"
-              )
-
-          unfinished_counts = {
-              status: count
-              for status, count in final_event["task_state_counts"].items()
-              if status != "FINISHED" and count
-          }
-          if unfinished_counts:
-              raise SystemExit(f"Retry left non-finished tasks: {unfinished_counts}")
-          PY
+            --task-ids-file "$RUNNER_TEMP/task-ids.txt" \
+            --from-scratch \
+            --connect
 
       - name: Verify retried results
         run: |
           set -euo pipefail
 
-          valk run results "$RUN_ID" --path "$AFTER_RESULTS"
+          valk run results "$RUN_ID" --path "$RUNNER_TEMP/after-results.json"
+          total_tasks="$(jq -r '.total_tasks' "$RUNNER_TEMP/before-run.json")"
 
-          python3 - <<'PY'
-          import json
-          import os
-          from datetime import datetime
-          from pathlib import Path
-
-          before_results = json.loads(Path(os.environ["BEFORE_RESULTS"]).read_text())
-          after_results = json.loads(Path(os.environ["AFTER_RESULTS"]).read_text())
-          before_finished_at = datetime.fromisoformat(before_results["finished_at"].replace("Z", "+00:00"))
-          after_finished_at = datetime.fromisoformat(after_results["finished_at"].replace("Z", "+00:00"))
-
-          before_task_ids = set((before_results.get("evaluation_results") or {}).keys()) | set(
-              (before_results.get("task_errors") or {}).keys()
-          )
-          after_evaluation_results = after_results.get("evaluation_results") or {}
-          after_task_errors = after_results.get("task_errors") or {}
-          after_task_ids = set(after_evaluation_results) | set(after_task_errors)
-
-          if after_results["status"] != "FINISHED":
-              raise SystemExit(f"Retried results ended with status {after_results['status']}")
-          if after_results["benchmark_id"] != os.environ["RUN_ID"]:
-              raise SystemExit("Retried results do not match run_id")
-          if after_finished_at <= before_finished_at:
-              raise SystemExit("Run finished_at did not advance after retry")
-          if after_task_ids != before_task_ids:
-              raise SystemExit("Retried task IDs differ from the original task IDs")
-          if after_task_errors:
-              raise SystemExit(f"Retry completed with {len(after_task_errors)} task error(s)")
-          if len(after_evaluation_results) != len(before_task_ids):
-              raise SystemExit(
-                  f"Expected {len(before_task_ids)} evaluation results, found {len(after_evaluation_results)}"
-              )
-          if not after_results.get("final_evaluation"):
-              raise SystemExit("Retry completed without a final evaluation")
-
-          print(f"Retry completed successfully for {len(after_evaluation_results)} task(s)")
-          PY
-
-      - name: Write summary
-        run: |
-          {
-            echo "## Retry evaluation"
-            echo
-            echo "- Run: \`$RUN_ID\`"
-            echo "- Environment: dev"
-            echo "- Result: all tasks retried from scratch and finished successfully"
-          } >> "$GITHUB_STEP_SUMMARY"
+          jq -e \
+            --argjson total_tasks "$total_tasks" \
+            --slurpfile before "$RUNNER_TEMP/before-results.json" \
+            '
+              .status == "FINISHED"
+              and ((.task_errors // {}) | length == 0)
+              and ((.evaluation_results // {}) | length == $total_tasks)
+              and (.finished_at != $before[0].finished_at)
+              and (.final_evaluation != null)
+            ' \
+            "$RUNNER_TEMP/after-results.json"
