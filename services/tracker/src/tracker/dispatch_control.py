@@ -191,11 +191,17 @@ def resolve_enqueue_failure(
     task_ids: list[str],
 ) -> EnqueueFailureResolution:
     """Fail an unclaimed dispatch without overriding delivered or superseding work."""
-    benchmark = session.exec(select(Benchmark).where(Benchmark.id == benchmark_id).with_for_update()).one()
+    benchmark = session.exec(
+        select(Benchmark)
+        .where(Benchmark.id == benchmark_id)
+        .execution_options(populate_existing=True)
+        .with_for_update()
+    ).one()
     dispatch = session.exec(
         select(ExecutorDispatch)
         .where(ExecutorDispatch.id == dispatch_id)
         .where(ExecutorDispatch.benchmark_id == benchmark_id)
+        .execution_options(populate_existing=True)
         .with_for_update()
     ).one()
 
