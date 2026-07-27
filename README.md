@@ -123,7 +123,7 @@ Downloads an agent from S3 to your local machine and unzips it.
 
 To run a specific agent on a given benchmark, use the command
 ```
-valkyrie run start --agent <agent id> --benchmark <benchmark name>
+valkyrie run start --agent <agent id> --benchmark <benchmark id>
 ```
 
 You can pass `--concurrency` to control the number of tasks that run in parallel, and `--task-ids` or `--slice` to run only a subset of tasks. Specific agents may take additional parameters as well, most commonly, a parameter to set the model. 
@@ -185,7 +185,7 @@ Starts are fail-fast: if a request fails, no later requests are attempted. The c
 | `--ignore-custom-services` / `--ics` | Ignore custom benchmark services that have been configured. Provides opt-out for custom services. |
 | `--connect` | Stream run updates after the run starts |
 
-### Update an active run's concurrency
+### Update a running run's concurrency
 
 ```bash
 valkyrie run update <id> --concurrency 20
@@ -194,7 +194,7 @@ valkyrie run update <id> --concurrency 20
 This updates the persisted concurrency limit for an active run without restarting it. Increases allow more tasks after
 the tracker next refreshes the run; decreases do not cancel in-flight work and pause new admissions until usage falls
 below the new limit. The value must be a positive integer, and completed, stopped, or failed runs cannot be updated.
-The limit is enforced independently by each run executor. If an active retry creates overlapping
+The limit is enforced independently by each `process_benchmark` executor. If an active retry creates overlapping
 executors, aggregate admissions may temporarily exceed the persisted value; a strict cross-executor or distributed cap
 is not provided.
 
@@ -232,7 +232,7 @@ termination emits `complete`, `error`, `stopped`, `disconnect`, or `interrupted`
 `disconnect` and exits nonzero. Transport or malformed-protocol failures can exit nonzero without a final record, so
 stderr and the process exit code remain authoritative for command failures.
 
-Exit code 0 means the CLI handled the response or stream event; it does not mean the run itself succeeded.
+Exit code 0 means the CLI handled the response or stream event; it does not mean the benchmark itself succeeded.
 Agents must inspect each run's `status` and each JSONL record's `event`. Optional values such as model, starter, label,
 finish time, and score can be null. In fetch output, `metadata_available: false` specifically means identity metadata
 could not be loaded. All timestamps are UTC ISO 8601 strings, and non-finite scores are normalized to null.
@@ -380,9 +380,9 @@ valkyrie run output <id> [subpath] [-o ./output-dir]
 
 | Argument / Option | Description |
 | --- | --- |
-| `RUN_ID` | UUID of the run |
+| `BENCHMARK_ID` | UUID of the benchmark run |
 | `SUBPATH` | Optional file or folder within the benchmark directory |
-| `-o` / `--output-dir` | Local destination directory (defaults to `./<run_id>`) |
+| `-o` / `--output-dir` | Local destination directory (defaults to `./<benchmark_id>`) |
 
 
 ## Adding Benchmarks
@@ -453,7 +453,7 @@ valkyrie run start --benchmark my-benchmark --agent sweagent \
 
 ## Slack Notifications
 
-Valkyrie can send Slack webhook notifications as runs progress. Store an AWS Secrets Manager secret name (pointing to your Slack webhook URL) and get notified automatically when runs hit defined thresholds or reach a terminal state (finished, error, stopped).
+Valkyrie can send Slack webhook notifications as benchmark runs progress. Store an AWS Secrets Manager secret name (pointing to your Slack webhook URL) and get notified automatically when runs hit defined thresholds or reach a terminal state (finished, error, stopped).
 
 ### Setting up the webhook
 
@@ -479,29 +479,18 @@ valkyrie run start --agent sweagent --benchmark swebench -i 25 -i 75
 
 If a webhook secret is configured but no `-i` flags are provided, Valkyrie defaults to `-i 100` (notify on completion only). If `-i` flags are provided but no webhook secret is configured, the intervals are ignored with a warning.
 
-Webhook configuration is persisted per run. On resume or retry, the webhook secret and intervals are read from the original run — no local config needed.
+Webhook configuration is persisted per-benchmark in the database. On resume or retry, the webhook secret and intervals are read from the original benchmark — no local config needed.
 
 ### Notification triggers
 
 | Trigger | Description |
 | --- | --- |
 | **In Progress** | Run has crossed a defined interval threshold |
-| **Finished** | All tasks within the run have completed (includes final score) |
+| **Finished** | All tasks within the benchmark have completed (includes final score) |
 | **Error** | Run has errored out |
 | **Stopped** | User has stopped the run |
 
 ## Documentation
-
-The canonical tracker lifecycle API is `/runs` and uses `run_id`. Legacy benchmark-run routes and fields remain
-available for at least three months after canonical clients ship. `benchmark_name` is unchanged because it names the
-benchmark definition.
-
-When components are deployed separately, upgrade the tracker before publishing the matching SDK or CLI. Older clients
-continue to use retained legacy routes, and new clients fall back to them on a canonical-route 404 during rollout or rollback.
-
-Physical identifiers are intentionally deferred: database and Alembic names, the `benchmarks/` S3 prefix, existing
-CloudWatch names, and the `tracker.utils:process_benchmark` Taskiq registration do not change in this migration. Renaming
-any of them requires a separate dual-read/backfill design after the compatibility window.
 
 | Topic | Link |
 | --- | --- |

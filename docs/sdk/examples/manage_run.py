@@ -45,7 +45,7 @@ async def manage_run(args: argparse.Namespace) -> None:
     """Fetch a run and perform the selected management action."""
     async with ValkyrieClient.from_config() as client:
         current = await client.runs.fetch(args.run_id)
-        print(f"{current.run_id} is {current.details.status.value}")
+        print(f"{current.benchmark_id} is {current.details.status.value}")
 
         if args.action == "stop":
             response = await client.runs.stop(args.run_id, force=args.force, task_ids=args.task_ids)

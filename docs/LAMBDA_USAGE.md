@@ -13,8 +13,7 @@ The lambda is invoked once after all tasks finish and results are uploaded. If t
 
 ## Payload
 
-The tracker invokes your lambda with the stored run arguments, canonical run ID, persisted benchmark name, and the
-legacy `benchmark_id` alias during the compatibility window:
+The tracker invokes your lambda with the full `BenchmarkArguments` plus the persisted benchmark ID and name:
 
 ```json
 {
@@ -31,7 +30,6 @@ legacy `benchmark_id` alias during the compatibility window:
   "task_ids": ["astropy__astropy-12907"],
   "slice_str": null,
   "lambda_function": "my-post-benchmark-handler",
-  "run_id": "e532551e-d51b-4912-983d-47695bd24174",
   "benchmark_id": "e532551e-d51b-4912-983d-47695bd24174",
   "benchmark_name": "swebench"
 }
@@ -44,8 +42,7 @@ legacy `benchmark_id` alias during the compatibility window:
 | `task_ids` | list or null | Task IDs that were run (null = all) |
 | `slice_str` | string or null | Dataset slice if provided |
 | `lambda_function` | string | Name of this lambda function |
-| `run_id` | string | UUID of the completed run |
-| `benchmark_id` | string | Deprecated alias of `run_id` retained for compatibility |
+| `benchmark_id` | string | UUID of the completed run |
 | `benchmark_name` | string | Persisted name of the completed benchmark |
 
 ## Format required by AWS
@@ -56,13 +53,13 @@ Example method:
 
 ```python
 def lambda_handler(event, context):
-    run_id = event.get("run_id") or event["benchmark_id"]
+    benchmark_id = event["benchmark_id"]
     agent_name = event["contract"]["name"]
 
     # Your post-run logic here
     # e.g. send a Slack notification, trigger evaluation, etc.
 
-    return {"statusCode": 200, "body": f"Processed {agent_name} run {run_id}"}
+    return {"statusCode": 200, "body": f"Processed {agent_name} run {benchmark_id}"}
 ```
 
 ## Deployment
