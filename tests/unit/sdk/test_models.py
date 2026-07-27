@@ -110,7 +110,7 @@ def test_non_empty_list_and_final_results_parse() -> None:
     assert result.run_arguments.contract.output_artifacts
 
 
-def test_canonical_run_models_accept_legacy_wire_names_without_exposing_them() -> None:
+def test_canonical_run_models_reject_legacy_wire_names() -> None:
     run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     payload = {
         "benchmark_name": "swebench",
@@ -123,12 +123,10 @@ def test_canonical_run_models_accept_legacy_wire_names_without_exposing_them() -
         "s3_bucket_url": "s3://bucket/run",
     }
 
-    response = StartRunResponse.model_validate(payload)
-
-    assert str(response.run_id) == run_id
-    assert response.model_dump(mode="json")["run_id"] == run_id
-    assert "benchmark_id" not in StartRunResponse.model_fields
-
     legacy_payload = {**payload, "benchmark_id": payload["run_id"]}
     del legacy_payload["run_id"]
-    assert StartRunResponse.model_validate(legacy_payload) == response
+    with pytest.raises(ValidationError):
+        StartRunResponse.model_validate(legacy_payload)
+
+    with pytest.raises(ValidationError):
+        ListRunsResponse.model_validate({"benchmarks": []})

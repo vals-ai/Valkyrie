@@ -3,7 +3,6 @@
 import json
 import re
 from collections.abc import Generator, Iterator
-from contextlib import contextmanager
 from typing import Any, TypeVar, cast
 from uuid import UUID
 
@@ -76,16 +75,6 @@ def response_error_detail(response: Response) -> Any:
     if isinstance(body, dict):
         return body.get("detail", response.text)
     return response.text
-
-
-def _is_missing_route(response: Response) -> bool:
-    """Return whether FastAPI could not match the requested route."""
-    if response.status_code != 404:
-        return False
-    try:
-        return response.json() == {"detail": "Not Found"}
-    except (ValueError, httpx.ResponseNotRead):
-        return False
 
 
 def _parse_response(response: Response, action: str) -> Any:
@@ -173,73 +162,6 @@ class TrackerService:
     def close(self) -> None:
         """Close the HTTP client."""
         self._client.close()
-
-    def _get_with_legacy_fallback(
-        self,
-        canonical_url: str,
-        legacy_url: str,
-        *,
-        params: dict[str, Any] | None = None,
-        legacy_params: dict[str, Any] | None = None,
-    ) -> Response:
-        response = self._client.get(canonical_url, params=params)
-        if _is_missing_route(response):
-            return self._client.get(legacy_url, params=legacy_params if legacy_params is not None else params)
-        return response
-
-    def _post_with_legacy_fallback(
-        self,
-        canonical_url: str,
-        legacy_url: str,
-        *,
-        params: dict[str, Any] | None = None,
-        legacy_params: dict[str, Any] | None = None,
-        json: dict[str, Any],
-    ) -> Response:
-        response = self._client.post(canonical_url, params=params, json=json)
-        if _is_missing_route(response):
-            return self._client.post(
-                legacy_url,
-                params=legacy_params if legacy_params is not None else params,
-                json=json,
-            )
-        return response
-
-    def _patch_with_legacy_fallback(
-        self,
-        canonical_url: str,
-        legacy_url: str,
-        *,
-        json: dict[str, Any],
-    ) -> Response:
-        response = self._client.patch(canonical_url, json=json)
-        if _is_missing_route(response):
-            return self._client.patch(legacy_url, json=json)
-        return response
-
-    @contextmanager
-    def _stream_with_legacy_fallback(
-        self,
-        method: str,
-        canonical_url: str,
-        legacy_url: str,
-        *,
-        params: dict[str, Any] | None = None,
-        legacy_params: dict[str, Any] | None = None,
-        json: dict[str, Any] | None = None,
-    ) -> Generator[Response, None, None]:
-        with self._client.stream(method, canonical_url, params=params, json=json, timeout=None) as response:
-            if response.status_code != 404:
-                yield response
-                return
-            # Only 404 bodies are buffered for exact missing-route detection; successful responses remain streamed.
-            response.read()
-            if not _is_missing_route(response):
-                yield response
-                return
-        fallback_params = legacy_params if legacy_params is not None else params
-        with self._client.stream(method, legacy_url, params=fallback_params, json=json, timeout=None) as response:
-            yield response
 
     @staticmethod
     def _load_config() -> dict[str, Any]:
@@ -524,11 +446,7 @@ class TrackerService:
 
             body = payload.model_dump()
 
-            response = self._post_with_legacy_fallback(
-                f"{self._base_url}/runs",
-                f"{self._base_url}/start-benchmark",
-                json=body,
-            )
+            response = self._client.post(f"{self._base_url}/runs", json=body)
 
             return response
         except httpx.HTTPError as e:
@@ -545,11 +463,7 @@ class TrackerService:
             GetRunResponse with run information
         """
         try:
-            response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/{run_id}",
-                f"{self._base_url}/fetch-benchmark",
-                legacy_params={"benchmark_id": str(run_id)},
-            )
+            response = self._client.get(f"{self._base_url}/runs/{run_id}")
 
             return _parse_model_response(response, "Failed to fetch run", GetRunResponse)
         except httpx.HTTPError as e:
@@ -568,12 +482,7 @@ class TrackerService:
         body = {"no_cache": no_cache, "lambda_function": lambda_function}
 
         try:
-            with self._stream_with_legacy_fallback(
-                "POST",
-                url,
-                f"{self._base_url}/analyze-benchmark/{run_id}",
-                json=body,
-            ) as response:
+            with self._client.stream("POST", url, json=body, timeout=None) as response:
                 if response.status_code != 200:
                     response.read()
                     details = response_error_detail(response)
@@ -620,11 +529,10 @@ class TrackerService:
             Generator[str, None, None]
         """
         try:
-            with self._stream_with_legacy_fallback(
+            with self._client.stream(
                 "GET",
                 f"{self._base_url}/runs/{run_id}/events",
-                f"{self._base_url}/fetch-benchmark",
-                legacy_params={"benchmark_id": str(run_id), "connect": "true"},
+                timeout=None,
             ) as response:
                 if response.status_code != 200:
                     response.read()
@@ -654,11 +562,9 @@ class TrackerService:
             if task_ids:
                 params["task_ids"] = task_ids
 
-            response = self._get_with_legacy_fallback(
+            response = self._client.get(
                 f"{self._base_url}/runs/{run_id}/results",
-                f"{self._base_url}/retrieve-results",
                 params=params,
-                legacy_params={"benchmark_id": str(run_id), **params},
             )
 
             if not s3:
@@ -708,11 +614,7 @@ class TrackerService:
             TrackerServiceError if request fails
         """
         try:
-            response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/{run_id}/results/exists",
-                f"{self._base_url}/check-results-exist",
-                legacy_params={"benchmark_id": str(run_id)},
-            )
+            response = self._client.get(f"{self._base_url}/runs/{run_id}/results/exists")
 
             return _parse_response(response, "Failed to check S3 results")["exists"]
         except httpx.HTTPError as e:
@@ -736,9 +638,8 @@ class TrackerService:
             StopRunResponse with status and message
         """
         try:
-            response = self._post_with_legacy_fallback(
+            response = self._client.post(
                 f"{self._base_url}/runs/{run_id}/stop",
-                f"{self._base_url}/stop-benchmark/{run_id}",
                 params={"force": force},
                 json={"task_ids": task_ids},
             )
@@ -755,9 +656,8 @@ class TrackerService:
         """Update the concurrency limit for an active run."""
         payload = UpdateRunConcurrencyRequest(concurrency=concurrency)
         try:
-            response = self._patch_with_legacy_fallback(
+            response = self._client.patch(
                 f"{self._base_url}/runs/{run_id}/concurrency",
-                f"{self._base_url}/benchmarks/{run_id}/concurrency",
                 json=payload.model_dump(),
             )
             return _parse_model_response(
@@ -803,11 +703,9 @@ class TrackerService:
             if secrets:
                 body["secrets"] = secrets
 
-            response = self._post_with_legacy_fallback(
+            response = self._client.post(
                 f"{self._base_url}/runs/{run_id}/{'retry' if retry else 'resume'}",
-                f"{self._base_url}/retry-or-resume-benchmark/{run_id}",
                 params=params,
-                legacy_params={"retry": retry, **params},
                 json=body,
             )
 
@@ -827,11 +725,7 @@ class TrackerService:
         """
         try:
             params = request.model_dump(exclude_none=True, mode="json")
-            response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs",
-                f"{self._base_url}/fetch-benchmarks",
-                params=params,
-            )
+            response = self._client.get(f"{self._base_url}/runs", params=params)
 
             return _parse_model_response(response, "Failed to fetch runs", ListRunsResponse)
         except httpx.HTTPError as e:
@@ -841,11 +735,7 @@ class TrackerService:
         """Fetch lightweight status and task counts for multiple runs."""
         try:
             params = {"ids": ",".join(str(run_id) for run_id in run_ids)}
-            response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/status",
-                f"{self._base_url}/benchmarks/status",
-                params=params,
-            )
+            response = self._client.get(f"{self._base_url}/runs/status", params=params)
             return _parse_model_response(response, "Failed to fetch run statuses", RunStatusResponse)
         except httpx.HTTPError as e:
             raise TrackerServiceError(f"Failed to fetch run statuses: {e}") from e
@@ -865,9 +755,8 @@ class TrackerService:
             params: dict[str, Any] = {}
             if task_ids:
                 params["task_ids"] = task_ids
-            response = self._get_with_legacy_fallback(
+            response = self._client.get(
                 f"{self._base_url}/runs/{run_id}/outputs",
-                f"{self._base_url}/fetch-run-outputs/{run_id}",
                 params=params,
             )
             if response.status_code != 200:
@@ -889,10 +778,7 @@ class TrackerService:
             RunMetadataResponse with run metadata
         """
         try:
-            response = self._get_with_legacy_fallback(
-                f"{self._base_url}/runs/{run_id}/metadata",
-                f"{self._base_url}/fetch-benchmark-metadata/{run_id}",
-            )
+            response = self._client.get(f"{self._base_url}/runs/{run_id}/metadata")
 
             return _parse_model_response(
                 response,

@@ -501,10 +501,27 @@ def test_tracker_exposes_canonical_run_routes_without_changing_legacy_routes() -
 
 
 def test_canonical_run_dtos_translate_legacy_payloads_to_canonical_default_dumps() -> None:
-    start_legacy = StartBenchmarkResponse.model_validate(load_fixture("start.json")["response"])
-    fetch_legacy = FetchBenchmarkResponse.model_validate(load_fixture("fetch.json")["response"])
-    list_legacy = FetchBenchmarksResponse.model_validate(load_fixture("list.json")["response"])
-    results_legacy = FinalViewResponse.model_validate(load_fixture("results.json")["inline"])
+    start_payload = load_fixture("start.json")["response"]
+    start_payload["benchmark_id"] = start_payload.pop("run_id")
+
+    fetch_payload = load_fixture("fetch.json")["response"]
+    fetch_payload["benchmark_id"] = fetch_payload.pop("run_id")
+
+    list_payload = load_fixture("list.json")["response"]
+    list_payload["benchmarks"] = list_payload.pop("runs")
+    for run in list_payload["benchmarks"]:
+        run["id"] = run.pop("run_id")
+        run["name"] = run.pop("benchmark_name")
+
+    results_payload = load_fixture("results.json")["inline"]
+    results_payload["benchmark_id"] = results_payload.pop("run_id")
+    results_payload["benchmark_arguments"] = results_payload.pop("run_arguments")
+    results_payload["final_evaluation"]["benchmark"] = results_payload["final_evaluation"].pop("run_id")
+
+    start_legacy = StartBenchmarkResponse.model_validate(start_payload)
+    fetch_legacy = FetchBenchmarkResponse.model_validate(fetch_payload)
+    list_legacy = FetchBenchmarksResponse.model_validate(list_payload)
+    results_legacy = FinalViewResponse.model_validate(results_payload)
 
     pairs = (
         (StartRunResponse.from_legacy(start_legacy), SDKStartRunResponse),
@@ -532,7 +549,16 @@ def test_every_tracker_route_is_classified_as_sdk_supported_or_internal() -> Non
 
 def test_final_evaluation_preserves_tracker_runtime_string_ids() -> None:
     payload = load_fixture("results.json")["inline"]
-    tracker_evaluation = FinalViewResponse.model_validate(payload).final_evaluation
+    tracker_payload = {
+        **payload,
+        "benchmark_id": payload["run_id"],
+        "benchmark_arguments": payload["run_arguments"],
+        "final_evaluation": {
+            **payload["final_evaluation"],
+            "benchmark": payload["final_evaluation"]["run_id"],
+        },
+    }
+    tracker_evaluation = FinalViewResponse.model_validate(tracker_payload).final_evaluation
     sdk_evaluation = SDKRunResultsResponse.model_validate(payload).final_evaluation
 
     assert tracker_evaluation is not None

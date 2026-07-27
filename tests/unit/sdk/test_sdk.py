@@ -201,79 +201,20 @@ async def test_start_normalizes_agent_and_builds_configured_payload(make_client)
     assert body["webhook_intervals"] == [25, 100]
 
 
-async def test_runs_resource_falls_back_to_legacy_routes_on_canonical_404(make_client, fetch_response) -> None:
+async def test_runs_resource_does_not_retry_legacy_routes(make_client) -> None:
     run_id = uuid4()
     requests: list[httpx.Request] = []
-    legacy_fetch = fetch_response(run_id)
-    legacy_fetch["benchmark_id"] = legacy_fetch.pop("run_id")
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        path = request.url.path
-        if path == "/runs" or path.startswith(f"/runs/{run_id}"):
-            return httpx.Response(404, json={"detail": "Not Found"})
-        if path == "/start-benchmark":
-            return httpx.Response(
-                200,
-                json={
-                    "benchmark_name": "swebench",
-                    "agent_name": "sweagent",
-                    "benchmark_id": str(run_id),
-                    "concurrency": 1,
-                    "started_at": "2026-07-08T12:00:00Z",
-                    "task_count": 2,
-                    "cloudwatch_url": "https://logs.test",
-                    "s3_bucket_url": "s3://runs-bucket/run",
-                },
-            )
-        if path == "/fetch-benchmark":
-            if request.url.params.get("connect") == "true":
-                payload = json.dumps(legacy_fetch)
-                return httpx.Response(200, text=f"event: progress\ndata: {payload}\n\nevent: complete\ndata: done\n\n")
-            return httpx.Response(200, json=legacy_fetch)
-        if path == "/fetch-benchmarks":
-            return httpx.Response(200, json={"benchmarks": [], "total_count": 0, "next_cursor": None})
-        if path == "/retrieve-results":
-            results = load_sdk_fixture("results.json")["inline"]
-            results["benchmark_id"] = str(run_id)
-            return httpx.Response(200, json=results)
-        if path in {f"/stop-benchmark/{run_id}", f"/retry-or-resume-benchmark/{run_id}"}:
-            return httpx.Response(200, json={"status": "success"})
-        raise AssertionError(f"Unexpected request: {request.url}")
+        return httpx.Response(404, json={"detail": "Not Found"}, request=request)
 
     client = make_client(handler)
     async with client:
-        started = await client.runs.start("sweagent", "swebench", concurrency=1)
-        listed = await client.runs.list()
-        results = await client.runs.results(run_id)
-        stopped = await client.runs.stop(run_id)
-        retried = await client.runs.retry(run_id)
-        streamed = [update async for update in client.runs.stream(run_id)]
+        with pytest.raises(ValkyrieAPIError, match="Not Found"):
+            await client.runs.fetch(run_id)
 
-    assert started.run_id == run_id
-    assert listed.runs == []
-    assert results.run_id == run_id
-    assert stopped.status == "success"
-    assert retried.status == "success"
-    assert [update.run_id for update in streamed] == [run_id]
-    assert [request.url.path for request in requests] == [
-        "/runs",
-        "/start-benchmark",
-        "/runs",
-        "/fetch-benchmarks",
-        f"/runs/{run_id}/results",
-        "/retrieve-results",
-        f"/runs/{run_id}/stop",
-        f"/stop-benchmark/{run_id}",
-        f"/runs/{run_id}",
-        "/fetch-benchmark",
-        f"/runs/{run_id}/retry",
-        f"/retry-or-resume-benchmark/{run_id}",
-        f"/runs/{run_id}/events",
-        "/fetch-benchmark",
-    ]
-    retry_request = requests[11]
-    assert retry_request.url.params["retry"] == "true"
+    assert [request.url.path for request in requests] == [f"/runs/{run_id}"]
 
 
 async def test_start_can_omit_optional_run_configuration(make_client, sdk_config) -> None:
@@ -286,7 +227,7 @@ async def test_start_can_omit_optional_run_configuration(make_client, sdk_config
             json={
                 "benchmark_name": "swebench",
                 "agent_name": "sweagent",
-                "benchmark_id": str(uuid4()),
+                "run_id": str(uuid4()),
                 "concurrency": 5,
                 "started_at": "2026-07-08T12:00:00Z",
                 "task_count": 1,
@@ -315,7 +256,7 @@ async def test_start_overlays_a_supplied_contract_without_mutating_it(make_clien
             json={
                 "benchmark_name": "swebench",
                 "agent_name": "contract-agent",
-                "benchmark_id": str(uuid4()),
+                "run_id": str(uuid4()),
                 "concurrency": 5,
                 "started_at": "2026-07-08T12:00:00Z",
                 "task_count": 1,
@@ -478,7 +419,6 @@ async def test_resume_request_matches_canonical_wire_fixture(make_client, sdk_co
         if request.url.path == f"/runs/{run_id}":
             response = load_sdk_fixture("fetch.json")["response"]
             response["run_id"] = str(run_id)
-            response.pop("benchmark_id", None)
             return httpx.Response(200, json=response)
         return httpx.Response(200, json=fixture["response"])
 
@@ -501,8 +441,7 @@ async def test_resume_request_matches_canonical_wire_fixture(make_client, sdk_co
 async def test_stream_yields_snapshots_and_stops_on_complete(make_client, fetch_response) -> None:
     event = load_sdk_fixture("fetch.json")["sse"]
     data = event["data"]
-    run_id = data.pop("benchmark_id")
-    data["run_id"] = run_id
+    run_id = data["run_id"]
     event_prefix = f"event: {event['event']}\n" if event["event"] else ""
     wire_event = f"{event_prefix}data: {json.dumps(data)}\n\nevent: complete\n\n"
     timeout: dict[str, float | None] = {}
@@ -628,7 +567,7 @@ async def test_api_and_transport_failures_use_sdk_exceptions(make_client) -> Non
             await client.runs.fetch(uuid4())
 
 
-async def test_domain_404_does_not_retry_the_legacy_route(make_client) -> None:
+async def test_domain_404_surfaces_from_the_canonical_route(make_client) -> None:
     requested_paths: list[str] = []
 
     def missing_run(request: httpx.Request) -> httpx.Response:

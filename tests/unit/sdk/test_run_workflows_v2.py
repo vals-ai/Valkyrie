@@ -125,26 +125,6 @@ async def test_update_concurrency_uses_canonical_run_endpoint(make_client) -> No
     assert result.concurrency == 7
 
 
-async def test_update_concurrency_falls_back_to_legacy_endpoint(make_client) -> None:
-    run_id = uuid4()
-    paths: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
-        if request.url.path == f"/runs/{run_id}/concurrency":
-            return httpx.Response(404, json={"detail": "Not Found"})
-        return httpx.Response(
-            200,
-            json={"benchmark_id": str(run_id), "status": "IN_PROGRESS", "concurrency": 7},
-        )
-
-    async with make_client(handler) as client:
-        result = await client.runs.update(run_id, concurrency=7)
-
-    assert paths == [f"/runs/{run_id}/concurrency", f"/benchmarks/{run_id}/concurrency"]
-    assert result.run_id == run_id
-
-
 async def test_update_concurrency_rejects_non_positive_values(make_client) -> None:
     async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
         with pytest.raises(ValkyrieRunError, match="concurrency must be greater than 0"):
@@ -257,38 +237,6 @@ async def test_stream_outputs_yields_archive_chunks_and_repeated_task_filters(ma
             )
         ]
 
-    assert chunks == [b"first-", b"second"]
-
-
-async def test_streaming_workflows_fall_back_to_legacy_routes_on_canonical_404(make_client) -> None:
-    run_id = uuid4()
-    paths: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
-        if request.url.path.startswith("/runs/"):
-            return httpx.Response(404, json={"detail": "Not Found"})
-        if request.url.path == f"/analyze-benchmark/{run_id}":
-            return httpx.Response(
-                200,
-                headers={"content-type": "text/event-stream"},
-                content='event: done\ndata: {"status": "done"}\n\n',
-            )
-        if request.url.path == f"/fetch-run-outputs/{run_id}":
-            return httpx.Response(200, stream=ChunkStream())
-        raise AssertionError(f"Unexpected request: {request.url}")
-
-    async with make_client(handler) as client:
-        events = [event async for event in client.runs.analyze(run_id)]
-        chunks = [chunk async for chunk in client.runs.stream_outputs(run_id)]
-
-    assert paths == [
-        f"/runs/{run_id}/analysis",
-        f"/analyze-benchmark/{run_id}",
-        f"/runs/{run_id}/outputs",
-        f"/fetch-run-outputs/{run_id}",
-    ]
-    assert [(event.event, event.data) for event in events] == [("done", {"status": "done"})]
     assert chunks == [b"first-", b"second"]
 
 

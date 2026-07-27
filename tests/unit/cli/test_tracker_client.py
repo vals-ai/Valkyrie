@@ -317,39 +317,13 @@ def test_retrieve_results_adapts_canonical_wire_response_to_legacy_cli_model(
     assert response.model_dump(mode="json")["run_arguments"]["contract"]["name"] == "agent"
 
 
-def test_tracker_client_falls_back_to_legacy_routes_on_canonical_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tracker_client_does_not_retry_a_legacy_route(monkeypatch: pytest.MonkeyPatch) -> None:
     run_id = uuid4()
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path.startswith("/runs/"):
-            return httpx.Response(404, json={"detail": "Not Found"})
-        if request.url.path == "/fetch-benchmark":
-            if request.url.params.get("connect") == "true":
-                return httpx.Response(200, text="data: legacy-update\n\n")
-            return httpx.Response(
-                200,
-                json={
-                    "benchmark_name": "swebench",
-                    "benchmark_id": str(run_id),
-                    "details": {
-                        "status": "IN_PROGRESS",
-                        "started_at": "2026-07-08T12:00:00Z",
-                        "total_tasks": 1,
-                        "finished_tasks": 0,
-                        "task_breakdown": {"IN_PROGRESS": 1},
-                        "docent_reading_status": "IDLE",
-                        "docent_reading_url": None,
-                    },
-                    "s3_bucket_url": "s3://bucket/run",
-                    "label": None,
-                    "final_score": None,
-                },
-            )
-        if request.url.path == f"/stop-benchmark/{run_id}":
-            return httpx.Response(200, json={"status": "success"})
-        raise AssertionError(f"Unexpected request: {request.url}")
+        return httpx.Response(404, json={"detail": "Not Found"}, request=request)
 
     transport = httpx.MockTransport(handler)
     original_client = httpx.Client
@@ -366,70 +340,14 @@ def test_tracker_client_falls_back_to_legacy_routes_on_canonical_404(monkeypatch
     monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
 
     tracker = TrackerService(base_url="http://tracker")
-    fetched = tracker.fetch_run(run_id)
-    stopped = tracker.stop_run(run_id, force=True, task_ids=["task-1"])
-    streamed = list(tracker.stream_run(run_id))
+    with pytest.raises(TrackerServiceError, match="Not Found"):
+        tracker.fetch_run(run_id)
     tracker.close()
 
-    assert fetched.run_id == run_id
-    assert stopped.status == "success"
-    assert streamed == ["data: legacy-update"]
-    assert [request.url.path for request in requests] == [
-        f"/runs/{run_id}",
-        "/fetch-benchmark",
-        f"/runs/{run_id}/stop",
-        f"/stop-benchmark/{run_id}",
-        f"/runs/{run_id}/events",
-        "/fetch-benchmark",
-    ]
-    assert requests[1].url.params["benchmark_id"] == str(run_id)
-    assert requests[3].url.params["force"] == "true"
-    assert json.loads(requests[3].content) == {"task_ids": ["task-1"]}
-    assert dict(requests[5].url.params) == {"benchmark_id": str(run_id), "connect": "true"}
+    assert [request.url.path for request in requests] == [f"/runs/{run_id}"]
 
 
-def test_stream_fallback_reuses_shared_params_when_no_legacy_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == "/runs/events":
-            return httpx.Response(404, json={"detail": "Not Found"})
-        return httpx.Response(200, text="event: complete\n\n")
-
-    transport = httpx.MockTransport(handler)
-    original_client = httpx.Client
-
-    def build_client(
-        *,
-        timeout: float | httpx.Timeout | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> httpx.Client:
-        return original_client(transport=transport, timeout=timeout, headers=headers)
-
-    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
-    monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
-
-    tracker = TrackerService(base_url="http://tracker")
-    with tracker._stream_with_legacy_fallback(
-        "GET",
-        "http://tracker/runs/events",
-        "http://tracker/fetch-benchmark",
-        params={"cursor": "next"},
-    ) as response:
-        assert response.status_code == 200
-    tracker.close()
-
-    assert [dict(request.url.params) for request in requests] == [
-        {"cursor": "next"},
-        {"cursor": "next"},
-    ]
-
-
-def test_tracker_client_does_not_fallback_for_a_domain_404(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_tracker_client_surfaces_a_domain_404(monkeypatch: pytest.MonkeyPatch) -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -632,47 +550,6 @@ def test_update_run_concurrency_uses_canonical_patch_endpoint(monkeypatch: pytes
     assert json.loads(requests[0].content) == {"concurrency": 9}
     assert response.run_id == run_id
     assert response.concurrency == 9
-
-
-def test_update_run_concurrency_falls_back_to_legacy_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Retry the legacy path only when an old tracker lacks the canonical route."""
-    requests: list[httpx.Request] = []
-    run_id = UUID("123e4567-e89b-12d3-a456-426614174000")
-
-    def handle_request(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.url.path == f"/runs/{run_id}/concurrency":
-            return httpx.Response(404, json={"detail": "Not Found"})
-        return httpx.Response(
-            200,
-            json={
-                "benchmark_id": str(run_id),
-                "status": "IN_PROGRESS",
-                "concurrency": 9,
-            },
-        )
-
-    transport = httpx.MockTransport(handle_request)
-    original_client = httpx.Client
-
-    def build_client(
-        *,
-        timeout: float | httpx.Timeout | None = None,
-        headers: dict[str, str] | None = None,
-    ) -> httpx.Client:
-        return original_client(transport=transport, timeout=timeout, headers=headers)
-
-    monkeypatch.setattr(TrackerService, "_load_config", staticmethod(_empty_config))
-    monkeypatch.setattr(TrackerService, "parse_config_keys", _empty_config_keys)
-    monkeypatch.setattr("valkyrie.cli.tracker_client.httpx.Client", build_client)
-
-    response = TrackerService(base_url="http://tracker").update_run_concurrency(run_id, 9)
-
-    assert [request.url.path for request in requests] == [
-        f"/runs/{run_id}/concurrency",
-        f"/benchmarks/{run_id}/concurrency",
-    ]
-    assert response.run_id == run_id
 
 
 def test_update_run_concurrency_surfaces_tracker_error(monkeypatch: pytest.MonkeyPatch) -> None:

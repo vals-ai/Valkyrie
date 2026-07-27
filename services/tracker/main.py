@@ -4,7 +4,7 @@ import tarfile
 import traceback
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 from uuid import UUID
 
 import httpx
@@ -1107,15 +1107,16 @@ async def get_run(
     harness_config: HarnessConfig = Depends(fetch_harness_config),
     org: Org = Depends(get_current_org),
 ) -> GetRunResponse:
-    response = await fetch_benchmark(
-        benchmark_id=run_id,
-        connect=False,
-        session=session,
-        harness_config=harness_config,
-        org=org,
+    response = cast(
+        FetchBenchmarkResponse,
+        await fetch_benchmark(
+            benchmark_id=run_id,
+            connect=False,
+            session=session,
+            harness_config=harness_config,
+            org=org,
+        ),
     )
-    if not isinstance(response, FetchBenchmarkResponse):
-        raise HTTPException(status_code=500, detail="Unexpected response type from fetch_benchmark")
     return GetRunResponse.from_legacy(response)
 
 

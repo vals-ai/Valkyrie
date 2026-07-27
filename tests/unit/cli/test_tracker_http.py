@@ -48,7 +48,7 @@ def _tracker_with_handler(
 def _fetch_payload() -> dict[str, object]:
     return {
         "benchmark_name": "swebench",
-        "benchmark_id": str(_RUN_ID),
+        "run_id": str(_RUN_ID),
         "details": {
             "status": "FINISHED",
             "started_at": "2026-07-17T12:00:00Z",
@@ -65,9 +65,9 @@ def _fetch_payload() -> dict[str, object]:
 
 def _metadata_payload() -> dict[str, object]:
     return {
-        "benchmark_id": str(_RUN_ID),
+        "run_id": str(_RUN_ID),
         "benchmark_name": "swebench",
-        "benchmark_arguments": {
+        "run_arguments": {
             "contract": {"name": "agent", "install_cmd": "true", "run_cmd": "true"},
             "concurrency": 2,
             "dataset": "verified",
@@ -141,11 +141,11 @@ class TestTrackerJsonEndpoints:
 
         def handle_request(request: httpx.Request) -> httpx.Response:
             requests.append(request)
-            if request.url.path == "/fetch-benchmark":
+            if request.url.path == f"/runs/{_RUN_ID}":
                 return httpx.Response(200, json=_fetch_payload(), request=request)
-            if request.url.path == f"/fetch-benchmark-metadata/{_RUN_ID}":
+            if request.url.path == f"/runs/{_RUN_ID}/metadata":
                 return httpx.Response(200, json=_metadata_payload(), request=request)
-            if request.url.path == "/retrieve-results":
+            if request.url.path == f"/runs/{_RUN_ID}/results":
                 if request.url.params["s3"] == "true":
                     return httpx.Response(
                         200,
@@ -159,7 +159,7 @@ class TestTrackerJsonEndpoints:
                 return httpx.Response(200, json=final_view, request=request)
             if request.url.path == "/fetch-benchmark-tasks":
                 return httpx.Response(200, json={"task_ids": ["task-a", "task-b"]}, request=request)
-            if request.url.path == "/check-results-exist":
+            if request.url.path == f"/runs/{_RUN_ID}/results/exists":
                 return httpx.Response(200, json={"exists": True}, request=request)
             return httpx.Response(404, json={"detail": "Not Found"}, request=request)
 
@@ -188,7 +188,7 @@ class TestTrackerJsonEndpoints:
         result_request = next(
             request
             for request in requests
-            if request.url.path == "/retrieve-results" and request.url.params["s3"] == "false"
+            if request.url.path == f"/runs/{_RUN_ID}/results" and request.url.params["s3"] == "false"
         )
         assert result_request.url.params.get_list("task_ids") == ["task-a"]
 
@@ -216,7 +216,7 @@ class TestTrackerStreams:
 
         def handle_request(request: httpx.Request) -> httpx.Response:
             nonlocal analysis_requests
-            if request.url.path == f"/analyze-benchmark/{_RUN_ID}":
+            if request.url.path == f"/runs/{_RUN_ID}/analysis":
                 analysis_requests += 1
                 if analysis_requests == 1:
                     return httpx.Response(
@@ -235,7 +235,7 @@ class TestTrackerStreams:
                     ),
                     request=request,
                 )
-            if request.url.path == "/fetch-benchmark":
+            if request.url.path == f"/runs/{_RUN_ID}/events":
                 return httpx.Response(
                     200,
                     headers={"content-type": "text/event-stream"},

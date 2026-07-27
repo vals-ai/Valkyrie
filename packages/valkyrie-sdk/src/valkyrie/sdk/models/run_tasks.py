@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.runs import Order, RunStatus, TaskStatus
@@ -26,7 +26,7 @@ class FetchTasksRequest(BaseModel):
 class RunStatusEntry(ResponseModel):
     """Lightweight status and task counts for one run."""
 
-    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "id"))
+    run_id: UUID
     status: RunStatus
     finished_at: datetime | None
     total_tasks: int
@@ -42,7 +42,7 @@ class RunStatusEntry(ResponseModel):
 class RunStatusResponse(ResponseModel):
     """Status entries returned for a group of runs."""
 
-    runs: list[RunStatusEntry] = Field(validation_alias=AliasChoices("runs", "entries"))
+    runs: list[RunStatusEntry]
 
 
 class TaskSummary(ResponseModel):

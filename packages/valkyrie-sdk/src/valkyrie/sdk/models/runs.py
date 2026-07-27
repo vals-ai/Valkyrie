@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import AliasChoices, BaseModel, Field, field_serializer
+from pydantic import BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
@@ -130,7 +130,7 @@ class StartRunResponse(ResponseModel):
 
     benchmark_name: str
     agent_name: str
-    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
+    run_id: UUID
     concurrency: int
     started_at: datetime
     task_count: int
@@ -142,7 +142,7 @@ class GetRunResponse(ResponseModel):
     """Current state of one run."""
 
     benchmark_name: str
-    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
+    run_id: UUID
     details: RunDetails
     s3_bucket_url: str
     label: str | None = None
@@ -153,8 +153,8 @@ class GetRunResponse(ResponseModel):
 class RunSummary(ResponseModel):
     """Summary row returned by the run-list endpoint."""
 
-    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "id"))
-    benchmark_name: str = Field(validation_alias=AliasChoices("benchmark_name", "name"))
+    run_id: UUID
+    benchmark_name: str
     agent_name: str
     label: str | None = None
     model: str | None
@@ -185,7 +185,7 @@ class RunSummary(ResponseModel):
 class ListRunsResponse(ResponseModel):
     """Page of runs."""
 
-    runs: list[RunSummary] = Field(validation_alias=AliasChoices("runs", "benchmarks"))
+    runs: list[RunSummary]
     total_count: int | None = None
     next_cursor: str | None = None
 
@@ -206,9 +206,9 @@ class RunArguments(ResponseModel):
 class RunMetadataResponse(ResponseModel):
     """Stored launch metadata for one run."""
 
-    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
+    run_id: UUID
     benchmark_name: str
-    run_arguments: RunArguments = Field(validation_alias=AliasChoices("run_arguments", "benchmark_arguments"))
+    run_arguments: RunArguments
     started_by_email: str | None = None
 
 
@@ -217,7 +217,7 @@ class RunFinalEvaluation(ResponseModel):
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     org_id: str
-    run_id: str = Field(validation_alias=AliasChoices("run_id", "benchmark"))
+    run_id: str
     final_score: float
     properties: dict[str, Any] = Field(default_factory=dict)
 
@@ -234,13 +234,13 @@ class AverageTaskBreakdown(ResponseModel):
 class RunResultsResponse(ResponseModel):
     """Inline final results for a run."""
 
-    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
+    run_id: UUID
     benchmark_name: str
     started_at: datetime
     finished_at: datetime | None
     status: RunStatus
     error_message: str | None
-    run_arguments: RunArguments = Field(validation_alias=AliasChoices("run_arguments", "benchmark_arguments"))
+    run_arguments: RunArguments
     tasks_stopped: int | None
     final_evaluation: RunFinalEvaluation | None
     average_task_breakdown: AverageTaskBreakdown | None
@@ -288,6 +288,6 @@ class UpdateRunConcurrencyRequest(BaseModel):
 class UpdateRunConcurrencyResponse(ResponseModel):
     """Response returned after changing an active run's concurrency."""
 
-    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
+    run_id: UUID
     status: RunStatus
     concurrency: int

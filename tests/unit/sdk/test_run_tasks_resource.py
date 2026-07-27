@@ -41,37 +41,6 @@ async def test_statuses_serializes_ids_as_csv_and_accepts_an_empty_list(make_cli
     assert empty.runs == []
 
 
-async def test_statuses_falls_back_to_the_legacy_route_and_shape(make_client) -> None:
-    run_id = uuid4()
-    paths: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        paths.append(request.url.path)
-        if request.url.path == "/runs/status":
-            return httpx.Response(404, json={"detail": "Not Found"})
-        return httpx.Response(
-            200,
-            json={
-                "entries": [
-                    {
-                        "id": str(run_id),
-                        "status": "IN_PROGRESS",
-                        "finished_at": None,
-                        "total_tasks": 1,
-                        "finished_tasks": 0,
-                        "task_state_counts": {"PENDING": 1},
-                    }
-                ]
-            },
-        )
-
-    async with make_client(handler) as client:
-        result = await client.runs.statuses([run_id])
-
-    assert paths == ["/runs/status", "/benchmarks/status"]
-    assert result.runs[0].run_id == run_id
-
-
 async def test_tasks_serializes_typed_filters_and_pagination(make_client) -> None:
     run_id = uuid4()
     task_row_id = uuid4()

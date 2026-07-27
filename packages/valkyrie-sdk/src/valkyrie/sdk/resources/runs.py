@@ -100,7 +100,6 @@ class RunsResource:
             "/runs",
             StartRunResponse,
             json=payload.model_dump(mode="json"),
-            fallback_path="/start-benchmark",
         )
 
     async def fetch(self, run_id: UUID) -> GetRunResponse:
@@ -109,8 +108,6 @@ class RunsResource:
             "GET",
             f"/runs/{run_id}",
             GetRunResponse,
-            fallback_path="/fetch-benchmark",
-            fallback_params={"benchmark_id": str(run_id)},
         )
 
     async def list(self, request: ListRunsRequest | None = None) -> ListRunsResponse:
@@ -121,7 +118,6 @@ class RunsResource:
             "/runs",
             ListRunsResponse,
             params=resolved_request.model_dump(exclude_none=True, mode="json"),
-            fallback_path="/fetch-benchmarks",
         )
 
     async def statuses(self, run_ids: Sequence[UUID]) -> RunStatusResponse:
@@ -131,7 +127,6 @@ class RunsResource:
             "/runs/status",
             RunStatusResponse,
             params={"ids": ",".join(str(run_id) for run_id in run_ids)},
-            fallback_path="/benchmarks/status",
         )
 
     async def tasks(self, run_id: UUID, request: FetchTasksRequest | None = None) -> TasksResponse:
@@ -145,7 +140,6 @@ class RunsResource:
             f"/runs/{run_id}/tasks",
             TasksResponse,
             params=params,
-            fallback_path=f"/benchmarks/{run_id}/tasks",
         )
 
     async def task(self, run_id: UUID, task_id: str) -> SingleTaskResponse:
@@ -155,7 +149,6 @@ class RunsResource:
             "GET",
             f"/runs/{run_id}/tasks/{task_segment}",
             SingleTaskResponse,
-            fallback_path=f"/benchmarks/{run_id}/tasks/{task_segment}",
         )
 
     async def artifacts(self, run_id: UUID, task_id: str) -> TaskArtifactsResponse:
@@ -165,48 +158,37 @@ class RunsResource:
             "GET",
             f"/runs/{run_id}/tasks/{task_segment}/artifacts",
             TaskArtifactsResponse,
-            fallback_path=f"/benchmarks/{run_id}/tasks/{task_segment}/artifacts",
         )
 
     @handle_httpx_stream_errors("Valkyrie stream failed")
     async def stream(self, run_id: UUID) -> AsyncIterator[GetRunResponse]:
         """Yield typed updates until the run completes or disconnects."""
-        routes = (
-            (f"/runs/{run_id}/events", None),
-            ("/fetch-benchmark", {"benchmark_id": str(run_id), "connect": "true"}),
-        )
-        for route_index, (path, params) in enumerate(routes):
-            async with self._sdk.stream_response("GET", path, params=params) as response:
-                if response.status_code == 404 and route_index == 0:
-                    await response.aread()
-                    if self._sdk.is_missing_route(response):
-                        continue
-                if not response.is_success:
-                    await response.aread()
-                    self._sdk.raise_for_status(response)
+        async with self._sdk.stream_response("GET", f"/runs/{run_id}/events") as response:
+            if not response.is_success:
+                await response.aread()
+                self._sdk.raise_for_status(response)
 
-                event_name = ""
-                data_lines: list[str] = []
-                async for line in response.aiter_lines():
-                    if line == "":
-                        if event_name or data_lines:
-                            snapshot = self._parse_stream_event(event_name, data_lines)
-                            if snapshot is not None:
-                                yield snapshot
-                            if event_name in {"complete", "disconnect"}:
-                                return
-                        event_name = ""
-                        data_lines = []
-                    elif line.startswith("event:"):
-                        event_name = line.removeprefix("event:").strip()
-                    elif line.startswith("data:"):
-                        data_lines.append(line.removeprefix("data:").lstrip())
+            event_name = ""
+            data_lines: list[str] = []
+            async for line in response.aiter_lines():
+                if line == "":
+                    if event_name or data_lines:
+                        snapshot = self._parse_stream_event(event_name, data_lines)
+                        if snapshot is not None:
+                            yield snapshot
+                        if event_name in {"complete", "disconnect"}:
+                            return
+                    event_name = ""
+                    data_lines = []
+                elif line.startswith("event:"):
+                    event_name = line.removeprefix("event:").strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line.removeprefix("data:").lstrip())
 
-                if event_name or data_lines:
-                    snapshot = self._parse_stream_event(event_name, data_lines)
-                    if snapshot is not None:
-                        yield snapshot
-                return
+            if event_name or data_lines:
+                snapshot = self._parse_stream_event(event_name, data_lines)
+                if snapshot is not None:
+                    yield snapshot
 
     @overload
     async def results(
@@ -247,14 +229,11 @@ class RunsResource:
         if task_ids:
             params["task_ids"] = list(task_ids)
         response_model = S3UploadResultsResponse if upload_to_s3 else RunResultsResponse
-        fallback_params = {"benchmark_id": str(run_id), **params}
         return await self._sdk.request_model(
             "GET",
             f"/runs/{run_id}/results",
             response_model,
             params=params,
-            fallback_path="/retrieve-results",
-            fallback_params=fallback_params,
         )
 
     async def metadata(self, run_id: UUID) -> RunMetadataResponse:
@@ -263,7 +242,6 @@ class RunsResource:
             "GET",
             f"/runs/{run_id}/metadata",
             RunMetadataResponse,
-            fallback_path=f"/fetch-benchmark-metadata/{run_id}",
         )
 
     async def results_exist(self, run_id: UUID) -> ResultsExistResponse:
@@ -272,8 +250,6 @@ class RunsResource:
             "GET",
             f"/runs/{run_id}/results/exists",
             ResultsExistResponse,
-            fallback_path="/check-results-exist",
-            fallback_params={"benchmark_id": str(run_id)},
         )
 
     @handle_httpx_stream_errors("Valkyrie analysis stream failed")
@@ -286,49 +262,42 @@ class RunsResource:
     ) -> AsyncIterator[AnalyzeEvent]:
         """Yield typed progress events while analyzing a finished run."""
         payload = AnalyzeRunRequest(no_cache=no_cache, lambda_function=lambda_function)
-        routes = (f"/runs/{run_id}/analysis", f"/analyze-benchmark/{run_id}")
-        for route_index, path in enumerate(routes):
-            async with self._sdk.stream_response(
-                "POST",
-                path,
-                json=payload.model_dump(mode="json"),
-            ) as response:
-                if response.status_code == 404 and route_index == 0:
-                    await response.aread()
-                    if self._sdk.is_missing_route(response):
-                        continue
-                if not response.is_success:
-                    await response.aread()
-                    self._sdk.raise_for_status(response)
+        async with self._sdk.stream_response(
+            "POST",
+            f"/runs/{run_id}/analysis",
+            json=payload.model_dump(mode="json"),
+        ) as response:
+            if not response.is_success:
+                await response.aread()
+                self._sdk.raise_for_status(response)
 
-                if "text/event-stream" not in response.headers.get("content-type", ""):
-                    await response.aread()
-                    cached_payload: Any = response.json()
-                    if not isinstance(cached_payload, dict):
-                        raise ValkyrieStreamError("Invalid Valkyrie analysis response")
-                    yield AnalyzeEvent(event="done", data=cast(dict[str, Any], cached_payload))
-                    return
-
-                event_name = ""
-                data_lines: list[str] = []
-                async for line in response.aiter_lines():
-                    if line == "":
-                        event = self._parse_analysis_event(event_name, data_lines)
-                        if event is not None:
-                            yield event
-                            if event.event == "done":
-                                return
-                        event_name = ""
-                        data_lines = []
-                    elif line.startswith("event:"):
-                        event_name = line.removeprefix("event:").strip()
-                    elif line.startswith("data:"):
-                        data_lines.append(line.removeprefix("data:").lstrip())
-
-                event = self._parse_analysis_event(event_name, data_lines)
-                if event is not None:
-                    yield event
+            if "text/event-stream" not in response.headers.get("content-type", ""):
+                await response.aread()
+                cached_payload: Any = response.json()
+                if not isinstance(cached_payload, dict):
+                    raise ValkyrieStreamError("Invalid Valkyrie analysis response")
+                yield AnalyzeEvent(event="done", data=cast(dict[str, Any], cached_payload))
                 return
+
+            event_name = ""
+            data_lines: list[str] = []
+            async for line in response.aiter_lines():
+                if line == "":
+                    event = self._parse_analysis_event(event_name, data_lines)
+                    if event is not None:
+                        yield event
+                        if event.event == "done":
+                            return
+                    event_name = ""
+                    data_lines = []
+                elif line.startswith("event:"):
+                    event_name = line.removeprefix("event:").strip()
+                elif line.startswith("data:"):
+                    data_lines.append(line.removeprefix("data:").lstrip())
+
+            event = self._parse_analysis_event(event_name, data_lines)
+            if event is not None:
+                yield event
 
     @handle_httpx_stream_errors("Valkyrie output stream failed")
     async def stream_outputs(
@@ -341,19 +310,12 @@ class RunsResource:
         params: dict[str, Any] = {}
         if task_ids:
             params["task_ids"] = list(task_ids)
-        routes = (f"/runs/{run_id}/outputs", f"/fetch-run-outputs/{run_id}")
-        for route_index, path in enumerate(routes):
-            async with self._sdk.stream_response("GET", path, params=params) as response:
-                if response.status_code == 404 and route_index == 0:
-                    await response.aread()
-                    if self._sdk.is_missing_route(response):
-                        continue
-                if not response.is_success:
-                    await response.aread()
-                    self._sdk.raise_for_status(response)
-                async for chunk in response.aiter_bytes():
-                    yield chunk
-                return
+        async with self._sdk.stream_response("GET", f"/runs/{run_id}/outputs", params=params) as response:
+            if not response.is_success:
+                await response.aread()
+                self._sdk.raise_for_status(response)
+            async for chunk in response.aiter_bytes():
+                yield chunk
 
     async def stop(
         self,
@@ -368,7 +330,6 @@ class RunsResource:
             f"/runs/{run_id}/stop",
             StopRunResponse,
             params={"force": force},
-            fallback_path=f"/stop-benchmark/{run_id}",
             json={"task_ids": list(task_ids)} if task_ids is not None else None,
         )
 
@@ -387,7 +348,6 @@ class RunsResource:
             f"/runs/{run_id}/concurrency",
             UpdateRunConcurrencyResponse,
             json=request.model_dump(),
-            fallback_path=f"/benchmarks/{run_id}/concurrency",
         )
 
     async def resume(
@@ -465,8 +425,6 @@ class RunsResource:
                 "service_headers": effective_headers,
                 "secrets": dict(secrets or {}),
             },
-            fallback_path=f"/retry-or-resume-benchmark/{run_id}",
-            fallback_params={"retry": retry, **params},
         )
 
     def _service_headers(self, benchmark: str, explicit_headers: Mapping[str, str] | None) -> dict[str, str]:

@@ -85,31 +85,15 @@ class ValkyrieClient:
         *,
         params: dict[str, Any] | None = None,
         json: Any = None,
-        fallback_path: str | None = None,
-        fallback_params: dict[str, Any] | None = None,
     ) -> ResponseModel:
-        """Send a request, optionally retrying a legacy route on a canonical 404."""
+        """Send a request and validate its response model."""
         try:
             response = await self._client.request(method, path, params=params, json=json)
-            if self.is_missing_route(response) and fallback_path is not None:
-                fallback_request_params = fallback_params if fallback_params is not None else params
-                response = await self._client.request(method, fallback_path, params=fallback_request_params, json=json)
         except httpx.HTTPError as exc:
             raise ValkyrieTransportError(f"Valkyrie request failed: {exc}") from exc
 
         self.raise_for_status(response)
         return model.model_validate(response.json())
-
-    @staticmethod
-    def is_missing_route(response: httpx.Response) -> bool:
-        """Return whether FastAPI could not match the requested route."""
-        if response.status_code != 404:
-            return False
-        try:
-            body: Any = response.json()
-        except (ValueError, httpx.ResponseNotRead):
-            return False
-        return body == {"detail": "Not Found"}
 
     @staticmethod
     def raise_for_status(response: httpx.Response) -> None:
