@@ -1,5 +1,6 @@
 """Generate the committed Tracker API contract."""
 
+from copy import deepcopy
 import json
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,7 @@ API_KEY_ONLY: list[dict[str, list[str]]] = [{"ApiKeyAuth": []}]
 
 
 def build_openapi() -> dict[str, Any]:
-    schema = app.openapi()
+    schema = deepcopy(app.openapi())
     schema["components"]["securitySchemes"] = {
         "BearerAuth": {
             "type": "http",
