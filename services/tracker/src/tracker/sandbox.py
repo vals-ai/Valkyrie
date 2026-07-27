@@ -629,7 +629,8 @@ async def _resolve_output_artifact_sandbox_path(sandbox: Sandbox, artifact: Outp
         if exists.exit_code == _SUCCESS_EXIT_CODE:
             return source
 
-    raise OutputArtifactError(f"Output artifact missing: {source}")
+    artifact_label = "Required output artifact" if _output_artifact_is_required(artifact) else "Output artifact"
+    raise OutputArtifactError(f"{artifact_label} missing: {source}")
 
 
 async def upload_output_artifacts(

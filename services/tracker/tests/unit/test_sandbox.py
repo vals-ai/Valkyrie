@@ -198,7 +198,7 @@ class TestOutputArtifacts:
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
 
-        with pytest.raises(OutputArtifactError, match="Output artifact missing"):
+        with pytest.raises(OutputArtifactError, match="Required output artifact missing"):
             await upload_output_artifacts(Mock(), [artifact], "benchmark-123", "task_0", harness_config.aws, "bucket")
 
     async def test_upload_output_artifacts_skips_missing_optional_model_patch(
