@@ -117,13 +117,9 @@ class DriverStackTest(unittest.TestCase):
                             assertions.Match.object_like(
                                 {
                                     "Command": [
-                                        "uv",
-                                        "run",
-                                        "--no-sync",
-                                        "python",
-                                        "-m",
-                                        "tracker.release_cli",
-                                        "status",
+                                        "/bin/sh",
+                                        "-c",
+                                        "echo 'A reviewed ECS command override is required for this release-test driver task.' >&2; exit 64",
                                     ],
                                     "Environment": assertions.Match.array_with(
                                         [

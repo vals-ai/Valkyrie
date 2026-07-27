@@ -1,13 +1,21 @@
+"""Run with `uv run pytest tests/unit/test_release_entrypoint.py`."""
+
+import builtins
+import hashlib
 import json
 import os
 import sys
-from collections.abc import Sequence
+from io import BytesIO
 
+import boto3
 import pytest
 from pydantic import ValidationError
 from pytest import MonkeyPatch
+from sqlmodel import Session
 
-from tracker import release_cli, release_entrypoint
+from tracker import release_entrypoint
+from tracker.database import session as tracker_session
+from tracker.database.models import ExecutorAdmission, ExecutorRelease, ExecutorReleaseStatus
 
 
 class FakeSecretsManager:
@@ -28,7 +36,17 @@ class FakeSecretsManager:
         }
 
 
-def _release_arguments(monkeypatch: MonkeyPatch) -> None:
+class FakeS3Client:
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+
+    def get_object(self, *, Bucket: str, Key: str) -> dict[str, object]:
+        assert Bucket == "releases"
+        assert Key == "releases/git-abc123-def456/executor.pex"
+        return {"Body": BytesIO(self.content)}
+
+
+def _release_arguments(monkeypatch: MonkeyPatch, *, artifact_digest: str = "a" * 64) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
@@ -42,45 +60,86 @@ def _release_arguments(monkeypatch: MonkeyPatch) -> None:
             "releases",
             "git-abc123-def456",
             "s3://releases/releases/git-abc123-def456/executor.pex",
-            "a" * 64,
+            artifact_digest,
             "1",
         ],
     )
 
 
-def test_release_entrypoint_treats_task_command_as_validated_inputs_and_sanitizes_environment(
+def test_release_entrypoint_uses_sealed_configuration_and_persists_active_release(
     monkeypatch: MonkeyPatch,
+    database_session: Session,
 ) -> None:
-    _release_arguments(monkeypatch)
+    content = b"sealed executor artifact"
+    artifact_digest = hashlib.sha256(content).hexdigest()
+    _release_arguments(monkeypatch, artifact_digest=artifact_digest)
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "caller-credential")
     monkeypatch.setenv("AWS_ENDPOINT_URL_SECRETSMANAGER", "https://caller.invalid")
     monkeypatch.setenv("HTTPS_PROXY", "https://caller.invalid")
     monkeypatch.setenv("DB_HOST", "caller.invalid")
     client = FakeSecretsManager()
     monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: client)
-    observed: list[str] = []
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
 
-    def capture(argv: Sequence[str] | None = None) -> None:
-        observed.extend(argv or [])
+    def create_s3_client(service_name: str) -> FakeS3Client:
+        assert service_name == "s3"
+        return FakeS3Client(content)
 
-    monkeypatch.setattr(release_cli, "main", capture)
+    monkeypatch.setattr(boto3, "client", create_s3_client)
+    real_import = builtins.__import__
+
+    def assert_sealed_environment_before_import(
+        name: str,
+        globals: dict[str, object] | None = None,
+        locals: dict[str, object] | None = None,
+        fromlist: tuple[str, ...] = (),
+        level: int = 0,
+    ) -> object:
+        if name == "tracker.database.session":
+            assert os.environ["DB_HOST"] == "database.internal"
+            assert os.environ["DB_USERNAME"] == "tracker"
+            assert os.environ["DB_PASSWORD"] == "secret"
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", assert_sealed_environment_before_import)
 
     release_entrypoint.main()
 
+    database_session.expire_all()
+    stored_release = database_session.get(ExecutorRelease, "git-abc123-def456")
+    admission = database_session.get(ExecutorAdmission, 1)
     assert client.secret_ids == ["arn:aws:secretsmanager:us-east-1:123456789012:secret:tracker"]
     assert "AWS_ACCESS_KEY_ID" not in os.environ
     assert "AWS_ENDPOINT_URL_SECRETSMANAGER" not in os.environ
     assert "HTTPS_PROXY" not in os.environ
-    assert os.environ["DB_HOST"] == "database.internal"
     assert os.environ["EXECUTOR_RELEASE_BUCKET"] == "releases"
-    assert observed == [
-        "activate",
-        "git-abc123-def456",
-        "s3://releases/releases/git-abc123-def456/executor.pex",
-        "a" * 64,
-        "--protocol-version",
-        "1",
-    ]
+    assert stored_release is not None
+    assert stored_release.status == ExecutorReleaseStatus.ACTIVE
+    assert stored_release.readiness_verified
+    assert admission is not None
+    assert admission.release_id == stored_release.id
+
+
+def test_release_entrypoint_digest_failure_does_not_commit_release(
+    monkeypatch: MonkeyPatch,
+    database_session: Session,
+) -> None:
+    _release_arguments(monkeypatch, artifact_digest=hashlib.sha256(b"expected").hexdigest())
+    client = FakeSecretsManager()
+    monkeypatch.setattr(release_entrypoint, "create_secrets_manager_client", lambda: client)
+    monkeypatch.setattr(tracker_session, "engine", database_session.get_bind())
+
+    def create_s3_client(service_name: str) -> FakeS3Client:
+        assert service_name == "s3"
+        return FakeS3Client(b"different")
+
+    monkeypatch.setattr(boto3, "client", create_s3_client)
+
+    with pytest.raises(SystemExit, match="Executor release activation failed:.*digest mismatch"):
+        release_entrypoint.main()
+
+    database_session.expire_all()
+    assert database_session.get(ExecutorRelease, "git-abc123-def456") is None
 
 
 def test_release_entrypoint_rejects_invalid_release_id_before_reading_secret(monkeypatch: MonkeyPatch) -> None:

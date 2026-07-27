@@ -192,7 +192,11 @@ class DriverStack(Stack):
                     field="benchmark_authorization",
                 ),
             },
-            command=["uv", "run", "--no-sync", "python", "-m", "tracker.release_cli", "status"],
+            command=[
+                "/bin/sh",
+                "-c",
+                "echo 'A reviewed ECS command override is required for this release-test driver task.' >&2; exit 64",
+            ],
         )
         task_role.add_to_policy(
             aws_iam.PolicyStatement(

@@ -21,9 +21,8 @@ stores the release and artifact selected for that invocation.
    `ACTIVE` release. In-progress retry never changes that ownership.
 6. Retirement remains blocked by queued or running dispatches, active current
    owners, or any active benchmark whose current owner is unknown.
-7. Roll back an executor release by promoting a verified previous release.
-   Existing execution ownership and immutable dispatch snapshots are not
-   rewritten.
+7. Tracker automatically retires each `DRAINING` release after all of those
+   blockers clear. Retired releases cannot become active again.
 
 ![Executor release lifecycle](../valkyrie-release-lifecycle.png)
 
@@ -101,9 +100,10 @@ accept continuation retries for an `IN_PROGRESS` benchmark whose current
 execution release is already that release.
 
 Retirement remains blocked while a release owns an active execution or has a
-queued or running dispatch. Once the execution and its dispatches are terminal,
-a later retry or resume uses the `ACTIVE` release instead of retaining the old
-release.
+queued or running dispatch. Tracker checks draining releases immediately at
+startup and once per minute, then automatically retires every blocker-free
+release. Once the execution and its dispatches are terminal, a later retry or
+resume uses the `ACTIVE` release instead of retaining the retired release.
 
 If the required current execution release or an `ACTIVE` release is unavailable,
 recovery fails explicitly. It never silently switches releases.
@@ -138,21 +138,7 @@ Any `IN_PROGRESS` or `STOPPING` benchmark without one blocks all release
 retirement. After it becomes terminal, retry or resume may establish the
 `ACTIVE` release as its current owner.
 
-### Operator visibility
-
-Global release health is available only through the trusted direct-database
-`tracker.release_cli status` command. It is not exposed through tenant HTTP.
-The JSON report includes the active admission pointer, readiness and retention
-metadata, active execution counts, exact dispatch/current-owner blockers, and
-unattributed active executions.
-
-A current-owner benchmark record is omitted as a duplicate only when a queued or
-running dispatch exists for the same benchmark on the same current release. An
-active dispatch on another release never suppresses that owner record. The
-unattributed count includes every `IN_PROGRESS` or `STOPPING` benchmark with
-null current ownership, regardless of dispatch history.
-
-### Failure and rollback policy
+### Failure and forward-recovery policy
 
 An invalid or missing persisted owner for in-progress recovery is a `409`
 conflict. Terminal recovery without a valid `ACTIVE` release is a `503` service
@@ -163,9 +149,11 @@ task attempts selected for that enqueue, errors the benchmark only when no activ
 sibling remains, and returns a `503` with the benchmark and dispatch IDs so Retry
 can continue the run.
 
-Executor rollback means promoting a verified previous executor release and
-allowing existing executions to drain on their current owners. It does not roll
-back Tracker or PostgreSQL.
+Tracker and ExecutorHost keep their normal ECS deployment circuit breakers, and
+failed infrastructure updates retain normal CloudFormation rollback. Executor
+activation runs only after that deployment succeeds. Once an executor release is
+active, it is never rolled back or reactivated after draining; fix executor
+failures by deploying a new release.
 
 Migration `e9f0a1b2c3d4` is forward-only because dropping current ownership would
 destroy required execution state. Normal rollback must never run `alembic
@@ -228,29 +216,15 @@ and approved activation, while existing runs continue on their pinned artifacts.
 Previous active releases drain normally.
 
 Partial, plan, and credentials-only deployments never publish or activate an
-executor release. The release workflow does not retire releases or delete
-artifacts.
+executor release. Tracker retires blocker-free draining releases automatically;
+artifact deletion remains separate.
 
-## Operator commands
+## Lifecycle interfaces
 
-Run these commands from the Tracker environment with its database settings and
-AWS credentials:
-
-```bash
-uv run python -m tracker.release_cli status
-uv run python -m tracker.release_cli activate RELEASE_ID s3://bucket/key SHA256_DIGEST
-uv run python -m tracker.release_cli register RELEASE_ID s3://bucket/key SHA256_DIGEST
-uv run python -m tracker.release_cli verify RELEASE_ID
-uv run python -m tracker.release_cli promote RELEASE_ID
-uv run python -m tracker.release_cli retire RELEASE_ID
-```
-
-`activate` is the rerunnable happy-path operation used by deployment. It requires
-`EXECUTOR_RELEASE_BUCKET` and `EXECUTOR_RELEASE_PREFIX`, streams the S3 object,
-checks its SHA-256 digest, promotes it, and commits once. The granular commands
-remain for trusted investigation and rollback by re-promoting a verified prior
-release. Until `status` reports an `ACTIVE` admission target, new benchmark starts
-return `503`.
+There is no release lifecycle CLI, operator status command, or tenant HTTP
+endpoint. The sealed deployment task calls release control directly, verifies
+the configured S3 artifact, and commits activation once. New benchmark starts
+return `503` until that activation commits an `ACTIVE` admission target.
 
 ## Artifact retention
 
@@ -277,15 +251,12 @@ Use this bounded investigation sequence:
    separately approved and audited operator action that first resolves the
    execution outcome.
 
-There is deliberately no scheduler, heartbeat, reaper, generic requeue path, or
-automatic orphan repair in this release-safety layer.
+The retirement reconciler changes release metadata only. It does not schedule,
+replay, requeue, repair, or delete executor work or artifacts.
 
 Successive promotions are independent: A, B, and C may all drain concurrently,
-and each retires when its own active execution count reaches zero. There is no
-two-release limit.
-
-Do not delete a release artifact manually while `tracker.release_cli status`
-reports an active-execution or retention blocker.
+and each retires automatically when its own active execution count reaches zero.
+There is no two-release limit.
 
 ## Release-test
 
@@ -362,8 +333,11 @@ The driver launch contract is published under
 group name, and operator-role ARN. Shared outputs already provide the cluster
 and public subnet IDs. Launches must use those exact values,
 `assignPublicIp=ENABLED`, and only reviewed non-secret command/manifest
-overrides. The default command is the direct-database `release_cli status`
-preflight.
+overrides. Without one, the default command writes that requirement to stderr
+and exits with status 64. Deploying the Driver stack publishes a new standalone
+task-definition revision through the SSM launch-contract ARN; it does not restart
+a task or service. Only future launches that resolve the new ARN receive the new
+default.
 
 The stage connects to `benchmarks.vals.ai`. Local clients outside the VPC cannot
 call the internal Tracker directly; use the driver for HTTP and database proof.

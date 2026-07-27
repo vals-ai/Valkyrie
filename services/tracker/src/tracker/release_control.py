@@ -27,13 +27,6 @@ from executor_protocol import (
     validate_executor_artifact_uri,
     validate_executor_digest,
 )
-from tracker.types import (
-    ExecutorDispatchBlocker,
-    ExecutorExecutionBlocker,
-    ExecutorReleaseStatusEntry,
-    ExecutorReleasesResponse,
-    UnattributedExecutionBlocker,
-)
 
 _ACTIVE_BENCHMARK_STATUSES = (BenchmarkStatus.IN_PROGRESS, BenchmarkStatus.STOPPING)
 _ACTIVE_DISPATCH_STATUSES = (
@@ -116,6 +109,8 @@ def activate_release(
         or release.protocol_version != candidate.protocol_version
     ):
         raise ReleaseControlError(f"Executor release {candidate.id!r} already has a different immutable identity")
+    if release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED):
+        raise ReleaseControlError(f"Executor release {release.id!r} cannot be activated from {release.status.value}")
 
     verify_release_artifact(session, release.id, s3_client=s3_client)
     activated = promote_release(session, release.id)
@@ -281,19 +276,20 @@ def resolve_current_execution_release(
 
 
 def promote_release(session: Session, release_id: str) -> ExecutorRelease:
-    """Promote a ready candidate or previously draining release for new benchmarks."""
+    """Promote a verified candidate for new benchmarks."""
     admission = _get_required_admission(session, for_update=True)
     release = _get_release(session, release_id, populate_existing=True, for_update=True)
-    if release.status == ExecutorReleaseStatus.RETIRED:
-        raise ReleaseControlError(f"Retired executor release {release_id!r} cannot be promoted")
-    rolling_back = release.status == ExecutorReleaseStatus.DRAINING
-    if not release.readiness_verified:
-        raise ReleaseControlError(f"Executor release {release_id!r} is not ready")
 
     if admission.release_id == release_id:
         if release.status != ExecutorReleaseStatus.ACTIVE:
             raise ReleaseControlError("Admission points to a release that is not active")
+        if not release.readiness_verified:
+            raise ReleaseControlError(f"Executor release {release_id!r} is not ready")
         return release
+    if release.status != ExecutorReleaseStatus.CANDIDATE:
+        raise ReleaseControlError(f"Executor release {release_id!r} cannot be promoted from {release.status.value}")
+    if not release.readiness_verified:
+        raise ReleaseControlError(f"Executor release {release_id!r} is not ready")
 
     if admission.release_id is not None:
         previous = _get_release(session, admission.release_id, populate_existing=True)
@@ -318,38 +314,43 @@ def promote_release(session: Session, release_id: str) -> ExecutorRelease:
     session.flush()
     _logger.info(
         "executor_release_lifecycle",
-        extra={
-            "event": "rollback" if rolling_back else "promoted",
-            "release_id": release.id,
-            "status": release.status.value,
-        },
+        extra={"event": "promoted", "release_id": release.id, "status": release.status.value},
     )
     return release
 
 
-def retire_if_empty(session: Session, release_id: str) -> bool:
-    """Retire a drained release when it owns no active executor work."""
-    admission = _get_admission(session, for_update=True)
-    release = _get_release(session, release_id, populate_existing=True, for_update=True)
-    if release.status == ExecutorReleaseStatus.RETIRED:
-        return False
-    if release.status != ExecutorReleaseStatus.DRAINING:
-        raise ReleaseControlError(f"Executor release {release_id!r} cannot retire from {release.status}")
-    if admission is not None and admission.release_id == release_id:
-        raise ReleaseControlError(f"Executor release {release_id!r} is the active admission target")
+def retire_drained_releases(session: Session) -> list[str]:
+    """Retire every draining release that owns no active executor work."""
+    admission = _get_required_admission(session, for_update=True)
+    draining_releases = session.exec(
+        select(ExecutorRelease)
+        .where(ExecutorRelease.status == ExecutorReleaseStatus.DRAINING)
+        .order_by(ExecutorRelease.id)
+        .with_for_update()
+    ).all()
+    if admission.release_id in {release.id for release in draining_releases}:
+        raise ReleaseControlError("The active admission target cannot be draining")
 
     active_work = active_executor_release_work(session)
     if active_work.unattributed_executions:
-        raise ReleaseControlError("Cannot retire executor releases while unattributed active executor work exists")
-    if active_work.counts_by_release.get(release_id, 0):
-        raise ReleaseControlError(f"Executor release {release_id!r} still has active executor work")
+        return []
 
+    retired_ids: list[str] = []
+    for release in draining_releases:
+        if active_work.counts_by_release.get(release.id, 0):
+            continue
+        _retire_release(session, release)
+        retired_ids.append(release.id)
+    session.flush()
+    return retired_ids
+
+
+def _retire_release(session: Session, release: ExecutorRelease) -> None:
     retired_at = datetime.now(UTC)
     release.status = ExecutorReleaseStatus.RETIRED
     release.retired_at = retired_at
     release.artifact_retention_until = retired_at + timedelta(days=_ARTIFACT_RETENTION_DAYS)
     session.add(release)
-    session.flush()
     _logger.info(
         "executor_release_lifecycle",
         extra={
@@ -359,7 +360,6 @@ def retire_if_empty(session: Session, release_id: str) -> bool:
             "artifact_retention_until": release.artifact_retention_until.isoformat(),
         },
     )
-    return True
 
 
 def _artifact_deletion_allowed(
@@ -388,88 +388,6 @@ def artifact_deletion_allowed(session: Session, release_id: str, *, now: datetim
         release,
         active_executor_release_work(session),
         now or datetime.now(UTC),
-    )
-
-
-def executor_releases_status(session: Session) -> ExecutorReleasesResponse:
-    """Build the global release-health report for trusted operators."""
-    admission = session.get(ExecutorAdmission, 1)
-    active_work = active_executor_release_work(session)
-    now = datetime.now(UTC)
-    active_counts = active_work.counts_by_release
-    unattributed_count = len(active_work.unattributed_executions)
-
-    entries: list[ExecutorReleaseStatusEntry] = []
-    for release in session.exec(select(ExecutorRelease).order_by(col(ExecutorRelease.created_at).desc())).all():
-        owned_active_runs = active_counts.get(release.id, 0)
-        blocker: str | None = None
-        retention_until = release.artifact_retention_until
-        if retention_until is not None and retention_until.tzinfo is None:
-            retention_until = retention_until.replace(tzinfo=UTC)
-        if release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED) and owned_active_runs:
-            noun = "execution" if owned_active_runs == 1 else "executions"
-            blocker = f"{owned_active_runs} active {noun}"
-        elif release.status in (ExecutorReleaseStatus.DRAINING, ExecutorReleaseStatus.RETIRED) and unattributed_count:
-            noun = "execution" if unattributed_count == 1 else "executions"
-            blocker = f"{unattributed_count} unattributed active {noun}"
-        elif release.status == ExecutorReleaseStatus.RETIRED and not _artifact_deletion_allowed(
-            release,
-            active_work,
-            now,
-        ):
-            if retention_until is None:
-                blocker = "artifact retention is unset"
-            elif retention_until > now:
-                blocker = f"artifact retained until {retention_until.isoformat()}"
-        entries.append(
-            ExecutorReleaseStatusEntry(
-                id=release.id,
-                status=release.status,
-                artifact_digest=release.artifact_digest,
-                protocol_version=release.protocol_version,
-                readiness_verified=release.readiness_verified,
-                readiness_metadata=release.readiness_metadata,
-                created_at=release.created_at,
-                activated_at=release.activated_at,
-                draining_at=release.draining_at,
-                retired_at=release.retired_at,
-                artifact_retention_until=retention_until,
-                owned_active_runs=owned_active_runs,
-                retirement_blocker=blocker,
-                blocking_dispatches=[
-                    ExecutorDispatchBlocker(
-                        dispatch_id=dispatch.id,
-                        benchmark_id=dispatch.benchmark_id,
-                        kind=dispatch.kind,
-                        status=dispatch.status,
-                        executor_release_id=dispatch.executor_release_id,
-                        created_at=dispatch.created_at,
-                    )
-                    for dispatch in active_work.dispatches_by_release.get(release.id, [])
-                ],
-                blocking_executions=[
-                    ExecutorExecutionBlocker(
-                        benchmark_id=benchmark.id,
-                        status=benchmark.status,
-                        current_execution_release_id=release.id,
-                        started_at=benchmark.started_at,
-                    )
-                    for benchmark in active_work.executions_by_release.get(release.id, [])
-                ],
-            )
-        )
-    return ExecutorReleasesResponse(
-        active_release_id=admission.release_id if admission is not None else None,
-        unattributed_active_execution_count=unattributed_count,
-        unattributed_active_executions=[
-            UnattributedExecutionBlocker(
-                benchmark_id=benchmark.id,
-                status=benchmark.status,
-                started_at=benchmark.started_at,
-            )
-            for benchmark in active_work.unattributed_executions
-        ],
-        entries=entries,
     )
 
 

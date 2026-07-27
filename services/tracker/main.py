@@ -2,7 +2,8 @@ import asyncio
 import io
 import logging
 import tarfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Annotated, Any
 from uuid import UUID, uuid4
@@ -81,6 +82,7 @@ from tracker.exceptions import TrackerServiceError
 from executor_protocol import EXECUTOR_TASK_NAME, executor_task_signature
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.release_control import ReleaseControlError
+from tracker.release_retirement import AutomaticReleaseRetirement
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
 from tracker.types import (
@@ -139,7 +141,17 @@ def _operation_id(route: APIRoute) -> str:
     return route.name
 
 
-app = FastAPI(generate_unique_id_function=_operation_id, redirect_slashes=False)
+@asynccontextmanager
+async def tracker_lifespan(_app: FastAPI) -> AsyncGenerator[None, None]:
+    retirement = AutomaticReleaseRetirement()
+    retirement.start()
+    try:
+        yield
+    finally:
+        retirement.stop()
+
+
+app = FastAPI(generate_unique_id_function=_operation_id, redirect_slashes=False, lifespan=tracker_lifespan)
 
 logfire.instrument_fastapi(app, excluded_urls="/health$")
 

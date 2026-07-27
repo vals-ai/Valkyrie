@@ -16,9 +16,6 @@ from tracker.database.models import (
     BenchmarkArguments,
     BenchmarkStatus,
     DocentReadingStatus,
-    ExecutorDispatchKind,
-    ExecutorDispatchStatus,
-    ExecutorReleaseStatus,
     FinalEvaluation,
     TaskStatus,
 )
@@ -338,69 +335,6 @@ class BenchmarkStatusEntry(BaseModel):
 
 class BenchmarkStatusResponse(BaseModel):
     entries: list[BenchmarkStatusEntry]
-
-
-class ExecutorDispatchBlocker(BaseModel):
-    dispatch_id: UUID
-    benchmark_id: UUID
-    kind: ExecutorDispatchKind
-    status: ExecutorDispatchStatus
-    executor_release_id: str
-    created_at: datetime
-
-    @field_serializer("created_at")
-    def _serialize_created_at(self, value: datetime) -> str | None:
-        return _serialize_utc(value)
-
-
-class ExecutorExecutionBlocker(BaseModel):
-    benchmark_id: UUID
-    status: BenchmarkStatus
-    current_execution_release_id: str
-    started_at: datetime
-
-    @field_serializer("started_at")
-    def _serialize_started_at(self, value: datetime) -> str | None:
-        return _serialize_utc(value)
-
-
-class UnattributedExecutionBlocker(BaseModel):
-    benchmark_id: UUID
-    status: BenchmarkStatus
-    started_at: datetime
-
-    @field_serializer("started_at")
-    def _serialize_started_at(self, value: datetime) -> str | None:
-        return _serialize_utc(value)
-
-
-class ExecutorReleaseStatusEntry(BaseModel):
-    id: str
-    status: ExecutorReleaseStatus
-    artifact_digest: str
-    protocol_version: str
-    readiness_verified: bool
-    readiness_metadata: dict[str, Any]
-    created_at: datetime
-    activated_at: datetime | None = None
-    draining_at: datetime | None = None
-    retired_at: datetime | None = None
-    artifact_retention_until: datetime | None = None
-    owned_active_runs: int
-    retirement_blocker: str | None = None
-    blocking_dispatches: list[ExecutorDispatchBlocker] = Field(default_factory=list)
-    blocking_executions: list[ExecutorExecutionBlocker] = Field(default_factory=list)
-
-    @field_serializer("created_at", "activated_at", "draining_at", "retired_at", "artifact_retention_until")
-    def _serialize_datetimes(self, value: datetime | None) -> str | None:
-        return _serialize_utc(value)
-
-
-class ExecutorReleasesResponse(BaseModel):
-    active_release_id: str | None
-    unattributed_active_execution_count: int
-    unattributed_active_executions: list[UnattributedExecutionBlocker]
-    entries: list[ExecutorReleaseStatusEntry]
 
 
 class SingleBenchmarkResponse(BaseModel):

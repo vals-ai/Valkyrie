@@ -79,6 +79,31 @@ _CALLER_CONTROLLED_ENV = (
 )
 
 
+def _activate_sealed_release(task: ReleaseTaskConfig, release: ReleaseInput) -> None:
+    from sqlmodel import Session
+
+    from tracker.database.models import ExecutorRelease
+    from tracker.database.session import engine
+    from tracker.release_control import ReleaseControlError, activate_release
+
+    try:
+        with Session(engine) as session:
+            activate_release(
+                session,
+                ExecutorRelease(
+                    id=release.release_id,
+                    artifact_uri=release.artifact_uri,
+                    artifact_digest=release.artifact_digest,
+                    protocol_version=release.protocol_version,
+                ),
+                expected_bucket=task.release_bucket,
+                expected_prefix=task.release_prefix,
+            )
+            session.commit()
+    except ReleaseControlError as error:
+        raise SystemExit(f"Executor release activation failed: {error}") from error
+
+
 def main() -> None:
     arguments = sys.argv[1:]
     if len(arguments) != 10:
@@ -118,18 +143,7 @@ def main() -> None:
         EXECUTOR_RELEASE_PREFIX=task.release_prefix,
     )
 
-    from tracker.release_cli import main as release_cli_main
-
-    release_cli_main(
-        [
-            "activate",
-            release.release_id,
-            release.artifact_uri,
-            release.artifact_digest,
-            "--protocol-version",
-            release.protocol_version,
-        ]
-    )
+    _activate_sealed_release(task, release)
 
 
 if __name__ == "__main__":

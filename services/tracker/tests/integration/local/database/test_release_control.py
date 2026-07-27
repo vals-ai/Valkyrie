@@ -36,7 +36,7 @@ from tracker.release_control import (
     pin_benchmark_to_release,
     promote_release,
     register_release,
-    retire_if_empty,
+    retire_drained_releases,
 )
 from tracker.utils.resources import fetch_benchmark_row
 from tracker.utils.run_control import apply_stop_benchmark
@@ -176,7 +176,7 @@ def test_concurrent_first_activation_serializes_create_or_match(
     assert admission.release_id == release.id
 
 
-def test_retirement_and_rollback_serialize_in_both_lock_orders(
+def test_reconciliation_and_activation_serialize_in_both_lock_orders(
     postgres_session: Session,
     postgres_engine: Engine,
 ) -> None:
@@ -187,38 +187,75 @@ def test_retirement_and_rollback_serialize_in_both_lock_orders(
     postgres_session.commit()
 
     outcomes = _run_while_first_transaction_holds_locks(
-        lambda session: retire_if_empty(session, "v1"),
-        lambda session: promote_release(session, "v1"),
+        retire_drained_releases,
+        lambda session: promote_release(session, "v3"),
         postgres_engine,
     )
 
-    assert sorted(outcomes) == ["first-committed", "second-rejected"]
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
     postgres_session.expire_all()
-    retired = postgres_session.get(ExecutorRelease, "v1")
+    release_v1 = postgres_session.get(ExecutorRelease, "v1")
+    release_v2 = postgres_session.get(ExecutorRelease, "v2")
+    release_v3 = postgres_session.get(ExecutorRelease, "v3")
     admission = postgres_session.get(ExecutorAdmission, 1)
-    assert retired is not None
+    assert release_v1 is not None
+    assert release_v2 is not None
+    assert release_v3 is not None
     assert admission is not None
-    assert retired.status == ExecutorReleaseStatus.RETIRED
-    assert admission.release_id == "v2"
-
-    promote_release(postgres_session, "v3")
-    promote_release(postgres_session, "v4")
-    postgres_session.commit()
+    assert release_v1.status == ExecutorReleaseStatus.RETIRED
+    assert release_v2.status == ExecutorReleaseStatus.DRAINING
+    assert release_v3.status == ExecutorReleaseStatus.ACTIVE
+    assert admission.release_id == "v3"
 
     outcomes = _run_while_first_transaction_holds_locks(
-        lambda session: promote_release(session, "v3"),
-        lambda session: retire_if_empty(session, "v3"),
+        lambda session: promote_release(session, "v4"),
+        retire_drained_releases,
         postgres_engine,
     )
 
-    assert sorted(outcomes) == ["first-committed", "second-rejected"]
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
     postgres_session.expire_all()
-    active = postgres_session.get(ExecutorRelease, "v3")
+    release_v2 = postgres_session.get(ExecutorRelease, "v2")
+    release_v3 = postgres_session.get(ExecutorRelease, "v3")
+    release_v4 = postgres_session.get(ExecutorRelease, "v4")
     admission = postgres_session.get(ExecutorAdmission, 1)
-    assert active is not None
+    assert release_v2 is not None
+    assert release_v3 is not None
+    assert release_v4 is not None
     assert admission is not None
-    assert active.status == ExecutorReleaseStatus.ACTIVE
-    assert admission.release_id == "v3"
+    assert release_v2.status == ExecutorReleaseStatus.RETIRED
+    assert release_v3.status == ExecutorReleaseStatus.RETIRED
+    assert release_v4.status == ExecutorReleaseStatus.ACTIVE
+    assert admission.release_id == "v4"
+
+
+def test_concurrent_reconciliation_retires_each_release_once(
+    postgres_session: Session,
+    postgres_engine: Engine,
+) -> None:
+    register_release(postgres_session, _release("reconcile-old"))
+    register_release(postgres_session, _release("reconcile-active"))
+    promote_release(postgres_session, "reconcile-old")
+    promote_release(postgres_session, "reconcile-active")
+    postgres_session.commit()
+    retired_results: list[list[str]] = []
+
+    def reconcile(session: Session) -> None:
+        retired_results.append(retire_drained_releases(session))
+
+    outcomes = _run_while_first_transaction_holds_locks(
+        reconcile,
+        reconcile,
+        postgres_engine,
+    )
+
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
+    assert [] in retired_results
+    assert sum("reconcile-old" in result for result in retired_results) == 1
+    postgres_session.expire_all()
+    release = postgres_session.get(ExecutorRelease, "reconcile-old")
+    assert release is not None
+    assert release.status == ExecutorReleaseStatus.RETIRED
 
 
 def test_terminal_recovery_and_promotion_use_the_winning_admission_lock_order(
@@ -446,11 +483,11 @@ def test_in_progress_retry_blocks_retirement_of_the_owned_release(
 
     outcomes = _run_while_first_transaction_holds_locks(
         lambda session: retry(session, retry_first.id),
-        lambda session: retire_if_empty(session, "retry-a"),
+        retire_drained_releases,
         postgres_engine,
     )
 
-    assert sorted(outcomes) == ["first-committed", "second-rejected"]
+    assert sorted(outcomes) == ["first-committed", "second-committed"]
     postgres_session.expire_all()
     stored_retry_first = postgres_session.get(Benchmark, retry_first.id)
     stored_release_a = postgres_session.get(ExecutorRelease, "retry-a")
@@ -485,7 +522,8 @@ def test_terminal_retry_after_retirement_uses_the_active_release(postgres_sessio
     postgres_session.add(benchmark)
     postgres_session.commit()
 
-    retire_if_empty(postgres_session, old_release.id)
+    retired_ids = retire_drained_releases(postgres_session)
+    assert old_release.id in retired_ids
     postgres_session.commit()
     postgres_session.expire_all()
 
