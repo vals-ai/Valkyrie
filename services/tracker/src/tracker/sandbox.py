@@ -676,7 +676,7 @@ async def _upload_output_artifact(
     artifact: OutputArtifactSpec,
     benchmark_id: str,
     task_id: str,
-    aws_runtime: AwsRuntime,
+    aws_runtime: AWSRuntime,
     total_bytes: int,
 ) -> int:
     artifact_path = _output_artifact_path(artifact)

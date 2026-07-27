@@ -201,7 +201,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_skips_missing_optional_model_patch(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = OutputArtifact(
             path="artifacts/model.patch",
@@ -220,8 +220,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         exec_mock.assert_awaited_once_with(
@@ -238,7 +237,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_handles_non_glob_symlinks_by_requiredness(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
         required: bool,
         expected_uploads: list[bytes],
     ) -> None:
@@ -254,7 +253,7 @@ class TestOutputArtifacts:
                 return ExecResult(exit_code=0, output="6")
             raise AssertionError(f"unexpected command: {command}")
 
-        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, _s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append(file_content)
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -271,8 +270,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert uploaded == expected_uploads
@@ -280,7 +278,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_prioritizes_required_artifacts_for_total_size_limit(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         optional_source = "/logs/optional.json"
         required_source = "/logs/required.json"
@@ -301,7 +299,7 @@ class TestOutputArtifacts:
         async def fake_download_file(path: str) -> bytes:
             return path.encode()
 
-        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws: Any, _s3_bucket: str) -> None:
+        async def fake_upload_to_s3(file_content: bytes, s3_key: str, _aws_runtime: AWSRuntime) -> None:
             uploaded.append((file_content, s3_key))
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -320,8 +318,7 @@ class TestOutputArtifacts:
             ],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert uploaded == [
@@ -369,7 +366,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifact_rejects_invalid_sizes(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
         stat_result: ExecResult,
         total_bytes: int,
         error: str,
@@ -390,8 +387,7 @@ class TestOutputArtifacts:
                 "artifacts/result.json",
                 "benchmark-123",
                 "task_0",
-                harness_config.aws,
-                "bucket",
+                aws_runtime,
                 total_bytes,
             )
 
@@ -400,7 +396,7 @@ class TestOutputArtifacts:
     async def test_upload_output_artifacts_skips_invalid_optional_file(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        harness_config: Any,
+        aws_runtime: AWSRuntime,
     ) -> None:
         artifact = OutputArtifact(
             path="atif/trajectory.json",
@@ -424,8 +420,7 @@ class TestOutputArtifacts:
             [artifact],
             "benchmark-123",
             "task_0",
-            harness_config.aws,
-            "bucket",
+            aws_runtime,
         )
 
         assert exec_mock.await_args_list == [

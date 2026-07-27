@@ -30,7 +30,8 @@ def _aws_runtime(
     if access_key_id is None:
         clients = DefaultChainAWSClientProvider(region)
     else:
-        assert secret_access_key is not None
+        if secret_access_key is None:
+            raise click.ClickException("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be configured together.")
         clients = ExplicitCredentialsAWSClientProvider(
             AWSCredentials(
                 aws_access_key_id=access_key_id,
