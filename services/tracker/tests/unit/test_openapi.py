@@ -32,3 +32,51 @@ def test_openapi_declares_authentication() -> None:
     assert schema["paths"]["/health"]["get"]["security"] == []
     assert schema["paths"]["/init"]["post"]["security"] == [{"ApiKeyAuth": []}]
     assert schema["paths"]["/start-benchmark"]["post"]["security"] == [{"ApiKeyAuth": []}]
+
+
+def test_openapi_declares_required_harness_headers() -> None:
+    schema = build_openapi()
+    expected_parameters = {
+        "HarnessAwsAccessKeyId": {
+            "name": "X-Harness-AWS-Access-Key-Id",
+            "in": "header",
+            "required": True,
+            "schema": {"type": "string"},
+        },
+        "HarnessAwsSecretAccessKey": {
+            "name": "X-Harness-AWS-Secret-Access-Key",
+            "in": "header",
+            "required": True,
+            "schema": {"type": "string"},
+        },
+        "HarnessAwsDefaultRegion": {
+            "name": "X-Harness-AWS-Default-Region",
+            "in": "header",
+            "required": True,
+            "schema": {"type": "string"},
+        },
+        "HarnessS3Bucket": {
+            "name": "X-Harness-S3-Bucket",
+            "in": "header",
+            "required": True,
+            "schema": {"type": "string"},
+        },
+    }
+    expected_references = [{"$ref": f"#/components/parameters/{name}"} for name in expected_parameters]
+    affected_operations = (
+        schema["paths"]["/agents"]["get"],
+        schema["paths"]["/agents/{name}/download-url"]["get"],
+        schema["paths"]["/analyze-benchmark/{benchmark_id}"]["post"],
+        schema["paths"]["/benchmarks/{benchmark_id}/tasks/{task_id}/artifacts"]["get"],
+        schema["paths"]["/check-results-exist"]["get"],
+        schema["paths"]["/fetch-benchmark"]["get"],
+        schema["paths"]["/fetch-benchmark-tasks"]["post"],
+        schema["paths"]["/fetch-run-outputs/{benchmark_id}"]["get"],
+        schema["paths"]["/retrieve-results"]["get"],
+        schema["paths"]["/retry-or-resume-benchmark/{benchmark_id}"]["post"],
+        schema["paths"]["/stop-benchmark/{benchmark_id}"]["post"],
+    )
+
+    assert schema["components"]["parameters"] == expected_parameters
+    for operation in affected_operations:
+        assert operation["parameters"][-4:] == expected_references
