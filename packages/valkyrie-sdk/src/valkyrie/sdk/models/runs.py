@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Any
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_serializer
+from pydantic import AliasChoices, BaseModel, Field, field_serializer
 
 from valkyrie.sdk.models._base import ResponseModel, serialize_utc
 from valkyrie.sdk.models.agents import AgentContractRequest
@@ -130,31 +130,41 @@ class StartRunResponse(ResponseModel):
 
     benchmark_name: str
     agent_name: str
-    run_id: UUID
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
     concurrency: int
     started_at: datetime
     task_count: int
     cloudwatch_url: str
     s3_bucket_url: str
 
+    @property
+    def benchmark_id(self) -> UUID:
+        """Released alias for run_id."""
+        return self.run_id
+
 
 class GetRunResponse(ResponseModel):
     """Current state of one run."""
 
     benchmark_name: str
-    run_id: UUID
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
     details: RunDetails
     s3_bucket_url: str
     label: str | None = None
     final_score: float | None = None
     error_message: str | None = None
 
+    @property
+    def benchmark_id(self) -> UUID:
+        """Released alias for run_id."""
+        return self.run_id
+
 
 class RunSummary(ResponseModel):
     """Summary row returned by the run-list endpoint."""
 
-    run_id: UUID
-    benchmark_name: str
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "id"))
+    benchmark_name: str = Field(validation_alias=AliasChoices("benchmark_name", "name"))
     agent_name: str
     label: str | None = None
     model: str | None
@@ -168,6 +178,16 @@ class RunSummary(ResponseModel):
     task_state_counts: dict[str, int] = Field(default_factory=dict)
     final_score: float | None = None
     error_message: str | None = None
+
+    @property
+    def id(self) -> UUID:
+        """Released alias for run_id."""
+        return self.run_id
+
+    @property
+    def name(self) -> str:
+        """Released alias for benchmark_name."""
+        return self.benchmark_name
 
     @field_serializer("started_at")
     def serialize_started_at(self, value: datetime) -> str:
@@ -185,9 +205,14 @@ class RunSummary(ResponseModel):
 class ListRunsResponse(ResponseModel):
     """Page of runs."""
 
-    runs: list[RunSummary]
+    runs: list[RunSummary] = Field(validation_alias=AliasChoices("runs", "benchmarks"))
     total_count: int | None = None
     next_cursor: str | None = None
+
+    @property
+    def benchmarks(self) -> list[RunSummary]:
+        """Released alias for runs."""
+        return self.runs
 
 
 class RunArguments(ResponseModel):
@@ -206,10 +231,20 @@ class RunArguments(ResponseModel):
 class RunMetadataResponse(ResponseModel):
     """Stored launch metadata for one run."""
 
-    run_id: UUID
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
     benchmark_name: str
-    run_arguments: RunArguments
+    run_arguments: RunArguments = Field(validation_alias=AliasChoices("run_arguments", "benchmark_arguments"))
     started_by_email: str | None = None
+
+    @property
+    def benchmark_id(self) -> UUID:
+        """Released alias for run_id."""
+        return self.run_id
+
+    @property
+    def benchmark_arguments(self) -> RunArguments:
+        """Released alias for run_arguments."""
+        return self.run_arguments
 
 
 class RunFinalEvaluation(ResponseModel):
@@ -217,9 +252,14 @@ class RunFinalEvaluation(ResponseModel):
 
     id: str = Field(default_factory=lambda: str(uuid4()))
     org_id: str
-    run_id: str
+    run_id: str = Field(validation_alias=AliasChoices("run_id", "benchmark"))
     final_score: float
     properties: dict[str, Any] = Field(default_factory=dict)
+
+    @property
+    def benchmark(self) -> str:
+        """Released alias for run_id."""
+        return self.run_id
 
 
 class AverageTaskBreakdown(ResponseModel):
@@ -234,18 +274,28 @@ class AverageTaskBreakdown(ResponseModel):
 class RunResultsResponse(ResponseModel):
     """Inline final results for a run."""
 
-    run_id: UUID
+    run_id: UUID = Field(validation_alias=AliasChoices("run_id", "benchmark_id"))
     benchmark_name: str
     started_at: datetime
     finished_at: datetime | None
     status: RunStatus
     error_message: str | None
-    run_arguments: RunArguments
+    run_arguments: RunArguments = Field(validation_alias=AliasChoices("run_arguments", "benchmark_arguments"))
     tasks_stopped: int | None
     final_evaluation: RunFinalEvaluation | None
     average_task_breakdown: AverageTaskBreakdown | None
     evaluation_results: dict[str, dict[str, Any]] | None
     task_errors: dict[str, str] | None
+
+    @property
+    def benchmark_id(self) -> UUID:
+        """Released alias for run_id."""
+        return self.run_id
+
+    @property
+    def benchmark_arguments(self) -> RunArguments:
+        """Released alias for run_arguments."""
+        return self.run_arguments
 
 
 class S3UploadResultsResponse(ResponseModel):
@@ -277,3 +327,22 @@ class StopRunResponse(StatusResponse):
 
 class RetryOrResumeRunResponse(StatusResponse):
     """Response returned after retrying or resuming a run."""
+
+
+# Released 0.2.1 names remain importable while new code uses run terminology.
+BenchmarkStatus = RunStatus
+StartBenchmarkRequest = StartRunRequest
+FetchBenchmarksRequest = ListRunsRequest
+AnalyzeBenchmarkRequest = AnalyzeRunRequest
+BenchmarkDetails = RunDetails
+StartBenchmarkResponse = StartRunResponse
+FetchBenchmarkResponse = GetRunResponse
+BenchmarkTableRow = RunSummary
+FetchBenchmarksResponse = ListRunsResponse
+BenchmarkArguments = RunArguments
+FetchBenchmarkMetadataResponse = RunMetadataResponse
+FinalEvaluation = RunFinalEvaluation
+FinalViewResponse = RunResultsResponse
+RetrieveResultsResponse = RetrieveRunResultsResponse
+StopBenchmarkResponse = StopRunResponse
+RetryOrResumeBenchmarkResponse = RetryOrResumeRunResponse

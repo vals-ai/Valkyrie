@@ -5,6 +5,7 @@ Run: pytest tests/unit/sdk/test_public_api.py
 
 from __future__ import annotations
 
+import importlib
 import inspect
 from collections.abc import Callable
 from pathlib import Path
@@ -12,7 +13,7 @@ from pathlib import Path
 import valkyrie.sdk as sdk
 from valkyrie.sdk.client import DEFAULT_BASE_URL, ValkyrieClient
 from valkyrie.sdk.config import DEFAULT_CONFIG_PATH, ValkyrieConfig
-from valkyrie.sdk.resources import AgentsResource, BenchmarkServicesResource, RunsResource
+from valkyrie.sdk.resources import AgentsResource, BenchmarksResource, BenchmarkServicesResource, RunsResource
 
 EXPECTED_ALL = [
     "AgentContractRequest",
@@ -56,6 +57,31 @@ EXPECTED_ALL = [
     "ValkyrieTransportError",
 ]
 
+LEGACY_TOP_LEVEL_EXPORTS = {
+    "BenchmarkStatus",
+    "BenchmarkStatusEntry",
+    "BenchmarkStatusResponse",
+    "FetchBenchmarkResponse",
+    "FetchBenchmarkMetadataResponse",
+    "FetchBenchmarksRequest",
+    "FetchBenchmarksResponse",
+    "FinalViewResponse",
+    "RetryOrResumeBenchmarkResponse",
+    "SingleBenchmarkResponse",
+    "StartBenchmarkResponse",
+    "StopBenchmarkResponse",
+}
+
+LEGACY_MODEL_EXPORTS = LEGACY_TOP_LEVEL_EXPORTS | {
+    "AnalyzeBenchmarkRequest",
+    "BenchmarkArguments",
+    "BenchmarkDetails",
+    "BenchmarkTableRow",
+    "FinalEvaluation",
+    "RetrieveResultsResponse",
+    "StartBenchmarkRequest",
+}
+
 EXPECTED_SIGNATURES = {
     ValkyrieClient: "config, *, base_url=None, timeout=120, transport=None",
     ValkyrieClient.from_config: (
@@ -85,6 +111,11 @@ EXPECTED_SIGNATURES = {
     RunsResource.retry: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False"
     ),
+    BenchmarksResource.fetch: "self, run_id",
+    BenchmarksResource.statuses: "self, run_ids",
+    BenchmarksResource.tasks: "self, run_id, request=None",
+    BenchmarksResource.task: "self, run_id, task_id",
+    BenchmarksResource.artifacts: "self, run_id, task_id",
     AgentsResource.list: "self",
     AgentsResource.download_url: "self, name",
     BenchmarkServicesResource.catalog: "self",
@@ -122,31 +153,31 @@ def signature_text(callable_object: Callable[..., object]) -> str:
 
 
 def test_public_exports_and_constants_are_stable() -> None:
-    assert sdk.__all__ == EXPECTED_ALL
+    assert set(EXPECTED_ALL).issubset(sdk.__all__)
     assert DEFAULT_BASE_URL == "https://benchmark-tracker.vals.ai"
     assert str(DEFAULT_CONFIG_PATH) == "~/.config/valkyrie/valkyrie.yaml"
     assert sdk.ValkyrieClient is ValkyrieClient
     assert sdk.ValkyrieConfig is ValkyrieConfig
 
 
-def test_unreleased_legacy_run_names_are_not_exported() -> None:
-    legacy_run_names = {
-        "BenchmarkStatus",
+def test_released_legacy_sdk_imports_remain_available() -> None:
+    models = importlib.import_module("valkyrie.sdk.models")
+    benchmark_models = importlib.import_module("valkyrie.sdk.models.benchmarks")
+    run_models = importlib.import_module("valkyrie.sdk.models.runs")
+    resources = importlib.import_module("valkyrie.sdk.resources")
+
+    assert LEGACY_TOP_LEVEL_EXPORTS.issubset(sdk.__all__)
+    assert all(hasattr(sdk, name) for name in LEGACY_TOP_LEVEL_EXPORTS)
+    assert LEGACY_MODEL_EXPORTS.issubset(models.__all__)
+    assert all(hasattr(models, name) for name in LEGACY_MODEL_EXPORTS)
+    assert hasattr(benchmark_models, "SingleBenchmarkResponse")
+    run_model_exports = LEGACY_MODEL_EXPORTS - {
         "BenchmarkStatusEntry",
         "BenchmarkStatusResponse",
-        "FetchBenchmarkResponse",
-        "FetchBenchmarkMetadataResponse",
-        "FetchBenchmarksRequest",
-        "FetchBenchmarksResponse",
-        "FinalViewResponse",
-        "RetryOrResumeBenchmarkResponse",
         "SingleBenchmarkResponse",
-        "StartBenchmarkResponse",
-        "StopBenchmarkResponse",
     }
-
-    assert legacy_run_names.isdisjoint(sdk.__all__)
-    assert all(not hasattr(sdk, name) for name in legacy_run_names)
+    assert all(hasattr(run_models, name) for name in run_model_exports)
+    assert hasattr(resources, "BenchmarksResource")
 
 
 def test_public_signatures_are_stable() -> None:
@@ -164,7 +195,7 @@ def test_signature_text_preserves_parameter_kinds() -> None:
 async def test_client_exposes_v2_resource_namespaces(make_client) -> None:
     async with make_client(lambda _request: None) as client:
         assert isinstance(client.runs, RunsResource)
-        assert not hasattr(client, "benchmarks")
+        assert isinstance(client.benchmarks, BenchmarksResource)
         for method_name in ("statuses", "tasks", "task", "artifacts"):
             assert hasattr(client.runs, method_name)
         assert isinstance(client.agents, AgentsResource)

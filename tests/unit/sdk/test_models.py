@@ -110,7 +110,7 @@ def test_non_empty_list_and_final_results_parse() -> None:
     assert result.run_arguments.contract.output_artifacts
 
 
-def test_canonical_run_models_reject_legacy_wire_names() -> None:
+def test_canonical_run_models_accept_released_legacy_names() -> None:
     run_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     payload = {
         "benchmark_name": "swebench",
@@ -125,8 +125,25 @@ def test_canonical_run_models_reject_legacy_wire_names() -> None:
 
     legacy_payload = {**payload, "benchmark_id": payload["run_id"]}
     del legacy_payload["run_id"]
-    with pytest.raises(ValidationError):
-        StartRunResponse.model_validate(legacy_payload)
+    response = StartRunResponse.model_validate(legacy_payload)
+    assert str(response.run_id) == run_id
+    assert response.benchmark_id == response.run_id
 
-    with pytest.raises(ValidationError):
-        ListRunsResponse.model_validate({"benchmarks": []})
+    listed = ListRunsResponse.model_validate({"benchmarks": []})
+    assert listed.runs == []
+    assert listed.benchmarks == []
+
+
+def test_canonical_run_responses_expose_released_legacy_attributes() -> None:
+    fetched = GetRunResponse.model_validate(load_fixture("fetch.json")["response"])
+    listed = ListRunsResponse.model_validate(load_fixture("list.json")["response"])
+    result = RunResultsResponse.model_validate(load_fixture("results.json")["inline"])
+
+    assert fetched.benchmark_id == fetched.run_id
+    assert listed.benchmarks == listed.runs
+    assert listed.runs[0].id == listed.runs[0].run_id
+    assert listed.runs[0].name == listed.runs[0].benchmark_name
+    assert result.benchmark_id == result.run_id
+    assert result.benchmark_arguments == result.run_arguments
+    assert result.final_evaluation is not None
+    assert result.final_evaluation.benchmark == result.final_evaluation.run_id

@@ -10,6 +10,35 @@ import pytest
 from valkyrie.sdk.models import FetchTasksRequest, Order, TaskStatus
 
 
+async def test_released_benchmarks_resource_keeps_legacy_fetch_route(make_client) -> None:
+    run_id = uuid4()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == f"/benchmarks/{run_id}"
+        return httpx.Response(
+            200,
+            json={
+                "id": str(run_id),
+                "name": "swebench",
+                "agent_name": "sweagent",
+                "model": "anthropic/claude-sonnet-4-6",
+                "started_at": "2026-07-08T12:00:00Z",
+                "finished_at": None,
+                "status": "IN_PROGRESS",
+                "total_tasks": 2,
+                "finished_tasks": 1,
+                "task_state_counts": {"FINISHED": 1, "IN_PROGRESS": 1},
+            },
+        )
+
+    async with make_client(handler) as client:
+        result = await client.benchmarks.fetch(run_id)
+
+    assert result.id == run_id
+    assert result.name == "swebench"
+
+
 async def test_statuses_serializes_ids_as_csv_and_accepts_an_empty_list(make_client) -> None:
     first_id = uuid4()
     second_id = uuid4()

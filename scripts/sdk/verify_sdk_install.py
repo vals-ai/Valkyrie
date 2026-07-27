@@ -47,13 +47,14 @@ def _artifact_commands(*, artifact: Path, label: str, workspace: Path, temporary
     smoke = (
         "import importlib.util; "
         "from valkyrie.sdk import ValkyrieClient; "
-        "from valkyrie.sdk.resources import RunsResource; "
-        "assert ValkyrieClient and RunsResource; "
+        "from valkyrie.sdk.resources import BenchmarksResource, RunsResource; "
+        "assert ValkyrieClient and BenchmarksResource and RunsResource; "
         "assert importlib.util.find_spec('tracker') is None; "
         "assert importlib.util.find_spec('valkyrie.cli') is None"
     )
     public_tests = (
         str(sdk_tests / "test_public_api.py") + "::test_public_exports_and_constants_are_stable",
+        str(sdk_tests / "test_public_api.py") + "::test_released_legacy_sdk_imports_remain_available",
         str(sdk_tests / "test_public_api.py") + "::test_public_signatures_are_stable",
     )
     commands = [
