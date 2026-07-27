@@ -360,6 +360,7 @@ class RunDetails(CanonicalRunModel):
     started_at: datetime
     total_tasks: int
     finished_tasks: int
+    # JSON conversion serializes enum keys as strings, so canonical and legacy TaskStatus values must stay aligned.
     task_breakdown: dict[TaskStatus, int]
     docent_reading_status: DocentReadingStatus
     docent_reading_url: str | None = None

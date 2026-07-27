@@ -232,6 +232,7 @@ class TrackerService:
             if response.status_code != 404:
                 yield response
                 return
+            # Only 404 bodies are buffered for exact missing-route detection; successful responses remain streamed.
             response.read()
             if not _is_missing_route(response):
                 yield response

@@ -771,6 +771,22 @@ class TestTrackerAPI:
         assert statuses.status_code == 200
         assert statuses.json()["runs"][0]["run_id"] == str(benchmark_row.id)
 
+    def test_get_run_returns_structured_500_for_unexpected_legacy_response(
+        self,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        async def _unexpected_response(**_kwargs: Any) -> StatusResponse:
+            return StatusResponse(status="unexpected")
+
+        monkeypatch.setattr("main.fetch_benchmark", _unexpected_response)
+
+        with TestClient(app, raise_server_exceptions=False) as guarded_client:
+            response = guarded_client.get(f"/runs/{uuid4()}")
+
+        assert response.status_code == 500
+        assert response.headers["content-type"] == "application/json"
+        assert response.json() == {"detail": "Unexpected response type from fetch_benchmark"}
+
     async def test_canonical_run_actions_forward_to_legacy_handlers(
         self,
         monkeypatch: MonkeyPatch,

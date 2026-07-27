@@ -1114,7 +1114,8 @@ async def get_run(
         harness_config=harness_config,
         org=org,
     )
-    assert isinstance(response, FetchBenchmarkResponse)
+    if not isinstance(response, FetchBenchmarkResponse):
+        raise HTTPException(status_code=500, detail="Unexpected response type from fetch_benchmark")
     return GetRunResponse.from_legacy(response)
 
 
