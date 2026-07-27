@@ -4,6 +4,7 @@ from tracker.scheduler.admission import (
     SandboxQueueContext,
     create_queue_context,
     enter_queued_sandbox,
+    recover_queued_pool,
 )
 from tracker.scheduler.store import (
     PostgresPoolLock,
@@ -23,5 +24,6 @@ __all__ = [
     "enter_queued_sandbox",
     "next_eligible_task",
     "queue_pool_id",
+    "recover_queued_pool",
     "reset_abandoned_builds",
 ]

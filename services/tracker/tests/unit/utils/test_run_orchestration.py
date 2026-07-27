@@ -49,107 +49,60 @@ def _persist_benchmark(
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
-async def test_queued_process_benchmark_bounds_local_pending_contenders(
+async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    request = StartBenchmarkRequest(
-        benchmark_name="swebench",
-        contract=contract,
-        concurrency=4,
-        priority=3,
-        task_ids=["task_0", "task_1", "task_2", "task_3"],
-        harness_config=harness_config,
-    )
-    provider_pool_id = "shared-pool"
-    benchmark = _persist_benchmark(
-        request,
-        database_session,
-        queued_pool_id=queue_pool_id(provider_pool_id),
-    )
-
-    sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
-    get_sandbox_provider = Mock(return_value=sandbox_provider)
-    two_started = asyncio.Event()
-    hold = asyncio.Event()
-    started: list[str] = []
-
-    async def process_task(
-        task_row: Task,
-        *_args: Any,
-        **_kwargs: Any,
-    ) -> dict[str, dict[str, Any]]:
-        started.append(task_row.task_id)
-        if len(started) == 2:
-            two_started.set()
-        if task_row.task_id == "task_0":
-            with Session(bind=database_session.bind) as session:
-                task = session.get(Task, task_row.id)
-                assert task is not None
-                task.status = TaskStatus.IN_PROGRESS
-                session.add(task)
-                session.commit()
-
-        await hold.wait()
-
-        return {task_row.task_id: {}}
-
-    monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
-    monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", get_sandbox_provider)
-
-    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), request.task_ids or []))
-    try:
-        await two_started.wait()
-
-        with Session(bind=database_session.bind) as session:
-            statuses = {
-                task.task_id: task.status
-                for task in session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
-            }
-
-        assert started == ["task_0", "task_1"]
-        assert statuses == {
-            "task_0": TaskStatus.IN_PROGRESS,
-            "task_1": TaskStatus.PENDING,
-            "task_2": TaskStatus.PENDING,
-            "task_3": TaskStatus.PENDING,
-        }
-    finally:
-        run.cancel()
-        with suppress(asyncio.CancelledError):
-            await run
-
-
-@pytest.mark.usefixtures("process_benchmark_env")
-async def test_queued_concurrency_decrease_blocks_without_preempting_then_increase_admits(
-    contract: AgentContractRequest,
-    database_session: Session,
-    harness_config: HarnessConfig,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+    task_ids = ["evaluation_0", "evaluation_1", "evaluation_2", "pending_0", "pending_1"]
     request = StartBenchmarkRequest(
         benchmark_name="swebench",
         contract=contract,
         concurrency=2,
         priority=3,
-        task_ids=["task_0", "task_1"],
+        task_ids=task_ids,
         harness_config=harness_config,
     )
-    provider_pool_id = "dynamic-pool"
+    provider_pool_id = "coordinator-pool"
     benchmark = _persist_benchmark(
         request,
         database_session,
         queued_pool_id=queue_pool_id(provider_pool_id),
     )
-    first_started = asyncio.Event()
-    second_waiting = asyncio.Event()
-    check_decrease = asyncio.Event()
-    blocked_by_decrease = asyncio.Event()
-    capacity_increased = asyncio.Event()
-    second_started = asyncio.Event()
-    hold = asyncio.Event()
+    database_session.add_all(
+        [
+            Task(
+                org_id=TEST_ORG_ID,
+                task_id=task_id,
+                benchmark=benchmark.id,
+                status=TaskStatus.EVALUATING,
+                eval_resume_state={"cursor": task_id},
+            )
+            for task_id in task_ids[:3]
+        ]
+        + [
+            Task(
+                org_id=TEST_ORG_ID,
+                task_id=task_id,
+                benchmark=benchmark.id,
+                status=TaskStatus.EVALUATING,
+            )
+            for task_id in task_ids[3:]
+        ]
+    )
+    database_session.commit()
+    evaluation_started: list[str] = []
+    evaluation_finished = {task_id: asyncio.Event() for task_id in task_ids[:3]}
+    release_evaluation = {task_id: asyncio.Event() for task_id in task_ids[:3]}
+    two_evaluations_started = asyncio.Event()
+    third_evaluation_started = asyncio.Event()
+    pending_started: list[str] = []
+    pending_contender_started = asyncio.Event()
+    hold_pending = asyncio.Event()
+    coordinator_polls: asyncio.Queue[None] = asyncio.Queue()
+    continue_coordinator: asyncio.Queue[None] = asyncio.Queue()
+    original_sleep = asyncio.sleep
 
     def set_concurrency(value: int) -> None:
         with Session(bind=database_session.bind) as session:
@@ -159,80 +112,87 @@ async def test_queued_concurrency_decrease_blocks_without_preempting_then_increa
             session.add(persisted_benchmark)
             session.commit()
 
-    async def process_task(task_row: Task, *_args: Any, **_kwargs: Any) -> dict[str, dict[str, Any]]:
-        if task_row.task_id == "task_0":
+    async def process_task(
+        task_row: Task,
+        *_args: Any,
+        **_kwargs: Any,
+    ) -> dict[str, dict[str, Any] | None]:
+        if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
+            evaluation_started.append(task_row.task_id)
+            if len(evaluation_started) == 2:
+                two_evaluations_started.set()
+            if len(evaluation_started) == 3:
+                third_evaluation_started.set()
+            await release_evaluation[task_row.task_id].wait()
+            result = {"status": "success", "score": 1.0}
             with Session(bind=database_session.bind) as session:
                 task = session.get(Task, task_row.id)
                 assert task is not None
-                task.status = TaskStatus.IN_PROGRESS
+                task.status = TaskStatus.FINISHED
                 session.add(task)
+                session.add(EvaluationResult(org_id=TEST_ORG_ID, task=task.id, instance_id=None, result=result))
                 session.commit()
-            first_started.set()
-        else:
-            second_waiting.set()
-            await check_decrease.wait()
-            with Session(bind=database_session.bind) as session:
-                persisted_benchmark = session.get(Benchmark, benchmark.id)
-                assert persisted_benchmark is not None
-                assert persisted_benchmark.arguments.concurrency == 1
-            blocked_by_decrease.set()
-            await capacity_increased.wait()
-            with Session(bind=database_session.bind) as session:
-                persisted_benchmark = session.get(Benchmark, benchmark.id)
-                assert persisted_benchmark is not None
-                assert persisted_benchmark.arguments.concurrency == 2
-                task = session.get(Task, task_row.id)
-                assert task is not None
-                task.status = TaskStatus.IN_PROGRESS
-                session.add(task)
-                session.commit()
-            second_started.set()
+            evaluation_finished[task_row.task_id].set()
 
-        await hold.wait()
+            return {task_row.task_id: result}
 
-        return {task_row.task_id: {}}
+        pending_started.append(task_row.task_id)
+        pending_contender_started.set()
+        await hold_pending.wait()
+
+        return {task_row.task_id: None}
+
+    async def controlled_sleep(seconds: float) -> None:
+        if seconds != 1.0:
+            await original_sleep(0)
+
+            return
+        coordinator_polls.put_nowait(None)
+        await continue_coordinator.get()
 
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
-    monkeypatch.setattr(
-        BenchmarkServiceClient,
-        "get_sandbox_provider",
-        Mock(return_value=sandbox_provider),
-    )
-
-    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), request.task_ids or []))
+    monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=sandbox_provider))
+    monkeypatch.setattr("tracker.utils.run_orchestration.asyncio.sleep", controlled_sleep)
+    run = asyncio.create_task(process_benchmark(request.model_dump(), str(benchmark.id), task_ids))
     try:
-        await first_started.wait()
+        await coordinator_polls.get()
+        await two_evaluations_started.wait()
+
+        assert len(evaluation_started) == 2
+        assert pending_started == []
+
         set_concurrency(1)
-        await second_waiting.wait()
-        check_decrease.set()
-        await blocked_by_decrease.wait()
+        first_evaluation = evaluation_started[0]
+        release_evaluation[first_evaluation].set()
+        await evaluation_finished[first_evaluation].wait()
+        continue_coordinator.put_nowait(None)
+        await coordinator_polls.get()
 
-        with Session(bind=database_session.bind) as session:
-            blocked_statuses = {
-                task.task_id: task.status
-                for task in session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
-            }
-
-        assert blocked_statuses == {
-            "task_0": TaskStatus.IN_PROGRESS,
-            "task_1": TaskStatus.PENDING,
-        }
+        assert len(evaluation_started) == 2
+        assert pending_started == []
 
         set_concurrency(2)
-        capacity_increased.set()
-        await second_started.wait()
+        continue_coordinator.put_nowait(None)
+        await coordinator_polls.get()
+        await third_evaluation_started.wait()
 
-        with Session(bind=database_session.bind) as session:
-            admitted_statuses = {
-                task.task_id: task.status
-                for task in session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
-            }
+        assert len(evaluation_started) == 3
+        assert pending_started == []
 
-        assert admitted_statuses == {
-            "task_0": TaskStatus.IN_PROGRESS,
-            "task_1": TaskStatus.IN_PROGRESS,
-        }
+        for task_id in evaluation_started[1:]:
+            release_evaluation[task_id].set()
+            await evaluation_finished[task_id].wait()
+        continue_coordinator.put_nowait(None)
+        await coordinator_polls.get()
+        await pending_contender_started.wait()
+
+        assert len(pending_started) == 1
+
+        continue_coordinator.put_nowait(None)
+        await coordinator_polls.get()
+
+        assert len(pending_started) == 1
     finally:
         run.cancel()
         with suppress(asyncio.CancelledError):
@@ -246,7 +206,7 @@ async def test_queued_process_benchmark_finishes_evaluation_resume_before_finali
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task_ids = ["resume_eval", "pending"]
+    task_ids = ["resume_eval"]
     request = StartBenchmarkRequest(
         benchmark_name="swebench",
         contract=contract,
@@ -261,22 +221,14 @@ async def test_queued_process_benchmark_finishes_evaluation_resume_before_finali
         database_session,
         queued_pool_id=queue_pool_id(provider_pool_id),
     )
-    database_session.add_all(
-        [
-            Task(
-                org_id=TEST_ORG_ID,
-                task_id="resume_eval",
-                benchmark=benchmark.id,
-                status=TaskStatus.EVALUATING,
-                eval_resume_state={"cursor": "durable"},
-            ),
-            Task(
-                org_id=TEST_ORG_ID,
-                task_id="pending",
-                benchmark=benchmark.id,
-                status=TaskStatus.PENDING,
-            ),
-        ]
+    database_session.add(
+        Task(
+            org_id=TEST_ORG_ID,
+            task_id="resume_eval",
+            benchmark=benchmark.id,
+            status=TaskStatus.EVALUATING,
+            eval_resume_state={"cursor": "durable"},
+        )
     )
     database_session.commit()
     initial_statuses: dict[str, TaskStatus] = {}
@@ -305,10 +257,7 @@ async def test_queued_process_benchmark_finishes_evaluation_resume_before_finali
     await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
 
     database_session.refresh(benchmark)
-    assert initial_statuses == {
-        "resume_eval": TaskStatus.EVALUATING,
-        "pending": TaskStatus.PENDING,
-    }
+    assert initial_statuses == {"resume_eval": TaskStatus.EVALUATING}
     assert benchmark.status == BenchmarkStatus.FINISHED
 
 
@@ -488,13 +437,19 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
         database_session,
         queued_pool_id=queue_pool_id("expected-pool"),
     )
+    active_task = Task(
+        org_id=TEST_ORG_ID,
+        task_id="task_0",
+        benchmark=benchmark.id,
+        status=TaskStatus.BUILDING,
+    )
     unrelated_task = Task(
         org_id=TEST_ORG_ID,
         task_id="task_unrelated",
         benchmark=benchmark.id,
         status=TaskStatus.PENDING,
     )
-    database_session.add(unrelated_task)
+    database_session.add_all([active_task, unrelated_task])
     database_session.commit()
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
     monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=sandbox_provider))
@@ -508,7 +463,7 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
     assert benchmark.error_message is None
     assert task_statuses == {
         "task_unrelated": TaskStatus.PENDING,
-        "task_0": TaskStatus.ERROR,
+        "task_0": TaskStatus.BUILDING,
         "task_1": TaskStatus.ERROR,
     }
     benchmark_service = AsyncMock(spec=BenchmarkServiceClient)
@@ -533,7 +488,7 @@ async def test_queued_process_benchmark_reports_provider_configuration_drift(
     assert benchmark.status == BenchmarkStatus.IN_PROGRESS
     assert {task.task_id: task.status for task in tasks} == {
         "task_unrelated": TaskStatus.PENDING,
-        "task_0": TaskStatus.PENDING,
+        "task_0": TaskStatus.BUILDING,
         "task_1": TaskStatus.PENDING,
     }
 

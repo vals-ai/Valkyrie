@@ -58,6 +58,7 @@ from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
+from tracker.scheduler.store import PostgresPoolLock
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -521,53 +522,84 @@ async def _process_task_attempt(
             return task.status == TaskStatus.STOPPED or task.started_at != attempt_started_at
 
     try:
-        if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None:
-            try:
-                log_output("Resuming evaluation from durable benchmark state\n")
-                resume_eval_start_time = time.perf_counter()
-                # Reset timer to keep the last received message from the benchmarks service accurate
-                last_log_time = time.monotonic()
-                evaluation_result = await benchmark_service.resume_evaluation(
-                    task_row.task_id,
-                    eval_resume_state=task_row.eval_resume_state,
-                    on_message=log_output,
-                    on_eval_resume_state=on_eval_resume_state,
-                    dataset=start_benchmark_request.dataset,
-                    sandbox_provider=sandbox_provider_config,
-                )
-                resume_eval_duration = time.perf_counter() - resume_eval_start_time
-                evaluation_result_row = EvaluationResult(
-                    org_id=org.id,
-                    task=task_row.id,
-                    instance_id=None,
-                    result=cast(dict[str, Any], evaluation_result),
-                    agent_caused_exit_reason=None,
-                )
-
-                with Session(bind=engine) as task_session:
-                    task_session.add(evaluation_result_row)
-                    task_in_session = fetch_task_row(task_row.id, task_session, org)
-                    if task_in_session.task_breakdown:
-                        existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
-                        assert existing_breakdown is not None
-                        existing_breakdown.evaluation_run_duration = resume_eval_duration
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.FINISHED,
-                        expected_started_at=attempt_started_at,
-                    ):
+        evaluation_resume_state = task_row.eval_resume_state
+        if task_row.status == TaskStatus.EVALUATING and evaluation_resume_state is not None:
+            async with AsyncExitStack() as evaluation_stack:
+                if queue_context is not None:
+                    attempt_lock_suffix = int(
+                        _normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC).timestamp() * 1_000_000
+                    )
+                    acquired = await evaluation_stack.enter_async_context(
+                        PostgresPoolLock(
+                            queue_context.engine,
+                            f"{queue_context.pool_id}:evaluation:{task_row.id}:{attempt_lock_suffix:x}",
+                        )
+                    )
+                    if not acquired:
                         return {task_id: None}
 
-                    return {task_id: evaluation_result_row.result}
-            except Exception as e:
-                with Session(bind=engine) as task_session:
-                    task = fetch_task_row(task_row.id, task_session, org)
-                    if task.status == TaskStatus.STOPPED:
-                        return {task_id: None}
+                    with Session(bind=engine) as task_session:
+                        current_task = fetch_task_row(task_row.id, task_session, org)
+                        current_benchmark = fetch_benchmark_row(benchmark_id, task_session, org)
+                        current_resume_state = current_task.eval_resume_state
+                        if (
+                            current_benchmark.status != BenchmarkStatus.IN_PROGRESS
+                            or current_task.status != TaskStatus.EVALUATING
+                            or current_resume_state is None
+                            or _normalized_attempt_time(current_task.started_at)
+                            != _normalized_attempt_time(attempt_started_at)
+                        ):
+                            return {task_id: None}
+                        task_row = current_task
+                        evaluation_resume_state = current_resume_state
 
-                raise e from e
+                try:
+                    log_output("Resuming evaluation from durable benchmark state\n")
+                    resume_eval_start_time = time.perf_counter()
+                    # Reset timer to keep the last received message from the benchmarks service accurate
+                    last_log_time = time.monotonic()
+                    evaluation_result = await benchmark_service.resume_evaluation(
+                        task_row.task_id,
+                        eval_resume_state=evaluation_resume_state,
+                        on_message=log_output,
+                        on_eval_resume_state=on_eval_resume_state,
+                        dataset=start_benchmark_request.dataset,
+                        sandbox_provider=sandbox_provider_config,
+                    )
+                    resume_eval_duration = time.perf_counter() - resume_eval_start_time
+                    evaluation_result_row = EvaluationResult(
+                        org_id=org.id,
+                        task=task_row.id,
+                        instance_id=None,
+                        result=cast(dict[str, Any], evaluation_result),
+                        agent_caused_exit_reason=None,
+                    )
+
+                    with Session(bind=engine) as task_session:
+                        task_session.add(evaluation_result_row)
+                        task_in_session = fetch_task_row(task_row.id, task_session, org)
+                        if task_in_session.task_breakdown:
+                            existing_breakdown = task_session.get(TaskBreakdown, task_in_session.task_breakdown)
+                            assert existing_breakdown is not None
+                            existing_breakdown.evaluation_run_duration = resume_eval_duration
+                        if not commit_task_status_transition(
+                            task_row.id,
+                            task_session,
+                            org,
+                            TaskStatus.FINISHED,
+                            expected_started_at=attempt_started_at,
+                            expected_status=TaskStatus.EVALUATING,
+                        ):
+                            return {task_id: None}
+
+                        return {task_id: evaluation_result_row.result}
+                except Exception as e:
+                    with Session(bind=engine) as task_session:
+                        task = fetch_task_row(task_row.id, task_session, org)
+                        if task.status == TaskStatus.STOPPED:
+                            return {task_id: None}
+
+                    raise e from e
 
         if queue_context is not None and task_row.status == TaskStatus.EVALUATING:
             with Session(bind=engine) as task_session:

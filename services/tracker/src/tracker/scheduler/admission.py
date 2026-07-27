@@ -32,6 +32,7 @@ class SandboxQueueContext:
     pool_id: str
     engine: Engine = field(repr=False)
     poll_interval_seconds: float = 1.0
+    admission_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
 
 def create_queue_context(
@@ -94,6 +95,34 @@ def _start_claimed_task(
     return result.rowcount == 1
 
 
+def _reset_abandoned_pool_builds(context: SandboxQueueContext) -> None:
+    with Session(context.engine) as session:
+        reset_abandoned_builds(session, context.pool_id, datetime.now(UTC))
+        session.commit()
+
+
+async def recover_queued_pool(context: SandboxQueueContext) -> None:
+    """Reset abandoned builds once while holding this provider pool's lock."""
+    while True:
+        async with context.admission_lock:
+            async with PostgresPoolLock(context.engine, context.pool_id) as acquired:
+                if acquired:
+                    _reset_abandoned_pool_builds(context)
+
+                    return
+
+        await asyncio.sleep(context.poll_interval_seconds)
+
+
+async def _close_stack_before_cancellation(stack: AsyncExitStack) -> None:
+    close_task = asyncio.create_task(stack.aclose())
+    try:
+        await asyncio.shield(close_task)
+    except asyncio.CancelledError:
+        await close_task
+        raise
+
+
 async def enter_queued_sandbox(
     *,
     stack: AsyncExitStack,
@@ -106,48 +135,48 @@ async def enter_queued_sandbox(
 ) -> Sandbox | None:
     """Wait for this exact attempt's global turn and enter its sandbox context."""
     while True:
-        async with PostgresPoolLock(context.engine, context.pool_id) as acquired:
-            if acquired:
-                with Session(context.engine) as session:
-                    reset_abandoned_builds(session, context.pool_id, datetime.now(UTC))
-                    session.commit()
-                    current_state = _queued_task_state(session, task_row_id, expected_started_at)
-                    eligible = eligible_task_is(
-                        session,
-                        context.pool_id,
-                        task_row_id,
-                        expected_started_at,
-                    )
-
-                if current_state != (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS):
-                    return None
-
-                if eligible and await context.provider.check_admission(source, resources):
+        async with context.admission_lock:
+            async with PostgresPoolLock(context.engine, context.pool_id) as acquired:
+                if acquired:
+                    _reset_abandoned_pool_builds(context)
                     with Session(context.engine) as session:
-                        claimed = claim_eligible_task(
+                        current_state = _queued_task_state(session, task_row_id, expected_started_at)
+                        eligible = eligible_task_is(
                             session,
                             context.pool_id,
                             task_row_id,
                             expected_started_at,
                         )
-                        current_state = _queued_task_state(session, task_row_id, expected_started_at)
 
-                    if not claimed:
-                        if current_state != (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS):
-                            return None
-                    else:
-                        sandbox = await stack.enter_async_context(create())
+                    if current_state != (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS):
+                        return None
+
+                    if eligible and await context.provider.check_admission(source, resources):
                         with Session(context.engine) as session:
-                            started = _start_claimed_task(
+                            claimed = claim_eligible_task(
                                 session,
+                                context.pool_id,
                                 task_row_id=task_row_id,
                                 expected_started_at=expected_started_at,
                             )
-                        if not started:
-                            await stack.aclose()
+                            current_state = _queued_task_state(session, task_row_id, expected_started_at)
 
-                            return None
+                        if not claimed:
+                            if current_state != (TaskStatus.PENDING, BenchmarkStatus.IN_PROGRESS):
+                                return None
+                        else:
+                            sandbox = await stack.enter_async_context(create())
+                            with Session(context.engine) as session:
+                                started = _start_claimed_task(
+                                    session,
+                                    task_row_id=task_row_id,
+                                    expected_started_at=expected_started_at,
+                                )
+                            if not started:
+                                await _close_stack_before_cancellation(stack)
 
-                        return sandbox
+                                return None
+
+                            return sandbox
 
         await asyncio.sleep(context.poll_interval_seconds)

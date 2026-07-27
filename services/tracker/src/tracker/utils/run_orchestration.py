@@ -35,7 +35,7 @@ from tracker.database.session import engine
 from tracker.exceptions import TrackerServiceError
 from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
-from tracker.scheduler.admission import SandboxQueueContext, create_queue_context
+from tracker.scheduler.admission import SandboxQueueContext, create_queue_context, recover_queued_pool
 from tracker.types import (
     FinalViewResponse,
     HarnessConfig,
@@ -84,6 +84,7 @@ async def _run_queued_tasks(
         notifier=notifier,
         coordinator_done=coordinator_done,
     )
+    await recover_queued_pool(queue_context)
     monitor_task = asyncio.create_task(monitor.track_tasks())
 
     def launch(task_row: Task) -> None:
@@ -132,33 +133,62 @@ async def _run_queued_tasks(
                 for task_row_id, (attempt, _tracked, runner) in local_runners.items()
                 if not runner.done()
             }
+            active_task_row_ids = {
+                task_row_id
+                for task_row_id, attempt in active_attempts.items()
+                if (current_task := current_by_id.get(task_row_id)) is not None and current_task.started_at == attempt
+            }
+            used_slots = sum(
+                task_row.status in (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)
+                or (task_row.status == TaskStatus.EVALUATING and task_row.id in active_task_row_ids)
+                for task_row in current_rows
+            )
+            available_slots = max(benchmark_row.arguments.concurrency - used_slots, 0)
 
-            for task_row in current_rows:
-                if (
-                    task_row.status == TaskStatus.EVALUATING
-                    and task_row.id not in active_attempts
-                    and benchmark_row.status == BenchmarkStatus.IN_PROGRESS
-                ):
+            if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and available_slots:
+                evaluation_candidates = sorted(
+                    (
+                        task_row
+                        for task_row in current_rows
+                        if task_row.status == TaskStatus.EVALUATING
+                        and task_row.eval_resume_state is not None
+                        and task_row.id not in active_attempts
+                    ),
+                    key=lambda task_row: (task_row.started_at, task_row.id),
+                )
+                for task_row in evaluation_candidates[:available_slots]:
                     launch(task_row)
+                available_slots -= min(len(evaluation_candidates), available_slots)
 
             pending_contender_exists = any(
                 current_by_id.get(task_row_id) is not None
-                and current_by_id[task_row_id].status == TaskStatus.PENDING
+                and (
+                    current_by_id[task_row_id].status == TaskStatus.PENDING
+                    or (
+                        current_by_id[task_row_id].status == TaskStatus.EVALUATING
+                        and current_by_id[task_row_id].eval_resume_state is None
+                    )
+                )
                 and current_by_id[task_row_id].started_at == attempt
                 and not runner.done()
                 for task_row_id, (attempt, _tracked, runner) in local_runners.items()
             )
-            if not pending_contender_exists and benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+            if not pending_contender_exists and available_slots and benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
                 pending_candidates = [
                     task_row
                     for task_row in current_rows
-                    if task_row.status == TaskStatus.PENDING and task_row.id not in active_attempts
+                    if (
+                        task_row.status == TaskStatus.PENDING
+                        or (task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is None)
+                    )
+                    and task_row.id not in active_attempts
                 ]
                 if pending_candidates:
                     launch(min(pending_candidates, key=lambda task_row: (task_row.started_at, task_row.id)))
 
             actionable_rows_remain = any(
-                task_row.status in (TaskStatus.PENDING, TaskStatus.EVALUATING) for task_row in current_rows
+                task_row.status in (TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.EVALUATING)
+                for task_row in current_rows
             )
             if not local_runners and not actionable_rows_remain:
                 break
@@ -240,13 +270,32 @@ def create_task_rows(
     session.commit()
     session.expire_all()
 
-    task_rows = session.exec(
+    return _load_verified_task_rows(
+        verified_task_ids,
+        benchmark_row,
+        session,
+        org,
+        statuses=[TaskStatus.PENDING, TaskStatus.EVALUATING],
+    )
+
+
+def _load_verified_task_rows(
+    verified_task_ids: Sequence[str],
+    benchmark_row: Benchmark,
+    session: Session,
+    org: Org,
+    *,
+    statuses: Sequence[TaskStatus] | None = None,
+) -> Sequence[tuple[str, Task]]:
+    task_rows_query = (
         select(Task.task_id, Task)
         .where(Task.benchmark == benchmark_row.id)
         .where(Task.org_id == org.id)
         .where(col(Task.task_id).in_(verified_task_ids))
-        .where(col(Task.status).in_([TaskStatus.PENDING, TaskStatus.EVALUATING]))
-    ).all()
+    )
+    if statuses is not None:
+        task_rows_query = task_rows_query.where(col(Task.status).in_(statuses))
+    task_rows = session.exec(task_rows_query).all()
 
     task_rows_by_id: dict[str, Task] = {task_id: task_row for task_id, task_row in task_rows}
     return [(task_id, task_rows_by_id[task_id]) for task_id in verified_task_ids if task_id in task_rows_by_id]
@@ -410,9 +459,14 @@ async def process_benchmark(
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             task_rows = create_task_rows(verified_task_ids, benchmark_row, session, org)
             queued_pool_id = benchmark_row.arguments.queue_pool_id
+            run_task_rows = (
+                _load_verified_task_rows(verified_task_ids, benchmark_row, session, org)
+                if queued_pool_id is not None
+                else task_rows
+            )
             limiter = None if queued_pool_id is not None else ResizableLimiter(benchmark_row.arguments.concurrency)
 
-        task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
+        task_row_ids: set[str] = {task_id for task_id, _ in run_task_rows}
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
         if missing_task_ids:
             raise TrackerServiceError(
@@ -470,7 +524,7 @@ async def process_benchmark(
         if queue_context is not None:
             await _run_queued_tasks(
                 benchmark_id=benchmark_id,
-                task_rows=task_rows,
+                task_rows=run_task_rows,
                 start_benchmark_request=start_benchmark_request,
                 benchmark_service=benchmark_service,
                 harness_config=harness_config,
@@ -500,12 +554,12 @@ async def process_benchmark(
                     org,
                     task_row.started_at,
                 )
-                for task_id, task_row in task_rows
+                for task_id, task_row in run_task_rows
             }
             monitor = TaskMonitor(benchmark_id, tracked_tasks, org, limiter=limiter, notifier=notifier)
             monitor_task = asyncio.create_task(monitor.track_tasks())
 
-            await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in task_rows])
+            await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in run_task_rows])
             await monitor_task
 
         with Session(bind=engine) as session:

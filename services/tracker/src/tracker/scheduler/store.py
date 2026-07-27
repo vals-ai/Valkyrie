@@ -10,14 +10,14 @@ from types import TracebackType
 from typing import cast
 from uuid import UUID
 
-from sqlalchemy import JSON, case, func, text, type_coerce
+from sqlalchemy import JSON, Text, case, cast as sql_cast, func, text, type_coerce
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import aliased
 from sqlmodel import Session, col, select, update
 
 from tracker.database.models import Benchmark, BenchmarkStatus, Task, TaskStatus
 
-_ACTIVE_TASK_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING)
+_ACTIVE_SANDBOX_STATUSES = (TaskStatus.BUILDING, TaskStatus.IN_PROGRESS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,10 +114,18 @@ def queue_pool_id(provider_pool_id: str) -> str:
 def next_eligible_task(session: Session, pool_id: str) -> ScheduledTask | None:
     """Select the global queue head whose run has current concurrency capacity."""
     active_task = aliased(Task)
+    eval_resume_state = sql_cast(col(active_task.eval_resume_state), Text)
     active_count = (
         select(func.count(col(active_task.id)))
         .where(col(active_task.benchmark) == col(Benchmark.id))
-        .where(col(active_task.status).in_(_ACTIVE_TASK_STATUSES))
+        .where(
+            col(active_task.status).in_(_ACTIVE_SANDBOX_STATUSES)
+            | (
+                (col(active_task.status) == TaskStatus.EVALUATING)
+                & eval_resume_state.is_not(None)
+                & (eval_resume_state != "null")
+            )
+        )
         .correlate(Benchmark)
         .scalar_subquery()
     )
@@ -156,10 +164,18 @@ def next_eligible_task(session: Session, pool_id: str) -> ScheduledTask | None:
 
 def _eligible_task_id(pool_id: str):
     active_task = aliased(Task)
+    eval_resume_state = sql_cast(col(active_task.eval_resume_state), Text)
     active_count = (
         select(func.count(col(active_task.id)))
         .where(col(active_task.benchmark) == col(Benchmark.id))
-        .where(col(active_task.status).in_(_ACTIVE_TASK_STATUSES))
+        .where(
+            col(active_task.status).in_(_ACTIVE_SANDBOX_STATUSES)
+            | (
+                (col(active_task.status) == TaskStatus.EVALUATING)
+                & eval_resume_state.is_not(None)
+                & (eval_resume_state != "null")
+            )
+        )
         .correlate(Benchmark)
         .scalar_subquery()
     )

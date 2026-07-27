@@ -113,11 +113,13 @@ class TestNextEligibleTask:
                     status=TaskStatus.IN_PROGRESS,
                     started_at=_NOW,
                 ),
-                make_task(
-                    blocked_run,
-                    "blocked-evaluating",
+                Task(
+                    org_id=blocked_run.org_id,
+                    benchmark=blocked_run.id,
+                    task_id="blocked-evaluating",
                     status=TaskStatus.EVALUATING,
                     started_at=_NOW,
+                    eval_resume_state={"cursor": "durable"},
                 ),
                 make_task(
                     blocked_run,
@@ -133,6 +135,12 @@ class TestNextEligibleTask:
                     fifo_run,
                     "fifo-older",
                     started_at=_NOW - timedelta(minutes=2),
+                ),
+                make_task(
+                    fifo_run,
+                    "dormant-evaluating",
+                    status=TaskStatus.EVALUATING,
+                    started_at=_NOW - timedelta(minutes=3),
                 ),
                 make_task(
                     priority_two_run,
