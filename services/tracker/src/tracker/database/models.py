@@ -452,10 +452,30 @@ class ResultBase(SQLModel):
 
 
 class EvaluationResult(ResultBase, table=True):
+    __table_args__ = (
+        Index(
+            "ix_evaluationresult_org_task_created_at_id",
+            "org_id",
+            "task",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
     instance_id: str | None = Field(default=None, unique=True)
     agent_caused_exit_reason: AgentCausedExitReason | None = Field(default=None)
     result: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
 
 
 class ErrorResult(ResultBase, table=True):
+    __table_args__ = (
+        Index(
+            "ix_errorresult_org_task_created_at_id",
+            "org_id",
+            "task",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+    )
+
     error_message: str = Field(nullable=False)

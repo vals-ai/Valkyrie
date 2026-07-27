@@ -32,6 +32,16 @@ class TestTrackerSchema:
 
         assert {"benchmark", "task", "evaluationresult", "finalevaluation"} <= tables
 
+    def test_task_outcome_history_has_query_indexes(self, postgres_engine: Engine) -> None:
+        inspector = inspect(postgres_engine)
+
+        assert "ix_evaluationresult_org_task_created_at_id" in {
+            index["name"] for index in inspector.get_indexes("evaluationresult")
+        }
+        assert "ix_errorresult_org_task_created_at_id" in {
+            index["name"] for index in inspector.get_indexes("errorresult")
+        }
+
     def test_terminal_statuses_set_finished_timestamps_in_postgres(self, postgres_session: Session) -> None:
         """Terminal state transitions must persist completion timestamps in production Postgres.
 
