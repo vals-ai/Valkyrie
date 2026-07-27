@@ -161,6 +161,22 @@ class TestWriteBenchmarkLogEvent:
         )
         assert client.put_log_events.call_args.kwargs["logStreamName"] == "provider/model_fast"
 
+    def test_splits_large_utf8_messages_below_cloudwatch_limit(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_credentials: AWSCredentials,
+    ) -> None:
+        client = self._mock_client(monkeypatch)
+        max_event_bytes = 1_048_576 - 26
+        message = "a" * (max_event_bytes - 1) + "🧪tail"
+
+        write_benchmark_log_event("bench123:task", message, aws_credentials, "/valkyrie/worker")
+
+        chunks = [call.kwargs["logEvents"][0]["message"] for call in client.put_log_events.call_args_list]
+        assert len(chunks) == 2
+        assert "".join(chunks) == message
+        assert all(len(chunk.encode()) <= max_event_bytes for chunk in chunks)
+
     def test_create_stream_botocore_error_reports_sanitized_name(
         self,
         monkeypatch: pytest.MonkeyPatch,

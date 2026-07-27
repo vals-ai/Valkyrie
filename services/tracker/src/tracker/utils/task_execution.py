@@ -45,6 +45,7 @@ from tracker.database.models import (
 )
 from tracker.database.session import engine
 from tracker.exceptions import (
+    CloudWatchError,
     DependencySetupExhaustedError,
     OutputArtifactError,
     SandboxSetupError,
@@ -283,7 +284,9 @@ def handle_early_exit(task_row: Task, task_session: Session) -> bool:
 
 
 def buffer_logs(
-    log_queue: asyncio.Queue[str], stream_key: str, aws: AWSCredentials, log_group: str, force_flush: bool = False
+    log_queue: asyncio.Queue[str],
+    write_queue: asyncio.Queue[str | None],
+    force_flush: bool = False,
 ) -> None:
     """
     Buffers the logs in the queue and waits till they are full before streaming them to CloudWatch.
@@ -295,9 +298,20 @@ def buffer_logs(
     while not log_queue.empty():
         messages.append(log_queue.get_nowait())
 
-    message = "".join(messages)
-    loop = asyncio.get_running_loop()
-    loop.run_in_executor(None, write_benchmark_log_event, stream_key, message, aws, log_group)
+    write_queue.put_nowait("".join(messages))
+
+
+async def write_buffered_logs(
+    write_queue: asyncio.Queue[str | None],
+    stream_key: str,
+    aws: AWSCredentials,
+    log_group: str,
+) -> None:
+    while (message := await write_queue.get()) is not None:
+        try:
+            await asyncio.to_thread(write_benchmark_log_event, stream_key, message, aws, log_group)
+        except CloudWatchError:
+            logger.exception("Failed to write task logs")
 
 
 def save_eval_resume_state(
@@ -465,6 +479,7 @@ async def _process_task_attempt(
     stream_suffix = f"{int(task_row.started_at.timestamp() * 1_000_000):x}"
     stream_key: str = f"{benchmark_id}:{task_id}_{stream_suffix}"
     log_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=20)
+    write_queue: asyncio.Queue[str | None] = asyncio.Queue()
 
     last_log_time: float = time.monotonic()
 
@@ -473,7 +488,7 @@ async def _process_task_attempt(
         nonlocal last_log_time
         last_log_time = time.monotonic()
         log_queue.put_nowait(data)
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group)
+        buffer_logs(log_queue, write_queue)
 
     # Auto flush if process takes a while to produce next log
     # If a process pauses without producing anymore logs, the logs we have collected get stuck
@@ -481,9 +496,17 @@ async def _process_task_attempt(
         while True:
             await asyncio.sleep(1)
             if not log_queue.empty() and time.monotonic() - last_log_time >= 10:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, write_queue, force_flush=True)
 
     flush_task = asyncio.create_task(auto_flush_logs())
+    write_task = asyncio.create_task(
+        write_buffered_logs(
+            write_queue,
+            stream_key,
+            harness_config.aws,
+            harness_config.log_group,
+        )
+    )
 
     def on_eval_resume_state(state: dict[str, Any]) -> None:
         save_eval_resume_state(task_row.id, org, state, expected_started_at=attempt_started_at)
@@ -629,7 +652,7 @@ async def _process_task_attempt(
                 )
 
                 # Force flush the logs if anything has been buffered
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, write_queue, force_flush=True)
 
                 # Compute the S3 key for the agent's output archive
                 agent_output_s3_key = None
@@ -708,7 +731,7 @@ async def _process_task_attempt(
                 task_breakdown.sandbox_run_duration = time.perf_counter() - start_sandbox_run_time
 
                 # Force flush the logs, maybe redundant since we have the one in finally:
-                buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+                buffer_logs(log_queue, write_queue, force_flush=True)
 
                 # Save the evaluation result to the database with the task row
                 # Record the termination reason if the agent did not exit cleanly (timeout / OS kill)
@@ -835,7 +858,9 @@ async def _process_task_attempt(
         flush_task.cancel()
         with suppress(asyncio.CancelledError):
             await flush_task
-        buffer_logs(log_queue, stream_key, harness_config.aws, harness_config.log_group, force_flush=True)
+        buffer_logs(log_queue, write_queue, force_flush=True)
+        write_queue.put_nowait(None)
+        await write_task
 
 
 def commit_task_error(

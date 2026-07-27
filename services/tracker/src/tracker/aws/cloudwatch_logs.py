@@ -1,5 +1,6 @@
 import re
 import time
+from collections.abc import Iterator
 from functools import lru_cache, wraps
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -15,6 +16,7 @@ if TYPE_CHECKING:
     from tracker.types import AWSCredentials
 
 _created_streams: set[str] = set()
+_MAX_LOG_EVENT_BYTES = 1_048_576 - 26
 
 
 def _sanitize_log_stream_name(task_id: str) -> str:
@@ -27,6 +29,17 @@ def _sanitize_log_stream_name(task_id: str) -> str:
     forbidden characters so logging degrades gracefully instead of failing.
     """
     return re.sub(r"[:*]", "_", task_id)
+
+
+def _log_event_chunks(message: str) -> Iterator[str]:
+    encoded = message.encode()
+    start = 0
+    while start < len(encoded):
+        end = min(start + _MAX_LOG_EVENT_BYTES, len(encoded))
+        while end < len(encoded) and encoded[end] & 0b1100_0000 == 0b1000_0000:
+            end -= 1
+        yield encoded[start:end].decode()
+        start = end
 
 
 @lru_cache(maxsize=32)
@@ -147,10 +160,11 @@ def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSCredential
         _created_streams.add(stream_key)
 
     try:
-        client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
-            logGroupName=log_group_name,
-            logStreamName=stream_name,
-            logEvents=[{"timestamp": int(time.time() * 1000), "message": message}],
-        )
+        for chunk in _log_event_chunks(message):
+            client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
+                logGroupName=log_group_name,
+                logStreamName=stream_name,
+                logEvents=[{"timestamp": int(time.time() * 1000), "message": chunk}],
+            )
     except (ClientError, BotoCoreError) as e:
         raise CloudWatchError(f"Failed to put log event: {e}") from e
