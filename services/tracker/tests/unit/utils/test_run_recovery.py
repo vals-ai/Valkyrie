@@ -22,7 +22,7 @@ from benchmark_service.sandbox import DaytonaProviderConfig
 from benchmark_service.schemas import FinalScoreResponse, RetrieveTaskResponse, VerifyTaskIdsResponse
 from fastapi.testclient import TestClient
 from pytest import MonkeyPatch
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from main import app
 from tests.factories import make_error_result, make_evaluation_result
@@ -1255,7 +1255,7 @@ class TestRunRecovery:
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
 
-    async def test_running_resume_noops(
+    async def test_direct_running_resume_noops(
         self,
         example_benchmark_object: Benchmark,
         database_session: Session,
@@ -1285,6 +1285,74 @@ class TestRunRecovery:
 
         task_row = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
         assert task_row.status == TaskStatus.ERROR
+
+    async def test_queued_running_resume_dispatches_durable_scheduler_context(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+        monkeypatch: MonkeyPatch,
+        mock_kicker: MockKicker,
+    ) -> None:
+        benchmark_row = example_benchmark_object
+        benchmark_row.status = BenchmarkStatus.IN_PROGRESS
+        benchmark_row.arguments = benchmark_row.arguments.model_copy(update={"queue_pool_id": "pool-recovery"})
+        task_specs: list[tuple[str, TaskStatus, dict[str, str] | None, int]] = [
+            ("pending", TaskStatus.PENDING, None, 1),
+            ("building", TaskStatus.BUILDING, None, 1),
+            ("in-progress", TaskStatus.IN_PROGRESS, None, 3),
+            ("resumable-evaluation", TaskStatus.EVALUATING, {"job_id": "evaluation-job"}, 4),
+            ("unresumable-evaluation", TaskStatus.EVALUATING, None, 5),
+            ("finished", TaskStatus.FINISHED, None, 6),
+            ("error", TaskStatus.ERROR, None, 7),
+            ("stopped", TaskStatus.STOPPED, None, 8),
+        ]
+        task_rows = [
+            Task(
+                id=UUID(int=task_index),
+                org_id=TEST_ORG_ID,
+                task_id=task_id,
+                benchmark=benchmark_row.id,
+                status=status,
+                eval_resume_state=eval_resume_state,
+                started_at=_created_at(start_day),
+            )
+            for task_index, (task_id, status, eval_resume_state, start_day) in enumerate(task_specs, start=1)
+        ]
+        database_session.add(benchmark_row)
+        database_session.add_all(task_rows)
+        database_session.commit()
+        database_session.expire_all()
+        original_states = {
+            task_row.task_id: (task_row.status, task_row.started_at)
+            for task_row in database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        }
+
+        async def _unexpected_reset(*_args: Any, **_kwargs: Any) -> list[str]:
+            raise AssertionError("queued recovery should not reset task attempts")
+
+        monkeypatch.setattr("main.reset_to_in_progress_status", _unexpected_reset)
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={"task_ids": ["finished"]},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "success"}
+        assert mock_kicker.queued_calls[0]["verified_task_ids"] == [
+            "pending",
+            "building",
+            "in-progress",
+            "resumable-evaluation",
+        ]
+
+        database_session.expire_all()
+        persisted_tasks = database_session.exec(
+            select(Task).where(Task.benchmark == benchmark_row.id).order_by(col(Task.started_at), col(Task.id))
+        ).all()
+        assert {
+            task_row.task_id: (task_row.status, task_row.started_at) for task_row in persisted_tasks
+        } == original_states
 
     async def test_running_resume_updates_concurrency_without_enqueuing_work(
         self,

@@ -55,6 +55,7 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+_TERMINAL_BENCHMARK_STATUSES = (BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED)
 
 
 async def _run_queued_tasks(
@@ -371,10 +372,12 @@ async def finalize_all_error_run(benchmark_id: UUID, org: Org) -> bool:
     - org: Organization that owns the run.
 
     Returns
-    - True when a concurrent retry defers finalization, otherwise False.
+    - True when another coordinator or concurrent retry defers finalization, otherwise False.
     """
     with Session(bind=engine) as session:
-        benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+        benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
+            return True
         if has_stopped_tasks(session, benchmark_row, org):
             set_benchmark_final_status(benchmark_row, session, org)
             return False
@@ -384,6 +387,8 @@ async def finalize_all_error_run(benchmark_id: UUID, org: Org) -> bool:
 
     with Session(bind=engine) as session:
         benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
+        if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
+            return True
         if has_runnable_tasks(session, benchmark_row, org):
             return True
         if has_stopped_tasks(session, benchmark_row, org):
@@ -435,6 +440,8 @@ async def process_benchmark(
         if not benchmark_row:
             raise TrackerServiceError(f"Run with id {benchmark_id} not found")
         org = session.exec(select(Org).where(Org.id == benchmark_row.org_id)).one()
+        if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
+            return
 
     finalization_deferred = False
     failure_recorded = False
@@ -564,6 +571,9 @@ async def process_benchmark(
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+            if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
+                finalization_deferred = True
+                return
             if has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
@@ -581,7 +591,7 @@ async def process_benchmark(
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             # final_score is a network call; a concurrent retry can make tasks runnable before we write FinalEvaluation.
-            if has_runnable_tasks(session, benchmark_row, org):
+            if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES or has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
 
@@ -595,7 +605,7 @@ async def process_benchmark(
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
-            if has_runnable_tasks(session, benchmark_row, org):
+            if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES or has_runnable_tasks(session, benchmark_row, org):
                 finalization_deferred = True
                 return
 
@@ -687,9 +697,8 @@ def _commit_process_benchmark_error(
     error_message: str,
 ) -> bool:
     benchmark_row = fetch_benchmark_row(benchmark_id, session, org, for_update=True)
-    terminal_statuses = [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]
-    if benchmark_row.status in terminal_statuses:
-        return True
+    if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
+        return False
 
     expected_attempts = {task_row.id: task_row.started_at for task_row in owned_task_rows}
     if expected_attempts:
@@ -729,10 +738,8 @@ def catch_errors_during_cleanup(benchmark_id: UUID, session: Session, org: Org) 
     1. Benchmark status must be in a finished state
     2. All tasks must be in a finished state
     """
-    terminal_statuses = [BenchmarkStatus.FINISHED, BenchmarkStatus.ERROR, BenchmarkStatus.STOPPED]
-
     benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
-    if benchmark_row.status in terminal_statuses:
+    if benchmark_row.status in _TERMINAL_BENCHMARK_STATUSES:
         return
 
     runnable_tasks = session.exec(

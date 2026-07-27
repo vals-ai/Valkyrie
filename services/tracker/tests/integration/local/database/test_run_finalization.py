@@ -3,6 +3,7 @@
 Exercise run-finalization concurrency against disposable Postgres.
 """
 
+import asyncio
 from typing import Any
 from uuid import uuid4
 
@@ -26,7 +27,7 @@ from tracker.database.models import (
     Task,
     TaskStatus,
 )
-from tracker.types import HarnessConfig, StartBenchmarkRequest
+from tracker.types import AWSCredentials, HarnessConfig, StartBenchmarkRequest
 from tracker.utils import process_benchmark
 from tracker.utils.task_error_summary import summarize_task_errors
 
@@ -208,6 +209,117 @@ class TestRunFinalization:
         assert persisted_task is not None
         assert persisted_task.status == TaskStatus.PENDING
         assert final_evaluation is None
+
+    async def test_overlapping_coordinators_publish_terminal_outcome_once(
+        self,
+        postgres_engine: Engine,
+        postgres_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        org = Org(id=uuid4(), name=f"overlapping-finalization-{uuid4()}")
+        contract = AgentContractRequest(name="overlap-agent", install_cmd="true", run_cmd="true")
+        benchmark = make_benchmark(
+            name="overlapping-finalization",
+            org_id=org.id,
+            contract=contract,
+            status=BenchmarkStatus.IN_PROGRESS,
+        )
+        benchmark.arguments = benchmark.arguments.model_copy(update={"lambda_function": "finalizer"})
+        task = make_task(benchmark, "finished-task", status=TaskStatus.FINISHED)
+
+        postgres_session.add(org)
+        postgres_session.flush()
+        postgres_session.add(benchmark)
+        postgres_session.flush()
+        postgres_session.add(task)
+        postgres_session.flush()
+        postgres_session.add(
+            EvaluationResult(
+                org_id=org.id,
+                task=task.id,
+                instance_id=f"overlap-{task.id}",
+                result={"score": 1.0},
+            )
+        )
+        postgres_session.commit()
+
+        request = StartBenchmarkRequest(
+            contract=contract,
+            benchmark_name=benchmark.name,
+            concurrency=1,
+            lambda_function="finalizer",
+            webhook_secret_name="terminal-webhook",
+            webhook_intervals=[50],
+            harness_config=harness_config,
+        )
+        score_barrier = asyncio.Event()
+        score_calls = 0
+        uploaded_benchmark_ids: list[str] = []
+        lambda_payloads: list[dict[str, Any]] = []
+        webhook_messages: list[str] = []
+
+        async def skip_cloud_operation(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def skip_log_group(*_args: Any, **_kwargs: Any) -> str:
+            return "test-log-group"
+
+        def provider_config(*_args: Any, **_kwargs: Any) -> DaytonaProviderConfig:
+            return DaytonaProviderConfig(
+                DAYTONA_API_KEY="test-key",
+                DAYTONA_API_URL="https://example.com",
+                DAYTONA_TARGET="test-target",
+            )
+
+        async def synchronized_final_score(*_args: Any, **_kwargs: Any) -> FinalScoreResponse:
+            nonlocal score_calls
+            score_calls += 1
+            if score_calls == 2:
+                score_barrier.set()
+            await score_barrier.wait()
+
+            return FinalScoreResponse(tasks_evaluated=[task.task_id], final_score=0.75, metadata={})
+
+        async def record_upload(benchmark_row: Benchmark, *_args: Any, **_kwargs: Any) -> None:
+            uploaded_benchmark_ids.append(str(benchmark_row.id))
+
+        def record_lambda(_client: object, _function_name: str, payload: dict[str, Any]) -> None:
+            lambda_payloads.append(payload)
+
+        def lambda_client(_aws: AWSCredentials) -> object:
+            return object()
+
+        async def record_webhook(_notifier: object, message: str) -> None:
+            webhook_messages.append(message)
+
+        monkeypatch.setattr(run_orchestration_module, "engine", postgres_engine)
+        monkeypatch.setattr(run_orchestration_module, "copy_agent_to_benchmark", skip_cloud_operation)
+        monkeypatch.setattr(run_orchestration_module, "create_benchmark_log_group", skip_log_group)
+        monkeypatch.setattr(run_orchestration_module, "fetch_sandbox_provider_config", provider_config)
+        monkeypatch.setattr(run_orchestration_module, "upload_final_view", record_upload)
+        monkeypatch.setattr(run_orchestration_module, "lambda_client", lambda_client)
+        monkeypatch.setattr(run_orchestration_module, "invoke_lambda", record_lambda)
+        monkeypatch.setattr(run_orchestration_module.SlackNotifier, "_send_webhook", record_webhook)
+        monkeypatch.setattr(BenchmarkServiceClient, "final_score", synchronized_final_score)
+
+        await asyncio.gather(
+            process_benchmark(request.model_dump(), str(benchmark.id), []),
+            process_benchmark(request.model_dump(), str(benchmark.id), []),
+        )
+
+        with Session(postgres_engine) as assertion_session:
+            persisted_benchmark = assertion_session.get(Benchmark, benchmark.id)
+            final_evaluations = assertion_session.exec(
+                select(FinalEvaluation).where(FinalEvaluation.benchmark == benchmark.id)
+            ).all()
+
+        assert persisted_benchmark is not None
+        assert persisted_benchmark.status == BenchmarkStatus.FINISHED
+        assert len(final_evaluations) == 1
+        assert uploaded_benchmark_ids == [str(benchmark.id)]
+        assert [payload["benchmark_id"] for payload in lambda_payloads] == [str(benchmark.id)]
+        assert len(webhook_messages) == 1
 
     async def test_all_error_finalization_returns_distinct_representatives(
         self,

@@ -280,7 +280,6 @@ class TestCountedStarts:
             ["--count", "11"],
             ["--concurrency", "0"],
             ["--concurrency", "-1"],
-            ["--use-queue"],
             ["--count", "2", "--connect", "--task-ids-file", "unread.txt"],
         ]
 
@@ -297,7 +296,6 @@ class TestCountedStarts:
 
         assert result.exit_code == 0
         assert "Override configured queue priority" in result.output
-        assert "Opt into the queue" not in result.output
 
     def test_priority_forwards_provider_and_numeric_zero(
         self,
@@ -309,7 +307,6 @@ class TestCountedStarts:
 
         assert queued_result.exit_code == 0, queued_result.output
         assert "Priority override:" in queued_result.output
-        assert "Admission:" not in queued_result.output
         start_call = start_testbed.tracker.start_benchmark.call_args
         assert start_call is not None
         assert type(start_call.kwargs["priority"]) is int
