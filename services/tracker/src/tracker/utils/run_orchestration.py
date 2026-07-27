@@ -3,14 +3,15 @@
 import asyncio
 import traceback
 from asyncio import Semaphore, gather
+from datetime import datetime
 from typing import Any, Sequence, cast
 from uuid import UUID
 
 import logfire
 import sentry_sdk
+from benchmark_service import SandboxProvider, SandboxProviderConfig
 from benchmark_service.client import BenchmarkServiceClient, BenchmarkServiceError, BenchmarkServiceUnauthenticatedError
 from opentelemetry import trace
-from redis.asyncio import Redis
 from sqlmodel import Session, col, desc, func, select
 
 from tracker._lambda import invoke_lambda, lambda_client
@@ -18,7 +19,7 @@ from tracker.aws.cloudwatch_logs import create_benchmark_log_group
 from tracker.aws.s3 import (
     copy_agent_to_benchmark,
 )
-from tracker.config import REDIS_URL, SANDBOX_QUEUE_ENABLED, broker
+from tracker.config import broker
 from tracker.database.models import (
     Benchmark,
     BenchmarkStatus,
@@ -54,6 +55,125 @@ logger = get_logger(__name__)
 
 _SANDBOX_CREATION_CAP: int = 10
 _RUNNABLE_TASK_STATUSES = [TaskStatus.PENDING, TaskStatus.BUILDING, TaskStatus.IN_PROGRESS, TaskStatus.EVALUATING]
+
+
+async def _run_queued_tasks(
+    *,
+    benchmark_id: UUID,
+    task_rows: Sequence[tuple[str, Task]],
+    start_benchmark_request: StartBenchmarkRequest,
+    benchmark_service: BenchmarkServiceClient,
+    harness_config: HarnessConfig,
+    org: Org,
+    sandbox_provider_config: SandboxProviderConfig,
+    sandbox_provider: SandboxProvider,
+    creation_semaphore: Semaphore,
+    queue_context: SandboxQueueContext,
+    notifier: SlackNotifier | None,
+) -> None:
+    """Run durable queued rows with active work plus one local pending contender."""
+    owned_task_row_ids = {task_row.id for _, task_row in task_rows}
+    local_runners: dict[UUID, tuple[datetime, TrackedTask, asyncio.Task[dict[str, dict[str, Any] | None]]]] = {}
+    tracked_tasks: dict[str, TrackedTask] = {}
+    coordinator_done = asyncio.Event()
+    monitor = TaskMonitor(
+        benchmark_id,
+        tracked_tasks,
+        org,
+        limiter=None,
+        notifier=notifier,
+        coordinator_done=coordinator_done,
+    )
+    monitor_task = asyncio.create_task(monitor.track_tasks())
+
+    def launch(task_row: Task) -> None:
+        tracked_task = TrackedTask(
+            process_task(
+                task_row,
+                start_benchmark_request,
+                benchmark_service,
+                benchmark_id,
+                task_row.task_id,
+                harness_config,
+                org,
+                sandbox_provider_config=sandbox_provider_config,
+                sandbox_provider=sandbox_provider,
+                creation_semaphore=creation_semaphore,
+                queue_context=queue_context,
+            ),
+            org,
+            task_row.started_at,
+        )
+        tracked_tasks[task_row.task_id] = tracked_task
+        runner = asyncio.create_task(tracked_task.run(None, task_row))
+        local_runners[task_row.id] = (task_row.started_at, tracked_task, runner)
+
+    try:
+        while True:
+            for task_row_id, (_attempt, _tracked, runner) in list(local_runners.items()):
+                if runner.done():
+                    await runner
+                    del local_runners[task_row_id]
+
+            with Session(bind=engine) as session:
+                benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
+                current_rows = list(
+                    session.exec(
+                        select(Task)
+                        .where(col(Task.id).in_(owned_task_row_ids))
+                        .where(Task.benchmark == benchmark_id)
+                        .where(Task.org_id == org.id)
+                    ).all()
+                )
+
+            current_by_id = {task_row.id: task_row for task_row in current_rows}
+            active_attempts = {
+                task_row_id: attempt
+                for task_row_id, (attempt, _tracked, runner) in local_runners.items()
+                if not runner.done()
+            }
+
+            for task_row in current_rows:
+                if (
+                    task_row.status == TaskStatus.EVALUATING
+                    and task_row.id not in active_attempts
+                    and benchmark_row.status == BenchmarkStatus.IN_PROGRESS
+                ):
+                    launch(task_row)
+
+            pending_contender_exists = any(
+                current_by_id.get(task_row_id) is not None
+                and current_by_id[task_row_id].status == TaskStatus.PENDING
+                and current_by_id[task_row_id].started_at == attempt
+                and not runner.done()
+                for task_row_id, (attempt, _tracked, runner) in local_runners.items()
+            )
+            if not pending_contender_exists and benchmark_row.status == BenchmarkStatus.IN_PROGRESS:
+                pending_candidates = [
+                    task_row
+                    for task_row in current_rows
+                    if task_row.status == TaskStatus.PENDING and task_row.id not in active_attempts
+                ]
+                if pending_candidates:
+                    launch(min(pending_candidates, key=lambda task_row: (task_row.started_at, task_row.id)))
+
+            actionable_rows_remain = any(
+                task_row.status in (TaskStatus.PENDING, TaskStatus.EVALUATING) for task_row in current_rows
+            )
+            if not local_runners and not actionable_rows_remain:
+                break
+
+            await asyncio.sleep(queue_context.poll_interval_seconds)
+    finally:
+        coordinator_done.set()
+        if any(not runner.done() for _attempt, _tracked, runner in local_runners.values()):
+            for _attempt, _tracked, runner in local_runners.values():
+                runner.cancel()
+        await gather(
+            *(runner for _attempt, _tracked, runner in local_runners.values()),
+            return_exceptions=True,
+        )
+        await monitor_task
 
 
 def set_benchmark_final_status(benchmark_row: Benchmark, session: Session, org: Org) -> None:
@@ -271,7 +391,6 @@ async def process_benchmark(
     failure_recorded = False
     benchmark_service: BenchmarkServiceClient | None = None
     queue_context: SandboxQueueContext | None = None
-    queue_redis: Redis | None = None
     task_rows: Sequence[tuple[str, Task]] = ()
 
     def record_failure(error_message: str) -> bool:
@@ -290,7 +409,8 @@ async def process_benchmark(
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
             task_rows = create_task_rows(verified_task_ids, benchmark_row, session, org)
-            limiter = ResizableLimiter(benchmark_row.arguments.concurrency)
+            queued_pool_id = benchmark_row.arguments.queue_pool_id
+            limiter = None if queued_pool_id is not None else ResizableLimiter(benchmark_row.arguments.concurrency)
 
         task_row_ids: set[str] = {task_id for task_id, _ in task_rows}
         missing_task_ids: list[str] = [task_id for task_id in verified_task_ids if task_id not in task_row_ids]
@@ -320,15 +440,16 @@ async def process_benchmark(
                 type(error).__name__,
             )
             raise TrackerServiceError("Sandbox provider configuration is unavailable") from error
-        if SANDBOX_QUEUE_ENABLED and start_benchmark_request.priority is not None:
-            if sandbox_provider.admission_pool_id is None:
-                raise TrackerServiceError("Configured sandbox provider does not support queued admission")
-            queue_redis = Redis.from_url(REDIS_URL)  # pyright: ignore[reportUnknownMemberType]
-            queue_context = create_queue_context(
-                redis=queue_redis,
-                provider=sandbox_provider,
-                priority=start_benchmark_request.priority,
-            )
+        if queued_pool_id is not None:
+            try:
+                queue_context = create_queue_context(
+                    engine=engine,
+                    provider=sandbox_provider,
+                )
+            except ValueError as error:
+                raise TrackerServiceError("Configured sandbox provider does not support queued admission") from error
+            if queue_context.pool_id != queued_pool_id:
+                raise TrackerServiceError("Configured sandbox provider does not match the run's queued provider pool")
 
         # Copy the agent into the benchmarks S3 folder
         await copy_agent_to_benchmark(
@@ -346,35 +467,46 @@ async def process_benchmark(
         # Semaphore to isolate concurrent sandboxes that are being made for the benchmark
         creation_semaphore = Semaphore(_SANDBOX_CREATION_CAP)
 
-        # Load the tasks we are going to be tracking
-        tracked_tasks: dict[str, TrackedTask] = {
-            task_id: TrackedTask(
-                process_task(
-                    task_row,
-                    start_benchmark_request,
-                    benchmark_service,
-                    benchmark_id,
-                    task_id,
-                    harness_config,
-                    org,
-                    sandbox_provider_config=sandbox_provider_config,
-                    sandbox_provider=sandbox_provider,
-                    creation_semaphore=creation_semaphore,
-                    queue_context=queue_context,
-                ),
-                org,
-                task_row.started_at,
+        if queue_context is not None:
+            await _run_queued_tasks(
+                benchmark_id=benchmark_id,
+                task_rows=task_rows,
+                start_benchmark_request=start_benchmark_request,
+                benchmark_service=benchmark_service,
+                harness_config=harness_config,
+                org=org,
+                sandbox_provider_config=sandbox_provider_config,
+                sandbox_provider=sandbox_provider,
+                creation_semaphore=creation_semaphore,
+                queue_context=queue_context,
+                notifier=notifier,
             )
-            for task_id, task_row in task_rows
-        }
+        else:
+            assert limiter is not None
+            tracked_tasks: dict[str, TrackedTask] = {
+                task_id: TrackedTask(
+                    process_task(
+                        task_row,
+                        start_benchmark_request,
+                        benchmark_service,
+                        benchmark_id,
+                        task_id,
+                        harness_config,
+                        org,
+                        sandbox_provider_config=sandbox_provider_config,
+                        sandbox_provider=sandbox_provider,
+                        creation_semaphore=creation_semaphore,
+                    ),
+                    org,
+                    task_row.started_at,
+                )
+                for task_id, task_row in task_rows
+            }
+            monitor = TaskMonitor(benchmark_id, tracked_tasks, org, limiter=limiter, notifier=notifier)
+            monitor_task = asyncio.create_task(monitor.track_tasks())
 
-        # Start the monitor to track the state the tasks are in and cancel them when no longer valid
-        monitor = TaskMonitor(benchmark_id, tracked_tasks, org, limiter=limiter, notifier=notifier)
-        monitor_task = asyncio.create_task(monitor.track_tasks())
-
-        await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in task_rows])
-
-        await monitor_task
+            await gather(*[tracked_tasks[task_id].run(limiter, task_row) for task_id, task_row in task_rows])
+            await monitor_task
 
         with Session(bind=engine) as session:
             benchmark_row = fetch_benchmark_row(benchmark_id, session, org)
@@ -482,12 +614,8 @@ async def process_benchmark(
                 except Exception as notification_error:
                     logger.warning(f"Failed to send terminal notification: {notification_error}")
         finally:
-            try:
-                if benchmark_service is not None:
-                    await benchmark_service.close()
-            finally:
-                if queue_redis is not None:
-                    await queue_redis.aclose()
+            if benchmark_service is not None:
+                await benchmark_service.close()
 
 
 def commit_benchmark_error(benchmark_row: Benchmark, session: Session, error_message: str) -> None:

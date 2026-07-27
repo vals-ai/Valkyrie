@@ -2,7 +2,7 @@
 
 import traceback
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -241,7 +241,13 @@ async def reset_to_in_progress_status(
                 if retry_mode == RetryMode.AUTO and task.eval_resume_state is not None
                 else TaskStatus.PENDING
             )
-            task.started_at = datetime.now(ZoneInfo("UTC"))
+            retry_started_at = datetime.now(ZoneInfo("UTC"))
+            comparable_retry_started_at = retry_started_at
+            if task.started_at.tzinfo is None and retry_started_at.tzinfo is not None:
+                comparable_retry_started_at = retry_started_at.replace(tzinfo=None)
+            if comparable_retry_started_at <= task.started_at:
+                retry_started_at = task.started_at + timedelta(microseconds=1)
+            task.started_at = retry_started_at
             task.finished_at = None
             if retry_mode == RetryMode.FROM_SCRATCH:
                 task.eval_resume_state = None

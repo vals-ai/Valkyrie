@@ -190,6 +190,8 @@ async def create_sandbox(
     creation_semaphore: Semaphore,
     labels: dict[str, str] | None = None,
     env_vars: dict[str, str] | None = None,
+    *,
+    unique_name: bool = True,
 ) -> AsyncGenerator[Sandbox, Any]:
     """
     Yeild a sandbox to be used within a context manager.
@@ -202,11 +204,13 @@ async def create_sandbox(
         labels: The labels to use for the sandbox
         env_vars: The environment variables to use for the sandbox
         creation_semaphore: Per-benchmark semaphore to limit concurrent sandbox creation.
+        unique_name: Whether to append a random suffix to the supplied name.
 
     Returns:
         A context manager that yields the sandbox
     """
-    sandbox_name = f"{sandbox_name}_{uuid.uuid4().hex[:6]}"
+    if unique_name:
+        sandbox_name = f"{sandbox_name}_{uuid.uuid4().hex[:6]}"
     source_name = _source_name(source)
     logger.info(f"Creating sandbox {sandbox_name} with source {source_name}")
 

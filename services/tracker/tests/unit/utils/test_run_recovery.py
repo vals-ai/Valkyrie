@@ -93,6 +93,55 @@ class TestRunRecovery:
     _test_org = Org(id=TEST_ORG_ID, name="default")
     _test_starter = RequestIdentity(org=_test_org, access_key_id=None, email=None, name=None)
 
+    async def test_manual_retry_always_advances_attempt_timestamp(
+        self,
+        contract: AgentContractRequest,
+        database_session: Session,
+        harness_config: HarnessConfig,
+        monkeypatch: MonkeyPatch,
+    ) -> None:
+        request = StartBenchmarkRequest(
+            benchmark_name="swebench",
+            contract=contract,
+            task_ids=["task_0"],
+            harness_config=harness_config,
+        )
+        benchmark = start_benchmark_request_to_benchmark(request, self._test_starter)
+        benchmark.status = BenchmarkStatus.STOPPED
+        task = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=benchmark.id,
+            status=TaskStatus.STOPPED,
+            started_at=_ORIGINAL_ATTEMPT_AT,
+        )
+        database_session.add_all([benchmark, task])
+        database_session.commit()
+        benchmark_service = AsyncMock(spec=BenchmarkServiceClient)
+        benchmark_service.verify_task_ids.return_value = VerifyTaskIdsResponse(task_ids=["task_0"])
+
+        def unchanged_attempt_time(_timezone: object) -> datetime:
+            return _ORIGINAL_ATTEMPT_AT
+
+        monkeypatch.setattr(
+            "tracker.utils.run_control.datetime",
+            SimpleNamespace(now=unchanged_attempt_time),
+        )
+
+        await reset_to_in_progress_status(
+            benchmark_row=benchmark,
+            session=database_session,
+            benchmark_service=benchmark_service,
+            retry=False,
+            retry_mode=RetryMode.AUTO,
+            rerun_task_ids=[],
+            org=self._test_org,
+        )
+
+        database_session.refresh(task)
+        assert task.status == TaskStatus.PENDING
+        assert task.started_at > _ORIGINAL_ATTEMPT_AT
+
     @pytest.mark.usefixtures("process_benchmark_env")
     async def test_process_benchmark_uses_persisted_and_refreshed_concurrency(
         self,

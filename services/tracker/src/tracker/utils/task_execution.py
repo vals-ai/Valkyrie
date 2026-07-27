@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -58,7 +58,6 @@ from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.observability import elapsed_ms, retry_callback
 from tracker.sandbox import DependencySetupMode, create_sandbox, run_agent, upload_agent_artifacts
 from tracker.scheduler.admission import SandboxQueueContext, enter_queued_sandbox
-from tracker.scheduler.gate import QueueTicket
 from tracker.types import (
     AWSCredentials,
     HarnessConfig,
@@ -154,9 +153,17 @@ class TrackedTask:
     def attempt_started_at(self) -> datetime:
         return self._attempt_started_at
 
-    async def run(self, limiter: ResizableLimiter, task_row: Task) -> dict[str, dict[str, Any] | None]:
+    async def run(
+        self,
+        limiter: ResizableLimiter | None,
+        task_row: Task,
+    ) -> dict[str, dict[str, Any] | None]:
         async def _wrap_coro():
             """Need to have a task created even if we are not running the coroutine so that we can cancel it before its running"""
+            if limiter is None:
+                self._status = TrackedTaskStatus.RUNNING
+
+                return await self._coro
             async with limiter:
                 self._status = TrackedTaskStatus.RUNNING
                 return await self._coro
@@ -190,7 +197,8 @@ class TaskMonitor:
     _task_tracking: dict[str, TrackedTask]
     _notifier: SlackNotifier | None
     _org: Org
-    _limiter: ResizableLimiter
+    _limiter: ResizableLimiter | None
+    _coordinator_done: asyncio.Event | None
     _cancellation_requested: set[str]
     _TRACK_INTERVAL: int = 2
 
@@ -199,14 +207,16 @@ class TaskMonitor:
         benchmark_id: UUID,
         task_tracking: dict[str, TrackedTask],
         org: Org,
-        limiter: ResizableLimiter,
+        limiter: ResizableLimiter | None,
         notifier: SlackNotifier | None = None,
+        coordinator_done: asyncio.Event | None = None,
     ):
         self._benchmark_id = benchmark_id
         self._task_tracking = task_tracking
         self._org = org
         self._notifier = notifier
         self._limiter = limiter
+        self._coordinator_done = coordinator_done
         self._cancellation_requested = set()
 
     def _load_state(self, task_ids: list[str]) -> tuple[Benchmark, dict[str, tuple[TaskStatus, datetime]]]:
@@ -242,18 +252,22 @@ class TaskMonitor:
         Tracks tasks and cancels them when they are no longer valid.
         """
 
-        while self._task_tracking:
+        while self._task_tracking or (self._coordinator_done is not None and not self._coordinator_done.is_set()):
             for task_id, tracked_task in list(self._task_tracking.items()):
                 if tracked_task.status == TrackedTaskStatus.DONE:
                     del self._task_tracking[task_id]
                     self._cancellation_requested.discard(task_id)
 
             if not self._task_tracking:
-                break
+                if self._coordinator_done is not None and self._coordinator_done.is_set():
+                    break
+                await asyncio.sleep(self._TRACK_INTERVAL)
+                continue
 
             tasks_to_check: list[str] = list(self._task_tracking.keys())
             benchmark_row, task_states = self._load_state(tasks_to_check)
-            await self._limiter.resize(benchmark_row.arguments.concurrency)
+            if self._limiter is not None:
+                await self._limiter.resize(benchmark_row.arguments.concurrency)
 
             for task_id in tasks_to_check:
                 tracked_task = self._task_tracking[task_id]
@@ -402,7 +416,6 @@ async def process_task(
     queue_context: SandboxQueueContext | None = None,
 ) -> dict[str, dict[str, Any] | None]:
     """Process one task while retaining dependency recovery state across sandbox attempts."""
-    queue_enqueued_at = datetime.now(UTC)
     return await _process_task_attempt(
         task_row,
         start_benchmark_request,
@@ -416,7 +429,6 @@ async def process_task(
         creation_semaphore,
         dependency_setup_recovery=_DependencySetupRecoveryState(),
         queue_context=queue_context,
-        queue_enqueued_at=queue_enqueued_at,
     )
 
 
@@ -441,7 +453,6 @@ async def _process_task_attempt(
     dependency_setup_recovery: _DependencySetupRecoveryState,
     *,
     queue_context: SandboxQueueContext | None = None,
-    queue_enqueued_at: datetime,
 ) -> dict[str, dict[str, Any] | None]:
     """
     Processes a task and returns the evaluation result
@@ -529,7 +540,7 @@ async def _process_task_attempt(
                     org_id=org.id,
                     task=task_row.id,
                     instance_id=None,
-                    result=evaluation_result,
+                    result=cast(dict[str, Any], evaluation_result),
                     agent_caused_exit_reason=None,
                 )
 
@@ -617,47 +628,34 @@ async def _process_task_attempt(
         def sandbox_context() -> AbstractAsyncContextManager[Sandbox]:
             nonlocal start_sandbox_build_time
             start_sandbox_build_time = time.perf_counter()
+            sandbox_name = (
+                task_row.task_id
+                if queue_context is None
+                else f"queued-{task_row.id.hex}-{int(_normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC).timestamp() * 1_000_000):x}"
+            )
             return create_sandbox(
                 provider=sandbox_provider,
-                sandbox_name=task_row.task_id,
+                sandbox_name=sandbox_name,
                 source=task_data.source,
                 labels=labels,
                 env_vars=env_vars,
                 resources=task_data.resources,
                 creation_semaphore=creation_semaphore,
+                unique_name=queue_context is None,
             )
 
         async with AsyncExitStack() as sandbox_stack:
             if queue_context is None:
                 sandbox = await sandbox_stack.enter_async_context(sandbox_context())
             else:
-                attempt_identity_time = _normalized_attempt_time(attempt_started_at).replace(tzinfo=UTC)
-                ticket = QueueTicket(
-                    pool_key=queue_context.pool_id,
-                    task_key=f"{benchmark_id}:{task_row.id}:{attempt_identity_time.isoformat()}",
-                    priority=queue_context.priority,
-                    enqueued_at=queue_enqueued_at,
-                )
-
-                def mark_building() -> bool:
-                    with Session(bind=engine) as task_session:
-                        return commit_task_status_transition(
-                            task_row.id,
-                            task_session,
-                            org,
-                            TaskStatus.BUILDING,
-                            expected_started_at=attempt_started_at,
-                            expected_status=TaskStatus.PENDING,
-                        )
-
                 sandbox = await enter_queued_sandbox(
                     stack=sandbox_stack,
                     context=queue_context,
-                    ticket=ticket,
+                    task_row_id=task_row.id,
+                    expected_started_at=attempt_started_at,
                     source=task_data.source,
                     resources=task_data.resources,
                     create=sandbox_context,
-                    mark_building=mark_building,
                 )
                 if sandbox is None:
                     return {task_id: None}
@@ -666,15 +664,16 @@ async def _process_task_attempt(
             start_sandbox_run_time = time.perf_counter()
 
             try:
-                with Session(bind=engine) as task_session:
-                    if not commit_task_status_transition(
-                        task_row.id,
-                        task_session,
-                        org,
-                        TaskStatus.IN_PROGRESS,
-                        expected_started_at=attempt_started_at,
-                    ):
-                        return {task_id: None}
+                if queue_context is None:
+                    with Session(bind=engine) as task_session:
+                        if not commit_task_status_transition(
+                            task_row.id,
+                            task_session,
+                            org,
+                            TaskStatus.IN_PROGRESS,
+                            expected_started_at=attempt_started_at,
+                        ):
+                            return {task_id: None}
 
                 # Upload the contract to the sandbox after creating and install the dependencies
                 await upload_agent_artifacts(
@@ -783,7 +782,7 @@ async def _process_task_attempt(
                     org_id=org.id,
                     task=task_row.id,
                     instance_id=sandbox.id,
-                    result=evaluation_result,
+                    result=cast(dict[str, Any], evaluation_result),
                     agent_caused_exit_reason=exit_reason,
                 )
 
