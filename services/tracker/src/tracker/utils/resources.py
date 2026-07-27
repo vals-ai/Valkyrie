@@ -59,7 +59,12 @@ def create_benchmark_service_client_from_request(request: StartBenchmarkRequest)
     return create_benchmark_service_client(url, service_headers=request.service_headers)
 
 
-def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_starter: RequestIdentity) -> Benchmark:
+def start_benchmark_request_to_benchmark(
+    request: StartBenchmarkRequest,
+    run_starter: RequestIdentity,
+    *,
+    queue_pool_id: str | None = None,
+) -> Benchmark:
     """Convert a StartBenchmarkRequest to a Benchmark database model."""
     return Benchmark(
         org_id=run_starter.org.id,
@@ -72,6 +77,7 @@ def start_benchmark_request_to_benchmark(request: StartBenchmarkRequest, run_sta
             contract=request.contract,
             concurrency=request.concurrency,
             priority=request.priority,
+            queue_pool_id=queue_pool_id,
             task_ids=request.task_ids,
             slice_str=request.slice_str,
             lambda_function=request.lambda_function,

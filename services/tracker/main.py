@@ -78,6 +78,7 @@ from tracker.exceptions import TrackerServiceError
 from tracker.logging import benchmark_id_var, configure_logging, get_logger, request_id_var
 from tracker.middleware import RequestContextMiddleware
 from tracker.observability import configure_observability
+from tracker.scheduler import queue_pool_id
 from tracker.types import (
     AnalyzeBenchmarkRequest,
     FetchBenchmarkMetadataResponse,
@@ -104,6 +105,7 @@ from tracker.utils import (
     build_benchmark_table_rows,
     commit_benchmark_error,
     create_benchmark_service_client,
+    create_task_rows,
     create_final_view,
     fetch_filtered_benchmark_rows,
     fetch_final_score_inputs,
@@ -304,6 +306,7 @@ async def start_benchmark(
         }
     )
 
+    resolved_queue_pool_id: str | None = None
     if not SANDBOX_QUEUE_ENABLED:
         if request.priority is not None:
             raise HTTPException(
@@ -319,10 +322,11 @@ async def start_benchmark(
         )
         provider = provider_config.create_provider()
         try:
-            queue_configured = provider.admission_pool_id is not None
+            provider_pool_id = provider.admission_pool_id
         finally:
             await provider.close()
 
+        queue_configured = provider_pool_id is not None
         if queue_configured and request.priority is None:
             request = request.model_copy(update={"priority": 3})
         elif not queue_configured and request.priority is not None:
@@ -330,6 +334,9 @@ async def start_benchmark(
                 status_code=400,
                 detail="Queue priority requires a sandbox provider configured for admission",
             )
+
+        if provider_pool_id is not None:
+            resolved_queue_pool_id = queue_pool_id(provider_pool_id)
 
     if not request.contract.install_cmd and not request.contract.run_cmd:
         request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request)})
@@ -360,10 +367,18 @@ async def start_benchmark(
         raise HTTPException(status_code=502, detail="Failed to verify task ids") from exc
 
     # Create benchmark row only after pre-flight checks pass.
-    benchmark_row = start_benchmark_request_to_benchmark(request, run_starter)
+    benchmark_row = start_benchmark_request_to_benchmark(
+        request,
+        run_starter,
+        queue_pool_id=resolved_queue_pool_id,
+    )
     session.add(benchmark_row)
     session.commit()
     benchmark_id_var.set(str(benchmark_row.id))
+    benchmark_started_at = benchmark_row.started_at
+
+    if resolved_queue_pool_id is not None:
+        create_task_rows(verify_response.task_ids, benchmark_row, session, run_starter.org)
 
     if run_starter.access_key_id is not None and run_starter.email is None:
         logger.warning(
@@ -403,7 +418,7 @@ async def start_benchmark(
         agent_name=request.contract.name,
         benchmark_id=benchmark_row.id,
         concurrency=request.concurrency,
-        started_at=benchmark_row.started_at,
+        started_at=benchmark_started_at,
         task_count=len(verify_response.task_ids),
         cloudwatch_url=get_benchmark_log_url(
             str(benchmark_row.id), request.harness_config.aws.aws_default_region, request.harness_config.log_group

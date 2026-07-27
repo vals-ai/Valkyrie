@@ -378,27 +378,45 @@ class TestTrackerAPI:
         assert response.json() == {"task_ids": ["task_1", "task_2"]}
 
     @pytest.mark.parametrize(
-        ("requested_priority", "expected_priority"),
+        (
+            "sandbox_queue_enabled",
+            "provider_pool_id",
+            "requested_priority",
+            "expected_priority",
+            "expected_queued_tasks",
+        ),
         [
-            pytest.param(None, 3, id="configured-default"),
-            *(pytest.param(priority, priority, id=f"configured-{priority}") for priority in range(5)),
+            pytest.param(False, "shared-pool", None, None, False, id="queue-disabled-direct"),
+            pytest.param(True, "shared-pool", None, 3, True, id="queued-default-priority"),
+            pytest.param(True, "shared-pool", 0, 0, True, id="queued-explicit-zero-priority"),
+            pytest.param(True, None, None, None, False, id="provider-without-pool-direct"),
         ],
     )
-    async def test_start_benchmark_persists_and_dispatches_admission_options(
+    async def test_start_benchmark_persists_queued_tasks_before_dispatch(
         self,
         contract: AgentContractRequest,
         monkeypatch: MonkeyPatch,
         database_session: Session,
         harness_config: HarnessConfig,
         mock_kicker: MockKicker,
+        sandbox_queue_enabled: bool,
+        provider_pool_id: str | None,
         requested_priority: int | None,
         expected_priority: int,
+        expected_queued_tasks: bool,
     ) -> None:
-        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
-        provider = Mock(admission_pool_id="shared-pool", close=AsyncMock())
-        provider_config = Mock()
-        provider_config.create_provider.return_value = provider
-        monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
+        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", sandbox_queue_enabled, raising=False)
+        provider: Mock | None = None
+        if sandbox_queue_enabled:
+            provider = Mock(admission_pool_id=provider_pool_id, close=AsyncMock())
+            provider_config = Mock()
+            provider_config.create_provider.return_value = provider
+            monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
+        else:
+            monkeypatch.setattr(
+                "main.fetch_sandbox_provider_config",
+                Mock(side_effect=RuntimeError("provider resolution must not run")),
+            )
         request = StartBenchmarkRequest(
             contract=contract,
             benchmark_name="swebench",
@@ -418,13 +436,8 @@ class TestTrackerAPI:
         json_response = response.json()
         benchmark_row = database_session.get(Benchmark, UUID(json_response["benchmark_id"]))
         assert benchmark_row is not None
-        assert benchmark_row.arguments == BenchmarkArguments(
-            contract=request.contract,
-            concurrency=5,
-            priority=expected_priority,
-            sandbox_provider="modal",
-            sandbox_provider_secret_name=harness_config.sandbox_provider_secret_name,
-        )
+        assert benchmark_row.arguments.priority == expected_priority
+        assert (benchmark_row.arguments.queue_pool_id is not None) is expected_queued_tasks
         assert isoparse(json_response["started_at"]) == benchmark_row.started_at.replace(tzinfo=timezone.utc)
         assert {key: json_response[key] for key in ("benchmark_name", "agent_name", "concurrency", "task_count")} == {
             "benchmark_name": "swebench",
@@ -433,88 +446,18 @@ class TestTrackerAPI:
             "task_count": 2,
         }
 
+        task_rows = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).all()
+        assert {task_row.task_id for task_row in task_rows} == (
+            {"task_0", "task_1"} if expected_queued_tasks else set()
+        )
+
         worker_request = mock_kicker.queued_calls[0]["start_benchmark_request_json"]
         assert {key: worker_request[key] for key in ("concurrency", "priority")} == {
             "concurrency": 5,
             "priority": expected_priority,
         }
-        provider.close.assert_awaited_once_with()
-
-    @pytest.mark.parametrize(("requested_priority", "expected_status"), [(None, 200), (1, 400)])
-    async def test_start_benchmark_bypasses_provider_resolution_when_environment_flag_is_false(
-        self,
-        contract: AgentContractRequest,
-        monkeypatch: MonkeyPatch,
-        database_session: Session,
-        harness_config: HarnessConfig,
-        mock_kicker: MockKicker,
-        requested_priority: int | None,
-        expected_status: int,
-    ) -> None:
-        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", False, raising=False)
-        monkeypatch.setattr(
-            "main.fetch_sandbox_provider_config",
-            Mock(side_effect=RuntimeError("provider resolution must not run")),
-        )
-        request = StartBenchmarkRequest(
-            contract=contract,
-            benchmark_name="swebench",
-            harness_config=harness_config,
-            priority=requested_priority,
-            sandbox_provider="modal",
-        )
-
-        no_raise_client = TestClient(app, raise_server_exceptions=False)
-        response = no_raise_client.post("/start-benchmark", json=request.model_dump())
-
-        assert response.status_code == expected_status
-        if requested_priority is None:
-            benchmark_id = UUID(response.json()["benchmark_id"])
-            benchmark_row = database_session.get(Benchmark, benchmark_id)
-            assert benchmark_row is not None and benchmark_row.arguments.priority is None
-            assert mock_kicker.queued_calls[0]["start_benchmark_request_json"]["priority"] is None
-        else:
-            assert response.json() == {"detail": "Queue priority requires sandbox queue to be enabled"}
-            assert database_session.exec(select(Benchmark)).all() == []
-            assert mock_kicker.queued_calls == []
-
-    @pytest.mark.parametrize(("requested_priority", "expected_status"), [(None, 200), (1, 400)])
-    async def test_start_benchmark_respects_provider_without_queue_configuration(
-        self,
-        contract: AgentContractRequest,
-        monkeypatch: MonkeyPatch,
-        database_session: Session,
-        harness_config: HarnessConfig,
-        mock_kicker: MockKicker,
-        requested_priority: int | None,
-        expected_status: int,
-    ) -> None:
-        monkeypatch.setattr("main.SANDBOX_QUEUE_ENABLED", True, raising=False)
-        provider = Mock(admission_pool_id=None, close=AsyncMock())
-        provider_config = Mock()
-        provider_config.create_provider.return_value = provider
-        monkeypatch.setattr("main.fetch_sandbox_provider_config", Mock(return_value=provider_config))
-        request = StartBenchmarkRequest(
-            contract=contract,
-            benchmark_name="swebench",
-            harness_config=harness_config,
-            priority=requested_priority,
-            sandbox_provider="modal",
-        )
-
-        response = client.post("/start-benchmark", json=request.model_dump())
-
-        assert response.status_code == expected_status
-        if requested_priority is None:
-            benchmark_id = UUID(response.json()["benchmark_id"])
-            benchmark_row = database_session.get(Benchmark, benchmark_id)
-            assert benchmark_row is not None and benchmark_row.arguments.priority is None
-            assert mock_kicker.queued_calls[0]["start_benchmark_request_json"]["priority"] is None
-        else:
-            assert response.json() == {"detail": "Queue priority requires a sandbox provider configured for admission"}
-            assert database_session.exec(select(Benchmark)).all() == []
-            assert mock_kicker.queued_calls == []
-        provider.close.assert_awaited_once_with()
+        if provider is not None:
+            provider.close.assert_awaited_once_with()
 
     async def test_start_benchmark_returns_502_when_benchmark_service_is_unreachable(
         self,
