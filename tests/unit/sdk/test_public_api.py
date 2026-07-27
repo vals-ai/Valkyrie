@@ -46,7 +46,6 @@ EXPECTED_ALL = [
     "TasksResponse",
     "TaskSummary",
     "TaskStatus",
-    "UpdateRunConcurrencyResponse",
     "ValkyrieAPIError",
     "ValkyrieClient",
     "ValkyrieConfig",
@@ -80,7 +79,6 @@ EXPECTED_SIGNATURES = {
     RunsResource.analyze: "self, run_id, *, no_cache=False, lambda_function=None",
     RunsResource.stream_outputs: "self, run_id, *, task_ids=None",
     RunsResource.stop: "self, run_id, *, force=False, task_ids=None",
-    RunsResource.update: "self, run_id, *, concurrency",
     RunsResource.resume: (
         "self, run_id, *, concurrency=None, task_ids=None, secrets=None, service_headers=None, from_scratch=False"
     ),

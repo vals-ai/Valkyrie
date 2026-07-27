@@ -213,12 +213,6 @@ async def finalize_all_error_run(run_id: UUID, org: Org) -> bool:
         if has_stopped_tasks(session, run_row, org):
             set_run_final_status(run_row, session, org)
             return False
-        if run_row.status != BenchmarkStatus.IN_PROGRESS:
-            return True
-        fresh_results = fetch_final_score_inputs(session, run_row, org)
-        if any(result is not None for result in fresh_results.values()):
-            return True
-
         # Mark the run as errored so future fetches return the discovered task errors.
         commit_run_error(run_row, session, error_message)
         return False

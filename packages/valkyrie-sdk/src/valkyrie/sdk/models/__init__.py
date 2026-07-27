@@ -43,8 +43,6 @@ from valkyrie.sdk.models.runs import (
     StartRunResponse,
     StopRunResponse,
     TaskStatus,
-    UpdateRunConcurrencyRequest,
-    UpdateRunConcurrencyResponse,
 )
 from valkyrie.sdk.models.services import (
     BenchmarkServiceCatalogResponse,
@@ -103,6 +101,4 @@ __all__ = [
     "TaskIDsResponse",
     "TasksResponse",
     "TaskSummary",
-    "UpdateRunConcurrencyRequest",
-    "UpdateRunConcurrencyResponse",
 ]

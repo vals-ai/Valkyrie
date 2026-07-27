@@ -57,7 +57,6 @@ from tracker.types import (
     TasksResponse,
     TaskSummary,
     UpdateRunConcurrencyRequest,
-    UpdateRunConcurrencyResponse,
     UpdateBenchmarkConcurrencyRequest,
 )
 from valkyrie.sdk.models import (
@@ -97,8 +96,6 @@ from valkyrie.sdk.models import (
     TaskIDsResponse as SDKTaskIDsResponse,
     TasksResponse as SDKTasksResponse,
     TaskSummary as SDKTaskSummary,
-    UpdateRunConcurrencyRequest as SDKUpdateRunConcurrencyRequest,
-    UpdateRunConcurrencyResponse as SDKUpdateRunConcurrencyResponse,
 )
 
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "sdk_api"
@@ -225,8 +222,6 @@ MODEL_PAIRS = (
     (VerifyTaskIdsResponse, SDKTaskIDsResponse),
     (AnalyzeRunRequest, SDKAnalyzeRunRequest),
     (RunMetadataResponse, SDKRunMetadataResponse),
-    (UpdateRunConcurrencyRequest, SDKUpdateRunConcurrencyRequest),
-    (UpdateRunConcurrencyResponse, SDKUpdateRunConcurrencyResponse),
 )
 INTERNAL_ROUTES = {
     ("/benchmarks/filter-options", "get"),

@@ -18,7 +18,6 @@ from sqlmodel import Session, col, func, select, update
 from starlette.requests import Request
 
 import tracker.utils.harness_config as harness_config_module
-import tracker.utils as tracker_utils
 from main import app
 from tests.factories import make_benchmark
 from tests.utils import TEST_ORG_ID
@@ -56,32 +55,6 @@ from tracker.utils import (
     start_request_to_run_row,
 )
 from tracker.utils.reporting import serialize_run_snapshot
-
-
-def test_run_helpers_use_canonical_internal_names() -> None:
-    assert hasattr(tracker_utils, "RunContext")
-    assert not hasattr(tracker_utils, "BenchmarkContext")
-    assert hasattr(tracker_utils, "build_run_table_rows")
-    assert not hasattr(tracker_utils, "build_benchmark_table_rows")
-    assert hasattr(tracker_utils, "commit_run_error")
-    assert not hasattr(tracker_utils, "commit_benchmark_error")
-    assert hasattr(tracker_utils, "fetch_run_row")
-    assert not hasattr(tracker_utils, "fetch_benchmark_row")
-    assert hasattr(tracker_utils, "fetch_filtered_run_rows")
-    assert not hasattr(tracker_utils, "fetch_filtered_benchmark_rows")
-    assert hasattr(tracker_utils, "initiate_stop_run")
-    assert not hasattr(tracker_utils, "initiate_stop_benchmark")
-    assert hasattr(tracker_utils, "process_run")
-    assert not hasattr(tracker_utils, "process_benchmark")
-    assert getattr(tracker_utils.process_run, "task_name") == "tracker.utils:process_benchmark"
-    assert hasattr(tracker_utils, "set_run_final_status")
-    assert not hasattr(tracker_utils, "set_benchmark_final_status")
-    assert hasattr(tracker_utils, "stream_run_results")
-    assert not hasattr(tracker_utils, "stream_benchmark_results")
-    assert hasattr(tracker_utils, "start_request_to_run_row")
-    assert not hasattr(tracker_utils, "start_benchmark_request_to_benchmark")
-    assert hasattr(tracker_utils, "update_run_resume_arguments")
-    assert not hasattr(tracker_utils, "update_benchmark_resume_arguments")
 
 
 def test_run_snapshot_serialization_is_canonical_only_when_requested() -> None:

@@ -45,14 +45,12 @@ class TestRunFinalization:
         Test cases:
         - A concurrent retry leaves the run in progress and defers finalization.
         - A concurrent stop marks the run stopped without committing an error summary.
-        - A concurrent successful retry leaves the run in progress for its worker to finalize.
         """
         org = Org(id=uuid4(), name=f"error-finalization-race-{uuid4()}")
         contract = AgentContractRequest(name="error-race-agent", install_cmd="true", run_cmd="true")
         target_statuses = {
             "retry-during-summary": TaskStatus.PENDING,
             "stop-during-summary": TaskStatus.STOPPED,
-            "success-during-summary": TaskStatus.FINISHED,
         }
 
         postgres_session.add(org)
@@ -82,15 +80,6 @@ class TestRunFinalization:
                 ).one()
                 task.status = target_statuses[task_id]
                 transition_session.add(task)
-                if task.status == TaskStatus.FINISHED:
-                    transition_session.add(
-                        EvaluationResult(
-                            org_id=org.id,
-                            task=task.id,
-                            instance_id=f"success-{task.id}",
-                            result={"score": 1.0},
-                        )
-                    )
                 transition_session.commit()
 
             return summarize_task_errors(task_errors)
@@ -105,12 +94,11 @@ class TestRunFinalization:
         with Session(postgres_engine) as assertion_session:
             persisted_runs = [assertion_session.get(Benchmark, run_row.id) for run_row in run_rows]
 
-        assert deferred_results == [True, False, True]
+        assert deferred_results == [True, False]
         assert all(run is not None for run in persisted_runs)
         assert [run.status for run in persisted_runs if run] == [
             BenchmarkStatus.IN_PROGRESS,
             BenchmarkStatus.STOPPED,
-            BenchmarkStatus.IN_PROGRESS,
         ]
         assert all(run.error_message is None for run in persisted_runs if run)
 

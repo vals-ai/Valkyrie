@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 
-from valkyrie.sdk import ValkyrieAPIError, ValkyrieRunError, ValkyrieStreamError
+from valkyrie.sdk import ValkyrieAPIError, ValkyrieStreamError
 
 _STOP_RUN_ID = UUID("11111111-1111-4111-8111-111111111111")
 
@@ -104,31 +104,6 @@ async def test_stop_sends_optional_task_scope(
         result = await client.runs.stop(_STOP_RUN_ID, force=True, task_ids=task_ids)
 
     assert result.status == "success"
-
-
-async def test_update_concurrency_uses_canonical_run_endpoint(make_client) -> None:
-    run_id = uuid4()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        assert request.method == "PATCH"
-        assert request.url.path == f"/runs/{run_id}/concurrency"
-        assert json.loads(request.content) == {"concurrency": 7}
-        return httpx.Response(
-            200,
-            json={"run_id": str(run_id), "status": "IN_PROGRESS", "concurrency": 7},
-        )
-
-    async with make_client(handler) as client:
-        result = await client.runs.update(run_id, concurrency=7)
-
-    assert result.run_id == run_id
-    assert result.concurrency == 7
-
-
-async def test_update_concurrency_rejects_non_positive_values(make_client) -> None:
-    async with make_client(lambda _request: pytest.fail("request should not be sent")) as client:
-        with pytest.raises(ValkyrieRunError, match="concurrency must be greater than 0"):
-            await client.runs.update(uuid4(), concurrency=0)
 
 
 async def test_analyze_normalizes_cached_json_to_a_done_event(make_client) -> None:

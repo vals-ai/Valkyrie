@@ -31,8 +31,6 @@ from valkyrie.sdk.models import (
     StopRunResponse,
     TaskArtifactsResponse,
     TasksResponse,
-    UpdateRunConcurrencyRequest,
-    UpdateRunConcurrencyResponse,
 )
 
 if TYPE_CHECKING:
@@ -331,23 +329,6 @@ class RunsResource:
             StopRunResponse,
             params={"force": force},
             json={"task_ids": list(task_ids)} if task_ids is not None else None,
-        )
-
-    async def update(
-        self,
-        run_id: UUID,
-        *,
-        concurrency: int,
-    ) -> UpdateRunConcurrencyResponse:
-        """Update the concurrency limit for an active run."""
-        if concurrency < 1:
-            raise ValkyrieRunError("concurrency must be greater than 0")
-        request = UpdateRunConcurrencyRequest(concurrency=concurrency)
-        return await self._sdk.request_model(
-            "PATCH",
-            f"/runs/{run_id}/concurrency",
-            UpdateRunConcurrencyResponse,
-            json=request.model_dump(),
         )
 
     async def resume(
