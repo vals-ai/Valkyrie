@@ -159,6 +159,7 @@ def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSCredential
             raise CloudWatchError(f"Failed to create log stream '{stream_name}': {e}") from e
         _created_streams.add(stream_key)
 
+    chunks_written = 0
     try:
         for chunk in _log_event_chunks(message):
             client.put_log_events(  # pyright: ignore[reportUnknownMemberType]
@@ -166,5 +167,6 @@ def write_benchmark_log_event(stream_key: str, message: str, aws: "AWSCredential
                 logStreamName=stream_name,
                 logEvents=[{"timestamp": int(time.time() * 1000), "message": chunk}],
             )
+            chunks_written += 1
     except (ClientError, BotoCoreError) as e:
-        raise CloudWatchError(f"Failed to put log event: {e}") from e
+        raise CloudWatchError(f"Failed to put log event after {chunks_written} complete chunks: {e}") from e

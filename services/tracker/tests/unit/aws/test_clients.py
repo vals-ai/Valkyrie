@@ -195,3 +195,23 @@ class TestWriteBenchmarkLogEvent:
 
         assert "provider/model_fast" in str(exc_info.value)
         client.put_log_events.assert_not_called()
+
+    def test_reports_partial_chunk_writes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        aws_credentials: AWSCredentials,
+    ) -> None:
+        client = self._mock_client(monkeypatch)
+        max_event_bytes = 1_048_576 - 26
+        client.put_log_events.side_effect = [
+            None,
+            ClientError({"Error": {"Code": "500", "Message": "Error"}}, "PutLogEvents"),
+        ]
+
+        with pytest.raises(CloudWatchError, match="after 1 complete chunks"):
+            write_benchmark_log_event(
+                "bench123:task",
+                "a" * (max_event_bytes + 1),
+                aws_credentials,
+                "/valkyrie/worker",
+            )
