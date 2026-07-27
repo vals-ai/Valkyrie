@@ -622,7 +622,10 @@ async def _resolve_output_artifact_sandbox_path(sandbox: Sandbox, artifact: Outp
             return source_path
     else:
         quoted_source = shlex.quote(source)
-        exists = await _exec(sandbox, f"test -f {quoted_source} && ! test -L {quoted_source}")
+        exists_command = f"test -f {quoted_source}"
+        if not _output_artifact_is_required(artifact):
+            exists_command += f" && ! test -L {quoted_source}"
+        exists = await _exec(sandbox, exists_command)
         if exists.exit_code == _SUCCESS_EXIT_CODE:
             return source
 

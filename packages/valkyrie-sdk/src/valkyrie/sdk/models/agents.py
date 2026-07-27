@@ -75,6 +75,7 @@ class AgentContractRequest(BaseModel):
             raise ValueError(f"output_artifacts cannot contain more than {MAX_OUTPUT_ARTIFACT_COUNT} entries")
 
         normalized_artifacts: list[OutputArtifactSpec] = []
+        normalized_paths: set[str] = set()
         for artifact in value:
             artifact_path = artifact if isinstance(artifact, str) else artifact.path
             path = PurePosixPath(artifact_path)
@@ -82,8 +83,12 @@ class AgentContractRequest(BaseModel):
                 raise ValueError("output_artifacts paths must be relative paths")
             if not path.parts or ".." in path.parts or "." in path.parts:
                 raise ValueError("output_artifacts paths cannot contain empty, '.', or '..' path parts")
+            normalized_path = str(path)
+            if normalized_path in normalized_paths:
+                raise ValueError(f"output_artifacts cannot contain duplicate paths: {normalized_path}")
+            normalized_paths.add(normalized_path)
             normalized_artifacts.append(
-                str(path) if isinstance(artifact, str) else artifact.model_copy(update={"path": str(path)})
+                normalized_path if isinstance(artifact, str) else artifact.model_copy(update={"path": normalized_path})
             )
         return normalized_artifacts
 

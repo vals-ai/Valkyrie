@@ -75,10 +75,7 @@ class TestOutputArtifacts:
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if (
-                command == "test -f /tmp/valkyrie/artifacts/turns.jsonl"
-                " && ! test -L /tmp/valkyrie/artifacts/turns.jsonl"
-            ):
+            if command == "test -f /tmp/valkyrie/artifacts/turns.jsonl":
                 return ExecResult(exit_code=0, output="")
             if command == "stat -c%s /tmp/valkyrie/artifacts/turns.jsonl":
                 return ExecResult(exit_code=0, output=str(len(artifact_content)))
@@ -160,10 +157,7 @@ class TestOutputArtifacts:
         uploaded: list[tuple[bytes, str]] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if (
-                command
-                == "test -f /logs/model-library-run/result.json && ! test -L /logs/model-library-run/result.json"
-            ):
+            if command == "test -f /logs/model-library-run/result.json":
                 return ExecResult(exit_code=0, output="")
             if command == "stat -c%s /logs/model-library-run/result.json":
                 return ExecResult(exit_code=0, output="13")
@@ -199,10 +193,7 @@ class TestOutputArtifacts:
         artifact = "artifacts/missing.json"
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            assert (
-                command == "test -f /tmp/valkyrie/artifacts/missing.json"
-                " && ! test -L /tmp/valkyrie/artifacts/missing.json"
-            )
+            assert command == "test -f /tmp/valkyrie/artifacts/missing.json"
             return ExecResult(exit_code=1, output="")
 
         monkeypatch.setattr(sandbox_module, "_exec", fake_exec)
@@ -242,17 +233,24 @@ class TestOutputArtifacts:
         )
         upload_mock.assert_not_awaited()
 
-    @pytest.mark.parametrize("required", [True, False])
-    async def test_upload_output_artifacts_does_not_follow_non_glob_symlinks(
+    @pytest.mark.parametrize(
+        ("required", "expected_uploads"),
+        [(True, [b"secret"]), (False, [])],
+        ids=["required-collected", "optional-skipped"],
+    )
+    async def test_upload_output_artifacts_handles_non_glob_symlinks_by_requiredness(
         self,
         monkeypatch: pytest.MonkeyPatch,
         harness_config: Any,
         required: bool,
+        expected_uploads: list[bytes],
     ) -> None:
         source = "/logs/symlink result.json"
         uploaded: list[bytes] = []
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
+            if command == "test -f '/logs/symlink result.json'":
+                return ExecResult(exit_code=0, output="")
             if command == "test -f '/logs/symlink result.json' && ! test -L '/logs/symlink result.json'":
                 return ExecResult(exit_code=1, output="")
             if command == "stat -c%s '/logs/symlink result.json'":
@@ -271,27 +269,16 @@ class TestOutputArtifacts:
         sandbox.download_file = AsyncMock(return_value=b"secret")
         artifact = OutputArtifact(path="artifacts/result.json", source=source, required=required)
 
-        if required:
-            with pytest.raises(OutputArtifactError, match="Output artifact missing"):
-                await upload_output_artifacts(
-                    sandbox,
-                    [artifact],
-                    "benchmark-123",
-                    "task_0",
-                    harness_config.aws,
-                    "bucket",
-                )
-        else:
-            await upload_output_artifacts(
-                sandbox,
-                [artifact],
-                "benchmark-123",
-                "task_0",
-                harness_config.aws,
-                "bucket",
-            )
+        await upload_output_artifacts(
+            sandbox,
+            [artifact],
+            "benchmark-123",
+            "task_0",
+            harness_config.aws,
+            "bucket",
+        )
 
-        assert uploaded == []
+        assert uploaded == expected_uploads
 
     async def test_upload_output_artifacts_prioritizes_required_artifacts_for_total_size_limit(
         self,
@@ -305,7 +292,7 @@ class TestOutputArtifacts:
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
             if command in {
                 f"test -f {optional_source} && ! test -L {optional_source}",
-                f"test -f {required_source} && ! test -L {required_source}",
+                f"test -f {required_source}",
             }:
                 return ExecResult(exit_code=0, output="")
             if command == f"stat -c%s {optional_source}":
@@ -355,7 +342,7 @@ class TestOutputArtifacts:
         artifact = "artifacts/large.json"
 
         async def fake_exec(_sandbox: Any, command: str) -> ExecResult:
-            if command == "test -f /tmp/valkyrie/artifacts/large.json && ! test -L /tmp/valkyrie/artifacts/large.json":
+            if command == "test -f /tmp/valkyrie/artifacts/large.json":
                 return ExecResult(exit_code=0, output="")
             if command == "stat -c%s /tmp/valkyrie/artifacts/large.json":
                 return ExecResult(exit_code=0, output=str(MAX_OUTPUT_ARTIFACT_BYTES + 1))
