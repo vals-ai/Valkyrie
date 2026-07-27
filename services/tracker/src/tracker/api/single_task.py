@@ -102,7 +102,7 @@ def get_task_attempts(
     benchmark_id: UUID,
     task_id: str,
     limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
+    offset: int = Query(default=0, ge=0, le=10_000),
     org: Org = Depends(get_current_org),
     session: Session = Depends(get_session),
 ) -> TaskAttemptsResponse:

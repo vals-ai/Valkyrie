@@ -154,11 +154,13 @@ def test_task_attempts_enforce_org_scope_and_page_limit(
     response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/attempts")
     foreign_response = _client.get(f"/benchmarks/{other_benchmark.id}/tasks/{other_task.task_id}/attempts")
     oversized_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/attempts?limit=101")
+    distant_response = _client.get(f"/benchmarks/{benchmark.id}/tasks/{task.task_id}/attempts?offset=10001")
 
     assert response.status_code == 200
     assert [attempt["error_message"] for attempt in response.json()["attempts"]] == ["target failure"]
     assert foreign_response.status_code == 404
     assert oversized_response.status_code == 422
+    assert distant_response.status_code == 422
 
 
 def test_single_task_returns_latest_terminal_result_and_enforces_org_scope(
