@@ -584,6 +584,10 @@ def _output_artifact_path(artifact: OutputArtifactSpec) -> str:
     return artifact if isinstance(artifact, str) else artifact.path
 
 
+def _output_artifact_is_required(artifact: OutputArtifactSpec) -> bool:
+    return isinstance(artifact, str) or artifact.required
+
+
 def _output_artifact_source(artifact: OutputArtifactSpec) -> str:
     artifact_path = _output_artifact_path(artifact)
     source = artifact.source if not isinstance(artifact, str) else None
@@ -617,11 +621,16 @@ async def _resolve_output_artifact_sandbox_path(sandbox: Sandbox, artifact: Outp
         if source_result.exit_code == _SUCCESS_EXIT_CODE and source_path:
             return source_path
     else:
-        exists = await _exec(sandbox, f"test -f {shlex.quote(source)}")
+        quoted_source = shlex.quote(source)
+        exists_command = f"test -f {quoted_source}"
+        if not _output_artifact_is_required(artifact):
+            exists_command += f" && ! test -L {quoted_source}"
+        exists = await _exec(sandbox, exists_command)
         if exists.exit_code == _SUCCESS_EXIT_CODE:
             return source
 
-    raise OutputArtifactError(f"Required output artifact missing: {source}")
+    artifact_label = "Required output artifact" if _output_artifact_is_required(artifact) else "Output artifact"
+    raise OutputArtifactError(f"{artifact_label} missing: {source}")
 
 
 async def upload_output_artifacts(
@@ -634,50 +643,89 @@ async def upload_output_artifacts(
 ) -> None:
     """Upload declared small output artifacts from the sandbox directly to task S3 keys."""
     total_bytes = 0
+    required_artifacts = [artifact for artifact in artifacts if _output_artifact_is_required(artifact)]
+    optional_artifacts = [artifact for artifact in artifacts if not _output_artifact_is_required(artifact)]
 
-    for artifact in artifacts:
+    for artifact in [*required_artifacts, *optional_artifacts]:
         artifact_path = _output_artifact_path(artifact)
-        sandbox_path = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
-        quoted_path = shlex.quote(sandbox_path)
-
-        size_result = await _exec(sandbox, f"stat -c%s {quoted_path}")
-        if size_result.exit_code != _SUCCESS_EXIT_CODE:
-            raise OutputArtifactError(f"Failed to stat output artifact: {sandbox_path}")
-
         try:
-            artifact_bytes = int(size_result.stdout.strip())
-        except ValueError as e:
-            raise OutputArtifactError(
-                f"Failed to parse output artifact size for {sandbox_path}: {size_result.stdout!r}"
-            ) from e
-
-        if artifact_bytes > MAX_OUTPUT_ARTIFACT_BYTES:
-            raise OutputArtifactError(
-                f"Output artifact {sandbox_path} is too large: {artifact_bytes} bytes > {MAX_OUTPUT_ARTIFACT_BYTES} bytes"
+            total_bytes = await _upload_output_artifact(
+                sandbox,
+                artifact,
+                benchmark_id,
+                task_id,
+                aws,
+                s3_bucket,
+                total_bytes,
+            )
+        except Exception:
+            if _output_artifact_is_required(artifact):
+                raise
+            logger.warning(
+                "output_artifact.optional_skip",
+                extra={
+                    "sandbox_id": sandbox.id,
+                    "sandbox_name": sandbox.name,
+                    "artifact_path": artifact_path,
+                    "benchmark_id": benchmark_id,
+                    "task_id": task_id,
+                },
+                exc_info=True,
             )
 
-        total_bytes += artifact_bytes
-        if total_bytes > OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES:
-            raise OutputArtifactError(
-                f"Output artifacts are too large: {total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
-            )
 
-        s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
-        file_content = await sandbox.download_file(sandbox_path)
-        await upload_to_s3(file_content, s3_key, aws, s3_bucket)
+async def _upload_output_artifact(
+    sandbox: Sandbox,
+    artifact: OutputArtifactSpec,
+    benchmark_id: str,
+    task_id: str,
+    aws: AWSCredentials,
+    s3_bucket: str,
+    total_bytes: int,
+) -> int:
+    artifact_path = _output_artifact_path(artifact)
+    sandbox_path = await _resolve_output_artifact_sandbox_path(sandbox, artifact, task_id)
+    quoted_path = shlex.quote(sandbox_path)
 
-        logger.info(
-            "output_artifact.upload.complete",
-            extra={
-                "sandbox_id": sandbox.id,
-                "sandbox_name": sandbox.name,
-                "sandbox_path": sandbox_path,
-                "s3_key": s3_key,
-                "benchmark_id": benchmark_id,
-                "task_id": task_id,
-                "artifact_bytes": artifact_bytes,
-            },
+    size_result = await _exec(sandbox, f"stat -c%s {quoted_path}")
+    if size_result.exit_code != _SUCCESS_EXIT_CODE:
+        raise OutputArtifactError(f"Failed to stat output artifact: {sandbox_path}")
+
+    try:
+        artifact_bytes = int(size_result.stdout.strip())
+    except ValueError as e:
+        raise OutputArtifactError(
+            f"Failed to parse output artifact size for {sandbox_path}: {size_result.stdout!r}"
+        ) from e
+
+    if artifact_bytes > MAX_OUTPUT_ARTIFACT_BYTES:
+        raise OutputArtifactError(
+            f"Output artifact {sandbox_path} is too large: {artifact_bytes} bytes > {MAX_OUTPUT_ARTIFACT_BYTES} bytes"
         )
+
+    new_total_bytes = total_bytes + artifact_bytes
+    if new_total_bytes > OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES:
+        raise OutputArtifactError(
+            f"Output artifacts are too large: {new_total_bytes} bytes > {OUTPUT_ARTIFACTS_MAX_TOTAL_BYTES} bytes"
+        )
+
+    s3_key = get_agent_result_s3_key(benchmark_id, task_id, artifact_path)
+    file_content = await sandbox.download_file(sandbox_path)
+    await upload_to_s3(file_content, s3_key, aws, s3_bucket)
+
+    logger.info(
+        "output_artifact.upload.complete",
+        extra={
+            "sandbox_id": sandbox.id,
+            "sandbox_name": sandbox.name,
+            "sandbox_path": sandbox_path,
+            "s3_key": s3_key,
+            "benchmark_id": benchmark_id,
+            "task_id": task_id,
+            "artifact_bytes": artifact_bytes,
+        },
+    )
+    return new_total_bytes
 
 
 async def run_agent(

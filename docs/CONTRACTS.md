@@ -153,13 +153,30 @@ output_artifacts:
     source: /logs/{task_id}/result.json
 ```
 
+By default, every declared artifact is required. Set `required: false` for best-effort telemetry that must not change the task result when it is missing or cannot be uploaded:
+
+```yaml
+output_artifacts:
+  - path: atif/trajectory.json
+    source: /logs/{task_id}/trajectory_atif.json
+    required: false
+  - path: artifacts/model.patch
+    source: /logs/{task_id}/artifacts/model.patch
+    required: false
+```
+
+`artifacts/model.patch` is reserved for an optional validated text diff produced
+by repository-editing agents. Its ATIF trajectory may reference it through
+`extra.vals.model_patch`; Valkyrie still collects it as a separate artifact.
+
 Valkyrie does not require a specific destination prefix. For Vals benchmark result ingestion, use the project convention `vals_format/config.json` and `vals_format/result.json`.
 
 Guardrails:
 
 - Artifact destination paths are relative to the task's S3 prefix. String entries use the same path under `/tmp/valkyrie`; object entries use their explicit `source`.
 - Object `source` paths must be absolute sandbox paths. Glob sources must include a non-root directory prefix such as `/logs` or `/app/results/...`.
-- Each declared artifact is required. Missing files or unresolved glob sources fail the task clearly.
+- String entries and object entries without `required: false` are required. Missing files, unresolved glob sources, validation failures, size-limit failures, download failures, and upload failures fail the task clearly.
+- Optional artifacts are skipped and logged when collection fails. They are intended for non-scoring telemetry; their absence never changes the task result.
 - Individual files cannot exceed 50 MiB.
 - At most 10 output artifacts can be declared.
 - The total uploaded sidecar bytes per task cannot exceed 50 MiB.
