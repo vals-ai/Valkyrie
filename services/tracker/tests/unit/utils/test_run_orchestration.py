@@ -262,6 +262,51 @@ async def test_queued_process_benchmark_finishes_evaluation_resume_before_finali
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
+async def test_queued_building_only_run_reaches_startup_recovery(
+    contract: AgentContractRequest,
+    database_session: Session,
+    harness_config: HarnessConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    task_ids = ["task_0"]
+    request = StartBenchmarkRequest(
+        benchmark_name="swebench",
+        contract=contract,
+        priority=3,
+        task_ids=task_ids,
+        harness_config=harness_config,
+    )
+    provider_pool_id = "recovery-pool"
+    benchmark = _persist_benchmark(
+        request,
+        database_session,
+        queued_pool_id=queue_pool_id(provider_pool_id),
+    )
+    database_session.add(
+        Task(
+            org_id=TEST_ORG_ID,
+            task_id=task_ids[0],
+            benchmark=benchmark.id,
+            status=TaskStatus.BUILDING,
+        )
+    )
+    database_session.commit()
+    sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
+    run_queued_tasks = AsyncMock()
+    monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=sandbox_provider))
+    monkeypatch.setattr("tracker.utils.run_orchestration._run_queued_tasks", run_queued_tasks)
+
+    await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
+
+    queued_call = run_queued_tasks.await_args
+    assert queued_call is not None
+    queued_task_rows = queued_call.kwargs["task_rows"]
+    assert [(task_id, task.status) for task_id, task in queued_task_rows] == [
+        ("task_0", TaskStatus.BUILDING),
+    ]
+
+
+@pytest.mark.usefixtures("process_benchmark_env")
 async def test_process_benchmark_defaults_to_five_concurrent_tasks(
     contract: AgentContractRequest,
     database_session: Session,

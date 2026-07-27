@@ -111,11 +111,10 @@ def queue_pool_id(provider_pool_id: str) -> str:
     return f"pool_{sha256(provider_pool_id.encode()).hexdigest()[:24]}"
 
 
-def next_eligible_task(session: Session, pool_id: str) -> ScheduledTask | None:
-    """Select the global queue head whose run has current concurrency capacity."""
+def _active_task_count():
     active_task = aliased(Task)
     eval_resume_state = sql_cast(col(active_task.eval_resume_state), Text)
-    active_count = (
+    return (
         select(func.count(col(active_task.id)))
         .where(col(active_task.benchmark) == col(Benchmark.id))
         .where(
@@ -129,6 +128,11 @@ def next_eligible_task(session: Session, pool_id: str) -> ScheduledTask | None:
         .correlate(Benchmark)
         .scalar_subquery()
     )
+
+
+def next_eligible_task(session: Session, pool_id: str) -> ScheduledTask | None:
+    """Select the global queue head whose run has current concurrency capacity."""
+    active_count = _active_task_count()
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     priority = arguments["priority"].as_integer()
     concurrency = arguments["concurrency"].as_integer()
@@ -163,22 +167,7 @@ def next_eligible_task(session: Session, pool_id: str) -> ScheduledTask | None:
 
 
 def _eligible_task_id(pool_id: str):
-    active_task = aliased(Task)
-    eval_resume_state = sql_cast(col(active_task.eval_resume_state), Text)
-    active_count = (
-        select(func.count(col(active_task.id)))
-        .where(col(active_task.benchmark) == col(Benchmark.id))
-        .where(
-            col(active_task.status).in_(_ACTIVE_SANDBOX_STATUSES)
-            | (
-                (col(active_task.status) == TaskStatus.EVALUATING)
-                & eval_resume_state.is_not(None)
-                & (eval_resume_state != "null")
-            )
-        )
-        .correlate(Benchmark)
-        .scalar_subquery()
-    )
+    active_count = _active_task_count()
     arguments = type_coerce(col(Benchmark.arguments), JSON)
     priority = arguments["priority"].as_integer()
     concurrency = arguments["concurrency"].as_integer()

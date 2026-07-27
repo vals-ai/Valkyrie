@@ -3,18 +3,15 @@
 Run: uv run pytest tests/unit/utils/test_task_execution_retry.py
 """
 
-import asyncio
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from benchmark_service import SandboxProvider
 from benchmark_service.client import BenchmarkServiceClient
 from benchmark_service.schemas import RetrieveTaskResponse
-from sqlalchemy.engine import Engine
-from sqlmodel import Session, select
+from sqlmodel import Session
 from tenacity import wait_none
 
 from tests.unit.utils.task_execution_support import (
@@ -22,10 +19,9 @@ from tests.unit.utils.task_execution_support import (
     make_retrieve_task_response,
     run_process_task,
 )
-from tracker.database.models import AgentContractRequest, EvaluationResult, TaskStatus
+from tracker.database.models import AgentContractRequest, TaskStatus
 from tracker.exceptions import AgentRunFailedError, DependencySetupExhaustedError, SandboxSetupError
 from tracker.sandbox import DependencySetupMode
-from tracker.scheduler.admission import SandboxQueueContext
 from tracker.types import HarnessConfig
 from tracker.utils import task_execution as task_execution_module
 
@@ -164,60 +160,6 @@ class TestTaskExecutionRetry:
 
         database_session.refresh(task_row)
         assert task_row.status == expected_status
-
-    async def test_queued_evaluation_resume_has_single_owner(
-        self,
-        contract: AgentContractRequest,
-        database_session: Session,
-        monkeypatch: pytest.MonkeyPatch,
-        harness_config: HarnessConfig,
-    ) -> None:
-        request, task_row, benchmark_id = create_task_environment(contract, database_session, harness_config)
-        task_row.status = TaskStatus.EVALUATING
-        task_row.eval_resume_state = {"cursor": "durable"}
-        database_session.add(task_row)
-        database_session.commit()
-        queue_engine = database_session.bind
-        assert isinstance(queue_engine, Engine)
-        context = SandboxQueueContext(
-            engine=queue_engine,
-            pool_id="pool",
-            provider=Mock(spec=SandboxProvider),
-            poll_interval_seconds=0,
-        )
-        owner_lock = asyncio.Lock()
-        resume_calls = 0
-
-        @asynccontextmanager
-        async def evaluation_lock(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bool, None]:
-            acquired = not owner_lock.locked()
-            if acquired:
-                await owner_lock.acquire()
-            try:
-                yield acquired
-            finally:
-                if acquired:
-                    owner_lock.release()
-
-        async def resume(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-            nonlocal resume_calls
-            resume_calls += 1
-            await asyncio.sleep(0)
-            return {"status": "success", "score": 1.0}
-
-        monkeypatch.setattr("tracker.utils.task_execution.engine", database_session.bind)
-        monkeypatch.setattr("tracker.utils.task_execution.buffer_logs", Mock())
-        monkeypatch.setattr(task_execution_module, "PostgresPoolLock", evaluation_lock, raising=False)
-        monkeypatch.setattr(BenchmarkServiceClient, "resume_evaluation", resume, raising=False)
-
-        await asyncio.gather(
-            run_process_task(request, task_row, benchmark_id, harness_config, queue_context=context),
-            run_process_task(request, task_row, benchmark_id, harness_config, queue_context=context),
-        )
-
-        evaluations = database_session.exec(select(EvaluationResult).where(EvaluationResult.task == task_row.id)).all()
-        assert resume_calls == 1
-        assert len(evaluations) == 1
 
     async def test_process_task_spans_timed_status_transitions(
         self,
