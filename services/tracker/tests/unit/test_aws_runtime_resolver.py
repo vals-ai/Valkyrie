@@ -253,7 +253,7 @@ def test_managed_execution_context_is_recursively_credential_free(harness_config
             name="test-agent",
             install_cmd="echo install",
             run_cmd="echo run",
-            secrets={"MODEL_API_KEY": "model-secret"},
+            secrets={"STAGING_AWS_PROFILE": "profile-name"},
         ),
         benchmark_name="test-benchmark",
         harness_config=None,

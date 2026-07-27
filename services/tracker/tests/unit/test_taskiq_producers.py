@@ -162,12 +162,31 @@ def test_managed_start_rejects_aws_authority_before_persistence(
     payloads = _capture_task_payloads(monkeypatch)
 
     async def agent_exists(*_args: Any, **_kwargs: Any) -> bool:
-        return True
+        raise AssertionError("invalid managed requests must be rejected before checking S3")
 
     monkeypatch.setattr("main.s3_object_exists", agent_exists)
     request = _start_request(contract, None).model_copy(
         update={"service_headers": {"AWS_SECRET_ACCESS_KEY": "credential"}}
     )
+
+    response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Managed execution cannot include AWS credentials"
+    assert database_session.exec(select(Benchmark).where(Benchmark.name == "producer-contract-test")).all() == []
+    assert payloads == []
+
+
+def test_managed_start_rejects_aws_authority_from_resolved_contract(
+    contract: AgentContractRequest,
+    database_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_managed_runtime(monkeypatch)
+    payloads = _capture_task_payloads(monkeypatch)
+    request = _start_request(contract.model_copy(update={"install_cmd": "", "run_cmd": ""}), None)
+    resolved_contract = contract.model_copy(update={"secrets": {"aws_profile": "credential"}})
+    monkeypatch.setattr("main._resolve_contract_from_s3", AsyncMock(return_value=resolved_contract))
 
     response = client.post("/start-benchmark", json=request.model_dump(mode="json"))
 

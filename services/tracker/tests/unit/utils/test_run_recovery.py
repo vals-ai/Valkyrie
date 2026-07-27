@@ -1287,12 +1287,18 @@ class TestRunRecovery:
         monkeypatch.setattr("main.process_benchmark.kicker", _unexpected_kicker)
 
         response = client.post(
-            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true",
+            f"/retry-or-resume-benchmark/{benchmark_row.id}?retry=true&concurrency=7",
+            json={"secrets": {"MODEL_API_KEY": "rotated-secret"}},
             headers=harness_headers,
         )
 
         assert response.status_code == 200
         assert response.json() == {"status": "success"}
+        database_session.expire_all()
+        persisted = database_session.get(Benchmark, benchmark_row.id)
+        assert persisted is not None
+        assert persisted.arguments.concurrency == 7
+        assert persisted.arguments.contract.secrets == {"MODEL_API_KEY": "rotated-secret"}
 
     async def test_running_resume_noops(
         self,
@@ -1328,6 +1334,15 @@ class TestRunRecovery:
 
         task_row = database_session.exec(select(Task).where(Task.benchmark == benchmark_row.id)).one()
         assert task_row.status == TaskStatus.ERROR
+
+        response = client.post(
+            f"/retry-or-resume-benchmark/{benchmark_row.id}",
+            json={"secrets": {"MODEL_API_KEY": "rotated-secret"}},
+            headers=harness_headers,
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Secret overrides require retry=true while a run is in progress."
 
     async def test_running_resume_updates_concurrency_without_enqueuing_work(
         self,

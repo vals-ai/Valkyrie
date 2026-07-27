@@ -160,6 +160,22 @@ def test_taskiq_adapter_rejects_mixed_and_invalid_managed_inputs(
         _parse_worker_execution(None, None, None, context_without_provider)
 
 
+async def test_worker_parse_failure_marks_run_error(
+    contract: AgentContractRequest,
+    database_session: Session,
+    process_benchmark_env: None,
+) -> None:
+    request = _managed_request(contract)
+    benchmark = _persist_benchmark(database_session, request, aws_managed=True)
+    invalid_context = {**_execution_context(request, benchmark.id), "version": 1}
+
+    await process_benchmark(execution_context_json=invalid_context)
+
+    database_session.refresh(benchmark)
+    assert benchmark.status == BenchmarkStatus.ERROR
+    assert "Queued managed execution context is invalid" in (benchmark.error_message or "")
+
+
 async def test_managed_worker_input_for_access_key_row_marks_run_error(
     contract: AgentContractRequest,
     harness_config: HarnessConfig,

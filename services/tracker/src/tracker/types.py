@@ -177,6 +177,10 @@ _FORBIDDEN_MANAGED_AWS_KEYS = {
     "aws_secret_access_key",
     "aws_session_token",
     "aws_profile",
+    "x_harness_aws_access_key_id",
+    "x_harness_aws_secret_access_key",
+    "x_harness_aws_session_token",
+    "x_harness_aws_profile",
 }
 
 
@@ -184,10 +188,7 @@ def _contains_forbidden_managed_aws_key(value: object) -> bool:
     if isinstance(value, dict):
         for key, nested_value in cast(dict[object, object], value).items():
             normalized_key = str(key).lower().replace("-", "_")
-            if any(
-                normalized_key == forbidden_key or normalized_key.endswith(f"_{forbidden_key}")
-                for forbidden_key in _FORBIDDEN_MANAGED_AWS_KEYS
-            ) or _contains_forbidden_managed_aws_key(nested_value):
+            if normalized_key in _FORBIDDEN_MANAGED_AWS_KEYS or _contains_forbidden_managed_aws_key(nested_value):
                 return True
     elif isinstance(value, list):
         return any(_contains_forbidden_managed_aws_key(item) for item in cast(list[object], value))

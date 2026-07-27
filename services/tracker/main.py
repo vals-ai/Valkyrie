@@ -4,7 +4,7 @@ import tarfile
 import traceback
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from uuid import UUID
 
 import httpx
@@ -323,7 +323,7 @@ async def start_benchmark(
                 detail="Managed runs require a sandbox provider and sandbox provider secret name.",
             )
     else:
-        assert effective_harness_config is not None
+        effective_harness_config = cast(HarnessConfig, effective_harness_config)
         body_provider_secret_name = (
             request.harness_config.sandbox_provider_secret_name if request.harness_config is not None else None
         )
@@ -355,19 +355,24 @@ async def start_benchmark(
         }
     )
 
-    if not request.contract.install_cmd and not request.contract.run_cmd:
-        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, aws_runtime)})
-    elif aws_managed and not await s3_object_exists(get_contract_s3_key(request.contract.name), aws_runtime):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
-        )
-
     if aws_managed:
         try:
             validate_managed_execution_request(request)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if not request.contract.install_cmd and not request.contract.run_cmd:
+        request = request.model_copy(update={"contract": await _resolve_contract_from_s3(request, aws_runtime)})
+        if aws_managed:
+            try:
+                validate_managed_execution_request(request)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+    elif aws_managed and not await s3_object_exists(get_contract_s3_key(request.contract.name), aws_runtime):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent '{request.contract.name}' is not available in the deployment bucket.",
+        )
 
     logger.info(f"Starting benchmark run - contract: {request.contract.name}, benchmark: {request.benchmark_name}")
 
@@ -899,6 +904,12 @@ async def retry_or_resume_benchmark(
             detail=f"Run {benchmark_id} is in the {benchmark_row.status} state. Cannot continue a run that is stopping.",
         )
 
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and secrets:
+        raise HTTPException(
+            status_code=409,
+            detail="Secret overrides require retry=true while a run is in progress.",
+        )
+
     if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not retry and concurrency is None:
         return RetryOrResumeBenchmarkResponse(
             status="success",
@@ -941,11 +952,6 @@ async def retry_or_resume_benchmark(
         org=org,
     )
 
-    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
-        return RetryOrResumeBenchmarkResponse(
-            status="success",
-        )
-
     if secrets or concurrency is not None:
         benchmark_row = update_benchmark_resume_arguments(
             benchmark_id,
@@ -955,13 +961,17 @@ async def retry_or_resume_benchmark(
             concurrency=concurrency,
         )
 
+    if benchmark_row.status == BenchmarkStatus.IN_PROGRESS and not verified_task_ids:
+        return RetryOrResumeBenchmarkResponse(
+            status="success",
+        )
+
     if benchmark_row.aws_managed:
         resume_request = benchmark_row.managed_start_benchmark_request(
             service_headers=effective_service_headers,
         )
     else:
-        access_key_harness_config = runtime_resolution.access_key_harness_config
-        assert access_key_harness_config is not None
+        access_key_harness_config = cast(HarnessConfig, runtime_resolution.access_key_harness_config)
         resume_request = benchmark_row.access_key_start_benchmark_request(
             access_key_harness_config,
             service_headers=effective_service_headers,

@@ -41,6 +41,7 @@ from tracker.logging import get_logger
 from tracker.notifications import NotificationContext, SlackNotifier
 from tracker.types import (
     FinalViewResponse,
+    HarnessConfig,
     ManagedExecutionContext,
     StartBenchmarkRequest,
 )
@@ -289,6 +290,19 @@ def _parse_worker_execution(
     )
 
 
+def _queued_benchmark_id(
+    benchmark_id_str: str | None,
+    execution_context_json: dict[str, Any] | None,
+) -> UUID:
+    raw_benchmark_id = (
+        execution_context_json.get("benchmark_id") if execution_context_json is not None else benchmark_id_str
+    )
+    try:
+        return UUID(str(raw_benchmark_id))
+    except (TypeError, ValueError):
+        raise ValueError("Queued benchmark request has no valid benchmark ID.") from None
+
+
 def _managed_worker_preflight(
     execution: _WorkerExecution,
     runtime: AWSRuntime,
@@ -297,7 +311,8 @@ def _managed_worker_preflight(
     create_benchmark_log_group(str(execution.benchmark_id), runtime)
     request = execution.request
     provider_secret_name = request.sandbox_provider_secret_name
-    assert provider_secret_name is not None
+    if provider_secret_name is None:
+        raise ValueError("Queued managed benchmark request has no sandbox provider secret name.")
     sandbox_provider_config = fetch_sandbox_provider_config(
         provider_secret_name,
         runtime.clients,
@@ -314,32 +329,16 @@ def _managed_worker_preflight(
 # Pin the Taskiq task name to its pre-refactor value so in-flight messages
 # enqueued as `tracker.utils:process_benchmark` still match after the module move.
 @broker.task("tracker.utils:process_benchmark")
-@logfire.instrument("process_benchmark", extract_args=("benchmark_id_str", "verified_task_ids"))
+@logfire.instrument("process_benchmark", extract_args=False)
 async def process_benchmark(
     start_benchmark_request_json: dict[str, Any] | None = None,
     benchmark_id_str: str | None = None,
     verified_task_ids: list[str] | None = None,
     execution_context_json: dict[str, Any] | None = None,
 ) -> None:
-    execution = _parse_worker_execution(
-        start_benchmark_request_json,
+    benchmark_id = _queued_benchmark_id(
         benchmark_id_str,
-        verified_task_ids,
         execution_context_json,
-    )
-    start_benchmark_request = execution.request
-    benchmark_id = execution.benchmark_id
-    verified_task_ids = execution.verified_task_ids
-
-    sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
-    sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
-    trace.get_current_span().set_attributes(
-        {
-            "benchmark_id": str(benchmark_id),
-            "benchmark_name": start_benchmark_request.benchmark_name,
-            "agent_name": start_benchmark_request.contract.name,
-            "task_count": len(verified_task_ids),
-        }
     )
 
     # Resolve the org from the benchmark row (no org check on first fetch since the benchmark was just created by our system)
@@ -353,6 +352,26 @@ async def process_benchmark(
     benchmark_service: BenchmarkServiceClient | None = None
     notifier: SlackNotifier | None = None
     try:
+        execution = _parse_worker_execution(
+            start_benchmark_request_json,
+            benchmark_id_str,
+            verified_task_ids,
+            execution_context_json,
+        )
+        start_benchmark_request = execution.request
+        verified_task_ids = execution.verified_task_ids
+
+        sentry_sdk.set_tag("benchmark_name", start_benchmark_request.benchmark_name)
+        sentry_sdk.set_tag("agent_name", start_benchmark_request.contract.name)
+        trace.get_current_span().set_attributes(
+            {
+                "benchmark_id": str(benchmark_id),
+                "benchmark_name": start_benchmark_request.benchmark_name,
+                "agent_name": start_benchmark_request.contract.name,
+                "task_count": len(verified_task_ids),
+            }
+        )
+
         if execution.managed:
             if not benchmark_row.aws_managed:
                 raise TrackerServiceError("Managed worker input does not match the stored run mode")
@@ -361,8 +380,7 @@ async def process_benchmark(
         else:
             if benchmark_row.aws_managed:
                 raise TrackerServiceError("Access-key worker input does not match the stored run mode")
-            harness_config = start_benchmark_request.harness_config
-            assert harness_config is not None
+            harness_config = cast(HarnessConfig, start_benchmark_request.harness_config)
             aws_runtime = AWSRuntime.from_harness_config(harness_config)
             sandbox_provider_config = fetch_sandbox_provider_config(
                 harness_config.sandbox_provider_secret_name,
