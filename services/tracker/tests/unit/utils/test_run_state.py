@@ -519,6 +519,34 @@ class TestRunState:
         assert transition_record["has_error_message"] is True
         assert not any(record["message"].startswith("task.status_transition") for record in log_records)
 
+    def test_commit_task_error_rejects_mismatched_status(
+        self,
+        example_benchmark_object: Benchmark,
+        database_session: Session,
+    ) -> None:
+        task_row = Task(
+            org_id=TEST_ORG_ID,
+            task_id="task_0",
+            benchmark=example_benchmark_object.id,
+            status=TaskStatus.FINISHED,
+        )
+        database_session.add(example_benchmark_object)
+        database_session.add(task_row)
+        database_session.commit()
+
+        committed = commit_task_error(
+            task_row,
+            database_session,
+            "stale evaluation failure",
+            expected_status=TaskStatus.EVALUATING,
+        )
+
+        database_session.refresh(task_row)
+        errors = database_session.exec(select(ErrorResult).where(ErrorResult.task == task_row.id)).all()
+        assert not committed
+        assert task_row.status == TaskStatus.FINISHED
+        assert errors == []
+
     async def test_set_benchmark_final_status(
         self, example_benchmark_object: Benchmark, database_session: Session
     ) -> None:

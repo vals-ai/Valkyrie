@@ -200,17 +200,17 @@ async def test_queued_coordinator_limits_evaluations_and_pending_contenders(
 
 
 @pytest.mark.usefixtures("process_benchmark_env")
-async def test_queued_process_benchmark_finishes_evaluation_resume_before_finalizing(
+async def test_queued_process_benchmark_recovers_existing_work_before_finalizing(
     contract: AgentContractRequest,
     database_session: Session,
     harness_config: HarnessConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    task_ids = ["resume_eval"]
+    task_ids = ["resume_eval", "recover_build"]
     request = StartBenchmarkRequest(
         benchmark_name="swebench",
         contract=contract,
-        concurrency=1,
+        concurrency=2,
         priority=3,
         task_ids=task_ids,
         harness_config=harness_config,
@@ -221,17 +221,35 @@ async def test_queued_process_benchmark_finishes_evaluation_resume_before_finali
         database_session,
         queued_pool_id=queue_pool_id(provider_pool_id),
     )
-    database_session.add(
-        Task(
-            org_id=TEST_ORG_ID,
-            task_id="resume_eval",
-            benchmark=benchmark.id,
-            status=TaskStatus.EVALUATING,
-            eval_resume_state={"cursor": "durable"},
-        )
+    database_session.add_all(
+        [
+            Task(
+                org_id=TEST_ORG_ID,
+                task_id="resume_eval",
+                benchmark=benchmark.id,
+                status=TaskStatus.EVALUATING,
+                eval_resume_state={"cursor": "durable"},
+            ),
+            Task(
+                org_id=TEST_ORG_ID,
+                task_id="recover_build",
+                benchmark=benchmark.id,
+                status=TaskStatus.BUILDING,
+            ),
+        ]
     )
     database_session.commit()
     initial_statuses: dict[str, TaskStatus] = {}
+
+    async def recover_queued_pool(_context: object) -> None:
+        with Session(bind=database_session.bind) as session:
+            task = session.exec(
+                select(Task).where(Task.benchmark == benchmark.id).where(Task.task_id == "recover_build")
+            ).one()
+            assert task.status == TaskStatus.BUILDING
+            task.status = TaskStatus.PENDING
+            session.add(task)
+            session.commit()
 
     async def process_task(task_row: Task, *_args: Any, **_kwargs: Any) -> dict[str, dict[str, Any]]:
         initial_statuses[task_row.task_id] = task_row.status
@@ -247,6 +265,7 @@ async def test_queued_process_benchmark_finishes_evaluation_resume_before_finali
         return {task_row.task_id: result}
 
     sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
+    monkeypatch.setattr("tracker.utils.run_orchestration.recover_queued_pool", recover_queued_pool)
     monkeypatch.setattr("tracker.utils.run_orchestration.process_task", process_task)
     monkeypatch.setattr(
         BenchmarkServiceClient,
@@ -254,56 +273,22 @@ async def test_queued_process_benchmark_finishes_evaluation_resume_before_finali
         Mock(return_value=sandbox_provider),
     )
 
-    await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
+    await asyncio.wait_for(
+        process_benchmark(request.model_dump(), str(benchmark.id), task_ids),
+        timeout=5,
+    )
 
     database_session.refresh(benchmark)
-    assert initial_statuses == {"resume_eval": TaskStatus.EVALUATING}
+    tasks = database_session.exec(select(Task).where(Task.benchmark == benchmark.id)).all()
+    assert initial_statuses == {
+        "resume_eval": TaskStatus.EVALUATING,
+        "recover_build": TaskStatus.PENDING,
+    }
+    assert {task.task_id: task.status for task in tasks} == {
+        "resume_eval": TaskStatus.FINISHED,
+        "recover_build": TaskStatus.FINISHED,
+    }
     assert benchmark.status == BenchmarkStatus.FINISHED
-
-
-@pytest.mark.usefixtures("process_benchmark_env")
-async def test_queued_building_only_run_reaches_startup_recovery(
-    contract: AgentContractRequest,
-    database_session: Session,
-    harness_config: HarnessConfig,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    task_ids = ["task_0"]
-    request = StartBenchmarkRequest(
-        benchmark_name="swebench",
-        contract=contract,
-        priority=3,
-        task_ids=task_ids,
-        harness_config=harness_config,
-    )
-    provider_pool_id = "recovery-pool"
-    benchmark = _persist_benchmark(
-        request,
-        database_session,
-        queued_pool_id=queue_pool_id(provider_pool_id),
-    )
-    database_session.add(
-        Task(
-            org_id=TEST_ORG_ID,
-            task_id=task_ids[0],
-            benchmark=benchmark.id,
-            status=TaskStatus.BUILDING,
-        )
-    )
-    database_session.commit()
-    sandbox_provider = Mock(spec=SandboxProvider, admission_pool_id=provider_pool_id)
-    run_queued_tasks = AsyncMock()
-    monkeypatch.setattr(BenchmarkServiceClient, "get_sandbox_provider", Mock(return_value=sandbox_provider))
-    monkeypatch.setattr("tracker.utils.run_orchestration._run_queued_tasks", run_queued_tasks)
-
-    await process_benchmark(request.model_dump(), str(benchmark.id), task_ids)
-
-    queued_call = run_queued_tasks.await_args
-    assert queued_call is not None
-    queued_task_rows = queued_call.kwargs["task_rows"]
-    assert [(task_id, task.status) for task_id, task in queued_task_rows] == [
-        ("task_0", TaskStatus.BUILDING),
-    ]
 
 
 @pytest.mark.usefixtures("process_benchmark_env")

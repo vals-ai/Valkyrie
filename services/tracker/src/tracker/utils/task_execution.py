@@ -483,6 +483,11 @@ async def _process_task_attempt(
         if benchmark_row.status == BenchmarkStatus.STOPPING or task_row.status == TaskStatus.STOPPED:
             handle_early_exit(task_row, task_session)
             return {task_id: None}
+        expected_failure_status = (
+            TaskStatus.EVALUATING
+            if task_row.status == TaskStatus.EVALUATING and task_row.eval_resume_state is not None
+            else None
+        )
         benchmark_name = benchmark_row.name
         benchmark_agent_name = benchmark_row.arguments.contract.name
         benchmark_started_by_email = benchmark_row.started_by_email
@@ -519,6 +524,17 @@ async def _process_task_attempt(
         with Session(bind=engine) as task_session:
             task = fetch_task_row(task_row.id, task_session, org)
             return task.status == TaskStatus.STOPPED or task.started_at != attempt_started_at
+
+    def commit_attempt_error(error_message: str) -> bool:
+        with Session(bind=engine) as task_session:
+            task = fetch_task_row(task_row.id, task_session, org)
+            return commit_task_error(
+                task,
+                task_session,
+                error_message,
+                expected_started_at=attempt_started_at,
+                expected_status=expected_failure_status,
+            )
 
     try:
         evaluation_resume_state = task_row.eval_resume_state
@@ -825,6 +841,7 @@ async def _process_task_attempt(
                     org,
                     TaskStatus.PENDING,
                     expected_started_at=attempt_started_at,
+                    expected_status=expected_failure_status,
                 ):
                     return {task_id: None}
         log_output(f"\n[ERROR] {_exception_message(e)}")
@@ -836,9 +853,7 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+        commit_attempt_error(error_message)
 
         return {task_id: None}
     except ConnectionClosedError as e:
@@ -851,9 +866,7 @@ async def _process_task_attempt(
         logger.warning(error_message)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+        commit_attempt_error(error_message)
 
         return {task_id: None}
     except ValidationError as e:
@@ -865,9 +878,7 @@ async def _process_task_attempt(
         )
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+        commit_attempt_error(error_message)
 
         return {task_id: None}
     except InvalidStatus as e:
@@ -876,9 +887,7 @@ async def _process_task_attempt(
         error_message = f"Benchmark service rejected the WebSocket connection (HTTP {e.response.status_code})"
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+        commit_attempt_error(error_message)
 
         return {task_id: None}
     except BenchmarkServiceError as e:
@@ -887,9 +896,7 @@ async def _process_task_attempt(
         error_message = _exception_message(e)
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+        commit_attempt_error(error_message)
 
         return {task_id: None}
     except Exception as e:
@@ -904,9 +911,7 @@ async def _process_task_attempt(
         # include the error message
         log_output(f"\n[ERROR] {error_message}")
 
-        with Session(bind=engine) as task_session:
-            task = fetch_task_row(task_row.id, task_session, org)
-            commit_task_error(task, task_session, error_message, expected_started_at=attempt_started_at)
+        commit_attempt_error(error_message)
 
         return {task_id: None}
     finally:
@@ -922,6 +927,7 @@ def commit_task_error(
     error_message: str,
     *,
     expected_started_at: datetime | None = None,
+    expected_status: TaskStatus | None = None,
 ) -> bool:
     session.add(ErrorResult(org_id=task_row.org_id, task=task_row.id, error_message=error_message))
     return _commit_task_status(
@@ -930,4 +936,5 @@ def commit_task_error(
         TaskStatus.ERROR,
         error_message=error_message,
         expected_started_at=expected_started_at,
+        expected_status=expected_status,
     )
