@@ -150,7 +150,7 @@ def get_task_attempts(
                 error_fingerprint=fingerprint,
             )
         )
-    attempts.sort(key=lambda attempt: (attempt.created_at, attempt.id.int, attempt.kind), reverse=True)
+    attempts.sort(key=lambda attempt: (attempt.created_at, attempt.id.int), reverse=True)
 
     evaluation_count = session.exec(select(func.count(col(EvaluationResult.id))).where(*evaluation_filters)).one()
     error_count = session.exec(select(func.count(col(ErrorResult.id))).where(*error_filters)).one()
