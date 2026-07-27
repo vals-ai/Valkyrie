@@ -159,6 +159,7 @@ class BenchmarkArguments(BaseModel):
     contract: AgentContractRequest
     concurrency: int
     priority: int | None = None
+    queue_pool_id: str | None = Field(default=None, exclude=True)
     task_ids: list[str] | None = None
     slice_str: str | None = None
     lambda_function: str | None = None
@@ -202,7 +203,10 @@ class BenchmarkArgumentsType(TypeDecorator[BenchmarkArguments]):
         """Runs when we save the value to the database."""
         if value is None:
             return None
-        return value.model_dump()
+        serialized = value.model_dump()
+        serialized["queue_pool_id"] = value.queue_pool_id
+
+        return serialized
 
     def process_result_value(self, value: dict[str, Any] | None, dialect: Dialect) -> BenchmarkArguments | None:
         """Runs when we fetch the value from the database."""
